@@ -4896,6 +4896,9 @@ final class SyncService: ObservableObject {
   /// and says why.
   static let workSessionNavigationTimeout: TimeInterval = 10
 
+  /// The longest the watchdog waits on a machine switch still in flight.
+  static let machineSwitchWaitCap: TimeInterval = 60
+
   /// Every tap must land somewhere visible. When one cannot reach where it
   /// pointed, drop the pending request, close the drawer, show the Hub, and
   /// tell the user why in one line.
@@ -4931,10 +4934,19 @@ final class SyncService: ObservableObject {
         }
         guard !Task.isCancelled, let self,
               self.requestedWorkSessionNavigation?.id == request.id else { return }
-        // Never pull the Wake & open prompt away from someone reading it. Wait
-        // for their answer, then give the open a fresh window to finish.
-        guard self.pendingMachineWake != nil else { break }
-        while self.pendingMachineWake != nil {
+        // Never pull the Wake & open prompt away from someone reading it, and
+        // never call a machine switch that is still connecting a failure (a
+        // move to another machine, or a push for one, can take longer than
+        // the window). Wait for either to finish, then give the open a fresh
+        // window. The switch wait is capped: the connect has its own budget,
+        // and this only guards against a marker nobody cleared.
+        let switchWaitEnds = Date().addingTimeInterval(Self.machineSwitchWaitCap)
+        @MainActor func stillBusy() -> Bool {
+          self.pendingMachineWake != nil
+            || (self.accountNavigationInFlight != nil && Date() < switchWaitEnds)
+        }
+        guard stillBusy() else { break }
+        while stillBusy() {
           try? await Task.sleep(nanoseconds: 500_000_000)
           if Task.isCancelled { return }
         }
