@@ -421,8 +421,6 @@ export function MusicPlayerCard({
   const reduced = useMusicReducedMotion();
   const nowPlaying = useMusicState((s) => s?.playback.nowPlaying ?? null);
   const isPlaying = useMusicState((s) => Boolean(s?.playback.isPlaying));
-  const queuePosition = useMusicState((s) => s?.playback.queuePosition ?? -1);
-  const queueLength = useMusicState((s) => s?.playback.queueLength ?? 0);
   const suspended = useMusicState((s) => s?.host.status === "suspended");
   if (!nowPlaying) return null;
   return (
@@ -438,11 +436,6 @@ export function MusicPlayerCard({
       <div className="ade-music-player-inner">
         <header className="ade-music-player-head">
           <span className="kit-eyebrow">{suspended ? "Paused · resumes here" : "Now playing"}</span>
-          {queueLength > 1 && queuePosition >= 0 ? (
-            <span className="kit-num ade-music-player-count">
-              {queuePosition + 1} of {queueLength}
-            </span>
-          ) : null}
           <PlayerIconButton size="sm" label="Hide player" onClick={onCollapse} className="ml-auto">
             <CaretDown size={14} weight="bold" />
           </PlayerIconButton>

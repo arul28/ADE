@@ -276,6 +276,25 @@ export function createAppleMusicApi(args: {
       return { containers: normalizeAll(containers.data), tracks: normalizeAll(tracks.data) };
     },
 
+    /**
+     * The catalog song ids that are still available in this storefront, in
+     * the order given. MusicKit refuses a whole queue when one id is gone (a
+     * pulled or region-locked song), so a queue is filtered through this first.
+     * Library ids (`i.…`) are not catalog ids and are passed through as is.
+     */
+    async availableSongIds(ids: readonly string[]): Promise<string[]> {
+      const catalog = ids.filter((id) => /^\d+$/.test(id));
+      if (!catalog.length) return [...ids];
+      const sf = await storefrontId();
+      const found = new Set<string>();
+      for (let at = 0; at < catalog.length; at += 300) {
+        const chunk = catalog.slice(at, at + 300);
+        const body = await request<{ data?: Resource[] }>(`/v1/catalog/${sf}/songs?${qs({ ids: chunk.join(",") })}`);
+        for (const song of body.data ?? []) if (song?.id) found.add(String(song.id));
+      }
+      return ids.filter((id) => !/^\d+$/.test(id) || found.has(id));
+    },
+
     async tracks(input: { kind: "album" | "playlist"; id: string; library: boolean }): Promise<MusicItem[]> {
       const id = encodeURIComponent(input.id);
       const collection = input.kind === "album" ? "albums" : "playlists";

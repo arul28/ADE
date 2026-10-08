@@ -49,6 +49,38 @@ const LIBRARY_LABELS: Record<MusicLibraryKind, string> = { playlists: "Playlists
 const QUEUE_WINDOW = 300;
 /** Songs kept before the chosen one, so previous works. */
 const QUEUE_BACK = 50;
+/**
+ * Queue songs from a list the page already loaded, starting at `index`.
+ *
+ * MusicKit's queue takes catalog ids: a list of library ids (`i.…`) fails with
+ * REQUEST_ERROR. Library songs carry their catalog id, so queue by that and
+ * skip the few without one (a song with none still plays on its own).
+ * Shuffle mixes the whole list before taking a window, so it reaches every song.
+ */
+function queueFromList(items: readonly MusicItem[], index: number, shuffle?: boolean): void {
+  const chosen = items[index];
+  const playable = items
+    .map((item, at) => ({ id: item.library ? item.catalogId : item.id, at }))
+    .filter((entry): entry is { id: string; at: number } => Boolean(entry.id));
+  if (!shuffle && chosen && !playable.some((entry) => entry.at === index)) {
+    void musicActions.playItems([chosen.id], 0);
+    return;
+  }
+  if (!playable.length) return;
+  if (shuffle) {
+    const ids = playable.map((entry) => entry.id);
+    for (let i = ids.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+    }
+    void musicActions.playItems(ids.slice(0, QUEUE_WINDOW), 0, true);
+    return;
+  }
+  const position = Math.max(0, playable.findIndex((entry) => entry.at === index));
+  const start = Math.max(0, Math.min(position - QUEUE_BACK, playable.length - QUEUE_WINDOW));
+  void musicActions.playItems(playable.slice(start, start + QUEUE_WINDOW).map((entry) => entry.id), position - start);
+}
+
 const SEARCH_IDEAS = ["Deep focus", "Lo-fi beats", "Synthwave", "Jazz for work", "Film scores", "Ambient", "Classical piano", "Coding mix"];
 
 /** Whether the Now Playing card is shown (on wide windows) or folded into the bar. */
@@ -758,8 +790,7 @@ function LibraryView({
   });
 
   const playSongsFrom = (index: number) => {
-    // A queue of the next 300 songs: enough for hours, small enough to load fast.
-    void musicActions.playItems(items.slice(index, index + 300).map((s) => s.id), 0);
+    queueFromList(items, index);
   };
 
   return (
@@ -770,7 +801,7 @@ function LibraryView({
           <button
             type="button"
             className="ade-music-pill"
-            onClick={() => void musicActions.playItems(items.slice(0, 300).map((s) => s.id), 0, true)}
+            onClick={() => queueFromList(items, 0, true)}
           >
             <Shuffle size={13} /> Shuffle
           </button>
@@ -834,23 +865,8 @@ function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps & { item
     // Handing MusicKit the playlist id loads only its first page of songs, so a
     // click further down (or shuffle) never reaches the rest. Queue from the
     // full list this page already read instead.
-    if (!tracks.length) {
-      void musicActions.playCollection(kind, item.id, index, shuffle);
-      return;
-    }
-    const ids = tracks.map((t) => t.id);
-    if (shuffle) {
-      for (let i = ids.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [ids[i], ids[j]] = [ids[j], ids[i]];
-      }
-      void musicActions.playItems(ids.slice(0, QUEUE_WINDOW), 0, true);
-      return;
-    }
-    // A window around the chosen song keeps the queue quick to load while
-    // previous still has songs to go back to.
-    const start = Math.max(0, Math.min(index - QUEUE_BACK, ids.length - QUEUE_WINDOW));
-    void musicActions.playItems(ids.slice(start, start + QUEUE_WINDOW), index - start);
+    if (tracks.length) queueFromList(tracks, index, shuffle);
+    else void musicActions.playCollection(kind, item.id, index, shuffle);
   };
 
   return (

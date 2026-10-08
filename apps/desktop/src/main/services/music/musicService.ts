@@ -522,13 +522,19 @@ export function createMusicService(args: {
           case "playAt":
             result = await h.request<HostState>("playAt", { index: cmd.index });
             break;
-          case "playItems":
+          case "playItems": {
+            // Drop songs that left the catalog: one missing id fails the whole queue.
+            const chosen = cmd.ids[cmd.index ?? 0];
+            const ids = cmd.ids.length > 1 ? await api.availableSongIds(cmd.ids).catch(() => cmd.ids) : cmd.ids;
+            if (!ids.length) throw new Error("NOT_FOUND");
+            const index = chosen !== undefined && ids.includes(chosen) ? ids.indexOf(chosen) : Math.min(cmd.index ?? 0, ids.length - 1);
             result = await h.request<HostState>("playItems", {
-              ids: cmd.ids,
-              index: cmd.index ?? 0,
+              ids,
+              index,
               shuffle: cmd.shuffle === undefined ? undefined : cmd.shuffle ? 1 : 0,
             }, 60_000);
             break;
+          }
           case "playCollection":
             result = await h.request<HostState>("playCollection", {
               kind: cmd.kind,
