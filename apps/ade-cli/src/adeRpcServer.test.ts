@@ -5370,7 +5370,7 @@ describe("adeRpcServer", () => {
     });
     expect(deniedAttentionRequest.isError).toBe(true);
     expect(
-      vi.mocked(fixture.runtime.sessionService.requestAttention).mock.calls.some(([sessionId]) => sessionId === "chat-2"),
+      vi.mocked(fixture.runtime.sessionService.requestAttention).mock.calls.some((call: unknown[]) => call[0] === "chat-2"),
     ).toBe(false);
 
     const ownScheduledWorkCreate = await callTool(handler, "run_ade_action", {
