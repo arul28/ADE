@@ -22,6 +22,38 @@ type AsyncMergeResult = {
   message: string | null;
 };
 
+/** What ADE sends to `PUT .../merge-async`. */
+type AsyncMergeRequest = {
+  merge_method: MergeMethod;
+  merge_action: "default";
+  sha?: string;
+  bypass_rules?: true;
+};
+
+/**
+ * True when a 409's running merge is not this request: an option GitHub
+ * reports for it differs from what this request sent. Only non-empty reported
+ * values count, and the requested head is read from `head_sha` alone, since
+ * `details.sha` is the merge's resulting commit, not its head.
+ */
+function runningMergeDiffers(sent: AsyncMergeRequest, responseBody: unknown): boolean {
+  if (!isRecord(responseBody)) return false;
+  const details = isRecord(responseBody.details) ? responseBody.details : {};
+  const reported = (name: string): unknown => {
+    for (const record of [details, responseBody]) {
+      const value = Object.hasOwn(record, name) ? record[name] : undefined;
+      if (value !== undefined && value !== null && value !== "") return value;
+    }
+    return undefined;
+  };
+  const headSha = reported("head_sha");
+  const method = reported("merge_method");
+  const bypass = reported("bypass_rules");
+  return (sent.sha !== undefined && headSha !== undefined && headSha !== sent.sha)
+    || (method !== undefined && method !== sent.merge_method)
+    || (bypass !== undefined && Boolean(bypass) !== Boolean(sent.bypass_rules));
+}
+
 function parseAsyncMergeResult(raw: unknown): AsyncMergeResult {
   const body = isRecord(raw) ? raw : {};
   const details = isRecord(body.details) ? body.details : {};
@@ -36,16 +68,14 @@ function parseAsyncMergeResult(raw: unknown): AsyncMergeResult {
 
 /** How long `land` waits for a stack merge before it answers "still merging". */
 const FOREGROUND_WAIT_MS = 20_000;
-/** How long ADE keeps polling in the background after that. */
+/** How long ADE keeps polling in the background after that; also each layer's merge poll. */
 const BACKGROUND_WAIT_MS = 15 * 60_000;
 const POLL_INTERVAL_MS = 2_000;
 /**
  * A bypass merge from above the bottom merges one layer at a time. How long it
- * waits for GitHub to restack the next layer onto the base, and how long one
- * layer's merge may run.
+ * waits for GitHub to restack the next layer onto the base.
  */
 const LAYER_READY_WAIT_MS = 3 * 60_000;
-const LAYER_MERGE_WAIT_MS = 5 * 60_000;
 /** Start attempts per layer while GitHub is still restacking it. */
 const LAYER_START_ATTEMPTS = 6;
 const LAYER_RETRY_DELAY_MS = 5_000;
@@ -216,7 +246,7 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
   const startMerge = async (
     repo: GitHubRepoRef,
     prNumber: number,
-    body: Record<string, unknown>,
+    body: AsyncMergeRequest,
   ): Promise<{ started: AsyncMergeResult } | { error: unknown }> => {
     try {
       const response = await githubService.apiRequest<unknown>({
@@ -228,6 +258,11 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     } catch (error) {
       const failure = githubApiFailure(error);
       const running = failure?.status === 409 ? parseAsyncMergeResult(failure.body) : null;
+      if (running?.uuid && runningMergeDiffers(body, failure?.body)) {
+        return {
+          error: new Error(`Another merge of #${prNumber} with different options is already running on GitHub. Wait for it to finish, then merge again.`),
+        };
+      }
       return running?.uuid ? { started: running } : { error };
     }
   };
@@ -443,11 +478,11 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     for (let attempt = 1; attempt <= LAYER_START_ATTEMPTS; attempt += 1) {
       const head = await verifyLayerHead(repo, guard);
       if ("stop" in head) return failed(head.stop);
-      const body = { merge_method: method, merge_action: "default", bypass_rules: true, sha: head.sha };
+      const body: AsyncMergeRequest = { merge_method: method, merge_action: "default", bypass_rules: true, sha: head.sha };
       const start = await startMerge(repo, prNumber, body);
       let status: number | null = null;
       if ("started" in start) {
-        const final = await pollMerge(repo, prNumber, start.started, Date.now() + LAYER_MERGE_WAIT_MS);
+        const final = await pollMerge(repo, prNumber, start.started, Date.now() + BACKGROUND_WAIT_MS);
         if (final.status !== "failed") return final;
         lastMessage = final.message ?? lastMessage;
       } else {
@@ -503,11 +538,10 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
           logger.warn("prs.stack_layer_cleanup_failed", { stackNumber, error: getErrorMessage(error) });
         });
       };
+      const afterMerged = (text: string) => (merged.length > 0 ? `Merged ${list(merged)}. ${text}` : text);
       const stopAt = async (number: number, reason: string): Promise<LandResult> => {
         await cleanUpMerged();
-        const error = merged.length > 0
-          ? `Merged ${list(merged)}. #${number} did not merge: ${reason}`
-          : `#${number} did not merge: ${reason}`;
+        const error = afterMerged(`#${number} did not merge: ${reason}`);
         finishOperation("failed", { ...meta, mergedPrNumbers: merged, error });
         return { ...base, error, stackPrNumbers };
       };
@@ -538,11 +572,17 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
             error: `GitHub added #${number} to the merge queue. Merge the rest of Stack #${stackNumber} after it lands.`,
           };
         }
+        if (outcome.status === "pending") {
+          await cleanUpMerged();
+          // The outcome is unknown, so the operation stays open, as the single
+          // stack merge leaves it; the PR poller shows how GitHub settles.
+          logger.warn("prs.stack_layer_merge_still_pending", { stackNumber, prNumber: number });
+          const error = afterMerged(`GitHub is still merging #${number}. ADE stopped waiting; merge the rest of the stack after it lands.`);
+          return { ...base, mergeStatus: "pending", stackPrNumbers, error };
+        }
         return await stopAt(
           number,
-          outcome.status === "pending"
-            ? "GitHub did not finish the merge in time."
-            : outcome.message ?? "GitHub could not merge this PR.",
+          outcome.message ?? "GitHub could not merge this PR.",
         );
       }
       const cleanup = await finishMerge(repo, stackNumber, merged, args, prNumber);
@@ -630,7 +670,7 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
       return await landLayerByLayer({ repo, prNumber, args, stackNumber, stackPrNumbers, coveredEntries, base, finishOperation });
     }
 
-    const body: Record<string, unknown> = { merge_method: args.method, merge_action: "default" };
+    const body: AsyncMergeRequest = { merge_method: args.method, merge_action: "default" };
     if (args.expectedHeadSha?.trim()) body.sha = args.expectedHeadSha.trim();
     if (args.bypassRules) body.bypass_rules = true;
 
