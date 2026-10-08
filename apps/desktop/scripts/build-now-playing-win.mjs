@@ -59,7 +59,7 @@ try {
     "/DUNICODE", "/D_UNICODE", "/D_WIN32_WINNT=0x0A00", "/DWINVER=0x0A00", "/DNOMINMAX",
     `/I${cppwinrt}`,
     source, `/Fe:${temporary}`,
-    "/link", "/SUBSYSTEM:CONSOLE", "windowsapp.lib", "crypt32.lib", "ole32.lib",
+    "/link", "/SUBSYSTEM:CONSOLE", "windowsapp.lib", "crypt32.lib", "ole32.lib", "shell32.lib", "windowscodecs.lib", "gdi32.lib",
   ], { cwd: scratch, stdio: "inherit", windowsHide: true, env: compilerEnv });
   const output = path.join(outputRoot, "ade-now-playing.exe");
   fs.copyFileSync(temporary, `${output}.tmp`);
