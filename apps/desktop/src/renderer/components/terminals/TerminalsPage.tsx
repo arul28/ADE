@@ -1816,7 +1816,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     <div className="flex h-full min-h-0 w-full flex-col" data-testid="work-focus-grid">
       <div key={focus.pageKey} {...focus.pageProps}>
         {focus.members.length === 0 ? (
-          <WorkFocusGridEmpty workingCount={work.runningFiltered.length} onLeaveGrid={() => work.setWorkFocusGrid(false)} />
+          <WorkFocusGridEmpty
+            workingCount={work.runningFiltered.length}
+            playing={active}
+          />
         ) : focus.members.length === 1 ? (
           renderFocusSurface(focus.members[0]!)
         ) : (

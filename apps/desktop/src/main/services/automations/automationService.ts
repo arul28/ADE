@@ -30,6 +30,13 @@ import type {
   AutomationScheduledCleanup,
   AutomationsEventPayload,
   AutomationToolFamily,
+  AutomationTestCleanupResult,
+  AutomationTestEvent,
+  AutomationTestPlan,
+  AutomationTestPlanStep,
+  AutomationTestRequest,
+  AutomationTestRunInfo,
+  AutomationTestRunMode,
   AutomationTrigger,
   AutomationTriggerType,
   ModelId,
@@ -39,6 +46,14 @@ import type {
 } from "../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../shared/types";
 import { advanceLaneToPrHead, resolvePrBranchLane, type AutomationPrLaneService } from "./automationPrBranchLane";
+import {
+  createAutomationTestRuns,
+  describeHeldBackStep,
+  safeTestHoldsBack,
+  safeTestRule,
+  testNotificationTitle,
+  withSafeTestNotice,
+} from "./automationTestRun";
 import { AUTOMATION_CHAT_SESSION_PREFIX } from "../../../shared/types/macDesktop";
 import { stripHostAuthoredMessageProvenance } from "../chat/spawnMissionOwnership";
 import type { Logger } from "../logging/logger";
@@ -323,6 +338,14 @@ export type TriggerContext = {
   linearAgent?: TriggerLinearAgentContext;
   /** Structured chat-session payload for `session.*` triggers. */
   session?: TriggerSessionContext;
+  /**
+   * What this run has made so far, for `{{run.*}}` in later steps: a
+   * notification can open the chat or lane the run created, which did not
+   * exist when the rule was written. Filled in as the run goes.
+   */
+  run?: AutomationRunTemplateContext;
+  /** Set on a test run. A safe test holds back outward steps; both kinds mark notifications "[Test]". */
+  test?: AutomationTestRunInfo;
   /**
    * Custom webhook request. Its fields read at the top of the placeholder
    * namespace: `{{trigger.body.*}}`, `{{trigger.headers.*}}`,
@@ -709,8 +732,32 @@ export function isWebhookTrigger(trigger: TriggerContext): boolean {
   return trigger.triggerType === "webhook" && Boolean(trigger.webhook);
 }
 
+/** `{{run.*}}` values. `laneId` falls back to the trigger's lane, which every lane mode writes. */
+export type AutomationRunTemplateContext = {
+  id: string;
+  laneId?: string;
+  laneName?: string;
+  chatSessionId?: string;
+};
+
+const PLACEHOLDER_PATH = String.raw`(?:trigger|run)\.[^}\s]+`;
+const WHOLE_PLACEHOLDER = new RegExp(String.raw`^\{\{\s*(${PLACEHOLDER_PATH})\s*\}\}$`);
+const ANY_PLACEHOLDER = new RegExp(String.raw`\{\{\s*(${PLACEHOLDER_PATH})\s*\}\}`, "g");
+
+/** One `trigger.*` or `run.*` value; `run.laneId` / `run.laneName` fall back to the trigger's lane. */
+function readTemplateValue(trigger: TriggerContext, expr: string): unknown {
+  if (expr.startsWith("run.")) {
+    const key = expr.slice("run.".length);
+    const run = trigger.run;
+    if (key === "laneId") return run?.laneId ?? trigger.laneId;
+    if (key === "laneName") return run?.laneName ?? trigger.laneName;
+    return run ? (run as Record<string, unknown>)[key] : undefined;
+  }
+  return readTriggerPath(trigger, expr);
+}
+
 /**
- * Recursively substitute `{{trigger.*}}` placeholders inside a JSON-ish args
+ * Recursively substitute `{{trigger.*}}` and `{{run.*}}` placeholders inside a JSON-ish args
  * tree with values read from the trigger context. Strings that are wholly a
  * single placeholder (`"{{trigger.issue.number}}"`) are replaced with the raw
  * value (preserves number/boolean types); strings with embedded placeholders
@@ -741,13 +788,13 @@ export function resolvePlaceholders(node: unknown, trigger: TriggerContext): unk
     );
   }
   if (typeof node === "string") {
-    const wholeMatch = /^\{\{\s*(trigger\.[^}\s]+)\s*\}\}$/.exec(node);
+    const wholeMatch = WHOLE_PLACEHOLDER.exec(node);
     if (wholeMatch) {
-      const value = readTriggerPath(trigger, wholeMatch[1]!);
+      const value = readTemplateValue(trigger, wholeMatch[1]!);
       return value === undefined ? node : value;
     }
-    return node.replace(/\{\{\s*(trigger\.[^}\s]+)\s*\}\}/g, (_, expr) => {
-      const value = readTriggerPath(trigger, String(expr));
+    return node.replace(ANY_PLACEHOLDER, (_, expr) => {
+      const value = readTemplateValue(trigger, String(expr));
       if (value == null) return "";
       if (typeof value === "string") return value;
       try { return JSON.stringify(value); } catch { return String(value); }
@@ -2113,6 +2160,7 @@ export function createAutomationService({
     ...(trigger.ingressSource ? { ingressSource: trigger.ingressSource } : {}),
     ...(trigger.ingressEventKey ? { ingressEventKey: trigger.ingressEventKey } : {}),
     ...(trigger.eventName ? { eventName: trigger.eventName } : {}),
+    ...(trigger.test ? { test: trigger.test } : {}),
     ...(trigger.author ? { author: trigger.author } : {}),
     ...(trigger.labels?.length ? { labels: trigger.labels } : {}),
     ...(trigger.paths?.length ? { paths: trigger.paths } : {}),
@@ -2131,6 +2179,9 @@ export function createAutomationService({
     ...(trigger.pr ? { pr: trigger.pr } : {}),
     ...(trigger.linear ? { linear: trigger.linear } : {}),
   });
+
+  /** Called once the test's run row exists, so `runTest` can answer with it. */
+  const testRunStartedListeners = new WeakMap<TriggerContext, (run: AutomationRun) => void>();
 
   const insertRun = (args: {
     rule: AutomationRule;
@@ -2207,7 +2258,7 @@ export function createAutomationService({
         args.rule.billingCode,
       ]
     );
-    return toRun({
+    const inserted = toRun({
       id: runId,
       automation_id: args.rule.id,
       chat_session_id: args.chatSessionId ?? null,
@@ -2232,6 +2283,10 @@ export function createAutomationService({
       confidence_json: confidence ? JSON.stringify(confidence) : null,
       billing_code: args.rule.billingCode,
     });
+    // `{{run.id}}` for later steps; a test waits for this row to answer.
+    args.trigger.run = { ...args.trigger.run, id: runId };
+    testRunStartedListeners.get(args.trigger)?.(inserted);
+    return inserted;
   };
 
   const updateRun = (runId: string, patch: Record<string, SqlValue>) => {
@@ -3208,8 +3263,16 @@ export function createAutomationService({
       return { status: "failed", output: `Action '${domain}.${actionName}' is not callable on the resolved service.` };
     }
 
-    // Resolve placeholders in args + any explicit `resolvers` map.
+    // Resolve placeholders in args + any explicit `resolvers` map. A
+    // notification link whose `{{run.*}}` value the run never filled resolves
+    // to an empty id; the action leaves it off and names it in `linkSkipped`.
     const resolvedArgs = resolvePlaceholders(config.args ?? {}, trigger);
+    if (
+      trigger.test && domain === "attention" && actionName === "sendNotification"
+      && isRecord(resolvedArgs) && typeof resolvedArgs.title === "string"
+    ) {
+      resolvedArgs.title = testNotificationTitle(resolvedArgs.title);
+    }
     if (config.resolvers && typeof resolvedArgs === "object" && resolvedArgs !== null && !Array.isArray(resolvedArgs)) {
       for (const [key, pathExpr] of Object.entries(config.resolvers)) {
         const value = readTriggerPath(trigger, pathExpr);
@@ -3251,6 +3314,10 @@ export function createAutomationService({
     if (raw === "provider-enabled" && (projectConfigService.get().effective.providerMode ?? "guest") === "guest") {
       return { status: "skipped", output: "Provider mode disabled." };
     }
+    if (trigger.test?.mode === "safe") {
+      const heldBack = safeTestHoldsBack(action);
+      if (heldBack) return { status: "skipped", output: describeHeldBackStep(action, trigger, heldBack, resolvePlaceholders) };
+    }
     if (action.type === "predict-conflicts") {
       if (!conflictService) throw new Error("Conflict service unavailable");
       const laneId = requiresTriggerLane(rule) || createsLaneForRun(rule)
@@ -3282,6 +3349,7 @@ export function createAutomationService({
       trigger.laneId = lane.id;
       trigger.laneName = lane.name;
       trigger.branch = lane.branchRef;
+      trigger.test?.lanes.push({ id: lane.id, name: lane.name });
       return {
         status: "succeeded",
         output: JSON.stringify({
@@ -3300,6 +3368,9 @@ export function createAutomationService({
           status: "failed",
           output: "delete-lane requires an explicit target lane, a lane created earlier in the chain, or a trigger lane.",
         };
+      }
+      if (trigger.test?.mode === "safe" && !trigger.test.lanes.some((lane) => lane.id === laneId)) {
+        return { status: "skipped", output: `Test: would delete lane ${laneId}. A safe test deletes only lanes it made.` };
       }
       const afterMinutes = Number(action.afterMinutes ?? 0);
       const options = normalizeLaneDeleteOptions(action.laneDeleteOptions);
@@ -3507,7 +3578,10 @@ export function createAutomationService({
       }
       const interpolated = resolvePlaceholders(rawPrompt, trigger);
       const filledPrompt = typeof interpolated === "string" ? interpolated : rawPrompt;
-      const promptText = isWebhookTrigger(trigger) ? `${WEBHOOK_UNTRUSTED_NOTICE}\n\n${filledPrompt}` : filledPrompt;
+      const promptText = withSafeTestNotice(
+        isWebhookTrigger(trigger) ? `${WEBHOOK_UNTRUSTED_NOTICE}\n\n${filledPrompt}` : filledPrompt,
+        trigger,
+      );
       const { modelId, modelDescriptor, providerGroup } = resolveAutomationModelDescriptor(rule, action);
       const resolvedChat = resolveChatProviderForDescriptor(modelDescriptor);
       const fastMode = action.fastMode === true
@@ -3537,6 +3611,8 @@ export function createAutomationService({
           automationRunId: runId,
         });
         updateRun(runId, { chat_session_id: session.id });
+        // Later steps can open this chat (`{{run.chatSessionId}}`).
+        trigger.run = { ...trigger.run, id: trigger.run?.id ?? runId, chatSessionId: session.id, laneId };
         const result = await agentChatServiceRef.runSessionTurn({
           sessionId: session.id,
           text: promptText,
@@ -3767,6 +3843,7 @@ export function createAutomationService({
     trigger.laneId = lane.id;
     trigger.laneName = lane.name;
     trigger.branch = lane.branchRef;
+    trigger.test?.lanes.push({ id: lane.id, name: lane.name });
     return { laneId: lane.id, laneName: lane.name };
   };
 
@@ -4032,7 +4109,10 @@ export function createAutomationService({
       emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
       throw new Error(message);
     }
-    const prompt = buildAutomationPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId });
+    const prompt = withSafeTestNotice(
+      buildAutomationPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId }),
+      args.trigger,
+    );
 
     const actionId = insertAction(run.id, 0, "agent-session");
     const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: false });
@@ -4282,6 +4362,100 @@ export function createAutomationService({
     });
   };
 
+  // Test runs: the plan, the test trigger and the throwaway lane live in
+  // automationTestRun.ts; starting the run and cleaning up need this service's
+  // run table, so they stay here.
+  const testRuns = createAutomationTestRuns({
+    projectRoot,
+    laneService,
+    prService: prServiceRef,
+    resolveExecutionKind,
+    resolvePlaceholders,
+  });
+
+  /**
+   * Start a test. Answers as soon as the run exists; the run goes on in the
+   * background and History follows it like any other run.
+   */
+  const runTest = async (request: AutomationTestRequest): Promise<AutomationRun> => {
+    const rule = findRule(request.id?.trim() ?? "");
+    if (!rule) throw new Error(`Automation not found: ${request.id}`);
+    const mode: AutomationTestRunMode = request.mode === "live" ? "live" : "safe";
+    const trigger = await testRuns.buildTestTrigger(rule, request.event, mode);
+    const { problems } = testRuns.problemsAndWarnings(rule, trigger, mode);
+    if (problems.length) throw new Error(problems.join(" "));
+    try {
+      if (mode === "safe") await testRuns.createSafeTestLane(rule, trigger);
+      const ruleForTest = mode === "safe" ? safeTestRule(rule) : rule;
+      const kind = resolveExecutionKind(ruleForTest);
+      if (kind !== "built-in" && kind !== "agent-session") throw new Error(`Unsupported automation execution kind: ${kind}`);
+
+      let resolveStarted!: (run: AutomationRun) => void;
+      const started = new Promise<AutomationRun>((resolve) => { resolveStarted = resolve; });
+      testRunStartedListeners.set(trigger, resolveStarted);
+      const finished = (kind === "built-in"
+        ? runLegacyRule(ruleForTest, trigger, UNBOUNDED_RUN_BUDGET)
+        : dispatchAgentSessionRun({ rule: ruleForTest, trigger, budget: UNBOUNDED_RUN_BUDGET }))
+        .finally(() => {
+          // Lanes a step made after the run row was written.
+          const runId = trigger.run?.id;
+          if (runId && loadRunRow(runId)) {
+            updateRun(runId, { trigger_metadata: JSON.stringify(buildTriggerMetadata(trigger)) });
+            emit({ type: "runs-updated", automationId: rule.id, runId });
+          }
+        });
+      finished.catch((error) => {
+        logger.warn("automations.test.failed", {
+          automationId: rule.id,
+          mode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      return await Promise.race([started, finished]);
+    } catch (error) {
+      // The run never started (no row), so History has no Clean up for a lane
+      // the test already made: remove it here.
+      if (!trigger.run?.id) {
+        for (const lane of trigger.test?.lanes ?? []) {
+          await laneService.delete({ laneId: lane.id, deleteBranch: true, force: true }).catch(() => undefined);
+        }
+      }
+      throw error;
+    }
+  };
+
+  const cleanUpTestRun = async (args: { runId: string }): Promise<AutomationTestCleanupResult> => {
+    const runId = args.runId?.trim() ?? "";
+    const row = runId ? loadRunRow(runId) : null;
+    if (!row) throw new Error(`Run not found: ${runId}`);
+    const metadata = safeJsonParseRecord(row.trigger_metadata) ?? {};
+    const test = isRecord(metadata.test) ? metadata.test as AutomationTestRunInfo : null;
+    if (!test) throw new Error("This run is not a test, so there is nothing to clean up.");
+    if (!row.ended_at) throw new Error("This test is still running. Clean it up after it finishes.");
+    if (test.cleanedUpAt) return { removed: [], failed: [] };
+    const removed: AutomationTestCleanupResult["removed"] = [];
+    const failed: AutomationTestCleanupResult["failed"] = [];
+    const lanes = Array.isArray(test.lanes) ? test.lanes : [];
+    const existing = new Set((await laneService.list({ includeArchived: true })).map((lane) => lane.id));
+    for (const lane of lanes) {
+      if (!existing.has(lane.id)) {
+        removed.push(lane);
+        continue;
+      }
+      try {
+        await laneService.delete({ laneId: lane.id, deleteBranch: true, force: true });
+        removed.push(lane);
+      } catch (error) {
+        failed.push({ ...lane, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (!failed.length) {
+      updateRun(runId, { trigger_metadata: JSON.stringify({ ...metadata, test: { ...test, cleanedUpAt: nowIso() } }) });
+      emit({ type: "runs-updated", automationId: row.automation_id, runId });
+    }
+    return { removed, failed };
+  };
+
   /**
    * Run one rule now, or answer `null` when its budget is spent.
    *
@@ -4296,9 +4470,13 @@ export function createAutomationService({
    */
   const runRuleNow = async (
     rule: AutomationRule,
-    trigger: TriggerContext,
+    sharedTrigger: TriggerContext,
     options: { dryRun?: boolean } = {},
   ): Promise<AutomationRun | null> => {
+    // One event can start several rules at once, and a run writes its lane and
+    // `{{run.*}}` values onto its trigger. Each run gets its own copy, so one
+    // rule's notification cannot open another rule's chat or lane.
+    const trigger: TriggerContext = { ...sharedTrigger };
     // A shared rule used to refuse here until someone confirmed the committed
     // config. That gate is gone with the committed config itself: automations
     // are personal now, so no rule arrives from a repository that this user did
@@ -5115,6 +5293,23 @@ export function createAutomationService({
       }, { dryRun: Boolean(args.dryRun) });
       if (!run) throw new Error(`Automation '${id}' changed before it could run.`);
       return run;
+    },
+
+    /** What a test of the rule will do, with this event's values. Changes nothing. */
+    planTest(args: AutomationTestRequest): Promise<AutomationTestPlan> {
+      const rule = findRule(args.id?.trim() ?? "");
+      if (!rule) throw new Error(`Automation not found: ${args.id}`);
+      return testRuns.planTest(rule, args);
+    },
+
+    /** Start a safe or live test; answers once the run exists. */
+    runTest(args: AutomationTestRequest): Promise<AutomationRun> {
+      return runTest(args);
+    },
+
+    /** Delete the lanes a finished test made. */
+    cleanUpTestRun(args: { runId: string }): Promise<AutomationTestCleanupResult> {
+      return cleanUpTestRun(args);
     },
 
     getHistory(args: { id: string; limit?: number }): AutomationRun[] {

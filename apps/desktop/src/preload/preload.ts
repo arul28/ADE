@@ -222,6 +222,9 @@ import type {
   AutomationWebhookTestResult,
   AutomationWebhookGatewayStatus,
   AutomationManualTriggerRequest,
+  AutomationTestCleanupResult,
+  AutomationTestPlan,
+  AutomationTestRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
@@ -2742,10 +2745,6 @@ const remoteAgentChatEventFanout = createRemoteRuntimeFanout<AgentChatEventEnvel
   extract: (payload) => toAgentChatEventEnvelope(payload),
   invalidate: () => agentChatSummaryCache.clear(),
 });
-const pinnedLocalAgentChatEventCallbacks = new Map<
-  string,
-  Set<(event: RemoteRuntimeBufferedEvent) => void>
->();
 const remoteSessionChangedFanout = createRemoteRuntimeFanout<TerminalSessionChangedEvent>({
   eventType: "terminal_session_changed",
   label: "session",
@@ -3460,18 +3459,11 @@ function handleRemoteRuntimeEventNotification(value: unknown): void {
     payload.eventEpoch,
     payload.event,
   );
-  const pinnedLocalCallbacks = pinnedLocalAgentChatEventCallbacks.get(
+  pinnedRuntimeEvents.handlePinnedRuntimeEventNotification(
     payload.bindingKey,
+    payload.eventEpoch,
+    payload.event,
   );
-  if (pinnedLocalCallbacks?.size) {
-    for (const dispatch of [...pinnedLocalCallbacks]) {
-      try {
-        dispatch(payload.event);
-      } catch (error) {
-        console.error("preload pinned local agent chat listener failed", error);
-      }
-    }
-  }
   const binding = currentProjectBinding;
   if (!binding || payload.bindingKey !== binding.key) return;
   resetRemoteRuntimeEmptyPolls();
@@ -3782,46 +3774,21 @@ function subscribeAgentChatEvents(
   const removeLocal = forcePinned ? () => undefined : agentChatEventFanout(cb);
   if (pin && (forcePinned || pin.key !== currentProjectBinding?.key)) {
     const startedAtMs = pin.kind === "local" ? Date.now() : 0;
-    const seenLocalEventIds = new Set<number>();
-    const dispatchPinnedLocalEvent = (event: RemoteRuntimeBufferedEvent): void => {
-      if (isPinnedRuntimeEventStale(startedAtMs, event.timestamp)) return;
-      if (!rememberPinnedRuntimeEventId(seenLocalEventIds, event.id)) return;
-      const envelope = toAgentChatEventEnvelope(event.payload);
-      if (!envelope) return;
-      agentChatSummaryCache.clear();
-      cb(envelope);
-    };
-    const pinnedLocalCallbacks =
-      pin.kind === "local"
-        ? pinnedLocalAgentChatEventCallbacks.get(pin.key) ??
-          new Set<(event: RemoteRuntimeBufferedEvent) => void>()
-        : null;
-    if (pinnedLocalCallbacks) {
-      pinnedLocalCallbacks.add(dispatchPinnedLocalEvent);
-      pinnedLocalAgentChatEventCallbacks.set(pin.key, pinnedLocalCallbacks);
-    }
+    // The pump takes both pushed and polled events and drops repeats itself.
     const stopPump = startPinnedRuntimeEventPump({
       pin,
       label: "chat",
       suppressReplay: pin.kind === "remote",
       dispatch: (event) => {
-        if (pin.kind === "local") {
-          // Shared with the push-notification path, so it owns dedup itself.
-          dispatchPinnedLocalEvent(event);
-          return;
-        }
+        if (isPinnedRuntimeEventStale(startedAtMs, event.timestamp)) return;
         const envelope = toAgentChatEventEnvelope(event.payload);
-        if (envelope) cb(envelope);
+        if (!envelope) return;
+        if (pin.kind === "local") agentChatSummaryCache.clear();
+        cb(envelope);
       },
     });
     return () => {
       stopPump();
-      if (pinnedLocalCallbacks) {
-        pinnedLocalCallbacks.delete(dispatchPinnedLocalEvent);
-        if (pinnedLocalCallbacks.size === 0) {
-          pinnedLocalAgentChatEventCallbacks.delete(pin.key);
-        }
-      }
       removeLocal();
     };
   }
@@ -5791,11 +5758,11 @@ const adeBridge = {
       modelPath: string | null;
     }> => ipcRenderer.invoke(IPC.transcriptionDownloadModel),
     onModelDownloadProgress: (
-      handler: (progress: { receivedBytes: number; totalBytes: number | null }) => void,
+      handler: (progress: { receivedBytes: number; totalBytes: number | null; stage?: "warmup" }) => void,
     ): (() => void) => {
       const listener = (
         _event: unknown,
-        progress: { receivedBytes: number; totalBytes: number | null },
+        progress: { receivedBytes: number; totalBytes: number | null; stage?: "warmup" },
       ) => handler(progress);
       ipcRenderer.on(IPC.transcriptionModelDownloadProgress, listener);
       return () => ipcRenderer.removeListener(IPC.transcriptionModelDownloadProgress, listener);
@@ -6016,6 +5983,27 @@ const adeBridge = {
         "triggerManually",
         { args },
         () => ipcRenderer.invoke(IPC.automationsTriggerManually, args),
+      ),
+    planTest: async (
+      args: AutomationTestRequest,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AutomationTestPlan> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "planTest", { args }, () =>
+        ipcRenderer.invoke(IPC.automationsPlanTest, args),
+      ),
+    runTest: async (
+      args: AutomationTestRequest,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AutomationRun> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "runTest", { args }, () =>
+        ipcRenderer.invoke(IPC.automationsRunTest, args),
+      ),
+    cleanUpTestRun: async (
+      args: { runId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<AutomationTestCleanupResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "cleanUpTestRun", { args }, () =>
+        ipcRenderer.invoke(IPC.automationsCleanUpTestRun, args),
       ),
     getHistory: async (
       args: {

@@ -1232,6 +1232,14 @@ ade automations create --from-file rule.json \
   --lane-mode create --lane-name-preset custom \
   --lane-name-template "{{trigger.issue.author}}/{{trigger.issue.title}}"
 
+# Test a rule before it runs for real. preview shows what a real run does;
+# safe runs in a throwaway lane and only reports posts and pushes; live runs
+# for real and needs --yes (without it, or with --plan, it shows the plan).
+ade automations test rule-1 --pr 1542
+ade automations test rule-1 --mode safe --pr 1542
+ade automations test rule-1 --mode live --lane lane-42 --yes
+ade automations cleanup-test <runId>
+
 # Filter run history by status.
 ade automations runs --rule rule-1 --status failed
 ade automations run-show <runId> --text

@@ -47,6 +47,9 @@ import {
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type {
   AutomationManualTriggerRequest,
+  AutomationTestCleanupResult,
+  AutomationTestPlan,
+  AutomationTestRequest,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   AutomationRun,
@@ -220,6 +223,7 @@ import {
   captureNotificationSentAnalytics,
   captureProviderCliUpdateAnalytics,
   captureWebhookUrlCreatedAnalytics,
+  captureAutomationTestAnalytics,
   providerAccountAnalyticsCapture,
 } from "../analytics/featureProductAnalytics";
 
@@ -321,6 +325,9 @@ type AutomationsDomainService = {
   deleteRule(args: { id: string }): AutomationRuleSummary[];
   toggleRule(args: { id: string; enabled: boolean }): AutomationRuleSummary[];
   triggerManually(args: AutomationManualTriggerRequest): Promise<AutomationRun>;
+  planTest(args: AutomationTestRequest): Promise<AutomationTestPlan>;
+  runTest(args: AutomationTestRequest): Promise<AutomationRun>;
+  cleanUpTestRun(args: { runId: string }): Promise<AutomationTestCleanupResult>;
   getHistory(args: { id: string; limit?: number }): AutomationRun[];
   listRuns(args?: AutomationRunListArgs): AutomationRun[];
   getRunDetail(args: { runId: string }): Promise<AutomationRunDetail | null>;
@@ -372,6 +379,19 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
     deleteRule: ({ id }) => automationService.deleteRule({ id }),
     toggleRule: ({ id, enabled }) => automationService.toggle({ id, enabled }),
     triggerManually: (args) => automationService.triggerManually(args),
+    planTest: (args) => automationService.planTest(args),
+    runTest: async (args) => {
+      const mode = args?.mode === "live" ? "live" : "safe";
+      try {
+        const run = await automationService.runTest(args);
+        captureAutomationTestAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", mode, outcome: "completed" });
+        return run;
+      } catch (error) {
+        captureAutomationTestAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", mode, outcome: "failed" });
+        throw error;
+      }
+    },
+    cleanUpTestRun: (args) => automationService.cleanUpTestRun(args),
     getHistory: (args) => automationService.getHistory(args),
     listRuns: (args = {}) => automationService.listRuns(args),
     getRunDetail: ({ runId }) => automationService.getRunDetail({ runId }),

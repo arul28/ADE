@@ -127,6 +127,39 @@ describe("Linear agent service", () => {
     harness.service.dispose();
   });
 
+  // A reply to a question card is the creator answering it; downstream, a
+  // response with no decision reads as a decline.
+  it("answers a pending question card with the creator's reply as an accepted answer", async () => {
+    const harness = serviceHarness([{
+      agentSessionId: "agent-session-1",
+      chatSessionId: "chat-1",
+      laneId: "lane-1",
+      runId: "run-1",
+      issueId: "issue-1",
+      issueIdentifier: "ADE-123",
+      creatorId: "creator-1",
+      startedAt: "2026-09-30T11:00:00.000Z",
+      pendingInput: { itemId: "question-1", kind: "question", questionId: "scope", options: [{ label: "UI flow", value: "ui" }] },
+    }]);
+
+    await harness.service.handleEvent(ingressEvent({
+      action: "prompted",
+      payload: {
+        agentSession: { id: "agent-session-1", creator: { id: "creator-1", displayName: "Ada" } },
+        agentActivity: { userId: "creator-1", content: { body: "ui flow" } },
+      },
+    }));
+
+    expect(harness.chat.respondToInput).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      itemId: "question-1",
+      decision: "accept",
+      answers: { scope: "ui" },
+    });
+    expect(harness.chat.sendMessage).not.toHaveBeenCalled();
+    harness.service.dispose();
+  });
+
   it("maps chat approvals and completion to Linear activities", () => {
     const harness = serviceHarness([{
       agentSessionId: "agent-session-1",

@@ -43,21 +43,32 @@ import {
 } from "../notifyLink";
 import { variablesForTrigger } from "../variableCatalog";
 import { VariableInput } from "./VariableMenu";
+import { explainAutomationActionError } from "../../../../shared/automationFeatureVersions";
 
 /**
  * A test send has no trigger to fill `{{…}}` values from, so each one is shown
  * as its name ("‹PR number›") rather than as braces on the lock screen.
  */
 function withVariableNames(text: string, triggerType: string): string {
-  const labels = new Map(
-    variablesForTrigger(triggerType).flatMap((group) => group.variables.map((v) => [v.token, v.label] as const)),
-  );
+  const labels = new Map([
+    ...variablesForTrigger(triggerType).flatMap((group) => group.variables.map((v) => [v.token, v.label] as const)),
+    ...RUN_VALUES.map((entry) => [entry.value, entry.label] as const),
+  ]);
   return text.replace(/\{\{[^}]*\}\}/g, (token) => {
     const normalized = token.replace(/\s+/g, "");
     const label = labels.get(normalized) ?? normalized.replace(/[{}]/g, "").split(".").pop() ?? "value";
     return `‹${label}›`;
   });
 }
+
+/**
+ * Things the run makes before this step, filled in as it goes. A run that
+ * never made one (its agent step failed first) sends the notification
+ * without the link.
+ */
+const RUN_CHAT = { label: "The chat this run started", value: "{{run.chatSessionId}}" };
+const RUN_LANE = { label: "The lane this run used", value: "{{run.laneId}}" };
+const RUN_VALUES = [RUN_CHAT, RUN_LANE];
 
 type Choice = { kind: NotifyLinkKind; label: string; icon: typeof Bell };
 
@@ -434,7 +445,10 @@ function LinkFields({
   const f = link.fields;
   const set = (patch: NotifyLinkFields) => onChange({ ...f, ...patch });
   const choices = useProjectChoices(link.kind, runtimePin);
-  const laneTrigger = isLaneTrigger(triggerType) ? [{ label: "The run's lane", value: "{{trigger.lane.id}}" }] : [];
+  const laneTrigger = [
+    ...(isLaneTrigger(triggerType) ? [{ label: "The trigger's lane", value: "{{trigger.lane.id}}" }] : []),
+    RUN_LANE,
+  ];
   const laneField = (label: string, hint?: string) => (
     <PickField
       label={label}
@@ -478,9 +492,12 @@ function LinkFields({
           placeholder="Chat id"
           options={choices.sessionOptions}
           optionsLoading={choices.sessionsLoading}
-          triggerValues={isSessionTrigger(triggerType)
-            ? [{ label: "The chat that started this run", value: "{{trigger.session.sessionId}}" }]
-            : []}
+          triggerValues={[
+            ...(isSessionTrigger(triggerType)
+              ? [{ label: "The chat that triggered this run", value: "{{trigger.session.sessionId}}" }]
+              : []),
+            RUN_CHAT,
+          ]}
           triggerType={triggerType}
           onChange={(sessionId) => set({ sessionId })}
         />
@@ -715,7 +732,11 @@ export function NotifyStepEditor({
       setTest({
         state: "done",
         tone: "error",
-        message: error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : String(error),
+        message: (() => {
+          const raw = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : String(error);
+          // An older ADE on the rule's machine has no notification action yet.
+          return explainAutomationActionError(raw) ?? raw;
+        })(),
       });
     }
   };

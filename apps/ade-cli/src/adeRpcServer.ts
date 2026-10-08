@@ -6,6 +6,7 @@ import {
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
+import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import { createHash, randomUUID } from "node:crypto";
@@ -6751,8 +6752,9 @@ async function runTool(args: {
       const trimmed = typeof responseText === "string" ? responseText.trim() : "";
       if (trimmed.length) return trimmed;
       if (answered) return null;
-      if (decision === "cancel") return "The user cancelled the question.";
-      if (decision === "decline") return "The user declined to answer the question.";
+      // Escape sends "cancel" and the card's decline button sends "decline";
+      // both are the user saying no, so the model hears the same thing.
+      if (decision === "cancel" || decision === "decline") return QUESTION_DECLINED_MODEL_MESSAGE;
       if (decision === "timeout") return "The question timed out before the user answered.";
       return "The user did not answer the question.";
     };
@@ -6825,7 +6827,14 @@ async function runTool(args: {
       blocking: false,
       outcome,
       decision: result.decision,
-      answers: result.answers,
+      answers: answered && structuredQuestions?.length
+        ? answersForModel({
+            questions: structuredQuestions.map((question) => ({
+              ...question,
+              options: question.options?.map((option) => ({ label: option.label, value: option.value ?? option.label })),
+            })),
+          }, result.answers)
+        : result.answers,
       responseText: summarizeAskUserDecision(result.decision, result.responseText, answered),
     });
   }

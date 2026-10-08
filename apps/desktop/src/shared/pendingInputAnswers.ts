@@ -195,6 +195,94 @@ export function splitAnswer(
   return { picks, pickLabels, note: notes.join(" ") };
 }
 
+/**
+ * What a model is told when a question it is waiting on gets no answer.
+ *
+ * Declining is not "decide for me". Every provider channel ADE can word used to
+ * say some version of "continue with your best judgement", so a model that was
+ * declined picked its own recommendation and kept working — the opposite of
+ * what the user meant. One instruction, so no provider drifts back.
+ */
+const UNANSWERED_QUESTION_INSTRUCTION =
+  "Do not pick an option for them, and do not continue on an assumption about it. "
+  + "Stop, say in plain text (not another question card) what you need from them and why, then end your turn and wait for their reply.";
+
+/** The user declined (the card's decline button, or Escape). */
+export const QUESTION_DECLINED_MODEL_MESSAGE = `The user declined to answer. ${UNANSWERED_QUESTION_INSTRUCTION}`;
+
+/**
+ * No answer came back and ADE cannot say why: the user may have declined, or
+ * the card may never have reached a screen (no surface attached, an aborted
+ * turn). Claiming "declined" there would put a choice in the user's mouth.
+ */
+export const QUESTION_UNANSWERED_MODEL_MESSAGE = `The user did not answer. ${UNANSWERED_QUESTION_INSTRUCTION}`;
+
+/**
+ * What a model is told when the user dismisses a question it asked WITHOUT
+ * stopping (Codex `requestUserInput` with `isBlocking: false`). The model never
+ * paused for it, so it must not pause now; it only learns the answer is not
+ * coming.
+ */
+export const LIVE_QUESTION_DECLINED_MODEL_MESSAGE =
+  "The user declined to answer this question. Keep working; do not stop or wait for an answer to it.";
+
+/** The decline text for a request: keep working on a live card, stop on a blocking one. */
+export function declineMessageForModel(request: { blocking?: boolean } | null | undefined): string {
+  return isNonBlockingPendingRequest(request) ? LIVE_QUESTION_DECLINED_MODEL_MESSAGE : QUESTION_DECLINED_MODEL_MESSAGE;
+}
+
+/**
+ * Appended to a typed reply that stands in for a pick.
+ *
+ * A note with no pick is the user talking back to the question ("explain these
+ * first"), not an option. Without this, a model reads `"Q"="eli5 please"` as a
+ * malformed answer and re-asks the same question in a simpler card.
+ */
+const TYPED_REPLY_MODEL_NOTE =
+  "[The user typed this instead of picking one of your options. Do what it says; if it asks you to explain or clarify, "
+  + "answer in plain text and wait. Do not ask the same question again in another question card.]";
+
+/**
+ * One question's answer as a provider should receive it: unchanged, plus
+ * {@link TYPED_REPLY_MODEL_NOTE} when the question offered options and the user
+ * picked none of them.
+ *
+ * Typed text that only names offered options ("A, B" — how a multi-select is
+ * answered where picking several is not possible) is a choice, not a reply.
+ */
+export function withTypedReplyNote(
+  options: readonly { label: string; value: string }[],
+  values: readonly string[],
+): string[] {
+  if (!options.length || !values.length) return [...values];
+  const known = new Set(options.flatMap((option) => [option.value, option.label].map((entry) => entry.trim().toLowerCase())));
+  // A whole match first: labels can contain commas ("Keep both, improve summary").
+  const namesOptionsOnly = (value: string) => {
+    if (known.has(value.trim().toLowerCase())) return true;
+    const parts = value.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
+    return parts.length > 0 && parts.every((part) => known.has(part));
+  };
+  return values.some(namesOptionsOnly) ? [...values] : [...values, TYPED_REPLY_MODEL_NOTE];
+}
+
+/**
+ * Normalized answers (from {@link normalizePendingInputAnswers}) as a provider
+ * should receive them. Secret answers and ids that match no question pass
+ * through untouched.
+ */
+export function answersForModel(
+  request: { questions?: readonly PendingInputQuestion[]; options?: readonly PendingInputOption[] | null } | null | undefined,
+  normalized: Readonly<Record<string, string[]>>,
+): Record<string, string[]> {
+  const questions = request?.questions ?? [];
+  return Object.fromEntries(Object.entries(normalized).map(([questionId, values]) => {
+    const questionIndex = questions.findIndex((question) => question.id === questionId);
+    const question = questions[questionIndex];
+    if (!question || question.isSecret) return [questionId, values];
+    return [questionId, withTypedReplyNote(optionsForQuestion(request, question, questionIndex), values)];
+  }));
+}
+
 /** Split an answer using the same legacy request-level option fallback as the composer. */
 export function splitAnswerForQuestion(
   request: { options?: readonly PendingInputOption[] | null } | null | undefined,

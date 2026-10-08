@@ -20,6 +20,7 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { QUESTION_DECLINED_MODEL_MESSAGE } from "../../../shared/pendingInputAnswers";
 
 describe("createAgentChatService", () => {
   it("returns a failed Cursor Task transcript by call id when no agent id exists", async () => {
@@ -335,7 +336,13 @@ describe("createAgentChatService", () => {
     expect(streamedText).toContain("Publishing a short demo plan.");
   });
 
-  it("uses Cursor SDK private question control blocks for ADE pending input", async () => {
+  // The reply to a Cursor control question is a whole new turn. An answer or a
+  // decline starts one; a cancel (Escape, or a settle) must not.
+  it.each([
+    { name: "an answer", response: { decision: "accept" as const, answers: { scope: ["UI flow"] }, responseText: "UI flow" }, followup: "UI flow" },
+    { name: "a decline", response: { decision: "decline" as const }, followup: QUESTION_DECLINED_MODEL_MESSAGE },
+    { name: "a cancel", response: { decision: "cancel" as const }, followup: null },
+  ])("uses Cursor SDK private question control blocks for ADE pending input: $name", async ({ response, followup }) => {
     process.env.CURSOR_API_KEY = "cursor-test-key";
     const events: AgentChatEventEnvelope[] = [];
     const { service } = createService({
@@ -387,23 +394,21 @@ describe("createAgentChatService", () => {
     await service.respondToInput({
       sessionId: session.id,
       itemId: questionEvent.event.itemId,
-      decision: "accept",
-      answers: { scope: ["UI flow"] },
-      responseText: "UI flow",
+      ...response,
     });
 
     for (let attempt = 0; attempt < 100; attempt += 1) {
       if (mockState.cursorSdkSendCalls.length > sendCallCountBeforeAnswer) break;
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    expect(mockState.cursorSdkSendCalls.length).toBeGreaterThan(sendCallCountBeforeAnswer);
-    expect(mockState.cursorSdkSendCalls.at(-1)?.promptText).toEqual(
-      expect.stringContaining("The user answered the Cursor planning question"),
-    );
-    expect(events.some((event) =>
-      event.event.type === "user_message"
-      && event.event.text.includes("The user answered the Cursor planning question")
-    )).toBe(false);
+    if (followup === null) {
+      expect(mockState.cursorSdkSendCalls.length).toBe(sendCallCountBeforeAnswer);
+      return;
+    }
+    expect(mockState.cursorSdkSendCalls.length).toBe(sendCallCountBeforeAnswer + 1);
+    expect(mockState.cursorSdkSendCalls.at(-1)?.promptText).toContain(followup);
+    // The follow-up is model-only: it never shows as something the user typed.
+    expect(events.some((event) => event.event.type === "user_message" && event.event.text.includes(followup))).toBe(false);
   });
 
   it("keeps Cursor SDK approvals live when preview persistence fails", async () => {

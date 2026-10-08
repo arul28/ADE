@@ -81,17 +81,16 @@ export function GitHubIssuesButton({
     >
       <GithubLogo size={12} weight="fill" />
       <span className="min-w-0 flex-1 truncate">GitHub issues</span>
-      <span className="kit-num text-[10.5px] text-muted-fg/60">{summary?.openCount}</span>
     </button>
   ) : (
     <button
       type="button"
-      aria-label={`GitHub issues, ${countLabel}`}
+      aria-label="GitHub issues"
       aria-haspopup="dialog"
       aria-expanded={open}
-      title={`GitHub issues · ${countLabel}`}
+      title="GitHub issues"
       className={cn(
-        "ade-shell-control inline-flex h-[20px] items-center gap-1 px-1.5",
+        "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
         "transition-[background-color,color,border-color,box-shadow] duration-150",
       )}
       data-state={open ? "open" : undefined}
@@ -101,8 +100,7 @@ export function GitHubIssuesButton({
         color: open ? GITHUB_BRAND.primaryBright : undefined,
       } as React.CSSProperties}
     >
-      <GithubLogo size={13} weight="fill" />
-      <span className="kit-num text-[10.5px] leading-none">{summary?.openCount}</span>
+      <GithubLogo size={16} weight="fill" />
     </button>
   );
 

@@ -26,6 +26,7 @@ import { actionToDraftAction } from "./builder/draftBridge";
 import { RuleList } from "./list/RuleList";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
 import { RuleBuilder } from "./builder/RuleBuilder";
+import { TestRunDialog, type TestKind } from "./builder/TestRunControls";
 import { RuleHistory } from "./history/RuleHistory";
 import { TemplateGallery } from "./templates/TemplateGallery";
 import { RuleMachineField } from "./builder/RuleMachineField";
@@ -33,6 +34,9 @@ import { machineRuleKey, useAutomationMachines, type MachineRule } from "./useAu
 import type { LaneMachine } from "../../state/laneMachineRouting";
 import { onMachine } from "../../state/projectMachines";
 import { parseMachineScopedId } from "../../state/foreignMachineReads";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { clearStoredAutomationDraft, loadStoredAutomationDraft, storeAutomationDraft } from "./automationDraftStore";
+import { automationFeaturesNeedingNewerAde, explainAutomationActionError } from "../../../shared/automationFeatureVersions";
 
 const CHOOSE_MACHINE_HINT = "Choose the machine this automation runs on.";
 
@@ -120,6 +124,22 @@ export async function readCursorCloudConnectionForAutomation(
   }
 }
 
+/** "3:42 PM" today, else "Oct 7, 3:42 PM". */
+function formatRestoredDraftTime(iso: string): string {
+  const at = new Date(iso);
+  if (!Number.isFinite(at.getTime())) return "earlier";
+  const sameDay = at.toDateString() === new Date().toDateString();
+  return at.toLocaleString(undefined, sameDay
+    ? { hour: "numeric", minute: "2-digit" }
+    : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/** An error in plain words: an older ADE's missing step names the release that has it. */
+function explainError(err: unknown): string {
+  const message = extractError(err);
+  return explainAutomationActionError(message) ?? message;
+}
+
 export function AutomationsWorkspace({
   active = true,
   pendingDraft,
@@ -155,22 +175,30 @@ export function AutomationsWorkspace({
   const requestedRuleId = searchParams.get("rule");
   const [draft, setDraft] = useState<AutomationRuleDraft | null>(null);
   const [issues, setIssues] = useState<AutomationDraftIssue[]>([]);
-  const [simulationNotes, setSimulationNotes] = useState<string[]>([]);
   const [requiredConfirmations, setRequiredConfirmations] = useState<AutomationDraftConfirmationRequirement[]>([]);
   const [acceptedConfirmations, setAcceptedConfirmations] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [simulating, setSimulating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualRunRule, setManualRunRule] = useState<AutomationRuleSummary | null>(null);
   const [manualRunLaneId, setManualRunLaneId] = useState<string>("");
   const [manualRunPending, setManualRunPending] = useState(false);
   const manualRunPendingRef = useRef(false);
   const [running, setRunning] = useState(false);
+  /** The open Test dialog's kind; null when it is closed. */
+  const [testKind, setTestKind] = useState<TestKind | null>(null);
   const [cursorCloudConnected, setCursorCloudConnected] = useState(false);
   const loadRef = useRef<(() => Promise<void>) | null>(null);
   const savedSnapshotRef = useRef<string | null>(null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  /** An older machine's "action not callable" in plain words; any other error as it is. */
+  /** True once the first rule list has loaded, so a stored draft can find its rule. */
+  const [rulesLoadedOnce, setRulesLoadedOnce] = useState(false);
+  /** Set once the stored draft was restored or found absent; persisting waits for it. */
+  const draftRestoreDoneRef = useRef(false);
+  /** When the restored draft was last edited; shown until it is saved or discarded. */
+  const [restoredDraftAt, setRestoredDraftAt] = useState<string | null>(null);
 
   // ── Machines ────────────────────────────────────────────────
   const {
@@ -240,7 +268,6 @@ export function AutomationsWorkspace({
       try {
         setDraft(JSON.parse(savedSnapshotRef.current) as AutomationRuleDraft);
         setIssues([]);
-        setSimulationNotes([]);
       } catch {
         // Malformed snapshot — leave draft as-is.
       }
@@ -266,6 +293,7 @@ export function AutomationsWorkspace({
       setLanes(nextLanes);
       setIngressStatus(nextIngress);
       setCursorCloudConnected(aiStatus);
+      setRulesLoadedOnce(true);
       setSelectedRuleId((current) => {
         // A rule on another machine stays selected while that machine can still
         // list it; this refresh only speaks for the tab's own rules.
@@ -277,7 +305,7 @@ export function AutomationsWorkspace({
       });
     } catch (err) {
       setCursorCloudConnected(false);
-      setError(extractError(err));
+      setError(explainError(err));
     } finally {
       setLoading(false);
     }
@@ -331,7 +359,6 @@ export function AutomationsWorkspace({
     setDraft(seeded);
     savedSnapshotRef.current = JSON.stringify(seeded);
     setIssues([]);
-    setSimulationNotes([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
     setDetailView("builder");
@@ -364,7 +391,6 @@ export function AutomationsWorkspace({
     setDraft(nextDraft);
     savedSnapshotRef.current = serialized;
     setIssues([]);
-    setSimulationNotes([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
   }, [entryByKey, selectedRuleId]);
@@ -383,6 +409,71 @@ export function AutomationsWorkspace({
       setSelectedRuleId(key);
     })();
   }, [confirmDiscardIfDirty, entryByKey, foreignLoads, requestedRuleId, searchParams, selectedRuleId, setSearchParams]);
+
+  // Bring back an unsaved draft from an earlier visit (another tab, a restart).
+  // A live edit in this session always wins over the stored copy.
+  useEffect(() => {
+    if (!active || draftRestoreDoneRef.current || !projectRoot || !rulesLoadedOnce) return;
+    const stored = loadStoredAutomationDraft(projectRoot);
+    if (!stored || isDirtyRef.current) {
+      draftRestoreDoneRef.current = true;
+      return;
+    }
+    const storedTarget = stored.targetMachineId
+      ? machines.find((machine) => machine.machineId === stored.targetMachineId) ?? null
+      : null;
+    if (stored.ruleKey) {
+      const entry = entryByKey.get(stored.ruleKey);
+      if (!entry) {
+        // The rule may live on a machine whose rules are still loading.
+        if (Object.values(foreignLoads).some((load) => load.status === "loading")) return;
+        // The rule is gone; its draft has nothing to save into.
+        clearStoredAutomationDraft(projectRoot);
+        draftRestoreDoneRef.current = true;
+        return;
+      }
+      const origin = entry.machine.isActiveBinding ? null : entry.machine;
+      loadedRuleKeyRef.current = stored.ruleKey;
+      setDraftOrigin({ machine: origin });
+      setDraftTarget(stored.targetMachineId ? storedTarget ?? origin : null);
+      setDraftMachineChosen(true);
+      setSelectedRuleId(stored.ruleKey);
+    } else {
+      draftingNewRef.current = true;
+      loadedRuleKeyRef.current = null;
+      setDraftOrigin(null);
+      setSelectedRuleId(null);
+      setDraftTarget(storedTarget && !storedTarget.isActiveBinding ? storedTarget : null);
+      // A machine that has gone since asks to be chosen again.
+      setDraftMachineChosen(stored.machineChosen && (!stored.targetMachineId || Boolean(storedTarget)));
+    }
+    savedSnapshotRef.current = stored.savedSnapshot;
+    setDraft(stored.draft);
+    setIssues([]);
+    setRequiredConfirmations([]);
+    setAcceptedConfirmations(new Set());
+    setDetailView("builder");
+    setRestoredDraftAt(stored.savedAt);
+    draftRestoreDoneRef.current = true;
+  }, [active, entryByKey, foreignLoads, machines, projectRoot, rulesLoadedOnce]);
+
+  // Keep the stored copy in step with the draft: written on every unsaved
+  // change, removed once the draft matches its saved rule (Save, Discard).
+  useEffect(() => {
+    if (!draftRestoreDoneRef.current) return;
+    if (!draft || !isDirty || savedSnapshotRef.current == null) {
+      clearStoredAutomationDraft(projectRoot);
+      setRestoredDraftAt(null);
+      return;
+    }
+    storeAutomationDraft(projectRoot, {
+      draft,
+      savedSnapshot: savedSnapshotRef.current,
+      ruleKey: selectedRuleId,
+      targetMachineId: draftTarget?.machineId ?? null,
+      machineChosen: draftMachineChosen,
+    });
+  }, [draft, draftMachineChosen, draftTarget, isDirty, projectRoot, selectedRuleId]);
 
   // The draft's machine supplies its own suites and ingress status; the tab
   // machine's would describe the wrong checkout.
@@ -417,7 +508,6 @@ export function AutomationsWorkspace({
         confirmations: [...acceptedConfirmations],
       }, draftPin), draftTarget);
       setIssues(result.issues);
-      setSimulationNotes([]);
       setRequiredConfirmations(result.requiredConfirmations);
       return result;
     },
@@ -494,9 +584,8 @@ export function AutomationsWorkspace({
       setDraft(nextDraft);
       savedSnapshotRef.current = JSON.stringify(nextDraft);
       setIssues([]);
-      setSimulationNotes([]);
     } catch (err) {
-      setError(extractError(err));
+      setError(explainError(err));
     } finally {
       setSaving(false);
     }
@@ -534,33 +623,12 @@ export function AutomationsWorkspace({
       setDraft(nextDraft);
       savedSnapshotRef.current = JSON.stringify(nextDraft);
       setIssues([]);
-      setSimulationNotes([]);
     } catch (err) {
-      setError(extractError(err));
+      setError(explainError(err));
     } finally {
       setSaving(false);
     }
   }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftMachineChosen, draftMoving, draftOrigin, draftTarget, moveRule, validateDraft]);
-
-  const simulateDraft = useCallback(async () => {
-    if (!draft) return;
-    setSimulating(true);
-    setError(null);
-    try {
-      if (!draftMachineChosen) throw new Error(CHOOSE_MACHINE_HINT);
-      const blocked = blockedReason(draftTarget);
-      if (blocked) throw new Error(blocked);
-      const result = await onMachine(window.ade.automations.simulate({ draft }, draftPin), draftTarget);
-      setIssues(result.issues);
-      setSimulationNotes(
-        result.issues.length ? [] : result.notes.length ? result.notes : ["Dry run completed with no blocking issues."],
-      );
-    } catch (err) {
-      setError(extractError(err));
-    } finally {
-      setSimulating(false);
-    }
-  }, [blockedReason, draft, draftMachineChosen, draftPin, draftTarget]);
 
   const createRule = useCallback(async () => {
     if (!(await confirmDiscardIfDirty())) return;
@@ -570,7 +638,6 @@ export function AutomationsWorkspace({
     setDraft(blank);
     savedSnapshotRef.current = JSON.stringify(blank);
     setIssues([]);
-    setSimulationNotes([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
     setDetailView("builder");
@@ -601,7 +668,7 @@ export function AutomationsWorkspace({
         if (entry.machine.pin) refreshMachine(entry.machine.machineId);
         else await refresh();
       } catch (err) {
-        setError(extractError(err));
+        setError(explainError(err));
       } finally {
         manualRunPendingRef.current = false;
         setManualRunPending(false);
@@ -648,7 +715,7 @@ export function AutomationsWorkspace({
       setSelectedRuleId(next[0] ? machineRuleKey(entry.machine, next[0].id) : null);
       if (!next.length) setDraft(createBlankDraft());
     } catch (err) {
-      setError(extractError(err));
+      setError(explainError(err));
     }
   }, [blockedReason, commitMachineRules, entryByKey]);
 
@@ -662,7 +729,7 @@ export function AutomationsWorkspace({
     }
     onMachine(window.ade.automations.toggle({ id: entry.rule.id, enabled }, entry.machine.pin), entry.machine)
       .then((next) => commitMachineRules(entry.machine, next))
-      .catch((err) => setError(extractError(err)));
+      .catch((err) => setError(explainError(err)));
   }, [blockedReason, commitMachineRules, entryByKey]);
 
   const hasProjectSidebar = useHasProjectSidebar();
@@ -674,6 +741,14 @@ export function AutomationsWorkspace({
   const builderSuites = draftTarget?.pin ? draftMachineSuites ?? [] : suites;
   const builderIngress = draftTarget?.pin ? draftMachineIngress : ingressStatus;
   const draftMachineBlocked = blockedReason(draftTarget);
+  // The machine the draft runs on, and whether its ADE is new enough for it.
+  // This window's own machine always is; an unknown version is not guessed at.
+  const ruleMachine = draftTarget ?? machines.find((machine) => machine.isActiveBinding) ?? null;
+  const ruleMachineVersion = ruleMachine && !ruleMachine.isThisMachine ? ruleMachine.version : null;
+  const needsNewerAde = useMemo(
+    () => automationFeaturesNeedingNewerAde(draft, ruleMachineVersion),
+    [draft, ruleMachineVersion],
+  );
   const machineNotes = Object.keys(foreignLoads).length > 0 ? (
     <div
       className="flex shrink-0 flex-wrap gap-x-3 gap-y-0.5 border-b border-fg/[0.04] px-3 py-1 text-[10.5px] text-muted-fg/50"
@@ -701,7 +776,6 @@ export function AutomationsWorkspace({
     setDraft(seeded);
     savedSnapshotRef.current = JSON.stringify(seeded);
     setIssues([]);
-    setSimulationNotes([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
     setDetailView("builder");
@@ -783,6 +857,35 @@ export function AutomationsWorkspace({
             </div>
           ) : null}
 
+          {draft && detailView === "builder" && restoredDraftAt ? (
+            <Banner
+              layout="inline"
+              testId="automation-draft-restored"
+              style={{ margin: "8px 16px 0" }}
+              model={{
+                id: "automation-draft-restored",
+                tone: "info",
+                title: `Restored your unsaved changes from ${formatRestoredDraftTime(restoredDraftAt)}.`,
+                detail: "Save to keep them.",
+                actions: [{ label: "Discard", onClick: () => void confirmDiscardIfDirty() }],
+              }}
+            />
+          ) : null}
+          {draft && detailView === "builder" && needsNewerAde.length > 0 && ruleMachine ? (
+            <Banner
+              layout="inline"
+              testId="automation-needs-newer-ade"
+              style={{ margin: "8px 16px 0" }}
+              model={{
+                id: "automation-needs-newer-ade",
+                tone: "warning",
+                title: `${ruleMachine.machineName} runs ADE ${ruleMachineVersion}, which is too old for this rule.`,
+                detail: `Update ADE on ${ruleMachine.machineName} to use ${needsNewerAde
+                  .map((feature) => `${feature.label} (ADE ${feature.minVersion})`)
+                  .join(", ")}. Until then the rule cannot run there.`,
+              }}
+            />
+          ) : null}
           {draft && detailView === "builder" && draftMachineChosen && draftMachineBlocked ? (
             <Banner
               layout="inline"
@@ -809,7 +912,6 @@ export function AutomationsWorkspace({
                 suites={builderSuites}
                 ingressStatus={builderIngress}
                 issues={issues}
-                simulationNotes={simulationNotes}
                 requiredConfirmations={requiredConfirmations}
                 acceptedConfirmations={acceptedConfirmations}
                 onToggleConfirmation={(key, checked) =>
@@ -821,7 +923,8 @@ export function AutomationsWorkspace({
                   })
                 }
                 onSave={() => void saveDraft()}
-                onSimulate={() => void simulateDraft()}
+                onTest={(kind) => setTestKind(kind)}
+                testBlockedReason={selectedRule ? null : "Save this automation to test it."}
                 onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
                 onIngressChanged={() => {
                   // The draft's machine owns its ingress status.
@@ -847,7 +950,6 @@ export function AutomationsWorkspace({
                 saveBlockedReason={draftMachineChosen ? null : CHOOSE_MACHINE_HINT}
                 cursorCloudConnected={cursorCloudConnected}
                 saving={saving}
-                simulating={simulating}
                 running={running}
                 dirty={isDirty}
               />
@@ -857,6 +959,28 @@ export function AutomationsWorkspace({
           </div>
         </div>
       )}
+
+      {testKind && selectedEntry ? (
+        <TestRunDialog
+          open
+          kind={testKind}
+          ruleId={selectedEntry.rule.id}
+          ruleName={selectedEntry.rule.name}
+          trigger={selectedEntry.rule.triggers[0] ?? selectedEntry.rule.trigger ?? { type: "manual" }}
+          laneMode={selectedEntry.rule.execution?.laneMode ?? null}
+          pin={selectedEntry.machine.pin}
+          saveFirstReason={isDirty
+            ? "Save your changes first. A test runs the saved automation."
+            : blockedReason(selectedEntry.machine)}
+          onClose={() => setTestKind(null)}
+          onStarted={() => {
+            setTestKind(null);
+            setDetailView("history");
+            if (selectedEntry.machine.pin) refreshMachine(selectedEntry.machine.machineId);
+            else void refresh();
+          }}
+        />
+      ) : null}
 
       {manualRunRule ? (
         <ManualRunModal

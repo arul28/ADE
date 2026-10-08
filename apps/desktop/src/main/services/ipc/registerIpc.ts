@@ -206,6 +206,9 @@ import type {
   AutomationWebhookTestRequest,
   AutomationWebhookTriggerConfig,
   AutomationManualTriggerRequest,
+  AutomationTestCleanupResult,
+  AutomationTestPlan,
+  AutomationTestRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
@@ -901,7 +904,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { captureAutomationTestAnalytics, capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -6533,6 +6536,29 @@ export function registerIpc({
       verboseTrace: Boolean(arg?.verboseTrace),
       dryRun: Boolean(arg?.dryRun),
     });
+  });
+
+  ipcMain.handle(IPC.automationsPlanTest, async (_event, arg: AutomationTestRequest): Promise<AutomationTestPlan> => {
+    const ctx = ensureAutomationContext();
+    return await ctx.automationService.planTest(arg);
+  });
+
+  ipcMain.handle(IPC.automationsRunTest, async (_event, arg: AutomationTestRequest): Promise<AutomationRun> => {
+    const ctx = ensureAutomationContext();
+    const mode = arg?.mode === "live" ? "live" : "safe";
+    try {
+      const run = await ctx.automationService.runTest(arg);
+      captureAutomationTestAnalytics({ analytics: productAnalyticsService, surface: "desktop", mode, outcome: "completed" });
+      return run;
+    } catch (error) {
+      captureAutomationTestAnalytics({ analytics: productAnalyticsService, surface: "desktop", mode, outcome: "failed" });
+      throw error;
+    }
+  });
+
+  ipcMain.handle(IPC.automationsCleanUpTestRun, async (_event, arg: { runId: string }): Promise<AutomationTestCleanupResult> => {
+    const ctx = ensureAutomationContext();
+    return await ctx.automationService.cleanUpTestRun({ runId: arg?.runId ?? "" });
   });
 
   ipcMain.handle(IPC.automationsGetHistory, async (_event, arg: { id: string; limit?: number }): Promise<AutomationRun[]> => {
