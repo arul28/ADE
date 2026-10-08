@@ -86,15 +86,39 @@ the bare account name, which is also session-independent.
 One supervisor and one brain exist per user and channel, whatever the number of
 logon sessions. Before starting a supervisor the launcher:
 
-1. **checks the session.** `WTSGetActiveConsoleSessionId()` must equal the
-   launcher's own `Process.SessionId`. Outside the console session it starts
-   no supervisor or brain. If the API cannot answer, it logs the failure and
-   exits rather than guessing.
-2. **takes a cross-session mutex,** `Global\ade-supervisor-<launcher-hash>-<SID>`.
-   An existing owner causes the newcomer to exit 0, leaving that owner alone.
-   A mutex API or creation failure causes it to exit 1. The handle is held for
+1. **reads the session.** It compares `WTSGetActiveConsoleSessionId()` with its
+   own `Process.SessionId` and logs both. This only decides whether the
+   child-session branch below applies; it does not stop a brain from starting.
+   If the API cannot answer, it logs the failure and exits rather than guessing.
+2. **outside the console session, honours a Windows Desktop launch request.**
+   A usable `child-launch.json` (below) means the session was opened for the
+   driver: the launcher starts the driver and exits, and never starts a brain
+   there. Without a usable request it carries on to the mutex.
+3. **takes a cross-session mutex,** `Global\ade-supervisor-<launcher-hash>-<SID>`.
+   This is what keeps one brain per user and channel. An existing owner, in
+   any session, causes the newcomer to exit 0, leaving that owner alone. A
+   mutex API or creation failure causes it to exit 1. The handle is held for
    the supervisor's lifetime; Windows releases it on exit. `Global\` excludes
    duplicates across sessions rather than just inside one session.
+
+So the brain runs in whichever session first starts a supervisor while none is
+running. That is usually the console session, but it can be a Remote Desktop
+session: Remote Desktop moves the user's session off the console and gives the
+console a fresh, empty one, and the launcher used to refuse every session but the
+console, so no brain could start at all while the user worked over Remote
+Desktop (an update installed from RDP on 2026-10-08 ended with no brain). A host
+with no console session at all (`0xFFFFFFFF`: Windows Sandbox, headless VMs,
+RDP-only servers) also runs its brain.
+
+A brain outside the console session keeps running while Remote Desktop is
+disconnected, and when Windows reconnects that session at the PC (its default
+when the user signs in there again), the brain is back on the console with it.
+It ends only when that session signs out. Nothing restarts it until the user's
+account has a session again; then
+the first of these starts it, in whichever session it runs: the startup Run
+value at the next sign-in, the desktop app's service install at launch, or
+`ade brain start`. Windows Desktop private screens need the brain in the console
+session; `ade doctor` shows which session the brain is in.
 
 `ade brain start` hands the launcher to a one-shot Scheduled Task (or, when
 that is refused, WMI `Win32_Process.Create`) so it escapes the caller's job
@@ -118,9 +142,10 @@ launch request:
 
 When the file exists, parses, `expiresAt` is in the future, and `driverPath`
 exists and ends in `ade-desktop-driver.exe`, the launcher starts it hidden with
-those arguments and no wait, so the driver can connect back to the console brain
-over the named pipe. It logs one line either way. That branch never starts a
-supervisor or a brain.
+those arguments and no wait, so the driver can connect back to the brain over
+the named pipe, and exits. That branch never starts a supervisor or a brain. A
+missing, expired or unusable request is logged and the launcher goes on to the
+mutex, which a running brain already holds.
 
 That branch is the fallback. Explorer starts startup entries only once a new
 session settles, which on a busy PC took longer than the 30 s the driver waits,

@@ -767,7 +767,7 @@ function windowsDesktopRows(
       status: inConsole ? "ok" : "warn",
       detail: inConsole
         ? `console session ${probe.brainSessionId}`
-        : `session ${probe.brainSessionId}, console is ${probe.consoleSessionId} · Start ADE from your Windows desktop, not over SSH.`,
+        : `session ${probe.brainSessionId}, console is ${probe.consoleSessionId} · The brain stops if that session signs out, and private screens need the console. Sign in at this PC to bring the session to the console.`,
     });
   }
   const oneSupervisor = probe.supervisorCount === 1 && probe.runValueCount === 1;

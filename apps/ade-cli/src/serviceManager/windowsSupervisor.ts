@@ -223,22 +223,39 @@ export function renderWindowsServiceLauncher(
     : ["function Write-SupervisorLog([string]$message) { }"];
   // ADE-160. Three guards run before any brain work, in this order:
   //
-  // 1. Session check. The Run entry fires at EVERY logon of the user, so a
-  //    Remote Desktop child session, an ordinary RDP logon, or fast user
-  //    switching starts a supervisor too. A brain there would end with that
-  //    session; the console session is where the always-on brain belongs.
-  // 2. Child-session branch. When this is not the console session, the Windows
-  //    Desktop feature leaves a short-lived launch request in
-  //    `<adeDir>\windows-desktop\child-launch.json`. The launcher starts that
-  //    driver (hidden, no wait) so it can connect back to the console brain over
-  //    the pipe — it never starts a supervisor or a brain here.
-  // 3. Single-instance mutex. `Global\` rather than `Local\` on purpose: a
+  // 1. Session probe. The Run entry fires at EVERY logon of the user, so a
+  //    Remote Desktop session, a Windows Desktop child session, or fast user
+  //    switching starts a supervisor too. The probe only records which session
+  //    this is (and whether a console session exists at all); it no longer
+  //    decides whether a brain may start. It used to refuse every session but
+  //    the active console session, which meant no brain could start at all
+  //    while the user worked over Remote Desktop (RDP moves the user's session
+  //    off the console and gives the console a fresh one), and none on a host
+  //    with no console session (0xFFFFFFFF: Windows Sandbox, headless VMs,
+  //    RDP-only servers).
+  // 2. Child-session branch. Outside the console session, a usable short-lived
+  //    launch request in `<adeDir>\windows-desktop\child-launch.json` means the
+  //    Windows Desktop feature opened this session for its driver. The launcher
+  //    starts that driver (hidden, no wait) so it can connect back to the brain
+  //    over the pipe, and exits -- a child session never starts a brain, even
+  //    when the mutex below happens to be free. With no usable request it falls
+  //    through to the mutex.
+  // 3. Single-instance mutex. This, not the session, is what keeps one brain
+  //    per user and channel. `Global\` rather than `Local\` on purpose: a
   //    `Local\` name is per session and would not exclude the second session.
   //    The name is baked in at render time (channel launcher hash + the user's
   //    SID), so every session of the account computes the same one. A
   //    supervisor that cannot take it logs why and exits 0, leaving the owner
-  //    alone. The handle is held for the supervisor's lifetime; Windows
-  //    releases it when the process exits.
+  //    alone, so a second session never starts a second brain. The handle is
+  //    held for the supervisor's lifetime; Windows releases it when the process
+  //    exits, including when the session that hosts it signs out, and the next
+  //    supervisor start in any session (the Run entry at the next logon, the
+  //    desktop app's service install, `ade brain start`) takes over.
+  //
+  // A brain that runs outside the console session ends when that session signs
+  // out (disconnecting RDP does not end it), and Windows Desktop private
+  // screens need the brain on the console. Both are reported, not refused:
+  // `ade doctor` shows the brain's session.
   const childLaunchPath = options.adeDir
     ? path.win32.join(options.adeDir, "windows-desktop", "child-launch.json")
     : null;
@@ -281,8 +298,9 @@ export function renderWindowsServiceLauncher(
       "  }",
       "}",
       "if (-not $sessionApiReady) { Write-SupervisorLog 'session API unavailable; refusing to start a brain'; exit 1 }",
+      "$consoleLabel = if ($consoleSessionId -eq [uint32]::MaxValue) { 'none' } else { [string]$consoleSessionId }",
       "if (-not $inConsoleSession) {",
-      "  Write-SupervisorLog \"not the console session (current=$currentSessionId console=$consoleSessionId); not starting a supervisor\"",
+      "  Write-SupervisorLog \"not the console session (current=$currentSessionId console=$consoleLabel)\"",
       "  if (-not [string]::IsNullOrEmpty($childLaunchPath) -and (Test-Path -LiteralPath $childLaunchPath -PathType Leaf)) {",
       "    try {",
       "      $child = (Get-Content -LiteralPath $childLaunchPath -Raw -ErrorAction Stop) | ConvertFrom-Json",
@@ -294,16 +312,13 @@ export function renderWindowsServiceLauncher(
       "        $childArgs = @($child.args | ForEach-Object { [string]$_ })",
       "        Start-Process -FilePath $driverPath -ArgumentList $childArgs -WindowStyle Hidden",
       "        Write-SupervisorLog 'child session: started the desktop driver'",
-      "      } else {",
-      "        Write-SupervisorLog \"child session: child-launch.json is not usable (expiry=$expiryOk driver=$driverOk)\"",
+      "        exit 0",
       "      }",
+      "      Write-SupervisorLog \"child session: child-launch.json is not usable (expiry=$expiryOk driver=$driverOk)\"",
       "    } catch {",
       "      Write-SupervisorLog \"child session: child-launch.json could not be used: $($_.Exception.Message)\"",
       "    }",
-      "  } else {",
-      "    Write-SupervisorLog 'child session: no child-launch.json; nothing to start'",
       "  }",
-      "  exit 0",
       "}",
       "$mutexHandle = [IntPtr]::Zero",
       "if ($mutexApiReady) {",
@@ -321,6 +336,9 @@ export function renderWindowsServiceLauncher(
       "} else {",
       "  Write-SupervisorLog 'supervisor mutex API unavailable; refusing to start a brain'",
       "  exit 1",
+      "}",
+      "if (-not $inConsoleSession) {",
+      "  Write-SupervisorLog \"no other supervisor is running; starting the brain in session $currentSessionId (console=$consoleLabel). It ends if this session signs out.\"",
       "}",
     ]
     : [];
