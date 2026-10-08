@@ -79,7 +79,7 @@ export type HomeNowPlayingState = {
   sessions?: HomeNowPlayingSession[];
   /** `session` is the one the user picked (or last pressed a button on), not the best one. */
   picked?: boolean;
-  source: "windows-smtc" | "macos-mediaremote" | "macos-music" | "ade-music" | "ade-browser" | null;
+  source: "windows-smtc" | "macos-music" | "ade-music" | "ade-browser" | null;
   error?: string;
 };
 
