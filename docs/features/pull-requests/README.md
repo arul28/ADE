@@ -985,6 +985,13 @@ bounded to lanes where it cannot be wrong. A live sibling PR means ownership is
 genuinely ambiguous and that PR's own merge should file its work; a session
 another PR explicitly claims belongs to that PR's lifecycle.
 
+Chats reach the `linked` scope even for a PR opened outside ADE: when polling
+auto-maps a PR to its lane — by the lane's current branch or by its branch
+history — it records a `pull_request_chat_sessions` edge for each agent session
+(up to three, never a plain shell) that was open in the lane when the PR was
+created. That edge is what settles the chat that opened a PR with `gh pr
+create` once the PR merges.
+
 Declared sessions are resolved **by id** (`sessionService.get`), not found
 inside a paged lane listing: the PR named them, so a long-lived lane whose
 session list runs past the page size must not silently drop them. Linked chats
