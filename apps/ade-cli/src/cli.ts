@@ -18578,13 +18578,21 @@ function buildCliPlan(
       label: "notify",
       formatter: "notify",
       needsLiveRuntime: "Notifications",
-      steps: [
-        actionStep("result", "attention", "sendNotification", {
-          title: title.trim(),
-          ...(body?.trim() ? { body: body.trim() } : {}),
-          ...(open?.trim() ? { open: open.trim() } : {}),
-        }),
-      ],
+      // Machine-wide (`notify.send`): it works from any folder and never
+      // registers the current one as a project. The folder only names the
+      // project a chat or PR link belongs to, when it is one.
+      steps: [{
+        key: "result",
+        method: "notify.send",
+        params: {
+          args: {
+            title: title.trim(),
+            ...(body?.trim() ? { body: body.trim() } : {}),
+            ...(open?.trim() ? { open: open.trim() } : {}),
+          },
+          projectRoot: resolveRoots({ projectRoot: options.projectRoot, workspaceRoot: null } as GlobalOptions).projectRoot,
+        },
+      }],
     };
   }
   if (primary === "status") {
@@ -20561,6 +20569,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "runtime/info" ||
     method === "machineInfo.get" ||
     method.startsWith("account.") ||
+    method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
     method.startsWith("personalChats.")

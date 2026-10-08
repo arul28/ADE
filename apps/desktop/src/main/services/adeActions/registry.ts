@@ -1353,10 +1353,18 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
  * agents and automation steps; the relay caps an account at
  * `CUSTOM_NOTIFICATION_HOURLY_LIMIT` an hour.
  */
-function buildSendNotificationAction(
-  runtime: AdeRuntime,
+/**
+ * `attention.sendNotification`, and `notify.send` for `ade notify` (which runs
+ * machine-wide, outside any project). `projectRoot` names the project a chat
+ * or PR link belongs to; it defaults to the runtime's own, and null stamps no
+ * project.
+ */
+export function buildSendNotificationAction(
+  runtime: Pick<AdeRuntime, "accountAuthService" | "projectRoot">,
   send: NonNullable<AdeRuntime["sendCustomNotification"]>,
+  options: { projectRoot?: string | null } = {},
 ) {
+  const projectRoot = options.projectRoot === undefined ? runtime.projectRoot : options.projectRoot;
   return async (args?: { title?: unknown; body?: unknown; open?: unknown }) => {
     // The link is checked apart from the text: an automation whose trigger
     // left a link value empty still sends its notification, opening ADE, and
@@ -1383,7 +1391,7 @@ function buildSendNotificationAction(
         deepLink: link?.ok ? link.link : null,
         // The sender stamps its machine onto a chat or PR link; the project
         // is this one, by the id every machine derives the same way.
-        projectId: runtime.projectRoot ? deriveProjectId(runtime.projectRoot) : null,
+        projectId: projectRoot ? deriveProjectId(projectRoot) : null,
       });
       return {
         sent: result.delivered > 0,

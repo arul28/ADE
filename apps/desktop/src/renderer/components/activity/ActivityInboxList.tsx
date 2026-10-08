@@ -66,6 +66,9 @@ function InboxRow({
       <button
         type="button"
         className="activity-inbox-open"
+        // The panels' arrow-key navigation moves between `[data-activity-row]`
+        // buttons, in the Inbox as in Sessions.
+        data-activity-row={item.id}
         onClick={() => onOpen(item)}
         title={`${item.title} — ${item.project.name} · ${item.machine.name}`}
       >

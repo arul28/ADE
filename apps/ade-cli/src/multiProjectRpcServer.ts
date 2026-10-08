@@ -78,6 +78,7 @@ import {
   isCtoOnlyAdeAction,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/actionPolicy";
+import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import {
   createSyncAccountDirectoryHealth,
@@ -422,6 +423,7 @@ const RUNTIME_METHODS = new Set([
   "runtime.activitySummary",
   "account.call",
   "attention.call",
+  "notify.send",
   "providers.status",
   "personalChats.call",
   "personalChats.streamEvents",
@@ -2161,6 +2163,52 @@ export function createMultiProjectRpcRequestHandler(
         return { accepted: false, reason: outcome.reason ?? "unsupported" };
       }
       return { accepted: true };
+    }
+
+    // `ade notify`: machine-wide, so it neither needs nor registers the
+    // caller's folder as a project. Open to agents, like the
+    // `attention.sendNotification` action it shares its rules with.
+    if (method === "notify.send") {
+      if (!callerHasRoleAtLeast(callerRole(), "agent")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "notify.send requires the agent role.",
+        );
+      }
+      // A chat or PR link is stamped with the caller's project only when that
+      // folder is an ADE project; any other folder stamps none.
+      const callerRoot = typeof params.projectRoot === "string" ? params.projectRoot.trim() : "";
+      const callerProject = callerRoot ? projectRegistry.findByRootPath(callerRoot) : null;
+      const registeredRoot = callerProject?.rootPath ?? null;
+      // The push publisher is one per brain, shared by every project, so any
+      // project's runtime can send: the caller's, else the sync host's (null
+      // while sync is off), else the first registered one.
+      const fallbackProjectId = projectRegistry.list()[0]?.projectId ?? null;
+      const scope = callerProject
+        ? await scopeRegistry.get(callerProject.projectId)
+        : await scopeRegistry.resolveActiveSyncHost()
+          ?? (fallbackProjectId ? await scopeRegistry.get(fallbackProjectId) : null);
+      const runtime = scope?.runtime;
+      const publisher = runtime?.pushPublisherService;
+      if (!runtime || !publisher) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "Notifications are unavailable until the ADE brain has a project open.",
+        );
+      }
+      const send = buildSendNotificationAction(
+        runtime,
+        (notification) => publisher.sendCustomNotification(notification),
+        { projectRoot: registeredRoot },
+      );
+      try {
+        return await send(isRecord(params.args) ? params.args : {});
+      } catch (error) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
 
     if (method === "attention.call") {
