@@ -486,9 +486,11 @@ struct HubScreen: View {
   }
 
   private var workSessionDeepLinkKey: String? {
+    // An outside tap (push, widget, Live Activity) is handled even while a chat
+    // is open here, because it replaces that chat; an in-app request waits.
     guard syncService.shouldShowProjectHub,
-          openChatTarget == nil,
-          let request = syncService.requestedWorkSessionNavigation else { return nil }
+          let request = syncService.requestedWorkSessionNavigation,
+          openChatTarget == nil || request.origin == .external else { return nil }
     return [
       request.id,
       String(syncService.rosterRevision),

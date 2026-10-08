@@ -8622,9 +8622,14 @@ final class SyncService: ObservableObject {
   ///     machine of a link minted before links carried one. Callers holding a
   ///     `WorkSessionNavigationRequest` must use the overload above rather than
   ///     reading a session id off it here.
+  ///   - promptToWake: false for an action that runs with ADE in the
+  ///     background (a notification's Approve or Deny). Nobody can answer the
+  ///     Wake & open sheet there, so a sleeping machine gets one bounded
+  ///     connect attempt instead of a prompt.
   func ensureAccountMachineForNavigation(
     _ rawMachineKey: String?,
-    sessionId: String? = nil
+    sessionId: String? = nil,
+    promptToWake: Bool = true
   ) async -> Bool {
     // "The link named no machine" is not "the current machine is fine". It used
     // to be, and that is how a lock-screen tap opened a MacBook chat against a
@@ -8648,7 +8653,7 @@ final class SyncService: ObservableObject {
     let id = UUID()
     let task = Task { @MainActor [weak self] in
       guard let self else { return false }
-      return await self.performAccountMachineNavigation(machineKey)
+      return await self.performAccountMachineNavigation(machineKey, promptToWake: promptToWake)
     }
     accountNavigationInFlight = (id, machineKey, task)
     let result = await task.value
@@ -8658,7 +8663,10 @@ final class SyncService: ObservableObject {
     return result
   }
 
-  private func performAccountMachineNavigation(_ machineKey: String) async -> Bool {
+  private func performAccountMachineNavigation(
+    _ machineKey: String,
+    promptToWake: Bool
+  ) async -> Bool {
     var machine = syncAccountMachineNavigationTarget(
       rawMachineKey: machineKey,
       machines: AccountService.shared.machines
@@ -8706,7 +8714,7 @@ final class SyncService: ObservableObject {
       lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt),
       sleepState: machine.sleepState,
       sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt)
-    ) else {
+    ), promptToWake else {
       return await pairWithAccountMachine(machine, authorization: authorization)
     }
     // Loops so a failed wake retries from the same card. Every pass ends in a

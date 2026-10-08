@@ -213,7 +213,9 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
       // one: sending there could approve another machine's request.
       var reached = await Self.accountMachinesReady()
       if reached, !sync.accountMachineIsCurrent(machineKey) {
-        reached = await sync.ensureAccountMachineForNavigation(machineKey)
+        // Notification actions run in the background, where nobody can answer
+        // a Wake & open sheet: one bounded attempt, no prompt.
+        reached = await sync.ensureAccountMachineForNavigation(machineKey, promptToWake: false)
       }
       guard reached else {
         let name = AccountService.shared.machines
