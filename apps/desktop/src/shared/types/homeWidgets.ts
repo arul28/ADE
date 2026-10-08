@@ -20,6 +20,7 @@ export const HOME_WIDGETS_IPC = {
   machineKill: "ade.home.machine.kill",
   weatherSearch: "ade.home.weather.search",
   weatherGet: "ade.home.weather.get",
+  focusClaimCompletion: "ade.home.focus.claimCompletion",
   shareCopyImage: "ade.home.share.copyImage",
   shareSaveImage: "ade.home.share.saveImage",
   nowPlayingSubscribe: "ade.home.nowPlaying.subscribe",
@@ -251,6 +252,13 @@ export type HomeWidgetsBridge = {
     /** Show this session instead of the best one (null: back to the best one). */
     select: (sessionId: string | null) => Promise<void>;
     onChanged: (cb: (state: HomeNowPlayingState) => void) => () => void;
+  };
+  focus: {
+    /**
+     * True for the one window that completes the focus phase ending at
+     * `endsAt`; every other window that asks gets false.
+     */
+    claimCompletion: (endsAt: number) => Promise<boolean>;
   };
   share: {
     copyImage: (pngDataUrl: string) => Promise<HomeShareResult>;

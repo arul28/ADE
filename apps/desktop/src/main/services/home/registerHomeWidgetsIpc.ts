@@ -211,6 +211,18 @@ export function registerHomeWidgetsIpc(args: {
     playing.select(typeof sessionId === "string" && sessionId.length <= 512 ? sessionId : null);
   });
 
+  // The focus timer runs in every window that loaded it; when a phase ends,
+  // the first window to ask completes it (logs, toasts) and the rest follow
+  // its stored state. Main is the one place the check-and-set is atomic.
+  const completedFocusPhases: number[] = [];
+  handle(HOME_WIDGETS_IPC.focusClaimCompletion, async (endsAt: unknown) => {
+    if (typeof endsAt !== "number" || !Number.isFinite(endsAt)) return false;
+    if (completedFocusPhases.includes(endsAt)) return false;
+    completedFocusPhases.push(endsAt);
+    if (completedFocusPhases.length > 16) completedFocusPhases.shift();
+    return true;
+  });
+
   // Share cards: the renderer draws the PNG; main only copies or saves it.
   const PNG_PREFIX = "data:image/png;base64,";
   const MAX_PNG_BYTES = 12 * 1024 * 1024;

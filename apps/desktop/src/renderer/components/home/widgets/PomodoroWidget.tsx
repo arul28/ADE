@@ -60,7 +60,7 @@ type FocusStore = FocusState & {
   pause: () => void;
   reset: () => void;
   setFocusMinutes: (minutes: number) => void;
-  complete: () => void;
+  complete: () => Promise<void>;
 };
 
 const useFocusStore = create<FocusStore>((set, get) => {
@@ -88,15 +88,24 @@ const useFocusStore = create<FocusStore>((set, get) => {
     },
     reset: () => save({ phase: "focus", endsAt: null, pausedMs: null }),
     setFocusMinutes: (minutes) => save({ focusMinutes: minutes, ...(get().phase === "focus" ? { endsAt: null, pausedMs: null } : {}) }),
-    complete: () => {
-      const state = get();
+    complete: async () => {
+      const ending = get();
       // Another window may have completed this phase already: take its state.
       const stored = readState();
-      if (stored.phase !== state.phase || stored.endsAt !== state.endsAt) {
+      if (stored.phase !== ending.phase || stored.endsAt !== ending.endsAt) {
         set(stored);
         schedule();
         return;
       }
+      // Every window's timer fires at the same moment; only the window main
+      // picks logs and toasts. The others take its write (storage event).
+      const claim = window.ade?.home?.focus?.claimCompletion;
+      if (ending.endsAt != null && claim) {
+        const won = await claim(ending.endsAt).catch(() => true);
+        if (!won) return;
+      }
+      const state = get();
+      if (state.phase !== ending.phase || state.endsAt !== ending.endsAt) return;
       if (state.phase === "focus") {
         // Credit the day the session ended on.
         const day = localDayKey(new Date(state.endsAt ?? Date.now()));
@@ -121,7 +130,7 @@ function schedule() {
   phaseTimer = null;
   const { endsAt } = useFocusStore.getState();
   if (endsAt == null) return;
-  phaseTimer = window.setTimeout(() => useFocusStore.getState().complete(), Math.max(0, endsAt - Date.now()));
+  phaseTimer = window.setTimeout(() => void useFocusStore.getState().complete(), Math.max(0, endsAt - Date.now()));
 }
 // A phase that ended while ADE was closed completes on first load.
 schedule();

@@ -13519,6 +13519,9 @@ const adeBridge = {
         return () => ipcRenderer.removeListener(HOME_WIDGETS_IPC.nowPlayingChanged, listener);
       },
     },
+    focus: {
+      claimCompletion: (endsAt: number) => ipcRenderer.invoke(HOME_WIDGETS_IPC.focusClaimCompletion, endsAt),
+    },
     share: {
       copyImage: (pngDataUrl: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.shareCopyImage, pngDataUrl),
       saveImage: (args: { pngDataUrl: string; fileName: string }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.shareSaveImage, args),
