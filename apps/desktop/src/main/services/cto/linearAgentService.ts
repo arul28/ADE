@@ -120,6 +120,30 @@ function lastParagraph(text: string): string {
   return parts.at(-1) ?? "";
 }
 
+/** Drops the lane worktree prefix from paths: every step runs inside it, so it only hides the part that differs. */
+function shortenWorktreePaths(text: string): string {
+  return text.replace(/(?:[A-Za-z]:)?[^\s'"`]*?[\\/]\.ade[\\/]worktrees[\\/][^\\/\s'"`]+(?:[\\/]|(?=[\s'"`]|$))/g, "");
+}
+
+/**
+ * The part of a shell command that says what it does. Agents start most
+ * commands with `cd <lane worktree> &&`, and Codex wraps them in
+ * `bash -lc '…'`; shown raw, every step reads the same.
+ */
+export function describeShellCommand(command: string): string {
+  let text = command.trim();
+  const wrapped = /^(?:\/\S*\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/.exec(text);
+  if (wrapped) text = wrapped[2]!.trim();
+  for (;;) {
+    const next = text.replace(/^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*/, "");
+    if (next === text) break;
+    text = next;
+  }
+  // A bare `cd` says nothing; the caller falls back to the tool's description.
+  if (/^cd(?:\s+(?:"[^"]*"|'[^']*'|\S+))?\s*$/.test(text)) return "";
+  return truncate(shortenWorktreePaths(text).replace(/\s+/g, " "), 200);
+}
+
 /** A short, human label for a tool call, in the style of Linear's own agents. */
 export function describeToolCall(tool: string, args: unknown): { action: string; parameter: string } {
   const record = isRecord(args) ? args : {};
@@ -131,9 +155,12 @@ export function describeToolCall(tool: string, args: unknown): { action: string;
     return "";
   };
   const name = tool.toLowerCase();
-  if (/(^|_)(bash|shell|exec|command|terminal)/.test(name)) return { action: "Ran", parameter: truncate(pick("command", "cmd"), 200) };
-  if (/(edit|write|patch|apply|create_file|str_replace)/.test(name)) return { action: "Edited", parameter: pick("file_path", "path", "filePath", "file") };
-  if (/(read|view|open|cat)/.test(name)) return { action: "Read", parameter: pick("file_path", "path", "filePath", "file") };
+  if (/(^|_)(bash|shell|exec|command|terminal)/.test(name)) {
+    const command = pick("command", "cmd");
+    return { action: "Ran", parameter: describeShellCommand(command) || truncate(pick("description") || shortenWorktreePaths(command), 200) };
+  }
+  if (/(edit|write|patch|apply|create_file|str_replace)/.test(name)) return { action: "Edited", parameter: shortenWorktreePaths(pick("file_path", "path", "filePath", "file")) };
+  if (/(read|view|open|cat)/.test(name)) return { action: "Read", parameter: shortenWorktreePaths(pick("file_path", "path", "filePath", "file")) };
   if (/(grep|search|find|glob|rg)/.test(name)) return { action: "Searched", parameter: truncate(pick("pattern", "query", "q", "glob"), 160) };
   if (/(web|fetch|browse)/.test(name)) return { action: "Fetched", parameter: truncate(pick("url", "query"), 200) };
   if (/(todo|plan)/.test(name)) return { action: "Planned", parameter: "" };
@@ -199,6 +226,8 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
     finalText: string;
     /** Tool items already shown in Linear; a call is re-emitted when its arguments arrive. */
     postedToolItems: Set<string>;
+    /** The last step shown, so back-to-back identical steps show once. */
+    lastActionLabel: string | null;
     /** The last problem this turn, reported only if the turn fails. */
     lastError: string | null;
   }>();
@@ -512,10 +541,35 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
   const stateFor = (chatSessionId: string) => {
     let state = turnState.get(chatSessionId);
     if (!state) {
-      state = { text: "", lastThoughtAt: 0, lastActionAt: 0, thoughtTimer: null, finalText: "", postedToolItems: new Set(), lastError: null };
+      state = { text: "", lastThoughtAt: 0, lastActionAt: 0, thoughtTimer: null, finalText: "", postedToolItems: new Set(), lastActionLabel: null, lastError: null };
       turnState.set(chatSessionId, state);
     }
     return state;
+  };
+
+  /** Shows one step of the turn in Linear: each item once, and never the same line twice in a row. */
+  const postStep = (
+    agentSessionId: string,
+    chatSessionId: string,
+    itemKey: string,
+    described: { action: string; parameter: string },
+  ): void => {
+    const state = stateFor(chatSessionId);
+    if (state.text.trim()) flushThought(agentSessionId, chatSessionId);
+    state.finalText = "";
+    // The first emission of an item often has no arguments yet; wait for the
+    // one that does, and show each item once.
+    if (!described.parameter || state.postedToolItems.has(itemKey)) return;
+    state.postedToolItems.add(itemKey);
+    const label = `${described.action}\u0000${described.parameter}`;
+    if (label === state.lastActionLabel) return;
+    state.lastActionLabel = label;
+    const now = Date.now();
+    // Reads and searches are cheap and many: show them as ephemeral so the
+    // timeline keeps only the meaningful steps.
+    const ephemeral = described.action === "Read" || described.action === "Searched" || now - state.lastActionAt < ACTION_MIN_INTERVAL_MS;
+    state.lastActionAt = now;
+    post(agentSessionId, { type: "action", action: described.action, parameter: described.parameter }, { ephemeral });
   };
 
   const pendingFromApproval = (event: { itemId: string; description: string; detail?: unknown; requestKind?: string }) => {
@@ -558,21 +612,19 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
         }
         break;
       }
+      // Claude, Cursor, Droid and OpenCode report steps as tool calls; Codex
+      // reports shell commands and file edits as their own events.
       case "tool_call": {
-        if (state.text.trim()) flushThought(agentSessionId, envelope.sessionId);
-        state.finalText = "";
-        const now = Date.now();
-        const described = describeToolCall(event.tool, event.args);
-        // The first emission of a call often has no arguments yet; wait for
-        // the one that does, and show each tool item once.
-        const toolItemKey = event.logicalItemId ?? event.itemId;
-        if (!described.parameter || state.postedToolItems.has(toolItemKey)) break;
-        state.postedToolItems.add(toolItemKey);
-        // Reads and searches are cheap and many: show them as ephemeral so the
-        // timeline keeps only the meaningful steps.
-        const ephemeral = described.action === "Read" || described.action === "Searched" || now - state.lastActionAt < ACTION_MIN_INTERVAL_MS;
-        state.lastActionAt = now;
-        post(agentSessionId, { type: "action", action: described.action, parameter: described.parameter }, { ephemeral });
+        postStep(agentSessionId, envelope.sessionId, event.logicalItemId ?? event.itemId, describeToolCall(event.tool, event.args));
+        break;
+      }
+      case "command": {
+        postStep(agentSessionId, envelope.sessionId, event.logicalItemId ?? event.itemId, { action: "Ran", parameter: describeShellCommand(event.command) || truncate(shortenWorktreePaths(event.command), 200) });
+        break;
+      }
+      case "file_change": {
+        const action = event.kind === "create" ? "Created" : event.kind === "delete" ? "Deleted" : "Edited";
+        postStep(agentSessionId, envelope.sessionId, event.logicalItemId ?? event.itemId, { action, parameter: shortenWorktreePaths(event.path) });
         break;
       }
       case "plan": {

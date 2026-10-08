@@ -220,9 +220,15 @@ export function resolveMergedSnapshotHistoryCursor(args: {
   mergedEvents: AgentChatEventEnvelope[];
   detached: boolean;
 }): number {
+  // A refresh that kept the resident history keeps its paging position too.
+  // Resetting a partly paged-back view to the snapshot's own start pointed the
+  // next "load earlier" at pages already on screen, and the page merge (which
+  // only dedupes at the seam) prepended them again: every refresh during a long
+  // live turn grew the transcript by another copy of its older rows.
   if (
     args.snapshotCursor <= 0
-    || args.currentCursor !== 0
+    || args.currentCursor == null
+    || args.currentCursor < 0
     || args.detached
     || !args.snapshotEvents.length
     || !args.existingEvents.length
@@ -235,6 +241,6 @@ export function resolveMergedSnapshotHistoryCursor(args: {
   const oldestExistingKey = chatEventDedupKey(args.existingEvents[0]!);
   const keptOldestExisting = args.mergedEvents.some((event) => chatEventDedupKey(event) === oldestExistingKey);
   return snapshotOverlaps && keptOldestExisting
-    ? 0
+    ? Math.min(args.currentCursor, args.snapshotCursor)
     : args.snapshotCursor;
 }

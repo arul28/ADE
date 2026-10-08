@@ -2475,6 +2475,15 @@ type ClaudeActiveSubagent = {
    * any downgrade for the model), keyed by the child's `agent_id`.
    */
   reasoningEffort?: string;
+  /**
+   * Created by the SubagentStart hook before any `task_*` frame for this id.
+   * It only carries metadata for the `task_started` that normally follows and
+   * replaces it. Claude Code also starts agents that never get a task — the
+   * side queries it forks from a running agent (progress summaries, prompt
+   * suggestions) each run under a fresh agent id — so a hook-only entry gets
+   * no terminal edge and must never count as live work.
+   */
+  hookOnly?: boolean;
 };
 
 type ClaudeContextGuardrailState = {
@@ -3724,12 +3733,21 @@ function claudeHasBoundedWorkload(runtime: ClaudeRuntime): boolean {
  * agents/shells; only foreground subagent edges remain an independent signal.
  */
 function claudeHasBackgroundWorkload(runtime: ClaudeRuntime): boolean {
-  const hasUnlevelledSubagent = [...runtime.activeSubagents.values()].some(
-    (subagent) =>
-      !subagent.skipTranscript
-      && (!subagent.background || !runtime.backgroundTasksLevelObserved),
-  );
-  return Boolean(hasUnlevelledSubagent || runtime.liveBackgroundTaskIds.size > 0);
+  return claudeWorkloadClaimingSubagentCount(runtime) > 0 || runtime.liveBackgroundTaskIds.size > 0;
+}
+
+/**
+ * Tracked tasks that still claim the runtime is doing work. Housekeeping tasks
+ * and hook-only entries never do: neither is guaranteed a terminal edge.
+ */
+function claudeWorkloadClaimingSubagentCount(runtime: ClaudeRuntime): number {
+  let count = 0;
+  for (const subagent of runtime.activeSubagents.values()) {
+    if (subagent.skipTranscript || subagent.hookOnly) continue;
+    if (subagent.background && runtime.backgroundTasksLevelObserved) continue;
+    count += 1;
+  }
+  return count;
 }
 
 /**
@@ -26165,6 +26183,7 @@ export function createAgentChatService(args: {
         || taskType === "local_workflow"
         || runtime.liveBackgroundTaskIds.has(taskId)
         || isBackgroundTask(msg)
+        || msg.is_backgrounded === true
         || (parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId)?.isBackground === true : false);
       // An explicit task_type "other" with no agent metadata is a plain Claude
       // Code task run, not a subagent — track it for cleanup but never emit
@@ -28552,6 +28571,8 @@ export function createAgentChatService(args: {
             || taskType === "local_workflow"
             || runtime.liveBackgroundTaskIds.has(taskId)
             || isBackgroundTask(taskMsg as Record<string, unknown>)
+            // The SDK's own word for where the task was registered.
+            || taskMsg.is_backgrounded === true
             || stashed?.isBackground === true;
           const command = compactString(taskMsg.command);
           // A background *shell* command (Bash run_in_background) has task_type
@@ -29451,6 +29472,7 @@ export function createAgentChatService(args: {
       if (runtime.interrupted && !runtime.spareBackgroundOnInterrupt) {
         await stopActiveClaudeSubagents(managed, runtime, turnId, "Interrupted");
       }
+      dropFinishedForegroundClaudeTasks(managed, runtime, turnId);
       const finalStatus: ClaudeTerminalStatus = runtime.interrupted
         ? "interrupted"
         : quotaTrippedThisTurn
@@ -33606,6 +33628,45 @@ export function createAgentChatService(args: {
     }
   }
 
+  /**
+   * Forget the foreground tasks a finished turn still tracks.
+   *
+   * A foreground subagent (or foreground shell run) cannot outlive the turn
+   * that started it: its tool call blocks the turn, and a move to the
+   * background reaches ADE before the turn can end (`task_updated`
+   * is_backgrounded, or the background level). So at the turn's end every
+   * tracked entry that is not background work is over, whether or not its own
+   * terminal frame arrived under the id ADE tracked it by. Without this, one
+   * lost, late or hook-only edge kept the runtime "busy" after the turn until
+   * the workload backstop expired hours later.
+   */
+  const dropFinishedForegroundClaudeTasks = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    turnId: string | undefined,
+  ): void => {
+    const dropped: string[] = [];
+    for (const [key, entry] of runtime.activeSubagents) {
+      // Housekeeping entries never claim work and keep their own lifecycle.
+      if (entry.skipTranscript) continue;
+      if (entry.background === true) continue;
+      if (
+        runtime.liveBackgroundTaskIds.has(key)
+        || runtime.liveBackgroundTaskIds.has(entry.taskId)
+        || (entry.agentId && runtime.liveBackgroundTaskIds.has(entry.agentId))
+      ) continue;
+      runtime.activeSubagents.delete(key);
+      dropped.push(key);
+    }
+    if (!dropped.length) return;
+    logger.info("agent_chat.claude_turn_end_dropped_foreground_tasks", {
+      sessionId: managed.session.id,
+      ...(turnId ? { turnId } : {}),
+      count: dropped.length,
+      taskIds: dropped.slice(0, 20),
+    });
+  };
+
   const stopActiveClaudeSubagents = async (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -33664,7 +33725,7 @@ export function createAgentChatService(args: {
       // Ambient (skip_transcript) and non-agent task runs never surfaced as
       // subagent rows, so they must not emit a stopped subagent_result here —
       // just drop the tracking entry.
-      if (subagent.skipTranscript || subagent.nonAgentTaskRun) {
+      if (subagent.skipTranscript || subagent.nonAgentTaskRun || subagent.hookOnly) {
         runtime.activeSubagents.delete(subagent.taskId);
         return;
       }
@@ -38299,19 +38360,19 @@ export function createAgentChatService(args: {
               const model = stringOrNull((input as unknown as Record<string, unknown>).model);
               const existing = runtime.activeSubagents.get(taskId);
               const resolvedModel = model ?? existing?.model;
+              // Keep everything the task frames already recorded (a
+              // housekeeping or non-agent flag must survive this rewrite).
+              // With no task yet, the entry is only a metadata stub for the
+              // task_started that normally follows; see `hookOnly`.
               runtime.activeSubagents.set(taskId, {
+                ...existing,
                 taskId: existing?.taskId ?? taskId,
                 description: existing?.description || input.agent_type,
                 parentToolUseId: existing?.parentToolUseId ?? null,
-                ...(existing?.background !== undefined ? { background: existing.background } : {}),
-                ...(existing?.command ? { command: existing.command } : {}),
-                ...(existing?.finalSummary ? { finalSummary: existing.finalSummary } : {}),
                 agentId: existing?.agentId ?? input.agent_id,
                 agentType: input.agent_type,
-                ...(existing?.parentAgentId ? { parentAgentId: existing.parentAgentId } : {}),
-                ...(existing?.taskType ? { taskType: existing.taskType } : {}),
-                ...(existing?.workflowName ? { workflowName: existing.workflowName } : {}),
                 ...optionalSubagentModelFields(resolvedModel, existing?.reasoningEffort),
+                ...(existing ? {} : { hookOnly: true }),
               });
             }
             return { continue: true };
@@ -38333,24 +38394,17 @@ export function createAgentChatService(args: {
                 // matches, so the notification handler reads the right summary
                 // regardless of which id space it looks up (prevents concurrent
                 // subagents from cross-wiring each other's completion text).
-                const existing = runtime.activeSubagents.get(agentId);
-                runtime.activeSubagents.set(agentId, {
-                  taskId: existing?.taskId ?? agentId,
-                  description: existing?.description ?? input.agent_type,
-                  parentToolUseId: existing?.parentToolUseId ?? null,
-                  background: existing?.background,
-                  agentId,
-                  ...(existing?.agentType ? { agentType: existing.agentType } : {}),
-                  ...(existing?.taskType ? { taskType: existing.taskType } : {}),
-                  ...(existing?.command ? { command: existing.command } : {}),
-                  ...optionalSubagentModelFields(existing?.model, existing?.reasoningEffort),
-                  finalSummary,
-                });
+                //
+                // Only entries that already exist. This hook also fires for an
+                // agent whose task already settled, and for the side queries
+                // Claude Code forks from a running agent (each under a fresh
+                // agent id, with no task_* frames at all). Creating an entry
+                // for either left a "running" subagent no terminal edge would
+                // ever remove, which held the runtime as busy until the
+                // workload backstop expired hours later.
                 for (const [key, entry] of runtime.activeSubagents) {
-                  if (key === agentId) continue;
-                  if (entry.agentId === agentId) {
-                    runtime.activeSubagents.set(key, { ...entry, finalSummary });
-                  }
+                  if (key !== agentId && entry.agentId !== agentId) continue;
+                  runtime.activeSubagents.set(key, { ...entry, agentId: entry.agentId ?? agentId, finalSummary });
                 }
                 // A native subagent can leave a background shell behind when
                 // it exits. Reap only shells that carry this subagent's parent
@@ -59571,8 +59625,10 @@ export function createAgentChatService(args: {
       liveBackgroundTaskCount: managed.runtime?.kind === "claude"
         ? managed.runtime.liveBackgroundTaskIds.size
         : 0,
+      // The entries that actually held the runtime, not every tracked id:
+      // housekeeping and hook-only entries never claim work.
       activeSubagentCount: managed.runtime?.kind === "claude"
-        ? managed.runtime.activeSubagents.size
+        ? claudeWorkloadClaimingSubagentCount(managed.runtime)
         : managed.runtime?.kind === "opencode"
           ? [...managed.runtime.subagents.values()].filter((child) => !child.settled).length
           : 0,
