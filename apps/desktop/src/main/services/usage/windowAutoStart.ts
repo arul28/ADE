@@ -122,14 +122,19 @@ export function createWindowAutoStartScheduler({
         configHome: state.configHome,
       }),
     };
-    const model = state.provider === "claude" ? "claude-haiku-5-5" : "gpt-5.6-luna";
+    const model = state.provider === "claude" ? "claude-haiku-5-5" : "gpt-6-luna";
     try {
       const resolved = state.provider === "claude"
         ? resolveClaudeExecutable({ env })
         : resolveCodexExecutableFn({ env });
+      // The cheapest request that opens a window: lowest effort, standard
+      // speed, no tools or MCP setup, nothing saved. Unpinned, Codex runs at
+      // config.toml's effort and service tier.
       const args = state.provider === "claude"
-        ? ["-p", "Reply with OK.", "--model", model, "--effort", "low", "--output-format", "text"]
-        : ["exec", "-m", model, "--skip-git-repo-check", "Reply with OK."];
+        ? ["-p", "Reply with OK.", "--model", model, "--effort", "low", "--output-format", "text",
+          "--tools=", "--strict-mcp-config", "--no-session-persistence"]
+        : ["exec", "-m", model, "-c", "model_reasoning_effort=low", "-c", "service_tier=default",
+          "--ephemeral", "--skip-git-repo-check", "Reply with OK."];
       const invocation = resolveCliSpawnInvocation(resolved.path, args, env);
       const options: SpawnOptions = {
         env,
@@ -185,7 +190,7 @@ export function createWindowAutoStartScheduler({
       : { ...state, configHome: instance.configHome };
     const ok = await runRequest(runState);
     const durationMs = Math.max(0, nowMs() - startedAt);
-    const model = state.provider === "claude" ? "claude-haiku-5-5" : "gpt-5.6-luna";
+    const model = state.provider === "claude" ? "claude-haiku-5-5" : "gpt-6-luna";
     logger.info("usage.window_autostart", {
       provider: state.provider,
       instanceId: state.instanceId,

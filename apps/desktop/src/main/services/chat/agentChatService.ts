@@ -374,10 +374,21 @@ import {
   stableStringify,
 } from "../shared/utils";
 import {
+  adeBackgroundUtilityProvider,
+  backgroundUtilityModelId,
   backgroundUtilityReasoningEffort,
   NATIVE_TITLE_POLL_MS,
   NATIVE_TITLE_WAIT_MS,
+  type AdeBackgroundUtilityProvider,
 } from "../../../shared/backgroundUtilityModel";
+import {
+  buildTurnEndAskPrompt,
+  classifyTurnEndAsk,
+  fallbackTurnEndQuestion,
+  parseTurnEndAskDecision,
+  TURN_END_ASK_JSON_SCHEMA,
+  TURN_END_ASK_SYSTEM_PROMPT,
+} from "../../../shared/turnEndAsk";
 import {
   exceedsProviderInlineLimit,
   inlineAttachmentHintPart,
@@ -601,6 +612,7 @@ import type {
   LaneLinearIssue,
   SessionLinearIssueLink,
   CursorCloudServiceTier,
+  SessionAttentionSource,
 } from "../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import {
@@ -9959,6 +9971,16 @@ export function createAgentChatService(args: {
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
   /**
+   * The host's `ade chat ask` path (marker, tracked-CLI state, phone push).
+   * Absent in tests and bare hosts, where the turn-end question check writes
+   * the same marker through `sessionService.requestAttention` alone.
+   */
+  requestSessionAttention?: (args: {
+    sessionId: string;
+    message: string;
+    source: SessionAttentionSource;
+  }) => boolean;
+  /**
    * The machine-local per-turn usage ledger. It watches the event stream and
    * writes one row per finished turn; it never changes a turn. Absent in tests
    * and in hosts that do not keep one.
@@ -10103,6 +10125,7 @@ export function createAgentChatService(args: {
     createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
     onTurnSettled,
+    requestSessionAttention: hostRequestSessionAttention,
     turnUsageLedger,
     modelRouter,
     onClaudeHooksIgnored,
@@ -11100,6 +11123,14 @@ export function createAgentChatService(args: {
    * transcript's rows name, and not only to a time. Cleared with the map above.
    */
   const lastTurnIdBySession = new Map<string, string>();
+  /**
+   * The turn whose ending question is still being judged by the cheap model,
+   * per chat. Any user message or turn start removes it, so an answer that
+   * arrives after the chat moved on finds nothing to apply to.
+   */
+  const turnEndAskPendingTurnBySession = new Map<string, string>();
+  /** `sessionId:turnId` pairs already checked, so no turn is judged twice. */
+  const turnEndAskCheckedTurns = new Set<string>();
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
   // and a `const` declared thousands of lines later is in its temporal dead zone
@@ -19849,6 +19880,133 @@ export function createAgentChatService(args: {
     });
   };
 
+  /** How long the cheap model gets to break a tie before ADE gives up quietly. */
+  const TURN_END_ASK_TIEBREAK_TIMEOUT_MS = 8_000;
+
+  const raiseTurnEndQuestion = (
+    managed: ManagedChatSession,
+    turnId: string,
+    question: string,
+    decidedBy: "rules" | "model",
+  ): void => {
+    const sessionId = managed.session.id;
+    const raised = hostRequestSessionAttention
+      ? hostRequestSessionAttention({ sessionId, message: question, source: "turn_end_question" })
+      : sessionService.requestAttention(sessionId, question, "turn_end_question");
+    logger.info("agent_chat.turn_end_question_raised", { sessionId, turnId, decidedBy, raised });
+  };
+
+  /**
+   * The hand may still go up only if nothing happened since the turn ended:
+   * same live chat, no user message or new turn (either clears the pending
+   * entry), no approval card, and no hand raised in the meantime.
+   */
+  const turnEndQuestionStillOpen = (managed: ManagedChatSession, turnId: string): boolean => {
+    const sessionId = managed.session.id;
+    if (managed.deleted || managedSessions.get(sessionId) !== managed) return false;
+    if (turnEndAskPendingTurnBySession.get(sessionId) !== turnId) return false;
+    if (hasLivePendingInput(managed)) return false;
+    return !sessionService.get(sessionId)?.attentionRequestedAt;
+  };
+
+  const runTurnEndQuestionTiebreak = async (args: {
+    managed: ManagedChatSession;
+    turnId: string;
+    provider: AdeBackgroundUtilityProvider;
+    replyText: string;
+    userMessage: string | null;
+  }): Promise<void> => {
+    const { managed, turnId, provider } = args;
+    const sessionId = managed.session.id;
+    const startedAt = Date.now();
+    let asksUser: boolean | null = null;
+    try {
+      // A scratch directory: the classifier must see no repo, no CLAUDE.md, no hooks.
+      fs.mkdirSync(layout.tmpDir, { recursive: true });
+      const result = await runSessionIntelligencePrompt({
+        cwd: layout.tmpDir,
+        modelId: backgroundUtilityModelId(provider),
+        systemPrompt: TURN_END_ASK_SYSTEM_PROMPT,
+        prompt: buildTurnEndAskPrompt({ userMessage: args.userMessage, replyText: args.replyText }),
+        jsonSchema: TURN_END_ASK_JSON_SCHEMA,
+        timeoutMs: TURN_END_ASK_TIEBREAK_TIMEOUT_MS,
+        taskType: "session_summary",
+      });
+      asksUser = parseTurnEndAskDecision(result.structuredOutput, result.text);
+    } catch (error) {
+      // Fail quiet: an unanswered tiebreak never raises a hand.
+      logger.warn("agent_chat.turn_end_question_tiebreak_failed", {
+        sessionId,
+        turnId,
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const stillOpen = turnEndQuestionStillOpen(managed, turnId);
+    if (turnEndAskPendingTurnBySession.get(sessionId) === turnId) {
+      turnEndAskPendingTurnBySession.delete(sessionId);
+    }
+    logger.info("agent_chat.turn_end_question_tiebreak", {
+      sessionId,
+      turnId,
+      provider,
+      asksUser,
+      stillOpen,
+      durationMs: Date.now() - startedAt,
+    });
+    if (asksUser === true && stillOpen) {
+      raiseTurnEndQuestion(managed, turnId, fallbackTurnEndQuestion(args.replyText), "model");
+    }
+  };
+
+  /**
+   * A turn that ends while the chat still owns live background work reads as
+   * Working, so a question in its reply is invisible unless the agent called
+   * `ade chat ask`. Read the reply's ending and raise the hand for it: clear
+   * asks at once, clear progress notes never, the rest by a cheap model when
+   * the provider has one. Once per turn and live only (replay never reaches
+   * here); the raised hand is what persists.
+   */
+  const checkTurnEndQuestion = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "done" }>,
+  ): void => {
+    const turnId = event.turnId?.trim();
+    if (event.status !== "completed" || !turnId) return;
+    const sessionId = managed.session.id;
+    const checkKey = `${sessionId}:${turnId}`;
+    if (turnEndAskCheckedTurns.has(checkKey)) return;
+    rememberBoundedId(turnEndAskCheckedTurns, checkKey, 1_024);
+    // A subagent's questions are for the agent that spawned it.
+    if (managed.session.spawnKind === "subagent" && managed.session.orchestrationParentSessionId?.trim()) return;
+    if (totalBackgroundWork(runtimeBackgroundWork(managed.runtime)) <= 0) return;
+    if (hasLivePendingInput(managed)) return;
+    if (sessionService.get(sessionId)?.attentionRequestedAt) return;
+
+    const entries = managed.recentConversationEntries;
+    const reply = entries[entries.length - 1];
+    if (!reply || reply.role !== "assistant") return;
+    if (reply.turnId && reply.turnId !== turnId) return;
+
+    const { verdict, question } = classifyTurnEndAsk(reply.text);
+    if (verdict === "not_ask") return;
+    if (verdict === "ask") {
+      raiseTurnEndQuestion(managed, turnId, question ?? fallbackTurnEndQuestion(reply.text), "rules");
+      return;
+    }
+    const provider = adeBackgroundUtilityProvider(managed.session.provider);
+    if (!provider) return;
+    const lastUser = [...entries].reverse().find((entry) => entry.role === "user");
+    turnEndAskPendingTurnBySession.set(sessionId, turnId);
+    void runTurnEndQuestionTiebreak({
+      managed,
+      turnId,
+      provider,
+      replyText: reply.text,
+      userMessage: lastUser ? lastUser.displayText ?? lastUser.text : null,
+    });
+  };
+
   const notifyTurnSettled = (
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "done" }>,
@@ -19868,6 +20026,14 @@ export function createAgentChatService(args: {
       });
     }
     warnIfServedModelDiffers(managed, event);
+    try {
+      checkTurnEndQuestion(managed, event);
+    } catch (error) {
+      logger.warn("agent_chat.turn_end_question_check_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     if (managed.runtime?.kind === "claude") {
       void refreshClaudeContextUsageSnapshot(
         managed,
@@ -20196,6 +20362,12 @@ export function createAgentChatService(args: {
           return event;
       }
     })();
+    if (
+      (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started")
+      || normalizedEvent.type === "user_message"
+    ) {
+      turnEndAskPendingTurnBySession.delete(managed.session.id);
+    }
     if (
       (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started")
       || normalizedEvent.type === "done"

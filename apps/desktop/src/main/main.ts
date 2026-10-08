@@ -340,6 +340,7 @@ import {
   createAutomationAdeActionLookup,
   flushStagedBoardMoves,
   getAdeActionDomainServices,
+  requestSessionAttentionForRuntime,
 } from "./services/adeActions/registry";
 import {
   createUsageTrackingService,
@@ -4461,6 +4462,8 @@ app.whenReady().then(async () => {
         projectId,
         event,
       }),
+      requestSessionAttention: (request) =>
+        requestSessionAttentionForRuntime(buildAdeActionRuntimeForAutomations(), request),
       onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
         analytics: productAnalyticsService,
         projectId,

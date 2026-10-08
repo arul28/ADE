@@ -13,19 +13,26 @@
  * 1. Nothing folds while a turn is live. Only a turn with a `done` row folds.
  * 2. The ANSWER is the last text row of the turn — or the last `final_answer`
  *    row when the provider labelled one. `commentary` rows are never the answer.
- *    Without a label, a short last text written after a few work rows is a
- *    postscript, and the long text before it is the answer
- *    ({@link answerBeforePostscript}).
+ *    Without a label, a last text written after a few work rows is a
+ *    postscript when the text before it is much longer, and that longer text
+ *    is the answer ({@link answerBeforePostscript}).
  *    A turn with no answer (tool-only, interrupted before text, error) does not
  *    fold at all.
  * 3. The span is the rows strictly between the turn's user message and the
  *    answer. Rows after the answer never fold.
  * 4. Inside the span only HISTORY folds — including warning and info notices,
- *    which have nothing to act on. Rows that were still working or needing the
- *    user when the turn ended, actionable rows (errors, sign-in, continuity
+ *    which have nothing to act on, and short narration ("Now I'll scroll to
+ *    the DRM section."). Rows that were still working or needing the user
+ *    when the turn ended, actionable rows (errors, sign-in, continuity
  *    recovery, reset credit), finished subagent results, and proof stay
- *    visible below the fold row. A fold that would hide only trivial rows
- *    (status/diagnostics receipts, empty text) is not drawn.
+ *    visible below the fold row. So does substantive prose that is not the
+ *    answer — a reply to the user's question written before the agent went
+ *    off to work and ended on a status message — and any prose that embeds
+ *    proof images ({@link proseStaysVisible}). `commentary` prose is
+ *    narration by the provider's own label and folds unless it embeds proof.
+ *    An earlier text that repeats the answer word for word still folds
+ *    ({@link TurnFold.duplicateAnswerKeys}). A fold that would hide only
+ *    trivial rows (status/diagnostics receipts, empty text) is not drawn.
  * 5. That decision is STICKY: liveness is read from a snapshot taken when the
  *    turn's `done` arrived ({@link snapshotTurnEnd}), so a card that settles
  *    later never jumps into the fold, and replaying the same events (a full
@@ -43,7 +50,7 @@ export type TurnFoldRowRole =
   | "boundary"
   /** The turn's `done` row. */
   | "turn_end"
-  /** Assistant prose — the answer candidates. Non-answer text folds. */
+  /** Assistant prose — the answer candidates. Non-answer narration folds; substantive prose and proof stay. */
   | "text"
   /** Finished work that folds: thoughts, plans, receipts, chips. */
   | "history"
@@ -72,9 +79,11 @@ export type TurnFoldRow = {
   /** `turn_end` rows: how the turn ended. */
   status?: TurnEndStatus;
   /**
-   * `text` rows: the prose, when the surface can supply it. Only read to find
-   * an earlier row that repeats the answer word for word
-   * ({@link TurnFold.duplicateAnswerKeys}).
+   * `text` rows: the prose, when the surface can supply it. Read to pick the
+   * answer over a postscript ({@link answerBeforePostscript}), to keep
+   * substantive prose and proof visible ({@link proseStaysVisible}), and to
+   * find an earlier row that repeats the answer word for word
+   * ({@link TurnFold.duplicateAnswerKeys}). Without it, non-answer text folds.
    */
   text?: string | null;
   /**
@@ -524,22 +533,55 @@ function rowFolds(row: TurnFoldRow, turnId: string, snapshot: TurnEndSnapshot | 
   }
 }
 
-/** A last text row this short can be a postscript to an earlier answer. */
-const TURN_FOLD_POSTSCRIPT_MAX_CHARS = 280;
 /** An earlier text row must be at least this long to be the answer instead. */
 const TURN_FOLD_ANSWER_MIN_CHARS = 400;
 /** And at least this many times longer than the postscript. */
 const TURN_FOLD_ANSWER_TO_POSTSCRIPT_RATIO = 3;
 /** Rows of work (a tool group, a notice) allowed between the answer and the postscript. */
 const TURN_FOLD_POSTSCRIPT_MAX_WORK_ROWS = 3;
+/**
+ * Non-answer prose at least this long (trimmed, UTF-16 units) is substance,
+ * not narration, and stays visible. Narration between tool calls ("I'll copy
+ * it to a private folder, then sign a test token.") runs well under 300
+ * characters; a reply to a question the user asked alongside the work runs
+ * to paragraphs. Same bar as {@link TURN_FOLD_ANSWER_MIN_CHARS}: prose long
+ * enough to be an answer is not hidden as narration.
+ */
+const TURN_FOLD_SUBSTANTIVE_PROSE_MIN_CHARS = TURN_FOLD_ANSWER_MIN_CHARS;
+/** A markdown image, inline proof (`ade-proof://`) or otherwise. */
+const PROSE_IMAGE_PATTERN = /!\[[^\]\n]*\]\([^)\s]+[^)]*\)/;
+/** Any reference to a proof artifact, image or link. */
+const PROSE_PROOF_PATTERN = /ade-proof:\/\//i;
+/**
+ * Markdown a writer only reaches for when the prose is content: a list item,
+ * a heading, a fenced code block, or a table separator row.
+ */
+const PROSE_STRUCTURE_PATTERN = /^ {0,3}(?:[-*+] +\S|\d{1,3}[.)] +\S|#{1,6} +\S|```|~~~|\|? *:?-{3,}:? *\|)/m;
+
+/**
+ * A non-answer text row that stays visible under the fold row instead of
+ * folding (rule 4). Proof always stays: a fold must never hide the evidence.
+ * Otherwise substantive prose stays — long, or shaped by markdown structure —
+ * unless the provider labelled it `commentary`. Short plain narration folds.
+ * Reads only the row's own prose, so the decision is replay-deterministic.
+ */
+function proseStaysVisible(row: TurnFoldRow): boolean {
+  const text = row.text?.trim();
+  if (!text) return false;
+  if (PROSE_PROOF_PATTERN.test(text) || PROSE_IMAGE_PATTERN.test(text)) return true;
+  if (row.phase === "commentary") return false;
+  return text.length >= TURN_FOLD_SUBSTANTIVE_PROSE_MIN_CHARS || PROSE_STRUCTURE_PATTERN.test(text);
+}
 
 /**
  * The answer of a turn whose provider labels no `final_answer` (Claude). The
- * answer is the last text row, except when that row is a short postscript to a
- * much longer text: the model answers in full, runs a cleanup tool, then writes
- * "I also deleted the temp files." Then the long text before it is the answer,
- * so the fold does not hide it. The postscript stays visible below the answer
- * (rows after the answer never fold).
+ * answer is the last text row, except when that row is a postscript to a much
+ * longer text: the model answers in full, runs a cleanup tool, then writes
+ * "I also deleted the temp files." — or answers in depth, starts an agent,
+ * then writes a paragraph of status. Then the long text before it is the
+ * answer, so the fold does not hide it. The postscript stays visible below the
+ * answer (rows after the answer never fold). The postscript has no length cap
+ * of its own; the ratio is the test.
  *
  * Desktop drops tool rows before it folds, so the texts can be adjacent here.
  * Only one step back, and not past more than a few drawn work rows. When the
@@ -556,7 +598,6 @@ function answerBeforePostscript(
   const postscriptLength = rows[lastText]!.text?.trim().length;
   // The surface did not supply prose: no basis to look past the last text.
   if (postscriptLength == null || postscriptLength === 0) return lastText;
-  if (postscriptLength > TURN_FOLD_POSTSCRIPT_MAX_CHARS) return lastText;
   let workRows = 0;
   for (let index = lastText - 1; index >= windowStart; index -= 1) {
     const row = rows[index]!;
@@ -614,10 +655,16 @@ function foldTurn(
   for (let index = windowStart; index < answerIndex; index += 1) {
     const row = rows[index]!;
     const belongsToDeferredTurn = Boolean(deferredTurnId && row.turnId === deferredTurnId);
-    if (!belongsToDeferredTurn && rowFolds(row, turnId, snapshot)) {
+    let folds = !belongsToDeferredTurn && rowFolds(row, turnId, snapshot);
+    if (folds && row.role === "text") {
+      // A word-for-word repeat of the answer folds however long it is; other
+      // substantive prose and proof stay visible.
+      if (answerText && isSameProse(row.text, answerText)) duplicateAnswerKeys.add(row.key);
+      else if (proseStaysVisible(row)) folds = false;
+    }
+    if (folds) {
       hiddenKeys.add(row.key);
       if (!row.trivial) hidesContent = true;
-      if (row.role === "text" && answerText && isSameProse(row.text, answerText)) duplicateAnswerKeys.add(row.key);
     } else {
       keptKeys.push(row.key);
     }

@@ -243,6 +243,8 @@ export type ExecuteAiTaskArgs = {
   imagePaths?: string[];
   permissionMode?: ExecutorOpts["permissions"]["mode"];
   oneShot?: boolean;
+  /** See `ProviderTaskRunnerArgs.toolless`. */
+  toolless?: boolean;
   sessionId?: string;
   projectId?: string;
   runId?: string;
@@ -1768,6 +1770,7 @@ export function createAiIntegrationService(args: {
       projectConfig: projectConfigService.get().effective,
       imagePaths: args.imagePaths,
       reasoningEffort: args.reasoningEffort ?? null,
+      ...(args.toolless ? { toolless: true } : {}),
     });
     const durationMs = Date.now() - start;
     const provider = resolveProviderGroupForModel(descriptor) as AgentProvider;
@@ -2011,6 +2014,7 @@ export function createAiIntegrationService(args: {
     jsonSchema?: unknown;
     reasoningEffort?: string | null;
     imagePaths?: string[];
+    toolless?: boolean;
   }): Promise<ExecuteAiTaskResult> => {
     return await executeTask({
       feature: args.feature,
@@ -2023,6 +2027,7 @@ export function createAiIntegrationService(args: {
       ...(args.jsonSchema ? { jsonSchema: args.jsonSchema } : {}),
       ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
       ...(args.imagePaths?.length ? { imagePaths: args.imagePaths } : {}),
+      ...(args.toolless ? { toolless: true } : {}),
       permissionMode: "read-only",
       oneShot: true
     });
@@ -2483,6 +2488,9 @@ export function createAiIntegrationService(args: {
       systemPrompt?: string;
       taskType?: Extract<AiTaskType, "terminal_summary" | "session_title" | "session_summary" | "handoff_summary" | "continuity_summary" | "context_compaction">;
     }): Promise<ExecuteAiTaskResult> {
+      // Every caller hands over the text to read in the prompt, so these run
+      // tool-less: no plan-mode setup on Claude, standard speed on Codex and
+      // Cursor (see `ProviderTaskRunnerArgs.toolless`).
       return await executeReadOnlyOneShotTask({
         feature: "terminal_summaries",
         taskType: args.taskType ?? "terminal_summary",
@@ -2493,7 +2501,8 @@ export function createAiIntegrationService(args: {
         reasoningEffort: args.reasoningEffort,
         imagePaths: args.imagePaths,
         jsonSchema: args.jsonSchema,
-        systemPrompt: args.systemPrompt
+        systemPrompt: args.systemPrompt,
+        toolless: true,
       });
     },
 

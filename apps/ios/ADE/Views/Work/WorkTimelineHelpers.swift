@@ -2302,7 +2302,8 @@ private enum WorkTurnFoldRole {
   case boundary
   /// The turn's `done` (its turn-end line).
   case turnEnd
-  /// Assistant prose: the answer candidates. Non-answer prose folds.
+  /// Assistant prose: the answer candidates. Non-answer narration folds;
+  /// substantive prose and proof stay (`workTurnFoldProseStaysVisible`).
   case text
   /// Finished work that folds: thoughts, plan proposals, receipts, chips.
   case history
@@ -2429,16 +2430,44 @@ private struct WorkTurnFoldPlan {
   let duplicateAnswers: Set<Int>
 }
 
-private let workTurnFoldPostscriptMaxChars = 280
 private let workTurnFoldAnswerMinChars = 400
 private let workTurnFoldAnswerToPostscriptRatio = 3
 private let workTurnFoldPostscriptMaxWorkRows = 3
+/// Non-answer prose at least this long is substance, not narration, and stays
+/// visible (desktop `TURN_FOLD_SUBSTANTIVE_PROSE_MIN_CHARS`).
+private let workTurnFoldSubstantiveProseMinChars = workTurnFoldAnswerMinChars
+/// Desktop `PROSE_IMAGE_PATTERN`: a markdown image.
+private let workTurnFoldProseImagePattern = #"!\[[^\]\n]*\]\([^)\s]+[^)]*\)"#
+/// Desktop `PROSE_PROOF_PATTERN`: any proof artifact reference.
+private let workTurnFoldProseProofPattern = #"(?i)ade-proof://"#
+/// Desktop `PROSE_STRUCTURE_PATTERN`: a list item, heading, fence or table separator.
+private let workTurnFoldProseStructurePattern = #"(?m)^ {0,3}(?:[-*+] +\S|\d{1,3}[.)] +\S|#{1,6} +\S|```|~~~|\|? *:?-{3,}:? *\|)"#
+
+/// A non-answer prose row that stays visible under the fold row instead of
+/// folding (desktop `proseStaysVisible`). Proof always stays; otherwise long or
+/// markdown-structured prose stays unless the provider labelled it
+/// `commentary`. Short plain narration folds.
+private func workTurnFoldProseStaysVisible(_ message: WorkChatMessage) -> Bool {
+  let text = message.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !text.isEmpty else { return false }
+  if text.range(of: workTurnFoldProseProofPattern, options: .regularExpression) != nil
+    || text.range(of: workTurnFoldProseImagePattern, options: .regularExpression) != nil {
+    return true
+  }
+  if message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "commentary" {
+    return false
+  }
+  // UTF-16 code units, matching desktop `String.length`.
+  return text.utf16.count >= workTurnFoldSubstantiveProseMinChars
+    || text.range(of: workTurnFoldProseStructurePattern, options: .regularExpression) != nil
+}
 
 /// The answer of a turn with no `final_answer` label (desktop
-/// `answerBeforePostscript`). The last prose, except when it is a short
-/// postscript to a much longer text: the model answers in full, runs a cleanup
-/// tool, then writes one more line. Then the long text is the answer, and the
-/// postscript stays visible below it.
+/// `answerBeforePostscript`). The last prose, except when it is a postscript
+/// to a much longer text: the model answers in full, runs a cleanup tool (or
+/// starts an agent), then writes one more line or a status paragraph. Then the
+/// long text is the answer, and the postscript stays visible below it. The
+/// postscript has no length cap of its own; the ratio is the test.
 private func workTurnFoldAnswerBeforePostscript(
   entries: [WorkTimelineEntry],
   rows: [WorkTurnFoldFacts],
@@ -2455,7 +2484,7 @@ private func workTurnFoldAnswerBeforePostscript(
     return message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count
   }
   let postscriptLength = proseLength(lastText)
-  guard postscriptLength > 0, postscriptLength <= workTurnFoldPostscriptMaxChars else { return lastText }
+  guard postscriptLength > 0 else { return lastText }
   var workRows = 0
   var index = lastText - 1
   while index >= windowStart {
@@ -2553,14 +2582,19 @@ private func workTurnFoldPlan(
       folds = false
     }
     guard folds else { continue }
+    if case .text = row.role, case .message(let message) = entries[index].payload {
+      // A word-for-word repeat of the answer folds however long it is; other
+      // substantive prose and proof stay visible.
+      if !answerText.isEmpty,
+         message.markdown.utf8.count >= answerText.utf8.count,
+         message.markdown.trimmingCharacters(in: .whitespacesAndNewlines) == answerText {
+        duplicates.insert(index)
+      } else if workTurnFoldProseStaysVisible(message) {
+        continue
+      }
+    }
     hidden.insert(index)
     if !row.trivial { hidesContent = true }
-    if case .text = row.role, !answerText.isEmpty,
-       case .message(let message) = entries[index].payload,
-       message.markdown.utf8.count >= answerText.utf8.count,
-       message.markdown.trimmingCharacters(in: .whitespacesAndNewlines) == answerText {
-      duplicates.insert(index)
-    }
   }
   // A fold over nothing but receipts and empty rows is noise: draw the rows.
   guard hidesContent else { return nil }
