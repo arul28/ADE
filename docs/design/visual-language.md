@@ -142,7 +142,8 @@ is not honoured everywhere).
   what is working now, activity and usage, limits and machines, pull requests.
   Users pick widgets, a size class (Compact, Regular, Large) and an order;
   the layout engine fills the page with even rows and no gaps, and hides what
-  does not fit behind "N hidden". Nothing scrolls: lists show the rows that
+  does not fit behind "N hidden" (in edit mode that note names each hidden
+  widget with its own remove). Nothing scrolls: lists show the rows that
   fit and a "N more" line. Each widget is a size container, so a card hides
   its least important part when a layout makes it short.
 - **Settings.** `ModernPage` spaces sections 44px apart. `ModernSection` is a

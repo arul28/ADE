@@ -1,7 +1,10 @@
 # ADE as the dev home: one chat system, a top-level browser, Apple Music, a widget home
 
-Status: spec, not started (2026-10-07). Scope: desktop app first. Web client,
-iOS and TUI keep working, and are not redesigned here.
+Status (2026-10-08): being built, in review as PR #1544; each section's own
+status line says what is done. The browser tab (§2) and the widget home (§4)
+are built; the Music tab (§3) is built on Windows, with signed-in playback
+still to verify. Scope: desktop app first. Web
+client, iOS and TUI keep working, and are not redesigned here.
 
 ## Goal
 
@@ -390,8 +393,19 @@ want it).**
     already running, with Music's icon; other Mac apps are not listed. Runs
     only while the widget is on screen.
 - **Shipped share:** a canvas-drawn PNG, copied or saved by main; no upload.
-- **Clipboard:** main watches the clipboard only while the widget is on the
-  page. Optional history file: `<userData>/home-widgets/`.
+- **Clipboard:** main watches the clipboard while a Clipboard widget is in
+  the active layout and has room to show (not paused, not hidden by the
+  packer), whether or not the home page is open. The watch resumes a few
+  seconds after launch when it was on; the app (`useHomeAppEffects`) turns it
+  off when the layout has no Clipboard widget, and the grid turns it off while
+  the widget is hidden. Copies a password manager marks (nspasteboard.org
+  markers on macOS; `ExcludeClipboardContentFromMonitorProcessing`, KeePass'
+  "Clipboard Viewer Ignore", or `CanIncludeInClipboardHistory` = 0 on
+  Windows) and copies that look like secrets are never kept. "Keep after
+  restart" writes `<userData>/home-widgets/`; turning it off, Clear and
+  removing an entry reach the disk at once, and a launch with it off removes
+  any leftover history. Removing the widget stops the watch but keeps the
+  in-memory history (and the file, when kept); Clear empties it.
 
 - **Grid:** the current cards (Projects, Activity & usage, Limits & machines,
   Pull requests, Working now) become widgets in a grid. The current layout is
