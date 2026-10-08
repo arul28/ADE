@@ -569,8 +569,14 @@
 .ade-mh-large { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; }
 .ade-mh-wide { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 18px; align-items: center; }
 .ade-mh-col { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.ade-mh-large .ade-mh-col:first-child { justify-content: space-between; }
-.ade-mh-large .ade-mh-col:first-child > * + * { margin-top: 12px; }
+/* Large's left column: the rings, then CPU and network share the height,
+   their charts stretching to fill it. */
+.ade-mh-large .ade-mh-col:first-child .ade-mh-cpu { flex: 3 1 0; min-height: 0; }
+.ade-mh-large .ade-mh-col:first-child .ade-mh-net { flex: 2 1 0; min-height: 0; }
+.ade-mh-chart-wrap { position: relative; display: flex; flex-direction: column; min-height: 0; }
+.ade-mh-chart-wrap[data-fill], .ade-mh-chart-empty[data-fill] { flex: 1 1 auto; min-height: 28px; }
+.ade-mh-chart-wrap[data-fill] .ade-mh-chart { flex: 1 1 auto; min-height: 0; height: 100%; }
+.ade-mh-chart-scale { position: absolute; top: 4px; left: 0; font-size: 9px; line-height: 1; color: var(--kit-text-3); pointer-events: none; }
 .ade-mh-large .ade-mh-ring { width: 54px; }
 
 .ade-mh-section { flex: none; display: flex; flex-direction: column; gap: 5px; min-width: 0; padding-top: 9px; border-top: 1px solid var(--kit-rule); }
@@ -601,7 +607,7 @@
 .ade-mh-net-legend .kit-legend > i[data-tone="accent"] { background: var(--color-accent); }
 .ade-mh-net-legend .kit-legend > i[data-tone="fg"] { background: color-mix(in srgb, var(--color-fg) 62%, transparent); }
 
-.ade-mh-mem-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; font-size: 11px; color: var(--kit-text-2); }
+.ade-mh-mem-bar { flex: none; margin: 1px 0 3px; }
 .ade-mh-proc-list { display: flex; flex-direction: column; margin: 0 -6px; }
 .ade-mh-proc {
   display: grid;
@@ -621,10 +627,12 @@
 .ade-mh-proc-value { font-size: 11px; color: var(--kit-text-2); min-width: 54px; text-align: right; }
 .ade-mh-proc:not(:has(.ade-mh-proc-cpu)) { grid-template-columns: minmax(0, 1fr) minmax(40px, 0.7fr) auto; }
 
-/* Large: memory users and ports share the right column's spare height. */
-.ade-mh-large .ade-mh-mem { flex: 1 1 0; min-height: 96px; }
-.ade-mh-large .ade-mh-mem .ade-mh-proc-fit { flex: 1 1 auto; min-height: 0; }
-.ade-mh-large .ade-mh-ports { flex: 1 1 0; min-height: 90px; }
+/* The memory users take the spare height and show what fits; the ports list
+   keeps its natural height (shrinking to "N more" when the card is short). */
+.ade-mh-mem { flex: 1 1 0; min-height: 84px; }
+.ade-mh-mem .ade-mh-proc-fit { flex: 1 1 auto; min-height: 0; }
+.ade-mh[data-view="regular"] .ade-mh-ports,
+.ade-mh-large .ade-mh-ports { flex: 0 1 auto; min-height: 74px; }
 .ade-mh-large .ade-mh-col:last-child > .ade-mh-section:first-child { border-top: 0; padding-top: 0; }
 
 .ade-mh-drive-list { display: flex; flex-direction: column; gap: 6px; }

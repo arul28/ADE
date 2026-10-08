@@ -85,12 +85,18 @@ function LiveChart({
   height,
   label,
   onHover,
+  fill = false,
+  scale,
 }: {
   series: Array<{ values: number[]; tone: "fg" | "accent" }>;
   max: number;
   height: number;
   label: string;
   onHover?: (index: number | null) => void;
+  /** Stretch to the parent's height (Large) instead of drawing `height` px tall. */
+  fill?: boolean;
+  /** What the top line means ("100%", "256 KB/s"), shown at its end. */
+  scale?: string;
 }) {
   const id = useId().replace(/:/g, "");
   const width = 240;
@@ -109,11 +115,13 @@ function LiveChart({
   });
   const longest = Math.max(0, ...series.map((entry) => Math.min(HISTORY_SLOTS, entry.values.length)));
   return (
+    <div className="ade-mh-chart-wrap" data-fill={fill || undefined}>
     <svg
       className="ade-mh-chart"
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
-      style={{ height }}
+      style={fill ? undefined : { height }}
+      data-fill={fill || undefined}
       role="img"
       aria-label={label}
       onMouseMove={onHover ? (event) => {
@@ -132,8 +140,8 @@ function LiveChart({
           </linearGradient>
         ))}
       </defs>
-      {[0.5].map((fraction) => (
-        <line key={fraction} x1="0" x2={width} y1={height * fraction} y2={height * fraction} className="ade-mh-chart-grid" vectorEffect="non-scaling-stroke" />
+      {[2, 2 + (height - 4) / 2].map((y) => (
+        <line key={y} x1="0" x2={width} y1={y} y2={y} className="ade-mh-chart-grid" vectorEffect="non-scaling-stroke" />
       ))}
       {paths.map((path, index) => (path.line ? (
         <g key={index}>
@@ -142,6 +150,8 @@ function LiveChart({
         </g>
       ) : null))}
     </svg>
+    {scale ? <span className="ade-mh-chart-scale kit-num" aria-hidden>{scale}</span> : null}
+    </div>
   );
 }
 
@@ -170,18 +180,20 @@ function Section({ title, aside, children, className }: { title: string; aside?:
   );
 }
 
-function CpuSection({ health, detail, chartHeight }: { health: HomeMachineHealth; detail: HomeMachineDetail; chartHeight: number }) {
+function CpuSection({ health, detail, chartHeight, fill = false }: { health: HomeMachineHealth; detail: HomeMachineDetail; chartHeight: number; fill?: boolean }) {
   const [hover, setHover] = useState<number | null>(null);
   const history = detail.cpuHistory.slice(-HISTORY_SLOTS);
   const shown = hover != null ? history[hover] : health.cpuPercent;
   const seconds = hover != null ? Math.round((history.length - 1 - hover) * 2.5) : 0;
+  // A quiet machine still shows its shape: the top line is the next 25% step above the minute's peak.
+  const top = Math.min(100, Math.max(25, Math.ceil(Math.max(0, ...history) / 25) * 25));
   return (
     <Section
       title="CPU"
       className="ade-mh-cpu"
       aside={shown == null ? "—" : hover != null && seconds > 0 ? `${shown}% · ${seconds}s ago` : `${shown}%`}
     >
-      <LiveChart series={[{ values: history, tone: "fg" }]} max={100} height={chartHeight} label={`CPU over the last minute, now ${health.cpuPercent ?? 0}%`} onHover={setHover} />
+      <LiveChart series={[{ values: history, tone: "fg" }]} max={top} scale={`${top}%`} height={chartHeight} fill={fill} label={`CPU over the last minute, now ${health.cpuPercent ?? 0}%`} onHover={setHover} />
       {detail.cores.length > 1 ? <CoreBars cores={detail.cores} /> : null}
       <div className="ade-mh-cpu-model" title={health.cpuModel ?? undefined}>
         {health.cpuModel ?? "Processor"} · {health.cpuCount} threads
@@ -190,12 +202,15 @@ function CpuSection({ health, detail, chartHeight }: { health: HomeMachineHealth
   );
 }
 
-function NetworkSection({ detail, chartHeight }: { detail: HomeMachineDetail; chartHeight: number }) {
+function NetworkSection({ detail, chartHeight, fill = false }: { detail: HomeMachineDetail; chartHeight: number; fill?: boolean }) {
   const [hover, setHover] = useState<number | null>(null);
   const rx = detail.netHistory?.rx.slice(-HISTORY_SLOTS) ?? [];
   const tx = detail.netHistory?.tx.slice(-HISTORY_SLOTS) ?? [];
   // Scale to the busiest moment, but never below 64 KB/s so background chatter stays a flat line.
-  const max = Math.max(64 * 1024, ...rx, ...tx) * 1.1;
+  const peak = Math.max(64 * 1024, ...rx, ...tx);
+  // Round the top line up to a 1-2-5 step so its label reads cleanly.
+  const magnitude = 2 ** Math.floor(Math.log2(peak));
+  const max = [1, 1.5, 2].map((step) => step * magnitude).find((step) => step >= peak) ?? peak;
   const down = hover != null ? rx[hover] : detail.net?.rxBps;
   const up = hover != null ? tx[hover] : detail.net?.txBps;
   return (
@@ -213,12 +228,14 @@ function NetworkSection({ detail, chartHeight }: { detail: HomeMachineDetail; ch
         <LiveChart
           series={[{ values: rx, tone: "accent" }, { values: tx, tone: "fg" }]}
           max={max}
+          scale={formatRate(max)}
           height={chartHeight}
+          fill={fill}
           label={`Network: ${formatRate(detail.net?.rxBps ?? 0)} in, ${formatRate(detail.net?.txBps ?? 0)} out`}
           onHover={setHover}
         />
       ) : (
-        <div className="ade-mh-chart-empty" style={{ height: chartHeight }}>Measuring…</div>
+        <div className="ade-mh-chart-empty" data-fill={fill || undefined} style={fill ? undefined : { height: chartHeight }}>Measuring…</div>
       )}
     </Section>
   );
@@ -245,12 +262,15 @@ function MemorySection({ health, detail, rows }: { health: HomeMachineHealth; de
     <Section
       title="Memory"
       className="ade-mh-mem"
-      aside={`${formatBytesShort(detail.memAvailableBytes)} available`}
+      aside={`${formatBytesShort(health.memUsedBytes)} used · ${formatBytesShort(detail.memAvailableBytes)} available`}
     >
-      <div className="ade-mh-mem-bar" title={`${formatBytesShort(health.memUsedBytes)} used of ${formatBytesShort(health.memTotalBytes)}`}>
-        <span className="kit-meter" data-level={PERCENT_LEVEL(usedPercent)}><span style={{ width: `${usedPercent}%` }} /></span>
-        <span className="kit-num">{formatBytesShort(health.memUsedBytes)} of {formatBytesShort(health.memTotalBytes)}</span>
-      </div>
+      <span
+        className="kit-meter ade-mh-mem-bar"
+        data-level={PERCENT_LEVEL(usedPercent)}
+        title={`${formatBytesShort(health.memUsedBytes)} used of ${formatBytesShort(health.memTotalBytes)} (${usedPercent}%)`}
+      >
+        <span style={{ width: `${usedPercent}%` }} />
+      </span>
       {detail.processes == null ? (
         <div className="ade-hw-note">Reading processes…</div>
       ) : rows === "fit" ? (
@@ -478,7 +498,7 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
         {gauges}
         <CpuSection health={health} detail={detail} chartHeight={38} />
         <NetworkSection detail={detail} chartHeight={26} />
-        <MemorySection health={health} detail={detail} rows={3} />
+        <MemorySection health={health} detail={detail} rows="fit" />
         {ports}
       </>
     );
@@ -487,8 +507,8 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
       <div className="ade-mh-large">
         <div className="ade-mh-col">
           {gauges}
-          <CpuSection health={health} detail={detail} chartHeight={64} />
-          <NetworkSection detail={detail} chartHeight={44} />
+          <CpuSection health={health} detail={detail} chartHeight={64} fill />
+          <NetworkSection detail={detail} chartHeight={44} fill />
         </div>
         <div className="ade-mh-col">
           <MemorySection health={health} detail={detail} rows="fit" />

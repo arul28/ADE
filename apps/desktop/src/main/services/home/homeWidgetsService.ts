@@ -779,6 +779,11 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
   };
 
   const health = async (args?: { detail?: boolean }): Promise<HomeMachineHealth> => {
+    if (!lastCpu) {
+      // The first call has nothing to compare with: take a reading, wait a beat, and compare to that.
+      lastCpu = cpuTimes(os.cpus());
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
     const cpus = os.cpus();
     const now = cpuTimes(cpus);
     const cpuPercent = busyPercent(now, lastCpu ?? undefined);
