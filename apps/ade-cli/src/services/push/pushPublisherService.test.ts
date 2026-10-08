@@ -2193,6 +2193,49 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it.each([
+    ["the relay delivers nothing", (publish: ReturnType<typeof vi.fn>) =>
+      publish.mockResolvedValueOnce({ ok: true, delivered: 0, suppressed: 0, failed: 1 })],
+    ["the relay call throws", (publish: ReturnType<typeof vi.fn>) =>
+      publish.mockRejectedValueOnce(new Error("network down"))],
+  ])("delivers a standalone session notice beside account Activity and retries only what it sent when %s", async (_label, failOnce) => {
+    const { publisher, publish, publishAttention, emit } = makeHarness();
+    // Account Activity publishes once, then is unreachable (null), so the
+    // retry flush falls back to plain alerts for whatever is still queued.
+    publishAttention.mockResolvedValueOnce({ ok: true, revision: 1 });
+    await publisher.start();
+    // The first phone send fails, then sends succeed.
+    failOnce(publish);
+    const alertTitles = (call: unknown[]) =>
+      ((call[0] as { notifications?: Array<{ title: string }> }).notifications ?? [])
+        .map((item) => item.title)
+        .filter(Boolean);
+
+    // One flush: an approval (account Activity carries it) and a move notice
+    // (no Activity item carries it).
+    emit(approval);
+    publisher.handleSessionNotice({
+      sessionId: "s-2",
+      dedupeKey: "cross-machine-move:handoff-1:continued",
+      title: "Continued on Mac mini",
+      body: "Open the chat for details.",
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publishAttention).toHaveBeenCalled();
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(alertTitles(publish.mock.calls[0]!)).toEqual(["Continued on Mac mini"]);
+
+    // The retry resends the notice it attempted, never the approval alert
+    // that account Activity already published.
+    await vi.advanceTimersByTimeAsync(60_000);
+    const retried = publish.mock.calls.slice(1).flatMap((call) => alertTitles(call));
+    expect(retried).toContain("Continued on Mac mini");
+    expect(retried.filter((title) => title !== "Continued on Mac mini")).toEqual([]);
+
+    publisher.dispose();
+  });
+
   it("publishes PR lifecycle alerts into the aggregate Live Activity", async () => {
     const { publisher, publish } = makeHarness();
     let firstPrCb: (event: PushPrNotification) => void = () => {

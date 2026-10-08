@@ -1638,7 +1638,8 @@ struct WorkSessionDestinationView: View {
       onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil,
       threadComments: threadCommentsForView,
       onUpdateThreadComment: updateThreadCommentAction,
-      onDeleteThreadComment: deleteThreadCommentAction
+      onDeleteThreadComment: deleteThreadCommentAction,
+      crossMachineHandoffActions: crossMachineHandoffActions
     )
   }
 
@@ -1768,6 +1769,19 @@ struct WorkSessionDestinationView: View {
        current.title != cached.title {
       current.title = cached.title
     }
+    // A cross-machine move record folded from a live notice (or an action's
+    // answer). Newer wins, so a fetched summary is never rolled back by an
+    // older cache entry.
+    // The brain's explicit clear drops the live record too; a merely absent
+    // cached record (an older host) does not.
+    if cached.crossMachineHandoff == nil, syncService.crossMachineHandoffClears[sessionId] != nil {
+      current.crossMachineHandoff = nil
+    } else {
+      current.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+        current: current.crossMachineHandoff,
+        incoming: cached.crossMachineHandoff
+      )
+    }
     if current != chatSummary {
       chatSummary = current
     }
@@ -1790,7 +1804,9 @@ struct WorkSessionDestinationView: View {
     guard !isCrossProject || onOtherMachine else { return }
 
     if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
-       let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+       let rawSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+      // A fetch that started before the brain cleared the move still carries it.
+      let fetchedSummary = syncService.withCrossMachineHandoffClearApplied(rawSummary)
       if chatSummary != fetchedSummary {
         chatSummary = fetchedSummary
       }
@@ -1806,8 +1822,9 @@ struct WorkSessionDestinationView: View {
           !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           syncService.supportsRemoteAction("chat.listSessions"),
           let summaries = try? await syncService.listChatSessions(laneId: laneId),
-          let fallbackSummary = summaries.first(where: { $0.sessionId == sessionId })
+          let rawFallback = summaries.first(where: { $0.sessionId == sessionId })
     else { return }
+    let fallbackSummary = syncService.withCrossMachineHandoffClearApplied(rawFallback)
 
     if chatSummary != fallbackSummary {
       chatSummary = fallbackSummary

@@ -1737,13 +1737,17 @@ describe("multi-project RPC server", () => {
       ]);
       expect(args?.join(" ")).not.toContain(destinationToken);
       expect(args?.join(" ")).not.toContain(expectedAuthorization);
-      expect(options?.env).toMatchObject({
-        GIT_TERMINAL_PROMPT: "0",
-        GCM_INTERACTIVE: "Never",
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-        GIT_CONFIG_VALUE_0: expectedAuthorization,
-      });
+      expect(options?.env).toMatchObject({ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" });
+      // A clone that already stores a header must not send two: the env resets
+      // the inherited list first, then sets exactly one Authorization header.
+      const env = options?.env ?? {};
+      const entries = Array.from({ length: Number(env.GIT_CONFIG_COUNT) }, (_, index) => ({
+        key: env[`GIT_CONFIG_KEY_${index}`],
+        value: env[`GIT_CONFIG_VALUE_${index}`],
+      }));
+      expect(entries[0]).toEqual({ key: "http.https://github.com/.extraheader", value: "" });
+      expect(entries.filter((entry) => entry.key === "http.https://github.com/.extraheader" && entry.value))
+        .toEqual([{ key: "http.https://github.com/.extraheader", value: expectedAuthorization }]);
     } finally {
       handler.dispose();
       runGitSpy.mockRestore();

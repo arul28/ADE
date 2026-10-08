@@ -7060,11 +7060,10 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   /**
-   * The reverse: the chat itself lives on another machine. It opens the same
-   * modal — every source step is pinned to that machine — but the chat's own
-   * machine is never a destination, so the machine list is empty and names it.
+   * The reverse: the chat itself lives on another machine. The brain's options
+   * response has no destination machines, so the setup shows its empty state.
    */
-  it("opens cross-machine handoff for a chat pinned to another machine and excludes that machine", async () => {
+  it("shows the empty destination list for a chat pinned to another machine", async () => {
     const studioBinding = {
       kind: "remote" as const,
       key: "remote:target-studio:project-studio",
@@ -7107,6 +7106,12 @@ describe("AgentChatPane submit recovery", () => {
 
     // The chat's own machine IS connected and handoff-capable. It must still be
     // left out of the destination list, which is what empties the machine list.
+    (window.ade as any).agentChat.getCrossMachineHandoffOptions = vi.fn().mockResolvedValue({
+      machines: [],
+      blockers: [],
+      changes: null,
+      current: null,
+    });
     (window.ade as any).remoteRuntime = {
       onConnectionSnapshotChanged: vi.fn().mockReturnValue(() => {}),
       getConnectionSnapshot: vi.fn().mockResolvedValue({
@@ -7137,7 +7142,8 @@ describe("AgentChatPane submit recovery", () => {
     openChatHandoff(session.sessionId, "remote");
 
     expect(await screen.findByRole("heading", { name: /Continue on another computer/i })).toBeTruthy();
-    expect(await screen.findByText(/This chat runs on Mac Studio\./i)).toBeTruthy();
+    expect(await screen.findByText("No other machines on this account")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Mac Studio/ })).toBeNull();
   });
 
   /**

@@ -1913,3 +1913,99 @@ func workChatMappedPullRequest(
     pr.githubPrNumber == tag.githubPrNumber || pr.githubUrl == tag.githubUrl
   }
 }
+
+// MARK: - Cross-machine handoff (in-chat card + send gate)
+
+extension WorkSessionDestinationView {
+  /// The card's calls, each the `chat.*CrossMachineHandoff` command desktop's
+  /// banner makes. Nil when the host has none of them, which hides the card's
+  /// buttons and lifts the send gate.
+  var crossMachineHandoffActions: WorkCrossMachineHandoffActions? {
+    guard syncService.crossMachineHandoffActionAvailable("chat.cancelCrossMachineHandoff", sessionId: sessionId)
+      || syncService.crossMachineHandoffActionAvailable("chat.acknowledgeCrossMachineHandoff", sessionId: sessionId)
+    else { return nil }
+    let sessionId = sessionId
+    return WorkCrossMachineHandoffActions(
+      keepHere: {
+        await runCrossMachineHandoffAction("Couldn't keep the chat here") {
+          try await syncService.cancelCrossMachineHandoff(sourceSessionId: sessionId)
+        }
+      },
+      dismiss: {
+        await runCrossMachineHandoffAction("Couldn't dismiss the move") {
+          try await syncService.cancelCrossMachineHandoff(sourceSessionId: sessionId)
+        }
+      },
+      resolveApproval: { approve in
+        guard let record = composerChatSummary?.crossMachineHandoff else { return }
+        await runCrossMachineHandoffAction(approve ? "Couldn't approve the move" : "Couldn't deny the move") {
+          try await syncService.resolveCrossMachineHandoffApproval(
+            sourceSessionId: sessionId,
+            handoffId: record.handoffId,
+            approve: approve
+          )
+        }
+      },
+      acknowledge: {
+        guard let record = composerChatSummary?.crossMachineHandoff else { return true }
+        do {
+          // Keyed by the move that landed the chat, not a later attempt.
+          let next = try await syncService.acknowledgeCrossMachineHandoff(
+            sourceSessionId: sessionId,
+            handoffId: record.continuation?.handoffId ?? record.handoffId
+          )
+          applyCrossMachineHandoffResult(next)
+          // The send that asked goes ahead now; the summary catches up behind it.
+          Task { @MainActor in await refreshChatStateAfterAction(forceRemote: true) }
+          return true
+        } catch {
+          ADEHaptics.error()
+          errorMessage = "Couldn't switch to working here: \(error.localizedDescription)"
+          return false
+        }
+      },
+      retry: {
+        // The same move again (same handoff id): the brain reconciles an
+        // `unknown` one through the destination's record, never a second chat.
+        await runCrossMachineHandoffAction("Couldn't retry the move") {
+          try await syncService.retryCrossMachineHandoff(sourceSessionId: sessionId)
+        }
+      },
+      open: {
+        guard let record = composerChatSummary?.crossMachineHandoff else { return }
+        syncService.openCrossMachineHandoffDestination(record)
+      }
+    )
+  }
+
+  @MainActor
+  private func runCrossMachineHandoffAction(
+    _ failure: String,
+    _ operation: () async throws -> AgentChatCrossMachineHandoffRecord?
+  ) async {
+    do {
+      let next = try await operation()
+      ADEHaptics.success()
+      applyCrossMachineHandoffResult(next)
+      await refreshChatStateAfterAction(forceRemote: true)
+    } catch {
+      ADEHaptics.error()
+      errorMessage = "\(failure): \(error.localizedDescription)"
+    }
+  }
+
+  /// Folds the record an action answered with into the cache and the live
+  /// summary at once, so the card and the send gate move before the refresh.
+  @MainActor
+  func applyCrossMachineHandoffResult(_ record: AgentChatCrossMachineHandoffRecord?) {
+    guard let record, !record.handoffId.isEmpty else { return }
+    syncService.applyCrossMachineHandoffActionResult(record, sessionId: sessionId)
+    if var current = chatSummary {
+      current.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+        current: current.crossMachineHandoff,
+        incoming: record
+      )
+      if current != chatSummary { chatSummary = current }
+    }
+  }
+}

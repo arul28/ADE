@@ -764,8 +764,23 @@ describe("SessionContextMenu spawn kind", () => {
 });
 
 describe("SessionContextMenu handoff submenu", () => {
+  let getCrossMachineHandoffOptions: ReturnType<typeof vi.fn>;
+
   beforeEach(() => {
+    getCrossMachineHandoffOptions = vi.fn().mockResolvedValue({
+      machines: [{
+        machineKey: "machine-studio",
+        name: "Studio",
+        online: true,
+        unavailableReason: null,
+        hasRepository: true,
+      }],
+      blockers: [],
+      changes: null,
+      current: null,
+    });
     (window as unknown as { ade: unknown }).ade = {
+      agentChat: { getCrossMachineHandoffOptions },
       automations: {
         list: vi.fn().mockResolvedValue([]),
         deleteRule: vi.fn().mockResolvedValue([]),
@@ -791,14 +806,25 @@ describe("SessionContextMenu handoff submenu", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("routes Another machine to the chat pane and closes", () => {
+  it("lists available machines and opens full setup for the chosen machine", async () => {
     const onOpenChatHandoff = vi.fn();
     const { onClose } = renderMenu(makeSession(), { onOpenChatHandoff });
 
     fireEvent.click(screen.getByTestId("session-menu-handoff"));
     fireEvent.click(screen.getByTestId("session-menu-handoff-remote"));
+    expect(await screen.findByRole("button", { name: /Quick brief to Studio/ })).toBeTruthy();
+    expect(getCrossMachineHandoffOptions).toHaveBeenCalledWith(
+      { sourceSessionId: "chat-1" },
+      null,
+    );
 
-    expect(onOpenChatHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }), "remote", null);
+    fireEvent.click(screen.getByRole("button", { name: "Set up the move to Studio" }));
+    expect(onOpenChatHandoff).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "chat-1" }),
+      "remote",
+      null,
+      { machine: "machine-studio" },
+    );
     expect(onClose).toHaveBeenCalled();
   });
 

@@ -2848,6 +2848,10 @@ export function appendCollapsedChatTranscriptEvent(
     // Hide this legacy durable shape during replay so old transcripts upgrade
     // to the same calm presentation as new events.
     if (isLegacyProviderRetryNotice(event)) return;
+    // A chat's move to or from another machine shows as a banner above the
+    // composer (the live move record, and the destination's arrival marker);
+    // it is state, not conversation. `cross_machine_handoff_ended` still renders.
+    if (event.status === "cross_machine_handoff_state" || event.status === "cross_machine_handoff_arrived") return;
     if (event.noticeKind === "info" && event.message.trim().toLowerCase() === "session ready") {
       return;
     }

@@ -18,6 +18,7 @@ import {
 import { inspectProjectPath } from "../../desktop/src/main/services/projects/projectPathInspector";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
+import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/chat/handoffGitBundle";
 import type { SyncHostRecoveryResult } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION, isSearchDocKind } from "../../desktop/src/shared/types";
@@ -919,12 +920,10 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
       blockingErrors.push("Destination Git authentication preflight received invalid repository details.");
     } else if (fs.existsSync(normalizedParent) && fs.statSync(normalizedParent).isDirectory()) {
       const githubService = createHeadlessGitHubService(normalizedParent, machineProjectLogger);
-      let destinationAuthHeader = "";
+      let destinationToken = "";
       if (githubService.parseGitHubRepoFromRemoteUrl(originUrl) && /^https:\/\//i.test(originUrl)) {
         try {
-          const token = await githubService.getGitTransportTokenOrThrowAsync();
-          const basic = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
-          destinationAuthHeader = `AUTHORIZATION: basic ${basic}`;
+          destinationToken = await githubService.getGitTransportTokenOrThrowAsync();
         } catch {
           // The destination may still have a system credential helper. Let
           // Git try it with terminal prompting disabled below.
@@ -941,19 +940,8 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
         {
           cwd: normalizedParent,
           timeoutMs: 30_000,
-          env: {
-            GIT_TERMINAL_PROMPT: "0",
-            GCM_INTERACTIVE: "Never",
-            ...(destinationAuthHeader
-              ? {
-                  // Keep destination-owned credentials out of command-line
-                  // arguments, which may be visible to other local processes.
-                  GIT_CONFIG_COUNT: "1",
-                  GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-                  GIT_CONFIG_VALUE_0: destinationAuthHeader,
-                }
-              : {}),
-          },
+          // Destination-owned credentials stay out of command-line arguments.
+          env: githubExtraHeaderGitEnv(destinationToken),
           maxOutputBytes: 64_000,
         },
       );
@@ -962,7 +950,9 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
         blockingErrors.push(`The destination cannot read the published repository with its own Git credentials: ${detail}`);
       } else {
         const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0] ?? "";
-        if (remoteHeadSha !== sourceHeadSha) {
+        // A move that carries its own commits (`hasGitBundle`) only needs the
+        // repository to be readable; the branch may be behind or unpublished.
+        if (params.hasGitBundle !== true && remoteHeadSha !== sourceHeadSha) {
           blockingErrors.push("The destination sees a different published branch commit than the source machine.");
         }
       }

@@ -738,7 +738,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           kind: normalizedSystemNoticeKind(from: optionalString(eventDict["status"]))?.rawValue
             ?? stringValue(eventDict["noticeKind"]),
           message: stringValue(eventDict["message"]),
-          detail: optionalString(prettyPrintedJSONString(eventDict["detail"])),
+          detail: systemNoticeStatusHidesDetail(optionalString(eventDict["status"]))
+            ? nil
+            : optionalString(prettyPrintedJSONString(eventDict["detail"])),
           turnId: turnId,
           steerId: optionalString(eventDict["steerId"])
         )

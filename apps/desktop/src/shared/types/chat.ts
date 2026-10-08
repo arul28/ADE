@@ -591,6 +591,25 @@ export type AgentChatNoticeDetail = {
     targetSessionId: string;
   };
   /**
+   * The source chat's move record. Carried live-only (status
+   * `cross_machine_handoff_state`) so the banner follows it, and durably on the
+   * `cross_machine_handoff_ended` notice for a move that failed or was cancelled.
+   */
+  crossMachineHandoffState?: AgentChatCrossMachineHandoffRecord | null;
+  /**
+   * Written once on a DESTINATION chat when another machine's chat moved here
+   * (status `cross_machine_handoff_arrived`). The arrival banner reads it; it
+   * is not rendered as a transcript row.
+   */
+  crossMachineHandoffArrival?: {
+    handoffId: string;
+    sourceMachineName: string;
+    sourceSessionId: string;
+    mode: "brief" | "fork";
+    unpushedCommits: number;
+    changedFiles: number;
+  };
+  /**
    * Identity of one host sleep, carried by both halves of the pause/resume
    * chip (`status: "host_asleep"` then `"host_awake"`). The renderer folds the
    * two into a SINGLE transcript row by this id, so a machine that sleeps
@@ -2897,6 +2916,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   modelId?: ModelId;
   /** Completed model/provider transitions, oldest first. */
   modelHandoffHistory?: AgentChatModelHandoff[];
+  /** This chat's latest move to another machine, if any. */
+  crossMachineHandoff?: AgentChatCrossMachineHandoffRecord | null;
   sessionProfile?: AgentChatSessionProfile;
   title?: string | null;
   goal?: string | null;
@@ -4150,6 +4171,27 @@ export type AgentChatCrossMachineHandoffCapsule = {
     /** True when older events were dropped to fit the transport cap. */
     truncated: boolean;
   };
+  /**
+   * Work no remote has: unpushed commits plus a snapshot commit of the
+   * working tree (tracked edits, deletes and untracked files; ignored files
+   * stay behind). Present only when the user opted in (`includeChanges`).
+   * The destination applies it into a new worktree with the edits uncommitted.
+   * See `handoffGitBundle.ts`.
+   */
+  gitBundle?: AgentChatCrossMachineGitBundle;
+};
+
+export type AgentChatCrossMachineGitBundle = {
+  /** `git bundle` bytes, base64. */
+  contentBase64: string;
+  bytes: number;
+  /** Branch tip the commits end at (equals `source.headSha`). */
+  branchHeadSha: string;
+  /** Snapshot commit on top of the tip holding the working tree. Null when clean. */
+  snapshotSha: string | null;
+  /** Commits that no remote has, from oldest to newest, excluding the snapshot. */
+  unpushedCommitCount: number;
+  changedFileCount: number;
 };
 
 /** Provider-native session files shipped inside a fork-mode capsule. */
@@ -4177,6 +4219,11 @@ export type AgentChatPrepareCrossMachineHandoffArgs = AgentChatCrossMachineTarge
   continuationPrompt?: string | null;
   /** Absent = brief. */
   mode?: "brief" | "fork";
+  /**
+   * Carry uncommitted and unpushed work as `capsule.gitBundle`. Relaxes the
+   * clean/published source requirement; a diverged branch still blocks.
+   */
+  includeChanges?: boolean;
 };
 
 export type AgentChatPrepareCrossMachineHandoffResult = {
@@ -4190,6 +4237,12 @@ export type AgentChatValidateCrossMachineSourceArgs = {
   sourceSessionId: string;
   capsule: AgentChatCrossMachineHandoffCapsule;
   capsuleFingerprint: string;
+  /**
+   * The move's own choice, which may differ from `Boolean(capsule.gitBundle)`:
+   * a move that asked for changes but had none to carry has no bundle, yet
+   * its source was checked under the relaxed rules. Absent = has a bundle.
+   */
+  includeChanges?: boolean;
 };
 
 export type AgentChatCrossMachineDestinationPreflightArgs = {
@@ -4200,6 +4253,11 @@ export type AgentChatCrossMachineDestinationPreflightArgs = {
   mode?: "brief" | "fork";
   /** Source chat provider, required for fork-support evaluation. */
   sourceProvider?: AgentChatProvider;
+  /**
+   * The capsule carries `gitBundle`: the source commit need not be on origin,
+   * and an existing lane/branch only has to be clean and at or behind it.
+   */
+  hasGitBundle?: boolean;
 };
 
 export type AgentChatCrossMachineDestinationPreflightResult = {
@@ -4227,6 +4285,12 @@ export type AgentChatCrossMachineDestinationPreflightResult = {
     laneName: string;
     behindBy: number;
   };
+  /**
+   * This destination can apply `capsule.gitBundle`. Absent on older
+   * destinations, which would silently drop the changes, so the source must
+   * refuse a bundle handoff unless this is true.
+   */
+  gitBundleSupport?: boolean;
 };
 
 export type AgentChatAcceptCrossMachineHandoffArgs = {
@@ -4248,6 +4312,188 @@ export type AgentChatMarkCrossMachineHandoffArgs = {
   targetMachineName: string;
   targetLaneId: string;
   targetSessionId: string;
+};
+
+/**
+ * A move of this chat to another machine, owned by the SOURCE brain
+ * (`crossMachineHandoffOrchestrator`). Persisted with the chat and projected
+ * onto its session summary, so every client (desktop banner, iOS, CLI) reads
+ * the same state whoever started the move.
+ *
+ * - `awaiting_approval`: an agent asked to move a chat that is not full-auto;
+ *   an Approve/Deny card is in the transcript.
+ * - `pending`: waits for the current turn to end. Any newer USER message
+ *   cancels it ("new instructions win").
+ * - `sending`: in flight; `checkpoint` names the last durable step passed.
+ * - `continued`: the destination chat started. The source stays usable; the
+ *   desktop routes new messages to the destination chat until the person
+ *   picks "Work here instead" (`resumedHere`). iOS asks "Continue on
+ *   <machine> / Work here instead" before a send.
+ * - `unknown`: the destination may have accepted but confirmation was lost.
+ *   Never auto-replayed; a retry reconciles through the destination record.
+ */
+export type AgentChatCrossMachineHandoffState =
+  | "awaiting_approval"
+  | "pending"
+  | "sending"
+  | "continued"
+  | "failed"
+  | "cancelled"
+  | "unknown";
+
+export type AgentChatCrossMachineHandoffCheckpoint =
+  | "prepared"
+  | "destination_ready"
+  | "accepted"
+  | "marked";
+
+export type AgentChatCrossMachineHandoffRecord = {
+  handoffId: string;
+  state: AgentChatCrossMachineHandoffState;
+  checkpoint: AgentChatCrossMachineHandoffCheckpoint | null;
+  targetMachineKey: string;
+  targetMachineName: string;
+  mode: "brief" | "fork";
+  targetModelId: ModelId;
+  /** Uncommitted and unpushed work travels as a git bundle. */
+  includeChanges: boolean;
+  requestedBy: "user" | "agent";
+  /**
+   * The permission level the destination chat would run with, in words
+   * ("ask before changes"). An agent's move runs there at the source chat's
+   * own level, mapped to the target model's provider (never broader), so the
+   * approval card can say exactly what it grants.
+   */
+  targetPermissionLabel?: string | null;
+  requestedAt: string;
+  updatedAt: string;
+  /** Plain-sentence reason for `failed`, `cancelled` and `unknown`. */
+  reason: string | null;
+  targetLaneId: string | null;
+  targetSessionId: string | null;
+  /**
+   * Where this chat last landed, kept across later move attempts: a second
+   * move that is cancelled or fails must not erase that the work already
+   * continues on another machine. Set when a move reaches `continued`.
+   */
+  continuedOn?: AgentChatCrossMachineContinuation | null;
+  /**
+   * The person chose to keep working here after the chat continued elsewhere.
+   * Until then, the source composer sends to the destination chat.
+   */
+  resumedHere: boolean;
+};
+
+export type AgentChatCrossMachineContinuation = {
+  handoffId: string;
+  targetMachineKey: string;
+  targetMachineName: string;
+  targetLaneId: string;
+  targetSessionId: string;
+  continuedAt: string;
+};
+
+/** Where the chat may go, and why not when it can't. */
+export type AgentChatCrossMachineHandoffMachineOption = {
+  machineKey: string;
+  name: string;
+  online: boolean;
+  /** Null when this machine can take the chat now. */
+  unavailableReason: string | null;
+  /** The repository is already registered there; false offers a clone. */
+  hasRepository: boolean | null;
+};
+
+/** Something on the source that blocks the move, with how to clear it. */
+export type AgentChatCrossMachineHandoffBlocker = {
+  id:
+    | "dirty"
+    | "unpushed"
+    | "no_upstream"
+    | "diverged"
+    | "behind"
+    | "rebasing"
+    | "merging"
+    | "no_origin"
+    | "awaiting_input"
+    | "move_in_progress"
+    /** The last move's answer was lost; retry it, check the other machine, or dismiss it. */
+    | "move_unknown"
+    | "not_work_chat";
+  title: string;
+  detail: string;
+  /** Moving uncommitted/unpushed work along clears this blocker. */
+  clearedByIncludeChanges: boolean;
+  /** Text an agent can act on ("run `ade git push --lane …`"). */
+  fixHint: string | null;
+};
+
+/** Every move action that needs only the source chat. */
+export type AgentChatCrossMachineHandoffSessionArgs = {
+  sourceSessionId: string;
+};
+
+export type AgentChatRetryCrossMachineHandoffArgs = AgentChatCrossMachineHandoffSessionArgs & {
+  /**
+   * Retry a fork that failed before it was packed as a brief: the same saved
+   * choices (machine, model, permissions, prompt, clone), only the mode changes.
+   */
+  asBrief?: boolean;
+};
+
+export type AgentChatCrossMachineHandoffOptionsResult = {
+  machines: AgentChatCrossMachineHandoffMachineOption[];
+  blockers: AgentChatCrossMachineHandoffBlocker[];
+  /** What `includeChanges` would carry, when the branch has any. */
+  changes: { unpushedCommits: number; changedFiles: number } | null;
+  current: AgentChatCrossMachineHandoffRecord | null;
+};
+
+export type AgentChatStartCrossMachineHandoffArgs = AgentChatCrossMachineTargetConfig & {
+  sourceSessionId: string;
+  /** Machine name or key, as listed by the options call. */
+  machine: string;
+  mode?: "brief" | "fork";
+  continuationPrompt?: string | null;
+  includeChanges?: boolean;
+  /** Clone the repository there when it is missing (GitHub only). */
+  clone?: boolean;
+  /** Queue until the current turn ends instead of refusing a busy chat. */
+  whenTurnEnds?: boolean;
+};
+
+/**
+ * What the destination would say about a move, asked through the source
+ * brain's own transport before anything is prepared or sent. The setup UI
+ * shows this instead of reaching the destination itself, so the review step
+ * describes the path the move actually takes.
+ */
+export type AgentChatPreviewCrossMachineHandoffArgs = {
+  sourceSessionId: string;
+  machine: string;
+  targetModelId: ModelId;
+  mode?: "brief" | "fork";
+  includeChanges?: boolean;
+};
+
+export type AgentChatPreviewCrossMachineHandoffResult = {
+  machineKey: string;
+  machineName: string;
+  /** False: the repository is not there yet; a move needs `clone`. */
+  hasRepository: boolean;
+  /** Null when the repository is missing (nothing to preflight yet). */
+  preflight: AgentChatCrossMachineDestinationPreflightResult | null;
+};
+
+export type AgentChatResolveCrossMachineHandoffApprovalArgs = {
+  sourceSessionId: string;
+  handoffId: string;
+  approve: boolean;
+};
+
+export type AgentChatAcknowledgeCrossMachineHandoffArgs = {
+  sourceSessionId: string;
+  handoffId: string;
 };
 
 /** Host-side emit of an `ade_card` transcript row. See `agentChatService.emitAdeCard`. */

@@ -111,6 +111,7 @@ import {
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
 import type { WebhookRemoteSource } from "./webhookRemoteCommands";
+import type { AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 
 type SyncServiceArgs = {
   db: AdeDb;
@@ -183,6 +184,8 @@ type SyncServiceArgs = {
   appleDeviceService?: AppleDeviceRemoteService | null;
   /** Webhook automations for remote surfaces (read-only). */
   getWebhookAutomations?: () => WebhookRemoteSource | null;
+  /** Auto-handoff rules for the phone's session menu; null when automations are off. */
+  getAutomationRules?: () => AutomationRuleRemoteSource | null;
   appleStreamRelay?: AppleStreamTicketIssuer | null;
   getAppleRemoteBitrateKbpsCap?: () => number | null;
   /**
@@ -865,6 +868,7 @@ export function createSyncService(args: SyncServiceArgs) {
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
     getWebhookAutomations: args.getWebhookAutomations,
+    getAutomationRules: args.getAutomationRules,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,

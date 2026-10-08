@@ -553,6 +553,15 @@ import type {
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
+  AgentChatAcknowledgeCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatRetryCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffResult,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatResolveCrossMachineHandoffApprovalArgs,
+  AgentChatStartCrossMachineHandoffArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
@@ -1925,6 +1934,11 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "prepareCrossMachineHandoff",
   "validateCrossMachineSource",
   "markCrossMachineHandoff",
+  "startCrossMachineHandoff",
+  "cancelCrossMachineHandoff",
+  "retryCrossMachineHandoff",
+  "resolveCrossMachineHandoffApproval",
+  "acknowledgeCrossMachineHandoff",
   "launchCli",
   "launchHeadless",
   "setClaudeOutputStyle",
@@ -7744,6 +7758,62 @@ const adeBridge = {
     ): Promise<void> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "markCrossMachineHandoff", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatMarkCrossMachineHandoff, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    getCrossMachineHandoffOptions: async (
+      args: AgentChatCrossMachineHandoffSessionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffOptionsResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getCrossMachineHandoffOptions", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetCrossMachineHandoffOptions, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    previewCrossMachineHandoff: async (
+      args: AgentChatPreviewCrossMachineHandoffArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatPreviewCrossMachineHandoffResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "previewCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatPreviewCrossMachineHandoff, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    startCrossMachineHandoff: async (
+      args: AgentChatStartCrossMachineHandoffArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "startCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatStartCrossMachineHandoff, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    cancelCrossMachineHandoff: async (
+      args: AgentChatCrossMachineHandoffSessionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "cancelCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatCancelCrossMachineHandoff, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    retryCrossMachineHandoff: async (
+      args: AgentChatRetryCrossMachineHandoffArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "retryCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatRetryCrossMachineHandoff, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    resolveCrossMachineHandoffApproval: async (
+      args: AgentChatResolveCrossMachineHandoffApprovalArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "resolveCrossMachineHandoffApproval", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatResolveCrossMachineHandoffApproval, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    acknowledgeCrossMachineHandoff: async (
+      args: AgentChatAcknowledgeCrossMachineHandoffArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "acknowledgeCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatAcknowledgeCrossMachineHandoff, args),
       ),
     send: async (args: AgentChatSendArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       agentChatSummaryCache.clear();

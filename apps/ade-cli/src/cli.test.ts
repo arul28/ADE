@@ -8210,6 +8210,38 @@ describe("ADE CLI", () => {
     });
   });
 
+  // The move form keeps --machine (it names the destination), so the session
+  // must resolve the same whichever side of the flag it is written on.
+  it.each([
+    ["session first", ["chat-1", "--machine", "Mac mini"]],
+    ["machine first", ["--machine", "Mac mini", "chat-1"]],
+    ["inline machine", ["--machine=Mac mini", "chat-1"]],
+    // A prompt that reads like a flag is text, not --cancel.
+    ["prompt that looks like a flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--cancel"]],
+    ["handoff note that looks like a flag", ["chat-1", "--machine", "Mac mini", "--handoff-note", "--cancel"]],
+    ["prompt that names a setting flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--fork"]],
+  ])("builds a move to another machine with the %s", (_label, head) => {
+    const move = expectExecutePlan(buildCliPlan([
+      "chat",
+      "handoff",
+      ...head,
+      "--model",
+      "anthropic/claude-haiku-4-5",
+      "--when-turn-ends",
+    ]));
+    expect(move.label).toBe("chat handoff to another machine");
+    const args = (move.steps[0]?.params as { arguments: { action: string; args: Record<string, unknown> } }).arguments;
+    expect(args.action).toBe("startCrossMachineHandoff");
+    expect(args.args).toMatchObject({
+      sourceSessionId: "chat-1",
+      machine: "Mac mini",
+      targetModelId: "anthropic/claude-haiku-4-5",
+      whenTurnEnds: true,
+      // The default mode, whatever the free text says.
+      mode: "brief",
+    });
+  });
+
   it("passes --target-lane through a brief handoff and rejects it for fork", () => {
     const handoff = expectExecutePlan(buildCliPlan([
       "chat",

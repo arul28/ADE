@@ -1,3 +1,4 @@
+import type { CrossMachineHandoffTransport } from "../../../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
 import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/src/shared/types";
 import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
@@ -151,6 +152,12 @@ export class ProjectScopeRegistry {
       syncRuntime?: AdeRuntimeSyncOptions;
       /** Socket endpoint shared by every project scope in this brain. */
       runtimeSocketPath?: string | null;
+      /**
+       * How each project's chat service moves a chat to another machine. One
+       * per brain (it owns the agents' paired connections); late-bound because
+       * the bridge is built after this registry.
+       */
+      crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
       onDisposeProject?: (projectId: ProjectId) => void;
       /** Injectable clock for the failed-boot backoff. Tests only. */
       now?: () => number;
@@ -224,6 +231,9 @@ export class ProjectScopeRegistry {
         chatRuntime: "agent",
         ...(this.options.runtimeSocketPath ? { runtimeSocketPath: this.options.runtimeSocketPath } : {}),
         ...(syncRuntime ? { syncRuntime } : {}),
+        ...(this.options.crossMachineHandoffTransport
+          ? { crossMachineHandoffTransport: this.options.crossMachineHandoffTransport }
+          : {}),
       });
       return new ProjectScope({
         registryProjectId: projectId,

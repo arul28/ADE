@@ -7,6 +7,7 @@ import "./lib/nodeWarnings";
 // older `ade` first on PATH, before the rest of the bundle loads.
 import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
+import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -15,6 +16,7 @@ import {
   createMachineRemoteConnection,
   executePlanAcrossMachines,
   extractMachineTargeting,
+  flagNamesOutsideFreeText,
   formatMachineFanOut,
   formatMachinesRoster,
   isMachineFanOutResult,
@@ -2203,6 +2205,18 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
+    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+                                                    Move the chat to another machine on your account (brief by
+                                                    default; --fork carries full history). --machine names the
+                                                    DESTINATION; the chat moves from here. Add --effort,
+                                                    --permissions, --include-changes (bring uncommitted and unpushed
+                                                    work), --clone (set the repo up there), --when-turn-ends (queue
+                                                    it; a newer user message cancels it). An agent moves only its
+                                                    own chat, keeps its permissions, and waits for the person's
+                                                    approval unless the chat is full-auto.
+    $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
+    $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
+    $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
@@ -9167,6 +9181,58 @@ export function formatChatLaunches(value: unknown): string {
   );
 }
 
+/**
+ * The target both handoff forms read the same way: the mode, the model (also
+ * `--target` or a bare positional) and its settings. `sub` "fork" implies
+ * fork mode.
+ */
+function readHandoffTarget(args: string[], sub: string): {
+  mode: "brief" | "fork";
+  targetModelId: string;
+  settings: {
+    reasoningEffort?: string;
+    fastMode?: boolean;
+    permissionMode?: string;
+    codexApprovalPolicy?: string;
+    codexSandbox?: string;
+    codexConfigSource?: string;
+  };
+} {
+  const modeArg = readValue(args, ["--mode"]);
+  const forkFlag = readFlag(args, ["--fork"]);
+  const briefFlag = readFlag(args, ["--brief"]);
+  if ((forkFlag && briefFlag) || (modeArg && (forkFlag || briefFlag))) {
+    throw new CliUsageError("Use either --mode, --fork, or --brief for chat handoff.");
+  }
+  const mode = sub === "fork" || forkFlag ? "fork" : briefFlag ? "brief" : modeArg ?? "brief";
+  if (mode !== "brief" && mode !== "fork") {
+    throw new CliUsageError("chat handoff --mode must be brief or fork.");
+  }
+  const targetModelId = requireValue(
+    readValue(args, ["--target-model", "--target-model-id", "--model", "--model-id", "--target"]) ??
+      firstStandalonePositional(args),
+    "targetModelId",
+  );
+  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
+  const fastMode = readFastModeFlag(args);
+  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  const codexApprovalPolicy = readValue(args, ["--codex-approval-policy", "--approval-policy"]);
+  const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
+  const codexConfigSource = readValue(args, ["--codex-config-source", "--config-source"]);
+  return {
+    mode,
+    targetModelId,
+    settings: {
+      ...(reasoningEffort !== null ? { reasoningEffort } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
+      ...(permissionMode !== null ? { permissionMode } : {}),
+      ...(codexApprovalPolicy !== null ? { codexApprovalPolicy } : {}),
+      ...(codexSandbox !== null ? { codexSandbox } : {}),
+      ...(codexConfigSource !== null ? { codexConfigSource } : {}),
+    },
+  };
+}
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
@@ -10134,33 +10200,64 @@ function buildChatPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "chat", "clearCodexGoal", withSession({ sessionId: requireSession() }))],
     };
   }
+  if (sub === "handoff") {
+    // The first control flag present wins. --machine with any of them is
+    // refused earlier, by extractMachineTargeting.
+    const controls = [
+      { flags: ["--cancel"], label: "chat handoff cancel", action: "cancelCrossMachineHandoff" },
+      { flags: ["--retry"], label: "chat handoff retry", action: "retryCrossMachineHandoff" },
+      { flags: ["--options", "--where"], label: "chat handoff options", action: "getCrossMachineHandoffOptions" },
+    ];
+    const flagNames = flagNamesOutsideFreeText(args);
+    const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
+    const handoffMachine = readValue(args, ["--machine", "--to-machine"]);
+    if (handoffMachine !== null && !handoffMachine.trim()) {
+      throw new CliUsageError("--machine needs a machine name or key (see `ade machines list`).");
+    }
+    if (control) {
+      return {
+        kind: "execute",
+        label: control.label,
+        steps: [actionStep("result", "chat", control.action, { sourceSessionId: requireSession() })],
+      };
+    }
+    if (handoffMachine !== null) {
+      // Move the chat to another machine on the account. The brain runs the
+      // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
+      // Never forwarded: --machine names the destination (cliMachineTargeting).
+      // Free text first: a prompt of "--fork" is text, not a flag.
+      const continuationPrompt = readValue(args, ["--prompt", "--note", "--handoff-note"]);
+      if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
+        throw new CliUsageError("--target-lane is for a handoff on this machine. The other machine picks or creates the lane.");
+      }
+      const target = readHandoffTarget(args, sub);
+      return {
+        kind: "execute",
+        label: "chat handoff to another machine",
+        steps: [
+          actionStep("result", "chat", "startCrossMachineHandoff", {
+            sourceSessionId: requireSession(),
+            machine: handoffMachine,
+            mode: target.mode,
+            targetModelId: target.targetModelId,
+            ...target.settings,
+            ...(continuationPrompt !== null ? { continuationPrompt } : {}),
+            ...(readFlag(args, ["--include-changes", "--bring-changes"]) ? { includeChanges: true } : {}),
+            ...(readFlag(args, ["--clone"]) ? { clone: true } : {}),
+            ...(readFlag(args, ["--when-turn-ends", "--after-turn"]) ? { whenTurnEnds: true } : {}),
+          }),
+        ],
+      };
+    }
+  }
   if (sub === "handoff" || sub === "fork") {
-    const modeArg = readValue(args, ["--mode"]);
-    const forkFlag = readFlag(args, ["--fork"]);
-    const briefFlag = readFlag(args, ["--brief"]);
-    if ((forkFlag && briefFlag) || (modeArg && (forkFlag || briefFlag))) {
-      throw new CliUsageError("Use either --mode, --fork, or --brief for chat handoff.");
-    }
-    const mode = sub === "fork" || forkFlag ? "fork" : briefFlag ? "brief" : modeArg ?? "brief";
-    if (mode !== "brief" && mode !== "fork") {
-      throw new CliUsageError("chat handoff --mode must be brief or fork.");
-    }
-    const targetModelId = requireValue(
-      readValue(args, ["--target-model", "--target-model-id", "--model", "--model-id", "--target"]) ??
-        firstStandalonePositional(args),
-      "targetModelId",
-    );
+    // Free text first: a note of "--fork" is text, not a flag.
+    const handoffNote = readValue(args, ["--handoff-note", "--note"]);
+    const { mode, targetModelId, settings } = readHandoffTarget(args, sub);
     const targetLaneId = readValue(args, ["--target-lane", "--target-lane-id"]);
     if (targetLaneId !== null && mode === "fork") {
       throw new CliUsageError("chat fork stays in the source lane; --target-lane is only valid for brief handoffs.");
     }
-    const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
-    const fastMode = readFastModeFlag(args);
-    const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
-    const codexApprovalPolicy = readValue(args, ["--codex-approval-policy", "--approval-policy"]);
-    const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
-    const codexConfigSource = readValue(args, ["--codex-config-source", "--config-source"]);
-    const handoffNote = readValue(args, ["--handoff-note", "--note"]);
     const throughTurnId = readValue(args, ["--through-turn", "--from-turn"]);
     if (throughTurnId !== null && mode !== "fork") {
       throw new CliUsageError("--through-turn only applies to chat fork.");
@@ -10178,12 +10275,8 @@ function buildChatPlan(args: string[]): CliPlan {
             targetModelId,
             mode,
             ...(targetLaneId !== null ? { targetLaneId } : {}),
-            ...(reasoningEffort !== null ? { reasoningEffort } : {}),
-            ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
-            ...(permissionMode !== null ? { permissionMode } : {}),
-            ...(codexApprovalPolicy !== null ? { codexApprovalPolicy } : {}),
-            ...(codexSandbox !== null ? { codexSandbox } : {}),
-            ...(codexConfigSource !== null ? { codexConfigSource } : {}),
+            ...settings,
+            ...(settings.fastMode !== undefined ? { codexFastMode: settings.fastMode } : {}),
             ...(handoffNote !== null ? { handoffNote } : {}),
             ...(throughTurnId !== null ? { throughTurnId } : {}),
           }),
@@ -17908,6 +18001,11 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "-m",
   "-q",
   "-t",
+  // `chat handoff` keeps --machine (it names the move's destination, so it
+  // is not extracted for forwarding); a session given after it must not be
+  // read as the machine's value.
+  "--machine",
+  "--to-machine",
   "--additional-instructions",
   "--app",
   "--accent",
@@ -23787,8 +23885,14 @@ async function runServe(
         logger: headlessProjectLogger,
       }),
   };
+  // Bound once the agents' machine bridge exists (below); a move asked for
+  // before then is refused as "can't reach other machines".
+  let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    // An embedded guest can't reach other machines, so it owns no moves (and
+    // its chat services never sweep any).
+    ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
@@ -23892,6 +23996,46 @@ async function runServe(
       call: async (input) => (await getAgentMachineBridge()).call(input),
       listMachines: async (input) => (await getAgentMachineBridge()).listMachines(input),
     };
+
+  // Moving a chat to another machine rides the same paired connection. The
+  // destination applies its own action policy to every step.
+  if (!embedded) {
+    crossMachineHandoffTransport = {
+      listMachines: async (options) => {
+        // Loaded on first use, not at startup: nothing on the brain's way to
+        // answering `ade/initialize` should wait for a move nobody asked for.
+        const { normalizeGitRemoteIdentity } = await import("../../desktop/src/shared/crossMachineHandoff");
+        const roster = await (await getAgentMachineBridge()).listMachines({ includeProjects: options?.includeProjects === true });
+        return roster.machines.map((machine) => ({
+          machineKey: machine.machineKey,
+          name: machine.name,
+          online: machine.online,
+          isThisMachine: machine.isThisMachine,
+          ...(machine.projects
+            ? { projects: machine.projects.map((project) => ({ origin: normalizeGitRemoteIdentity(project.origin) })) }
+            : {}),
+          note: machine.note ?? null,
+        }));
+      },
+      callAction: async (input) => (await getAgentMachineBridge()).call({
+        machine: input.machine,
+        scope: { kind: "repo", originUrl: input.originUrl },
+        method: "ade/actions/call",
+        params: { name: "run_ade_action", arguments: { domain: "chat", action: input.action, args: input.args } },
+        caller: { chatSessionId: null, permissionLevel: null },
+        ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+        ...(input.clone ? { clone: true } : {}),
+      }),
+      // A timeout or a dropped connection after sending (machineBridge's
+      // MachineCallTimeoutError / MachineConnectionDroppedError, matched by
+      // code). Offline, this-machine and refusals are thrown before or by
+      // the destination, so they are plain failures.
+      isLostAnswer: (error) => {
+        const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+        return code === "machine_call_timeout" || code === "machine_connection_dropped";
+      },
+    };
+  }
 
   // Children reporting to parents outside their own scope: another project,
   // the personal scope, or another machine. The brain owns the outbox; each

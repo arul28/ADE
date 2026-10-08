@@ -213,6 +213,11 @@ type PendingAlert = {
   itemId?: string | null;
   /** UNNotificationCategory identifier binding actionable buttons on iOS. */
   category?: string | null;
+  /**
+   * No account Activity item carries this alert (it changes no run state), so
+   * it is delivered even when the same flush published Activity.
+   */
+  standalone?: boolean;
 };
 
 type PushAgentChatService = {
@@ -1752,7 +1757,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     const alertItems: PushRelayAlertItem[] = [];
     const alertAttempts: AlertDeliveryAttempt[] = [];
-    for (const alert of accountAttentionPublished ? [] : consumedAlerts) {
+    for (const alert of accountAttentionPublished ? consumedAlerts.filter((pending) => pending.standalone) : consumedAlerts) {
       const retryTargets = alert.targetDeviceIds ? new Set(alert.targetDeviceIds) : null;
       const eligibleDevices = devices.filter(
         (device) =>
@@ -1807,6 +1812,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // suppression absorbs unchanged resends. Quiet hours block it too — the
     // setting promises "no pushes on a schedule", and a stale badge self-heals
     // on the next foreground (which clears it) or the first post-window flush.
+    // A failed publish requeues only what it carried. Alerts the account
+    // Activity already published, or that had no phone to reach, were not
+    // sent here; requeueing them would publish them again next flush.
+    const requeueAttemptedAlerts = (): void => {
+      const attemptedAlerts = new Set<PendingAlert>();
+      for (const attempt of alertAttempts) if (attempt.alert) attemptedAlerts.add(attempt.alert);
+      pendingAlerts = [...attemptedAlerts, ...pendingAlerts];
+    };
+
     const alertCoveredDeviceIds = new Set(alertItems.flatMap((item) => item.deviceIds ?? []));
     const badgeSyncDeviceIds = devices
       .filter((device) =>
@@ -1862,7 +1876,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const failed = readOutcomeCount(result, "failed");
       const alertOutcomes = readAlertOutcomes(result);
       if (alertOutcomes == null && delivered === 0 && suppressed === 0 && failed > 0) {
-        pendingAlerts = [...consumedAlerts, ...pendingAlerts];
+        requeueAttemptedAlerts();
         deps.store.recordPublishResult({ at: new Date().toISOString(), error: `relay delivered 0 of ${failed} targets` });
         logWarn("push.publish_undelivered", new Error(`0 of ${failed} targets delivered`));
         scheduleRetry();
@@ -1994,7 +2008,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       }
       // Re-queue the alerts we attempted so a transient relay failure retries;
       // the relay's dedupeKey suppression makes a resend idempotent.
-      pendingAlerts = [...consumedAlerts, ...pendingAlerts];
+      requeueAttemptedAlerts();
       deps.store.recordPublishResult({ at: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) });
       logWarn("push.publish_failed", error);
       scheduleRetry();
@@ -2687,6 +2701,32 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         interruptionLevel: "time-sensitive",
       });
       scheduleFlush(true);
+    },
+
+    /**
+     * A one-off alert about a chat that is not "needs you": a move to another
+     * machine landed or failed while the person wasn't watching. Plain
+     * title/body/deep link through the same alert queue; no run state changes.
+     */
+    handleSessionNotice(notice: {
+      sessionId: string;
+      dedupeKey: string;
+      title: string;
+      body: string | null;
+      deepLink?: string | null;
+    }): void {
+      if (disposed || !notice.sessionId) return;
+      enqueueAlert({
+        sessionId: notice.sessionId,
+        dedupeKey: `alert:${notice.sessionId}:${notice.dedupeKey}`,
+        render: () => ({ title: notice.title, body: notice.body }),
+        deepLink: notice.deepLink ?? `ade://session/${notice.sessionId}`,
+        threadId: notice.sessionId,
+        phase: "terminal",
+        interruptionLevel: "active",
+        standalone: true,
+      });
+      scheduleFlush(true, false);
     },
 
     handleSessionAttentionResolved(scopeKey: string | null, sessionId: string): void {

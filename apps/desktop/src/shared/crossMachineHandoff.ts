@@ -1,10 +1,115 @@
 import type {
   AgentChatAcceptCrossMachineHandoffResult,
+  AgentChatCrossMachineContinuation,
   AgentChatCrossMachineDestinationPreflightResult,
+  AgentChatCrossMachineHandoffCheckpoint,
+  AgentChatCrossMachineHandoffRecord,
   AgentChatSession,
+  AgentChatCrossMachineTargetConfig,
   RemoteRuntimeHandoffStoragePreflightResult,
-  RemoteRuntimeRouteKind,
 } from "./types";
+
+/**
+ * Every move field that sets what the destination chat may do. An agent's move
+ * never chooses them: the orchestrator drops what it passed and sets them from
+ * the source chat's own level, so an agent cannot widen its access by moving.
+ */
+export const CROSS_MACHINE_PERMISSION_FIELDS = [
+  "permissionMode",
+  "claudePermissionMode",
+  "codexApprovalPolicy",
+  "codexSandbox",
+  "codexConfigSource",
+  "opencodePermissionMode",
+  "droidPermissionMode",
+  "acpPermissionMode",
+  "cursorModeId",
+  "cursorConfigValues",
+] as const satisfies ReadonlyArray<keyof AgentChatCrossMachineTargetConfig>;
+
+/** `args` without any permission field (see `CROSS_MACHINE_PERMISSION_FIELDS`). */
+export function withoutCrossMachinePermissionFields<T extends Record<string, unknown>>(args: T): T {
+  const next: Record<string, unknown> = { ...args };
+  for (const field of CROSS_MACHINE_PERMISSION_FIELDS) delete next[field];
+  return next as T;
+}
+
+/** A move that is still asking, waiting or in flight. */
+export function isCrossMachineHandoffActive(
+  record: AgentChatCrossMachineHandoffRecord | null | undefined,
+): boolean {
+  return record?.state === "awaiting_approval" || record?.state === "pending" || record?.state === "sending";
+}
+
+/**
+ * The durable steps of a move in order, with the words every surface shows.
+ * One list so desktop and iOS cannot drift (iOS mirrors it).
+ */
+export const CROSS_MACHINE_HANDOFF_STEPS: ReadonlyArray<{
+  id: AgentChatCrossMachineHandoffCheckpoint;
+  label: string;
+}> = [
+  { id: "prepared", label: "Packed" },
+  { id: "destination_ready", label: "Ready there" },
+  { id: "accepted", label: "Accepted" },
+  { id: "marked", label: "Done" },
+];
+
+/**
+ * Which of two records about the same chat to keep. Records arrive from a
+ * live event, an action's answer and a summary refresh in any order; a late
+ * older one must not replace a newer one. A different move (another
+ * handoffId) wins when it was requested later; the same move by `updatedAt`.
+ */
+export function pickNewerCrossMachineHandoffRecord(
+  current: AgentChatCrossMachineHandoffRecord | null | undefined,
+  incoming: AgentChatCrossMachineHandoffRecord | null | undefined,
+): AgentChatCrossMachineHandoffRecord | null {
+  if (!incoming) return current ?? null;
+  if (!current) return incoming;
+  // A missing or unparseable timestamp falls back to the record's other one.
+  const time = (value: string, fallback: string) => {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+    const other = Date.parse(fallback);
+    return Number.isFinite(other) ? other : 0;
+  };
+  if (current.handoffId !== incoming.handoffId) {
+    return time(incoming.requestedAt, incoming.updatedAt) >= time(current.requestedAt, current.updatedAt) ? incoming : current;
+  }
+  return time(incoming.updatedAt, incoming.requestedAt) >= time(current.updatedAt, current.requestedAt) ? incoming : current;
+}
+
+/**
+ * Where a source chat continues, if anywhere. Records written before
+ * `continuedOn` existed fall back to a `continued` record's own target.
+ */
+export function crossMachineContinuation(
+  record: AgentChatCrossMachineHandoffRecord | null | undefined,
+): AgentChatCrossMachineContinuation | null {
+  if (!record) return null;
+  if (record.continuedOn) return record.continuedOn;
+  if (record.state !== "continued" || !record.targetLaneId || !record.targetSessionId) return null;
+  return {
+    handoffId: record.handoffId,
+    targetMachineKey: record.targetMachineKey,
+    targetMachineName: record.targetMachineName,
+    targetLaneId: record.targetLaneId,
+    targetSessionId: record.targetSessionId,
+    continuedAt: record.updatedAt,
+  };
+}
+
+/**
+ * New messages in the source chat go to the destination: it continued there,
+ * no move is under way, and the person hasn't chosen to work here instead.
+ */
+export function crossMachineSendsElsewhere(
+  record: AgentChatCrossMachineHandoffRecord | null | undefined,
+): AgentChatCrossMachineContinuation | null {
+  if (!record || record.resumedHere || isCrossMachineHandoffActive(record)) return null;
+  return crossMachineContinuation(record);
+}
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -138,6 +243,8 @@ export function decodeCrossMachineDestinationPreflightResult(
     warnings: requireStringList(record.warnings, "Destination handoff warnings"),
     ...(forkHandoffSupport ? { forkHandoffSupport } : {}),
     ...(laneFastForward ? { laneFastForward } : {}),
+    // Absent on older destinations; only an explicit true means support.
+    ...(record.gitBundleSupport === true ? { gitBundleSupport: true } : {}),
   };
 }
 
@@ -169,9 +276,4 @@ export function decodeAcceptCrossMachineHandoffResult(
     reusedLane: requireBoolean(record.reusedLane, "Destination lane reuse status"),
     reusedSession: requireBoolean(record.reusedSession, "Destination chat reuse status"),
   };
-}
-
-export function requireRemoteRuntimeRouteKind(value: unknown): RemoteRuntimeRouteKind {
-  if (value === "lan" || value === "tailnet" || value === "relay" || value === "ssh") return value;
-  throw new Error("ADE could not verify the active route to the destination machine. Reconnect and retry.");
 }

@@ -772,10 +772,21 @@ function listMatches(expected: string[] | undefined, actual: string[] | undefine
  * stable across a rule's runs (so its own retry keeps its lease), distinct
  * between rules, and obviously not a chat to anyone reading a status payload.
  */
-export function scopeAutomationAdeActionArgs(domain: string, resolvedArgs: unknown, ruleId: string): void {
+export function scopeAutomationAdeActionArgs(
+  domain: string,
+  resolvedArgs: unknown,
+  ruleId: string,
+  action?: string,
+): void {
   const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
   if (domain === "chat") {
     for (const candidate of candidates) {
+      // An unattended rule is never the person: a move it starts waits for
+      // approval unless the chat is full-auto, and the orchestrator runs it at
+      // the chat's own permission level.
+      if (action === "startCrossMachineHandoff" && isRecord(candidate)) {
+        candidate.requestedBy = "agent";
+      }
       // A send wait's prompt provenance is the host's to derive; an
       // unattended rule has no agent identity, so it gets none.
       if (isRecord(candidate)) delete candidate.sendMetadata;
@@ -3189,7 +3200,7 @@ export function createAutomationService({
     }
 
     try {
-      scopeAutomationAdeActionArgs(domain, resolvedArgs, ruleId);
+      scopeAutomationAdeActionArgs(domain, resolvedArgs, ruleId, actionName);
       const callable = fn as (...a: unknown[]) => unknown;
       const result = Array.isArray(resolvedArgs)
         ? await callable(...resolvedArgs)

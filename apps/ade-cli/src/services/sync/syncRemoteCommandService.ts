@@ -71,6 +71,8 @@ import type {
   AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
   AgentChatPrepareCrossMachineHandoffArgs,
+  AgentChatStartCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatProvider,
   AgentChatRewindFilesArgs,
@@ -393,6 +395,7 @@ import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/ch
 import type { ProxyService } from "../proxy/proxyService";
 import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
 import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./webhookRemoteCommands";
+import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -544,6 +547,8 @@ export function measureSyncRemoteCommandResultBytes(result: unknown): number {
 type SyncRemoteCommandServiceArgs = {
   /** Webhook automations for phones and the web client (read-only); late-bound, null when absent. */
   getWebhookAutomations?: () => WebhookRemoteSource | null;
+  /** Auto-handoff rules for the phone's session menu; late-bound, null when automations are off. */
+  getAutomationRules?: () => AutomationRuleRemoteSource | null;
   /** Overrides the result size limit. Tests only. */
   remoteCommandResultMaxBytes?: number;
   /**
@@ -1237,6 +1242,7 @@ function parseCrossMachineDestinationPreflightArgs(
     ),
     ...(mode !== undefined ? { mode } : {}),
     ...(sourceProvider ? { sourceProvider: sourceProvider as AgentChatProvider } : {}),
+    ...(value.hasGitBundle === true ? { hasGitBundle: true } : {}),
   };
 }
 
@@ -1255,21 +1261,27 @@ function parseFastForwardCrossMachineHandoffLaneArgs(
   };
 }
 
-function parsePrepareCrossMachineHandoffArgs(
+/**
+ * The fields a move and its prepare step share: the source chat, the target
+ * model and its settings, the mode and whether changes travel. `action`
+ * names the command in error messages.
+ */
+function parseCrossMachineTargetArgs(
   value: Record<string, unknown>,
-): AgentChatPrepareCrossMachineHandoffArgs {
+  action: string,
+): Omit<AgentChatPrepareCrossMachineHandoffArgs, "handoffId"> {
   const parseNullableString = (key: string): string | null | undefined => {
     if (!(key in value)) return undefined;
     if (value[key] == null) return null;
     if (typeof value[key] !== "string") {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a string or null.`);
+      throw new Error(`${action} ${key} must be a string or null.`);
     }
     return value[key].trim();
   };
   const parseBoolean = (key: string): boolean | undefined => {
     if (!(key in value)) return undefined;
     if (typeof value[key] !== "boolean") {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a boolean.`);
+      throw new Error(`${action} ${key} must be a boolean.`);
     }
     return value[key];
   };
@@ -1277,7 +1289,7 @@ function parsePrepareCrossMachineHandoffArgs(
     if (!(key in value)) return undefined;
     const parsed = asTrimmedString(value[key]);
     if (!parsed || !allowed.includes(parsed as T)) {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} is invalid.`);
+      throw new Error(`${action} ${key} is invalid.`);
     }
     return parsed as T;
   };
@@ -1285,7 +1297,7 @@ function parsePrepareCrossMachineHandoffArgs(
     if (!("cursorConfigValues" in value)) return undefined;
     if (value.cursorConfigValues == null) return null;
     if (!isRecord(value.cursorConfigValues)) {
-      throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues must be an object or null.");
+      throw new Error(`${action} cursorConfigValues must be an object or null.`);
     }
     const entries = Object.entries(value.cursorConfigValues).map(([rawKey, entryValue]) => {
       const key = rawKey.trim();
@@ -1297,7 +1309,7 @@ function parsePrepareCrossMachineHandoffArgs(
           || (typeof entryValue === "number" && Number.isFinite(entryValue))
         )
       ) {
-        throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues contains an invalid entry.");
+        throw new Error(`${action} cursorConfigValues contains an invalid entry.`);
       }
       return [key, entryValue] as const;
     });
@@ -1316,20 +1328,17 @@ function parsePrepareCrossMachineHandoffArgs(
   const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
   const cursorModeId = parseNullableString("cursorModeId");
   const cursorConfigValues = parseConfigValues();
-  const mode = parseHandoffMode(value.mode, "chat.prepareCrossMachineHandoff");
+  const mode = parseHandoffMode(value.mode, action);
+  const includeChanges = parseBoolean("includeChanges");
   return {
     sourceSessionId: requireString(
       value.sourceSessionId,
-      "chat.prepareCrossMachineHandoff requires sourceSessionId.",
+      `${action} requires sourceSessionId.`,
     ),
     ...(mode !== undefined ? { mode } : {}),
-    handoffId: requireString(
-      value.handoffId,
-      "chat.prepareCrossMachineHandoff requires handoffId.",
-    ),
     targetModelId: requireString(
       value.targetModelId,
-      "chat.prepareCrossMachineHandoff requires targetModelId.",
+      `${action} requires targetModelId.`,
     ) as AgentChatPrepareCrossMachineHandoffArgs["targetModelId"],
     ...(continuationPrompt !== undefined ? { continuationPrompt } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
@@ -1343,6 +1352,54 @@ function parsePrepareCrossMachineHandoffArgs(
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(cursorModeId !== undefined ? { cursorModeId } : {}),
     ...(cursorConfigValues !== undefined ? { cursorConfigValues } : {}),
+    ...(includeChanges !== undefined ? { includeChanges } : {}),
+  };
+}
+
+function parsePrepareCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPrepareCrossMachineHandoffArgs {
+  return {
+    ...parseCrossMachineTargetArgs(value, "chat.prepareCrossMachineHandoff"),
+    handoffId: requireString(value.handoffId, "chat.prepareCrossMachineHandoff requires handoffId."),
+  };
+}
+
+/** The brain-owned move: the shared target fields plus where and when. */
+function parseStartCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatStartCrossMachineHandoffArgs {
+  const flag = (key: string): boolean | undefined => {
+    if (!(key in value)) return undefined;
+    if (typeof value[key] !== "boolean") throw new Error(`chat.startCrossMachineHandoff ${key} must be a boolean.`);
+    return value[key] as boolean;
+  };
+  const clone = flag("clone");
+  const whenTurnEnds = flag("whenTurnEnds");
+  return {
+    ...parseCrossMachineTargetArgs(value, "chat.startCrossMachineHandoff"),
+    machine: requireString(value.machine, "chat.startCrossMachineHandoff requires machine."),
+    ...(clone !== undefined ? { clone } : {}),
+    ...(whenTurnEnds !== undefined ? { whenTurnEnds } : {}),
+  };
+}
+
+function parsePreviewCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPreviewCrossMachineHandoffArgs {
+  if ("includeChanges" in value && typeof value.includeChanges !== "boolean") {
+    throw new Error("chat.previewCrossMachineHandoff includeChanges must be a boolean.");
+  }
+  const mode = parseHandoffMode(value.mode, "chat.previewCrossMachineHandoff");
+  return {
+    sourceSessionId: requireString(value.sourceSessionId, "chat.previewCrossMachineHandoff requires sourceSessionId."),
+    machine: requireString(value.machine, "chat.previewCrossMachineHandoff requires machine."),
+    targetModelId: requireString(
+      value.targetModelId,
+      "chat.previewCrossMachineHandoff requires targetModelId.",
+    ) as AgentChatPreviewCrossMachineHandoffArgs["targetModelId"],
+    ...(mode !== undefined ? { mode } : {}),
+    ...(value.includeChanges === true ? { includeChanges: true } : {}),
   };
 }
 
@@ -1386,6 +1443,7 @@ function parseValidateCrossMachineSourceArgs(
       value.capsuleFingerprint,
       "chat.validateCrossMachineSource requires capsuleFingerprint.",
     ),
+    ...(typeof value.includeChanges === "boolean" ? { includeChanges: value.includeChanges } : {}),
   };
 }
 
@@ -3014,6 +3072,8 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
     parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
   }
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
+  // Claude session tag (desktop's "Set tag…"). Empty or null clears it.
+  if ("tag" in value) parsed.tag = value.tag == null ? null : asTrimmedString(value.tag) ?? null;
   if (value.spawnKind === "subagent" || value.spawnKind === "peer") {
     parsed.spawnKind = value.spawnKind;
   }
@@ -4977,6 +5037,42 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").markCrossMachineHandoff(
       parseMarkCrossMachineHandoffArgs(payload),
     ));
+  // The brain-owned move (crossMachineHandoffOrchestrator). A phone or paired
+  // desktop is the person, so a start from here is never agent-requested.
+  register("chat.getCrossMachineHandoffOptions", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getCrossMachineHandoffOptions({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.getCrossMachineHandoffOptions requires sourceSessionId."),
+    }));
+  // Read-only: asks the destination through this brain's own transport.
+  register("chat.previewCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").previewCrossMachineHandoff(
+      parsePreviewCrossMachineHandoffArgs(payload),
+    ));
+  register("chat.startCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").startCrossMachineHandoff({
+      ...parseStartCrossMachineHandoffArgs(payload),
+      requestedBy: "user",
+    }));
+  register("chat.cancelCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").cancelCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.cancelCrossMachineHandoff requires sourceSessionId."),
+    }));
+  register("chat.retryCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").retryCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.retryCrossMachineHandoff requires sourceSessionId."),
+      ...(payload.asBrief === true ? { asBrief: true } : {}),
+    }));
+  register("chat.resolveCrossMachineHandoffApproval", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineHandoffApproval({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.resolveCrossMachineHandoffApproval requires sourceSessionId."),
+      handoffId: requireString(payload.handoffId, "chat.resolveCrossMachineHandoffApproval requires handoffId."),
+      approve: payload.approve === true,
+    }));
+  register("chat.acknowledgeCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").acknowledgeCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.acknowledgeCrossMachineHandoff requires sourceSessionId."),
+      handoffId: requireString(payload.handoffId, "chat.acknowledgeCrossMachineHandoff requires handoffId."),
+    }));
   register("chat.getContextUsage", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getContextUsage(
       parseAgentChatContextUsageArgs(payload),
@@ -6126,6 +6222,29 @@ function registerProviderAccountRemoteCommands({ args, register }: RemoteCommand
   });
   for (const entry of createProviderAccountRemoteCommandHandlers(domain)) {
     register(entry.action, entry.policy, entry.handler, "runtime");
+  }
+}
+
+/**
+ * Auto-handoff rules (`automations.list` / `saveDraft` / `deleteRule`). Not
+ * advertised unless the runtime wires a source, so the phone hides
+ * "Auto handoff…" on a host without automations.
+ */
+function registerAutomationRuleRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const getAutomationRules = args.getAutomationRules;
+  if (!getAutomationRules) return;
+  const resolve = (): AutomationRuleRemoteSource => {
+    const source = getAutomationRules();
+    if (!source) throw new Error("Automations are not available on this machine.");
+    return source;
+  };
+  const entries = createAutomationRuleRemoteCommandHandlers({
+    list: () => resolve().list(),
+    saveDraft: (req) => resolve().saveDraft(req),
+    deleteRule: (input) => resolve().deleteRule(input),
+  });
+  for (const entry of entries) {
+    register(entry.action, entry.policy, async (payload) => entry.handler(payload));
   }
 }
 
@@ -7724,6 +7843,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
   registerWebhookRemoteCommands({ args, register });
+  registerAutomationRuleRemoteCommands({ args, register });
   registerProviderAccountRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });

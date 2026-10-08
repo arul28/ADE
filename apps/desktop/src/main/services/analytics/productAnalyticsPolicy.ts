@@ -196,6 +196,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // with less history. Never the transcript, the models, the turn counts, or
   // the share of the window it took.
   "handoff_replay",
+  // How a move of a chat to another machine ended: continued there, failed,
+  // cancelled, or unknown (the answer was lost). Never the machine, the reason,
+  // the branch, or any capsule content.
+  "cross_machine_move",
   // Durable provider/account decisions. These are closed facts emitted by
   // brain/main owners; ids, labels, paths, keys, and model names never enter
   // the event.
@@ -413,6 +417,10 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // same for a brief handoff, and this funnel is only legible if fitting,
     // truncating, refusing, retrying and giving up are separable in one filter.
     "fit", "truncated", "refused", "retried", "gave_up",
+    // The two terminal states of a cross-machine move that the generic set
+    // lacks (`failed` and `cancelled` above cover the others): it continued on
+    // the other machine, or ADE lost the answer and can't tell.
+    "continued", "unknown",
     // Provider/account settings and reset-credit states. `enabled` and
     // `disabled` are the two boolean setting outcomes; the other mutations use
     // the existing completed/success buckets.

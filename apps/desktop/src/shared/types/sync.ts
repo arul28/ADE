@@ -2536,6 +2536,13 @@ export type SyncRemoteCommandAction =
   | "chat.fastForwardCrossMachineHandoffLane"
   | "chat.acceptCrossMachineHandoff"
   | "chat.markCrossMachineHandoff"
+  | "chat.getCrossMachineHandoffOptions"
+  | "chat.previewCrossMachineHandoff"
+  | "chat.startCrossMachineHandoff"
+  | "chat.cancelCrossMachineHandoff"
+  | "chat.retryCrossMachineHandoff"
+  | "chat.resolveCrossMachineHandoffApproval"
+  | "chat.acknowledgeCrossMachineHandoff"
   | "chat.getContextUsage"
   | "chat.rewindFiles"
   | "chat.getTurnFileDiff"
@@ -2885,6 +2892,12 @@ export type SyncRemoteCommandAction =
   | "automations.webhookList"
   | "automations.webhookListDeliveries"
   | "automations.webhookGetDelivery"
+  // Auto-handoff rules from the phone's chat menu: the same automations
+  // surface the desktop menu writes through (`automations.list`,
+  // `automation_planner.saveDraft`, `automations.deleteRule`).
+  | "automations.list"
+  | "automations.saveDraft"
+  | "automations.deleteRule"
   | "apple.streamTicket"
   | "apple.input"
   | "apple.invoke"

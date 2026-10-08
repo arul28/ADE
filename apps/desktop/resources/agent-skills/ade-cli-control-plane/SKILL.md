@@ -519,6 +519,36 @@ ade chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
   Windows machine, start a subagent on the Mac rather than driving its
   simulator from here.
 
+### Moving this chat to another machine
+
+When the user says "continue this on the Mac mini" (or you need hardware
+another machine has), move the chat itself rather than starting a child:
+
+```bash
+ade chat handoff <session> --options --json        # where it can go, blockers and their fixes
+ade chat handoff <session> --machine "Mac mini" --model <model> \
+  --prompt "what to do first there" --when-turn-ends
+```
+
+- `--machine` here is the DESTINATION; the command runs on this machine.
+  Brief by default; `--fork` carries full history (same provider only).
+  Don't add `--machine` to `--cancel`/`--retry`/`--options`; it is refused.
+- You can only move your own chat, and it runs there at its own permission
+  level (mapped to the target model's provider, never broader): any
+  `--permissions`/`--sandbox` you pass is dropped.
+- If the last move is `unknown` (its answer was lost), a new move is refused.
+  Tell the user to check the other machine; `--retry` resends it, `--cancel`
+  dismisses it. A retry is refused when the chat changed since it was sent.
+- From inside your own turn you need `--when-turn-ends`: the move starts when
+  your turn ends, and any new message from the user cancels it.
+- `--include-changes` brings uncommitted and unpushed work; otherwise push
+  first (`ade git push --lane <lane>`). `--clone` sets a missing repo up there.
+- Unless the chat is full-auto, the user approves your request from the chat's
+  banner. Say that you asked, and stop; do not retry while it waits. If they
+  deny it, don't ask again (a new request is refused for two minutes).
+- Your `--prompt` is the first message the chat gets there, so write it as the
+  next instruction to yourself.
+
 ## Archived lanes, chats, and shells
 
 Archiving hides an item; ADE never deletes anything on its own. Archived chats

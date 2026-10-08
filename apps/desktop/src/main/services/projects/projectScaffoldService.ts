@@ -192,6 +192,11 @@ export function createProjectScaffoldService({
       }
     }
 
+    // `git clone -c …` on purpose: the clone's own `-c` is persisted in the
+    // new repository's .git/config, and ADE's normal fetch/push has no other
+    // auth injection, so later Git work relies on that header. Callers that
+    // add their own header (cross-machine handoff) reset the inherited list
+    // first, so GitHub never sees two.
     const cloneArgs: string[] = ["clone"];
     if (authHeader) {
       cloneArgs.push(

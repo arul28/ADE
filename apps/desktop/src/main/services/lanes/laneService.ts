@@ -5885,7 +5885,18 @@ export function createLaneService({
     },
 
     async importBranch(
-      args: { branchRef: string; name?: string; description?: string; baseBranch?: string },
+      args: {
+        branchRef: string;
+        name?: string;
+        description?: string;
+        baseBranch?: string;
+        /**
+         * Push the branch to origin when it tracks nothing. Default true. A
+         * cross-machine move carrying unpushed commits passes false: arriving
+         * on another machine must not publish work the person never pushed.
+         */
+        publishUpstream?: boolean;
+      },
       runtimeOptions: { laneId?: string } = {},
     ): Promise<LaneSummary> {
       const rawRef = (args.branchRef ?? "").trim();
@@ -6018,13 +6029,15 @@ export function createLaneService({
         invalidateLanePathCaches();
 
         // Best-effort push to establish upstream if not already tracking a remote
-        try {
-          const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
-          if (upstreamCheck.exitCode !== 0) {
-            await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+        if (args.publishUpstream !== false) {
+          try {
+            const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
+            if (upstreamCheck.exitCode !== 0) {
+              await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+            }
+          } catch {
+            // Non-fatal: lane works locally even without remote tracking
           }
-        } catch {
-          // Non-fatal: lane works locally even without remote tracking
         }
 
         const row = getLaneRow(laneId);

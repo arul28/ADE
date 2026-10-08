@@ -3301,6 +3301,20 @@ function scopeTerminalAdeActionArgs(
   }
 }
 
+/**
+ * The move actions that name a source chat (`sourceSessionId`). A chat-bound
+ * agent may aim them only at its own chat; see runTool. Approving a move is
+ * user-only (ADE_ACTION_USER_ONLY), so it is not here.
+ */
+const CROSS_MACHINE_MOVE_ACTIONS = new Set([
+  "startCrossMachineHandoff",
+  "cancelCrossMachineHandoff",
+  "retryCrossMachineHandoff",
+  "acknowledgeCrossMachineHandoff",
+  "previewCrossMachineHandoff",
+  "getCrossMachineHandoffOptions",
+]);
+
 const SCOPED_CHAT_ACTIONS = new Set([
   "getChatEventHistory",
   "getChatEventHistoryPage",
@@ -5632,6 +5646,46 @@ async function runTool(args: {
       }
       const { config: _ignoredDraftConfig, ...testArgs } = rawObjectArgs;
       scopedObjectArgs = testArgs;
+    }
+    if (domain === "chat" && CROSS_MACHINE_MOVE_ACTIONS.has(action)) {
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `chat.${action} requires object arguments.`);
+      }
+      // Same bar as user-only actions: an agent's shell with no chat identity
+      // looks exactly like a person's terminal, so only the desktop (or the
+      // CTO) counts as the person here. The phone reaches these through its
+      // own remote commands, which are always the person.
+      // A run/step agent that merely inherited the CTO role is an agent here:
+      // only the CTO thread itself (callerIsTrustedCto) speaks for the person.
+      const callerIsPerson = mayUseUserOnlyActions(session)
+        || (callerIsCto && await callerIsTrustedCto(runtime, session));
+      // A chat-bound agent moves, cancels, retries or previews ITS OWN chat
+      // only, the way SCOPED_CHAT_ACTIONS holds it to its own row. An unbound
+      // caller keeps project-wide reach, and its start still needs approval.
+      const boundChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
+        ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      const requestedSourceSessionId = asOptionalTrimmedString(rawObjectArgs.sourceSessionId);
+      if (!callerIsPerson && boundChatSessionId && requestedSourceSessionId !== boundChatSessionId) {
+        chatAccessDenied(`run_ade_action:chat.${action}`, {
+          callerChatSessionId: boundChatSessionId,
+          requestedSessionId: requestedSourceSessionId,
+        });
+      }
+      if (action === "startCrossMachineHandoff") {
+        // Who asked decides whether the person must approve the move, so it is
+        // derived from the caller's identity and never taken from its
+        // arguments. The orchestrator then sets an agent's move to the source
+        // chat's own permission level, whatever permissions it passed.
+        const { requestedBy: _ignoredRequestedBy, ...startArgs } = rawObjectArgs;
+        if (callerIsPerson) {
+          scopedObjectArgs = { ...startArgs, requestedBy: "user" };
+        } else {
+          // Each agent start may put an approval card (and a push) in front of
+          // the person, so it shares ask_user's rate limit.
+          ensureAskUserAllowed(session);
+          scopedObjectArgs = { ...startArgs, requestedBy: "agent" };
+        }
+      }
     }
     if (domain === "automations" && action === "webhookCreateAutomation") {
       // The calling chat is derived from the caller's identity, never taken

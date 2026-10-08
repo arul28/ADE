@@ -163,6 +163,7 @@ export function projectChatOntoSession(
     ...(chat.modelHandoffHistory?.length
       ? { modelHandoffHistory: chat.modelHandoffHistory }
       : {}),
+    ...(chat.crossMachineHandoff ? { crossMachineHandoff: chat.crossMachineHandoff } : {}),
     // Whatever the provider actually reported, and nothing more. A blank or
     // absent model must stay absent on the row: the card renders the chip only
     // when there is a real answer, so "we do not know" and "no model" have to
