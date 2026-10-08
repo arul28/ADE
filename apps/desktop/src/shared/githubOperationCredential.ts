@@ -435,3 +435,14 @@ export function selectGithubOperationCredential<T>(
   }
   return null;
 }
+
+/** How an issue edit's credential reads in a sentence ("Edits use …"). */
+export function issueWriteSourceLabel(source: GithubOperationCredentialSource | null | undefined): string | null {
+  switch (source) {
+    case "app": return "ADE's GitHub App";
+    case "gh": return "your GitHub CLI login";
+    case "pat":
+    case "environment": return "your token";
+    default: return null;
+  }
+}

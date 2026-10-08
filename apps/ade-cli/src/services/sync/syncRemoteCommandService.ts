@@ -1,5 +1,7 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
+import type { LinearIssueCreateInput } from "../../../../desktop/src/shared/types";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
 import fs from "node:fs";
@@ -1696,6 +1698,9 @@ function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
     includeAutoRebaseStatus: asOptionalBoolean(value.includeAutoRebaseStatus),
   };
 }
+
+/** 10 MB of bytes as base64 (4 characters per 3 bytes). */
+const LINEAR_REMOTE_UPLOAD_MAX_BASE64 = Math.ceil((10 * 1024 * 1024) / 3) * 4;
 
 function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
   return {
@@ -6466,25 +6471,8 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   register("cto.createLinearIssue", { viewerAllowed: true }, async (payload) => {
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
-    const teamKey = requireString(payload.teamKey, "cto.createLinearIssue requires teamKey.");
-    const title = requireString(payload.title, "cto.createLinearIssue requires title.");
-    const optionalString = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : null);
-    return linearIssueTracker.createIssue({
-      teamKey,
-      title,
-      description: typeof payload.description === "string" ? payload.description : null,
-      projectId: optionalString(payload.projectId),
-      projectMilestoneId: optionalString(payload.projectMilestoneId),
-      parentId: optionalString(payload.parentId),
-      stateId: optionalString(payload.stateId),
-      assigneeId: optionalString(payload.assigneeId),
-      cycleId: optionalString(payload.cycleId),
-      dueDate: optionalString(payload.dueDate),
-      templateId: optionalString(payload.templateId),
-      priority: asOptionalNumber(payload.priority) ?? null,
-      estimate: asOptionalNumber(payload.estimate) ?? null,
-      labelIds: asStringArray(payload.labelIds),
-    });
+    // The tracker reads the request (`parseLinearIssueCreateInput`).
+    return linearIssueTracker.createIssue(payload as unknown as LinearIssueCreateInput);
   });
   register("cto.getLinearIssueCreateOptions", { viewerAllowed: true }, async (payload) => {
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
@@ -6495,6 +6483,22 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     const projectId = asTrimmedString(payload.projectId);
     const linearIssueTracker = projectId ? await getConnectedLinearIssueTracker(args) : null;
     return linearIssueTracker && projectId ? linearIssueTracker.listProjectMilestones(projectId) : [];
+  });
+  // A picture pasted into the create form on the web client or a phone. The
+  // bytes cross the sync channel, so they are capped well below Linear's own
+  // 50 MB limit.
+  register("cto.uploadLinearFile", { viewerAllowed: true }, async (payload) => {
+    const dataBase64 = requireString(payload.dataBase64, "cto.uploadLinearFile requires dataBase64.");
+    if (dataBase64.length > LINEAR_REMOTE_UPLOAD_MAX_BASE64) {
+      throw new Error("That file is over the 10 MB limit for uploads from another device.");
+    }
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.uploadFile({
+      filename: asTrimmedString(payload.filename) ?? "upload",
+      contentType: asTrimmedString(payload.contentType) ?? "application/octet-stream",
+      dataBase64,
+    });
   });
   register("cto.createLinearIssueComment", { viewerAllowed: true }, async (payload) => {
     const issueId = requireString(payload.issueId, "cto.createLinearIssueComment requires issueId.");
@@ -6729,8 +6733,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("github.listRepoIssueList", { viewerAllowed: true, observesAbort: true }, async (payload) => {
     const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoIssueList");
-    const state = payload.state === "closed" || payload.state === "all" ? payload.state : "open";
-    return requireService(args.githubService, "GitHub service not available.").listRepoIssueList(owner, name, state);
+    return requireService(args.githubService, "GitHub service not available.").listRepoIssueList(owner, name, parseGitHubIssueListState(payload.state));
   });
   register("github.listIssueComments", { viewerAllowed: true, observesAbort: true }, async (payload) => {
     const parsed = parseGitHubGetIssueArgs(payload);

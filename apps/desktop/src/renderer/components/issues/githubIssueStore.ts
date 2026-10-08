@@ -3,7 +3,8 @@ import type { AgentChatContextAttachment, GitHubIssueTypeOption, GitHubIssueWrit
 import type { GitHubIssueTemplateSet } from "../../../shared/githubIssueTemplates";
 import { makeGitHubIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { githubIssueId, type GitHubIssueCommentLike, type GitHubIssueLike, type GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
-import { useActiveProjectRoot } from "./linearIssueStore";
+import { createIssueEntryCache, errorMessage, type IssueEntry } from "./issueEntryCache";
+import { useActiveProjectRoot } from "../../state/appStore";
 
 /**
  * GitHub issues, read the way the issue viewer needs them, inside GitHub's
@@ -92,7 +93,7 @@ export function normalizeGitHubIssue(owner: string, repo: string, raw: GitHubIss
 }
 
 /** The lane-issue shape chat attachments and lane links carry. */
-export function githubIssueToLaneIssue(issue: GitHubIssueDetail): LaneGitHubIssue {
+export function githubIssueDetailToLaneIssue(issue: GitHubIssueDetail): LaneGitHubIssue {
   return {
     id: githubIssueId(issue.owner, issue.repo, issue.number),
     number: issue.number,
@@ -112,7 +113,7 @@ export function githubIssueToLaneIssue(issue: GitHubIssueDetail): LaneGitHubIssu
 }
 
 export function githubIssueToContextAttachment(issue: GitHubIssueDetail): AgentChatContextAttachment {
-  return makeGitHubIssueContextAttachment(githubIssueToLaneIssue(issue));
+  return makeGitHubIssueContextAttachment(githubIssueDetailToLaneIssue(issue));
 }
 
 function normalizeComment(raw: GitHubIssueCommentLike): GitHubIssueComment | null {
@@ -126,9 +127,6 @@ function normalizeComment(raw: GitHubIssueCommentLike): GitHubIssueComment | nul
   };
 }
 
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.trim() ? error.message : fallback;
-}
 
 const listeners = new Set<() => void>();
 function notify(): void {
@@ -141,40 +139,32 @@ function subscribe(listener: () => void): () => void {
 
 /* ── One issue ─────────────────────────────────────────────────────────── */
 
-export type GitHubIssueEntry = {
-  status: "idle" | "loading" | "ready" | "missing" | "error";
-  issue: GitHubIssueDetail | null;
-  error: string | null;
-  fetchedAt: number;
-};
+export type GitHubIssueEntry = IssueEntry<GitHubIssueDetail>;
 
-type InternalEntry = GitHubIssueEntry & { promise: Promise<GitHubIssueDetail | null> | null };
-
-const EMPTY_ENTRY: GitHubIssueEntry = { status: "idle", issue: null, error: null, fetchedAt: 0 };
-const entries = new Map<string, InternalEntry>();
+const entries = createIssueEntryCache<GitHubIssueDetail>({ maxEntries: MAX_ENTRIES, staleMs: STALE_MS, notify });
 
 function issueKey(projectRoot: string | null, owner: string, repo: string, number: number): string {
   return `${projectRoot ?? ""}::${owner.toLowerCase()}/${repo.toLowerCase()}#${number}`;
 }
 
-function writeEntry(key: string, patch: Partial<InternalEntry>): void {
-  const current = entries.get(key) ?? { ...EMPTY_ENTRY, promise: null };
-  entries.delete(key);
-  entries.set(key, { ...current, ...patch });
-  while (entries.size > MAX_ENTRIES) {
-    const oldest = entries.keys().next().value;
-    if (oldest === undefined) break;
-    entries.delete(oldest);
-  }
-  notify();
+/** Store a copy read elsewhere (a list row, a create), so it shows at once. */
+export function primeGitHubIssue(
+  projectRoot: string | null,
+  issue: GitHubIssueDetail,
+  options: { partial?: boolean } = {},
+): void {
+  const key = issueKey(projectRoot, issue.owner, issue.repo, issue.number);
+  const current = entries.peek(key);
+  if (current && current.updatedAt >= issue.updatedAt) return;
+  // A list row carries only the first labels and assignees. It shows at once,
+  // but counts as never read (`fetchedAt: 0`): opening it reads the whole issue,
+  // and edits that replace a set wait for that read.
+  entries.write(key, { status: "ready", issue, error: null, fetchedAt: options.partial ? 0 : Date.now() });
 }
 
-/** Store a copy read elsewhere (a list row), so opening it costs nothing. */
-export function primeGitHubIssue(projectRoot: string | null, issue: GitHubIssueDetail): void {
-  const key = issueKey(projectRoot, issue.owner, issue.repo, issue.number);
-  const current = entries.get(key);
-  if (current?.issue && current.issue.updatedAt >= issue.updatedAt) return;
-  writeEntry(key, { status: "ready", issue, error: null, fetchedAt: Date.now() });
+/** Whether the held copy is a whole issue (read on its own), not a list row. */
+export function isCompleteGitHubIssue(entry: { fetchedAt: number }): boolean {
+  return entry.fetchedAt > 0;
 }
 
 export function loadGitHubIssue(
@@ -184,43 +174,17 @@ export function loadGitHubIssue(
   number: number,
   options: { force?: boolean } = {},
 ): Promise<GitHubIssueDetail | null> {
-  const key = issueKey(projectRoot, owner, repo, number);
-  const current = entries.get(key);
-  if (current?.promise) return current.promise;
-  if (!options.force && current?.status === "ready" && Date.now() - current.fetchedAt < STALE_MS) {
-    return Promise.resolve(current.issue);
-  }
   const read = window.ade?.github?.getIssue;
-  if (!read) {
-    writeEntry(key, { status: "error", error: "GitHub is not available here.", promise: null });
-    return Promise.resolve(null);
-  }
-  const promise = read({ owner, name: repo, number })
-    .then((raw) => {
-      const issue = normalizeGitHubIssue(owner, repo, raw);
-      writeEntry(key, {
-        status: issue ? "ready" : "missing",
-        issue,
-        error: null,
-        fetchedAt: Date.now(),
-        promise: null,
-      });
-      return issue;
-    })
-    .catch((error: unknown) => {
-      writeEntry(key, {
-        status: current?.issue ? "ready" : "error",
-        error: errorMessage(error, "GitHub request failed."),
-        promise: null,
-      });
-      return current?.issue ?? null;
-    });
-  writeEntry(key, { status: current?.issue ? current.status : "loading", promise });
-  return promise;
+  return entries.load(
+    issueKey(projectRoot, owner, repo, number),
+    read ? async () => normalizeGitHubIssue(owner, repo, await read({ owner, name: repo, number })) : null,
+    { unavailable: "GitHub is not available here.", failed: "GitHub request failed." },
+    options,
+  );
 }
 
 export function peekGitHubIssue(projectRoot: string | null, owner: string, repo: string, number: number): GitHubIssueDetail | null {
-  return entries.get(issueKey(projectRoot, owner, repo, number))?.issue ?? null;
+  return entries.peek(issueKey(projectRoot, owner, repo, number));
 }
 
 export function useGitHubIssue(ref: { owner: string; repo: string; number: number } | null): GitHubIssueEntry & {
@@ -229,7 +193,7 @@ export function useGitHubIssue(ref: { owner: string; repo: string; number: numbe
 } {
   const projectRoot = useActiveProjectRoot();
   const key = ref ? issueKey(projectRoot, ref.owner, ref.repo, ref.number) : null;
-  const entry = useSyncExternalStore(subscribe, () => (key ? entries.get(key) ?? EMPTY_ENTRY : EMPTY_ENTRY), () => EMPTY_ENTRY);
+  const entry = useSyncExternalStore(subscribe, () => entries.read(key), () => entries.empty);
   const owner = ref?.owner ?? null;
   const repo = ref?.repo ?? null;
   const number = ref?.number ?? null;
@@ -248,7 +212,7 @@ export function useGitHubIssue(ref: { owner: string; repo: string; number: numbe
 export function useGitHubIssuePeek(ref: { owner: string; repo: string; number: number } | null): GitHubIssueDetail | null {
   const projectRoot = useActiveProjectRoot();
   const key = ref ? issueKey(projectRoot, ref.owner, ref.repo, ref.number) : null;
-  return useSyncExternalStore(subscribe, () => (key ? entries.get(key)?.issue ?? null : null), () => null);
+  return useSyncExternalStore(subscribe, () => (key ? entries.peek(key) : null), () => null);
 }
 
 export async function loadGitHubIssueComments(owner: string, repo: string, number: number): Promise<GitHubIssueComment[]> {
@@ -306,7 +270,7 @@ type SummaryEntry = { summary: GitHubRepoIssueSummary | null; checkedAt: number;
 const summaries = new Map<string, SummaryEntry>();
 const EMPTY_SUMMARY: SummaryEntry = { summary: null, checkedAt: 0, promise: null };
 
-function summaryKey(repo: GitHubRepo): string {
+function repoKey(repo: GitHubRepo): string {
   return `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
 }
 
@@ -324,7 +288,7 @@ function readStoredSummary(key: string): SummaryEntry | null {
 
 /** Re-read the summary now (pane open, Refresh) or when it has gone stale. */
 export function refreshGitHubIssueSummary(repo: GitHubRepo, options: { force?: boolean } = {}): void {
-  const key = summaryKey(repo);
+  const key = repoKey(repo);
   let current = summaries.get(key);
   if (!current) {
     current = readStoredSummary(key) ?? undefined;
@@ -355,7 +319,7 @@ export function refreshGitHubIssueSummary(repo: GitHubRepo, options: { force?: b
 }
 
 export function useGitHubIssueSummary(repo: GitHubRepo | null): GitHubRepoIssueSummary | null {
-  const key = repo ? summaryKey(repo) : null;
+  const key = repo ? repoKey(repo) : null;
   const entry = useSyncExternalStore(subscribe, () => (key ? summaries.get(key) ?? EMPTY_SUMMARY : EMPTY_SUMMARY), () => EMPTY_SUMMARY);
   const owner = repo?.owner ?? null;
   const name = repo?.name ?? null;
@@ -387,7 +351,7 @@ const lists = new Map<string, ListEntry>();
 const EMPTY_LIST: ListEntry = { issues: [], fetchedAt: 0, status: "idle", error: null, promise: null };
 
 function listKey(repo: GitHubRepo, state: GitHubIssueStateFilter): string {
-  return `${summaryKey(repo)}:${state}`;
+  return `${repoKey(repo)}:${state}`;
 }
 
 export function loadGitHubIssueList(
@@ -407,7 +371,7 @@ export function loadGitHubIssueList(
       const issues = (rows ?? [])
         .map((row) => normalizeGitHubIssue(repo.owner, repo.name, row))
         .filter((issue): issue is GitHubIssueDetail => issue != null && !issue.isPullRequest);
-      for (const issue of issues) primeGitHubIssue(projectRoot, issue);
+      for (const issue of issues) primeGitHubIssue(projectRoot, issue, { partial: true });
       lists.set(key, { issues, fetchedAt: Date.now(), status: "ready", error: null, promise: null });
     })
     .catch((error: unknown) => {
@@ -461,7 +425,7 @@ function ensureIssueEventSubscription(): void {
     const owner = event.repoOwner.toLowerCase();
     const repo = event.repoName.toLowerCase();
     const suffix = `::${owner}/${repo}#${event.issueNumber}`;
-    for (const key of [...entries.keys()]) {
+    for (const key of [...entries.entries.keys()]) {
       if (!key.endsWith(suffix)) continue;
       const projectRoot = key.slice(0, key.length - suffix.length) || null;
       void loadGitHubIssue(projectRoot, event.repoOwner, event.repoName, event.issueNumber, { force: true });
@@ -472,12 +436,12 @@ function ensureIssueEventSubscription(): void {
 
 /** Lists and the badge re-read at the next look; mounted lists re-read now. */
 function markRepoIssuesStale(owner: string, repo: string): void {
-  const repoKey = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+  const repoId = repoKey({ owner, name: repo });
   for (const [key, list] of lists) {
-    if (key.startsWith(`${repoKey}:`)) lists.set(key, { ...list, fetchedAt: 0 });
+    if (key.startsWith(`${repoId}:`)) lists.set(key, { ...list, fetchedAt: 0 });
   }
-  const summary = summaries.get(repoKey);
-  if (summary) summaries.set(repoKey, { ...summary, checkedAt: 0 });
+  const summary = summaries.get(repoId);
+  if (summary) summaries.set(repoId, { ...summary, checkedAt: 0 });
   notify();
 }
 
@@ -500,13 +464,15 @@ export function noteGitHubIssueCreated(projectRoot: string | null, issue: GitHub
 /* ── Writing ───────────────────────────────────────────────────────────── */
 
 const WRITE_ACCESS_STALE_MS = 15 * 60_000;
+/** Labels, people and milestones change rarely; read again after this. */
+const REPO_CATALOG_STALE_MS = 15 * 60_000;
 
 type WriteAccessEntry = { access: GitHubIssueWriteAccess | null; checkedAt: number; promise: Promise<void> | null };
 const writeAccess = new Map<string, WriteAccessEntry>();
 const EMPTY_WRITE_ACCESS: WriteAccessEntry = { access: null, checkedAt: 0, promise: null };
 
 export function refreshGitHubIssueWriteAccess(repo: GitHubRepo, options: { force?: boolean } = {}): void {
-  const key = summaryKey(repo);
+  const key = repoKey(repo);
   const current = writeAccess.get(key);
   if (current?.promise) return;
   if (!options.force && current && Date.now() - current.checkedAt < WRITE_ACCESS_STALE_MS) return;
@@ -528,7 +494,7 @@ export function refreshGitHubIssueWriteAccess(repo: GitHubRepo, options: { force
  * and the viewer's controls stay read-only with the reason.
  */
 export function useGitHubIssueWriteAccess(repo: GitHubRepo | null): GitHubIssueWriteAccess | null {
-  const key = repo ? summaryKey(repo) : null;
+  const key = repo ? repoKey(repo) : null;
   const entry = useSyncExternalStore(subscribe, () => (key ? writeAccess.get(key) ?? EMPTY_WRITE_ACCESS : EMPTY_WRITE_ACCESS), () => EMPTY_WRITE_ACCESS);
   const owner = repo?.owner ?? null;
   const name = repo?.name ?? null;
@@ -550,9 +516,9 @@ const catalogs = new Map<string, CatalogEntry>();
 const EMPTY_CATALOG_ENTRY: CatalogEntry = { catalog: null, checkedAt: 0, promise: null };
 
 export function loadGitHubRepoCatalog(repo: GitHubRepo): void {
-  const key = summaryKey(repo);
+  const key = repoKey(repo);
   const current = catalogs.get(key);
-  if (current?.promise || (current?.catalog && Date.now() - current.checkedAt < WRITE_ACCESS_STALE_MS)) return;
+  if (current?.promise || (current?.catalog && Date.now() - current.checkedAt < REPO_CATALOG_STALE_MS)) return;
   const github = window.ade?.github;
   if (!github) return;
   const args = { owner: repo.owner, name: repo.name };
@@ -586,7 +552,7 @@ export function loadGitHubRepoCatalog(repo: GitHubRepo): void {
 }
 
 export function useGitHubRepoCatalog(repo: GitHubRepo | null): GitHubRepoCatalog | null {
-  const key = repo ? summaryKey(repo) : null;
+  const key = repo ? repoKey(repo) : null;
   return useSyncExternalStore(subscribe, () => (key ? catalogs.get(key) ?? EMPTY_CATALOG_ENTRY : EMPTY_CATALOG_ENTRY).catalog, () => null);
 }
 
@@ -604,31 +570,32 @@ export async function editGitHubIssue(
   const update = window.ade?.github?.updateIssue;
   if (!update) throw new Error("Editing GitHub issues is not available here.");
   const key = issueKey(projectRoot, issue.owner, issue.repo, issue.number);
-  const snapshot = entries.get(key)?.issue ?? issue;
-  writeEntry(key, { issue: { ...snapshot, ...optimistic }, status: "ready" });
-  try {
-    const raw = await update({ owner: issue.owner, name: issue.repo, number: issue.number, patch });
-    const next = normalizeGitHubIssue(issue.owner, issue.repo, raw);
-    writeEntry(key, { issue: next ?? { ...snapshot, ...optimistic }, fetchedAt: Date.now(), error: null });
-    // The list rows and the badge count may have changed with it.
-    for (const [listKeyValue, list] of lists) {
-      if (listKeyValue.startsWith(`${summaryKey({ owner: issue.owner, name: issue.repo })}:`)) {
-        lists.set(listKeyValue, {
-          ...list,
-          issues: list.issues.map((row) => (row.number === issue.number && next ? next : row)),
-          fetchedAt: 0,
-        });
-      }
+  const snapshot = entries.peek(key) ?? issue;
+  const next = await entries.edit(
+    [key],
+    snapshot,
+    { ...snapshot, ...optimistic },
+    async () => normalizeGitHubIssue(issue.owner, issue.repo, await update({ owner: issue.owner, name: issue.repo, number: issue.number, patch })),
+    "GitHub rejected the change.",
+  );
+  // A later edit owns the outcome; it updates the lists when it lands.
+  if (!next) return;
+  // The list rows and the badge count may have changed with it.
+  const repoId = repoKey({ owner: issue.owner, name: issue.repo });
+  for (const [listKeyValue, list] of lists) {
+    if (listKeyValue.startsWith(`${repoId}:`)) {
+      lists.set(listKeyValue, {
+        ...list,
+        issues: list.issues.map((row) => (row.number === issue.number ? next : row)),
+        fetchedAt: 0,
+      });
     }
-    if (patch.state) {
-      const summary = summaries.get(summaryKey({ owner: issue.owner, name: issue.repo }));
-      if (summary) summaries.set(summaryKey({ owner: issue.owner, name: issue.repo }), { ...summary, checkedAt: 0 });
-    }
-    notify();
-  } catch (error) {
-    writeEntry(key, { issue: snapshot });
-    throw new Error(errorMessage(error, "GitHub rejected the change."));
   }
+  if (patch.state) {
+    const summary = summaries.get(repoId);
+    if (summary) summaries.set(repoId, { ...summary, checkedAt: 0 });
+  }
+  notify();
 }
 
 export async function commentOnGitHubIssue(issue: GitHubIssueDetail, body: string): Promise<GitHubIssueComment | null> {
@@ -670,7 +637,7 @@ export function cachedGitHubIssues(owner: string, repo: string): GitHubIssueDeta
     if (!key.startsWith(`${wanted}:`)) continue;
     for (const issue of list.issues) byNumber.set(issue.number, issue);
   }
-  for (const entry of entries.values()) {
+  for (const entry of entries.entries.values()) {
     const issue = entry.issue;
     if (issue && `${issue.owner.toLowerCase()}/${issue.repo.toLowerCase()}` === wanted && !issue.isPullRequest) {
       byNumber.set(issue.number, issue);
@@ -685,7 +652,7 @@ const createCatalogs = new Map<string, CreateCatalogEntry>();
 const EMPTY_CREATE_CATALOG: CreateCatalogEntry = { templates: null, types: [], promise: null, loaded: false };
 
 export function useGitHubCreateCatalog(repo: GitHubRepo | null): CreateCatalogEntry {
-  const key = repo ? summaryKey(repo) : null;
+  const key = repo ? repoKey(repo) : null;
   const entry = useSyncExternalStore(subscribe, () => (key ? createCatalogs.get(key) ?? EMPTY_CREATE_CATALOG : EMPTY_CREATE_CATALOG), () => EMPTY_CREATE_CATALOG);
   const owner = repo?.owner ?? null;
   const name = repo?.name ?? null;

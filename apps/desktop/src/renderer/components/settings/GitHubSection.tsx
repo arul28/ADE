@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
 import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
   CheckCircle,
@@ -38,14 +39,8 @@ import type { GitHubIssueWriteAccess } from "../../../shared/types";
 
 /** One line on which credential edits issues here, and what would change it. */
 function issueAccessHint(access: GitHubIssueWriteAccess): string {
-  const via = access.writeSource === "app"
-    ? "ADE's GitHub App"
-    : access.writeSource === "gh"
-      ? "your GitHub CLI login"
-      : access.writeSource === "pat" || access.writeSource === "environment"
-        ? "your token"
-        : null;
-  if (access.app?.installed && access.app.issuesPermission !== "write") {
+  const via = issueWriteSourceLabel(access.writeSource);
+  if (access.app?.needsApproval) {
     return via
       ? `Edits use ${via}. ADE's GitHub App needs its Issues permission approved on GitHub to edit issues itself.`
       : "ADE's GitHub App needs its Issues permission approved on GitHub before ADE can edit issues.";
@@ -497,11 +492,14 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
             <ModernRow
               title="Editing issues in ADE"
               hint={issueAccessHint(issueAccess)}
-              control={issueAccess.app?.installed && issueAccess.app.issuesPermission !== "write" && issueAccess.app.manageUrl ? (
+              control={issueAccess.app?.needsApproval && issueAccess.app.manageUrl ? (
                 <button
                   type="button"
                   className="ade-modern-btn"
-                  onClick={() => void window.ade?.app?.openExternal?.(issueAccess.app!.manageUrl!)}
+                  onClick={() => {
+                    const url = issueAccess.app?.manageUrl;
+                    if (url) void window.ade?.app?.openExternal?.(url);
+                  }}
                 >
                   Review on GitHub
                 </button>

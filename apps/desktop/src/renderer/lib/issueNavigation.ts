@@ -35,13 +35,6 @@ export type IssueOpenRequest = {
   source?: IssueOpenSource;
 };
 
-/** Providers whose issues ADE can render natively today. */
-const NATIVE_VIEWER_PROVIDERS: ReadonlySet<IssueRef["provider"]> = new Set(["linear", "github"]);
-
-export function hasNativeIssueViewer(ref: IssueRef): boolean {
-  return NATIVE_VIEWER_PROVIDERS.has(ref.provider);
-}
-
 const toolChannel = createPendingRequestChannel<IssueOpenRequest>("issue-tool");
 const sheetChannel = createPendingRequestChannel<IssueOpenRequest>("issue-sheet");
 
@@ -65,11 +58,11 @@ export function hasIssueInPlaceHost(): boolean {
 }
 
 /**
- * Open an issue where the user is. Returns false when ADE cannot render this
- * provider natively, so the caller falls back to opening the URL.
+ * Open an issue where the user is. Every `IssueRef` provider has a native
+ * viewer, so this always handles the request; the result keeps callers' URL
+ * fallback in place for a provider added without one.
  */
 export function openIssueRef(request: IssueOpenRequest): boolean {
-  if (!hasNativeIssueViewer(request.ref)) return false;
   if (hasIssueInPlaceHost()) toolChannel.request(request);
   else sheetChannel.request(request);
   return true;
@@ -77,7 +70,6 @@ export function openIssueRef(request: IssueOpenRequest): boolean {
 
 /** Always the sheet, whatever page is active (the pane's own "pop out"). */
 export function openIssueInSheet(request: IssueOpenRequest): boolean {
-  if (!hasNativeIssueViewer(request.ref)) return false;
   sheetChannel.request(request);
   return true;
 }

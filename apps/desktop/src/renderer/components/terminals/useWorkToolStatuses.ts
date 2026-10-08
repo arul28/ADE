@@ -33,7 +33,7 @@ import {
   type AppleLaneDeviceCard,
 } from "../apple/useAppleLaneDeviceCard";
 import { issueTabsScopeKey, useIssueTabs } from "../issues/issueTabsStore";
-import { useActiveProjectRoot } from "../issues/linearIssueStore";
+import { useActiveProjectRoot } from "../../state/appStore";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
 import {
   hostDesktopTool,
@@ -636,7 +636,11 @@ export function useWorkToolStatuses(args: {
       });
     };
     load();
-    const dispose = window.ade?.prs?.onEvent?.(() => load());
+    // An issue webhook says nothing about this lane's pull requests.
+    const dispose = window.ade?.prs?.onEvent?.((event) => {
+      if (event?.type === "github-issue-changed") return;
+      load();
+    });
     return () => {
       cancelled = true;
       dispose?.();

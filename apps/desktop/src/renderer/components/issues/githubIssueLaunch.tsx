@@ -5,9 +5,9 @@ import { sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch
 import { createPendingRequestChannel } from "../../lib/pendingRequestChannel";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
-import { buildChatLaunchNativePayload, defaultNativeControls } from "../../lib/nativeLaunchControls";
-import { batchLaunchSupportsFastMode, resolveLaunchProviderAndModel } from "../../lib/linearBatchLaunch";
-import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { defaultNativeControls } from "../../lib/nativeLaunchControls";
+import { issueChatLaunchArgs, rollBackIssueLane } from "../../lib/linearBatchLaunch";
+import { useActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import { SessionLaunchModelControls, type SessionLaunchModelConfig } from "../shared/SessionLaunchModelControls";
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
@@ -17,7 +17,7 @@ import { Dialog } from "../ui/dialog";
 import { LaneMachineSelector } from "../lanes/LaneMachineSelector";
 import { useLaneMachineChoice } from "../lanes/useLaneMachineChoice";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
-import { githubIssueToContextAttachment, githubIssueToLaneIssue, type GitHubIssueDetail } from "./githubIssueStore";
+import { githubIssueToContextAttachment, githubIssueDetailToLaneIssue, type GitHubIssueDetail } from "./githubIssueStore";
 
 /**
  * "Start a lane (and maybe an agent) for this GitHub issue."
@@ -77,7 +77,7 @@ export function GitHubIssueLaunchHost() {
 
 function GitHubIssueLaunchDialog({ request, onClose }: { request: GitHubIssueLaunchRequest; onClose: () => void }) {
   const { issue } = request;
-  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const projectRoot = useActiveProjectRoot();
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const harnessPresets = useRootAppStore((state) => state.harnessPresets);
   const { recents } = useModelRecents();
@@ -127,29 +127,29 @@ function GitHubIssueLaunchDialog({ request, onClose }: { request: GitHubIssueLau
       const createArgs = {
         name: `#${issue.number} ${issue.title}`.slice(0, 120),
         branchName,
-        githubIssue: githubIssueToLaneIssue(issue),
+        githubIssue: githubIssueDetailToLaneIssue(issue),
       };
       const lane = pin ? await window.ade.lanes.create(createArgs, pin) : await window.ade.lanes.create(createArgs);
       laneId = lane.id;
       if (!laneOnly) {
         await ensureHarnessPresetOnBrain(config.presetId ?? null, { targetsAnotherMachine: pin?.kind === "remote" });
-        const { provider, model } = target
-          ? { provider: target.harness as Parameters<typeof window.ade.agentChat.launch>[0]["provider"], model: target.launchModelId }
-          : resolveLaunchProviderAndModel(modelId);
-        const native = buildChatLaunchNativePayload(modelId, config.nativeControls);
-        const launchArgs: Parameters<typeof window.ade.agentChat.launch>[0] = {
+        // The same launch the Linear batch runner makes, with this issue as context.
+        const { permissionMode, ...launchArgs } = issueChatLaunchArgs({
           laneId: lane.id,
-          provider,
-          model,
-          modelId,
-          reasoningEffort: config.reasoningEffort,
-          ...(batchLaunchSupportsFastMode(modelId) ? { fastMode: config.fastMode } : {}),
-          ...(native ?? {}),
+          config: {
+            modelId,
+            reasoningEffort: config.reasoningEffort,
+            fastMode: config.fastMode,
+            kickoffPrompt: prompt,
+            branchOverride: branchName,
+            nativeControls: config.nativeControls,
+            presetLaunch: target ? { presetId: target.presetId, harness: target.harness, model: target.launchModelId } : null,
+          },
           kickoffText: prompt.trim() || githubIssueKickoffPrompt(),
-          contextAttachments: [githubIssueToContextAttachment(issue)],
-          ...(target ? { presetId: target.presetId } : {}),
-        };
-        const session = pin ? await window.ade.agentChat.launch(launchArgs, pin) : await window.ade.agentChat.launch(launchArgs);
+          contextAttachment: githubIssueToContextAttachment(issue),
+        });
+        const args = { ...launchArgs, ...(permissionMode != null ? { permissionMode } : {}) };
+        const session = pin ? await window.ade.agentChat.launch(args, pin) : await window.ade.agentChat.launch(args);
         if (projectRoot && !pin) announceWorkChatSessionCreated(projectRoot, session);
       }
       if (pin) requestCrossMachineLanesForMachine(selectedMachineId);
@@ -162,12 +162,15 @@ function GitHubIssueLaunchDialog({ request, onClose }: { request: GitHubIssueLau
       onClose();
       window.location.hash = "#/lanes?drawer=stack";
     } catch (cause) {
-      // An agent that failed to start leaves no half-made lane behind.
+      let message = cause instanceof Error ? cause.message : "The lane was not created.";
+      // An agent that failed to start leaves no half-made lane behind; if the
+      // lane cannot be removed, the error says so instead of hiding it.
       if (laneId && !laneOnly) {
-        const deleteArgs = { laneId, force: true, deleteBranch: true, deleteRemoteBranch: false, remoteName: "origin" };
-        await (targetPin ? window.ade.lanes.delete(deleteArgs, targetPin) : window.ade.lanes.delete(deleteArgs)).catch(() => undefined);
+        const pin = targetPin;
+        const rollback = await rollBackIssueLane(laneId, (args) => (pin ? window.ade.lanes.delete(args, pin) : window.ade.lanes.delete(args)));
+        if (!rollback.ok) message = `${message} — ${rollback.message}`;
       }
-      setError(cause instanceof Error ? cause.message : "The lane was not created.");
+      setError(message);
     } finally {
       setBusy(false);
     }

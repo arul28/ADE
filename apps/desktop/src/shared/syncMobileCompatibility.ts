@@ -53,6 +53,7 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "cto.createLinearIssue",
   "cto.getLinearIssueCreateOptions",
   "cto.listLinearProjectMilestones",
+  "cto.uploadLinearFile",
   "cto.countLinearIssues",
   "cto.getLinearCustomViews",
   // Whether the CTO thread is blocked on the user. The CTO chat is hidden from

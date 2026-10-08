@@ -549,8 +549,8 @@ export type GitHubAppIssuePermission = "write" | "read" | "none";
 /**
  * Whether ADE can change issues in a repository, and through which credential.
  * `writeSource` null means no credential can: the viewer shows read-only
- * controls with the reason. `app.issuesPermission` other than "write" on an
- * installed App is what raises the "Update GitHub permissions" banner.
+ * controls with the reason. `app.needsApproval` (installed, but `Issues` is
+ * not "write") is what raises the "Update GitHub permissions" banner.
  */
 export type GitHubIssueWriteAccess = {
   owner: string;
@@ -558,6 +558,8 @@ export type GitHubIssueWriteAccess = {
   app: {
     installed: boolean;
     issuesPermission: GitHubAppIssuePermission | null;
+    /** Installed, but an owner still has to approve `Issues: write`. */
+    needsApproval: boolean;
     manageUrl: string | null;
   } | null;
   writeSource: GitHubCredentialSource | null;

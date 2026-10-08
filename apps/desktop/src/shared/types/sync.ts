@@ -2637,6 +2637,7 @@ export type SyncRemoteCommandAction =
   | "cto.createLinearIssue"
   | "cto.getLinearIssueCreateOptions"
   | "cto.listLinearProjectMilestones"
+  | "cto.uploadLinearFile"
   | "cto.countLinearIssues"
   | "cto.getLinearCustomViews"
   | "cto.updateIdentity"

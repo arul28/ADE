@@ -122,6 +122,7 @@ export async function describeIssueWriteAccess<T extends { source: GitHubCredent
       ? {
         installed: grant?.installed ?? false,
         issuesPermission: grant?.issuesPermission ?? null,
+        needsApproval: Boolean(grant?.installed && grant.issuesPermission !== "write"),
         manageUrl: grant?.manageUrl ?? null,
       }
       : null,

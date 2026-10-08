@@ -5675,10 +5675,12 @@ function AgentChatMessageListMain({
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const listRootRef = useRef<HTMLDivElement | null>(null);
+  // The lane is read from the chat's own machine, which a remote chat's tab
+  // does not hold.
+  const scopeLaneName = chatScope.lane?.id === laneId ? chatScope.lane?.name ?? null : null;
   const createIssueFromSelection = useCallback((text: string) => {
-    const lane = laneId ? useAppStore.getState().lanes.find((entry) => entry.id === laneId) : null;
-    requestIssueCreate(issueCreateRequestFromSelection(text, { sessionId: sessionId ?? null, laneId: laneId ?? null, laneName: lane?.name ?? null }));
-  }, [laneId, sessionId]);
+    requestIssueCreate(issueCreateRequestFromSelection(text, { sessionId: sessionId ?? null, laneId: laneId ?? null, laneName: scopeLaneName }));
+  }, [laneId, scopeLaneName, sessionId]);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const olderHistorySentinelRef = useRef<HTMLDivElement | null>(null);
   const lastHandledScrollToRowRequestIdRef = useRef<number | null>(null);

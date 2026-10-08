@@ -328,12 +328,15 @@ private let linearDisplayFormatter: DateFormatter = {
   return formatter
 }()
 
-func linearFormatDate(_ raw: String?) -> String? {
+/// An ISO 8601 timestamp from Linear or GitHub, with or without fractions.
+func issueISODate(_ raw: String?) -> Date? {
   guard let raw, !raw.isEmpty else { return nil }
   for parser in linearISOParsers {
-    if let date = parser.date(from: raw) {
-      return linearDisplayFormatter.string(from: date)
-    }
+    if let date = parser.date(from: raw) { return date }
   }
   return nil
+}
+
+func linearFormatDate(_ raw: String?) -> String? {
+  issueISODate(raw).map { linearDisplayFormatter.string(from: $0) }
 }

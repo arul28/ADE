@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import type { GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
-import { PickerMenu, type PickerOption } from "../app/LinearIssuePropertyPickers";
+import { PickerMenu, githubLabelOptions, githubPersonOptions, type PickerOption } from "./IssuePickerMenu";
 import { GitHubIssueStateIcon, githubIssueStateLabel } from "../lanes/githubBrand";
 import { cn } from "../ui/cn";
 import { EditableIssueBody, EditableIssueTitle, IssueCommentComposer } from "./issueEditing";
@@ -140,16 +140,26 @@ function Activity({
   // The comment count is already on the issue, so an issue nobody commented on
   // costs no read at all.
   const nothingToRead = issue.commentCount === 0;
+  // The thread is read again when the issue changes (a Refresh, a comment
+  // webhook, a comment posted here): its update time and comment count move.
+  // The comments on screen stay until the new read lands.
+  const version = `${issue.updatedAt}:${issue.commentCount}`;
+  const [loadedVersion, setLoadedVersion] = useState<string | null>(null);
   useEffect(() => {
-    if (!expanded || comments || error || nothingToRead) return;
+    if (!expanded || error || nothingToRead) return;
+    if (comments && loadedVersion === version) return;
     let cancelled = false;
     setLoading(true);
     void loadGitHubIssueComments(issue.owner, issue.repo, issue.number)
-      .then((rows) => { if (!cancelled) setComments(rows); })
+      .then((rows) => {
+        if (cancelled) return;
+        setComments(rows);
+        setLoadedVersion(version);
+      })
       .catch(() => { if (!cancelled) setError("Couldn't load comments."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [comments, error, expanded, issue.number, issue.owner, issue.repo, nothingToRead]);
+  }, [comments, error, expanded, issue.number, issue.owner, issue.repo, loadedVersion, nothingToRead, version]);
 
   return (
     <section className="ade-issue-section">
@@ -325,11 +335,7 @@ export function GitHubIssueView({
             open={openPicker === "assignees"}
             anchorRef={assigneesRef}
             onClose={close}
-            options={people.map((entry) => ({
-              id: entry.login,
-              label: entry.login,
-              icon: <LinearAssigneeAvatar name={entry.login} avatarUrl={entry.avatarUrl} size={14} />,
-            }))}
+            options={githubPersonOptions(people)}
             selectedIds={assigned}
             multi
             placeholder={catalog ? "Assign people…" : "Loading people…"}
@@ -344,11 +350,7 @@ export function GitHubIssueView({
             open={openPicker === "labels"}
             anchorRef={labelsRef}
             onClose={close}
-            options={labels.map((entry) => ({
-              id: entry.name,
-              label: entry.name,
-              icon: <span className="block h-2 w-2 rounded-full" style={{ backgroundColor: entry.color ?? "var(--kit-fill)" }} />,
-            }))}
+            options={githubLabelOptions(labels)}
             selectedIds={labelled}
             multi
             placeholder={catalog ? "Add or remove labels…" : "Loading labels…"}

@@ -1802,6 +1802,11 @@ export function selectActiveProjectRoot(state: Pick<AppState, "project" | "proje
   return root?.trim() || null;
 }
 
+/** The project this tab works in: the remote root on a remote tab. */
+export function useActiveProjectRoot(): string | null {
+  return useAppStore(selectActiveProjectRoot);
+}
+
 export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
 
 type LaneRefreshRequest = {

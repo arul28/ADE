@@ -1,43 +1,46 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CircleNotch, DotsThree, GithubLogo, Image as ImageIcon, X } from "@phosphor-icons/react";
-import type {
-  CtoGetLinearIssuePickerDataResult,
-  GitHubIssueAttachmentInput,
-  LinearIssueCreateOptions,
-  LinearProjectMilestone,
-  NormalizedLinearIssue,
-} from "../../../shared/types";
+import type { GitHubIssueAttachmentInput, LinearIssueCreateOptions, LinearProjectMilestone } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
-import {
-  missingRequiredGitHubFormField,
-  serializeGitHubIssueForm,
-  type GitHubIssueFormAnswers,
-  type GitHubIssueTemplate,
-} from "../../../shared/githubIssueTemplates";
+import type { GitHubIssueFormAnswers, GitHubIssueTemplate } from "../../../shared/githubIssueTemplates";
 import { isMacRuntimeTarget } from "../../lib/platform";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { requestLinearIssueLaunch } from "../../lib/linearLaunchRequests";
 import { announceIssueCreated, type IssueCreateRequest } from "../../lib/issueCreateRequests";
 import { showToast } from "../app/toast/toastStore";
-import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
-import { cachedLinearBrowserIssues } from "../app/LinearIssueBrowser";
-import { PickerMenu, type PickerOption } from "../app/LinearIssuePropertyPickers";
-import { PRIORITY_CHOICES } from "../app/linearIssueBrowserModel";
-import { GitHubIssueStateIcon } from "../lanes/githubBrand";
-import { LinearMark, LinearPriorityIcon, LinearStateIcon } from "../lanes/linearBrand";
-import { cn } from "../ui/cn";
+import { LinearMark } from "../lanes/linearBrand";
 import { Dialog } from "../ui/dialog";
+import { GitHubIssueFormFields } from "./GitHubIssueFormFields";
 import {
-  cachedGitHubIssues,
   loadGitHubRepoCatalog,
-  normalizeGitHubIssue,
   noteGitHubIssueCreated,
   useGitHubCreateCatalog,
   useGitHubRepoCatalog,
   useProjectGitHubRepo,
 } from "./githubIssueStore";
-import { cachedLinearIssues, useActiveProjectRoot, useLinearPickerCatalog } from "./linearIssueStore";
 import { requestGitHubIssueLaunch } from "./githubIssueLaunch";
+import {
+  ChipPicker,
+  GitHubCreateChips,
+  GitHubMoreFields,
+  LinearCreateChips,
+  LinearMoreFields,
+  linearTeamProjects,
+} from "./issueCreateChips";
+import {
+  initialIssueForm,
+  rememberIssueProvider,
+  writeIssueDraft,
+  type GitHubFields,
+  type IssueDraft,
+  type IssueProvider,
+  type LinearFields,
+} from "./issueCreateDraft";
+import { submitGitHubIssue, submitLinearIssue } from "./issueCreateSubmit";
+import type { PickerOption } from "./IssuePickerMenu";
+import { useActiveProjectRoot } from "../../state/appStore";
+import { useLinearPickerCatalog } from "./linearIssueStore";
+import { useSimilarIssues } from "./useSimilarIssues";
 
 /**
  * Starting a new issue in Linear or GitHub, in one composer: a big title, the
@@ -45,7 +48,8 @@ import { requestGitHubIssueLaunch } from "./githubIssueLaunch";
  * a `⋯` row for the fields most issues skip. Templates fill it in; a GitHub
  * issue form replaces the description with its own fields.
  *
- * - The draft is saved per tracker while you type and cleared on create.
+ * - The draft is saved per tracker and project while you type, and cleared on
+ *   create (`issueCreateDraft.ts`).
  * - Pictures pasted or dropped into the description upload to Linear at once,
  *   or go to GitHub with the issue through `gh --attach`.
  * - Similar open issues ADE already read show under the title, without a
@@ -53,196 +57,7 @@ import { requestGitHubIssueLaunch } from "./githubIssueLaunch";
  * - An issue started from a chat gets a "Context" footer linking back to it.
  */
 
-type Provider = "linear" | "github";
-
-const LAST_PROVIDER_KEY = "ade.issueCreate.lastProvider";
-const DRAFT_KEY = (provider: Provider) => `ade.issueCreate.draft.v1:${provider}`;
 const MOD = () => (isMacRuntimeTarget() ? "⌘" : "Ctrl");
-
-type LinearFields = {
-  teamKey: string | null;
-  stateId: string | null;
-  priority: number | null;
-  assigneeId: string | null;
-  labelIds: string[];
-  projectId: string | null;
-  milestoneId: string | null;
-  cycleId: string | null;
-  estimate: number | null;
-  dueDate: string;
-  parent: string;
-  templateId: string | null;
-};
-
-type GitHubFields = {
-  labels: string[];
-  assignees: string[];
-  milestone: number | null;
-  type: string | null;
-  parent: string;
-  templateKey: string | null;
-};
-
-type Draft = { title: string; body: string; linear: LinearFields; github: GitHubFields };
-
-const EMPTY_LINEAR: LinearFields = {
-  teamKey: null, stateId: null, priority: null, assigneeId: null, labelIds: [], projectId: null,
-  milestoneId: null, cycleId: null, estimate: null, dueDate: "", parent: "", templateId: null,
-};
-const EMPTY_GITHUB: GitHubFields = { labels: [], assignees: [], milestone: null, type: null, parent: "", templateKey: null };
-
-function readDraft(provider: Provider): Draft | null {
-  try {
-    const raw = window.localStorage.getItem(DRAFT_KEY(provider));
-    const parsed = raw ? JSON.parse(raw) as Partial<Draft> : null;
-    if (!parsed) return null;
-    return {
-      title: typeof parsed.title === "string" ? parsed.title : "",
-      body: typeof parsed.body === "string" ? parsed.body : "",
-      linear: { ...EMPTY_LINEAR, ...(parsed.linear ?? {}) },
-      github: { ...EMPTY_GITHUB, ...(parsed.github ?? {}) },
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeDraft(provider: Provider, draft: Draft | null): void {
-  try {
-    if (!draft || (!draft.title.trim() && !draft.body.trim())) window.localStorage.removeItem(DRAFT_KEY(provider));
-    else window.localStorage.setItem(DRAFT_KEY(provider), JSON.stringify(draft));
-  } catch {
-    // The draft is a convenience; losing it is not an error.
-  }
-}
-
-function initialProvider(request: IssueCreateRequest): Provider {
-  if (request.prefill?.parent) return request.prefill.parent.provider;
-  if (request.provider) return request.provider;
-  try {
-    const last = window.localStorage.getItem(LAST_PROVIDER_KEY);
-    if (last === "linear" || last === "github") return last;
-  } catch {
-    // fall through
-  }
-  return "linear";
-}
-
-/* ── Similar issues ────────────────────────────────────────────────────── */
-
-function words(value: string): Set<string> {
-  return new Set(value.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 3));
-}
-
-function similarity(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) return 0;
-  let shared = 0;
-  for (const word of a) if (b.has(word)) shared += 1;
-  return shared / Math.min(a.size, b.size);
-}
-
-type SimilarIssue = { key: string; label: string; title: string; open: () => void; icon: React.ReactNode };
-
-/* ── Small pieces ──────────────────────────────────────────────────────── */
-
-function Chip({
-  label,
-  children,
-  anchorRef,
-  onClick,
-  muted,
-}: {
-  label: string;
-  children: React.ReactNode;
-  anchorRef?: React.RefObject<HTMLButtonElement>;
-  onClick: () => void;
-  muted?: boolean;
-}) {
-  return (
-    <button
-      ref={anchorRef}
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-7 min-w-0 max-w-[220px] items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.02] px-2 text-[11.5px] transition-colors hover:border-fg/[0.16] hover:bg-fg/[0.05]",
-        muted ? "text-[color:var(--kit-text-3)]" : "text-fg/85",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-/** A chip that opens a filterable picker. */
-function ChipPicker({
-  label,
-  display,
-  options,
-  selected,
-  multi,
-  placeholder,
-  onOpen,
-  onPick,
-  muted,
-}: {
-  label: string;
-  display: React.ReactNode;
-  options: PickerOption[];
-  selected: string[];
-  multi?: boolean;
-  placeholder: string;
-  onOpen?: () => void;
-  onPick: (id: string) => void;
-  muted?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLButtonElement>(null);
-  return (
-    <>
-      <Chip label={label} anchorRef={ref} muted={muted} onClick={() => { onOpen?.(); setOpen(true); }}>{display}</Chip>
-      <PickerMenu
-        open={open}
-        anchorRef={ref}
-        onClose={() => setOpen(false)}
-        options={options}
-        selectedIds={new Set(selected)}
-        multi={multi}
-        placeholder={placeholder}
-        onPick={(id) => {
-          if (!multi) setOpen(false);
-          onPick(id);
-        }}
-      />
-    </>
-  );
-}
-
-function toggle(list: string[], id: string): string[] {
-  return list.includes(id) ? list.filter((entry) => entry !== id) : [...list, id];
-}
-
-function estimateScale(options: LinearIssueCreateOptions | null): Array<{ value: number; label: string }> {
-  if (!options || options.estimationType === "notUsed") return [];
-  const extended = options.estimationExtended;
-  let scale: Array<{ value: number; label: string }>;
-  switch (options.estimationType) {
-    case "exponential":
-      scale = [1, 2, 4, 8, 16, ...(extended ? [32, 64] : [])].map((value) => ({ value, label: String(value) }));
-      break;
-    case "fibonacci":
-      scale = [1, 2, 3, 5, 8, ...(extended ? [13, 21] : [])].map((value) => ({ value, label: String(value) }));
-      break;
-    case "tShirt":
-      scale = [["XS", 1], ["S", 2], ["M", 3], ["L", 5], ["XL", 8], ...(extended ? [["XXL", 13], ["XXXL", 21]] : [])]
-        .map(([label, value]) => ({ value: value as number, label: label as string }));
-      break;
-    default:
-      scale = [1, 2, 3, 4, 5, ...(extended ? [6, 7] : [])].map((value) => ({ value, label: String(value) }));
-  }
-  return options.estimationAllowZero ? [{ value: 0, label: "0" }, ...scale] : scale;
-}
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -260,28 +75,20 @@ function imageFiles(list: FileList | null | undefined): File[] {
   return [...(list ?? [])].filter((file) => file.type.startsWith("image/"));
 }
 
-/* ── The dialog ────────────────────────────────────────────────────────── */
-
 export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRequest; onClose: () => void }) {
   const projectRoot = useActiveProjectRoot();
   const parent = request.prefill?.parent ?? null;
-  const [provider, setProvider] = useState<Provider>(() => initialProvider(request));
-  const hasPrefill = Boolean(request.prefill?.title || request.prefill?.body);
-  const [title, setTitle] = useState(() => request.prefill?.title ?? (hasPrefill ? "" : readDraft(initialProvider(request))?.title ?? ""));
-  const [body, setBody] = useState(() => request.prefill?.body ?? (hasPrefill ? "" : readDraft(initialProvider(request))?.body ?? ""));
-  const [linear, setLinear] = useState<LinearFields>(() => {
-    const draft = hasPrefill ? null : readDraft("linear")?.linear;
-    const base = { ...EMPTY_LINEAR, ...(draft ?? {}) };
-    if (parent?.provider === "linear") return { ...base, parent: parent.identifier, teamKey: parent.teamKey ?? base.teamKey };
-    return base;
-  });
-  const [github, setGitHub] = useState<GitHubFields>(() => {
-    const draft = hasPrefill ? null : readDraft("github")?.github;
-    const base = { ...EMPTY_GITHUB, ...(draft ?? {}) };
-    if (parent?.provider === "github") return { ...base, parent: String(parent.number) };
-    return base;
-  });
-  const [formAnswers, setFormAnswers] = useState<GitHubIssueFormAnswers>({});
+  // One read of the draft for the whole form, keyed to this project.
+  const [initial] = useState(() => initialIssueForm(request, projectRoot));
+  const [provider, setProvider] = useState<IssueProvider>(initial.provider);
+  const [title, setTitle] = useState(initial.title);
+  const [body, setBody] = useState(initial.body);
+  const [linear, setLinear] = useState<LinearFields>(initial.linear);
+  const [github, setGitHub] = useState<GitHubFields>(initial.github);
+  const [formAnswers, setFormAnswers] = useState<GitHubIssueFormAnswers>(initial.formAnswers);
+  const draftRef = useRef<IssueDraft | null>(null);
+  const providerRef = useRef(provider);
+  providerRef.current = provider;
   const [attachments, setAttachments] = useState<GitHubIssueAttachmentInput[]>([]);
   const [uploads, setUploads] = useState(0);
   const [showMore, setShowMore] = useState(() => Boolean(parent));
@@ -293,12 +100,18 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
 
   // Remember the tracker, and keep the draft, as the user types.
   useEffect(() => {
-    try { window.localStorage.setItem(LAST_PROVIDER_KEY, provider); } catch { /* ignore */ }
+    rememberIssueProvider(provider);
   }, [provider]);
   useEffect(() => {
-    const timer = window.setTimeout(() => writeDraft(provider, { title, body, linear, github }), 400);
+    draftRef.current = { title, body, linear, github, formAnswers };
+    const timer = window.setTimeout(() => writeIssueDraft(provider, projectRoot, draftRef.current), 400);
     return () => window.clearTimeout(timer);
-  }, [body, github, linear, provider, title]);
+  }, [body, formAnswers, github, linear, projectRoot, provider, title]);
+  // Closing inside the 400 ms window must not lose the last keystrokes. A
+  // create clears `draftRef` first, so nothing is written back after it.
+  useEffect(() => () => {
+    if (draftRef.current) writeIssueDraft(providerRef.current, projectRoot, draftRef.current);
+  }, [projectRoot]);
 
   /* Linear data */
   const catalog = useLinearPickerCatalog();
@@ -336,7 +149,13 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   }, [linear.projectId]);
 
   /* GitHub data */
-  const { repo } = useProjectGitHubRepo();
+  // A sub-issue goes where its parent is, which need not be this project's repo.
+  const { repo: projectRepo } = useProjectGitHubRepo();
+  const parentRepo = useMemo(
+    () => (parent?.provider === "github" ? { owner: parent.owner, name: parent.repo } : null),
+    [parent],
+  );
+  const repo = parentRepo ?? projectRepo;
   const repoCatalog = useGitHubRepoCatalog(provider === "github" ? repo : null);
   const createCatalog = useGitHubCreateCatalog(provider === "github" ? repo : null);
   useEffect(() => {
@@ -381,48 +200,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   };
 
   /* Similar issues, from what ADE already read */
-  const [similar, setSimilar] = useState<SimilarIssue[]>([]);
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const mine = words(title);
-      if (mine.size < 2) {
-        setSimilar([]);
-        return;
-      }
-      if (provider === "linear") {
-        const pool = new Map<string, NormalizedLinearIssue>();
-        for (const issue of [...cachedLinearIssues(), ...cachedLinearBrowserIssues()]) pool.set(issue.id, issue);
-        setSimilar([...pool.values()]
-          .filter((issue) => issue.stateType !== "completed" && issue.stateType !== "canceled")
-          .map((issue) => ({ issue, score: similarity(mine, words(issue.title)) }))
-          .filter((entry) => entry.score >= 0.6)
-          .sort((a, b) => b.score - a.score)
-          .slice(0, 3)
-          .map(({ issue }) => ({
-            key: issue.id,
-            label: issue.identifier,
-            title: issue.title,
-            icon: <LinearStateIcon stateType={issue.stateType} size={11} />,
-            open: () => openIssueRef({ ref: { provider: "linear", identifier: issue.identifier, url: issue.url }, source: "issue-viewer" }),
-          })));
-      } else if (repo) {
-        setSimilar(cachedGitHubIssues(repo.owner, repo.name)
-          .filter((issue) => issue.state === "open")
-          .map((issue) => ({ issue, score: similarity(mine, words(issue.title)) }))
-          .filter((entry) => entry.score >= 0.6)
-          .sort((a, b) => b.score - a.score)
-          .slice(0, 3)
-          .map(({ issue }) => ({
-            key: String(issue.number),
-            label: `#${issue.number}`,
-            title: issue.title,
-            icon: <GitHubIssueStateIcon state={issue.state} stateReason={issue.stateReason} size={11} />,
-            open: () => openIssueRef({ ref: { provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url }, source: "issue-viewer" }),
-          })));
-      }
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [provider, repo, title]);
+  const similar = useSimilarIssues(provider, repo, title);
 
   /* Pictures */
   const insertAtCursor = useCallback((text: string) => {
@@ -479,7 +257,8 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     setFormAnswers({});
     setAttachments([]);
     setError(null);
-    writeDraft(provider, null);
+    draftRef.current = null;
+    writeIssueDraft(provider, projectRoot, null);
     titleRef.current?.focus();
   };
 
@@ -495,31 +274,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     setError(null);
     try {
       if (provider === "linear") {
-        if (!teamKey) throw new Error("Pick a team.");
-        const create = window.ade?.cto?.createLinearIssue;
-        if (!create) throw new Error("Creating Linear issues is not available here.");
-        let parentId: string | null = null;
-        if (linear.parent.trim()) {
-          const parentIssue = await window.ade?.cto?.getLinearIssue?.({ issueId: linear.parent.trim() });
-          if (!parentIssue) throw new Error(`Linear didn't return the parent ${linear.parent.trim()}.`);
-          parentId = parentIssue.id;
-        }
-        const issue = await create({
-          teamKey,
-          title: trimmed,
-          description: `${body}${contextFooter}`,
-          stateId: linear.stateId,
-          priority: linear.priority,
-          assigneeId: linear.assigneeId,
-          labelIds: linear.labelIds,
-          projectId: linear.projectId,
-          projectMilestoneId: linear.projectId ? linear.milestoneId : null,
-          cycleId: linear.cycleId,
-          estimate: linear.estimate,
-          dueDate: linear.dueDate || null,
-          parentId,
-          templateId: linear.templateId,
-        });
+        const issue = await submitLinearIssue({ teamKey, title: trimmed, description: `${body}${contextFooter}`, fields: linear });
         showToast({
           tone: "success",
           title: `Created ${issue.identifier}`,
@@ -531,37 +286,24 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
           openIssueRef({ ref: { provider: "linear", identifier: issue.identifier, url: issue.url }, source: "issue-viewer" });
         }
       } else {
-        if (!repo) throw new Error("This project has no GitHub repository.");
-        if (templateRequired && !template) throw new Error("This repository asks for a template. Pick one.");
-        if (formTemplate) {
-          const missing = missingRequiredGitHubFormField(formTemplate, formAnswers);
-          if (missing) throw new Error(`Fill in "${missing}".`);
-        }
-        const create = window.ade?.github?.createIssue;
-        if (!create) throw new Error("Creating GitHub issues is not available here.");
-        const description = formTemplate ? serializeGitHubIssueForm(formTemplate, formAnswers) : body;
-        const parentNumber = Number(github.parent.replace(/^#/, ""));
-        const result = await create({
-          owner: repo.owner,
-          name: repo.name,
-          input: {
-            title: trimmed,
-            body: `${description}${contextFooter}`,
-            labels: github.labels,
-            assignees: github.assignees,
-            milestone: github.milestone,
-            type: github.type,
-            parentNumber: Number.isInteger(parentNumber) && parentNumber > 0 ? parentNumber : null,
-            attachments,
-          },
+        const { issue, warnings } = await submitGitHubIssue({
+          repo,
+          title: trimmed,
+          body,
+          contextFooter,
+          fields: github,
+          template,
+          templateRequired,
+          formAnswers,
+          attachments,
         });
-        const issue = normalizeGitHubIssue(repo.owner, repo.name, result.issue);
-        if (!issue) throw new Error("GitHub created the issue but did not return it.");
         noteGitHubIssueCreated(projectRoot, issue);
+        // A warning (not linked under the parent, fields not set) is worth reading.
         showToast({
-          tone: result.warnings.length ? "warning" : "success",
+          tone: warnings.length ? "warning" : "success",
           title: `Created #${issue.number}`,
-          message: result.warnings.length ? result.warnings.join(" ") : issue.title,
+          message: warnings.length ? warnings.join(" ") : issue.title,
+          ...(warnings.length ? { durationMs: 18_000 } : {}),
           actions: [{ label: "Start lane", onClick: () => requestGitHubIssueLaunch(issue) }],
         });
         announceIssueCreated({ provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number });
@@ -571,7 +313,8 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
       }
       if (createMore) reset();
       else {
-        writeDraft(provider, null);
+        draftRef.current = null;
+        writeIssueDraft(provider, projectRoot, null);
         onClose();
       }
     } catch (cause) {
@@ -581,205 +324,8 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     }
   };
 
-  /* Linear chips */
-  const linearStates = (catalog?.states ?? []).filter((state) => state.teamKey === teamKey);
-  const state = linearStates.find((entry) => entry.id === linear.stateId) ?? null;
-  const assignee = catalog?.users.find((user) => user.id === linear.assigneeId) ?? null;
-  const teamLabels = (catalog?.labels ?? []).filter((label) => !label.teamKey || label.teamKey === teamKey);
-  const pickedLabels = teamLabels.filter((label) => linear.labelIds.includes(label.id));
-  const projects = (catalog?.projects ?? []).filter((project) => !project.teamKey || project.teamKey === teamKey);
-  const project = projects.find((entry) => entry.id === linear.projectId) ?? null;
-  const cycle = createOptions?.cycles.find((entry) => entry.id === linear.cycleId) ?? null;
-  const scale = estimateScale(createOptions);
+  const project = linearTeamProjects(catalog, teamKey).find((entry) => entry.id === linear.projectId) ?? null;
   const linearTemplate = createOptions?.templates.find((entry) => entry.id === linear.templateId) ?? null;
-
-  const linearChips = (
-    <>
-      <ChipPicker
-        label="Status"
-        display={state ? <><LinearStateIcon stateType={state.type} size={12} />{state.name}</> : "Default status"}
-        muted={!state}
-        options={linearStates.map((entry) => ({ id: entry.id, label: entry.name, icon: <LinearStateIcon stateType={entry.type} size={12} /> }))}
-        selected={linear.stateId ? [linear.stateId] : []}
-        placeholder="Status…"
-        onPick={(id) => setLinear((current) => ({ ...current, stateId: id }))}
-      />
-      <ChipPicker
-        label="Priority"
-        display={<><LinearPriorityIcon priority={linear.priority ?? 0} size={12} />{PRIORITY_CHOICES.find((choice) => choice.value === (linear.priority ?? 0))?.label ?? "No priority"}</>}
-        muted={!linear.priority}
-        options={PRIORITY_CHOICES.map((choice) => ({ id: String(choice.value), label: choice.label, icon: <LinearPriorityIcon priority={choice.value} size={12} /> }))}
-        selected={[String(linear.priority ?? 0)]}
-        placeholder="Priority…"
-        onPick={(id) => setLinear((current) => ({ ...current, priority: Number(id) }))}
-      />
-      <ChipPicker
-        label="Assignee"
-        display={<><LinearAssigneeAvatar name={assignee ? assignee.displayName ?? assignee.name : null} avatarUrl={assignee?.avatarUrl ?? null} size={14} />{assignee ? assignee.displayName ?? assignee.name : "Assignee"}</>}
-        muted={!assignee}
-        options={[
-          { id: "", label: "Unassigned" },
-          ...(catalog?.users ?? []).filter((user) => user.active).map((user) => ({
-            id: user.id,
-            label: user.displayName ?? user.name,
-            keywords: `${user.name} ${user.email ?? ""}`,
-            icon: <LinearAssigneeAvatar name={user.displayName ?? user.name} avatarUrl={user.avatarUrl ?? null} size={14} />,
-          })),
-        ]}
-        selected={[linear.assigneeId ?? ""]}
-        placeholder="Assign to…"
-        onPick={(id) => setLinear((current) => ({ ...current, assigneeId: id || null }))}
-      />
-      <ChipPicker
-        label="Labels"
-        display={pickedLabels.length
-          ? <><span className="flex gap-0.5">{pickedLabels.slice(0, 3).map((label) => <span key={label.id} className="block h-2 w-2 rounded-full" style={{ backgroundColor: label.color ?? "var(--kit-fill)" }} />)}</span>{pickedLabels.length === 1 ? pickedLabels[0]!.name : `${pickedLabels.length} labels`}</>
-          : "Labels"}
-        muted={!pickedLabels.length}
-        multi
-        options={teamLabels.map((label) => ({ id: label.id, label: label.name, icon: <span className="block h-2 w-2 rounded-full" style={{ backgroundColor: label.color ?? "var(--kit-fill)" }} /> }))}
-        selected={linear.labelIds}
-        placeholder="Labels…"
-        onPick={(id) => setLinear((current) => ({ ...current, labelIds: toggle(current.labelIds, id) }))}
-      />
-      <ChipPicker
-        label="Project"
-        display={project ? project.name : "Project"}
-        muted={!project}
-        options={[{ id: "", label: "No project" }, ...projects.map((entry) => ({ id: entry.id, label: entry.name }))]}
-        selected={[linear.projectId ?? ""]}
-        placeholder="Project…"
-        onPick={(id) => setLinear((current) => ({ ...current, projectId: id || null, milestoneId: null }))}
-      />
-    </>
-  );
-
-  const linearMore = (
-    <>
-      {project ? (
-        <ChipPicker
-          label="Milestone"
-          display={milestones.find((entry) => entry.id === linear.milestoneId)?.name ?? "Milestone"}
-          muted={!linear.milestoneId}
-          options={[{ id: "", label: "No milestone" }, ...milestones.map((entry) => ({ id: entry.id, label: entry.name }))]}
-          selected={[linear.milestoneId ?? ""]}
-          placeholder="Milestone…"
-          onPick={(id) => setLinear((current) => ({ ...current, milestoneId: id || null }))}
-        />
-      ) : null}
-      {createOptions?.cyclesEnabled ? (
-        <ChipPicker
-          label="Cycle"
-          display={cycle ? `Cycle ${cycle.number}${cycle.active ? " (current)" : ""}` : "Cycle"}
-          muted={!cycle}
-          options={[{ id: "", label: "No cycle" }, ...createOptions.cycles.map((entry) => ({
-            id: entry.id,
-            label: `${entry.name || `Cycle ${entry.number}`}${entry.active ? " (current)" : ""}`,
-          }))]}
-          selected={[linear.cycleId ?? ""]}
-          placeholder="Cycle…"
-          onPick={(id) => setLinear((current) => ({ ...current, cycleId: id || null }))}
-        />
-      ) : null}
-      {scale.length ? (
-        <ChipPicker
-          label="Estimate"
-          display={linear.estimate != null ? `Estimate ${scale.find((entry) => entry.value === linear.estimate)?.label ?? linear.estimate}` : "Estimate"}
-          muted={linear.estimate == null}
-          options={[{ id: "", label: "No estimate" }, ...scale.map((entry) => ({ id: String(entry.value), label: entry.label }))]}
-          selected={[linear.estimate == null ? "" : String(linear.estimate)]}
-          placeholder="Estimate…"
-          onPick={(id) => setLinear((current) => ({ ...current, estimate: id === "" ? null : Number(id) }))}
-        />
-      ) : null}
-      <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
-        Due
-        <input
-          type="date"
-          aria-label="Due date"
-          className="bg-transparent text-fg/85 outline-none [color-scheme:dark]"
-          value={linear.dueDate}
-          onChange={(event) => setLinear((current) => ({ ...current, dueDate: event.target.value }))}
-        />
-      </label>
-      <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
-        Parent
-        <input
-          aria-label="Parent issue"
-          placeholder="ADE-123"
-          className="w-[84px] bg-transparent font-mono text-fg/85 outline-none placeholder:text-[color:var(--kit-text-3)]"
-          value={linear.parent}
-          disabled={parent?.provider === "linear"}
-          onChange={(event) => setLinear((current) => ({ ...current, parent: event.target.value.toUpperCase() }))}
-        />
-      </label>
-    </>
-  );
-
-  /* GitHub chips */
-  const ghPeople = repoCatalog?.people ?? [];
-  const ghLabels = repoCatalog?.labels ?? [];
-  const ghMilestones = repoCatalog?.milestones ?? [];
-  const githubChips = (
-    <>
-      <ChipPicker
-        label="Labels"
-        display={github.labels.length ? (github.labels.length === 1 ? github.labels[0]! : `${github.labels.length} labels`) : "Labels"}
-        muted={!github.labels.length}
-        multi
-        options={ghLabels.map((label) => ({ id: label.name, label: label.name, icon: <span className="block h-2 w-2 rounded-full" style={{ backgroundColor: label.color ?? "var(--kit-fill)" }} /> }))}
-        selected={github.labels}
-        placeholder={repoCatalog ? "Labels…" : "Loading labels…"}
-        onPick={(id) => setGitHub((current) => ({ ...current, labels: toggle(current.labels, id) }))}
-      />
-      <ChipPicker
-        label="Assignees"
-        display={github.assignees.length ? (github.assignees.length === 1 ? github.assignees[0]! : `${github.assignees.length} people`) : "Assignees"}
-        muted={!github.assignees.length}
-        multi
-        options={ghPeople.map((person) => ({ id: person.login, label: person.login, icon: <LinearAssigneeAvatar name={person.login} avatarUrl={person.avatarUrl} size={14} /> }))}
-        selected={github.assignees}
-        placeholder={repoCatalog ? "Assign people…" : "Loading people…"}
-        onPick={(id) => setGitHub((current) => ({ ...current, assignees: toggle(current.assignees, id) }))}
-      />
-      {ghMilestones.length ? (
-        <ChipPicker
-          label="Milestone"
-          display={ghMilestones.find((entry) => entry.number === github.milestone)?.title ?? "Milestone"}
-          muted={github.milestone == null}
-          options={[{ id: "", label: "No milestone" }, ...ghMilestones.map((entry) => ({ id: String(entry.number), label: entry.title }))]}
-          selected={[github.milestone == null ? "" : String(github.milestone)]}
-          placeholder="Milestone…"
-          onPick={(id) => setGitHub((current) => ({ ...current, milestone: id ? Number(id) : null }))}
-        />
-      ) : null}
-      {createCatalog.types.length ? (
-        <ChipPicker
-          label="Type"
-          display={github.type ?? "Type"}
-          muted={!github.type}
-          options={[{ id: "", label: "No type" }, ...createCatalog.types.map((entry) => ({ id: entry.name, label: entry.name }))]}
-          selected={[github.type ?? ""]}
-          placeholder="Issue type…"
-          onPick={(id) => setGitHub((current) => ({ ...current, type: id || null }))}
-        />
-      ) : null}
-    </>
-  );
-
-  const githubMore = (
-    <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
-      Parent
-      <input
-        aria-label="Parent issue number"
-        placeholder="#123"
-        className="w-[64px] bg-transparent font-mono text-fg/85 outline-none placeholder:text-[color:var(--kit-text-3)]"
-        value={github.parent}
-        disabled={parent?.provider === "github"}
-        onChange={(event) => setGitHub((current) => ({ ...current, parent: event.target.value }))}
-      />
-    </label>
-  );
 
   /* Template chip */
   const templateOptions: PickerOption[] = provider === "linear"
@@ -958,7 +504,9 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5 border-t border-[color:var(--kit-rule)] px-4 py-2.5">
-          {provider === "linear" ? linearChips : githubChips}
+          {provider === "linear"
+            ? <LinearCreateChips linear={linear} setLinear={setLinear} catalog={catalog} teamKey={teamKey} />
+            : <GitHubCreateChips github={github} setGitHub={setGitHub} repoCatalog={repoCatalog} types={createCatalog.types} />}
           <button
             type="button"
             className="kit-icon-btn"
@@ -971,7 +519,18 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
           </button>
           {showMore ? (
             <div className="flex w-full flex-wrap items-center gap-1.5">
-              {provider === "linear" ? linearMore : githubMore}
+              {provider === "linear" ? (
+                <LinearMoreFields
+                  linear={linear}
+                  setLinear={setLinear}
+                  hasProject={project != null}
+                  milestones={milestones}
+                  createOptions={createOptions}
+                  parentLocked={parent?.provider === "linear"}
+                />
+              ) : (
+                <GitHubMoreFields github={github} setGitHub={setGitHub} parentLocked={parent?.provider === "github"} />
+              )}
             </div>
           ) : null}
         </div>
@@ -997,114 +556,3 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     </Dialog>
   );
 }
-
-/** An issue form's fields as native controls. */
-function GitHubIssueFormFields({
-  template,
-  answers,
-  onChange,
-}: {
-  template: GitHubIssueTemplate;
-  answers: GitHubIssueFormAnswers;
-  onChange: (next: GitHubIssueFormAnswers) => void;
-}) {
-  const set = (index: number, value: GitHubIssueFormAnswers[number]) => onChange({ ...answers, [index]: value });
-  return (
-    <div className="mt-3 flex flex-col gap-4">
-      {template.fields.map((field, index) => {
-        if (field.type === "markdown") {
-          return <p key={index} className="whitespace-pre-wrap text-[12px] text-[color:var(--kit-text-2)]">{field.value}</p>;
-        }
-        const heading = (
-          <div className="mb-1 text-[12.5px] font-medium text-fg/90">
-            {field.label}
-            {"required" in field && field.required ? <span className="ml-1 text-[color:var(--kit-crit)]">*</span> : null}
-            {field.description ? <div className="text-[11.5px] font-normal text-[color:var(--kit-text-3)]">{field.description}</div> : null}
-          </div>
-        );
-        if (field.type === "input") {
-          return (
-            <label key={index} className="block">
-              {heading}
-              <input
-                className="ade-dialog-input"
-                placeholder={field.placeholder ?? undefined}
-                value={String(answers[index] ?? "")}
-                onChange={(event) => set(index, event.target.value)}
-              />
-            </label>
-          );
-        }
-        if (field.type === "textarea") {
-          return (
-            <label key={index} className="block">
-              {heading}
-              <textarea
-                className="ade-dialog-input !h-auto min-h-[88px] resize-y py-2"
-                placeholder={field.placeholder ?? undefined}
-                value={String(answers[index] ?? "")}
-                onChange={(event) => set(index, event.target.value)}
-              />
-            </label>
-          );
-        }
-        if (field.type === "dropdown") {
-          const chosen = Array.isArray(answers[index]) ? answers[index] as string[] : [];
-          return (
-            <div key={index}>
-              {heading}
-              <div className="flex flex-wrap gap-1.5">
-                {field.options.map((option) => {
-                  const on = chosen.includes(option);
-                  return (
-                    <button
-                      key={option}
-                      type="button"
-                      aria-pressed={on}
-                      className={cn(
-                        "h-7 rounded-md border px-2 text-[11.5px]",
-                        on ? "border-[color:var(--color-accent)] bg-[color:var(--kit-active)] text-fg" : "border-fg/[0.1] text-fg/80 hover:bg-[color:var(--kit-hover)]",
-                      )}
-                      onClick={() => set(index, field.multiple ? toggle(chosen, option) : on ? [] : [option])}
-                    >
-                      {option}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        }
-        if (field.type !== "checkboxes") return null;
-        const checked = Array.isArray(answers[index]) ? answers[index] as boolean[] : [];
-        return (
-          <div key={index}>
-            {heading}
-            <div className="flex flex-col gap-1">
-              {field.options.map((option, optionIndex) => (
-                <label key={option.label} className="flex items-start gap-2 text-[12px] text-fg/85">
-                  <input
-                    type="checkbox"
-                    className="mt-[3px]"
-                    checked={Boolean(checked[optionIndex])}
-                    onChange={(event) => {
-                      const next = [...checked];
-                      next[optionIndex] = event.target.checked;
-                      set(index, next);
-                    }}
-                  />
-                  <span>
-                    {option.label}
-                    {option.required ? <span className="ml-1 text-[color:var(--kit-crit)]">*</span> : null}
-                  </span>
-                </label>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-export type { CtoGetLinearIssuePickerDataResult };

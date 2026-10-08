@@ -1,5 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import { execFile } from "node:child_process";
 import type { MachineResetOptions, MachineResetPlan } from "../../../shared/types/machineReset";
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
@@ -11579,8 +11580,7 @@ export function registerIpc({
   ipcMain.handle(IPC.githubListRepoIssueList, async (_event, arg: { owner?: string; name?: string; state?: "open" | "closed" | "all" }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
-    const state = arg?.state === "closed" || arg?.state === "all" ? arg.state : "open";
-    return await ctx.githubService.listRepoIssueList(owner, name, state);
+    return await ctx.githubService.listRepoIssueList(owner, name, parseGitHubIssueListState(arg?.state));
   });
 
   ipcMain.handle(IPC.githubCreateIssue, async (_event, arg: { owner?: string; name?: string; input: unknown }) => {
@@ -13452,7 +13452,6 @@ export function registerIpc({
     async (_event, arg: LinearIssueCreateInput): Promise<NormalizedLinearIssue> => {
       const ctx = getCtx();
       if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
-      if (typeof arg?.teamKey !== "string" || typeof arg?.title !== "string") throw new Error("A Linear issue needs a team and a title.");
       return ctx.linearIssueTracker.createIssue(arg);
     }
   );

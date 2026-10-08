@@ -15,6 +15,11 @@ import type { GitHubIssueLike } from "./laneGitHubIssue";
 
 export type GitHubIssueListState = "open" | "closed" | "all";
 
+/** The list state a caller asked for; anything unknown is "open". */
+export function parseGitHubIssueListState(value: unknown): GitHubIssueListState {
+  return value === "closed" || value === "all" ? value : "open";
+}
+
 export const GITHUB_ISSUE_LIST_PAGE_SIZE = 100;
 
 export const GITHUB_ISSUE_LIST_QUERY = `query RepoIssueList($owner: String!, $name: String!, $states: [IssueState!], $first: Int!) {

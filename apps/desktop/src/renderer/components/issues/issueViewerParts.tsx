@@ -1,16 +1,19 @@
 import React, { useState } from "react";
-import { ArrowClockwise, ArrowSquareOut, CircleNotch, DotsThree, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, ChatCircleText, CircleNotch, DotsThree, Plus, Sparkle, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, LaneSummary } from "../../../shared/types";
 import type { IssueRef } from "../../../shared/issueRefs";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { navigateToAppTarget, openExternalUrl } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
+import { Button } from "../ui/Button";
 import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../ui/ContextMenu";
+import { Banner } from "../ui/notice";
 import { BranchIcon } from "../ui/vcsIcons";
 
 /**
  * Chrome every issue provider's viewer shares: the props a host passes, the
- * 40px header, copy-with-toast, and the "Linked in ADE" lane list.
+ * frame (header, scrolling body, action dock), the 40px header, the
+ * "last copy" banner, copy-with-toast, and the "Linked in ADE" lane list.
  */
 export type IssueViewerProps = {
   issueRef: IssueRef;
@@ -146,3 +149,132 @@ export function LinkedInAdeLanes({ linked }: { linked: Array<{ lane: LaneSummary
   );
 }
 
+
+/** The viewer's frame: header, scrolling body, and the action dock under it. */
+export function IssueViewerFrame({
+  variant,
+  ariaLabel,
+  header,
+  dock,
+  children,
+}: {
+  variant: IssueViewerProps["variant"];
+  ariaLabel: string;
+  header: React.ReactNode;
+  dock?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="ade-issue-frame" data-issue-viewer={variant} aria-label={ariaLabel}>
+      {header}
+      <div className="ade-issue-frame-scroll">{children}</div>
+      {dock}
+    </section>
+  );
+}
+
+/** A re-read failed; the issue on screen is the last copy ADE read. */
+export function IssueStaleBanner({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+  if (!error) return null;
+  return (
+    <div className="px-4 pt-3">
+      <Banner
+        layout="inline"
+        model={{
+          id: "issue-refresh-failed",
+          tone: "warning",
+          title: "Showing the last copy ADE read",
+          detail: error,
+          actions: [{ label: "Retry", onClick: onRetry }],
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Launch agent, Lane only, and Attach to chat (when a chat is there to take
+ * it). `attachment` builds the chat context only when clicked.
+ */
+export function IssueActionDock({
+  label,
+  onLaunch,
+  attachment,
+  onAttachToChat,
+}: {
+  /** How the issue reads in a message: `ADE-123`, `#123`. */
+  label: string;
+  onLaunch: (laneOnly: boolean) => void;
+  attachment: () => AgentChatContextAttachment;
+  onAttachToChat?: (attachment: AgentChatContextAttachment) => void;
+}) {
+  return (
+    <div className="ade-issue-frame-dock" data-issue-action-dock="true">
+      <Button
+        type="button"
+        variant="primary"
+        casing="sentence"
+        className="shrink-0 gap-1.5 px-3"
+        title="New lane for this issue, plus an agent started on it"
+        onClick={() => onLaunch(false)}
+      >
+        <Sparkle size={13} weight="fill" />
+        Launch agent
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        casing="sentence"
+        className="shrink-0 gap-1.5 px-3"
+        title="New lane for this issue. Start an agent later."
+        onClick={() => onLaunch(true)}
+      >
+        <Plus size={13} weight="bold" />
+        Lane only
+      </Button>
+      {onAttachToChat ? (
+        <Button
+          type="button"
+          variant="outline"
+          casing="sentence"
+          className="shrink-0 gap-1.5 px-3"
+          title="Add this issue to the chat's next message as context"
+          onClick={() => {
+            try {
+              onAttachToChat(attachment());
+            } catch (error) {
+              showToast({
+                tone: "warning",
+                title: `Couldn't attach ${label}`,
+                message: error instanceof Error ? error.message : "There is no chat to attach it to.",
+              });
+            }
+          }}
+        >
+          <ChatCircleText size={13} />
+          Attach to chat
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The lanes carrying an issue, and how many chats in each were handed it:
+ * `links` gives a lane's links to this issue, `primary` whether the lane was
+ * made for it (a link of its own).
+ */
+export function lanesCarryingIssue(
+  lanes: LaneSummary[],
+  links: (lane: LaneSummary) => Array<{ evidence?: { chatSessionId?: string | null } | null }>,
+  primary: (lane: LaneSummary) => boolean = () => false,
+): Array<{ lane: LaneSummary; chatCount: number }> {
+  const out: Array<{ lane: LaneSummary; chatCount: number }> = [];
+  for (const lane of lanes) {
+    const matching = links(lane);
+    if (!primary(lane) && matching.length === 0) continue;
+    const chats = new Set(matching.map((link) => link.evidence?.chatSessionId).filter((id): id is string => Boolean(id)));
+    out.push({ lane, chatCount: chats.size });
+  }
+  return out;
+}

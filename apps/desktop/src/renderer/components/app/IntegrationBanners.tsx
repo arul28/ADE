@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
 import { CloudSlash, GithubLogo, Robot } from "@phosphor-icons/react";
 import type { NavigateFunction } from "react-router-dom";
 import type {
@@ -205,7 +206,8 @@ export function IntegrationBanners({
     const onPrEvent = (event: PrEventPayload) => {
       // Reconcile progress pings never carry App install/auth changes — skip them
       // so a focus reconcile doesn't trigger two forced status calls.
-      if (event?.type === "pr-reconcile") return;
+      // Issue webhooks carry no App install or auth change either.
+      if (event?.type === "pr-reconcile" || event?.type === "github-issue-changed") return;
       if (prRefreshTimerRef.current != null) clearTimeout(prRefreshTimerRef.current);
       prRefreshTimerRef.current = setTimeout(() => {
         prRefreshTimerRef.current = null;
@@ -486,17 +488,16 @@ export function IntegrationBanners({
       !githubSuppressed
       && currentProjectRoot
       && issueAccess
-      && issueApp?.installed
-      && issueApp.issuesPermission !== "write"
+      && issueApp?.needsApproval
     ) {
-      const fallback = issueAccess.writeSource && issueAccess.writeSource !== "app";
+      const fallback = issueAccess.writeSource && issueAccess.writeSource !== "app" ? issueWriteSourceLabel(issueAccess.writeSource) : null;
       list.push({
         id: "github-app-issues-permission",
         tone: fallback ? "info" : "warning",
         icon: GITHUB_ICON,
         title: "Update GitHub permissions to edit issues in ADE",
         detail: fallback
-          ? `ADE's GitHub App on ${issueAccess.owner} can't change issues yet, so edits use your ${issueAccess.writeSource === "gh" ? "GitHub CLI login" : "token"} for now. An owner approves the new permission on GitHub.`
+          ? `ADE's GitHub App on ${issueAccess.owner} can't change issues yet, so edits use ${fallback} for now. An owner approves the new permission on GitHub.`
           : `ADE's GitHub App on ${issueAccess.owner} can't change issues yet. An owner approves the new permission on GitHub.`,
         actions: issueApp.manageUrl
           ? [{ label: "Review on GitHub", variant: "primary", href: issueApp.manageUrl }]

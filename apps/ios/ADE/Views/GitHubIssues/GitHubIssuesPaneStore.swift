@@ -342,16 +342,26 @@ final class GitHubIssuesPaneStore: ObservableObject {
     await refreshWriteAccess()
   }
 
+  /// Each reload's number; a reply for an older one (the filter changed while
+  /// it was in flight) is dropped instead of showing the wrong rows.
+  private var reloadGeneration = 0
+
   func reload() async {
     guard let repo else { return }
+    reloadGeneration += 1
+    let generation = reloadGeneration
+    let filter = stateFilter
     if issues.isEmpty { phase = .loading }
     do {
-      issues = try await sync.fetchGitHubIssueList(repo, state: stateFilter)
+      let rows = try await sync.fetchGitHubIssueList(repo, state: filter)
+      guard generation == reloadGeneration else { return }
+      issues = rows
       phase = .loaded
-      if let summary = try? await sync.fetchGitHubRepoIssueSummary(repo) {
+      if let summary = try? await sync.fetchGitHubRepoIssueSummary(repo), generation == reloadGeneration {
         openCount = summary.openCount
       }
     } catch {
+      guard generation == reloadGeneration else { return }
       phase = issues.isEmpty ? .failed(error.localizedDescription) : .loaded
     }
   }
@@ -376,8 +386,32 @@ final class GitHubIssuesPaneStore: ObservableObject {
 
 /// GitHub bodies mix markdown and HTML (bots often send only HTML). The phone's
 /// markdown renderer does not read HTML, so the common tags become markdown and
-/// the rest is removed instead of showing as raw text.
+/// the rest is removed instead of showing as raw text. Code is left exactly as
+/// written: fenced blocks and inline code spans are not touched.
 func githubIssueDisplayMarkdown(_ raw: String) -> String {
+  githubIssueCodeSegments(raw)
+    .map { $0.isCode ? $0.text : githubIssueProseWithoutHTML($0.text) }
+    .joined()
+    .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// The text cut into code (``` fences and `inline` spans) and everything else.
+func githubIssueCodeSegments(_ text: String) -> [(text: String, isCode: Bool)] {
+  guard let regex = try? NSRegularExpression(pattern: "```[\\s\\S]*?(```|$)|`[^`\\n]+`") else { return [(text, false)] }
+  var segments: [(text: String, isCode: Bool)] = []
+  var cursor = text.startIndex
+  for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+    guard let range = Range(match.range, in: text) else { continue }
+    if cursor < range.lowerBound { segments.append((String(text[cursor..<range.lowerBound]), false)) }
+    segments.append((String(text[range]), true))
+    cursor = range.upperBound
+  }
+  if cursor < text.endIndex { segments.append((String(text[cursor...]), false)) }
+  return segments
+}
+
+private func githubIssueProseWithoutHTML(_ raw: String) -> String {
   var text = raw
   func replace(_ pattern: String, _ template: String) {
     guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else { return }
@@ -389,36 +423,20 @@ func githubIssueDisplayMarkdown(_ raw: String) -> String {
   replace("<br\\s*/?>", "\n")
   replace("</?(p|div)[^>]*>", "\n")
   replace("<summary[^>]*>(.*?)</summary>", "**$1**\n")
-  replace("<[^>]+>", "")
-  replace("\n{3,}", "\n\n")
+  // Only things shaped like tags: a letter or `/` right after `<`, so
+  // `a < b` and `<-` stay text.
+  replace("</?[A-Za-z][^>]*>", "")
   return text
     .replacingOccurrences(of: "&amp;", with: "&")
     .replacingOccurrences(of: "&lt;", with: "<")
     .replacingOccurrences(of: "&gt;", with: ">")
     .replacingOccurrences(of: "&quot;", with: "\"")
-    .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 // MARK: - Dates
 
-private let githubISOParsers: [ISO8601DateFormatter] = {
-  let withFractional = ISO8601DateFormatter()
-  withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  let plain = ISO8601DateFormatter()
-  plain.formatOptions = [.withInternetDateTime]
-  return [withFractional, plain]
-}()
-
-func githubIssueDate(_ raw: String?) -> Date? {
-  guard let raw, !raw.isEmpty else { return nil }
-  for parser in githubISOParsers {
-    if let date = parser.date(from: raw) { return date }
-  }
-  return nil
-}
-
 func githubIssueRelativeAge(_ raw: String?) -> String? {
-  guard let date = githubIssueDate(raw) else { return nil }
+  guard let date = issueISODate(raw) else { return nil }
   let delta = Date().timeIntervalSince(date)
   if delta < 60 { return "now" }
   let minutes = Int(delta / 60)

@@ -377,7 +377,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `shared/types/workTools.ts` — a new tool has to be added here
     // deliberately rather than arriving as free text.
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
-    "tool_browser", "tool_pr", "tool_mac_desktop", "tool_windows_desktop",
+    "tool_browser", "tool_pr", "tool_mac_desktop", "tool_windows_desktop", "tool_issues",
     // The two Work Focus modes, prefixed like the tool ids so they cannot be
     // confused with another action's outcome.
     "mode_focus", "mode_focus_grid",

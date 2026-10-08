@@ -5,7 +5,22 @@ import type {
   GitHubIssueCreateInput,
   GitHubIssueCreateResult,
   GitHubIssueTypeOption,
+  GitHubIssueWriteAccess,
+  GitHubRepoIssueSummary,
 } from "../../../shared/types";
+import {
+  githubOperationCredentialCandidates,
+  type GithubOperationCredentialCapability,
+  type GithubOperationCredentialSource,
+} from "../../../shared/githubOperationCredential";
+import {
+  GITHUB_ISSUE_LIST_QUERY,
+  githubIssueListFromGraphql,
+  githubIssueListVariables,
+  type GitHubIssueListState,
+} from "../../../shared/githubIssueList";
+import type { GitHubIssue, GitHubIssueComment, GitHubIssueUpdate, GitHubMilestone } from "./githubService";
+import { createAppIssueGrantReader, describeIssueWriteAccess } from "./githubIssueWriteAccess";
 import {
   parseGitHubIssueTemplate,
   parseGitHubIssueTemplateConfig,
@@ -14,8 +29,11 @@ import {
 import type { GitHubIssueLike } from "../../../shared/laneGitHubIssue";
 
 /**
- * Creating GitHub issues, shared by the desktop GitHub service and its headless
- * twin (the runtime and the CLI).
+ * GitHub issue operations, shared by the desktop GitHub service and its
+ * headless twin (the runtime and the CLI): reads for the viewer and the pane,
+ * edits, comments, and creating issues. Each service supplies its own
+ * transport (`apiRequest`, `apiRequestAllPages`, its credential inventory and
+ * how it runs `gh`); everything above that is here, once.
  *
  * - A plain issue is one REST `POST /issues` under the `issue-write`
  *   capability, so it follows the same App → `gh` → PAT order as other issue
@@ -36,7 +54,21 @@ type ApiRequest = <T>(args: {
   body?: unknown;
   capability?: "read" | "write" | "issue-write";
   repo?: { owner: string; name: string };
+  token?: string;
 }) => Promise<{ data: T }>;
+
+/** One credential a service can try; the shape both services' inventories hold. */
+type CredentialCandidate = {
+  source: GithubOperationCredentialSource;
+  token: string;
+  capabilities: readonly GithubOperationCredentialCapability[];
+};
+
+type ApiRequestAllPages = <T>(args: {
+  path: string;
+  query?: Record<string, string | number | boolean | undefined | null>;
+  maxPages?: number;
+}) => Promise<T[]>;
 
 /** Runs `gh` with the given args in `cwd`; resolves stdout. */
 export type RunGh = (args: string[], options: { cwd: string; timeoutMs: number }) => Promise<string>;
@@ -67,9 +99,120 @@ function isNotFound(error: unknown): boolean {
   return statusOf(error) === 404 || /\b404\b|not found/i.test(error instanceof Error ? error.message : "");
 }
 
-export function createGithubIssueOps(deps: { apiRequest: ApiRequest; runGh: RunGh | null; logger: Logger }) {
-  const { apiRequest, runGh, logger } = deps;
+export function createGithubIssueOps(deps: {
+  apiRequest: ApiRequest;
+  apiRequestAllPages: ApiRequestAllPages;
+  /** The service's credential candidates, every capability. */
+  readCredentialCandidates: () => Promise<readonly CredentialCandidate[]>;
+  runGh: RunGh | null;
+  logger: Logger;
+}) {
+  const { apiRequest, apiRequestAllPages, readCredentialCandidates, runGh, logger } = deps;
   const repoPath = (owner: string, name: string) => `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+
+  // The ADE App's issues permission on an owner, read from the user's
+  // installations (one request, cached). The service's `apiRequest` uses it
+  // too, to skip an App that cannot write issues.
+  const readAppIssueGrant = createAppIssueGrantReader(async (appToken) => {
+    const { data } = await apiRequest<unknown>({
+      method: "GET",
+      path: "/user/installations",
+      query: { per_page: 100 },
+      token: appToken,
+      capability: "read",
+    });
+    return data;
+  });
+
+  const getIssueWriteAccess = async (owner: string, name: string, options: { force?: boolean } = {}): Promise<GitHubIssueWriteAccess> => {
+    return await describeIssueWriteAccess({
+      owner,
+      name,
+      candidates: githubOperationCredentialCandidates(await readCredentialCandidates(), "issue-write"),
+      readGrant: readAppIssueGrant,
+      force: options.force === true,
+    });
+  };
+
+  /**
+   * One PATCH for any mix of an issue's title, body, state, labels, assignees
+   * and milestone. Issue-only (`issue-write`): pull requests keep their own
+   * write path even though GitHub serves both from `/issues`.
+   */
+  const updateIssue = async (owner: string, name: string, number: number, patch: GitHubIssueUpdate): Promise<GitHubIssue | null> => {
+    const { data } = await apiRequest<GitHubIssue>({
+      method: "PATCH",
+      path: `${repoPath(owner, name)}/issues/${number}`,
+      body: patch,
+      capability: "issue-write",
+      repo: { owner, name },
+    });
+    return data ?? null;
+  };
+
+  const commentOnIssue = async (owner: string, name: string, number: number, body: string): Promise<GitHubIssueComment | null> => {
+    const { data } = await apiRequest<GitHubIssueComment>({
+      method: "POST",
+      path: `${repoPath(owner, name)}/issues/${number}/comments`,
+      body: { body },
+      capability: "issue-write",
+      repo: { owner, name },
+    });
+    return data ?? null;
+  };
+
+  const listRepoMilestones = async (owner: string, name: string): Promise<GitHubMilestone[]> => {
+    const data = await apiRequestAllPages<GitHubMilestone>({
+      path: `${repoPath(owner, name)}/milestones`,
+      query: { state: "open", per_page: 100 },
+      maxPages: 2,
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  // A read-only GraphQL query against one repository. Errors in the body are
+  // GitHub's answer, not a transport failure, so they are raised as such.
+  const graphqlRepoRead = async <T>(owner: string, name: string, query: string, variables: Record<string, unknown>): Promise<T> => {
+    const { data } = await apiRequest<{ data?: T; errors?: Array<{ message?: unknown }> }>({
+      method: "POST",
+      path: "/graphql",
+      capability: "read",
+      repo: { owner, name },
+      body: { query, variables },
+    });
+    const errors = Array.isArray(data?.errors)
+      ? data.errors.map((entry) => (typeof entry?.message === "string" ? entry.message : "")).filter(Boolean)
+      : [];
+    if (errors.length > 0) throw new Error(errors.join("; "));
+    if (data?.data == null) throw new Error(`GitHub did not return ${owner}/${name}.`);
+    return data.data;
+  };
+
+  const getRepoIssueSummary = async (owner: string, name: string): Promise<GitHubRepoIssueSummary> => {
+    const data = await graphqlRepoRead<{
+      repository?: { hasIssuesEnabled?: unknown; issues?: { totalCount?: unknown } | null } | null;
+    }>(
+      owner,
+      name,
+      "query RepoIssueSummary($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { hasIssuesEnabled issues(states: OPEN) { totalCount } } }",
+      { owner, name },
+    );
+    const repository = data.repository;
+    if (!repository) throw new Error(`GitHub did not return ${owner}/${name}.`);
+    const totalCount = repository.issues?.totalCount;
+    return {
+      owner,
+      name,
+      hasIssuesEnabled: repository.hasIssuesEnabled === true,
+      openCount: typeof totalCount === "number" && Number.isFinite(totalCount) ? totalCount : 0,
+      checkedAt: new Date().toISOString(),
+    };
+  };
+
+  const listRepoIssueList = async (owner: string, name: string, state: GitHubIssueListState): Promise<GitHubIssueLike[]> => {
+    const data = await graphqlRepoRead<unknown>(owner, name, GITHUB_ISSUE_LIST_QUERY, githubIssueListVariables(owner, name, state));
+    return githubIssueListFromGraphql(data);
+  };
 
   const listIssueTemplates = async (owner: string, name: string): Promise<GitHubIssueTemplateSet> => {
     let entries: Array<{ name?: string; path?: string; type?: string }> = [];
@@ -153,7 +296,13 @@ export function createGithubIssueOps(deps: { apiRequest: ApiRequest; runGh: RunG
       if (!match) throw new Error("GitHub CLI created the issue but did not print its URL.");
       return Number(match[1]);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      // Windows can still hold a picture open just after `gh` exits; a failed
+      // cleanup must not hide the real result.
+      try {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      } catch (error) {
+        logger.warn("github.issue_attach_cleanup_failed", { dir, error: error instanceof Error ? error.message : String(error) });
+      }
     }
   };
 
@@ -238,5 +387,17 @@ export function createGithubIssueOps(deps: { apiRequest: ApiRequest; runGh: RunG
     });
   };
 
-  return { createIssue, listIssueTemplates, listIssueTypes, linkSubIssue };
+  return {
+    readAppIssueGrant,
+    getIssueWriteAccess,
+    updateIssue,
+    commentOnIssue,
+    listRepoMilestones,
+    getRepoIssueSummary,
+    listRepoIssueList,
+    createIssue,
+    listIssueTemplates,
+    listIssueTypes,
+    linkSubIssue,
+  };
 }

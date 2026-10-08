@@ -409,6 +409,76 @@ type RunOptions = {
 };
 
 /**
+ * The agent-chat launch for a lane made for an issue, from a launch config:
+ * the provider and model (a custom provider's harness wins), the Work
+ * composer's native controls, and the issue as session context. Shared by the
+ * Linear batch launch and the GitHub issue launch.
+ */
+export function issueChatLaunchArgs(args: {
+  laneId: string;
+  config: BatchLaunchIssueConfig;
+  kickoffText: string;
+  contextAttachment: AgentChatContextAttachment;
+}): Parameters<BatchLaunchDeps["launch"]>[0] {
+  const { config } = args;
+  const nativeControls = config.nativeControls ?? defaultNativeControls();
+  const presetId = config.presetLaunch?.presetId ?? null;
+  const { provider, model } = config.presetLaunch
+    ? { provider: config.presetLaunch.harness as AgentChatProvider, model: config.presetLaunch.model }
+    : resolveLaunchProviderAndModel(config.modelId);
+  const nativePayload = config.nativeControls
+    ? buildChatLaunchNativePayload(config.modelId, nativeControls)
+    : undefined;
+  return {
+    laneId: args.laneId,
+    provider,
+    model,
+    modelId: config.modelId,
+    reasoningEffort: config.reasoningEffort,
+    ...(batchLaunchSupportsFastMode(config.modelId) ? { fastMode: config.fastMode } : {}),
+    ...(nativePayload ?? {}),
+    ...(config.permissionMode != null
+      ? { permissionMode: config.permissionMode }
+      : nativePayload?.permissionMode != null
+        ? { permissionMode: nativePayload.permissionMode }
+        : {}),
+    kickoffText: args.kickoffText,
+    contextAttachments: [args.contextAttachment],
+    ...(presetId ? { presetId } : {}),
+  };
+}
+
+/**
+ * Delete a lane this launch created after its agent failed to start, so a
+ * retry does not pile up orphan lanes.
+ *
+ * Best-effort cleanup of any branch the lane pushed at create time, but
+ * deliberately NOT requireRemoteBranchDelete: a transient remote/network
+ * failure must stay non-fatal so the local teardown (worktree + DB row) still
+ * completes. A genuinely fatal failure (worktree/DB) is returned, not
+ * swallowed: the lane stays visible and the caller says it may need cleanup.
+ */
+export async function rollBackIssueLane(
+  laneId: string,
+  deleteLane: NonNullable<BatchLaunchDeps["deleteLane"]>,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  try {
+    await deleteLane({
+      laneId,
+      force: true,
+      deleteBranch: true,
+      deleteRemoteBranch: true,
+      remoteName: "origin",
+    });
+    return { ok: true };
+  } catch (rollbackError) {
+    const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+    console.error("[Issue launch] Lane rollback failed after agent launch failure", { laneId, error: rollbackMessage });
+    return { ok: false, message: `lane could not be rolled back and may need manual cleanup (${rollbackMessage})` };
+  }
+}
+
+/**
  * Bounded-parallel launch over the supplied issues. Each issue runs
  * create-lane → headless launch (session + kickoff turn) with its own model
  * config. Sibling failures never abort the pool: failures are recorded and the
@@ -496,34 +566,16 @@ export async function runBatchLaunch(
         return;
       }
 
-      const chatPresetId = config.presetLaunch?.presetId ?? null;
-      const { provider, model } = config.presetLaunch
-        ? { provider: config.presetLaunch.harness as AgentChatProvider, model: config.presetLaunch.model }
-        : resolveLaunchProviderAndModel(config.modelId);
-      const nativePayload = config.nativeControls
-        ? buildChatLaunchNativePayload(config.modelId, nativeControls)
-        : undefined;
       // Single headless launch: creates the session AND runs the kickoff turn
       // server-side (no mounted pane needed). Persist the issue as session context
       // so the agent reads it and the session→issue link is recorded (reused by
       // PR-open closeout).
-      const session = await deps.launch({
+      const session = await deps.launch(issueChatLaunchArgs({
         laneId,
-        provider,
-        model,
-        modelId: config.modelId,
-        reasoningEffort: config.reasoningEffort,
-        ...(batchLaunchSupportsFastMode(config.modelId) ? { fastMode: config.fastMode } : {}),
-        ...(nativePayload ?? {}),
-        ...(config.permissionMode != null
-          ? { permissionMode: config.permissionMode }
-          : nativePayload?.permissionMode != null
-            ? { permissionMode: nativePayload.permissionMode }
-            : {}),
+        config,
         kickoffText,
-        contextAttachments: [makeLinearIssueContextAttachment(issue, "lane_link")],
-        ...(chatPresetId ? { presetId: chatPresetId } : {}),
-      });
+        contextAttachment: makeLinearIssueContextAttachment(issue, "lane_link"),
+      }));
       result.createdSessionIds.push(session.id);
       // `agentChat.launch` intentionally returns as soon as the durable session
       // exists; its kickoff turn continues in the background. Keep the launch
@@ -539,31 +591,13 @@ export async function runBatchLaunch(
       // the failed status' laneId) and surface the orphan so the user can
       // open/clean it up, rather than leaving an invisible orphan.
       if (laneId && createdLane && deps.deleteLane) {
-        try {
-          // Best-effort cleanup of any branch the lane pushed at create time.
-          // Deliberately NOT requireRemoteBranchDelete: a transient remote/network
-          // failure must stay non-fatal so the local teardown (worktree + DB row)
-          // still completes and the lane is fully rolled back rather than left as a
-          // half-deleted visible orphan. A genuinely fatal failure (worktree/DB)
-          // still throws and is surfaced below.
-          await deps.deleteLane({
-            laneId,
-            force: true,
-            deleteBranch: true,
-            deleteRemoteBranch: true,
-            remoteName: "origin",
-          });
+        const rollback = await rollBackIssueLane(laneId, deps.deleteLane);
+        if (rollback.ok) {
           const idx = result.createdLaneIds.indexOf(laneId);
           if (idx >= 0) result.createdLaneIds.splice(idx, 1);
           laneId = null;
-        } catch (rollbackError) {
-          const rollbackMessage =
-            rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-          console.error("[Linear] Lane rollback failed after agent launch failure", {
-            laneId,
-            error: rollbackMessage,
-          });
-          detail = `${detail} — lane could not be rolled back and may need manual cleanup (${rollbackMessage})`;
+        } else {
+          detail = `${detail} — ${rollback.message}`;
         }
       }
       result.failedIssueIds.push(issue.id);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { issueRefLabel, type IssueRef } from "../../../shared/issueRefs";
+import { issueRefKey, issueRefLabel, type IssueRef } from "../../../shared/issueRefs";
 import {
   clearPendingIssueSheetRequest,
   subscribeIssueSheetRequests,
@@ -74,7 +74,10 @@ export function IssueSheetHost() {
       testId="issue-sheet"
     >
       {request ? (
+        // Keyed by issue: an unsaved title or description edit must not carry
+        // over to the next issue the sheet shows.
         <IssueViewer
+          key={issueRefKey(request.ref)}
           issueRef={request.ref}
           variant="sheet"
           onOpenRelated={openRelated}

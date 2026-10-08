@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -3196,11 +3197,10 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     async listRepoIssueList(args?: unknown) {
       const actionArgs = asActionRecord(args);
-      const state = actionArgs.state;
       return githubService.listRepoIssueList(
         requireNonEmptyString(actionArgs.owner, "owner"),
         requireNonEmptyString(actionArgs.name, "name"),
-        state === "closed" || state === "all" ? state : "open",
+        parseGitHubIssueListState(actionArgs.state),
       );
     },
     async listIssueComments(args?: unknown) {

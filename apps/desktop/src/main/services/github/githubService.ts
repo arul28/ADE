@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import { createGithubIssueOps } from "./githubIssueOps";
-import { createAppIssueGrantReader, describeIssueWriteAccess, issueWriteCandidates } from "./githubIssueWriteAccess";
-import { GITHUB_ISSUE_LIST_QUERY, githubIssueListFromGraphql, githubIssueListVariables, type GitHubIssueListState } from "../../../shared/githubIssueList";
+import { issueWriteCandidates } from "./githubIssueWriteAccess";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import os from "node:os";
 import path from "node:path";
@@ -16,8 +15,6 @@ import type {
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
-  GitHubRepoIssueSummary,
-  GitHubIssueWriteAccess,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubCredentialVerification,
@@ -2206,69 +2203,11 @@ export function createGithubService({
     });
   };
 
-  // The ADE App's issues permission on an owner, read from the user's
-  // installations (one request, cached).
-  const readAppIssueGrant = createAppIssueGrantReader(async (appToken) => {
-    const { data } = await apiRequest<unknown>({
-      method: "GET",
-      path: "/user/installations",
-      query: { per_page: 100 },
-      token: appToken,
-      capability: "read",
-    });
-    return data;
-  });
-
-  const getIssueWriteAccess = async (owner: string, name: string, options: { force?: boolean } = {}): Promise<GitHubIssueWriteAccess> => {
-    const inventory = await readCredentialInventory();
-    return await describeIssueWriteAccess({
-      owner,
-      name,
-      candidates: githubOperationCredentialCandidates(inventory.candidates, "issue-write"),
-      readGrant: readAppIssueGrant,
-      force: options.force === true,
-    });
-  };
-
-  /**
-   * One PATCH for any mix of an issue's title, body, state, labels, assignees
-   * and milestone. Issue-only (`issue-write`): pull requests keep their own
-   * write path even though GitHub serves both from `/issues`.
-   */
-  const updateIssue = async (owner: string, name: string, number: number, patch: GitHubIssueUpdate): Promise<GitHubIssue | null> => {
-    const { data } = await apiRequest<GitHubIssue>({
-      method: "PATCH",
-      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
-      body: patch,
-      capability: "issue-write",
-      repo: { owner, name },
-    });
-    return data ?? null;
-  };
-
-  const commentOnIssue = async (owner: string, name: string, number: number, body: string): Promise<GitHubIssueComment | null> => {
-    const { data } = await apiRequest<GitHubIssueComment>({
-      method: "POST",
-      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`,
-      body: { body },
-      capability: "issue-write",
-      repo: { owner, name },
-    });
-    return data ?? null;
-  };
-
-  const listRepoMilestones = async (owner: string, name: string): Promise<GitHubMilestone[]> => {
-    const data = await apiRequestAllPages<GitHubMilestone>({
-      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/milestones`,
-      query: { state: "open", per_page: 100 },
-      maxPages: 2,
-    });
-    return Array.isArray(data) ? data : [];
-  };
-
-  // Creating issues, templates and issue types (see githubIssueOps.ts).
+  // Issue reads, edits and creates (see githubIssueOps.ts).
   const issueOps = createGithubIssueOps({
     apiRequest,
+    apiRequestAllPages,
+    readCredentialCandidates: async () => (await readCredentialInventory()).candidates,
     logger,
     runGh: async (ghArgs, options) => {
       const resolved = resolveExecutableFromKnownLocations("gh");
@@ -2283,6 +2222,7 @@ export function createGithubService({
       return String(stdout);
     },
   });
+  const readAppIssueGrant = issueOps.readAppIssueGrant;
 
   const getIssue = async (owner: string, name: string, number: number): Promise<GitHubIssue | null> => {
     try {
@@ -2298,55 +2238,6 @@ export function createGithubService({
       });
       return null;
     }
-  };
-
-  // A read-only GraphQL query against one repository. Errors in the body are
-  // GitHub's answer, not a transport failure, so they are raised as such.
-  const graphqlRepoRead = async <T>(owner: string, name: string, query: string, variables: Record<string, unknown>): Promise<T> => {
-    const { data } = await apiRequest<{ data?: T; errors?: Array<{ message?: unknown }> }>({
-      method: "POST",
-      path: "/graphql",
-      capability: "read",
-      repo: { owner, name },
-      body: { query, variables },
-    });
-    const errors = Array.isArray(data?.errors)
-      ? data.errors.map((entry) => (typeof entry?.message === "string" ? entry.message : "")).filter(Boolean)
-      : [];
-    if (errors.length > 0) throw new Error(errors.join("; "));
-    if (data?.data == null) throw new Error(`GitHub did not return ${owner}/${name}.`);
-    return data.data;
-  };
-
-  const getRepoIssueSummary = async (owner: string, name: string): Promise<GitHubRepoIssueSummary> => {
-    const data = await graphqlRepoRead<{
-      repository?: { hasIssuesEnabled?: unknown; issues?: { totalCount?: unknown } | null } | null;
-    }>(
-      owner,
-      name,
-      "query RepoIssueSummary($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { hasIssuesEnabled issues(states: OPEN) { totalCount } } }",
-      { owner, name },
-    );
-    const repository = data.repository;
-    if (!repository) throw new Error(`GitHub did not return ${owner}/${name}.`);
-    const totalCount = repository.issues?.totalCount;
-    return {
-      owner,
-      name,
-      hasIssuesEnabled: repository.hasIssuesEnabled === true,
-      openCount: typeof totalCount === "number" && Number.isFinite(totalCount) ? totalCount : 0,
-      checkedAt: new Date().toISOString(),
-    };
-  };
-
-  const listRepoIssueList = async (owner: string, name: string, state: GitHubIssueListState): Promise<GitHubIssueLike[]> => {
-    const data = await graphqlRepoRead<unknown>(
-      owner,
-      name,
-      GITHUB_ISSUE_LIST_QUERY,
-      githubIssueListVariables(owner, name, state),
-    );
-    return githubIssueListFromGraphql(data);
   };
 
   const listIssueComments = async (
@@ -2814,16 +2705,16 @@ export function createGithubService({
     listRepoCollaborators,
     listRepoIssues,
     getIssue,
-    getRepoIssueSummary,
+    getRepoIssueSummary: issueOps.getRepoIssueSummary,
     createIssue: issueOps.createIssue,
     listIssueTemplates: issueOps.listIssueTemplates,
     listIssueTypes: issueOps.listIssueTypes,
     linkSubIssue: issueOps.linkSubIssue,
-    getIssueWriteAccess,
-    updateIssue,
-    commentOnIssue,
-    listRepoMilestones,
-    listRepoIssueList,
+    getIssueWriteAccess: issueOps.getIssueWriteAccess,
+    updateIssue: issueOps.updateIssue,
+    commentOnIssue: issueOps.commentOnIssue,
+    listRepoMilestones: issueOps.listRepoMilestones,
+    listRepoIssueList: issueOps.listRepoIssueList,
     listIssueComments,
     listRepoPulls,
     listPullRequestReviews,

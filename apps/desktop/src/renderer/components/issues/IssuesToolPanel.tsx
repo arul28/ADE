@@ -25,7 +25,8 @@ import {
   openIssueTab,
   useIssueTabs,
 } from "./issueTabsStore";
-import { useActiveProjectRoot, useLinearIssuePeek } from "./linearIssueStore";
+import { useActiveProjectRoot } from "../../state/appStore";
+import { useLinearIssuePeek } from "./linearIssueStore";
 
 /**
  * The Issues tool in the Work tools pane: the issues you opened from this

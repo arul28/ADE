@@ -1,4 +1,5 @@
 import type { IssueTracker } from "./issueTracker";
+import { parseLinearIssueCreateInput } from "../../../shared/linearIssueCreateInput";
 import type { LinearClient } from "./linearClient";
 import { getErrorMessage } from "../shared/utils";
 import { OPEN_ISSUE_STATE_TYPES } from "./linearClientShared";
@@ -130,7 +131,7 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
     },
 
     createIssue(input) {
-      return args.client.createIssue(input);
+      return args.client.createIssue(parseLinearIssueCreateInput(input));
     },
     getIssueCreateOptions(teamKeyOrId) {
       return args.client.getIssueCreateOptions(teamKeyOrId);

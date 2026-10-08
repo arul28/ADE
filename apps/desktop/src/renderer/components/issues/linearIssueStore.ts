@@ -4,8 +4,9 @@ import type {
   CtoLinearIssueComment,
   NormalizedLinearIssue,
 } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
+import { useActiveProjectRoot } from "../../state/appStore";
 import { applyIssueEdit, type LinearIssueEdit } from "../app/linearIssueBrowserModel";
+import { createIssueEntryCache, type IssueEntry, type IssueEntryStatus } from "./issueEntryCache";
 
 /**
  * One cache for every place that shows a single Linear issue: the Issues tab in
@@ -24,28 +25,9 @@ const STALE_MS = 60_000;
 const CATALOG_STALE_MS = 90_000;
 const MAX_ENTRIES = 80;
 
-export type LinearIssueEntryStatus = "idle" | "loading" | "ready" | "missing" | "error";
+export type LinearIssueEntryStatus = IssueEntryStatus;
+export type LinearIssueEntry = IssueEntry<NormalizedLinearIssue>;
 
-export type LinearIssueEntry = {
-  status: LinearIssueEntryStatus;
-  issue: NormalizedLinearIssue | null;
-  error: string | null;
-  fetchedAt: number;
-  /** An edit is in flight; pickers show it as pending. */
-  editing: boolean;
-};
-
-type InternalEntry = LinearIssueEntry & { promise: Promise<NormalizedLinearIssue | null> | null; editSequence: number };
-
-const EMPTY_ENTRY: LinearIssueEntry = {
-  status: "idle",
-  issue: null,
-  error: null,
-  fetchedAt: 0,
-  editing: false,
-};
-
-const entries = new Map<string, InternalEntry>();
 const listeners = new Set<() => void>();
 
 function notify(): void {
@@ -57,29 +39,10 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+const issues = createIssueEntryCache<NormalizedLinearIssue>({ maxEntries: MAX_ENTRIES, staleMs: STALE_MS, notify });
+
 function entryKey(projectRoot: string | null | undefined, identifier: string): string {
   return `${projectRoot ?? ""}::${identifier.trim().toUpperCase()}`;
-}
-
-function writeEntry(key: string, patch: Partial<InternalEntry>): void {
-  const current = entries.get(key) ?? { ...EMPTY_ENTRY, promise: null, editSequence: 0 };
-  // Re-insert so the Map's order is least-recently-written first.
-  entries.delete(key);
-  entries.set(key, { ...current, ...patch });
-  while (entries.size > MAX_ENTRIES) {
-    const oldest = entries.keys().next().value;
-    if (oldest === undefined) break;
-    entries.delete(oldest);
-  }
-  notify();
-}
-
-function readEntry(key: string): LinearIssueEntry {
-  return entries.get(key) ?? EMPTY_ENTRY;
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.trim() ? error.message : fallback;
 }
 
 /**
@@ -91,46 +54,18 @@ export function loadLinearIssue(
   identifier: string,
   options: { force?: boolean } = {},
 ): Promise<NormalizedLinearIssue | null> {
-  const key = entryKey(projectRoot, identifier);
-  const current = entries.get(key);
-  if (current?.promise) return current.promise;
-  if (!options.force && current?.status === "ready" && Date.now() - current.fetchedAt < STALE_MS) {
-    return Promise.resolve(current.issue);
-  }
   const read = window.ade?.cto?.getLinearIssue;
-  if (!read) {
-    writeEntry(key, { status: "error", error: "Linear is not available here.", promise: null });
-    return Promise.resolve(null);
-  }
-  const promise = read({ issueId: identifier.trim() })
-    .then((issue) => {
-      writeEntry(key, {
-        status: issue ? "ready" : "missing",
-        issue: issue ?? null,
-        error: null,
-        fetchedAt: Date.now(),
-        promise: null,
-      });
-      return issue ?? null;
-    })
-    .catch((error: unknown) => {
-      writeEntry(key, {
-        status: current?.issue ? "ready" : "error",
-        error: errorMessage(error, "Linear request failed."),
-        promise: null,
-      });
-      return current?.issue ?? null;
-    });
-  writeEntry(key, {
-    status: current?.issue ? current.status : "loading",
-    promise,
-  });
-  return promise;
+  return issues.load(
+    entryKey(projectRoot, identifier),
+    read ? async () => (await read({ issueId: identifier.trim() })) ?? null : null,
+    { unavailable: "Linear is not available here.", failed: "Linear request failed." },
+    options,
+  );
 }
 
 /** The cached copy only, for hover cards that must not cause a request. */
 export function peekLinearIssue(projectRoot: string | null | undefined, identifier: string): NormalizedLinearIssue | null {
-  return entries.get(entryKey(projectRoot, identifier))?.issue ?? null;
+  return issues.peek(entryKey(projectRoot, identifier));
 }
 
 /**
@@ -147,24 +82,15 @@ export async function editLinearIssue(
   const update = window.ade?.cto?.updateLinearIssue;
   if (!update) throw new Error("Editing Linear issues is not available here.");
   const keys = [entryKey(projectRoot, issue.identifier), entryKey(projectRoot, issue.id)];
-  const primary = keys[0]!;
-  const snapshot = entries.get(primary)?.issue ?? issue;
-  const sequence = (entries.get(primary)?.editSequence ?? 0) + 1;
+  const snapshot = issues.peek(keys[0]!) ?? issue;
   const optimistic = applyIssueEdit(snapshot, edit, catalog);
-  for (const key of keys) writeEntry(key, { issue: optimistic, status: "ready", editing: true, editSequence: sequence });
-  const isLatest = () => entries.get(primary)?.editSequence === sequence;
-  try {
-    const updated = await update({ issueId: issue.id, ...edit });
-    if (!isLatest()) return;
-    for (const key of keys) {
-      writeEntry(key, { issue: updated ?? optimistic, editing: false, fetchedAt: Date.now() });
-    }
-  } catch (error) {
-    if (isLatest()) {
-      for (const key of keys) writeEntry(key, { issue: snapshot, editing: false });
-    }
-    throw new Error(errorMessage(error, "Linear rejected the change."));
-  }
+  await issues.edit(
+    keys,
+    snapshot,
+    optimistic,
+    async () => (await update({ issueId: issue.id, ...edit })) ?? null,
+    "Linear rejected the change.",
+  );
 }
 
 export function useLinearIssue(identifier: string | null): LinearIssueEntry & {
@@ -175,8 +101,8 @@ export function useLinearIssue(identifier: string | null): LinearIssueEntry & {
   const key = identifier ? entryKey(projectRoot, identifier) : null;
   const entry = useSyncExternalStore(
     subscribe,
-    () => (key ? readEntry(key) : EMPTY_ENTRY),
-    () => EMPTY_ENTRY,
+    () => issues.read(key),
+    () => issues.empty,
   );
   useEffect(() => {
     if (!identifier) return;
@@ -199,19 +125,10 @@ export function useLinearIssuePeek(identifier: string | null): NormalizedLinearI
   const key = identifier ? entryKey(projectRoot, identifier) : null;
   const entry = useSyncExternalStore(
     subscribe,
-    () => (key ? readEntry(key) : EMPTY_ENTRY),
-    () => EMPTY_ENTRY,
+    () => issues.read(key),
+    () => issues.empty,
   );
   return entry.issue;
-}
-
-/** The project the issue reads belong to: the remote root on a remote tab. */
-export function useActiveProjectRoot(): string | null {
-  return useAppStore((state) =>
-    state.projectBinding?.kind === "remote"
-      ? state.projectBinding.rootPath ?? null
-      : state.project?.rootPath ?? null,
-  );
 }
 
 /* ── Picker catalog (states, users, labels) ─────────────────────────────── */
@@ -350,5 +267,5 @@ export function useLinearWorkspaceTeamKeys(): string[] {
 
 /** Every issue this cache holds, for the create form's "similar issues" hint. */
 export function cachedLinearIssues(): NormalizedLinearIssue[] {
-  return [...entries.values()].map((entry) => entry.issue).filter((issue): issue is NormalizedLinearIssue => issue != null);
+  return [...issues.entries.values()].map((entry) => entry.issue).filter((issue): issue is NormalizedLinearIssue => issue != null);
 }

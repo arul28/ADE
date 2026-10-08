@@ -5485,6 +5485,15 @@ export function createLaneService({
             "delete from session_github_issues where project_id = ? and id = ?",
             [projectId, link.id],
           );
+          // The lane made for this issue carries its own link (`lane:<laneId>`).
+          // Taking the issue off the chat also takes it off the lane, or the
+          // lane's PR would still close an issue the user detached.
+          if (link.laneId && !chatSessionId.startsWith("lane:")) {
+            db.run(
+              "delete from session_github_issues where project_id = ? and session_id = ? and issue_id = ?",
+              [projectId, `lane:${link.laneId}`, link.issue.id],
+            );
+          }
         }
         db.run("commit");
       } catch (err) {

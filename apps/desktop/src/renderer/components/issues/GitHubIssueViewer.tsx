@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { ChatCircleText, CircleNotch, GithubLogo, GitBranch, Hash, LinkSimple, MarkdownLogo, Plus, Sparkle, TreeStructure } from "@phosphor-icons/react";
+import { CircleNotch, GithubLogo, GitBranch, Hash, LinkSimple, MarkdownLogo, TreeStructure } from "@phosphor-icons/react";
 import type { LaneSummary } from "../../../shared/types";
 import { githubIssueToContextAttachment } from "./githubIssueStore";
 import { requestGitHubIssueLaunch } from "./githubIssueLaunch";
@@ -9,13 +9,13 @@ import { useAppStore } from "../../state/appStore";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
 import { GitHubIssueStateIcon, githubIssueStateLabel } from "../lanes/githubBrand";
-import { Button } from "../ui/Button";
 import type { ContextMenuEntry } from "../ui/ContextMenu";
 import { Banner } from "../ui/notice";
 import { GitHubIssueView } from "./GitHubIssueView";
 import {
   commentOnGitHubIssue,
   editGitHubIssue,
+  isCompleteGitHubIssue,
   loadGitHubRepoCatalog,
   useGitHubIssue,
   useGitHubIssueWriteAccess,
@@ -25,7 +25,16 @@ import {
 import type { GitHubIssueEditing } from "./GitHubIssueView";
 import type { GitHubIssueWriteAccess } from "../../../shared/types";
 import { settingsRouteFor } from "../settings/settingsManifest";
-import { copyIssueText, IssueViewerHeader, LinkedInAdeLanes, type IssueViewerProps } from "./issueViewerParts";
+import {
+  copyIssueText,
+  IssueActionDock,
+  IssueStaleBanner,
+  IssueViewerFrame,
+  IssueViewerHeader,
+  lanesCarryingIssue,
+  LinkedInAdeLanes,
+  type IssueViewerProps,
+} from "./issueViewerParts";
 
 type GitHubRef = Extract<IssueRef, { provider: "github" }>;
 
@@ -44,7 +53,11 @@ export function GitHubIssueViewer({
   const repo = useMemo(() => ({ owner: githubRef.owner, name: githubRef.repo }), [githubRef.owner, githubRef.repo]);
   const access = useGitHubIssueWriteAccess(repo);
   const catalog = useGitHubRepoCatalog(repo);
-  const readOnlyReason = issueReadOnlyReason(access);
+  // A copy from a list row holds only some labels and assignees; replacing a
+  // set from it would drop the rest, so edits wait for the whole issue.
+  const readOnlyReason = issue && !isCompleteGitHubIssue(entry)
+    ? entry.error ? "ADE couldn't read the whole issue. Retry to edit it." : "Reading the whole issue from GitHub…"
+    : issueReadOnlyReason(access);
   const editing = useMemo<GitHubIssueEditing | undefined>(() => {
     if (!issue) return undefined;
     const fail = (error: unknown) => {
@@ -129,20 +142,7 @@ export function GitHubIssueViewer({
   } else {
     body = (
       <>
-        {entry.error ? (
-          <div className="px-4 pt-3">
-            <Banner
-              layout="inline"
-              model={{
-                id: "issue-refresh-failed",
-                tone: "warning",
-                title: "Showing the last copy ADE read",
-                detail: entry.error,
-                actions: [{ label: "Retry", onClick: entry.refresh }],
-              }}
-            />
-          </div>
-        ) : null}
+        <IssueStaleBanner error={entry.error} onRetry={entry.refresh} />
         {access && !access.writeSource ? <WriteAccessNotice access={access} onLeave={onClose} /> : null}
         <GitHubIssueView
           issue={issue}
@@ -155,65 +155,24 @@ export function GitHubIssueViewer({
   }
 
   return (
-    <section className="ade-issue-frame" data-issue-viewer={variant} aria-label={`GitHub issue ${githubRef.owner}/${githubRef.repo}#${githubRef.number}`}>
-      {header}
-      <div className="ade-issue-frame-scroll">{body}</div>
-      {issue && !issue.isPullRequest ? (
-        <div className="ade-issue-frame-dock">
-          <Button
-            type="button"
-            variant="primary"
-            casing="sentence"
-            className="shrink-0 gap-1.5 px-3"
-            title="New lane for this issue, plus an agent started on it"
-            onClick={() => {
-              if (variant === "sheet") onClose?.();
-              requestGitHubIssueLaunch(issue);
-            }}
-          >
-            <Sparkle size={13} weight="fill" />
-            Launch agent
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            casing="sentence"
-            className="shrink-0 gap-1.5 px-3"
-            title="New lane for this issue. Start an agent later."
-            onClick={() => {
-              if (variant === "sheet") onClose?.();
-              requestGitHubIssueLaunch(issue, { laneOnly: true });
-            }}
-          >
-            <Plus size={13} weight="bold" />
-            Lane only
-          </Button>
-          {onAttachToChat ? (
-            <Button
-              type="button"
-              variant="outline"
-              casing="sentence"
-              className="shrink-0 gap-1.5 px-3"
-              title="Add this issue to the chat's next message as context"
-              onClick={() => {
-                try {
-                  onAttachToChat(githubIssueToContextAttachment(issue));
-                } catch (error) {
-                  showToast({
-                    tone: "warning",
-                    title: `Couldn't attach #${issue.number}`,
-                    message: error instanceof Error ? error.message : "There is no chat to attach it to.",
-                  });
-                }
-              }}
-            >
-              <ChatCircleText size={13} />
-              Attach to chat
-            </Button>
-          ) : null}
-        </div>
+    <IssueViewerFrame
+      variant={variant}
+      ariaLabel={`GitHub issue ${githubRef.owner}/${githubRef.repo}#${githubRef.number}`}
+      header={header}
+      dock={issue && !issue.isPullRequest ? (
+        <IssueActionDock
+          label={`#${issue.number}`}
+          onLaunch={(laneOnly) => {
+            if (variant === "sheet") onClose?.();
+            requestGitHubIssueLaunch(issue, { laneOnly });
+          }}
+          attachment={() => githubIssueToContextAttachment(issue)}
+          onAttachToChat={onAttachToChat}
+        />
       ) : null}
-    </section>
+    >
+      {body}
+    </IssueViewerFrame>
   );
 }
 
@@ -221,7 +180,7 @@ export function GitHubIssueViewer({
 function issueReadOnlyReason(access: GitHubIssueWriteAccess | null): string | null {
   if (!access) return "Checking whether ADE can edit issues here…";
   if (access.writeSource) return null;
-  if (access.app?.installed && access.app.issuesPermission !== "write") {
+  if (access.app?.needsApproval) {
     return "ADE's GitHub App can't edit issues until its Issues permission is approved.";
   }
   return "Connect GitHub CLI or add a token in Settings to edit issues.";
@@ -229,7 +188,7 @@ function issueReadOnlyReason(access: GitHubIssueWriteAccess | null): string | nu
 
 /** Said once, above the issue, with the action that fixes it. */
 function WriteAccessNotice({ access, onLeave }: { access: GitHubIssueWriteAccess; onLeave?: () => void }) {
-  const needsApproval = Boolean(access.app?.installed && access.app.issuesPermission !== "write");
+  const needsApproval = Boolean(access.app?.needsApproval);
   const openSettings = () => {
     onLeave?.();
     window.location.hash = `#${settingsRouteFor("integrations.github")}`;
@@ -351,12 +310,5 @@ function lanesLinkedToGitHubIssue(
     && candidate.owner?.toLowerCase() === issue.owner.toLowerCase()
     && candidate.repo?.toLowerCase() === issue.repo.toLowerCase(),
   );
-  const out: Array<{ lane: LaneSummary; chatCount: number }> = [];
-  for (const lane of lanes) {
-    const links = (lane.githubIssueLinks ?? []).filter((link) => matches(link.issue));
-    if (links.length === 0) continue;
-    const chats = new Set(links.map((link) => link.evidence?.chatSessionId).filter((id): id is string => Boolean(id)));
-    out.push({ lane, chatCount: chats.size });
-  }
-  return out;
+  return lanesCarryingIssue(lanes, (lane) => (lane.githubIssueLinks ?? []).filter((link) => matches(link.issue)));
 }
