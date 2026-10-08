@@ -1660,6 +1660,7 @@ struct WorkRootHeaderActions {
   var onOpenActivity: () -> Void = {}
   var onOpenLinear: () -> Void = {}
   var onOpenCursorCloud: () -> Void = {}
+  var onOpenGitHubIssues: () -> Void = {}
   var onOpenSettings: () -> Void = {}
 }
 
@@ -1679,6 +1680,7 @@ struct WorkRootHeader: View {
   let isLive: Bool
   let showsLinear: Bool
   let showsCursorCloud: Bool
+  var showsGitHubIssues = false
   /// Non-nil while multi-select is on; the row becomes "N selected · Cancel".
   let selectionCount: Int?
   let actions: WorkRootHeaderActions
@@ -1724,6 +1726,7 @@ struct WorkRootHeader: View {
         WorkHeaderOverflowMenu(
           showsLinear: showsLinear,
           showsCursorCloud: showsCursorCloud,
+          showsGitHubIssues: showsGitHubIssues,
           actions: actions
         )
       }
@@ -1863,6 +1866,7 @@ private struct WorkHeaderOverflowMenu: View {
   @EnvironmentObject private var drawer: ActivityDrawerModel
   let showsLinear: Bool
   let showsCursorCloud: Bool
+  var showsGitHubIssues = false
   let actions: WorkRootHeaderActions
 
   private var unread: Int { drawer.unreadCount }
@@ -1884,6 +1888,14 @@ private struct WorkHeaderOverflowMenu: View {
           actions.onOpenLinear()
         } label: {
           Label { Text("Linear") } icon: { Image("LinearLogo") }
+        }
+      }
+      if showsGitHubIssues {
+        Button {
+          ADEHaptics.light()
+          actions.onOpenGitHubIssues()
+        } label: {
+          Label { Text("GitHub Issues") } icon: { Image("ProviderGitHub") }
         }
       }
       if showsCursorCloud {
@@ -1918,7 +1930,7 @@ private struct WorkHeaderOverflowMenu: View {
     .buttonStyle(.plain)
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
-    .accessibilityHint("Activity, Linear, Cursor Cloud and Settings")
+    .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
   }
 }
 

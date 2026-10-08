@@ -16,7 +16,8 @@ import type {
 } from "../../../shared/types";
 import type { DeeplinkEnvelope } from "../../../shared/deeplinks";
 import { openExternalUrl } from "../../lib/openExternal";
-import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueInSheet } from "../../lib/issueNavigation";
 import { Banner } from "../ui/notice";
 
 export type InboundBranchDeeplink = {
@@ -347,7 +348,8 @@ export function InboundDeeplinkModal({
           key="linear"
           type="button"
           onClick={() => {
-            requestLinearIssueQuickView({ issueIdentifier: envelope.linearIssue!, source: "deeplink" });
+            const ref = linearIssueRef(envelope.linearIssue!);
+            if (ref) openIssueInSheet({ ref, source: "deeplink" });
             onClose();
           }}
           style={outlineButton({ height: 36 })}

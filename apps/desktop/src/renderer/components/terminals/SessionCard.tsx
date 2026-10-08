@@ -86,7 +86,8 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { ChatSubagentGlyph, chatSubagentColor } from "../chat/chatSubagentIdentity";
 import { navigateToSpawnedChat } from "../chat/spawnNavigation";
-import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueRef } from "../../lib/issueNavigation";
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { SessionStatusSlot } from "./SessionStatusSlot";
 import { useChatLaunchQueuedState, useChatLaunchRowState, useChatLaunchStatusLine } from "../../state/chatLaunchStore";
@@ -274,10 +275,8 @@ function LinkifiedPreviewLine({
       if (prMatch) {
         onOpenPr(Number.parseInt(prMatch[1]!, 10));
       } else if (linearIssue) {
-        requestLinearIssueQuickView({
-          issueIdentifier: linearIssue,
-          source: "manual",
-        });
+        const ref = linearIssueRef(linearIssue);
+        if (ref) openIssueRef({ ref, source: "session-card" });
       }
     };
     return (

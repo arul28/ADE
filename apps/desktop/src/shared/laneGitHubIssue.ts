@@ -1,4 +1,4 @@
-import type { LaneGitHubIssue } from "./types";
+import type { GitHubIssueCreateInput, LaneGitHubIssue } from "./types";
 
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -97,12 +97,91 @@ export type GitHubIssueLike = {
   html_url?: string;
   state?: string;
   state_reason?: string | null;
-  labels?: Array<string | { name?: string }>;
-  assignees?: Array<{ login?: string }>;
-  user?: { login?: string } | null;
+  labels?: Array<string | { name?: string; color?: string | null }>;
+  assignees?: Array<{ login?: string; avatar_url?: string | null }>;
+  user?: { login?: string; avatar_url?: string | null } | null;
+  milestone?: { title?: string | null } | null;
+  comments?: number;
   created_at?: string;
   updated_at?: string;
+  closed_at?: string | null;
   pull_request?: unknown;
+};
+
+/** The fields an issue edit may change (GitHub's PATCH body). */
+export type GitHubIssuePatch = {
+  title?: string;
+  body?: string;
+  state?: "open" | "closed";
+  state_reason?: "completed" | "not_planned" | "duplicate" | "reopened" | null;
+  labels?: string[];
+  assignees?: string[];
+  /** Milestone number, or null to clear it. */
+  milestone?: number | null;
+  /** Issue type name (organization repositories), or null to clear it. */
+  type?: string | null;
+};
+
+const ISSUE_STATE_REASONS = new Set(["completed", "not_planned", "duplicate", "reopened"]);
+
+/** Accept only the fields and shapes GitHub's issue PATCH takes; drop the rest. */
+export function parseGitHubIssueUpdate(value: unknown): GitHubIssuePatch {
+  const record = readRecord(value) ?? {};
+  const patch: GitHubIssuePatch = {};
+  if (typeof record.title === "string" && record.title.trim()) patch.title = record.title;
+  if (typeof record.body === "string") patch.body = record.body;
+  if (record.state === "open" || record.state === "closed") patch.state = record.state;
+  if (record.state_reason === null || (typeof record.state_reason === "string" && ISSUE_STATE_REASONS.has(record.state_reason))) {
+    patch.state_reason = record.state_reason as GitHubIssuePatch["state_reason"];
+  }
+  if (Array.isArray(record.labels)) patch.labels = record.labels.filter((entry): entry is string => typeof entry === "string");
+  if (Array.isArray(record.assignees)) patch.assignees = record.assignees.filter((entry): entry is string => typeof entry === "string");
+  if (record.milestone === null || (typeof record.milestone === "number" && Number.isInteger(record.milestone))) {
+    patch.milestone = record.milestone as number | null;
+  }
+  if (record.type === null || (typeof record.type === "string" && record.type.trim())) {
+    patch.type = record.type === null ? null : String(record.type).trim();
+  }
+  return patch;
+}
+
+/** Keep only well-formed create fields; pictures stay base64 and bounded by count. */
+export function parseGitHubIssueCreateInput(value: unknown): GitHubIssueCreateInput {
+  const record = readRecord(value) ?? {};
+  const title = typeof record.title === "string" ? record.title : "";
+  const strings = (entry: unknown) => (Array.isArray(entry) ? entry.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []);
+  const attachments = (Array.isArray(record.attachments) ? record.attachments : [])
+    .map(readRecord)
+    .filter((entry): entry is Record<string, unknown> => entry != null)
+    .filter((entry) => typeof entry.filename === "string" && typeof entry.dataBase64 === "string")
+    .slice(0, 20)
+    .map((entry) => ({
+      filename: String(entry.filename),
+      contentType: typeof entry.contentType === "string" ? entry.contentType : "application/octet-stream",
+      dataBase64: String(entry.dataBase64),
+    }));
+  return {
+    title,
+    ...(typeof record.body === "string" ? { body: record.body } : {}),
+    labels: strings(record.labels),
+    assignees: strings(record.assignees),
+    ...(typeof record.milestone === "number" && Number.isInteger(record.milestone) ? { milestone: record.milestone } : {}),
+    ...(typeof record.type === "string" && record.type.trim() ? { type: record.type.trim() } : {}),
+    ...(typeof record.parentNumber === "number" && Number.isInteger(record.parentNumber) && record.parentNumber > 0
+      ? { parentNumber: record.parentNumber }
+      : {}),
+    ...(attachments.length ? { attachments } : {}),
+  };
+}
+
+/** One issue comment as GitHub's REST API returns it (the fields ADE reads). */
+export type GitHubIssueCommentLike = {
+  id?: number;
+  body?: string | null;
+  html_url?: string;
+  user?: { login?: string; avatar_url?: string | null } | null;
+  created_at?: string;
+  updated_at?: string;
 };
 
 export function githubIssueToLaneIssue(

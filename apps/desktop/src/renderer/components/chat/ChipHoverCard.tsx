@@ -18,10 +18,12 @@
 //   - **Degrades to nothing.** No lane, no session row, no PR record, no
 //     network: the card simply does not appear. There is no error state for a
 //     hover.
-//   - **Reads, never fetches, except for PRs.** Lanes, chats, and Linear issues
-//     already live in app state. PRs go through `listPrsCoalesced`, the same
-//     coalesced reader the composer's `#` suggestions use, and only once the
-//     user has actually hovered.
+//   - **Reads, never fetches, except for PRs and Linear issues.** Lanes and
+//     chats already live in app state. PRs go through `listPrsCoalesced`, the
+//     same coalesced reader the composer's `#` suggestions use; Linear issues go
+//     through the issue viewer's cache (`linearIssueStore`), so a hover after
+//     the issue was opened costs nothing and a hover before it warms the tab.
+//     Both only once the user has actually hovered.
 //   - **The CHAT's machine, not the tab's.** A lane id is unique per machine,
 //     not globally, so resolving one against the project tab's lane list can
 //     match a DIFFERENT lane that happens to share the id — and then print its
@@ -41,6 +43,11 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { listPrsCoalesced } from "../../lib/prReadCache";
+import { loadLinearIssue, peekLinearIssue } from "../issues/linearIssueStore";
+import { loadGitHubIssue, peekGitHubIssue } from "../issues/githubIssueStore";
+import { GitHubIssueStateIcon } from "../lanes/githubBrand";
+import { issueRefFromUrl } from "../../../shared/issueRefs";
+import { LinearStateIcon } from "../lanes/linearBrand";
 import { relativeWhen } from "../../lib/format";
 import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
 import { computeTooltipPosition, type TooltipPlacement } from "../ui/tooltipPosition";
@@ -93,13 +100,29 @@ export type ChipCardData =
   | { kind: "pr"; number: number; title: string | null; state: PrState; repo: string | null }
   | { kind: "lane"; name: string; branch: string | null }
   | { kind: "chat"; title: string; lastActivity: string | null }
-  | { kind: "linear"; identifier: string; title: string };
+  | {
+    kind: "linear";
+    identifier: string;
+    title: string;
+    stateName?: string | null;
+    stateType?: string | null;
+    assigneeName?: string | null;
+  }
+  | {
+    kind: "github-issue";
+    reference: string;
+    title: string;
+    state: "open" | "closed";
+    stateReason: string | null;
+    assignees: string[];
+  };
 
 type ChipCardTarget =
   | { kind: "pr"; number: number; owner: string | null; repo: string | null }
   | { kind: "lane"; laneId: string }
   | { kind: "chat"; sessionId: string }
-  | { kind: "linear"; identifier: string };
+  | { kind: "linear"; identifier: string }
+  | { kind: "github-issue"; owner: string; repo: string; number: number };
 
 function githubPullTarget(url: string): ChipCardTarget | null {
   try {
@@ -143,6 +166,10 @@ export function chipCardTarget(chip: Chip): ChipCardTarget | null {
         : null;
     case "linear_issue":
       return chip.label.trim() ? { kind: "linear", identifier: chip.label.trim().toUpperCase() } : null;
+    case "issue": {
+      const ref = source.origin === "url" ? issueRefFromUrl(source.url) : null;
+      return ref?.provider === "github" ? { kind: "github-issue", owner: ref.owner, repo: ref.repo, number: ref.number } : null;
+    }
     default:
       return null;
   }
@@ -182,7 +209,32 @@ export async function loadChipCardData(
       lastActivity: session.lastActivityAt || session.endedAt || session.startedAt || null,
     };
   }
+  if (target.kind === "github-issue") {
+    const issue = peekGitHubIssue(sources.rootPath, target.owner, target.repo, target.number)
+      ?? await loadGitHubIssue(sources.rootPath, target.owner, target.repo, target.number).catch(() => null);
+    if (!issue || issue.isPullRequest) return null;
+    return {
+      kind: "github-issue",
+      reference: `${issue.owner}/${issue.repo}#${issue.number}`,
+      title: issue.title,
+      state: issue.state,
+      stateReason: issue.stateReason,
+      assignees: issue.assignees.map((entry) => entry.login),
+    };
+  }
   if (target.kind === "linear") {
+    const issue = peekLinearIssue(sources.rootPath, target.identifier)
+      ?? await loadLinearIssue(sources.rootPath, target.identifier).catch(() => null);
+    if (issue) {
+      return {
+        kind: "linear",
+        identifier: issue.identifier,
+        title: issue.title,
+        stateName: issue.stateName,
+        stateType: issue.stateType,
+        assigneeName: issue.assigneeName,
+      };
+    }
     const title = linearTitleFromLanes(sources.lanes, target.identifier) ?? previewTitle;
     return title ? { kind: "linear", identifier: target.identifier, title } : null;
   }
@@ -257,10 +309,27 @@ function ChipCardBody({ data }: { data: ChipCardData }) {
       </>
     );
   }
+  if (data.kind === "github-issue") {
+    return (
+      <>
+        <div className="flex items-center gap-1.5 text-[11px] text-fg/60">
+          <GitHubIssueStateIcon state={data.state} stateReason={data.stateReason} size={11} />
+          <span className="truncate font-medium text-fg/85">{data.reference}</span>
+        </div>
+        <div className="mt-0.5 line-clamp-2 text-[12px] text-fg/90">{data.title}</div>
+        {data.assignees.length > 0 ? <div className="mt-0.5 truncate text-[11px] text-fg/55">{data.assignees.join(", ")}</div> : null}
+      </>
+    );
+  }
   return (
     <>
-      <div className="text-[11px] font-medium text-fg/60">{data.identifier}</div>
+      <div className="flex items-center gap-1.5 text-[11px] text-fg/60">
+        {data.stateType ? <LinearStateIcon stateType={data.stateType} size={11} /> : null}
+        <span className="font-medium text-fg/85">{data.identifier}</span>
+        {data.stateName ? <span className="truncate">{data.stateName}</span> : null}
+      </div>
       <div className="mt-0.5 line-clamp-2 text-[12px] text-fg/90">{data.title}</div>
+      {data.assigneeName ? <div className="mt-0.5 truncate text-[11px] text-fg/55">{data.assigneeName}</div> : null}
     </>
   );
 }

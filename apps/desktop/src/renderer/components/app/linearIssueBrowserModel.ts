@@ -94,6 +94,8 @@ export function applyIssueEdit<T extends BrowserIssue>(
   catalog: CtoGetLinearIssuePickerDataResult,
 ): T {
   let next: T = { ...issue, updatedAt: new Date().toISOString() };
+  if (typeof edit.title === "string" && edit.title.trim()) next = { ...next, title: edit.title.trim() };
+  if (typeof edit.description === "string") next = { ...next, description: edit.description };
   if (edit.stateId) {
     const state = catalog.states.find((entry) => entry.id === edit.stateId);
     if (state) next = { ...next, stateId: state.id, stateName: state.name, stateType: state.type };

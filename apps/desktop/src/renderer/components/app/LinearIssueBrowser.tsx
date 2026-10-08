@@ -43,6 +43,7 @@ import {
 } from "./LinearIssueBrowserRows";
 import { LinearBatchActionView, LinearIssueDetails } from "./LinearIssueDetailPane";
 import { LinearInboxList } from "./LinearInboxList";
+import { subscribeIssueCreated } from "../../lib/issueCreateRequests";
 import {
   applyIssueEdit,
   formatLinearCount,
@@ -166,6 +167,21 @@ type LinearIssueBrowserCacheEntry = {
 };
 
 const linearIssueBrowserCache = new Map<string, LinearIssueBrowserCacheEntry>();
+
+/**
+ * Every issue this window already read in the browser, for the create form's
+ * "similar issues" hint. Reads memory only; never a request.
+ */
+export function cachedLinearBrowserIssues(): NormalizedLinearIssue[] {
+  const byId = new Map<string, NormalizedLinearIssue>();
+  for (const entry of linearIssueBrowserCache.values()) {
+    for (const search of entry.searches.values()) {
+      for (const issue of search.result?.issues ?? []) byId.set(issue.id, issue);
+    }
+    for (const detail of entry.details.values()) byId.set(detail.issue.id, detail.issue);
+  }
+  return [...byId.values()];
+}
 const ctoCacheScopes = new WeakMap<object, number>();
 let nextCtoCacheScope = 1;
 
@@ -524,8 +540,6 @@ export function LinearIssueBrowser({
   showBranchPreview = true,
   singleSelect = false,
   refreshKey = 0,
-  requestedIssueIdentifier,
-  requestedIssueRequestKey,
   onIssueAction,
   onOpenLinearSettings,
   onConnectionVisibilityChange,
@@ -544,8 +558,6 @@ export function LinearIssueBrowser({
   showBranchPreview?: boolean;
   singleSelect?: boolean;
   refreshKey?: number;
-  requestedIssueIdentifier?: string | null;
-  requestedIssueRequestKey?: string | number | null;
   onIssueAction: (issue: BrowserIssue) => void | Promise<void>;
   onOpenLinearSettings?: () => void;
   onConnectionVisibilityChange?: (visible: boolean) => void;
@@ -602,7 +614,6 @@ export function LinearIssueBrowser({
   const quickViewRequestIdRef = useRef(0);
   const catalogRequestIdRef = useRef(0);
   const searchRequestIdRef = useRef(0);
-  const lastRequestedIssueKeyRef = useRef<string | null>(null);
   // Accumulated data for every issue displayed this session, so a selection
   // built across multiple searches stays resolvable when an earlier pick is no
   // longer on the current page. seenVersion forces a re-render when it grows.
@@ -931,42 +942,10 @@ export function LinearIssueBrowser({
   }, [canAutoLoadIssues, issues.length, lastRenderedIndex, listRows.length, loadingIssues, pageInfo.hasNextPage, searchIssues]);
 
   useEffect(() => {
-    const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
-    const requestKey = `${normalized}:${requestedIssueRequestKey ?? ""}`;
-    if (!normalized || lastRequestedIssueKeyRef.current === requestKey) return;
-    lastRequestedIssueKeyRef.current = requestKey;
-    const nextFilters: LinearIssueBrowserFilters = {
-      ...DEFAULT_FILTERS,
-      query: normalized,
-      statePreset: "all",
-    };
-    setFilters(nextFilters);
-    safeSaveFilters(projectRoot, nextFilters);
-    setIssues([]);
-    setPageInfo({ hasNextPage: false, endCursor: null });
-    setSearchTotalCount(null);
-    setSelectedIssueId(null);
-    setSelectedIssueIds(new Set());
-    safeSaveSelection(projectRoot, new Set());
-    setCollapsedGroups({});
-  }, [projectRoot, requestedIssueIdentifier, requestedIssueRequestKey]);
-
-  useEffect(() => {
     if (selectedIssueId && displayIssues.some((issue) => issue.id === selectedIssueId)) return;
     if (selectedIssueId && externalIssue?.id === selectedIssueId) return;
     setSelectedIssueId(displayIssues[0]?.id ?? null);
   }, [displayIssues, externalIssue, selectedIssueId]);
-
-  useEffect(() => {
-    const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
-    if (!normalized) return;
-    const match = displayIssues.find((issue) =>
-      issue.identifier.trim().toUpperCase() === normalized
-      || issue.id.trim() === requestedIssueIdentifier?.trim()
-    );
-    if (!match || selectedIssueId === match.id) return;
-    setSelectedIssueId(match.id);
-  }, [displayIssues, requestedIssueIdentifier, selectedIssueId]);
 
   const listSelectedIssue = displayIssues.find((issue) => issue.id === selectedIssueId)
     ?? (externalIssue && externalIssue.id === selectedIssueId ? externalIssue : null)
@@ -1018,6 +997,15 @@ export function LinearIssueBrowser({
     }, 120);
     return () => window.clearTimeout(timer);
   }, [detailIssues, fetchIssueDetail, selectedIssueKey]);
+
+  // An issue made from the pane's "New" is selected at once; the list gains it
+  // at its next refresh.
+  useEffect(() => subscribeIssueCreated((event) => {
+    if (event.provider !== "linear") return;
+    rememberDetail(event.issue);
+    setExternalIssue(event.issue);
+    setSelectedIssueId(event.issue.id);
+  }), [rememberDetail]);
 
   const handleOpenRelatedIssue = useCallback(async (ref: LinearIssueRef) => {
     if (displayIssues.some((issue) => issue.id === ref.id)) {

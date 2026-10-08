@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { createGithubIssueOps } from "../../desktop/src/main/services/github/githubIssueOps";
+import { createAppIssueGrantReader, describeIssueWriteAccess, issueWriteCandidates } from "../../desktop/src/main/services/github/githubIssueWriteAccess";
+import { GITHUB_ISSUE_LIST_QUERY, githubIssueListFromGraphql, githubIssueListVariables } from "../../desktop/src/shared/githubIssueList";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -49,6 +52,7 @@ import type {
   GitHubIssue,
   GitHubIssueComment,
   GitHubLabel,
+  GitHubMilestone,
   GitHubPullRequest,
   GitHubPullRequestReview,
 } from "../../desktop/src/main/services/github/githubService";
@@ -957,7 +961,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: null,
         ghAuthError: null,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     if (appToken) {
@@ -967,7 +971,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: null,
         ghAuthError: null,
-        capabilities: ["read"],
+        capabilities: ["read", "issue-write"],
         userLogin: appStatus.userLogin,
       });
     }
@@ -978,7 +982,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: gh.ghCliPath,
         ghAuthError: gh.ghAuthError,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     if (patToken) {
@@ -988,7 +992,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: gh.ghCliPath,
         ghAuthError: gh.ghAuthError,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     return {
@@ -1345,7 +1349,7 @@ export function createHeadlessGitHubService(
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
     const explicitToken = args.token?.trim() ?? "";
-    const candidates: HeadlessGitHubTokenCandidate[] = explicitToken
+    const candidatePool: HeadlessGitHubTokenCandidate[] = explicitToken
       ? [{
           token: explicitToken,
           source: "environment",
@@ -1358,6 +1362,16 @@ export function createHeadlessGitHubService(
           (await readCredentialInventoryAsync()).candidates,
           capability,
         );
+    // An issue write uses the App only when its installation grants
+    // `Issues: write`; otherwise it would 403 on every edit (see
+    // `githubIssueWriteAccess.ts`).
+    const candidates = capability === "issue-write" && !explicitToken
+      ? await issueWriteCandidates(
+        candidatePool,
+        args.repo?.owner ?? classifyGitHubRepositoryApiPath(args.path)?.owner ?? null,
+        readAppIssueGrant,
+      )
+      : candidatePool;
     if (candidates.length === 0) {
       throw new Error(
         "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
@@ -1689,6 +1703,83 @@ export function createHeadlessGitHubService(
     return Array.isArray(data) ? data : [];
   };
 
+  // The ADE App's issues permission on an owner, read from the user's
+  // installations (one request, cached).
+  const readAppIssueGrant = createAppIssueGrantReader(async (appToken) => {
+    const { data } = await apiRequest<unknown>({
+      method: "GET",
+      path: "/user/installations",
+      query: { per_page: 100 },
+      token: appToken,
+      capability: "read",
+    });
+    return data;
+  });
+
+  const getIssueWriteAccess: HeadlessGitHubService["getIssueWriteAccess"] = async (owner, name, options = {}) => {
+    const inventory = await readCredentialInventoryAsync();
+    return await describeIssueWriteAccess({
+      owner,
+      name,
+      candidates: githubOperationCredentialCandidates(inventory.candidates, "issue-write"),
+      readGrant: readAppIssueGrant,
+      force: options.force === true,
+    });
+  };
+
+  /**
+   * One PATCH for any mix of an issue's title, body, state, labels, assignees
+   * and milestone. Issue-only (`issue-write`): pull requests keep their own
+   * write path even though GitHub serves both from `/issues`.
+   */
+  const updateIssue: HeadlessGitHubService["updateIssue"] = async (owner, name, number, patch) => {
+    const { data } = await apiRequest<GitHubIssue>({
+      method: "PATCH",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+      body: patch,
+      capability: "issue-write",
+      repo: { owner, name },
+    });
+    return data ?? null;
+  };
+
+  const commentOnIssue: HeadlessGitHubService["commentOnIssue"] = async (owner, name, number, body) => {
+    const { data } = await apiRequest<GitHubIssueComment>({
+      method: "POST",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`,
+      body: { body },
+      capability: "issue-write",
+      repo: { owner, name },
+    });
+    return data ?? null;
+  };
+
+  const listRepoMilestones: HeadlessGitHubService["listRepoMilestones"] = async (owner, name) => {
+    const data = await apiRequestAllPages<GitHubMilestone>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/milestones`,
+      query: { state: "open", per_page: 100 },
+      maxPages: 2,
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  // Creating issues, templates and issue types (see githubIssueOps.ts).
+  const issueOps = createGithubIssueOps({
+    apiRequest,
+    logger,
+    runGh: async (ghArgs, options) => {
+      const result = await runCommandAsync(await resolveGhCliPathAsync(), ghArgs, {
+        cwd: options.cwd,
+        timeoutMs: options.timeoutMs,
+        maxBuffer: 1024 * 1024,
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr.trim() || `gh ${ghArgs.slice(0, 2).join(" ")} failed (exit ${result.exitCode}).`);
+      }
+      return result.stdout;
+    },
+  });
+
   const getIssue: HeadlessGitHubService["getIssue"] = async (
     owner,
     name,
@@ -1709,6 +1800,55 @@ export function createHeadlessGitHubService(
       });
       return null;
     }
+  };
+
+  // A read-only GraphQL query against one repository. Errors in the body are
+  // GitHub's answer, not a transport failure, so they are raised as such.
+  const graphqlRepoRead = async <T>(owner: string, name: string, query: string, variables: Record<string, unknown>): Promise<T> => {
+    const { data } = await apiRequest<{ data?: T; errors?: Array<{ message?: unknown }> }>({
+      method: "POST",
+      path: "/graphql",
+      capability: "read",
+      repo: { owner, name },
+      body: { query, variables },
+    });
+    const errors = Array.isArray(data?.errors)
+      ? data.errors.map((entry) => (typeof entry?.message === "string" ? entry.message : "")).filter(Boolean)
+      : [];
+    if (errors.length > 0) throw new Error(errors.join("; "));
+    if (data?.data == null) throw new Error(`GitHub did not return ${owner}/${name}.`);
+    return data.data;
+  };
+
+  const getRepoIssueSummary: HeadlessGitHubService["getRepoIssueSummary"] = async (owner, name) => {
+    const data = await graphqlRepoRead<{
+      repository?: { hasIssuesEnabled?: unknown; issues?: { totalCount?: unknown } | null } | null;
+    }>(
+      owner,
+      name,
+      "query RepoIssueSummary($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { hasIssuesEnabled issues(states: OPEN) { totalCount } } }",
+      { owner, name },
+    );
+    const repository = data.repository;
+    if (!repository) throw new Error(`GitHub did not return ${owner}/${name}.`);
+    const totalCount = repository.issues?.totalCount;
+    return {
+      owner,
+      name,
+      hasIssuesEnabled: repository.hasIssuesEnabled === true,
+      openCount: typeof totalCount === "number" && Number.isFinite(totalCount) ? totalCount : 0,
+      checkedAt: new Date().toISOString(),
+    };
+  };
+
+  const listRepoIssueList: HeadlessGitHubService["listRepoIssueList"] = async (owner, name, state) => {
+    const data = await graphqlRepoRead<unknown>(
+      owner,
+      name,
+      GITHUB_ISSUE_LIST_QUERY,
+      githubIssueListVariables(owner, name, state),
+    );
+    return githubIssueListFromGraphql(data);
   };
 
   const listIssueComments: HeadlessGitHubService["listIssueComments"] = async (
@@ -2371,6 +2511,16 @@ export function createHeadlessGitHubService(
     },
     listRepoIssues,
     getIssue,
+    getRepoIssueSummary,
+    createIssue: issueOps.createIssue,
+    listIssueTemplates: issueOps.listIssueTemplates,
+    listIssueTypes: issueOps.listIssueTypes,
+    linkSubIssue: issueOps.linkSubIssue,
+    getIssueWriteAccess,
+    updateIssue,
+    commentOnIssue,
+    listRepoMilestones,
+    listRepoIssueList,
     listIssueComments,
     listRepoPulls,
     listPullRequestReviews,

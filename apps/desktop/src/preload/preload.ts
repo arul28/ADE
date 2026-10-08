@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import {
   type AppOpenSystemSettingsPaneArgs,
@@ -312,6 +313,11 @@ import type {
   CtoCountLinearIssuesArgs,
   CtoCountLinearIssuesResult,
   CtoGetLinearIssueArgs,
+  CtoCreateLinearIssueCommentArgs,
+  LinearIssueCreateInput,
+  LinearIssueCreateOptions,
+  LinearProjectMilestone,
+  LinearUploadResult,
   CtoLinearCustomView,
   LinearAgentOverview,
   LinearInboxNotification,
@@ -422,6 +428,11 @@ import type {
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
+  GitHubRepoIssueSummary,
+  GitHubIssueWriteAccess,
+  GitHubIssueCreateInput,
+  GitHubIssueCreateResult,
+  GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
@@ -1118,7 +1129,7 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
-import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
+import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "../shared/laneGitHubIssue";
 
 type ShortIpcCache<T> = {
   clear: () => void;
@@ -11808,6 +11819,46 @@ const adeBridge = {
       callProjectRuntimeActionOr("github", "getIssue", { args }, () =>
         ipcRenderer.invoke(IPC.githubGetIssue, args),
       ),
+    getRepoIssueSummary: async (args: { owner: string; name: string }): Promise<GitHubRepoIssueSummary> =>
+      callProjectRuntimeActionOr("github", "getRepoIssueSummary", { args }, () =>
+        ipcRenderer.invoke(IPC.githubGetRepoIssueSummary, args),
+      ),
+    listRepoIssueList: async (args: { owner: string; name: string; state: "open" | "closed" | "all" }): Promise<GitHubIssueLike[]> =>
+      callProjectRuntimeActionOr("github", "listRepoIssueList", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListRepoIssueList, args),
+      ),
+    createIssue: async (args: { owner: string; name: string; input: GitHubIssueCreateInput }): Promise<GitHubIssueCreateResult> =>
+      callProjectRuntimeActionOr("github", "createIssue", { args }, () =>
+        ipcRenderer.invoke(IPC.githubCreateIssue, args),
+      ),
+    listIssueTemplates: async (args: { owner: string; name: string }): Promise<GitHubIssueTemplateSet> =>
+      callProjectRuntimeActionOr("github", "listIssueTemplates", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListIssueTemplates, args),
+      ),
+    listIssueTypes: async (args: { owner: string; name: string }): Promise<GitHubIssueTypeOption[]> =>
+      callProjectRuntimeActionOr("github", "listIssueTypes", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListIssueTypes, args),
+      ),
+    getIssueWriteAccess: async (args: { owner: string; name: string; force?: boolean }): Promise<GitHubIssueWriteAccess> =>
+      callProjectRuntimeActionOr("github", "getIssueWriteAccess", { args }, () =>
+        ipcRenderer.invoke(IPC.githubGetIssueWriteAccess, args),
+      ),
+    updateIssue: async (args: { owner: string; name: string; number: number; patch: GitHubIssuePatch }): Promise<GitHubIssueLike | null> =>
+      callProjectRuntimeActionOr("github", "updateIssue", { args }, () =>
+        ipcRenderer.invoke(IPC.githubUpdateIssue, args),
+      ),
+    commentOnIssue: async (args: { owner: string; name: string; number: number; body: string }): Promise<GitHubIssueCommentLike | null> =>
+      callProjectRuntimeActionOr("github", "commentOnIssue", { args }, () =>
+        ipcRenderer.invoke(IPC.githubCommentOnIssue, args),
+      ),
+    listRepoMilestones: async (args: { owner: string; name: string }): Promise<Array<{ number: number; title: string }>> =>
+      callProjectRuntimeActionOr("github", "listRepoMilestones", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListRepoMilestones, args),
+      ),
+    listIssueComments: async (args: { owner: string; name: string; number: number }): Promise<GitHubIssueCommentLike[]> =>
+      callProjectRuntimeActionOr("github", "listIssueComments", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListIssueComments, args),
+      ),
     listRepoAutolinks: async (args: {
       owner?: string;
       name?: string;
@@ -13205,8 +13256,35 @@ const adeBridge = {
       callProjectRuntimeActionOr(
         "linear_issue_tracker",
         "fetchIssueComments",
-        { args },
+        // The tracker takes the id itself, like `fetchIssueById` below; passing
+        // `{ args }` handed it the whole object and every runtime read failed.
+        { arg: args.issueId },
         () => ipcRenderer.invoke(IPC.ctoGetLinearIssueComments, args),
+      ),
+    createLinearIssue: async (args: LinearIssueCreateInput): Promise<NormalizedLinearIssue> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "createIssue", { arg: args }, () =>
+        ipcRenderer.invoke(IPC.ctoCreateLinearIssue, args),
+      ),
+    getLinearIssueCreateOptions: async (args: { teamKey: string }): Promise<LinearIssueCreateOptions> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "getIssueCreateOptions", { arg: args.teamKey }, () =>
+        ipcRenderer.invoke(IPC.ctoGetLinearIssueCreateOptions, args),
+      ),
+    listLinearProjectMilestones: async (args: { projectId: string }): Promise<LinearProjectMilestone[]> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "listProjectMilestones", { arg: args.projectId }, () =>
+        ipcRenderer.invoke(IPC.ctoListLinearProjectMilestones, args),
+      ),
+    uploadLinearFile: async (args: { filename: string; contentType: string; dataBase64: string }): Promise<LinearUploadResult> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "uploadFile", { arg: args }, () =>
+        ipcRenderer.invoke(IPC.ctoUploadLinearFile, args),
+      ),
+    createLinearIssueComment: async (
+      args: CtoCreateLinearIssueCommentArgs,
+    ): Promise<{ commentId: string }> =>
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "createComment",
+        { argsList: [args.issueId, args.body] },
+        () => ipcRenderer.invoke(IPC.ctoCreateLinearIssueComment, args),
       ),
     getLinearIssue: async (
       args: CtoGetLinearIssueArgs,

@@ -190,6 +190,7 @@ struct WorkRootSyncInputs: Equatable {
   var projectIconDataUrl: String?
   var showsLinear = false
   var showsCursorCloud = false
+  var showsGitHubIssues = false
   var laneColorAvailable = false
   var laneManageAvailable = false
   var lifecycleAvailable = false
@@ -235,6 +236,7 @@ struct WorkRootSyncInputs: Equatable {
     showsCursorCloud = sync.activeProjectId != nil
       && sync.cursorCloudConnected
       && sync.supportsRemoteAction("ai.cursorCloudFleet")
+    showsGitHubIssues = sync.activeProjectId.map { sync.githubIssuesMenuProjectIds.contains($0) } ?? false
     laneColorAvailable = sync.canInvokeRemoteAction("lanes.updateAppearance")
     laneManageAvailable = sync.canInvokeRemoteAction("lanes.rename")
     lifecycleAvailable = sync.supportsSessionLifecycleActions
@@ -966,6 +968,7 @@ struct WorkRootListScreen: View, Equatable {
           isLive: inputs.isLive,
           showsLinear: inputs.showsLinear,
           showsCursorCloud: inputs.showsCursorCloud,
+          showsGitHubIssues: inputs.showsGitHubIssues,
           selectionCount: isSelecting ? selectedSessionIds.count : nil,
           actions: workHeaderActions
         )
@@ -1068,6 +1071,7 @@ struct WorkRootListScreen: View, Equatable {
       .task(id: "\(inputs.activeProjectId ?? ""):\(inputs.activeProjectHostIdentity ?? ""):\(inputs.isAttached)") {
         await syncService.refreshLinearConnection()
         await syncService.refreshCursorCloudConnection()
+        GitHubIssuesMenuAvailability.shared.refresh(sync: syncService, projectId: inputs.activeProjectId)
       }
       .task(id: workProjectionReloadKey) {
         guard let revision = workProjectionReloadKey else { return }
@@ -1640,6 +1644,7 @@ struct WorkRootListScreen: View, Equatable {
         syncService.linearPanePresented = true
       },
       onOpenCursorCloud: { syncService.cursorCloudPanePresented = true },
+      onOpenGitHubIssues: { syncService.githubIssuesPanePresented = true },
       onOpenSettings: { syncService.settingsPresented = true }
     )
   }

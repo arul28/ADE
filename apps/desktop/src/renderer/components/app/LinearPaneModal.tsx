@@ -30,6 +30,8 @@ export function LinearPaneModal({
   refreshTitle = "Refresh Linear",
   closeTitle = "Close Linear",
   onRefresh,
+  onNew,
+  newTitle,
   onClose,
   children,
 }: {
@@ -44,6 +46,8 @@ export function LinearPaneModal({
   refreshTitle?: string;
   closeTitle?: string;
   onRefresh: () => void;
+  onNew?: () => void;
+  newTitle?: string;
   onClose: () => void;
   children: React.ReactNode;
 }) {
@@ -93,6 +97,8 @@ export function LinearPaneModal({
         refreshTitle={refreshTitle}
         closeTitle={closeTitle}
         onRefresh={onRefresh}
+        onNew={onNew}
+        newTitle={newTitle}
         onClose={onClose}
       />
 

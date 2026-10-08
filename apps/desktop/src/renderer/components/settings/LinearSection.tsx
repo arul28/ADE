@@ -9,7 +9,8 @@ import {
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../../../shared/types";
 import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import { ModernSection } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { setIssueTopBarVisible, useIssueTopBarPreferences } from "../issues/issueTopBarPreferences";
 import { Banner } from "../ui/notice";
 import { LinearMark } from "../lanes/linearBrand";
 import "./IntegrationsSettings.css";
@@ -52,6 +53,7 @@ type GitHubAutolinkCandidate = {
 };
 
 export function LinearSection({ embedded = false }: { embedded?: boolean }) {
+  const issueTopBar = useIssueTopBarPreferences();
   // Linear connection, GitHub repo, and team keys are all scoped to the active
   // project (credentials are project-scoped). Re-run the loaders whenever the
   // active project changes so the autolink commands target the right repo and
@@ -585,6 +587,22 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
             </div>
           </div>
         )}
+      </ModernSection>
+
+      <ModernSection group="Linear" anchor="linear-top-bar" title="Top bar" hint="Signing out is how you turn Linear off.">
+        <ModernRows>
+          <ModernRow
+            title="Show Linear in the top bar"
+            hint="On this computer. Linear links still open in the Issues tab and the issue sheet."
+            control={(
+              <SettingsToggle
+                label="Show Linear in the top bar"
+                checked={issueTopBar.linear}
+                onChange={(next) => setIssueTopBarVisible("linear", next)}
+              />
+            )}
+          />
+        </ModernRows>
       </ModernSection>
 
       {isConnected ? <LinearAgentSection connected={isConnected} pin={pin} /> : null}

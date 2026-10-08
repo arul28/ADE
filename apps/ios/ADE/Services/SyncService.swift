@@ -4252,6 +4252,9 @@ final class SyncService: ObservableObject {
   /// `requestedLinearIssueNavigation` deep links.
   @Published var linearPanePresented = false
   @Published var cursorCloudPanePresented = false
+  @Published var githubIssuesPanePresented = false
+  /// Projects whose Work ⋯ menu offers GitHub Issues (see `GitHubIssuesMenuAvailability`).
+  @Published var githubIssuesMenuProjectIds: Set<String> = []
   /// When set, the Linear pane attaches the chosen issue to this chat session
   /// instead of opening issue detail / launch.
   @Published var linearPaneAttachSessionId: String? = nil

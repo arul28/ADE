@@ -11177,11 +11177,13 @@ describe("ADE CLI", () => {
       },
     });
 
-    const setState = buildCliPlan(["linear", "set-state", "ENG-431", "state-done"]);
+    // A state id goes straight to updateIssueState; a state name is looked up first.
+    const stateId = "5f0c2a1e-3b4d-4c6e-8f9a-0b1c2d3e4f50";
+    const setState = buildCliPlan(["linear", "set-state", "ENG-431", stateId]);
     expect(setState.kind).toBe("execute");
     if (setState.kind !== "execute") return;
     expect(setState.steps[0]?.params).toMatchObject({
-      arguments: { action: "updateIssueState", argsList: ["ENG-431", "state-done"] },
+      arguments: { action: "updateIssueState", argsList: ["ENG-431", stateId] },
     });
 
     const assignNone = buildCliPlan(["linear", "assign", "ENG-431", "none"]);

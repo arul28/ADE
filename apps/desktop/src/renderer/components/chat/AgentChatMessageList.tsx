@@ -87,6 +87,7 @@ import {
   userTextLooksLikeMarkdown,
 } from "./chatUserMessageCards";
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
+import { issueCreateRequestFromSelection, requestIssueCreate } from "../../lib/issueCreateRequests";
 import { ThreadCommentLayer } from "./ThreadCommentLayer";
 import { parseThreadReviewBlock, type ChatThreadComment } from "../../../shared/threadComments";
 import {
@@ -5641,6 +5642,10 @@ function AgentChatMessageListMain({
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const listRootRef = useRef<HTMLDivElement | null>(null);
+  const createIssueFromSelection = useCallback((text: string) => {
+    const lane = laneId ? useAppStore.getState().lanes.find((entry) => entry.id === laneId) : null;
+    requestIssueCreate(issueCreateRequestFromSelection(text, { sessionId: sessionId ?? null, laneId: laneId ?? null, laneName: lane?.name ?? null }));
+  }, [laneId, sessionId]);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const olderHistorySentinelRef = useRef<HTMLDivElement | null>(null);
   const lastHandledScrollToRowRequestIdRef = useRef<number | null>(null);
@@ -8352,9 +8357,10 @@ function AgentChatMessageListMain({
           comments={threadComments.comments}
           layoutVersion={`${groupedRows.length}:${shouldVirtualize ? `${startIndex}-${endIndex}` : "all"}`}
           onAddToChat={onInsertDraft}
+          onCreateIssue={createIssueFromSelection}
         />
       ) : (
-        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />
+        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} onCreateIssue={createIssueFromSelection} />
       )}
     </div>
     </ProofCitationProvider>

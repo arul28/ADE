@@ -32,6 +32,8 @@ import {
   useAppleLaneDeviceCard,
   type AppleLaneDeviceCard,
 } from "../apple/useAppleLaneDeviceCard";
+import { issueTabsScopeKey, useIssueTabs } from "../issues/issueTabsStore";
+import { useActiveProjectRoot } from "../issues/linearIssueStore";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
 import {
   hostDesktopTool,
@@ -83,6 +85,12 @@ export type WorkToolStatus = {
 export type WorkToolStatusMap = Partial<Record<WorkSidebarTab, WorkToolStatus>>;
 
 const IDLE: WorkToolStatus = { line: null, live: false, errorCount: 0, errored: false };
+
+/** The Issues card line: how many issues this lane has open as tabs. Local, never fetched. */
+function issuesToolStatusLine(count: number): WorkToolStatus {
+  if (count <= 0) return IDLE;
+  return statusLine(count === 1 ? "1 issue open" : `${count} issues open`, false);
+}
 
 /** The PR card line: how many pull requests the PR tool shows as open. */
 function prToolStatusLine(count: number | null): WorkToolStatus {
@@ -635,6 +643,9 @@ export function useWorkToolStatuses(args: {
     };
   }, [enabled, lane, laneId, prSessionId, runtimePinKey]);
 
+  const issueTabsProjectRoot = useActiveProjectRoot();
+  const openIssueTabCount = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs.length;
+
   const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopTool);
   const macDesktopStatus = useMemo(
     () => statusLine(macDesktopLine, macDesktopLive),
@@ -661,6 +672,7 @@ export function useWorkToolStatuses(args: {
     "mac-desktop": macDesktopStatus,
     "windows-desktop": macDesktopStatus,
     pr: prToolStatusLine(prCount),
+    issues: issuesToolStatusLine(openIssueTabCount),
   }), [
     appControlSession,
     macDesktopStatus,
@@ -674,6 +686,7 @@ export function useWorkToolStatuses(args: {
     offline,
     panelShellCount,
     prCount,
+    openIssueTabCount,
     terminalTitles,
   ]);
 

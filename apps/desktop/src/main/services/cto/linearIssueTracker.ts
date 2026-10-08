@@ -132,6 +132,20 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
     createIssue(input) {
       return args.client.createIssue(input);
     },
+    getIssueCreateOptions(teamKeyOrId) {
+      return args.client.getIssueCreateOptions(teamKeyOrId);
+    },
+    listProjectMilestones(projectId) {
+      return args.client.listProjectMilestones(projectId);
+    },
+    uploadFile({ filename, contentType, dataBase64 }) {
+      const name = filename.trim().replace(/[\\/]/g, "_").slice(0, 200) || "upload";
+      return args.client.uploadFileBytes({
+        filename: name,
+        contentType: contentType.trim() || "application/octet-stream",
+        bytes: new Uint8Array(Buffer.from(dataBase64, "base64")),
+      });
+    },
 
     createIssueRelation(params) {
       return args.client.createIssueRelation(params);

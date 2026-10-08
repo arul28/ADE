@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -3098,6 +3099,110 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
         throw new Error("Expected 'number' to be a positive integer.");
       }
       return githubService.getIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
+      );
+    },
+    async getRepoIssueSummary(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.getRepoIssueSummary(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async createIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.createIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        parseGitHubIssueCreateInput(actionArgs.input),
+      );
+    },
+    async listIssueTemplates(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listIssueTemplates(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async linkSubIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const parentNumber = Number(actionArgs.parentNumber);
+      const childNumber = Number(actionArgs.childNumber);
+      if (!Number.isInteger(parentNumber) || parentNumber <= 0 || !Number.isInteger(childNumber) || childNumber <= 0) {
+        throw new Error("Expected positive integer 'parentNumber' and 'childNumber'.");
+      }
+      return githubService.linkSubIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        parentNumber,
+        childNumber,
+      );
+    },
+    async listIssueTypes(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listIssueTypes(requireNonEmptyString(actionArgs.owner, "owner"));
+    },
+    async getIssueWriteAccess(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.getIssueWriteAccess(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        { force: actionArgs.force === true },
+      );
+    },
+    async updateIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.updateIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
+        parseGitHubIssueUpdate(actionArgs.patch),
+      );
+    },
+    async commentOnIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.commentOnIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
+        requireNonEmptyString(actionArgs.body, "body"),
+      );
+    },
+    async listRepoMilestones(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listRepoMilestones(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async listRepoIssueList(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const state = actionArgs.state;
+      return githubService.listRepoIssueList(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        state === "closed" || state === "all" ? state : "open",
+      );
+    },
+    async listIssueComments(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = typeof actionArgs.number === "number"
+        ? actionArgs.number
+        : Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.listIssueComments(
         requireNonEmptyString(actionArgs.owner, "owner"),
         requireNonEmptyString(actionArgs.name, "name"),
         number,

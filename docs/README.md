@@ -57,6 +57,7 @@ docs/
     ├── history/                           # operations timeline, transcripts, export
     ├── apple-device/                      # Apple Development tool + helper stream + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
+    ├── issues/                            # open an issue where you are: Issues tool tab, issue sheet
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
     ├── mac-desktop/                       # per-lane macOS virtual display driven by `ade screen` / `ade mac-desktop`
     ├── onboarding-and-settings/           # first-run, schema, settings tabs

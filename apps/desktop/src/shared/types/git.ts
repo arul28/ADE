@@ -517,6 +517,66 @@ export type GitHubSetTokenResult = GitHubStatus & {
   credentialVerification: GitHubCredentialVerification;
 };
 
+/** One picture to put in a new GitHub issue (uploaded through `gh --attach`). */
+export type GitHubIssueAttachmentInput = { filename: string; contentType: string; dataBase64: string };
+
+export type GitHubIssueCreateInput = {
+  title: string;
+  body?: string;
+  labels?: string[];
+  assignees?: string[];
+  /** Milestone number. */
+  milestone?: number | null;
+  /** Issue type name (organization repositories). */
+  type?: string | null;
+  /** Make the new issue a sub-issue of this one. */
+  parentNumber?: number | null;
+  attachments?: GitHubIssueAttachmentInput[];
+};
+
+export type GitHubIssueCreateResult = {
+  /** GitHub's REST issue object. */
+  issue: import("../laneGitHubIssue").GitHubIssueLike & { id?: number };
+  /** Steps after the create that did not take (the issue still exists). */
+  warnings: string[];
+};
+
+export type GitHubIssueTypeOption = { id: number | null; name: string; description: string | null; color: string | null };
+
+/** The ADE GitHub App installation's `issues` permission; null when unknown. */
+export type GitHubAppIssuePermission = "write" | "read" | "none";
+
+/**
+ * Whether ADE can change issues in a repository, and through which credential.
+ * `writeSource` null means no credential can: the viewer shows read-only
+ * controls with the reason. `app.issuesPermission` other than "write" on an
+ * installed App is what raises the "Update GitHub permissions" banner.
+ */
+export type GitHubIssueWriteAccess = {
+  owner: string;
+  name: string;
+  app: {
+    installed: boolean;
+    issuesPermission: GitHubAppIssuePermission | null;
+    manageUrl: string | null;
+  } | null;
+  writeSource: GitHubCredentialSource | null;
+  checkedAt: string;
+};
+
+/**
+ * Whether a repository uses GitHub issues, and how many are open. One GraphQL
+ * point: the open count from REST `open_issues_count` includes pull requests,
+ * so it cannot drive the Issues button's badge.
+ */
+export type GitHubRepoIssueSummary = {
+  owner: string;
+  name: string;
+  hasIssuesEnabled: boolean;
+  openCount: number;
+  checkedAt: string;
+};
+
 export type GitHubAppInstallationStatus = {
   repo: GitHubRepoRef | null;
   appName: string;

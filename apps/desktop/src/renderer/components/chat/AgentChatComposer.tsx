@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
+import { openIssueRef } from "../../lib/issueNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
@@ -2367,11 +2370,7 @@ export function AgentChatComposer({
   const [issueContextMenuOpen, setIssueContextMenuOpen] = useState(false);
   const [addSecretOpen, setAddSecretOpen] = useState(false);
   const [linearIssuePickerOpen, setLinearIssuePickerOpen] = useState(false);
-  const [linearIssuePickerMode, setLinearIssuePickerMode] = useState<"attach" | "details">("attach");
   const [githubIssuePickerOpen, setGitHubIssuePickerOpen] = useState(false);
-  const [githubIssuePickerMode, setGitHubIssuePickerMode] = useState<"attach" | "details">("attach");
-  const [linearDetailsIssueId, setLinearDetailsIssueId] = useState<string | null>(null);
-  const [githubDetailsIssueId, setGitHubDetailsIssueId] = useState<string | null>(null);
   const [githubRepo, setGitHubRepo] = useState<{ owner: string; name: string } | null>(null);
 
   useEffect(() => {
@@ -5575,6 +5574,13 @@ export function AgentChatComposer({
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
+    if (event.dataTransfer.types.includes(ISSUE_CONTEXT_DND_MIME)) {
+      if (!canAttachIssueContext) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setDragActive("reference");
+      return;
+    }
     if (event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)) {
       if (composerInputLocked) return;
       event.preventDefault();
@@ -5598,6 +5604,12 @@ export function AgentChatComposer({
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
     setDragActive(false);
+    if (event.dataTransfer.types.includes(ISSUE_CONTEXT_DND_MIME)) {
+      event.preventDefault();
+      const issueContext = readIssueContextDrag(event.dataTransfer);
+      if (issueContext && canAttachIssueContext) onAddContextAttachment?.(issueContext);
+      return;
+    }
     const mention = event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)
       ? parseChatMentionDragPayload(event.dataTransfer.getData(CHAT_MENTION_DND_MIME))
       : null;
@@ -6046,7 +6058,6 @@ export function AgentChatComposer({
             onClick={() => {
               if (!canAttachIssueContext) return;
               setIssueContextMenuOpen(false);
-              setLinearIssuePickerMode("attach");
               setLinearIssuePickerOpen(true);
             }}
           >
@@ -6068,7 +6079,6 @@ export function AgentChatComposer({
               onClick={() => {
                 if (!canAttachIssueContext) return;
                 setIssueContextMenuOpen(false);
-                setGitHubIssuePickerMode("attach");
                 setGitHubIssuePickerOpen(true);
               }}
             >
@@ -6088,31 +6098,15 @@ export function AgentChatComposer({
     </ViewportOverlayPortal>
   ) : null;
 
-  const selectedLinearContextIssue = (
-    linearIssuePickerMode === "details" && linearDetailsIssueId
-      ? contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
-          attachment.type === "linear_issue" && attachment.issue.id === linearDetailsIssueId
-        ),
-      )
-      : contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
-          attachment.type === "linear_issue"
-        ),
-      )
+  const selectedLinearContextIssue = contextAttachments.find(
+    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
+      attachment.type === "linear_issue"
+    ),
   )?.issue ?? null;
-  const selectedGitHubContextIssue = (
-    githubIssuePickerMode === "details" && githubDetailsIssueId
-      ? contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
-          attachment.type === "github_issue" && attachment.issue.id === githubDetailsIssueId
-        ),
-      )
-      : contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
-          attachment.type === "github_issue"
-        ),
-      )
+  const selectedGitHubContextIssue = contextAttachments.find(
+    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
+      attachment.type === "github_issue"
+    ),
   )?.issue ?? null;
   const isMcpElicitation = pendingInput?.providerMetadata?.mcpElicitation === true;
   const mcpElicitationSupportsPersistence = pendingInput?.providerMetadata?.persistenceSupported === true;
@@ -6136,7 +6130,7 @@ export function AgentChatComposer({
       {issueContextMenu}
       <LinearIssueSelectModal
         open={linearIssuePickerOpen}
-        ariaLabel={linearIssuePickerMode === "details" ? "Linear issue" : "Attach Linear issue"}
+        ariaLabel="Attach Linear issue"
         selectedIssue={selectedLinearContextIssue}
         pinnedIssue={pinnedLinearIssue}
         pinnedIssueLabel={pinnedLinearIssue ? "Linked to this lane" : "Attached to chat"}
@@ -6144,7 +6138,7 @@ export function AgentChatComposer({
         actionBusyLabel="Attaching issue"
         actionDisabled={busy || parallelLaunchBusy}
         showBranchPreview={false}
-        mode={linearIssuePickerMode}
+        mode="attach"
         onOpenChange={setLinearIssuePickerOpen}
         onSelectIssue={(laneIssue) => {
           onAddContextAttachment?.(makeLinearIssueContextAttachment(
@@ -6162,9 +6156,9 @@ export function AgentChatComposer({
       />
       <GitHubIssueSelectModal
         open={githubIssuePickerOpen}
-        ariaLabel={githubIssuePickerMode === "details" ? "GitHub issue" : "Attach GitHub issue"}
+        ariaLabel="Attach GitHub issue"
         selectedIssue={selectedGitHubContextIssue}
-        mode={githubIssuePickerMode}
+        mode="attach"
         actionLabel="Attach issue"
         actionBusyLabel="Attaching issue"
         actionDisabled={busy || parallelLaunchBusy}
@@ -6576,15 +6570,17 @@ export function AgentChatComposer({
               onRemoveContext={onRemoveContextAttachment}
               onOpenContext={(attachment) => {
                 if (attachment.type === "linear_issue") {
-                  setLinearDetailsIssueId(attachment.issue.id);
-                  setLinearIssuePickerMode("details");
-                  setLinearIssuePickerOpen(true);
+                  // Peek at the issue before sending: the native viewer, where you are.
+                  const ref = linearIssueRef(attachment.issue.identifier, attachment.issue.url ?? null);
+                  if (ref) openIssueRef({ ref, source: "chip" });
                   return;
                 }
                 if (attachment.type === "github_issue") {
-                  setGitHubDetailsIssueId(attachment.issue.id);
-                  setGitHubIssuePickerMode("details");
-                  setGitHubIssuePickerOpen(true);
+                  const issue = attachment.issue;
+                  openIssueRef({
+                    ref: { provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url },
+                    source: "chip",
+                  });
                 }
               }}
               onRemovePendingImageAttachment={removePendingImageAttachment}

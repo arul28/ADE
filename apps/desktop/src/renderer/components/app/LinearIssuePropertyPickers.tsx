@@ -16,7 +16,7 @@ import {
   type LinearIssueEdit,
 } from "./linearIssueBrowserModel";
 
-type PickerOption = {
+export type PickerOption = {
   id: string;
   label: string;
   icon?: React.ReactNode;
@@ -30,7 +30,7 @@ const MAX_VISIBLE_OPTIONS = 120;
  * a window capture listener stops the key before the host dialog's own
  * Escape handler (Radix listens on the document in capture) can close the pane.
  */
-function PickerMenu({
+export function PickerMenu({
   open,
   anchorRef,
   onClose,
@@ -144,6 +144,8 @@ function PickerMenu({
   );
 }
 
+export type LinearIssuePropertyLayout = "bar" | "rows";
+
 function PropertyChip({
   label,
   value,
@@ -151,6 +153,7 @@ function PropertyChip({
   pending,
   onClick,
   anchorRef,
+  layout,
   children,
 }: {
   label: string;
@@ -159,9 +162,10 @@ function PropertyChip({
   pending?: boolean;
   onClick: () => void;
   anchorRef: React.RefObject<HTMLButtonElement>;
+  layout: LinearIssuePropertyLayout;
   children: React.ReactNode;
 }) {
-  return (
+  const chip = (
     <button
       ref={anchorRef}
       type="button"
@@ -170,13 +174,29 @@ function PropertyChip({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-fg/[0.07] bg-fg/[0.02] px-2 text-[11.5px] text-fg/85 transition-colors",
-        disabled ? "cursor-default" : "hover:border-fg/[0.14] hover:bg-fg/[0.05]",
+        "inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 text-[11.5px] text-fg/85 transition-colors",
+        layout === "bar"
+          ? "border border-fg/[0.07] bg-fg/[0.02]"
+          : "-ml-2 w-[calc(100%+8px)] justify-start border border-transparent",
+        disabled
+          ? "cursor-default"
+          : layout === "bar"
+            ? "hover:border-fg/[0.14] hover:bg-fg/[0.05]"
+            : "hover:bg-[color:var(--kit-hover)]",
         pending && "opacity-70",
       )}
     >
       {children}
     </button>
+  );
+  if (layout === "bar") return chip;
+  // A labeled row of the issue viewer's property sidebar: the label names the
+  // field, the chip is the value and the picker trigger.
+  return (
+    <div className="grid grid-cols-[76px_minmax(0,1fr)] items-center gap-2">
+      <span className="text-[11px] text-[color:var(--kit-text-3)]">{label}</span>
+      <div className="min-w-0">{chip}</div>
+    </div>
   );
 }
 
@@ -190,11 +210,14 @@ export function LinearIssuePropertyBar({
   catalog,
   onEdit,
   pending,
+  layout = "bar",
 }: {
   issue: BrowserIssue;
   catalog: CtoGetLinearIssuePickerDataResult;
   onEdit?: (edit: LinearIssueEdit) => void;
   pending?: boolean;
+  /** `bar` is a wrapping row of chips; `rows` is one labeled row per field. */
+  layout?: LinearIssuePropertyLayout;
 }) {
   const [openPicker, setOpenPicker] = useState<"status" | "priority" | "assignee" | "labels" | null>(null);
   const statusRef = useRef<HTMLButtonElement>(null);
@@ -250,20 +273,23 @@ export function LinearIssuePropertyBar({
   const avatarUrl = "raw" in issue ? issue.assigneeAvatarUrl ?? null : null;
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5" data-linear-property-bar="true">
-      <PropertyChip label="Status" value={issue.stateName} disabled={!editable || stateOptions.length === 0} pending={pending} anchorRef={statusRef} onClick={() => setOpenPicker("status")}>
+    <div
+      className={layout === "bar" ? "flex flex-wrap items-center gap-1.5" : "flex flex-col gap-0.5"}
+      data-linear-property-bar="true"
+    >
+      <PropertyChip layout={layout} label="Status" value={issue.stateName} disabled={!editable || stateOptions.length === 0} pending={pending} anchorRef={statusRef} onClick={() => setOpenPicker("status")}>
         <LinearStateIcon stateType={issue.stateType} size={12} />
         <span className="truncate">{issue.stateName}</span>
       </PropertyChip>
-      <PropertyChip label="Priority" value={priorityText} disabled={!editable} pending={pending} anchorRef={priorityRef} onClick={() => setOpenPicker("priority")}>
+      <PropertyChip layout={layout} label="Priority" value={priorityText} disabled={!editable} pending={pending} anchorRef={priorityRef} onClick={() => setOpenPicker("priority")}>
         <LinearPriorityIcon priority={issue.priority} size={12} />
         <span className="truncate">{priorityText}</span>
       </PropertyChip>
-      <PropertyChip label="Assignee" value={issue.assigneeName ?? "Unassigned"} disabled={!editable} pending={pending} anchorRef={assigneeRef} onClick={() => setOpenPicker("assignee")}>
+      <PropertyChip layout={layout} label="Assignee" value={issue.assigneeName ?? "Unassigned"} disabled={!editable} pending={pending} anchorRef={assigneeRef} onClick={() => setOpenPicker("assignee")}>
         <LinearAssigneeAvatar name={issue.assigneeName} avatarUrl={avatarUrl} size={14} />
         <span className="truncate">{issue.assigneeName ?? "Unassigned"}</span>
       </PropertyChip>
-      <PropertyChip label="Labels" value={currentLabels.map((label) => label.name).join(", ") || "None"} disabled={!editable || labelOptions.length === 0} pending={pending} anchorRef={labelsRef} onClick={() => setOpenPicker("labels")}>
+      <PropertyChip layout={layout} label="Labels" value={currentLabels.map((label) => label.name).join(", ") || "None"} disabled={!editable || labelOptions.length === 0} pending={pending} anchorRef={labelsRef} onClick={() => setOpenPicker("labels")}>
         {currentLabels.length === 0 ? (
           <>
             {editable ? <Plus size={11} /> : <Tag size={11} />}

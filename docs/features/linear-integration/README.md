@@ -55,6 +55,7 @@ The Linear services live under the `cto/` service directory as shared plumbing; 
 - `apps/desktop/src/shared/linearIssueBranch.ts` — `linearIssueLaneName` / `linearIssueBranchName` derivation.
 - `apps/desktop/src/shared/chatContextAttachments.ts` — the `linear_issue` chat context attachment shape.
 - `apps/ade-cli/src/cli.ts` — the `ade linear` bridge (`buildLinearPlan`) routed over the daemon to the desktop runtime's Linear connection.
+- `apps/ade-cli/src/issueCliFields.ts` — turns typed names (states, users, labels, projects, cycles, milestones, templates) and values (priority, estimate, due date) into the ids and fields `ade linear create` / `edit` send.
 
 IPC channel names live in `apps/desktop/src/shared/ipc.ts` (registered in `registerIpc.ts`), reached via `window.ade.cto.*`; the lane-scoped session-attach channels are on `window.ade.lane.*`. See the [Read surface](#read-surface) and [Session-scoped issue attachment](#session-scoped-issue-attachment-and-cli-context-injection) sections for the exact channel lists.
 
@@ -105,9 +106,10 @@ Because the four commands are advertised as optional capabilities, the iOS UI ga
 
 Renderer surfaces over these reads:
 
-- `renderer/components/app/LinearQuickViewButton.tsx` — top-bar button and deeplink receiver. When Linear is connected it opens a popover hosting the shared `LinearIssueBrowser`; it also receives `requestLinearIssueQuickView` deeplink events and shows a setup modal when the project or Linear connection is missing.
-- `renderer/components/app/LinearIssueBrowser.tsx` — the full filter/search surface with checkbox multi-select (shift-click range, select-all), per-project filter persistence in `localStorage`, and a virtualized list (`@tanstack/react-virtual`) with sticky state-group headers and live group counts. The left rail has All issues, My issues, Current cycle (when a team has cycles), the viewer's Linear custom views, and projects with live open-issue counts. Rows show priority, state, labels, a Lane/Agent chip, and the assignee. The detail pane renders the description, editable properties (optimistic, rolled back with an error toast on failure), a Relations section (Parent, Blocked by, Blocks, Related, Sub-issues; a click opens that issue), and the comment thread. Keyboard: `j`/`k` or arrows move, `x` toggles the checkbox, `Enter` runs the primary action, `/` focuses search, `Esc` clears the checked set.
-- `renderer/components/app/LinearIssueSelectModal.tsx` / `LinearIssueResolveModals.tsx` — single-issue select/resolve dialogs mounted from `CreateLaneDialog`, the quick view, and the chat composer.
+- `renderer/components/app/LinearQuickViewButton.tsx` — top-bar button. When Linear is connected it opens a popover hosting the shared `LinearIssueBrowser`. It answers "open the Linear pane" requests (`requestLinearPaneOpen`) and owns the launch modal, which the issue viewer reaches through `requestLinearIssueLaunch`. Opening ONE issue (a link, a chip, a deeplink, a lane badge) no longer comes here: it opens the issue itself in the Work tools pane or the issue sheet. See [Issues](../issues/README.md).
+- `renderer/components/app/LinearIssueBrowser.tsx` — the full filter/search surface with checkbox multi-select (shift-click range, select-all), per-project filter persistence in `localStorage`, and a virtualized list (`@tanstack/react-virtual`) with sticky state-group headers and live group counts. The left rail has All issues, My issues, Current cycle (when a team has cycles), the viewer's Linear custom views, and projects with live open-issue counts. Rows show priority, state, labels, a Lane/Agent chip, and the assignee. The detail pane renders the shared `LinearIssueView` (`renderer/components/issues/`): the description, a Relations section (Parent, Blocked by, Blocks, Related, Sub-issues; a click opens that issue), the comment thread with avatars, and a property sidebar with editable status, priority, assignee and labels (optimistic, rolled back with an error toast on failure). Keyboard: `j`/`k` or arrows move, `x` toggles the checkbox, `Enter` runs the primary action, `/` focuses search, `Esc` clears the checked set.
+- `renderer/components/app/LinearIssueSelectModal.tsx` / `LinearIssueResolveModals.tsx` — single-issue select/resolve dialogs mounted from `CreateLaneDialog`, the quick view, and the chat composer's "attach issue" picker. Viewing an attached issue opens the issue viewer instead.
+- `renderer/components/issues/` — the native issue viewer (Issues tool tab, issue sheet), its per-issue cache, and the create composer the pane's "New" opens (all Linear create fields, templates, picture upload through `cto.uploadLinearFile`). See [Issues](../issues/README.md).
 - `renderer/components/lanes/LinearIssueBadge.tsx`, `linearBrand.tsx`, `linearIssueDisplay.ts`, `linearProjectIcon.tsx` — the lane-list badge, brand tokens (`LINEAR_BRAND`, `LinearMark`, `LinearStateIcon`, `LinearPriorityIcon`), and display/label helpers.
 - `renderer/components/settings/LinearSection.tsx` — Settings → Integrations panel for connecting/disconnecting Linear and surfacing the connected workspace.
 
@@ -159,6 +161,15 @@ Every write is best-effort: failures are logged (`linear_live_status.*`) and de-
 ## `ade linear` bridge
 
 The `ade linear` CLI (`buildLinearPlan` in `apps/ade-cli/src/cli.ts`) is the issue attach/read bridge for CLI and remote sessions, routed over the daemon to the desktop runtime's Linear connection — no local API key needed. Subcommands: `attach` / `attach-issue`, `detach` / `detach-issue`, `issues`, `attached`, and `my-issues`. This is how a headless or CLI session attaches, lists, and reads issues; issue writes go through the same `issueTracker` surface over the bridge.
+
+Creating and editing issues:
+
+- `ade linear create --team ADE --title "..."` creates an issue (through `createFollowUpIssue`) and prints its id and URL with `--text`. It takes every field the desktop create form has: `--description` or `--description-file <path|->`, `--state`, `--assignee`, `--priority`, `--label` (repeat it), `--project`, `--milestone`, `--cycle`, `--estimate`, `--due YYYY-MM-DD`, `--parent`, and `--template`. With no `--team`, the team comes from `--from` or `--parent`. Inside a session with an attached issue, the new issue links to it as related; `--blocks`, `--blocked-by`, `--sub-issue`, and `--duplicate` pick the link, and `--standalone` skips it. A near-duplicate of an open issue is refused unless `--allow-duplicate`.
+- `ade linear edit <id>` changes any of those fields in one `updateIssue`, plus `--remove-label`.
+- One field at a time: `set-state`, `assign`, `set-priority`, `set-estimate`, `set-cycle`, `set-project`, `set-milestone`, `set-due`, `set-parent`, `label`, and `unlabel`. `none` clears the field where Linear allows it.
+- `ade linear relate <id> --blocks|--blocked-by|--related|--duplicate-of <other>` links two issues.
+
+Names are matched in the CLI from `getIssuePickerData` (states, users, labels, projects), `getIssueCreateOptions` (cycles and templates), and `listProjectMilestones`. A state or label is matched in the issue's team. `--assignee me` reads the connected Linear user. `--cycle` takes `current`, `next`, a cycle number, or an id. A name that matches more than one item is an error that lists them; an id is sent without a lookup. The matching lives in `apps/ade-cli/src/issueCliFields.ts`.
 
 ## Deeplinks and ADE attachments
 

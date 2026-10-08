@@ -26,13 +26,20 @@ import { getGitHubTokenAccessState } from "./githubScopes";
 export const GITHUB_CREDENTIAL_CACHE_TTL_MS = 30_000;
 
 export type GithubOperationCredentialSource = GitHubCredentialSource;
-export type GithubOperationCredentialCapability = GitHubCredentialCapability;
+/**
+ * `issue-write` is a write the ADE GitHub App may also serve: changing an
+ * issue's state, labels, assignees, milestone, title or body, and commenting.
+ * The App holds no other write permission, so every other write skips it. The
+ * App is still only used for an issue write when its installation grants
+ * `Issues: write` (see `githubIssueWriteAccess.ts`).
+ */
+export type GithubOperationCredentialCapability = GitHubCredentialCapability | "issue-write";
 
 export const GITHUB_OPERATION_CREDENTIALS = [
-  { source: "environment", capabilities: ["read", "write"] },
-  { source: "app", capabilities: ["read"] },
-  { source: "gh", capabilities: ["read", "write"] },
-  { source: "pat", capabilities: ["read", "write"] },
+  { source: "environment", capabilities: ["read", "write", "issue-write"] },
+  { source: "app", capabilities: ["read", "issue-write"] },
+  { source: "gh", capabilities: ["read", "write", "issue-write"] },
+  { source: "pat", capabilities: ["read", "write", "issue-write"] },
 ] as const satisfies readonly {
   source: GithubOperationCredentialSource;
   capabilities: readonly GithubOperationCredentialCapability[];
@@ -52,9 +59,9 @@ const GITHUB_WRITE_CREDENTIAL_PRECEDENCE:
 export function githubOperationCredentialPrecedence(
   capability: GithubOperationCredentialCapability,
 ): readonly GithubOperationCredentialSource[] {
-  return capability === "read"
-    ? GITHUB_OPERATION_CREDENTIAL_PRECEDENCE
-    : GITHUB_WRITE_CREDENTIAL_PRECEDENCE;
+  return capability === "write"
+    ? GITHUB_WRITE_CREDENTIAL_PRECEDENCE
+    : GITHUB_OPERATION_CREDENTIAL_PRECEDENCE;
 }
 
 export function githubOperationCredentialCapabilities(

@@ -72,6 +72,16 @@ export function createGithubNamespace(deps: {
     detectRepo: () => call("github.detectRepo", {}, null),
     listRepoIssues: (args?: unknown) => call("github.listRepoIssues", args ?? {}, []),
     getIssue: (args?: unknown) => call("github.getIssue", args ?? {}, null),
+    getRepoIssueSummary: (args?: unknown) => call("github.getRepoIssueSummary", args ?? {}, null),
+    listIssueComments: (args?: unknown) => call("github.listIssueComments", args ?? {}, []),
+    listRepoIssueList: (args?: unknown) => call("github.listRepoIssueList", args ?? {}, []),
+    getIssueWriteAccess: (args?: unknown) => call("github.getIssueWriteAccess", args ?? {}, null),
+    createIssue: (args?: unknown) => call("github.createIssue", args ?? {}, null, false),
+    listIssueTemplates: (args?: unknown) => call("github.listIssueTemplates", args ?? {}, { templates: [], blankIssuesEnabled: true }),
+    listIssueTypes: (args?: unknown) => call("github.listIssueTypes", args ?? {}, []),
+    updateIssue: (args?: unknown) => call("github.updateIssue", args ?? {}, null, false),
+    commentOnIssue: (args?: unknown) => call("github.commentOnIssue", args ?? {}, null, false),
+    listRepoMilestones: (args?: unknown) => call("github.listRepoMilestones", args ?? {}, []),
     listRepoAutolinks: async () => [],
     getAppInstallationStatus: async () => ({
       installed: false,
@@ -79,8 +89,8 @@ export function createGithubNamespace(deps: {
       appUserAuthFailure: null,
     }),
     createRepoAutolink: async () => null,
-    listRepoLabels: async () => [],
-    listRepoCollaborators: async () => [],
+    listRepoLabels: (args?: unknown) => call("github.listRepoLabels", args ?? {}, []),
+    listRepoCollaborators: (args?: unknown) => call("github.listRepoCollaborators", args ?? {}, []),
     listMyRepos: async () => ({ repositories: [], nextCursor: null }),
     // Publishing creates a repo + pushes, so keep it explicitly marked as a
     // mutation and ineligible for adapter read caching.
