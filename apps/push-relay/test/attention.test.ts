@@ -6812,6 +6812,33 @@ describe("Live Activity island tallies", () => {
     }
   });
 
+  it("keeps a seen finished chat in Waiting while its wake is pending, and drops other seen finished work", async () => {
+    const database = new SqliteD1Database();
+    try {
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "parked",
+        phase: "completed",
+        eventKind: "agent_completed",
+        boardColumn: "waiting",
+        waitingReason: "scheduled",
+      }));
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "finished",
+        phase: "completed",
+        eventKind: "agent_completed",
+        boardColumn: "done",
+      }));
+      database.native.prepare(`
+        update attention_items set seen_at = '2026-07-28T08:00:30.000Z' where user_id = 'account-a'
+      `).run();
+
+      const contentState = await contentStateFor(database, "account-a");
+      expect(contentState.columns).toEqual({ needsYou: 0, working: 0, waiting: 1, done: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
   it("derives planning from chatActivityMode and never from a phase", async () => {
     const database = new SqliteD1Database();
     try {

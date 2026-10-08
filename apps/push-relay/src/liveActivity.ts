@@ -273,7 +273,13 @@ async function accountActivityContentState(
     try {
       const item = JSON.parse(row.payload_json) as ParsedAttentionItem;
       if (item.phase === "closed" || item.phase === "open") return [];
-      if ((item.phase === "completed" || item.phase === "merged") && row.seen_at) return [];
+      // Seen finished work leaves the activity, but a finished chat that waits
+      // on a scheduled wake is not finished: it stays counted in Waiting.
+      if (
+        (item.phase === "completed" || item.phase === "merged")
+        && row.seen_at
+        && activityBoardColumn(item) !== "waiting"
+      ) return [];
       return [item];
     } catch {
       return [];
