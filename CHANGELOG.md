@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.96] - 2026-10-08
+
+### Desktop
+
+- Activity overhaul: one four-state model, short pushes, one Live Activity, desktop Activity panel, `ade notify` (#1524, #1526).
+- Native Linear/GitHub issue viewer; move chats between machines from anywhere (#1528, #1509).
+- Turn fold, background-question, utility-model, pasted-file, and stacked-PR fixes (#1530, #1531, #1535).
+- `ade projects` uses the machine brain (#1532).
+- Windows updates survive a reopen; brain starts over Remote Desktop (#1516, #1534).
+
+### iOS
+
+- Four activity states, four-tile Live Activity, push taps that land (#1525).
+
 ## [1.2.95] - 2026-10-07
 
 ### Desktop
@@ -2381,7 +2395,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.95...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.96...HEAD
+[1.2.96]: https://github.com/arul28/ADE/compare/v1.2.95...v1.2.96
 [1.2.95]: https://github.com/arul28/ADE/compare/v1.2.94...v1.2.95
 [1.2.94]: https://github.com/arul28/ADE/compare/v1.2.93...v1.2.94
 [1.2.93]: https://github.com/arul28/ADE/compare/v1.2.92...v1.2.93
