@@ -172,6 +172,12 @@ export type SessionStatusActivityContext = {
   /** Live background work, for the "×N" suffix. */
   backgroundWork?: SessionBackgroundWork | null;
   nextWakeAt?: string | null;
+  /**
+   * A nested subagent still keeps this chat busy (`subagentKeepsParentBusy`).
+   * A finished parent then reads Waiting, the same column the board and the
+   * lane rollup file it in, because the subagent wakes it when its turn ends.
+   */
+  subagentBusy?: boolean;
   nowMs?: number;
   /**
    * Host-computed usage-limit resume state (`AgentChatSessionSummary.usageLimitResume`).
@@ -347,9 +353,11 @@ export function sessionStatusPresentation(
     }
   }
 
-  if ((phase === "ready" || phase === "idle") && activity.nextWakeAt) {
-    const wakeAt = Date.parse(activity.nextWakeAt);
-    if (Number.isFinite(wakeAt) && wakeAt > (activity.nowMs ?? Date.now())) {
+  if (phase === "ready" || phase === "idle") {
+    if (
+      activity.subagentBusy === true
+      || scheduledWakeState(activity.nextWakeAt, activity.nowMs ?? Date.now()) === "pending"
+    ) {
       return {
         label: "Waiting",
         tone: "neutral",
@@ -570,6 +578,55 @@ export function nextTurnStallDeadlineMs(sessions: Iterable<TurnStallInput>, nowM
     if (anchorMs == null) continue;
     const deadline = anchorMs + TURN_STALL_AFTER_MS;
     if (deadline <= nowMs) continue;
+    if (next === null || deadline < next) next = deadline;
+  }
+  return next;
+}
+
+/**
+ * How long a due wake may take to start its turn before the row stops reading
+ * as parked on it. The scheduler starts a due wake at the next turn boundary,
+ * so a wake a few seconds late is normal; one minutes late may never come.
+ */
+export const SCHEDULED_WAKE_GRACE_MS = 2 * 60 * 1000;
+
+/**
+ * Whether a finished (ready/idle) chat is parked on a scheduled wake.
+ *
+ * `pending`: a wake is armed and not yet overdue, so the agent will start
+ * again on its own. Every surface reads this as Waiting, not Done.
+ * `overdue`: the wake is past due by more than the grace and has not started a
+ * turn. The scheduler may be paused, down or gone, so the row is Done again and
+ * needs a person to look, because the work it promised is not coming by itself.
+ *
+ * `nextWakeAt` is the host's earliest ARMED, UNPAUSED wake, so a paused
+ * schedule is already null here. The caller decides the phase is ready/idle.
+ */
+export type ScheduledWakeState = "pending" | "overdue";
+
+export function scheduledWakeState(
+  nextWakeAt: string | null | undefined,
+  nowMs: number = Date.now(),
+): ScheduledWakeState | null {
+  if (!nextWakeAt) return null;
+  const wakeMs = Date.parse(nextWakeAt);
+  if (!Number.isFinite(wakeMs)) return null;
+  return nowMs < wakeMs + SCHEDULED_WAKE_GRACE_MS ? "pending" : "overdue";
+}
+
+/**
+ * The next instant one of these wakes turns overdue, so a surface can
+ * re-evaluate exactly then instead of polling. Null when none can.
+ */
+export function nextScheduledWakeDeadlineMs(
+  sessions: Iterable<{ nextWakeAt?: string | null }>,
+  nowMs: number = Date.now(),
+): number | null {
+  let next: number | null = null;
+  for (const session of sessions) {
+    if (!session.nextWakeAt) continue;
+    const deadline = Date.parse(session.nextWakeAt) + SCHEDULED_WAKE_GRACE_MS;
+    if (!Number.isFinite(deadline) || deadline <= nowMs) continue;
     if (next === null || deadline < next) next = deadline;
   }
   return next;

@@ -10,6 +10,7 @@ import {
   foldScheduledWorkRows,
   moveScheduledWorkToTurnEnds,
 } from "./chatScheduledWorkRows";
+import { arrangeComputerUseRuns, hasComputerUseEntries } from "./chatComputerUseRows";
 import {
   applyChatTranscriptTurnFolds,
   buildTranscriptEventRowKeys,
@@ -4520,6 +4521,27 @@ describe("text adjacency across an older-history prepend", () => {
       previous.context,
     );
     expect(after.rows).toEqual(collapseChatTranscriptEventsWithContext(merged).rows);
+
+    // An earlier event replaced in place, with the last one unchanged: Claude
+    // resends a tool call under the same item id once its args arrive, after
+    // other events already landed.
+    const toolCall = (args: Record<string, unknown>): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:01.000Z",
+      event: { type: "tool_call", tool: "Bash", args, itemId: "tool-1", turnId: "turn-1" },
+    } as never);
+    const live = [toolCall({}), textEvent("running it", 2)];
+    const liveRows = collapseChatTranscriptEventsWithContext(live);
+    const resent = [toolCall({ command: "ade screen status" }), live[1]!, textEvent(" now", 3)];
+    expect(resent[live.length - 1]).toBe(live[live.length - 1]);
+    const afterResend = collapseChatTranscriptEventsIncrementalWithContext(
+      resent,
+      live,
+      liveRows.rows,
+      liveRows.context,
+    );
+    expect(afterResend.rows).toEqual(collapseChatTranscriptEventsWithContext(resent).rows);
+    expect(JSON.stringify(afterResend.rows)).toContain("ade screen status");
   });
 
   it("keeps an intervening non-text event between the halves of a message", () => {
@@ -4553,7 +4575,8 @@ describe("turn fold (desktop adapter)", () => {
   /** The same presentation filter the message list applies before folding. */
   function present(rows: ReturnType<typeof collapseChatTranscriptEventsWithContext>["rows"]) {
     return mergeAdjacentActivityBundleRows(
-      groupChatTranscriptRows(rows).filter((row) => row.event.type !== "work_log_group"),
+      groupChatTranscriptRows(rows).filter((row) =>
+        row.event.type !== "work_log_group" || hasComputerUseEntries(row.event.entries)),
     );
   }
 
@@ -4636,9 +4659,11 @@ describe("turn fold (desktop adapter)", () => {
     }
   });
 
-  it("keeps subagent results and proof visible, and never folds rows after the answer", () => {
+  it("keeps subagent results, proof and computer-use actions visible, and never folds rows after the answer", () => {
     const { display } = fold([
       ev({ type: "user_message", text: "fan out", turnId: "t1" }),
+      ev({ type: "command", command: "ade screen click --label Save", cwd: "/r", output: 'hit: AXButton "Save" (e1)', itemId: "c1", turnId: "t1", status: "completed" }),
+      ev({ type: "reasoning", text: "Clicked.", turnId: "t1" }),
       ev({ type: "subagent_started", taskId: "chat:child-1", agentId: "child-1", agentType: "claude", description: "Scout", spawnKind: "peer", taskType: "subagent" }),
       ev({ type: "subagent_result", taskId: "chat:child-1", agentId: "child-1", status: "completed", summary: "Found it." }),
       ev({ type: "ade_card", cardId: "proof-1", variant: "proof_artifact", state: "terminal", title: "Screenshot", fallbackText: "Screenshot", turnId: "t1" }),
@@ -4650,6 +4675,7 @@ describe("turn fold (desktop adapter)", () => {
     expect(types(display)).toEqual([
       "user_message",
       "turn_fold",
+      "work_log_group",
       "subagent_result_card",
       "ade_card",
       "text",
@@ -5020,6 +5046,53 @@ describe("turn fold (desktop adapter)", () => {
       expect(rows.map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]))
         .toEqual([["Hello world.", undefined], ["Late label.", "final_answer"]]);
     });
+  });
+});
+
+describe("computer-use runs (desktop timeline)", () => {
+  let clock = 0;
+  const ev = (event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+    sessionId: "session-1",
+    timestamp: new Date(Date.UTC(2026, 8, 23, 11, 0, clock++)).toISOString(),
+    event,
+  });
+  const screenCommand = (itemId: string, command: string) =>
+    ev({ type: "command", command, cwd: "/r", output: "", itemId, turnId: "t1", status: "completed" });
+  const groups = (rows: ChatTranscriptGroupedEnvelope[]) =>
+    rows.flatMap((row) => row.event.type === "work_log_group"
+      ? [{ key: row.key, compact: Boolean(row.event.computerUseCompact), commands: row.event.entries.map((entry) => entry.command) }]
+      : []);
+
+  it("draws only a turn's last run in full, joins adjacent runs, and reuses unchanged envelopes", () => {
+    const events = [
+      ev({ type: "user_message", text: "go", turnId: "t1" }),
+      screenCommand("c1", "ade screen click --label Save"),
+      ev({ type: "text", text: "Saved.", turnId: "t1", itemId: "m1" }),
+      screenCommand("c2", "ade screen observe"),
+      ev({ type: "text", text: "Done.", turnId: "t1", itemId: "m2" }),
+    ];
+    const grouped = groupChatTranscriptRows(collapseChatTranscriptEventsWithContext(events).rows);
+
+    const first = arrangeComputerUseRuns(grouped, new Map());
+    const [earlierRun, lastRun] = groups(first.rows);
+    expect([earlierRun, lastRun]).toEqual([
+      { key: expect.stringContaining("c1"), compact: true, commands: ["ade screen click --label Save"] },
+      { key: expect.stringContaining("c2"), compact: false, commands: ["ade screen observe"] },
+    ]);
+
+    // Same rows again: every run keeps the envelope it had.
+    const again = arrangeComputerUseRuns(grouped, first.built);
+    expect(again.rows).toHaveLength(first.rows.length);
+    again.rows.forEach((row, index) => expect(row).toBe(first.rows[index]));
+
+    // The narration between them folded away: one run, keyed by the first, in full.
+    const withoutNarration = grouped.filter((row) => !(row.event.type === "text" && row.event.text === "Saved."));
+    const joined = arrangeComputerUseRuns(withoutNarration, first.built);
+    expect(groups(joined.rows)).toEqual([
+      { key: earlierRun!.key, compact: false, commands: ["ade screen click --label Save", "ade screen observe"] },
+    ]);
+    // Its fields changed, so its envelope is rebuilt rather than the stale one reused.
+    expect(joined.rows.find((row) => row.key === earlierRun!.key)).not.toBe(first.built.get(earlierRun!.key));
   });
 });
 

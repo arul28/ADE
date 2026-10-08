@@ -133,7 +133,7 @@ The entry is present only where a helper exists (`supportsCaptureGesturePlatform
 
 ## Packaging
 
-The helpers stage like `whisper-cli`, not like `ade-attention-notch`.
+The helpers stage like `transcribe-cli`, not like `ade-attention-notch`.
 
 `ade-attention-notch` is macOS-only, so it sits in the **`mac.extraResources`** block. The capture helpers ship through the **top-level `build.extraResources`** entry, copying `resources/native` filtered to exactly `ade-capture-helper` and `ade-capture-helper.exe`. One entry covers both platforms, and because each build script only produces its own platform's binary, the Mac package contains only the Mach-O and the Windows package only the `.exe` — with no per-platform configuration to keep in sync.
 

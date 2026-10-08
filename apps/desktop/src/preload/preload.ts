@@ -4511,6 +4511,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appGetInstalledBrowsers),
     openInBrowser: async (args: { url: string; browserId: string }): Promise<void> =>
       ipcRenderer.invoke(IPC.appOpenInBrowser, args),
+    getAppIcon: async (args: { name: string }): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.appGetAppIcon, args),
     onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -9754,10 +9756,9 @@ const adeBridge = {
    * to drive. The pin only localizes URLs: on a remote pin a loopback URL is
    * rewritten onto a port forward (`withLocalizedBrowserUrl`), and
    * `acknowledgeRemoteRequest` deliberately answers the pinned daemon. A local pin
-   * must not go through that checkout's runtime: the runtime's browser gate admits
-   * only an agent's own chat (with its actor capability), so this window — a
-   * person's client with no chat identity — was refused every call whenever its
-   * session sat on another binding than the tab. Methods keep their `pin`
+   * must not go through that checkout's runtime: the runtime tags calls with the
+   * caller's chat and lane, and this window — a person's client with no chat
+   * identity — must act on the tab it shows, not on another binding's. Methods keep their `pin`
    * parameter so every call site stays uniform.
    */
   builtInBrowser: {
@@ -9896,6 +9897,13 @@ const adeBridge = {
       clearAround(
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserSwitchTab, args),
+      ),
+    // Local IPC only: the tab is this desktop's own, and reassigning it is the
+    // person's move, never the bridge's.
+    handTabToChat: async (args: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserHandTabToChat, args),
       ),
     closeTab: async (
       args: BuiltInBrowserTabArgs,

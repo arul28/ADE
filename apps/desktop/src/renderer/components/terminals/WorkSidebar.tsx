@@ -333,6 +333,7 @@ export function WorkSidebar({
     addAppControlContext,
     addBuiltInBrowserContext,
     addContextAttachment,
+    attachBrowserTab,
     insertDraft,
   } = useWorkToolContextInsertion({ contextTarget, contextDisabledReason, runtimePin });
 
@@ -401,6 +402,7 @@ export function WorkSidebar({
     onClearDiffSelection: clearDiffSelection,
     onAddAttachment: addAttachment,
     onAddBuiltInBrowserContext: addBuiltInBrowserContext,
+    onAttachBrowserTab: attachBrowserTab,
     onAddAppControlContext: addAppControlContext,
     onAddIosContext: addIosContext,
     onAddContextAttachment: addContextAttachment,
@@ -416,6 +418,7 @@ export function WorkSidebar({
     addBuiltInBrowserContext,
     addContextAttachment,
     addIosContext,
+    attachBrowserTab,
     canInsertContext,
     clearDiffSelection,
     insertDraft,

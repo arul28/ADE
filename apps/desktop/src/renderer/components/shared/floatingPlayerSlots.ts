@@ -46,6 +46,22 @@ export function floatingPlayerFramesBefore(id: string): FloatingPlayerFrame[] {
     .map(([, slot]) => slot.frame);
 }
 
+/**
+ * Whether any floating player is on screen. The Work tab's corner preview card
+ * is not a floating player and does not take part in placement, so it reads
+ * this to step aside instead of sitting on top of one.
+ */
+export function useAnyFloatingPlayerShown(): boolean {
+  return useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    () => slots.size > 0,
+    () => slots.size > 0,
+  );
+}
+
 export function useFloatingPlayerSlotsVersion(): number {
   return useSyncExternalStore(
     (listener) => {

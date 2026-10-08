@@ -8,6 +8,7 @@ import {
   type BrowserDetectionDeps,
 } from "./browserDetection";
 import { _testing as icons, browserIconDataUrl } from "./browserIcons";
+import { appIconDataUrlByName } from "../apps/appIcons";
 
 /**
  * What is installed, and what its icon looks like.
@@ -230,5 +231,31 @@ describe("browserIconDataUrl", () => {
     // cached miss.
     expect(await browserIconDataUrl(appPath, { platform: "darwin" }))
       .toMatch(/^data:image\/png;base64,/);
+  });
+});
+
+describe("appIconDataUrlByName", () => {
+  it("finds an app by name in the application folders, and never resolves a name outside them", async () => {
+    // `~/Applications/Notes.app`, and `Outside.app` one level above it: what a
+    // name like `../Outside` would reach if it were joined onto the folder.
+    const outside = writeMacApp("Outside", "app.icns", icns([{ type: "ic11", payload: fakePng(21) }]));
+    const home = path.dirname(outside);
+    const notesResources = path.join(home, "Applications", "Notes.app", "Contents", "Resources");
+    fs.mkdirSync(notesResources, { recursive: true });
+    fs.writeFileSync(path.join(notesResources, "app.icns"), icns([{ type: "ic11", payload: fakePng(22) }]));
+
+    const originalHome = process.env.HOME;
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    process.env.HOME = home;
+    Object.defineProperty(process, "platform", { ...originalPlatform, value: "darwin" });
+    try {
+      expect(await appIconDataUrlByName("Notes")).toMatch(/^data:image\/png;base64,/);
+      for (const hostile of ["../Outside", "Applications/../../Outside", `${"x".repeat(81)}`, "Notes\u0000"]) {
+        expect(await appIconDataUrlByName(hostile), hostile).toBeNull();
+      }
+    } finally {
+      process.env.HOME = originalHome;
+      Object.defineProperty(process, "platform", originalPlatform);
+    }
   });
 });

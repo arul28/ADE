@@ -6,9 +6,11 @@
  * OpenCode-wrapped Anthropic must not spawn `claude -p` Haiku. Droid, Pi, ACP,
  * and local sessions reuse the session's own model.
  */
-export const BACKGROUND_UTILITY_CLAUDE_MODEL_ID = "anthropic/claude-haiku-4-5";
+export const BACKGROUND_UTILITY_CLAUDE_MODEL_ID = "anthropic/claude-haiku-5-5";
 export const BACKGROUND_UTILITY_CODEX_MODEL_ID = "openai/gpt-5.6-luna";
 export const BACKGROUND_UTILITY_CODEX_REASONING_EFFORT = "low";
+/** Haiku 5.5 thinks at `medium` by default; names and status lines need none of it. */
+export const BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT = "low";
 export const BACKGROUND_UTILITY_CURSOR_MODEL_ID = "cursor/composer-2.5";
 
 export type AdeBackgroundUtilityProvider = "claude" | "codex" | "cursor";
@@ -66,6 +68,9 @@ export function backgroundUtilityReasoningEffort(modelId: string | null | undefi
   const id = String(modelId ?? "").trim();
   if (id === BACKGROUND_UTILITY_CODEX_MODEL_ID || id === "gpt-5.6-luna" || id === "luna") {
     return BACKGROUND_UTILITY_CODEX_REASONING_EFFORT;
+  }
+  if (id === BACKGROUND_UTILITY_CLAUDE_MODEL_ID || id === "claude-haiku-5-5" || id === "haiku") {
+    return BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT;
   }
   return null;
 }

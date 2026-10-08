@@ -3871,7 +3871,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     models: { claude: [], codex: [], cursor: [], droid: [] },
     availableModelIds: [
       "anthropic/claude-sonnet-5",
-      "anthropic/claude-haiku-4-5",
+      "anthropic/claude-haiku-5-5",
       "openai/gpt-5-codex",
     ],
     features: [
@@ -7121,6 +7121,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       navigate: resolvedArg({} as any),
       createTab: resolvedArg({} as any),
       switchTab: resolvedArg({} as any),
+      handTabToChat: resolvedArg({} as any),
       closeTab: resolvedArg({} as any),
       reload: resolvedArg({} as any),
       goBack: resolvedArg({} as any),

@@ -1100,6 +1100,12 @@ declare global {
         getInstalledBrowsers?: () => Promise<InstalledBrowser[]>;
         /** Open a URL in one of the browsers `getInstalledBrowsers` returned. */
         openInBrowser?: (args: { url: string; browserId: string }) => Promise<void>;
+        /**
+         * An installed app's icon by its name ("Xcode", "Notes"), as a data
+         * URL, or null. macOS only; elsewhere, and on the hosted-web client,
+         * the method is absent or answers null, and callers draw a glyph.
+         */
+        getAppIcon?: (args: { name: string }) => Promise<string | null>;
         onRuntimeStatusChanged: (
           cb: (status: LocalRuntimeStatus) => void,
         ) => () => void;
@@ -3353,6 +3359,8 @@ declare global {
           args: BuiltInBrowserTabArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
+        /** "Attach to chat": move a tab's lease to one chat (or drop it). Optional for older preloads. */
+        handTabToChat?: (args: BuiltInBrowserTabArgs) => Promise<BuiltInBrowserStatus>;
         closeTab: (
           args: BuiltInBrowserTabArgs,
           pin?: OpenProjectBinding | null,

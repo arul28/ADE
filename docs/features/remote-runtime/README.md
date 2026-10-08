@@ -1705,8 +1705,8 @@ served by an open app belongs to that app: the app re-registers its own runtime
 whenever it sees the brain go missing, so a standalone runtime installed under
 it is replaced again within milliseconds (on 2026-10-05 a Mac Studio's open app
 put 1.2.90 back 10 ms after a remote update installed 1.2.91). So the host asks
-first. The desktop announces its bridge token on `ade/initialize`, and the brain
-calls `app_update.install` on that bridge
+first: the brain calls `app_update.install` on this machine's desktop bridge
+when an app answers there
 (`apps/ade-cli/src/services/runtime/desktopAppUpdateBridge.ts`). The app
 (`apps/desktop/src/main/services/updates/remoteUpdateInstall.ts`) checks its own
 feed, then answers `installing` (staged: it runs its consented

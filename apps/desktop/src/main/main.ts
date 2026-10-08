@@ -779,7 +779,7 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
 }
 
 // Voice-to-text transcription is a project-independent capability (it only needs
-// the bundled whisper binary + model + shared glossary), so it lives as a single
+// the bundled transcribe-cli binary + model + shared glossary), so it lives as a single
 // shared instance threaded into every project/dormant context. Constructed lazily
 // on first context build.
 let sharedTranscriptionService: ReturnType<typeof createTranscriptionService> | null = null;
@@ -789,8 +789,8 @@ function getSharedTranscriptionService(logger: Logger): ReturnType<typeof create
       logger,
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
-      // The ~141 MB model is downloaded at runtime (not bundled) into userData
-      // so it never bloats the auto-update zip. See whisperModelStore.
+      // The ~464 MB model is downloaded at runtime (not bundled) into userData
+      // so it never bloats the auto-update zip. See speechModelStore.
       modelDir: path.join(app.getPath("userData"), "whisper"),
     });
   }
@@ -2094,7 +2094,6 @@ app.whenReady().then(async () => {
     // died with it. Set ADE_DEV_RUNTIME_SYNC=1 to opt a dev brain in on purpose.
     disableSync: !app.isPackaged && process.env.ADE_DEV_RUNTIME_SYNC !== "1",
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
-    desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
     onRuntimeStatusChange: (status) => {
       broadcast(IPC.appRuntimeStatusChanged, status);
       // A service manager that refused the brain is the fleet failure nobody
@@ -4613,6 +4612,7 @@ app.whenReady().then(async () => {
         conflictService,
         testService,
         agentChatService,
+        prService,
         onEvent: (event) =>
           emitProjectEvent(projectRoot, IPC.automationsEvent, event),
       });
@@ -4705,6 +4705,8 @@ app.whenReady().then(async () => {
       db,
       projectId,
       credentialStore: openCursorCloudCredentialStore(projectRoot),
+      // Only a project with an enabled cursor.* rule polls the relay.
+      wantsEvents: () => automationService?.hasEnabledCursorCloudRules() ?? false,
       getAccountAccessToken,
       cursorStore: createKvIngressCursorStore(db),
       dispatch: async (record) => {
@@ -4784,8 +4786,11 @@ app.whenReady().then(async () => {
       resolveDevinBinary: resolveDevinCloudBinary,
     });
     automationService?.setCursorCloudIngressAvailable(() => {
+      // Unconfigured counts as available: enabling the first cursor.* rule is
+      // what starts the self-configuring poll, so gating on "ready" would make
+      // that first rule impossible to enable.
       const status = cursorCloudIngressService.getStatus();
-      return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
+      return status.state !== "error" || Boolean(status.webhookId);
     });
 
     const deferredProjectStartCancels = new Set<() => void>();

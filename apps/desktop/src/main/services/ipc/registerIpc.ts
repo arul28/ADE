@@ -58,6 +58,7 @@ import {
 import { detectInstalledEditorTargets } from "../editors/editorDetection";
 import { detectBrowsersCached } from "../browsers/browserDetection";
 import { browserIconDataUrl } from "../browsers/browserIcons";
+import { appIconDataUrlByName } from "../apps/appIcons";
 import { openUrlInBrowser } from "../browsers/browserLauncher";
 import type { InstalledBrowser } from "../../../shared/browserTargets";
 import {
@@ -777,6 +778,7 @@ import type {
   ExternalSessionImportResult,
   ExternalSessionSummary,
   ExternalSessionDetail,
+  ExternalSessionDetailArgs,
   ExternalSessionDetailUpdatedEvent,
   ProviderInstance,
   ProviderInstanceCreateResult,
@@ -897,7 +899,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { capturePresetAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -912,6 +914,7 @@ import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import {
+  loadExternalSessionDetail,
   normalizeExternalSessionDetailArgs,
   startExternalSessionDetailWatch,
   stopExternalSessionDetailWatch,
@@ -4322,6 +4325,21 @@ export function registerIpc({
     }
   });
 
+  /**
+   * An installed app's icon by name, for transcript rows that name the app an
+   * agent drove. Cached per name in the main process; a miss is null, never an
+   * error, because the row simply draws its glyph.
+   */
+  ipcMain.handle(IPC.appGetAppIcon, async (event, arg: { name?: unknown }): Promise<string | null> => {
+    // Only ADE's own renderer may ask: the answer says whether an app bundle exists.
+    assertTrustedAppControlSender(event, IPC.appGetAppIcon);
+    try {
+      return await appIconDataUrlByName(typeof arg?.name === "string" ? arg.name : "");
+    } catch {
+      return null;
+    }
+  });
+
   ipcMain.handle(
     IPC.appOpenInBrowser,
     async (_event, arg: { url?: string; browserId?: string }): Promise<void> => {
@@ -5570,10 +5588,17 @@ export function registerIpc({
       const ctx = getCtx();
       // Same reasoning as diagnostics: this updates the CLI on the machine the
       // main process runs on, never a remote host's.
-      return await runAcpProviderUpdate({
+      const result = await runAcpProviderUpdate({
         provider: arg.provider,
         cwd: ctx.project.rootPath,
       });
+      captureProviderCliUpdateAnalytics({
+        analytics: productAnalyticsService,
+        surface: "desktop",
+        provider: arg.provider,
+        outcome: result.ok ? "completed" : "failed",
+      });
+      return result;
     },
   );
 
@@ -6786,9 +6811,13 @@ export function registerIpc({
     const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
     if (!watchId) throw new Error("external session detail watchId must be a string.");
     const args = normalizeExternalSessionDetailArgs(arg);
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["externalSessionsService"]);
-    const externalSessionsService = ctx.externalSessionsService;
+    // The watch reads this computer's provider stores, so it needs no project
+    // runtime. A runtime-backed project has no local external sessions
+    // service; read the same stores directly instead of refusing.
+    const externalSessionsService = getCtx().externalSessionsService;
+    const loadDetail = externalSessionsService
+      ? (detailArgs: ExternalSessionDetailArgs) => externalSessionsService.getDetail(detailArgs)
+      : (detailArgs: ExternalSessionDetailArgs) => loadExternalSessionDetail(detailArgs);
     const sender = event.sender;
     const senderId = sender.id;
     if (!detailWatchCleanupSenders.has(senderId)) {
@@ -6803,7 +6832,7 @@ export function registerIpc({
       watchId,
       provider: args.provider,
       sessionId: args.sessionId,
-      loadDetail: (detailArgs) => externalSessionsService.getDetail(detailArgs),
+      loadDetail,
       onUpdate: (detail) => {
         if (sender.isDestroyed()) return;
         const payload: ExternalSessionDetailUpdatedEvent = { watchId, detail };
@@ -8602,7 +8631,7 @@ export function registerIpc({
 
   // ── Voice-to-text dictation ──────────────────────────────────────────────
   // The transcription service is project-independent (no DB / lane deps): it
-  // only needs the bundled whisper binary + model + the shared glossary. It is
+  // only needs the bundled transcribe-cli binary + model + the shared glossary. It is
   // resolved from the active context, where it is threaded as a shared
   // singleton (see main.ts).
   type TranscriptionPcmFormat = "int16" | "float32";
@@ -8707,7 +8736,7 @@ export function registerIpc({
     return service.getStatus();
   });
 
-  // Download the ~141 MB speech model on demand (first dictation). Streams to
+  // Download the ~464 MB speech model on demand (first dictation). Streams to
   // disk in the main process; progress is pushed to the requesting renderer.
   ipcMain.handle(
     IPC.transcriptionDownloadModel,
@@ -10450,6 +10479,11 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserSwitchTab, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSwitchTab, { windowMs: 10_000, max: 120 });
     return ensureBuiltInBrowser().switchTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserSwitchTab), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserHandTabToChat, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserHandTabToChat, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().handTabToChat(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserHandTabToChat), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserCloseTab, async (event, arg) => {

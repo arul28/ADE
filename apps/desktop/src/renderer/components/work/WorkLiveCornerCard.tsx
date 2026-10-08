@@ -68,6 +68,7 @@ import {
 import { MacDesktopMiniPlayer } from "./MacDesktopMiniPlayer";
 import { AppControlMiniPlayer } from "./AppControlMiniPlayer";
 import { FloatingPlayerCapturePill, useFloatingPlayerCapture } from "../shared/FloatingPlayer";
+import { useAnyFloatingPlayerShown } from "../shared/floatingPlayerSlots";
 import { showToast } from "../app/toast/toastStore";
 import { fgTint } from "../lanes/laneDesignTokens";
 
@@ -563,7 +564,14 @@ export function WorkLiveCornerCard({
   const objectFit = WORK_LIVE_CARD_OBJECT_FIT;
 
   const fits = workLiveCardFits(hostSize, bottomReserve, baseCardSize);
-  const visible = active && tool != null && fits;
+  // One preview at a time: while a floating player (Mac Desktop, App Control,
+  // an Apple device) is on screen, the card steps aside rather than sit on top
+  // of it — the "second live preview over the floating player" the owner
+  // reported on 2026-10-07. A tool the user floated by hand is an explicit ask
+  // and still shows.
+  const floatingPlayerShown = useAnyFloatingPlayerShown();
+  const yieldsToPlayer = floatingPlayerShown && !(tool != null && floating.includes(tool));
+  const visible = active && tool != null && fits && !yieldsToPlayer;
 
   /* ── Host geometry ─────────────────────────────────────────────────────── */
 

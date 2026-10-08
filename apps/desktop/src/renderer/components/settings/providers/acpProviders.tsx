@@ -356,36 +356,43 @@ function DevinBody() {
 }
 
 /**
- * Grok's update advisory.
+ * Where the installed CLI sits against the versions ADE has tested.
  *
- * ADE launches Grok with `--no-auto-update`, so nothing else surfaces a stale
- * install. The one-click button exists only when the host resolved the binary
- * to a known installer (`update.canUpdate`); otherwise the note says how to
- * update by hand, and there is no button to run the wrong command.
+ * An update installs the newest tested version, never npm `latest`. The button
+ * exists only when the host resolved the binary to a known installer
+ * (`update.canUpdate`); otherwise the note says how to update by hand, and
+ * there is no button to run the wrong command.
  */
-function GrokUpdateBody({ ctx }: { ctx: ProvidersViewContext }) {
-  const diagnostics = ctx.acpDiagnostics.grok ?? null;
+function AcpVersionBody({ ctx, id, label }: { ctx: ProvidersViewContext; id: AcpSettingsProviderId; label: string }) {
+  const diagnostics = ctx.acpDiagnostics[id] ?? null;
   const update = diagnostics?.update ?? null;
   if (!diagnostics || !update) return null;
-  const busy = ctx.acpUpdateBusy === "grok";
-  const error = ctx.acpDiagnosticsError.grok ?? null;
-  const statusLine = update.updateAvailable
-    ? `Update available: Grok ${diagnostics.version ?? "installed"} → ${update.latestVersion ?? "latest"}.`
-    : update.latestVersion
-      ? `Up to date (${diagnostics.version ?? "unknown"} · latest ${update.latestVersion}).`
-      : "Latest version unknown.";
+  const busy = ctx.acpUpdateBusy === id;
+  const error = ctx.acpDiagnosticsError[id] ?? null;
+  const installed = update.installedVersion ?? diagnostics.version ?? "unknown";
+  const { min, max } = update.testedRange;
+  const statusLine = update.standing === "below"
+    ? `${label} ${installed} is older than ADE supports. Update to ${update.targetVersion}.`
+    : update.standing === "above"
+      ? `${label} ${installed} is newer than ADE has tested. Some features may not work.`
+      : update.updateAvailable
+        ? `Update available: ${installed} → ${update.targetVersion}.`
+        : update.standing === "unknown"
+          ? `ADE could not read the ${label} version.`
+          : `Up to date (${installed}).`;
+  const tone = update.standing === "below"
+    ? COLORS.warning
+    : update.updateAvailable
+      ? COLORS.textPrimary
+      : COLORS.textMuted;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <SubsectionTitle>Updates</SubsectionTitle>
-      <div
-        style={{
-          fontSize: 11,
-          fontFamily: SANS_FONT,
-          lineHeight: 1.5,
-          color: update.updateAvailable ? COLORS.warning : COLORS.textMuted,
-        }}
-      >
+      <SubsectionTitle>Version</SubsectionTitle>
+      <div style={{ fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: tone }}>
         {statusLine}
+      </div>
+      <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+        ADE is tested with {min === max ? min : `${min} to ${max}`}.
       </div>
       {update.note ? (
         <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
@@ -397,9 +404,9 @@ function GrokUpdateBody({ ctx }: { ctx: ProvidersViewContext }) {
           type="button"
           style={outlineButton({ height: 28 })}
           disabled={busy}
-          onClick={() => void ctx.actions.updateAcpProvider("grok")}
+          onClick={() => void ctx.actions.updateAcpProvider(id)}
         >
-          {busy ? "Updating…" : "Update now"}
+          {busy ? "Updating…" : `Update to ${update.targetVersion}`}
         </button>
       ) : null}
       {error ? (
@@ -410,6 +417,11 @@ function GrokUpdateBody({ ctx }: { ctx: ProvidersViewContext }) {
     </div>
   );
 }
+
+const ACP_EXTRA_BODIES: Partial<Record<AcpSettingsProviderId, () => React.JSX.Element>> = {
+  kimi: KimiBody,
+  devin: DevinBody,
+};
 
 function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
   return {
@@ -432,11 +444,15 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
     ...(spec.id === "grok" || spec.id === "kimi"
       ? { Diagnostics: ({ ctx }: { ctx: ProvidersViewContext }) => <AcpDiagnostics ctx={ctx} id={spec.id} /> }
       : {}),
-    ...(spec.id === "kimi" ? { Body: KimiBody } : {}),
-    ...(spec.id === "devin" ? { Body: DevinBody } : {}),
-    ...(spec.id === "grok"
-      ? { Body: ({ ctx }: { ctx: ProvidersViewContext }) => <GrokUpdateBody ctx={ctx} /> }
-      : {}),
+    Body: ({ ctx }: { ctx: ProvidersViewContext }) => {
+      const Extra = ACP_EXTRA_BODIES[spec.id];
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <AcpVersionBody ctx={ctx} id={spec.id} label={spec.label} />
+          {Extra ? <Extra /> : null}
+        </div>
+      );
+    },
   };
 }
 

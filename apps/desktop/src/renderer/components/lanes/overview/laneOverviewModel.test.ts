@@ -108,6 +108,25 @@ describe("buildLaneChatRows", () => {
   });
 });
 
+describe("buildLaneChatRows: a chat waiting on its subagent", () => {
+  it("reads Waiting, like the Work tab, until the subagent is done", () => {
+    const parent = terminal({ id: "parent", runtimeState: "idle" });
+    const subagent = (runtimeState: TerminalSessionSummary["runtimeState"]) => terminal({
+      id: "subagent",
+      runtimeState,
+      spawnKind: "subagent",
+      orchestrationParentSessionId: "parent",
+    });
+    const label = (terminals: TerminalSessionSummary[]) => buildLaneChatRows({ laneId: "lane-1", nowMs: NOW, chats: [], terminals })
+      .find((row) => row.sessionId === "parent")?.presentation?.label;
+
+    expect(label([parent, subagent("running")])).toBe("Waiting");
+    expect(label([parent, subagent("idle")])).toBe("Done");
+    // A subagent in another lane is that lane's work, not this chat's.
+    expect(label([parent, { ...subagent("running"), laneId: "lane-2" }])).toBe("Done");
+  });
+});
+
 describe("capRows", () => {
   it("caps at eight until expanded", () => {
     const rows = Array.from({ length: 11 }, (_, index) => index);

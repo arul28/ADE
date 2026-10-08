@@ -188,9 +188,14 @@ class SqliteD1Statement {
     };
   }
 
-  async run(): Promise<{ success: boolean }> {
-    this.runSync();
-    return { success: true };
+  async run(): Promise<{ success: boolean; meta: { changes: number } }> {
+    if (/\breturning\b/i.test(this.sql)) {
+      const rows = this.runSync();
+      return { success: true, meta: { changes: rows.length } };
+    }
+    // Real D1 reports affected rows in `meta.changes`; callers branch on it.
+    const result = this.database.prepare(this.sql).run(...this.values) as { changes?: number | bigint };
+    return { success: true, meta: { changes: Number(result.changes ?? 0) } };
   }
 
   runSync(): Array<Record<string, unknown>> {
@@ -219,6 +224,10 @@ class SqliteD1Database {
         "../migrations/0004_device_registration_generation.sql",
         "../migrations/0005_activity_feed.sql",
         "../migrations/0006_machine_revocation.sql",
+        "../migrations/0007_revoked_machine_key_index.sql",
+        "../migrations/0008_account_settings.sql",
+        "../migrations/0009_account_vault.sql",
+        "../migrations/0010_heartbeat_write_costs.sql",
       ]) {
         this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
       }
@@ -2004,6 +2013,63 @@ describe("account Attention contract", () => {
         machine_name: "Studio refreshed",
         last_seen_at: "2026-07-28T08:01:00.000Z",
       });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("reports settings and vault change marks on presence, and omits them when they cannot be read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    const env = makeAttentionEnv(database, {
+      CLERK_JWKS_URL: authorization.jwksUrl,
+      CLERK_ISSUER: authorization.issuer,
+      CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+    });
+    const presence = async () => {
+      const response = await publishActivityForTest(env, authorization, {
+        machineName: "Studio",
+        mode: "presence",
+        rosterEpoch: 1,
+        items: [],
+        tombstones: [],
+      });
+      expect(response.status).toBe(200);
+      return await response.json() as { accountChanges?: { accountUserId: string; settings: string | null; vault: string | null } };
+    };
+    const writeSetting = (key: string, updatedAt: string) => database.native.prepare(`
+      insert into account_settings(user_id, scope_key, setting_key, value_json, updated_at, deleted)
+      values (?, 'all', ?, '1', ?, 0)
+    `).run(authorization.userId, key, updatedAt);
+    try {
+      const empty = await presence();
+      expect(empty.accountChanges).toEqual({ accountUserId: authorization.userId, settings: null, vault: null });
+
+      writeSetting("a", "2026-07-28T08:00:30.000Z");
+      const afterFirst = (await presence()).accountChanges?.settings;
+      expect(afterFirst).not.toBeNull();
+
+      // A second write in the same millisecond still moves the mark, because
+      // the pull cursor orders by (updated_at, key) and would return it.
+      writeSetting("b", "2026-07-28T08:00:30.000Z");
+      const afterSameInstant = await presence();
+      expect(afterSameInstant.accountChanges?.settings).not.toBe(afterFirst);
+      expect(afterSameInstant.accountChanges?.vault).toBeNull();
+
+      // Marks are advisory: when they cannot be read the heartbeat still lands.
+      database.native.exec("drop table account_vault_items");
+      const withoutMarks = await presence();
+      expect(withoutMarks.accountChanges).toBeUndefined();
+      expect(row(database, `
+        select last_seen_at from attention_machine_links where machine_key = ?
+      `, MACHINE_KEY)).toEqual({ last_seen_at: "2026-07-28T08:01:00.000Z" });
     } finally {
       database.close();
     }

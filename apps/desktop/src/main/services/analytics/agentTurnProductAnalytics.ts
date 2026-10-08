@@ -139,6 +139,33 @@ export function captureMacDesktopAnalytics(args: {
 }
 
 /**
+ * Whether an installation lets agents use the user's own browser at all: one
+ * coarse fact, a successful `ade browser attach`. Never the browser, the
+ * machine, the tab, its URL or title, or the chat.
+ */
+export type UserBrowserAnalyticsProperties = {
+  action: "user_browser";
+  outcome: "started";
+};
+
+/**
+ * The attach fact, deduplicated per UTC day like the Mac Desktop facts, so
+ * the worst case is one accepted event per installation per day.
+ */
+export function captureUserBrowserAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  properties: UserBrowserAnalyticsProperties;
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    dedupeKey: "work_user_browser:started",
+    minimumIntervalMs: MAC_DESKTOP_ANALYTICS_MIN_INTERVAL_MS,
+    properties: { feature: "work", action: "user_browser", outcome: "started" },
+  });
+}
+
+/**
  * The whole App Control analytics payload: a session started on a lane, an
  * agent drove it, or a recording was filed as proof. Nothing about the lane,
  * the chat, the app, its command or its window can be added without changing

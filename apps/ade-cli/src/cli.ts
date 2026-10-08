@@ -98,6 +98,7 @@ import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
+import { USER_BROWSER_TARGET_PREFIX } from "../../desktop/src/shared/userBrowserLabels";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
@@ -592,6 +593,7 @@ export type FormatterId =
   | "apple-action"
   | "apple-point-action"
   | "browser-action"
+  | "browser-attach"
   | "browser-status"
   | "browser-dev-servers"
   | "browser-sessions"
@@ -1133,6 +1135,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
@@ -2930,10 +2933,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   waits up to 2 minutes, printing "waiting for the user to allow this chat to
   use the ADE browser" once, and a Block fails with "approval_blocked: the user
   blocked this chat from using the ADE browser". One answer covers every site.
-  The runtime
-  accepts browser commands only from ADE-launched chat/terminal sessions with
-  a browser capability, validates lane/chat identity, and rejects agent force
-  takeovers. Profile diagnostics and remembered-permission administration stay
+  Any process
+  on this machine may drive the browser; a chat's calls are tagged with that
+  chat and its lane so it owns its tabs, and agent force takeovers are
+  refused. Profile diagnostics and remembered-permission administration stay
   in the trusted ADE renderer.
 
   Every tab shares the user's sign-ins unless it is opened --isolated. An
@@ -2943,6 +2946,28 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   test can keep "owner" and "viewer" signed in side by side. A tab's sign-in is
   fixed when it opens: plain "open" reuses only this chat's shared-profile tab,
   and "open --profile viewer" reuses only this chat's "viewer" tab.
+
+  The user's own browser (only when the user asks for it):
+    $ ade --socket browser attach --text           The tab the user is looking at
+    $ ade --socket browser attach --tab "Stripe" --text
+                                                   The tab whose title or URL contains "Stripe"
+    $ ade --socket browser attach --browser edge --text
+                                                   chrome, edge, brave, arc, helium or chromium
+    $ ade --socket browser detach --text           Back to ADE's browser
+  ADE's browser is the default for all web work. Attach only when the user asks
+  you to look at or use their own browser ("the tab I have open", "use my
+  Chrome"), never on your own. Attach runs on the machine this chat runs on and
+  prints "attached: <browser> on <machine>, tab "<title>" (<url>)": tell the
+  user which machine and tab. The browser needs remote debugging on; when
+  attach says it is off, ask the user to open the page it names
+  (chrome://inspect/#remote-debugging, or edge:// / brave://) and turn it on.
+  The browser then asks them once to allow the connection. While attached, this
+  chat's observe, click, fill, clear, type, key, scroll, hover, wait, open,
+  reload, back, forward, screenshot, proof and trace act in that tab and print
+  "target: your <browser> on <machine>" first; other commands say to detach.
+  The attachment ends on detach, when the tab closes or the browser quits, or
+  after 30 idle minutes; the next command says so. "status" shows it.
+  --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
@@ -3558,7 +3583,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations example                       Print an example rule (stdout)
 
   Lane mode flags (apply to create/update on top of --from-file/--stdin/--text):
-    --lane-mode <create|reuse|require-on-trigger>   Create, reuse, or require lane at trigger time
+    --lane-mode <create|reuse|require-on-trigger|pr-branch>
+                                                    Create, reuse, or require lane at trigger time;
+                                                    pr-branch runs in the trigger PR's own branch
     --lane <id>                                     Target lane (only with --lane-mode reuse)
     --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
     --lane-name-template <string>                   Template (only with preset custom)
@@ -14163,6 +14190,39 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       ],
     };
   }
+  // The user's own browser: only when the user asked for it. Runs on this
+  // chat's runtime host, which reaches the browser directly (no desktop).
+  // `--tab` here names a tab by title or URL text, not an ADE tab id.
+  if (sub === "attach" || sub === "connect") {
+    const browser = readValue(args, ["--browser"]);
+    const tab = readValue(args, ["--tab", "--tab-match"]);
+    const userDataDir = readValue(args, ["--user-data-dir", "--profile-dir"]);
+    const attachArgs: JsonObject = {
+      ...(browser ? { browser } : {}),
+      ...(tab ? { tab } : {}),
+      ...(userDataDir ? { userDataDir: path.resolve(userDataDir) } : {}),
+    };
+    return {
+      kind: "execute",
+      label: "browser attach",
+      formatter: "browser-attach",
+      // The attachment lives in the runtime's memory; a headless one-shot
+      // runtime would drop it when this command ends.
+      needsLiveRuntime: "Browser attachment",
+      // Chrome asks the user to allow the connection; the attach waits for them.
+      minTimeoutMs: 90_000,
+      progressNotice: "Connecting to the user's browser. If it asks to allow remote debugging, the user must click Allow.",
+      steps: [actionStep("result", "built_in_browser", "attachUserBrowser", attachArgs)],
+    };
+  }
+  if (sub === "detach" || sub === "disconnect") {
+    return {
+      kind: "execute",
+      label: "browser detach",
+      formatter: "browser-attach",
+      steps: [actionStep("result", "built_in_browser", "detachUserBrowser", {})],
+    };
+  }
   if (sub === "status" || sub === "tabs" || sub === "list") {
     return {
       kind: "execute",
@@ -16419,6 +16479,7 @@ const AUTOMATION_LANE_MODES = [
   "create",
   "reuse",
   "require-on-trigger",
+  "pr-branch",
 ] as const;
 const AUTOMATION_LANE_NAME_PRESETS = [
   "issue-title",
@@ -16491,9 +16552,10 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   ) {
     throw new CliUsageError("--lane is only valid with --lane-mode reuse.");
   }
-  if (preset != null && effectiveLaneMode !== "create") {
+  const namesLane = effectiveLaneMode === "create" || effectiveLaneMode === "pr-branch";
+  if (preset != null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-preset is only valid with --lane-mode create.",
+      "--lane-name-preset is only valid with --lane-mode create or pr-branch.",
     );
   }
   if (template != null && preset != null && preset !== "custom") {
@@ -16501,14 +16563,17 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
       "--lane-name-template is only valid with --lane-name-preset custom.",
     );
   }
-  if (template != null && preset == null && effectiveLaneMode !== "create") {
+  if (template != null && preset == null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-template requires --lane-mode create (with --lane-name-preset custom).",
+      "--lane-name-template requires --lane-mode create or pr-branch (with --lane-name-preset custom).",
     );
   }
 
   const execution: JsonObject = { ...existingExecution };
   if (laneMode != null) execution.laneMode = laneMode;
+  // Only "reuse" names a fixed lane. Switching a saved rule to another mode
+  // drops the old target, which validation rejects next to that mode.
+  if (laneMode != null && laneMode !== "reuse") delete execution.targetLaneId;
   if (laneId != null) execution.targetLaneId = laneId;
   if (preset != null) execution.laneNamePreset = preset;
   if (template != null) execution.laneNameTemplate = template;
@@ -17711,6 +17776,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   // without them `ade browser --arg-json '{}' open` dispatched on the JSON.
   "--arg",
   "--arg-json",
+  "--browser",
   "--browser-session",
   "--browser-session-id",
   "--button",
@@ -17784,6 +17850,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--position",
   "--preset",
   "--profile",
+  "--profile-dir",
   "--query",
   "--reason",
   "--ref",
@@ -17799,6 +17866,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--steps",
   "--tab",
   "--tab-id",
+  "--tab-match",
   "--test-id",
   "--testid",
   "--text-match",
@@ -17824,6 +17892,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--upload",
   "--url",
   "--user-agent",
+  "--user-data-dir",
   "--value",
   "--wait-after-ms",
   "--why",
@@ -21502,7 +21571,7 @@ function buildInitializeParams(
   const envStepId = asString(process.env.ADE_STEP_ID);
   const envAttemptId = asString(process.env.ADE_ATTEMPT_ID);
   const envOwnerId = asString(process.env.ADE_OWNER_ID);
-  const browserActorToken = asString(process.env.ADE_BROWSER_ACTOR_TOKEN);
+  const envChatScope = asString(process.env.ADE_CHAT_SCOPE);
   return {
     protocolVersion: PROTOCOL_VERSION,
     clientInfo: { name: clientName, version: VERSION },
@@ -21515,7 +21584,7 @@ function buildInitializeParams(
       ...(envStepId ? { stepId: envStepId } : {}),
       ...(envAttemptId ? { attemptId: envAttemptId } : {}),
       ...(envOwnerId ? { ownerId: envOwnerId } : {}),
-      ...(browserActorToken ? { browserActorToken } : {}),
+      ...(envChatScope === "personal" ? { chatScope: "personal" } : {}),
       computerUsePolicy: {
         mode: "auto",
         allowLocalFallback: options.role !== "external",
@@ -24199,15 +24268,13 @@ async function runServe(
     });
   };
 
-  // The bridge token this machine's desktop app announced when it connected.
-  // "Update & restart" uses it to ask that app to install its own update: an
-  // app that owns the brain puts its own runtime back over a standalone one.
-  let machineDesktopBridgeAuthToken: string | null = null;
+  // "Update & restart" asks this machine's desktop app, when one is running, to
+  // install its own update: an app that owns the brain puts its own runtime
+  // back over a standalone one.
   const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
     const { requestDesktopAppUpdate } = await import("./services/runtime/desktopAppUpdateBridge");
     const routing = await requestDesktopAppUpdate({
       socketPath: process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim() || layout.desktopBridgeSocketPath,
-      authToken: machineDesktopBridgeAuthToken,
       targetVersion,
     });
     headlessProjectLogger.info("brain.remote_update_route", routing.attached
@@ -24306,9 +24373,6 @@ async function runServe(
             requestRestart: requestBrainServiceRestartFromServe,
             requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
           }),
-          onDesktopBridgeAuthToken: (authToken: string) => {
-            machineDesktopBridgeAuthToken = authToken;
-          },
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
         }),
       getRuntimeStatus: () => {
@@ -27325,6 +27389,11 @@ function formatUpdateStatus(value: unknown): string {
       asString(errorDetails.phase) ?? "unknown phase"
     }${errorDetails.preservesDownload === true ? " · download preserved" : ""}`
     : null;
+  const checkFailure = isRecord(value.checkFailure) ? value.checkFailure : null;
+  const checkFailureAt = formatEpochTimestamp(checkFailure?.at);
+  const checkFailureLine = checkFailure
+    ? `${asString(checkFailure.kind) ?? "unknown"}${checkFailureAt ? ` at ${checkFailureAt}` : ""}`
+    : null;
 
   return renderKeyValues("ADE update", [
     ["status", value.status],
@@ -27338,6 +27407,8 @@ function formatUpdateStatus(value: unknown): string {
     ["recently installed", recentlyInstalledLine],
     ["auto-apply at", formatEpochTimestamp(autoApplyPending?.deadlineAt)],
     ["auto-apply suppressed until", formatEpochTimestamp(value.autoApplySuppressedUntil)],
+    ["last checked", formatEpochTimestamp(value.lastCheckedAt)],
+    ["check failed", checkFailureLine],
     ["error", errorLine],
     ["error detail", errorDetailLine],
   ]);
@@ -29031,8 +29102,63 @@ function saveScreenshotResult(
   };
 }
 
+/**
+ * `ade browser attach` / `detach`. The first line is the one the transcript
+ * keys on (`attached:` / `detached:` / `not attached:`).
+ */
+function formatBrowserAttach(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const message = asString(result.message) ?? "";
+  if (result.attached !== true) return message;
+  const tab = firstRecord(result, ["tab"]);
+  const notes = Array.isArray(result.notes) ? result.notes.map((note) => asString(note)).filter(Boolean) : [];
+  return [
+    message,
+    "",
+    renderKeyValues("Your browser", [
+      ["browser", result.browserLabel],
+      ["machine", result.machine],
+      ["tab", tab?.title],
+      ["url", tab?.url],
+    ]),
+    ...notes.map((note) => `note: ${note}`),
+    "",
+    "This chat's ade browser commands now act in this tab. Tell the user which machine and tab, and run ade browser detach when you are done.",
+  ].join("\n");
+}
+
+/** The chat's attachment to the user's own browser, as `browser status` shows it. */
+function formatUserBrowserStatus(userBrowser: JsonObject): string {
+  const tab = firstRecord(userBrowser, ["tab"]);
+  const available = firstArray(userBrowser, ["available"]);
+  const rows: Array<[string, unknown]> = userBrowser.attached === true
+    ? [
+      ["attached", `${asString(userBrowser.browserLabel) ?? "browser"} on ${asString(userBrowser.machine) ?? "this computer"}`],
+      ["tab", tab?.title],
+      ["url", tab?.url],
+      ["since", userBrowser.attachedAt],
+    ]
+    : [
+      ["attached", "no — this chat uses ADE's browser"],
+      [
+        "remote debugging on",
+        available.filter((entry) => entry.remoteDebugging === true).map((entry) => entry.label).join(", ") || "none",
+      ],
+    ];
+  return renderKeyValues("Your browser", rows);
+}
+
 function formatBrowserStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
+  const userBrowser = firstRecord(status, ["userBrowser"]);
+  if (userBrowser) {
+    const { userBrowser: _userBrowser, builtInUnavailable, ...builtIn } = status;
+    const unavailable = asString(builtInUnavailable);
+    const rest = unavailable
+      ? `ADE browser: ${unavailable}`
+      : Object.keys(builtIn).length ? formatBrowserStatus(builtIn) : "";
+    return [formatUserBrowserStatus(userBrowser), ...(rest ? ["", rest] : [])].join("\n");
+  }
   // This machine has no desktop attached, so there is no browser here to
   // report on: the daemon handed the URL to a desktop that has this lane
   // pinned, which opens it over a tunnel back to this machine's localhost.
@@ -30579,6 +30705,8 @@ function formatTextOutput(
       return formatAppControlRecording(value);
     case "browser-status":
       return formatBrowserStatus(value);
+    case "browser-attach":
+      return formatBrowserAttach(value);
     case "browser-dev-servers":
       return formatBrowserDevServers(value);
     case "work-tools-state":
@@ -30996,6 +31124,9 @@ function summarizeProofFiling(
           : null,
       ].filter(Boolean).join(" ")
     : null;
+  // Proof of a page in the user's own browser says so, like every command there.
+  const observed = unwrapActionEnvelope(values.observation);
+  const userBrowserTarget = isRecord(observed) ? asString(observed.userBrowserTarget) : null;
   const owner = [
     `lane ${laneId ? shortProofOwnerId(laneId) : "none"}`,
     `chat ${chatSessionId ? shortProofOwnerId(chatSessionId) : "none"}`,
@@ -31016,6 +31147,7 @@ function summarizeProofFiling(
     })),
     ...(warnings.length ? { warnings } : {}),
     ...(capturedFrom ? { capturedFrom } : {}),
+    ...(userBrowserTarget ? { userBrowserTarget } : {}),
     confirmation:
       `Attached ${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"} `
       + `to ${owner} (${title})`,
@@ -32264,9 +32396,25 @@ function formatOutput(
 ): string {
   if (options.text) {
     if (isMachineFanOutResult(value)) return `${formatMachineFanOut(value)}\n`;
-    return `${formatTextOutput(value, formatter)}\n`;
+    const targetLine = userBrowserTargetLine(value);
+    // Said once, on the first line; not again as a row of the result.
+    const shown = targetLine && isRecord(value)
+      ? (({ userBrowserTarget: _target, ...rest }) => rest)(value)
+      : value;
+    return `${targetLine}${formatTextOutput(shown, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
+}
+
+/**
+ * `target: your Google Chrome on <machine>` — printed first by every command
+ * that acted in the user's own browser (`ade browser attach`), so neither the
+ * agent nor the user mistakes it for ADE's browser. Empty otherwise.
+ */
+function userBrowserTargetLine(value: unknown): string {
+  if (!isRecord(value) || value.attached === true) return "";
+  const target = asString(value.userBrowserTarget);
+  return target ? `${USER_BROWSER_TARGET_PREFIX} ${target}\n` : "";
 }
 
 function appendOutputSuffix(output: string, suffix: string): string {
@@ -32781,7 +32929,7 @@ async function runParsedCli(
       const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath);
       return {
         output: parsed.options.text
-          ? `${renderKeyValues("ADE browser screenshot", [
+          ? `${userBrowserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
             ["saved", saved.savedPath],
             ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
             ["bytes", saved.bytes],

@@ -5179,13 +5179,13 @@ describe("AgentChatMessageList transcript rendering", () => {
           type: "done",
           turnId: "turn-claude-runtime",
           status: "failed",
-          model: "claude-haiku-4-5-20260707",
-          modelId: "anthropic/claude-haiku-4-5",
+          model: "claude-haiku-5-5-20260707",
+          modelId: "anthropic/claude-haiku-5-5",
         },
       },
     ]);
 
-    expect(screen.getAllByText("Claude Haiku 4.5 (claude-haiku-4-5-20260707)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Claude Haiku 5.5 (claude-haiku-5-5-20260707)").length).toBeGreaterThan(0);
   });
 
   it("surfaces the latest turn task rollup and inline file changes", () => {

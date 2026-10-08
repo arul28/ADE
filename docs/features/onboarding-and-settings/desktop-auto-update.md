@@ -145,7 +145,7 @@ labels this value as an estimate rather than an exact installer requirement.
 | `ENOSPC` | Synchronous throw, rejected download, or updater `error` event | `disk_full` at the active phase | Preserve a verified download; clear incomplete download data |
 | `EDQUOT` | Rejected download or updater `error` event | `quota` at the active phase | Same as `ENOSPC` |
 | Network | Rejected check/download or updater `error` event; `net::ERR_*` included | `network` (phase `check` when the feed request itself failed) | Retry; incomplete cache may be cleared |
-| Wedged updater session | Feed check fails with `net::ERR_*` while Node's `fetch` reaches the feed, and a fresh session did not help | `network_stuck` at phase `check`; the dialog offers Restart ADE | Same as a check failure |
+| Wedged updater session | Feed check fails with `net::ERR_*` while Node's `fetch` reaches the feed; ADE retries with a fresh session, then switches the updater to Node HTTP/HTTPS if Chromium still fails | Recovered checks continue normally; if the Node transport also fails, the check reports `network` at phase `check` | Same as a check failure |
 | Checksum/signature | Rejected verification or updater `error` event | `verification` / `signature` | Clear unsafe cached data |
 | Permission | Synchronous throw or updater `error` event | `permission` | Preserve only a previously verified download |
 | Installer handoff | Synchronous throw, async updater `error`, or watchdog expiry | `installer` | Preserve the verified download |
@@ -162,8 +162,9 @@ an explicit updater error clears it.
 
 electron-updater fetches through Chromium's `net` on one session it caches for
 the life of the process. That session can stop working while the machine is
-online: every check then fails with `net::ERR_FAILED` a few milliseconds after
-it starts, before any request leaves the machine, until ADE is relaunched.
+online: checks then fail with `net::ERR_FAILED` a few milliseconds after they
+start, before any request leaves the machine. ADE now recovers the updater
+transport for the rest of that launch.
 
 When a check fails with `net::ERR_*`, `checkFeedRecoveringNetSession` asks
 Node's `fetch` for the channel file (`latest-mac.yml` / `latest.yml`) on the
@@ -171,13 +172,20 @@ configured feed (`updaterNetRecovery.ts`). If Node gets no success response
 either (no answer, a 404, a 5xx, a captive portal's page), the feed itself is
 unavailable: `network`, "ADE can't reach the update server". If Node gets a
 success response, the updater gets a fresh in-memory session
-(`electron-updater-recovered-<n>`) and the check runs once more. Each step logs
-`autoUpdate.net_wedge_detected`, then `autoUpdate.net_wedge_recovered` or
-`autoUpdate.net_wedge_unrecovered`, with the probe result. Still failing ends in
-`network_stuck`, whose remedy is Restart ADE (`IPC.updateRelaunchApp`, through
-the normal quit warnings). One retry per check; after a fresh session fails,
-background checks stop making new ones until a check succeeds, while a user's
-Check again may try one more.
+(`electron-updater-recovered-<n>`) and the check runs once more. If Chromium
+still fails on that session, ADE replaces the updater executor's request
+creation with Node's `http` / `https` transports and retries again. The Node
+executor follows `location` redirects for both feed checks and artifact
+downloads, and remains active for the rest of that launch.
+
+`autoUpdate.net_wedge_detected` records the Node probe and starts recovery
+without waiting for Chromium diagnostics. `autoUpdate.chromium_net_diagnostics`
+later records default-session reachability, network-service pid/age, and app
+uptime. `autoUpdate.net_wedge_recovered` records whether a fresh Chromium
+session or Node transport recovered the check. Only if the final Node request
+also fails does the check report a normal `network` error; a feed reachable by
+Node no longer requires restarting ADE just because Chromium's updater session
+is stuck.
 
 ## Quit deadline during the native handoff
 
@@ -247,7 +255,12 @@ same way for all of them while the status is `ready`:
 | --- | --- |
 | Same or older than the staged version | Ignored (`autoUpdate.update_available_ignored`). The status, the staged version, and the cached archive do not change; `latestKnownVersion` still records what the feed reported. |
 | Strictly newer | Supersedes. The recorded `downloadedFile` is dropped, the updater cache is wiped with reason `superseded_ready_update`, any auto-apply countdown for the old version is cancelled, and the snapshot runs `checking` → `downloading` → `ready` on the new version. The countdown re-arms on the new `ready`. |
-| The check fails | Nothing changes. Both the `error` event and a rejected `checkForUpdates()` return early while the status is still `ready`, logging `autoUpdate.ready_check_failed`. |
+| The check fails | The staged version, ready status, and cached archive stay intact. ADE records the failure kind, message, and time in `checkFailure`, and logs `autoUpdate.ready_check_failed`. |
+
+Every answered feed check records `lastCheckedAt` and clears any prior
+`checkFailure`. Settings → About shows the last check time, or the failure kind
+and time when the latest check did not get an answer. `ade update status` exposes
+the same timestamps and failure kind to CLI users.
 
 Every entry point first logs `autoUpdate.check_requested` with the current
 status and a `userInitiated` label, so an operator can tell whether a check was

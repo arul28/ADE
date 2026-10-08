@@ -6,10 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  downloadWhisperModel,
-  isWhisperModelInstalled,
-  whisperModelPath,
-} from "./whisperModelStore";
+  downloadSpeechModel,
+  isSpeechModelInstalled,
+  speechModelPath,
+} from "./speechModelStore";
 
 function sha256(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
@@ -49,7 +49,7 @@ afterEach(async () => {
   }
 });
 
-describe("whisperModelStore.downloadWhisperModel", () => {
+describe("speechModelStore.downloadSpeechModel", () => {
   it("streams the model to disk and verifies the pinned sha256", async () => {
     const body = Buffer.from("fake-whisper-model-bytes");
     const server = await startServer((_req, res) => {
@@ -59,15 +59,15 @@ describe("whisperModelStore.downloadWhisperModel", () => {
     try {
       const modelDir = await makeModelDir();
       const progress: number[] = [];
-      const result = await downloadWhisperModel({
+      const result = await downloadSpeechModel({
         modelDir,
         source: { url: server.url, sha256: sha256(body) },
         minBytes: 1,
         onProgress: (p) => progress.push(p.receivedBytes),
       });
-      expect(result.modelPath).toBe(whisperModelPath(modelDir));
+      expect(result.modelPath).toBe(speechModelPath(modelDir));
       expect(fs.readFileSync(result.modelPath)).toEqual(body);
-      expect(isWhisperModelInstalled(modelDir, 1)).toBe(true);
+      expect(isSpeechModelInstalled(modelDir, 1)).toBe(true);
       expect(progress.at(-1)).toBe(body.length);
       // No leftover partial file.
       expect(fs.existsSync(`${result.modelPath}.part`)).toBe(false);
@@ -85,7 +85,7 @@ describe("whisperModelStore.downloadWhisperModel", () => {
     try {
       const modelDir = await makeModelDir();
       await expect(
-        downloadWhisperModel({
+        downloadSpeechModel({
           modelDir,
           source: { url: server.url, sha256: "0".repeat(64) },
           minBytes: 1,
@@ -93,8 +93,8 @@ describe("whisperModelStore.downloadWhisperModel", () => {
         }),
       ).rejects.toThrow(/checksum mismatch/i);
       // Neither the final file nor a partial is left behind.
-      expect(fs.existsSync(whisperModelPath(modelDir))).toBe(false);
-      expect(fs.existsSync(`${whisperModelPath(modelDir)}.part`)).toBe(false);
+      expect(fs.existsSync(speechModelPath(modelDir))).toBe(false);
+      expect(fs.existsSync(`${speechModelPath(modelDir)}.part`)).toBe(false);
     } finally {
       await server.close();
     }
@@ -113,7 +113,7 @@ describe("whisperModelStore.downloadWhisperModel", () => {
     });
     try {
       const modelDir = await makeModelDir();
-      const result = await downloadWhisperModel({
+      const result = await downloadSpeechModel({
         modelDir,
         source: { url: server.url, sha256: sha256(body) },
         minBytes: 1,
@@ -128,13 +128,13 @@ describe("whisperModelStore.downloadWhisperModel", () => {
 
   it("is a no-op when the model is already installed", async () => {
     const modelDir = await makeModelDir();
-    fs.writeFileSync(whisperModelPath(modelDir), Buffer.from("already-here"));
+    fs.writeFileSync(speechModelPath(modelDir), Buffer.from("already-here"));
     const server = await startServer((_req, res) => {
       res.writeHead(500);
       res.end("should not be called");
     });
     try {
-      await downloadWhisperModel({
+      await downloadSpeechModel({
         modelDir,
         source: { url: server.url, sha256: "unused" },
         minBytes: 1,

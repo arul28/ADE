@@ -1,6 +1,7 @@
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
+import { ACP_PROVIDER_UPDATE_RUN_BUDGET_MS } from "../ai/acpProviderUpdate";
 
 export const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 
@@ -25,6 +26,15 @@ export const USAGE_REFRESH_HISTORY_TIMEOUT_MS = LEDGER_WORKER_TIMEOUT_MS + 30_00
  */
 export const USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS =
   LEDGER_WORKER_TIMEOUT_MS + 15_000;
+
+/**
+ * ADE's one-click update of a provider CLI runs an npm or vendor install, then
+ * re-reads the version. On the 30s default the renderer reported a failure
+ * while the install went on, and "Try again" could start a second install
+ * against the same CLI. Each budget outward is longer than the one inside it.
+ */
+export const ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS = ACP_PROVIDER_UPDATE_RUN_BUDGET_MS + 10_000;
+export const ACP_PROVIDER_UPDATE_TIMEOUT_MS = ACP_PROVIDER_UPDATE_RUN_BUDGET_MS + 20_000;
 
 /**
  * A cold simulator launch is boot (90s) + xcodebuild (600s) + install (180s)
@@ -156,6 +166,8 @@ export const WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS = WINDOWS_DESKTOP_
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
+  // See ACP_PROVIDER_UPDATE_TIMEOUT_MS.
+  ["ai.acpProviderUpdate", ACP_PROVIDER_UPDATE_TIMEOUT_MS],
   // Lane deletion can legitimately include a 60s worktree removal followed by
   // a 45s remote-branch deletion. The old 30s client budget reported failure
   // while the daemon kept mutating state to a successful completion.

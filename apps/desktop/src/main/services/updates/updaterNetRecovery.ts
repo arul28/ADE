@@ -5,8 +5,13 @@
  * `net::ERR_FAILED` a few milliseconds after it starts, and only a relaunch
  * used to clear it. These helpers tell that apart from a real outage by asking
  * Node's own HTTP stack, which shares nothing with Chromium's, and hand the
- * updater a fresh session when Node gets through.
+ * updater a fresh session when Node gets through. When a fresh session fails
+ * too, the updater stops using Chromium for the rest of the launch and sends
+ * its requests through Node.
  */
+
+import http from "node:http";
+import https from "node:https";
 
 const FEED_PROBE_TIMEOUT_MS = 8_000;
 /** A channel file is a few hundred bytes; this only bounds a wrong answer. */
@@ -141,4 +146,94 @@ export function replaceUpdaterNetSession(updater: unknown, partition: string): b
   } catch {
     return false;
   }
+}
+
+type NodeTransportExecutor = NetSessionExecutor & {
+  createRequest?: unknown;
+  addRedirectHandlers?: unknown;
+};
+
+/**
+ * Sends every later updater request (feed, download, differential ranges)
+ * through Node's http/https instead of Chromium, for the rest of this launch.
+ * builder-util-runtime's HttpExecutor is written for Node: it follows redirects
+ * from the `location` header, which ElectronHttpExecutor replaces with
+ * Chromium's `redirect` event. So only those two methods change. Callers use
+ * this only after Node itself fetched the feed, so a network that needs
+ * Chromium's proxy settings never reaches it.
+ */
+export function switchUpdaterToNodeTransport(updater: unknown): boolean {
+  const executor = netSessionExecutor(updater) as NodeTransportExecutor | null;
+  if (!executor || typeof executor.createRequest !== "function") return false;
+  executor.createRequest = (
+    options: http.RequestOptions & { session?: unknown; redirect?: unknown },
+    callback: (response: http.IncomingMessage) => void,
+  ) => {
+    const { session: _session, redirect: _redirect, ...nodeOptions } = options;
+    const transport = nodeOptions.protocol === "http:" ? http : https;
+    return transport.request(nodeOptions, callback);
+  };
+  executor.addRedirectHandlers = () => {};
+  return true;
+}
+
+export type ChromiumNetDiagnostics = {
+  /** Whether Chromium's default session (the one the app's windows use) reaches the feed. */
+  defaultSession: { reachable: boolean; status: number | null; error: string | null } | null;
+  /** Chromium's network service process, to tell a restarted one from a live one. */
+  networkService: { pid: number; ageMs: number | null } | null;
+  appUptimeMs: number;
+};
+
+const CHROMIUM_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * What else in Chromium still works when the updater's session does not. A
+ * failing default session points at the network service, a working one at the
+ * updater's own session; a network service much younger than the app means it
+ * restarted underneath the session. Never rejects.
+ */
+export async function describeChromiumNet(url: string): Promise<ChromiumNetDiagnostics> {
+  const appUptimeMs = Math.round(process.uptime() * 1_000);
+  let electron: {
+    app?: { getAppMetrics?: () => Array<{ pid: number; type: string; serviceName?: string; creationTime: number }> };
+    net?: {
+      fetch?: (url: string, init: { signal: AbortSignal }) => Promise<{
+        ok: boolean;
+        status: number;
+        body?: { cancel: () => Promise<void> } | null;
+      }>;
+    };
+  };
+  try {
+    // Through require for the same reason as replaceUpdaterNetSession.
+    electron = require("electron");
+  } catch {
+    return { defaultSession: null, networkService: null, appUptimeMs };
+  }
+  let networkService: ChromiumNetDiagnostics["networkService"] = null;
+  try {
+    const metric = electron.app?.getAppMetrics?.().find(
+      (entry) => entry.type === "Utility" && entry.serviceName === "network.mojom.NetworkService",
+    );
+    if (metric) {
+      networkService = {
+        pid: metric.pid,
+        ageMs: Number.isFinite(metric.creationTime) ? Math.round(Date.now() - metric.creationTime) : null,
+      };
+    }
+  } catch {
+    networkService = null;
+  }
+  let defaultSession: ChromiumNetDiagnostics["defaultSession"] = null;
+  if (typeof electron.net?.fetch === "function") {
+    try {
+      const response = await electron.net.fetch(url, { signal: AbortSignal.timeout(CHROMIUM_PROBE_TIMEOUT_MS) });
+      void response.body?.cancel().catch(() => {});
+      defaultSession = { reachable: response.ok, status: response.status, error: null };
+    } catch (error) {
+      defaultSession = { reachable: false, status: null, error: errorMessage(error) };
+    }
+  }
+  return { defaultSession, networkService, appUptimeMs };
 }

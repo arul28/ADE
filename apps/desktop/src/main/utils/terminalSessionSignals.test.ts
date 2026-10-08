@@ -249,7 +249,7 @@ describe("terminalSessionSignals", () => {
       targetId: "claude-session-1",
       launch: { permissionMode: "default" },
     }, { model: "anthropic/claude-haiku-4-5", reasoningEffort: "low", permissionMode: "auto", prompt: "keep going" })).toBe(
-      "claude --permission-mode auto --model claude-haiku-4-5 --effort low --resume claude-session-1 \"keep going\"",
+      "claude --permission-mode auto --model claude-haiku-5-5 --effort low --resume claude-session-1 \"keep going\"",
     );
 
     expect(buildTrackedCliResumeCommand({

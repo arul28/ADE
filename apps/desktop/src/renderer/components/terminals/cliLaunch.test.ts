@@ -1666,7 +1666,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "claude-session-1",
       launch: { permissionMode: "default" },
     }, { model: "anthropic/claude-haiku-4-5", reasoningEffort: "low", permissionMode: "auto" })).toBe(
-      "claude --permission-mode auto --model claude-haiku-4-5 --effort low --resume claude-session-1",
+      "claude --permission-mode auto --model claude-haiku-5-5 --effort low --resume claude-session-1",
     );
 
     expect(buildTrackedCliResumeCommand({

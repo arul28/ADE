@@ -4296,7 +4296,12 @@ the stats and shows update guidance.
   task-update ribbons are omitted from the thread, while scheduled-work state
   remains available in Chat Info. Claude-only prompt-suggestion ribbons are
   also omitted from the visible Claude transcript while their underlying events
-  remain available to the raw timeline.
+  remain available to the raw timeline. A tool group holding ADE computer-use
+  shell commands carries `computerUseActions` and draws them as action rows
+  (`WorkComputerUseActions.swift`; parser and words ported from desktop in
+  `WorkComputerUseSummary.swift` and `WorkComputerUsePresentation.swift`), and
+  a turn fold keeps it visible. See
+  [chat/transcript-and-turns.md](../chat/transcript-and-turns.md).
   The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView` still open
   the whole turn's activity in `WorkTurnActivitySheet`. The association is
   data-driven and never invents file changes for providers that did not emit
@@ -4661,7 +4666,7 @@ the stats and shows update guidance.
   `resolveCliProviderForModel`), so adding a provider means updating
   both the runtime registry and the phone's model-catalog grouping
   together; the phone's Claude fallback catalog leads with Opus 5.5 (its
-  positional default), then Fable 5.1, Sonnet 5.5, Sonnet 5, Haiku 4.5, Opus 5,
+  positional default), then Fable 5.1, Sonnet 5.5, Sonnet 5, Haiku 5.5, Opus 5,
   and legacy Sonnet 4.6 /
   Fable 5 / Opus 4.8 / Opus 4.7 selections normalize forward instead of
   appearing as rows, while the generic `opus` alias resolves to Opus 5.5 and the

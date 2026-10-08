@@ -5000,6 +5000,9 @@ export function AgentChatPane({
       : { ...current, [token]: label });
   }, []);
   const [composerCaretToEndRequest, setComposerCaretToEndRequest] = useState(0);
+  // A browser tab attached from the Browser panel, for the composer to insert
+  // at its caret (the pane cannot see the caret, only the draft).
+  const [browserTabInsertRequest, setBrowserTabInsertRequest] = useState<{ id: number; token: string } | null>(null);
   const insertComposerDraft = useCallback((value: string) => {
     const previousText = draft;
     const foregroundChatLaunchPending = (rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
@@ -9623,12 +9626,20 @@ export function AgentChatPane({
       if (incoming.length === 0) return;
       setContextAttachments((prev) => mergeChatContextAttachments(prev, incoming));
     };
+    const onInsertBrowserTab = (event: Event) => {
+      const detail = composerDetail(event);
+      if (!detail || typeof detail.token !== "string" || !detail.token) return;
+      const token = detail.token;
+      clearPromptSuggestionForSession(selectedSessionIdRef.current);
+      setBrowserTabInsertRequest((current) => ({ id: (current?.id ?? 0) + 1, token }));
+    };
     window.addEventListener("ade:agent-chat:add-attachment", onAddAttachment);
     window.addEventListener("ade:agent-chat:add-context-attachment", onAddContextAttachment);
     window.addEventListener("ade:agent-chat:insert-draft", onInsertDraft);
     window.addEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
     window.addEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
     window.addEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
+    window.addEventListener("ade:agent-chat:insert-browser-tab", onInsertBrowserTab);
     return () => {
       window.removeEventListener("ade:agent-chat:add-attachment", onAddAttachment);
       window.removeEventListener("ade:agent-chat:add-context-attachment", onAddContextAttachment);
@@ -9636,12 +9647,14 @@ export function AgentChatPane({
       window.removeEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
       window.removeEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
       window.removeEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
+      window.removeEventListener("ade:agent-chat:insert-browser-tab", onInsertBrowserTab);
       };
   }, [
     addAppControlContext,
     addAttachment,
     addBuiltInBrowserContext,
     addIosElementContext,
+    clearPromptSuggestionForSession,
     draftContextTargetId,
     forceDraft,
     insertComposerDraft,
@@ -15585,6 +15598,7 @@ export function AgentChatPane({
   const composerElement = (
       <AgentChatComposer
             caretToEndRequest={composerCaretToEndRequest}
+            browserTabInsertRequest={browserTabInsertRequest}
             threadComments={threadComments}
             threadCommentsSessionId={threadCommentsSessionId}
             threadCommentsPin={chatRuntimePin}

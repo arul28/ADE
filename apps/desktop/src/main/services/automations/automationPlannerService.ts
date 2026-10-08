@@ -104,7 +104,7 @@ function safeTrim(value: unknown): string {
 function normalizeLaneMode(value: unknown): NonNullable<AutomationRule["execution"]>["laneMode"] | undefined {
   const raw = safeTrim(value);
   if (raw === "provided" || raw === "prompt-at-run") return "require-on-trigger";
-  return raw === "create" || raw === "reuse" || raw === "require-on-trigger" ? raw : undefined;
+  return raw === "create" || raw === "reuse" || raw === "require-on-trigger" || raw === "pr-branch" ? raw : undefined;
 }
 
 function normalizeLaneNamePreset(value: unknown): NonNullable<AutomationRule["execution"]>["laneNamePreset"] | undefined {
@@ -1004,10 +1004,12 @@ function normalizeDraft(args: {
       });
     });
   }
+  // The PR's branch can be named like a created lane; other modes reuse a name.
+  const namesLane = requestedLaneMode === "create" || requestedLaneMode === "pr-branch";
   const laneExecutionFields = {
     ...(requestedLaneMode ? { laneMode: requestedLaneMode } : {}),
-    ...(requestedLaneMode === "create" && requestedLaneNamePreset ? { laneNamePreset: requestedLaneNamePreset } : {}),
-    ...(requestedLaneMode === "create" && requestedLaneNamePreset === "custom" && requestedLaneNameTemplate
+    ...(namesLane && requestedLaneNamePreset ? { laneNamePreset: requestedLaneNamePreset } : {}),
+    ...(namesLane && requestedLaneNamePreset === "custom" && requestedLaneNameTemplate
       ? { laneNameTemplate: requestedLaneNameTemplate }
       : {}),
   };
@@ -1604,6 +1606,9 @@ export function createAutomationPlannerService({
       }
       if (execution.laneMode === "require-on-trigger") {
         notes.push("Lane resolution: trigger caller must supply a lane.");
+      }
+      if (execution.laneMode === "pr-branch") {
+        notes.push("Lane resolution: the lane on the trigger PR's own branch.");
       }
 
       return { normalized, actions, notes, issues };

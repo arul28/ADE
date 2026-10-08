@@ -1844,7 +1844,18 @@ describe("product analytics producers", () => {
     });
   });
 
-  it("keeps the three Mac Desktop outcomes and drops anything that identifies the screen", () => {
+  it("keeps the Mac Desktop and user-browser outcomes and drops anything that identifies the screen or tab", () => {
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "user_browser",
+      outcome: "started",
+      browser: "chrome",
+      machine: "Arul's Mac Studio",
+      tab_title: "Payments",
+      url: "https://dashboard.stripe.com/payments",
+      chat_session_id: "chat-1",
+    })).toEqual({ feature: "work", action: "user_browser", outcome: "started" });
+
     for (const outcome of ["started", "agent_drove", "recorded"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "work",

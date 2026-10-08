@@ -13,8 +13,8 @@ import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
  * The desktop app's Chromium demo engine as the runtime daemon reaches it.
  *
  * The engine needs a hidden Electron renderer (WebCodecs), so it lives in the
- * desktop. The daemon talks to it over the desktop bridge socket with the
- * bridge token, like the App Control recorder. Methods are
+ * desktop. The daemon talks to it over the desktop bridge socket, like the App
+ * Control recorder. Methods are
  * `demo_engine.<analyze|render|cancel>`; each job carries an id so an abort
  * here cancels it there. The desktop cancels a closed connection's jobs.
  *
@@ -35,14 +35,12 @@ const CANCEL_TIMEOUT_MS = 5_000;
 
 export function createDemoEngineBridgeClient(args: {
   socketPath: string;
-  getAuthToken: () => string | null;
   logger: Logger;
 }): DemoEngine & { dispose(): void } {
   const { logger } = args;
   const NO_DESKTOP = "Rendering this demo needs the ADE desktop app on this machine, and none is attached.";
   const connection = createDesktopBridgeConnection({
     socketPath: args.socketPath,
-    getAuthToken: args.getAuthToken,
     unavailableMessage: NO_DESKTOP,
     closedMessage: "The demo engine bridge was disposed.",
   });

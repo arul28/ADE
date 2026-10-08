@@ -32,10 +32,6 @@ import {
 } from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { injectFsFault } from "../../../test/faultInjection";
-import {
-  resolveBuiltInBrowserActorCapability,
-  type BrowserActorCapabilityIssuer,
-} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { loadQwenUserSettings } from "../ai/qwenUserSettings";
 import {
   buildLaneAppleDeviceDirective,
@@ -2402,7 +2398,6 @@ export {
   renameSession,
   replaceDynamicOpenCodeModelDescriptors,
   replaceDynamicPiModelDescriptors,
-  resolveBuiltInBrowserActorCapability,
   resolveLaneAppleDeviceDirective,
   respondWithSession,
   restartRecoveryStopAttribution,
@@ -2436,7 +2431,6 @@ export type {
   AgentChatCreateScheduledWorkArgs,
   AgentChatCrossMachineHandoffCapsule,
   AgentChatEventEnvelope,
-  BrowserActorCapabilityIssuer,
   ChatScheduledWorkRecord,
   ChatScheduledWorkState,
   ComputerUseBackendStatus,

@@ -243,6 +243,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let nestedSubagent: Bool
   /// Setup rail of a chat launch that still owns this row; nil otherwise.
   let launchRail: [ChatLaunchRailSegment]?
+  let waitingOnSubagent: Bool
 
   init(
     session: TerminalSessionSummary,
@@ -255,7 +256,8 @@ private struct WorkSessionRowRenderSignature: Equatable {
     isSelectedTransitionSource: Bool,
     compact: Bool,
     nestedSubagent: Bool,
-    showsLaneIdentity: Bool
+    showsLaneIdentity: Bool,
+    waitingOnSubagent: Bool
   ) {
     self.sessionId = session.id
     self.title = chatSummary?.title ?? session.title
@@ -286,7 +288,12 @@ private struct WorkSessionRowRenderSignature: Equatable {
     // snooze boundary and the row would paint a capsule from one instant beside
     // a status slot from another.
     let now = Date()
-    let row = workSessionRowPresentation(session: session, summary: chatSummary, now: now)
+    let row = workSessionRowPresentation(
+      session: session,
+      summary: chatSummary,
+      waitingOnSubagent: waitingOnSubagent,
+      now: now
+    )
     self.previewLine = workSessionRowPreviewSource(
       session: session,
       chatSummary: chatSummary,
@@ -312,6 +319,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.isProminent = row.status?.prominent ?? false
     self.statusTone = row.status?.tone
     self.model = chatSummary?.model
+    self.waitingOnSubagent = waitingOnSubagent
     // Same source as `workSpawnKind` in WorkSpawnNesting: the session row
     // carries the host projection, and the chat summary is a fallback when
     // the list has not hydrated it yet. Nested compact rows key the leading
@@ -371,6 +379,7 @@ struct WorkSessionRow: View, Equatable {
   /// The singleton form: no lane header above this row, so the row shows the
   /// lane itself. Under a lane header the chip would just repeat the header.
   var showsLaneIdentity: Bool = true
+  var waitingOnSubagent: Bool = false
   private let renderSignature: WorkSessionRowRenderSignature
 
   init(
@@ -385,7 +394,8 @@ struct WorkSessionRow: View, Equatable {
     isSelectedTransitionSource: Bool,
     compact: Bool = false,
     nestedSubagent: Bool = false,
-    showsLaneIdentity: Bool = true
+    showsLaneIdentity: Bool = true,
+    waitingOnSubagent: Bool = false
   ) {
     self.session = session
     self.lane = lane
@@ -399,6 +409,7 @@ struct WorkSessionRow: View, Equatable {
     self.compact = compact
     self.nestedSubagent = nestedSubagent
     self.showsLaneIdentity = showsLaneIdentity
+    self.waitingOnSubagent = waitingOnSubagent
     self.renderSignature = WorkSessionRowRenderSignature(
       session: session,
       lane: lane,
@@ -410,7 +421,8 @@ struct WorkSessionRow: View, Equatable {
       isSelectedTransitionSource: isSelectedTransitionSource,
       compact: compact,
       nestedSubagent: nestedSubagent,
-      showsLaneIdentity: showsLaneIdentity
+      showsLaneIdentity: showsLaneIdentity,
+      waitingOnSubagent: waitingOnSubagent
     )
   }
 

@@ -1017,6 +1017,10 @@ this run's own bookkeeping, not about orphans on disk.
 
 ## Not in scope
 
+On a Linux runtime host there is no lane screen: `ade screen status` (and
+`ade mac-desktop status`) says "Lane screens are not supported on Linux yet."
+and points at `ade browser` and `ade app-control`.
+
 The Linux seat backend, nested macOS virtual machines, replacing the built-in
 Browser, App Control, or the iOS Simulator tool, and any change to how Codex
 Computer Use is launched. `DesktopSeatProvider` in

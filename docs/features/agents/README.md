@@ -20,7 +20,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/ade-cli/src/services/account/accountAuthService.ts` | Required ADE account auth for humans, remote agents, and CI: loopback OAuth, account-directory device authorization, shared `account.session.v1` refresh storage, JWT-`exp`-authoritative access-token refresh, one cross-process refresh-rotation recovery attempt after `invalid_grant`, and ephemeral `ADE_ACCOUNT_TOKEN` credentials. Desktop, CLI, and ADE Code ask the brain-owned refresh broker for access tokens. |
 | `apps/desktop/src/main/services/ai/apiKeyStore.ts`, `apps/desktop/src/main/services/cto/linearCredentialService.ts` | Encrypted provider/Linear credential storage with account/device provenance. Account-origin values hydrate from the brain-backed vault and are purged at sign-out or account switch; device-only values remain local. |
 | `apps/ade-cli/src/adeRpcServer.ts`, `apps/ade-cli/src/multiProjectRpcServer.ts`, `apps/ade-cli/src/runtimeRoles.ts` | Private ADE action RPC, caller-role boundary, and multi-project routing. `start_cli_session` requires `subagent` or `peer` whenever it records parent lineage. The RPC edge derives trusted parent→child turn provenance for `chat.messageSession`, strips spoofed provenance, keeps writes/history/lifecycle scoped, and permits bounded transcript reads from project-backed chats. The machine router locates the owning registered project for a chat id and aggregates foreign-project chat search while excluding personal chats. |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities.ts`, `desktopBridgeServer.ts`; `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`, `desktopBridgeMethods.ts` | Browser-automation security boundary. ADE issues an opaque in-memory capability for each chat-owned agent/terminal; the runtime strips caller routing and carries the token over a separately authenticated bridge, then Electron validates it in the issuing process and restores only its bound browser scope. `desktopBridgeMethods.ts` names the wire constants and the two exceptions to the shape: `issueActorCapability` / `revokeActorCapability` are served by the bridge itself rather than by `BuiltInBrowserService`, because the capability registry lives in Electron main while the daemon that injects `ADE_BROWSER_ACTOR_TOKEN` is a separate process; they need bridge auth and, unlike every browser action, no actor capability of their own. |
+| `apps/desktop/src/main/services/builtInBrowser/desktopBridgeServer.ts`; `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`, `desktopBridgeMethods.ts` | Browser-automation bridge. The owner-only socket is the boundary — no bridge secret and no per-chat token. The runtime (`scopeBuiltInBrowserAdeActionArgs`) tags each call with the caller's chat and lane, the desktop trusts that scope for tab ownership and presence, and `force` is always false for agents. |
 | `apps/ade-cli/src/services/builtInBrowser/remoteBrowserForwarder.ts` | `ade browser open` on a machine with no desktop attached. A box running only `ade serve` has no `WebContentsView`, but a desktop elsewhere may hold a remote pin on this machine's lane and can already reach its loopback ports over a port-forward, so the daemon publishes a `built_in_browser_remote_request` on the runtime event stream those desktops already receive and waits briefly for an acknowledgement. Only `navigate` / `createTab` / `showPanel` forward — they mean "put this URL on a screen", which any attached desktop can satisfy. `observe` / `click` and the rest act on a specific live tab and still fail, now with an error that says where the browser actually runs. With a desktop attached, the local bridge still takes every call, and a call with `openPanel: true` is also forwarded, addressed to the desktop that sent the chat its last message, so the page opens on the screen the user is at. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
 | `apps/desktop/resources/agent-skills/ade-cli-control-plane/SKILL.md` | Agent-facing ADE CLI control-plane guidance. |
@@ -52,14 +52,12 @@ real nested hierarchy; `null` or absent means a depth-one child of the main
 session. Live frames remain defensive because not every SDK start event carries
 the parent id.
 
-The `ade --socket browser ...` driver is available only to an ADE-launched,
-chat-bound agent or owned terminal. Its opaque browser actor capability binds
-the call to that chat's lane/project or personal tab collection. The runtime
-rejects missing capabilities and strips forged routing; Electron mints and
-validates the opaque token against its own in-memory registry — the daemon
-requests one over the desktop bridge when it launches a chat — before restoring
-the bound scope. Neither
-path exposes renderer-only profile diagnostics or permission administration.
+The `ade --socket browser ...` driver works for any process on this machine,
+like Mac Desktop; there is no per-chat token. The runtime tags a chat's calls
+with that chat's own id and lane (or the personal tab collection) and strips
+forged routing, so a chat owns the tabs it opens. Calls from another machine's
+brain are refused, and neither path exposes renderer-only profile diagnostics
+or permission administration.
 
 Every regular chat runtime can schedule its own durable future work through
 `ade chat scheduled-work create` or

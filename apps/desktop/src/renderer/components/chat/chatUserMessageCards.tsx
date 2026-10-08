@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { ChatTeardropText } from "@phosphor-icons/react";
 import {
   splitChatOutputContextSegments,
@@ -79,7 +79,9 @@ export function ChatContextSegments({ segments }: { segments: ChatOutputContextS
       {segments.map((segment, idx) => {
         if (segment.kind === "context") return <ChatOutputContextQuoteCard key={`chat-context-${idx}`} quote={segment.quote} />;
         const text = segment.text.replace(/^\s*\n/, "").replace(/\n\s*$/, "");
-        return text.trim() ? <React.Fragment key={`chat-text-${idx}`}>{text}</React.Fragment> : null;
+        // Each run sits between block cards, so a block of its own reads the
+        // same, and its chips (an attached browser tab) still draw as pills.
+        return text.trim() ? <ChipText key={`chat-text-${idx}`} text={text} /> : null;
       })}
     </>
   );

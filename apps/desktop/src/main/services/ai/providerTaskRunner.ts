@@ -23,6 +23,7 @@ import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
 import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
 import {
+  claudeRuntimeEffortFlags,
   codexReasoningEffortFlags,
   resolveGrokCliModelForLaunch,
   resolveKimiCliModelForLaunch,
@@ -154,11 +155,11 @@ function buildClaudePermissionMode(mode: AgentPermissionMode | undefined): strin
 }
 
 /**
- * Codex rejects an effort a model does not advertise, so only forward a tier the
- * descriptor actually lists. An unknown tier falls back to the CLI default rather
- * than failing the whole task.
+ * Codex and Claude reject an effort a model does not advertise, so only forward
+ * a tier the descriptor actually lists. An unknown tier falls back to the CLI
+ * default rather than failing the whole task.
  */
-function resolveCodexTaskReasoningEffort(args: ProviderTaskRunnerArgs): string | null {
+function resolveTaskReasoningEffort(args: ProviderTaskRunnerArgs): string | null {
   const effort = String(args.reasoningEffort ?? "").trim();
   if (!effort) return null;
   const tiers = args.descriptor.reasoningTiers;
@@ -274,6 +275,9 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   if (args.jsonSchema) {
     cliArgs.push("--json-schema", JSON.stringify(args.jsonSchema));
   }
+  if (args.descriptor.capabilities?.reasoning !== false) {
+    cliArgs.push(...claudeRuntimeEffortFlags(resolveTaskReasoningEffort(args)));
+  }
   if (sessionId) {
     cliArgs.push("--session-id", sessionId);
   } else {
@@ -324,7 +328,7 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
   if (codexModel) {
     cliArgs.push("--model", codexModel);
   }
-  cliArgs.push(...codexReasoningEffortFlags(resolveCodexTaskReasoningEffort(args)));
+  cliArgs.push(...codexReasoningEffortFlags(resolveTaskReasoningEffort(args)));
 
   if (args.permissionMode === "full-auto") {
     cliArgs.push("--dangerously-bypass-approvals-and-sandbox");

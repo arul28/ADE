@@ -275,6 +275,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `chat` | `voice_conversation_started` | `completed` | coarse chat provider family |
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
 | `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
+| `updates` | `provider_cli_updated` | `completed`, `failed` | coarse provider family (the ACP CLIs report `other`); never the version, install path, or output |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
@@ -283,6 +284,14 @@ keeps only the event's property keys and closed values; its `safeStringProperty`
 path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
+
+ADE's one-click update of a user-installed provider CLI (from the provider's
+Settings page or the chat warning for a CLI older than ADE supports) records
+`updates/provider_cli_updated` where the update runs: the desktop IPC handler
+(`surface: "desktop"`) and the `ai.acpProviderUpdate` action (`surface: "api"`).
+It is a rare, deliberate click, deduplicated per outcome and provider family
+for an hour, so the worst case is a few events a day inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute ceilings.
 
 Making a private webhook URL records `automations/webhook_url_created` where
 the URL is made: the desktop's IPC handler (`desktop`) or the
@@ -633,6 +642,27 @@ to at most three accepted events per installation per UTC day, inside the
 existing `ade_feature_used` 140-per-day / 30-per-minute limits and the shared
 200-event ceiling; no ceiling was raised. The dashboard spec is deliberately
 untouched: no card asks this yet.
+
+Whether agents use the user's own browser records the same `ade_feature_used`
+event once per successful `ade browser attach`, at the brain-side attach
+service (`createUserBrowserAttachService`, through an injected
+`captureAttached` callback — the service never reaches the analytics service
+or an id itself), with `feature: "work"`, `action: "user_browser"`, and
+`outcome: "started"`. A refused or cancelled attach, a detach, and every page
+action in the attached tab emit nothing: those are high-frequency or say
+nothing about adoption.
+
+The product question is only whether anyone lets agents into their own
+browser. Nothing finer crosses the boundary: no browser, machine name, tab,
+title, URL, or chat. A single `work_user_browser:started` key with a 24-hour
+minimum interval bounds this to at most one accepted event per installation
+per UTC day, inside the existing `ade_feature_used` 140-per-day / 30-per-minute
+limits and the shared 200-event ceiling; no ceiling was raised. The dashboard
+spec is deliberately untouched: no card asks this yet.
+
+The transcript's computer-use action rows are render-only and emit nothing:
+they describe tool calls an agent already made, and counting them would
+report agent activity as user engagement.
 
 The Work tab's Focus view (busy lanes folded) and its Focus grid (every
 waiting chat side by side) report adoption on the same event, emitted by the two

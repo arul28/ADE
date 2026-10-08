@@ -2825,6 +2825,28 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       .toThrow(/leased by chat chat-1/);
   });
 
+  it("moves a tab lease to the receiving chat or drops it for a new chat", async () => {
+    const { service } = createChatApprovingService();
+    await service.navigate({
+      url: "https://attach.test",
+      activate: true,
+      newTab: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-old",
+    });
+    const tabId = service.getStatus().activeTabId ?? "";
+
+    service.handTabToChat({ tabId, laneId: "lane-2", chatSessionId: "chat-new" });
+    expect(service.getStatus()).toMatchObject({
+      activeTabId: tabId,
+      ownerLaneId: "lane-2",
+      ownerChatSessionId: "chat-new",
+    });
+
+    service.handTabToChat({ tabId, chatSessionId: null });
+    expect(service.getStatus().ownerChatSessionId).toBeNull();
+  });
+
   it("holds and then blocks an agent-triggered redirect once the chat is no longer allowed", async () => {
     const { service, answer, asked } = createChatApprovingService();
     await service.createTab({

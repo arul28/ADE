@@ -518,6 +518,17 @@ export type AgentChatNoticeDetailSection = {
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
   /**
+   * An ACP provider CLI older than the range ADE has tested. The notice row
+   * offers an Update button when `canUpdate` is true and the host can run it.
+   */
+  providerUpdate?: {
+    provider: AcpChatProvider;
+    installedVersion: string;
+    targetVersion: string;
+    canUpdate: boolean;
+    note: string | null;
+  };
+  /**
    * The usage-snapshot account id a notice is about (`<provider>:<instanceId>`).
    *
    * Carried by the Codex `reset_credit_available` notice so the "Use reset"

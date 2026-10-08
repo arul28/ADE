@@ -354,7 +354,9 @@ export function applyBrowserMockBrainDown(ade: {
 
 /**
  * `?adeUpdateError=stuck|offline` puts a failed update check in the update
- * snapshot (the top-bar pill and its dialog); `?adeRuntimeFallback=1` reports
+ * snapshot (the top-bar pill and its dialog); `stale-stuck|stale-offline` is a
+ * failed check that kept a downloaded update (the Settings About card);
+ * `?adeRuntimeFallback=1` reports
  * the desktop-owned no-sync brain ("Phone sync is off").
  */
 export function applyBrowserMockUpdateAndFallback(ade: {
@@ -379,6 +381,26 @@ export function applyBrowserMockUpdateAndFallback(ade: {
         preservesDownload: false,
       },
     });
+  }
+  if (updateError === "stale-stuck" || updateError === "stale-offline") {
+    const baseGetState = ade.updateGetState;
+    ade.updateGetState = async () => ({
+      ...(await baseGetState()),
+      status: "ready",
+      currentVersion: "1.2.92",
+      version: "1.2.93",
+      latestKnownVersion: "1.2.93",
+      lastCheckedAt: Date.now() - 6 * 60 * 60_000,
+      checkFailure: {
+        kind: updateError === "stale-stuck" ? "network_stuck" : "network",
+        message: "net::ERR_FAILED",
+        at: Date.now() - 4 * 60_000,
+      },
+    });
+    // The About card hides update checks in dev builds; the preview stands in
+    // for the packaged app here.
+    const baseGetInfo = ade.app.getInfo;
+    ade.app.getInfo = async () => ({ ...(await baseGetInfo()), appVersion: "1.2.92", isPackaged: true });
   }
   if (urlParam("adeRuntimeFallback") === "1") {
     // The banner's Fix it is the desktop's service restart; the preview has

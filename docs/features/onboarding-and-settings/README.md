@@ -986,7 +986,7 @@ Renderer — settings:
   — Pause all scheduled work and the active durable-job list. Naming,
   commit suggestions, idle status lines, and similar background helpers
   pick a cheap model from the ADE provider that owns the session
-  (Haiku 4.5 for Claude, GPT-5.6 Luna for Codex, Composer 2.5 for
+  (Haiku 5.5 at `low` effort for Claude, GPT-5.6 Luna for Codex, Composer 2.5 for
   Cursor; other providers reuse the session model). There is no
   Settings picker for those helpers. The section owns **Pause all scheduled
   work**, persisted as `ai.chat.scheduledWorkPaused`. This pauses Claude

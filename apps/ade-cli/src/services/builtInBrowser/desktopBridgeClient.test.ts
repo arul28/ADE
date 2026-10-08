@@ -11,13 +11,12 @@ import {
   type JsonRpcTransport,
 } from "../../jsonrpc";
 import {
-  checkBuiltInBrowserDesktopBridgeAuth,
   createBuiltInBrowserDesktopBridgeClient,
   DesktopBridgeUnavailableError,
+  probeDesktopBridge,
 } from "./desktopBridgeClient";
 import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
 import { createScenePreviewBridgeClient } from "./scenePreviewBridgeClient";
-import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./desktopBridgeMethods";
 import type { BuiltInBrowserDesktopBridgeClient } from "./desktopBridgeMethods";
 import {
   createRemoteBrowserForwarder,
@@ -131,140 +130,23 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
-      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     const result = await client.navigate({ url: "https://example.com" });
     expect(result).toEqual({ ok: true, url: "https://example.com" });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.method).toBe("built_in_browser.navigate");
-    expect(seen[0]?.params).toEqual({
-      url: "https://example.com",
-      __adeDesktopBridgeAuth: "bridge-auth",
-    });
+    expect(seen[0]?.params).toEqual({ url: "https://example.com" });
     client.dispose();
   });
 
-  it("verifies an in-memory desktop bridge credential without persisting it", async () => {
-    const seen: JsonRpcRequest[] = [];
-    server = await startBridgeServer(async (request) => {
-      seen.push(request);
-      return { authenticated: true };
-    });
-
-    await expect(checkBuiltInBrowserDesktopBridgeAuth({
-      socketPath: server.socketPath,
-      authToken: "ephemeral-secret",
-    }).then((result) => result.verified)).resolves.toBe(true);
-    expect(seen).toEqual([expect.objectContaining({
-      method: "built_in_browser.authenticate",
-      params: { __adeDesktopBridgeAuth: "ephemeral-secret" },
-    })]);
-  });
-
-  it.each([
-    ["accepts the desktop's own token", async () => (server = await startBridgeServer(async () => ({ authenticated: true }))).socketPath, { verified: true }],
-    ["a desktop that answers no", async () => (server = await startBridgeServer(async () => ({ authenticated: false }))).socketPath, { verified: false, kind: "rejected" }],
-    ["a desktop that refuses the token", async () => (server = await startBridgeServer(async () => { throw new Error("Desktop bridge authentication failed."); })).socketPath, { verified: false, kind: "rejected" }],
-    ["no desktop listening", async () => createBridgeSocketPath("ade-bridge-absent"), { verified: false, kind: "unreachable" }],
-    // The one row that waits: `timedOut` lets the clock run only once the
-    // desktop has the request in hand, on fake timers rather than real time.
-    ["a desktop that never answers", async () => {
-      let asked!: () => void;
-      const received = new Promise<void>((resolve) => { asked = resolve; });
-      server = await startBridgeServer(() => {
-        asked();
-        return new Promise(() => {});
-      });
-      return { socketPath: server.socketPath, timedOut: received };
-    }, { verified: false, kind: "timeout" }],
-    // An ADE desktop started as administrator: its socket refuses the
-    // background service. POSIX shows it as a socket this user cannot open.
-    ...(process.platform === "win32" ? [] : [[
-      "a socket this process may not open",
-      async () => {
-        server = await startBridgeServer(async () => ({ authenticated: true }));
-        fs.chmodSync(server.socketPath, 0o000);
-        return server.socketPath;
-      },
-      { verified: false, kind: "access_denied" },
-    ] as const]),
-  ] as const)("says why the desktop bridge did not attach: %s", async (_case, listen, expected) => {
-    const listening: string | { socketPath: string; timedOut: Promise<void> } = await listen();
-    const timeoutMs = 200;
-    let result;
-    if (typeof listening === "string") {
-      result = await checkBuiltInBrowserDesktopBridgeAuth({ socketPath: listening, authToken: "desktop-token", timeoutMs });
-    } else {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        const checking = checkBuiltInBrowserDesktopBridgeAuth({ socketPath: listening.socketPath, authToken: "desktop-token", timeoutMs });
-        await listening.timedOut;
-        await vi.advanceTimersByTimeAsync(timeoutMs);
-        result = await checking;
-      } finally {
-        vi.useRealTimers();
-      }
-    }
-    expect(result).toMatchObject(expected);
-    // A failure always carries one sentence for logs and proof metadata, and
-    // never the token.
-    if (!result.verified) {
-      expect(result.reason).toEqual(expect.stringMatching(/\S/));
-      expect(result.reason).not.toContain("desktop-token");
-    }
-  });
-
-  it("rejects missing authentication without dropping a bridge connection", async () => {
-    server = await startBridgeServer(async () => ({ ok: true }));
-    let authToken: string | null = null;
-    const warn = vi.fn();
-    const client = createBuiltInBrowserDesktopBridgeClient({
-      socketPath: server.socketPath,
-      getAuthToken: () => authToken,
-      logger: { ...silentLogger(), warn },
-    });
-
-    // A desktop IS listening here, so a missing token is a real
-    // desktop-side fault and keeps its own message — it must NOT be reported
-    // as "no desktop attached", which would send `ade browser open` off to a
-    // remote desktop while a local one is right there.
-    const authFailure = await client.getStatus().then(
-      () => null,
-      (error: unknown) => error,
-    );
-    expect(authFailure).toBeInstanceOf(Error);
-    expect((authFailure as Error).message).toMatch(/authentication is unavailable/);
-    expect(authFailure).not.toBeInstanceOf(DesktopBridgeUnavailableError);
-    expect(warn).not.toHaveBeenCalled();
-
-    authToken = "bridge-auth";
-    await expect(client.getStatus()).resolves.toEqual({ ok: true });
-    expect(server.connectionCount()).toBe(1);
-
-    authToken = null;
-    await expect(client.getStatus()).rejects.toThrow(/authentication is unavailable/);
-    // The unauthenticated call reuses the cached connection rather than
-    // reconnecting, and must not tear it down for the next authenticated one.
-    expect(server.connectionCount()).toBe(1);
-    expect(warn).not.toHaveBeenCalled();
-
-    authToken = "bridge-auth";
-    await expect(client.getStatus()).resolves.toEqual({ ok: true });
-    expect(server.connectionCount()).toBe(1);
-    client.dispose();
-  });
-
-  it("reports a headless machine as bridge-unavailable even when the token is also missing", async () => {
+  it("reports a headless machine as bridge-unavailable when no desktop is attached", async () => {
     const missingPath = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "ade-bridge-test-headless-")),
       "absent.sock",
     );
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: missingPath,
-      // A machine with no desktop has no token either: the desktop is what
-      // sets it. The absent socket, not the absent token, is what decides.
-      getAuthToken: () => null,
       logger: silentLogger(),
     });
     await expect(client.navigate({ url: "http://localhost:4567" })).rejects.toBeInstanceOf(
@@ -281,12 +163,11 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
-      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await client.getStatus();
     expect(recorded[0]?.method).toBe("built_in_browser.getStatus");
-    expect(recorded[0]?.params).toEqual({ __adeDesktopBridgeAuth: "bridge-auth" });
+    expect(recorded[0]?.params).toEqual({});
     client.dispose();
   });
 
@@ -298,7 +179,6 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
-      getAuthToken: () => "bridge-auth",
       projectRoot: "/Users/ade/project-alpha",
       logger: silentLogger(),
     });
@@ -308,17 +188,15 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
 
     expect(recorded[0]?.params).toEqual({
       projectRoot: "/Users/ade/project-alpha",
-      __adeDesktopBridgeAuth: "bridge-auth",
     });
     expect(recorded[1]?.params).toEqual({
       url: "https://example.com",
       projectRoot: "/Users/ade/project-alpha",
-      __adeDesktopBridgeAuth: "bridge-auth",
     });
     client.dispose();
   });
 
-  it("forwards the runtime-bound actor capability while erasing caller routing", async () => {
+  it("forwards the runtime project scope while erasing caller routing", async () => {
     const recorded: JsonRpcRequest[] = [];
     server = await startBridgeServer(async (request) => {
       recorded.push(request);
@@ -326,7 +204,6 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
-      getAuthToken: () => "bridge-auth",
       projectRoot: "/Users/ade/project-alpha",
       logger: silentLogger(),
     });
@@ -336,17 +213,13 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
       chatSessionId: "chat-personal",
       projectRoot: "/tmp/spoofed-project",
       tabCollection: "personal" as const,
-      [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: "opaque-actor-token",
     };
     await client.navigate(runtimeScopedNavigate);
 
     expect(recorded[0]?.params).toEqual({
       url: "https://personal.example.test",
       chatSessionId: "chat-personal",
-      projectRoot: "/Users/ade/project-alpha",
-      tabCollection: undefined,
-      [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: "opaque-actor-token",
-      __adeDesktopBridgeAuth: "bridge-auth",
+      tabCollection: "personal",
     });
     client.dispose();
   });
@@ -358,7 +231,6 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     );
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: missingPath,
-      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(
@@ -373,7 +245,6 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
-      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(/Browser pane is offline/);
@@ -389,7 +260,6 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
-      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(/temporary/);
@@ -405,7 +275,6 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     server = await startBridgeServer(async () => ({ generation }), socketPath);
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath,
-      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
 
@@ -418,6 +287,32 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
 
     await expect(client.getStatus()).resolves.toEqual({ generation: 2 });
     client.dispose();
+  });
+
+  it("probes an attached desktop without sending a bridge secret", async () => {
+    const recorded: JsonRpcRequest[] = [];
+    server = await startBridgeServer(async (request) => {
+      recorded.push(request);
+      return { authenticated: true };
+    });
+
+    await expect(probeDesktopBridge({ socketPath: server.socketPath })).resolves.toEqual({ attached: true });
+    expect(recorded).toEqual([expect.objectContaining({
+      method: "built_in_browser.authenticate",
+      params: {},
+    })]);
+  });
+
+  it("turns an old desktop's authentication refusal into an update message", async () => {
+    server = await startBridgeServer(async () => {
+      throw new Error("Desktop bridge authentication failed.");
+    });
+
+    await expect(probeDesktopBridge({ socketPath: server.socketPath })).resolves.toEqual({
+      attached: false,
+      kind: "unreachable",
+      reason: "ADE Desktop is older than ADE's background service. Restart ADE Desktop to finish updating.",
+    });
   });
 });
 
@@ -696,13 +591,7 @@ describe("remote browser forwarder", () => {
     expect(targets).toEqual(forwardedTo);
   });
 
-  it("forwards from a real headless runtime, where the bridge token is missing too", async () => {
-    // Regression: the client read the auth token before it ever touched the
-    // socket. On a machine with no desktop the token is null too, so the call
-    // died with a plain Error, `forwardIfNoDesktop` did not recognise it, and
-    // `ade browser open` failed on exactly the runtime the forwarder exists
-    // for. Uses the REAL bridge client — the fake in `makeBridge` cannot show
-    // which error class the token check produces.
+  it("forwards from a real headless runtime when no desktop is attached", async () => {
     const missingPath = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "ade-bridge-test-forward-")),
       "absent.sock",
@@ -726,7 +615,6 @@ describe("remote browser forwarder", () => {
     });
     const headless = createBuiltInBrowserDesktopBridgeClient({
       socketPath: missingPath,
-      getAuthToken: () => null,
       logger: silentLogger(),
     });
     const bridge = withRemoteBrowserForwarding(headless, forwarder);
@@ -772,7 +660,6 @@ describe("createDesktopBridgeConnection", () => {
   function open(overrides: Partial<Parameters<typeof createDesktopBridgeConnection>[0]> = {}) {
     return createDesktopBridgeConnection({
       socketPath: "/nonexistent/bridge.sock",
-      getAuthToken: () => "token",
       unavailableMessage: "no desktop attached",
       closedMessage: "connection closed",
       ...overrides,
@@ -792,12 +679,6 @@ describe("createDesktopBridgeConnection", () => {
     await expect(connection.request("scene_preview.render", {}, 5_000)).resolves.toEqual({ ok: true });
     // The error answer did not cost a reconnect.
     expect(server.connectionCount()).toBe(1);
-  });
-
-  it("refuses a call with no bridge token before opening a socket", async () => {
-    const connection = open({ getAuthToken: () => null });
-    await expect(connection.request("scene_preview.render", {}, 5_000))
-      .rejects.toThrow("no desktop attached");
   });
 
   it("refuses a call made after close", async () => {
@@ -839,7 +720,6 @@ describe("createScenePreviewBridgeClient", () => {
     });
     const previewer = createScenePreviewBridgeClient({
       socketPath: server.socketPath,
-      getAuthToken: () => "token",
     });
 
     const first = previewer.render({ source: "<p>a</p>" });

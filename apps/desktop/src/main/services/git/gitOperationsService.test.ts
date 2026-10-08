@@ -1246,7 +1246,7 @@ describe("gitOperationsService.generateCommitMessage", () => {
       aiIntegrationService: {
         getFeatureFlag: () => true,
         getStatus: vi.fn(async () => ({
-          availableModelIds: ["anthropic/claude-haiku-4-5"],
+          availableModelIds: ["anthropic/claude-haiku-5-5"],
         })),
         generateCommitMessage: vi.fn(async (args: { prompt: string; model?: string }) => {
           capturedPrompt = args.prompt;
@@ -1278,9 +1278,9 @@ describe("gitOperationsService.generateCommitMessage", () => {
 
     expect(result).toEqual({
       message: "Update git service",
-      model: "anthropic/claude-haiku-4-5",
+      model: "anthropic/claude-haiku-5-5",
     });
-    expect(capturedModel).toBe("anthropic/claude-haiku-4-5");
+    expect(capturedModel).toBe("anthropic/claude-haiku-5-5");
     expect(capturedPrompt).toContain("Changed files:");
     expect(capturedPrompt).toContain("M\tapps/desktop/src/main/foo.ts");
     expect(capturedPrompt).toContain("A\tapps/desktop/src/main/bar.ts");
@@ -1462,7 +1462,7 @@ describe("gitOperationsService.generateCommitMessage", () => {
       aiIntegrationService: {
         getFeatureFlag: () => true,
         getStatus: vi.fn(async () => ({
-          availableModelIds: ["anthropic/claude-haiku-4-5"],
+          availableModelIds: ["anthropic/claude-haiku-5-5"],
         })),
         generateCommitMessage: vi.fn(async () => ({
           text: "Update git service.",
@@ -1490,7 +1490,7 @@ describe("gitOperationsService.generateCommitMessage", () => {
 
     expect(result).toEqual({
       message: "Refs ADE-123: Update git service",
-      model: "anthropic/claude-haiku-4-5",
+      model: "anthropic/claude-haiku-5-5",
     });
   });
 });

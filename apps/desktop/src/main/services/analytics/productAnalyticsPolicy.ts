@@ -180,6 +180,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // The same three coarse outcomes for the lane's App Control session: one
   // started, an agent drove it, or a recording was filed as proof.
   "app_control",
+  // Whether agents use the user's own browser (`ade browser attach`): one
+  // coarse `started` outcome. Never the browser, machine, tab, URL, or chat.
+  "user_browser",
   // One coarse fact per capture-gesture press: whether the shot reached the
   // composer. Never the window, its title, the app it belonged to, the path the
   // PNG passed through, or the image.
@@ -227,6 +230,8 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // ended. Never the URL, the hook, the secret's name or value, or the chat.
   "webhook_url_created",
   "secret_requested",
+  // ADE's one-click update of a user-installed provider CLI. Never the version.
+  "provider_cli_updated",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {

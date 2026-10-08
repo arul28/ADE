@@ -1567,6 +1567,7 @@ struct WorkRootListScreen: View, Equatable {
       compact: compact,
       nestedSubagent: nestedSubagent,
       showsLaneIdentity: showsLaneIdentity,
+      waitingOnSubagent: sessionPresentation.busySubagentParentIds.contains(session.id),
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,

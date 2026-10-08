@@ -2369,6 +2369,10 @@ private func workTurnFoldRow(for entry: WorkTimelineEntry) -> WorkTurnFoldFacts 
     return WorkTurnFoldFacts(role: .text, turnId: messageTurnId, trivial: empty)
   case .turnEndMarker:
     return WorkTurnFoldFacts(role: .turnEnd, turnId: turnId, trivial: true)
+  case .toolGroup(let group) where !group.computerUseActions.isEmpty:
+    // Computer-use actions stay in the thread when the turn folds, as on
+    // desktop: they are the record of what the agent did on a screen.
+    return WorkTurnFoldFacts(role: .keep, turnId: turnId, trivial: false)
   case .toolCard, .commandCard, .fileChangeCard, .toolGroup, .changedFiles:
     return WorkTurnFoldFacts(role: .history, turnId: turnId, trivial: false)
   case .eventCard(let card):
@@ -2759,26 +2763,65 @@ func workPresentedTimelineEntries(
   let index = toolActivity ?? workTurnToolActivityIndex(from: timeline)
   let claimedInlineGroupIds = index.claimedInlineGroupIds
   let liveGroupIds = isStreaming ? index.activeInlineGroupIds : []
-  let drawn = timeline.filter { entry in
+  let drawn = timeline.compactMap { entry -> WorkTimelineEntry? in
     switch entry.payload {
-    case .toolGroup, .changedFiles:
+    case .toolGroup(let group):
       if claimedInlineGroupIds.contains(entry.id) || liveGroupIds.contains(entry.id) {
-        return false
+        // A cluster holding computer-use actions (`ade screen click …`) stays
+        // in the thread as those actions (desktop keeps the same
+        // `work_log_group` rows); the rest of its tools live on the turn line.
+        let actions = workComputerUseActions(from: group.members)
+        guard !actions.isEmpty else { return nil }
+        var actionGroup = group
+        actionGroup.computerUseActions = actions
+        return WorkTimelineEntry(
+          id: entry.id,
+          timestamp: entry.timestamp,
+          rank: entry.rank,
+          payload: .toolGroup(actionGroup),
+          turnId: entry.turnId
+        )
+      }
+    case .changedFiles:
+      if claimedInlineGroupIds.contains(entry.id) || liveGroupIds.contains(entry.id) {
+        return nil
       }
     default:
       break
     }
-    guard case .eventCard(let card) = entry.payload else { return true }
+    guard case .eventCard(let card) = entry.payload else { return entry }
     switch card.kind {
     case "activity", "activityBundle", "todo":
-      return false
+      return nil
     case "promptSuggestion":
-      return !hidesPromptSuggestions
+      return hidesPromptSuggestions ? nil : entry
     default:
-      return true
+      return entry
     }
   }
-  return workGroupingPresentedRuns(drawn)
+  return workGroupingPresentedRuns(workMarkCompactComputerUseRuns(drawn))
+}
+
+/// Only a turn's newest computer-use run draws its newest action in full;
+/// every earlier run of that turn draws compact, as on desktop.
+func workMarkCompactComputerUseRuns(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  func turnKey(_ entry: WorkTimelineEntry, _ group: WorkToolGroupModel) -> String {
+    entry.turnId ?? group.turnId ?? "entry:\(entry.id)"
+  }
+  var lastIndexByTurn: [String: Int] = [:]
+  for (index, entry) in entries.enumerated() {
+    if case .toolGroup(let group) = entry.payload, !group.computerUseActions.isEmpty {
+      lastIndexByTurn[turnKey(entry, group)] = index
+    }
+  }
+  guard lastIndexByTurn.count > 0 else { return entries }
+  return entries.enumerated().map { index, entry in
+    guard case .toolGroup(var group) = entry.payload, !group.computerUseActions.isEmpty else { return entry }
+    let compact = lastIndexByTurn[turnKey(entry, group)] != index
+    guard compact != group.computerUseCompact else { return entry }
+    group.computerUseCompact = compact
+    return WorkTimelineEntry(id: entry.id, timestamp: entry.timestamp, rank: entry.rank, payload: .toolGroup(group), turnId: entry.turnId)
+  }
 }
 
 /// Up to three subagent cards side by side on desktop (`SUBAGENT_CARD_GRID_MAX_COLUMNS`).

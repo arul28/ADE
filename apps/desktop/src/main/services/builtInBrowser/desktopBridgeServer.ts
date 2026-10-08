@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
-import { randomBytes, timingSafeEqual } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -13,10 +12,6 @@ import {
   type JsonRpcTransport,
 } from "../../../../../ade-cli/src/jsonrpc";
 import {
-  BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
-  BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
-  BUILT_IN_BROWSER_ISSUE_ACTOR_CAPABILITY_METHOD,
-  BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD,
   isBuiltInBrowserDesktopBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import {
@@ -53,11 +48,6 @@ import {
   type DemoEngine,
   type DemoPlan,
 } from "../../../shared/demoVideo/demoContract";
-import {
-  issueBuiltInBrowserActorCapability,
-  resolveBuiltInBrowserActorCapability,
-  revokeBuiltInBrowserActorCapability,
-} from "./builtInBrowserActorCapabilities";
 import { DEMO_ENGINE_INPUT_EXTENSIONS } from "../demoVideo/demoMp4Source";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
@@ -98,10 +88,8 @@ type BridgeConnectionState = {
  * - `startHandoff` → emits `handoff-started`, which the router turns into
  *   `clearForTab` plus `clearForChatSession` for the previous owner.
  *
- * The other two clear paths are deliberately absent: `noteWindowTabsClosed`
- * runs on window teardown, which no bridge method can request, and
- * `revokeActorCapability` clears presence itself and returns long before this
- * dispatch. `endSession` reads as turn-ending but is not — it closes a
+ * The other clear path is deliberately absent: `noteWindowTabsClosed` runs
+ * on window teardown, which no bridge method can request. `endSession` reads as turn-ending but is not — it closes a
  * recorded action session, touches no tab and clears no presence, so an agent
  * that ends a session and keeps browsing must keep its globe.
  */
@@ -111,7 +99,6 @@ const TURN_ENDING_BRIDGE_METHODS = new Set<string>(["closeTab", "startHandoff"])
 
 export type BuiltInBrowserDesktopBridgeServer = {
   socketPath: string;
-  authToken: string;
   dispose: () => void;
 };
 
@@ -169,7 +156,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
-  const bridgeAuthToken = randomBytes(32).toString("base64url");
 
   if (!isNamedPipe) {
     const socketDir = path.dirname(socketPath);
@@ -357,16 +343,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       );
     }
     const name = method.slice((engine?.prefix ?? BUILT_IN_BROWSER_METHOD_PREFIX).length);
+    // No secret on this socket: it is owner-only (0600 in a 0700 directory, a
+    // per-account named pipe on Windows), the same boundary the brain's own
+    // socket relies on. A process that can open it is already running as the
+    // user and could drive the browser profile on disk directly.
     const rawParams = isRecord(request.params) ? { ...request.params } : {};
-    const providedBridgeAuth = typeof rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM] === "string"
-      ? rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM].trim()
-      : "";
-    if (!safeTokenEquals(providedBridgeAuth, bridgeAuthToken)) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        "Built-in browser bridge authentication failed.",
-      );
-    }
     if (engine) return await engine.handle(name, rawParams, connection);
     if (isAppUpdateMethod) {
       const installer = args.getAppUpdateInstaller?.() ?? null;
@@ -378,57 +359,14 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       }
       return await installer.install({ targetVersion: normalizedString(rawParams.targetVersion) });
     }
+    // The brain's attach probe (`probeDesktopBridge`). The name predates the
+    // bridge dropping its secret and is kept so older brains' probes answer.
     if (name === "authenticate") {
       return { authenticated: true };
     }
-    // Capability lifecycle. Electron owns the registry, so the runtime daemon
-    // asks for the per-chat token here rather than minting one in its own
-    // process (where nothing could ever validate it). Bridge auth is the only
-    // gate: the caller is the runtime that already decides which lane, project
-    // and chat an agent belongs to. No actor capability is required — this is
-    // where they come from.
-    if (name === BUILT_IN_BROWSER_ISSUE_ACTOR_CAPABILITY_METHOD) {
-      const requestedChatSessionId = normalizedString(rawParams.chatSessionId);
-      if (!requestedChatSessionId) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidParams,
-          "Browser actor capabilities require a chat session id.",
-        );
-      }
-      const tabCollection = rawParams.tabCollection === "personal" ? "personal" : null;
-      const token = issueBuiltInBrowserActorCapability({
-        chatSessionId: requestedChatSessionId,
-        laneId: normalizedString(rawParams.laneId),
-        projectRoot: tabCollection === "personal"
-          ? null
-          : normalizedString(rawParams.projectRoot),
-        tabCollection,
-      });
-      return { token };
-    }
-    if (name === BUILT_IN_BROWSER_REVOKE_ACTOR_CAPABILITY_METHOD) {
-      const requestedChatSessionId = normalizedString(rawParams.chatSessionId);
-      if (!requestedChatSessionId) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidParams,
-          "Browser actor capabilities require a chat session id.",
-        );
-      }
-      revokeBuiltInBrowserActorCapability(requestedChatSessionId);
-      // The chat is over (or its capability was rotated): it cannot issue
-      // another browser command, so leaving a globe pulsing beside it for the
-      // rest of the expiry window would outlive the only thing that could
-      // refresh it.
-      builtInBrowserAgentPresence.clearForChatSession(requestedChatSessionId);
-      return { revoked: true };
-    }
-    // Read-only Work-tools mirror. Bridge auth only, exactly like the two
-    // capability methods above and for the same reason: the caller is the
-    // runtime daemon itself, which has no chat and therefore can never hold an
-    // actor capability. It gets a deliberately narrow projection (see
-    // `BuiltInBrowserRuntimeStatus`) that carries no cookies, no observation
-    // bytes and no way to act on a tab, so serving it without a capability
-    // grants nothing the daemon could not already infer from its own events.
+    // Read-only Work-tools mirror for the runtime daemon. A deliberately narrow
+    // projection (see `BuiltInBrowserRuntimeStatus`): no cookies, no
+    // observation bytes and no way to act on a tab.
     if (name === BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD) {
       // Project-scoped, not frontmost-window-scoped. The daemon asking is bound
       // to one project; answering out of whichever window is active would hide
@@ -501,39 +439,21 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         `Action 'built_in_browser.${name}' is not exposed by the desktop bridge.`,
       );
     }
-    delete rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM];
+    // The runtime daemon decides who is calling: it resolves the chat, its lane
+    // and its project (or the personal collection) from the caller it already
+    // knows, and sends them here. A call with no chat (the user's own terminal)
+    // is allowed too; it just owns no tab.
     const chatSessionId = normalizedString(rawParams.chatSessionId);
-    const actorToken = normalizedString(rawParams[BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]);
-    delete rawParams[BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM];
-    // Validate in the issuing Electron process so opaque capabilities remain
-    // revocable without sharing the in-memory registry or its authority with
-    // the runtime daemon (which runs in a separate process).
-    const actor = resolveBuiltInBrowserActorCapability(actorToken);
-    if (!actorToken || !chatSessionId) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        "Built-in browser automation needs a chat capability, and this caller has none. `ade browser` only works from a chat or terminal that ADE launched — open ADE Desktop with this project and start the chat from there.",
-      );
-    }
-    if (!actor) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        "This chat's browser capability is no longer valid — it was revoked when the chat ended, or ADE Desktop restarted after issuing it. Relaunch this chat from ADE Desktop.",
-      );
-    }
-    if (actor.chatSessionId !== chatSessionId) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        "This browser capability belongs to a different chat session than the one making the call. Relaunch this chat from ADE Desktop.",
-      );
-    }
+    const laneId = normalizedString(rawParams.laneId);
+    const tabCollection = rawParams.tabCollection === "personal" ? "personal" : null;
+    const projectRoot = tabCollection === "personal" ? null : normalizedString(rawParams.projectRoot);
     const params = {
       ...rawParams,
-      chatSessionId: actor.chatSessionId,
-      laneId: actor.laneId ?? undefined,
-      ...(actor.projectRoot
-        ? { projectRoot: actor.projectRoot, tabCollection: undefined }
-        : { projectRoot: undefined, tabCollection: actor.tabCollection }),
+      chatSessionId: chatSessionId ?? undefined,
+      laneId: laneId ?? undefined,
+      ...(projectRoot
+        ? { projectRoot, tabCollection: undefined }
+        : { projectRoot: undefined, tabCollection: tabCollection ?? undefined }),
       force: false,
     };
     // A step caption touches no tab: it must not light the browser's presence.
@@ -559,13 +479,12 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     // Every method counts, reads included: `status` and `observe` are how an
     // agent looks at the page, and a badge that lit only for writes would go
     // dark while it read.
-    const presenceTouch = {
-      chatSessionId: actor.chatSessionId,
-      laneId: actor.laneId,
-      projectRoot: actor.projectRoot,
-      tabId: normalizedString(rawParams.tabId),
-    };
-    const opened = builtInBrowserAgentPresence.touch(presenceTouch);
+    //
+    // Presence is a chat's ("this chat is browsing"); a chatless call has none.
+    const presenceTouch = chatSessionId
+      ? { chatSessionId, laneId, projectRoot, tabId: normalizedString(rawParams.tabId) }
+      : null;
+    const opened = presenceTouch ? builtInBrowserAgentPresence.touch(presenceTouch) : null;
     try {
       const result = await (callable as (input: unknown) => Promise<unknown>).call(service, params);
       // …except after the two calls that END the agent's turn at the tab. Both
@@ -574,7 +493,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       // tab id — leaving the badge saying "browsing" for a full expiry window
       // after the agent closed its last tab, or pulsing beside the very banner
       // asking a human to sign in.
-      if (!TURN_ENDING_BRIDGE_METHODS.has(name)) {
+      if (presenceTouch && !TURN_ENDING_BRIDGE_METHODS.has(name)) {
         builtInBrowserAgentPresence.touch(presenceTouch);
       }
       return result;
@@ -585,8 +504,8 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       // the earlier ones earned, and the `ifSequence` guard drops the undo if a
       // concurrent command from the same chat moved the entry meanwhile (or if
       // a recording took a hold on it while this call was in flight).
-      if (opened.created) {
-        builtInBrowserAgentPresence.clearForChatSession(actor.chatSessionId, {
+      if (chatSessionId && opened?.created) {
+        builtInBrowserAgentPresence.clearForChatSession(chatSessionId, {
           ifSequence: opened.sequence,
         });
       }
@@ -599,9 +518,8 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   }
 
   /**
-   * The App Control screencast recorder, for the runtime daemon. Bridge auth
-   * is the only gate, as for the Work-tools mirror: the caller is the daemon,
-   * which decides which lane records. Recordings are keyed per lane.
+   * The App Control screencast recorder, for the runtime daemon, which decides
+   * which lane records. Recordings are keyed per lane.
    */
   async function handleAppControlRecorder(
     name: string,
@@ -656,7 +574,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   }
 
   /**
-   * `ade scene preview`, for the runtime daemon. Bridge auth is the only gate.
+   * `ade scene preview`, for the runtime daemon.
    * The scene source is the only input: no path is read or written here, and
    * the screenshot comes back in the answer for the daemon to file.
    */
@@ -687,8 +605,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   }
 
   /**
-   * The Chromium demo engine, for the runtime daemon. Bridge auth is the only
-   * gate, as for the recorder. The engine reads one `.aderaw` capture and
+   * The Chromium demo engine, for the runtime daemon. The engine reads one `.aderaw` capture and
    * writes one `.mp4`; paths are checked here before it opens either.
    */
   async function handleDemoEngine(
@@ -743,7 +660,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 
   return {
     socketPath,
-    authToken: bridgeAuthToken,
     dispose: () => {
       for (const stop of activeServerHandles) {
         try {
@@ -837,12 +753,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizedString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function safeTokenEquals(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function isSystemTempDir(dirPath: string): boolean {

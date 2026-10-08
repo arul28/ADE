@@ -55,6 +55,18 @@ enum WorkBoardWaitingReason: Hashable {
   case snoozed
   case ci
   case review
+  case scheduled
+  case subagent
+
+  var chipText: String {
+    switch self {
+    case .snoozed: return "Snoozed"
+    case .ci: return "Waiting on CI"
+    case .review: return "Waiting for review"
+    case .scheduled: return "Wake scheduled"
+    case .subagent: return "Subagent working"
+    }
+  }
 }
 
 /// Does this lane's PR park a running session in Waiting?
@@ -111,13 +123,22 @@ func workSessionWaitingReason(
   session: TerminalSessionSummary,
   phase: CanonicalSessionPhase,
   laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason],
+  nextWakeAt: String? = nil,
+  busySubagentParentIds: Set<String> = [],
   now: Date = Date()
 ) -> WorkBoardWaitingReason? {
   // The shared filing rule, so a raised hand still outranks the snooze overlay:
   // a `needsYou` row is never filed as snoozed and therefore never waits.
   if isSessionFiledAsSnoozed(session.snoozeState, phase: phase, now: now) { return .snoozed }
-  guard phase == .starting || phase == .running || phase == .stale else { return nil }
-  return laneWaitingReasonByLaneId[session.laneId]
+  switch phase {
+  case .starting, .running, .stale:
+    return laneWaitingReasonByLaneId[session.laneId]
+  case .ready, .idle:
+    if workScheduledWakeIsPending(nextWakeAt, now: now) { return .scheduled }
+    return busySubagentParentIds.contains(session.id) ? .subagent : nil
+  case .needsYou, .failed, .stopped, .ended, .settled:
+    return nil
+  }
 }
 
 /// Which of the three phase-derived chips a row answers to, once Waiting has
@@ -192,9 +213,11 @@ func workFilteredSessions(
   searchText: String,
   outputSearchBySessionId: [String: String] = [:],
   /// Lane → PR-derived wait, from `workLaneWaitingReasonByLaneId`. Empty is a
-  /// valid input (no PRs loaded yet): Waiting then means snoozed-only, and every
-  /// running row stays in Working rather than being guessed at.
+  /// valid input (no PRs loaded yet): Waiting can still contain scheduled wakes,
+  /// busy parents, or snoozed rows; running rows stay in Working rather than
+  /// being guessed at.
   laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason] = [:],
+  busySubagentParentIds: Set<String> = [],
   now: Date = Date()
 ) -> [TerminalSessionSummary] {
   let chatSessionIds = Set(sessions.filter(isChatSession).map(\.id))
@@ -219,6 +242,8 @@ func workFilteredSessions(
         session: session,
         phase: phase,
         laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
+        nextWakeAt: chatSummaries[session.id]?.nextWakeAt,
+        busySubagentParentIds: busySubagentParentIds,
         now: now
       )
       switch selectedStatus {
@@ -396,7 +421,7 @@ func workSessionEmptyStateMessage(status: WorkSessionStatusFilter, searchText: S
     // Waiting is the one chip whose contents are not obvious from its name, so
     // an empty Waiting says what would have been in it.
     if status == .waiting {
-      return "Nothing is snoozed, and no lane PR is sitting on CI or waiting for a review."
+      return "Nothing is snoozed, scheduled to wake, waiting for a subagent, or held by a lane PR on CI or review."
     }
     return "Change the lane, status, or machine filters to widen the Work list."
   }

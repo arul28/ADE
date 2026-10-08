@@ -145,7 +145,12 @@ import {
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
-import { mentionChipMarkSvg, type ComposerAtChipKind } from "./mentionChipMark";
+import {
+  COMPOSER_MENTION_CHIP_CLASS,
+  COMPOSER_TOKEN_CHIP_ICON_CLASS,
+  mentionChipMarkSvg,
+  type ComposerAtChipKind,
+} from "./mentionChipMark";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
@@ -176,6 +181,8 @@ import {
 } from "../../../shared/smartLinks";
 import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
+import { hasBrowserTabMention, parseBrowserTabMentions } from "../../../shared/browserTabMention";
+import { hydrateBrowserTabChipsInEditor, insertBrowserTabChip } from "./composerBrowserTabChip";
 import type { ChatThreadComment } from "../../../shared/threadComments";
 import { ComposerThreadCommentsButton } from "./ThreadCommentControls";
 import { countCommentsForNextSend } from "./threadCommentsStore";
@@ -336,10 +343,6 @@ const SMART_LINK_ICON_MARK_CLASS =
   "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-violet-100/85";
 const SMART_LINK_ICON_GLYPH_CLASS =
   "inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-violet-200/10 px-0.5 font-mono text-[7px] font-bold text-violet-100/80";
-const COMPOSER_TOKEN_CHIP_ICON_CLASS =
-  "inline-flex h-3 w-3 shrink-0 items-center justify-center text-violet-100/75";
-const COMPOSER_MENTION_CHIP_CLASS =
-  "mx-0.5 inline-flex max-w-[10.5rem] translate-y-px items-center gap-1 rounded border border-violet-300/22 bg-violet-500/12 px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-4 text-violet-100/88 align-baseline";
 const COMPOSER_TOKEN_CHIP_CLASS =
   "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] leading-5 text-violet-100/88 align-baseline";
 
@@ -1895,6 +1898,7 @@ export function AgentChatComposer({
   isActive = false,
   shouldAutofocus = isActive,
   caretToEndRequest = 0,
+  browserTabInsertRequest = null,
   threadComments = EMPTY_THREAD_COMMENTS,
   threadCommentsSessionId = null,
   threadCommentsPin = null,
@@ -2063,6 +2067,12 @@ export function AgentChatComposer({
    * editor with the caret at the very end, after the added chip.
    */
   caretToEndRequest?: number;
+  /**
+   * A browser tab attached from the Browser panel ("Attach to chat"). Each new
+   * `id` inserts the tab's `<ade-browser-tab>` token as a chip at the caret the
+   * user last left in the composer, then focuses it after the chip.
+   */
+  browserTabInsertRequest?: { id: number; token: string } | null;
   /** The chat's pending thread comments; the ones marked for send go with the next message. */
   threadComments?: readonly ChatThreadComment[];
   threadCommentsSessionId?: string | null;
@@ -2392,6 +2402,7 @@ export function AgentChatComposer({
   const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(
     () => findSmartLinks(draft).length > 0
       || hasChatOutputContext(draft)
+      || hasBrowserTabMention(draft)
       || parseChatMentions(draft).length > 0
       || parseModelMentions(draft).length > 0,
   );
@@ -2569,7 +2580,12 @@ export function AgentChatComposer({
     setSmartLinkEditorEnabled(true);
   };
   useEffect(() => {
-    if (hasChatOutputContext(draft) || parseChatMentions(draft).length > 0 || parseModelMentions(draft).length > 0) {
+    if (
+      hasChatOutputContext(draft)
+      || hasBrowserTabMention(draft)
+      || parseChatMentions(draft).length > 0
+      || parseModelMentions(draft).length > 0
+    ) {
       promoteToRichEditor();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- promotion follows the draft only
@@ -4135,6 +4151,36 @@ export function AgentChatComposer({
     richSelectionRef.current = range.cloneRange();
   }, []);
 
+  // Insert an attached browser tab at the caret the user last left here. The
+  // rich editor takes the chip directly, so the context chips around it keep
+  // their places; the plain textarea splices the token into the draft and lets
+  // promotion draw the chip, with the caret restored just after it.
+  const appliedBrowserTabInsertIdRef = useRef(browserTabInsertRequest?.id ?? 0);
+  useEffect(() => {
+    const request = browserTabInsertRequest;
+    if (!request || request.id === appliedBrowserTabInsertIdRef.current) return;
+    const match = parseBrowserTabMentions(request.token)[0];
+    if (!match) {
+      appliedBrowserTabInsertIdRef.current = request.id;
+      return;
+    }
+    if (useRichComposer) {
+      const editor = richEditorRef.current;
+      if (!editor) return;
+      appliedBrowserTabInsertIdRef.current = request.id;
+      placeCaretAfterChip(insertBrowserTabChip(editor, richSelectionRef.current, match));
+      syncRichDraft();
+      return;
+    }
+    appliedBrowserTabInsertIdRef.current = request.id;
+    const caret = Math.min(Math.max(0, lastPlainSelectionRef.current ?? draft.length), draft.length);
+    const head = draft.slice(0, caret);
+    const tail = draft.slice(caret);
+    const inserted = `${head && !/\s$/.test(head) ? " " : ""}${request.token}${/^\s/.test(tail) ? "" : " "}`;
+    richPromotionCaretRef.current = head.length + inserted.length;
+    onDraftChange(`${head}${inserted}${tail}`);
+  }, [browserTabInsertRequest, draft, onDraftChange, placeCaretAfterChip, syncRichDraft, useRichComposer]);
+
   /** Light up one part of a model chip and open its list. */
   const openModelChipSegment = useCallback((chip: HTMLElement, segment: ModelChipSegment) => {
     const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
@@ -4454,6 +4500,8 @@ export function AgentChatComposer({
       }
     }
 
+    // First, so a title inside an attached tab's block never chips on its own.
+    hydrateBrowserTabChipsInEditor(editor);
     hydrateMentionChipsInEditor();
     hydrateChatOutputContextChipsInEditor(editor);
 

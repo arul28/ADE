@@ -1015,6 +1015,24 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cleaned, "Hello. \"Goodbye\"")
   }
 
+  func testDictationCleanupRemovesPunctuatedFillers() {
+    let glossary = VoiceGlossary(version: 1, contextualTerms: [], corrections: [], fillers: ["um", "uh"])
+    let cases: [(String, String)] = [
+      ("Um, rebase onto main.", "Rebase onto main."),
+      ("So, uh, we should ship it.", "So, we should ship it."),
+      ("Um. Ship it.", "Ship it."),
+      ("We ship it. Um, then merge.", "We ship it. Then merge."),
+      ("Um, uh, ship it.", "Ship it."),
+      ("Um. Um. Ship it.", "Ship it."),
+      ("Uh. Um. Ship it.", "Ship it."),
+      ("Um! Ship it.", "Ship it."),
+      ("... so we ship.", "... So we ship."),
+    ]
+    for (raw, expected) in cases {
+      XCTAssertEqual(DictationCleanup.clean(raw, glossary: glossary), expected, raw)
+    }
+  }
+
   func testDictationCleanupAllowsExpandedUppercaseCharacters() {
     let cleaned = DictationCleanup.clean("ßeta", glossary: .empty)
 
@@ -20759,7 +20777,7 @@ final class ADETests: XCTestCase {
       "claude-fable-5-1",
       "claude-sonnet-5-5",
       "claude-sonnet-5",
-      "claude-haiku-4-5",
+      "claude-haiku-5-5",
       "claude-opus-5",
     ])
     XCTAssertEqual(openCodeAnthropic?.models.map(\.id), [
@@ -20935,7 +20953,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-sonnet-5-5"))
-    XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
+    // Retired Haiku 4.5 ids resolve to Haiku 5.5, which now carries reasoning tiers.
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-haiku-4-5"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-haiku-5-5"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.6-terra"), ["low", "medium", "high", "xhigh", "max", "ultra"])

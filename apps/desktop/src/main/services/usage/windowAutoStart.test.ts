@@ -188,7 +188,7 @@ describe("window auto-start", () => {
 
     expect(spawn).toHaveBeenCalledWith(
       "/bin/claude",
-      ["-p", "Reply with OK.", "--model", "claude-haiku-4-5", "--output-format", "text"],
+      ["-p", "Reply with OK.", "--model", "claude-haiku-5-5", "--effort", "low", "--output-format", "text"],
       expect.objectContaining({
         cwd: expect.any(String),
         windowsHide: true,
@@ -202,7 +202,7 @@ describe("window auto-start", () => {
     expect(log.info).toHaveBeenCalledWith("usage.window_autostart", expect.objectContaining({
       provider: "claude",
       instanceId: "claude",
-      model: "claude-haiku-4-5",
+      model: "claude-haiku-5-5",
       ok: true,
     }));
   });

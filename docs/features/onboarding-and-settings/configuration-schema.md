@@ -327,7 +327,7 @@ type AiConfig = {
 schema for older configs, but Settings no longer offers per-helper
 model pickers. Background naming, idle status lines, and commit
 suggestions pick a cheap model from the ADE provider that owns the
-session (Haiku 4.5 / GPT-5.6 Luna / Composer 2.5), then that session's
+session (Haiku 5.5 / GPT-5.6 Luna / Composer 2.5), then that session's
 model, then a deterministic slug. OpenCode, Droid, Pi, and ACP skip the
 cheap helper and use the session model. Manual Graph PR create is
 title plus optional markdown — ADE does not draft the description.

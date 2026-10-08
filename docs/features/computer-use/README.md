@@ -53,6 +53,28 @@ Shared modules:
 - `apps/desktop/src/shared/pathCase.ts` — node-free path case rule (`foldsCase`), shared by the proof URLs and `pathContainment.ts`.
 - `apps/ade-cli/src/services/proof/adeCaptureRegistry.ts` — the RPC server's registry of files that its capture actions wrote, by path and hash. An ingest is filed as ADE's capture only when each input matches an entry. Each match is one-shot.
 
+### The user's own browser (apps/desktop/src/main/services/userBrowser/)
+
+- `userBrowserDiscovery.ts` — which supported Chromium browsers (Chrome, Edge, Brave, Arc, Helium, Chromium) have remote debugging on, read from each profile's `DevToolsActivePort` file on macOS, Windows and Linux. That part reads files only and never connects. Once `attach` has connected, it also picks the tab (`chooseUserBrowserTab`): the tab the query names, or the one the user is looking at.
+- `userBrowserAttachService.ts` — `attach` / `detach` / `status` and the per-chat attachment: one browser-level CDP connection, a flattened session on the chosen tab, and App Control's agent action engine (`appControl/appControlAgentActions.ts`) running the page commands.
+- `apps/desktop/src/main/services/shared/cdpClient.ts` — the one CDP WebSocket client, shared with App Control. `session(id)` scopes commands and events to a flattened target session.
+- `apps/desktop/src/main/services/shared/cdpPageDiagnostics.ts` — the console, network and navigation tracking `observe` and `wait` read, shared with App Control. Each caller's policy (which console levels, `Log.entryAdded`, uncaught exceptions) is an explicit option.
+- `apps/desktop/src/shared/userBrowserLabels.ts` — the words attach prints (`attached:`, `detached:`, `target:`), shared by the code that prints them and the transcript that reads them back.
+- `apps/desktop/src/main/services/shared/withTimeout.ts` — a promise's value, or null once a deadline passes or it rejects; bounds the attach service's CDP waits.
+- `apps/ade-cli/src/services/builtInBrowser/userBrowserRouting.ts` — wraps the runtime's `built_in_browser` bridge client: serves `attachUserBrowser` / `detachUserBrowser` and sends the page commands `adeRpcServer` routed to the user's browser to the attachment.
+
+### Computer-use action rows in the transcript
+
+- `apps/desktop/src/shared/computerUseActionSummary.ts` — reads one shell command (`ade screen …`, `ade browser …`, `ade apple …`, also through `"$ADE_CLI_PATH"`) into a summary: verb, element hit, app, surface, effect. Returns null whenever it is unsure.
+- `apps/desktop/src/shared/computerUseActionOutput.ts` — the output half: `hit:` / `effect:` lines, key-value rows, the Mac Desktop windows footer, `ade:` errors, the user's-browser lines, `--json` results.
+- `apps/desktop/src/shared/computerUseActionPresentation.ts` — a summary in words, and a run's layout (latest in full, earlier compact, same-app folds).
+- `apps/desktop/src/shared/readRecord.ts` — the dependency-free plain-object guard these shared modules use.
+- `apps/desktop/src/renderer/components/chat/chatComputerUseRows.ts` and `ChatComputerUseActions.tsx` — which transcript entries are actions, and the rows that draw them.
+- `apps/desktop/src/main/services/apps/appIcons.ts` — an app's icon by name for those rows (`ade.app.getAppIcon`, macOS only).
+- iOS: `apps/ios/ADE/Views/Work/WorkComputerUseSummary.swift` (parser port), `WorkComputerUsePresentation.swift` (words), `WorkComputerUseActions.swift` (rows).
+
+How the rows read and fold: [chat/transcript-and-turns.md](../chat/transcript-and-turns.md).
+
 ### Direct Codex Computer Use
 
 - `apps/desktop/src/main/utils/codexComputerUse.ts` — resolves the standalone `SkyComputerUseClient`, requires explicit user opt-in, verifies its strict macOS code signature plus OpenAI team/bundle identifiers, and returns the MCP launch config.
@@ -138,7 +160,7 @@ for a reviewer. Only an explicit proof call writes a record:
   skip both checks. A CLI capture counts as ADE's only when the RPC server's
   capture registry still holds the file with the same hash. See [Already-filed bytes and older videos](../proof.md#already-filed-bytes-and-older-videos).
 - **Browser use is visible to the human, automatically.** Every
-  capability-validated `ade browser …` command marks the calling chat as using
+  `ade browser …` command from a chat marks the calling chat as using
   the browser, so a globe appears on its session card and chat header, the
   Browser tool's tab gets a live dot, and the phone and TUI say the same thing.
   Nothing is asked of the agent — there is no "announce it" instruction to
@@ -295,6 +317,65 @@ App Control keeps one session per lane. Proof goes through this broker in two wa
 
 See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
 
+## Attach to the user's own browser
+
+ADE's browser is the default for web work. When the user asks an agent to
+look at or use their own browser ("the tab I have open", "use my Chrome"), the
+agent runs `ade browser attach`. The user's request is the consent; ADE adds no
+prompt of its own. The browser's own "Allow remote debugging?" prompt appears
+on connect, and the user answers it there.
+
+- **Where it runs.** On the chat's runtime host, the machine the agent runs
+  on, inside the runtime process. It needs no desktop, so it works on a
+  headless or remote runtime the same way. The output names the machine and
+  the tab: `attached: Google Chrome on Sam's Mac Studio, tab "Payments ·
+  Stripe" (https://dashboard.stripe.com/payments)`. The first word,
+  `attached:`, is the line the transcript keys on.
+- **Finding the browser.** A browser with remote debugging on writes
+  `DevToolsActivePort` into its profile directory (macOS
+  `~/Library/Application Support/<vendor>`, Windows
+  `%LOCALAPPDATA%\<vendor>\User Data`, Linux `$XDG_CONFIG_HOME` or
+  `~/.config`). ADE reads those files and prefers the newest. Only `attach`
+  connects: connecting is what triggers the browser's prompt, so `status`
+  never does. When no browser has it on, attach fails and names the page the
+  user opens to turn it on (`chrome://inspect/#remote-debugging`,
+  `edge://…`, `brave://…`). A port file left by a browser that quit is
+  skipped. `--browser` picks one browser; `--user-data-dir` checks one
+  profile directory.
+- **Picking the tab.** `--tab <text>` matches a tab title or URL. Without it,
+  ADE takes the focused visible tab, or the only visible one. When several
+  could be meant, attach lists them and the agent asks the user.
+- **Acting.** While a chat is attached, its `observe`, `click`, `fill`,
+  `clear`, `type`, `key`, `scroll`, `hover`, `wait`, `open`, `reload`, `back`,
+  `forward`, `screenshot`, `proof` and `trace` act in that tab through App
+  Control's action engine, with the same element handles and `hit:` /
+  `effect:` lines as ADE's browser. Every answer starts with `target: your
+  <browser> on <machine>`. Navigation is limited to http(s) pages. New tabs,
+  isolated sign-ins, handoff, recording, network logging, drag and upload stay
+  ADE-browser-only and say so. Other chats are unaffected.
+- **Proof.** Observations are written under
+  `.ade/cache/user-browser-observations/` and remembered by the runtime's
+  capture registry, so `ade browser proof` files them as ADE's capture through
+  the normal ingest path.
+- **Ending it.** `ade browser detach` closes the connection. The attachment
+  also ends when the tab closes, the browser quits, or it sits unused for 30
+  minutes; the chat's next browser command says which, and later commands go
+  to ADE's browser again. Ending or deleting the chat releases it too.
+  `ade browser detach` while an attach is still waiting on the browser's
+  prompt cancels that attach: when the browser answers, the connection is
+  closed and the chat stays on ADE's browser. Attaching again likewise
+  supersedes a waiting attach. `ade browser status` shows the attachment.
+- **Who may act in it.** Only the chat that attached. The runtime decides once
+  whether a call goes to the user's browser, authorizes it for that, and the
+  router obeys that decision, so an attachment that ends mid-call never sends
+  the call to ADE's browser unchecked. A user-browser call must come from a
+  chat of this project that has not ended, and may name only its own chat.
+  Anything else is refused (`run_ade_action:built_in_browser.observe is not
+  permitted for this caller: …`). As with ADE's own browser, the chat id is a
+  label the caller reports, not a token: another process running as the same
+  OS user could act as the chat, and could equally read its environment.
+  When the chat ends or is deleted, its attachment is released.
+
 ## Mac Desktop and Windows Desktop
 
 A third, newer surface sits beside these: **Mac Desktop** gives each lane its
@@ -406,7 +487,7 @@ How each surface decides the effect:
   than `about:blank` and other unsupported protocols stay blocked; site
   permission requests (camera, notifications, …) still use their own
   per-site prompt; a login handoff still hands control to the person;
-  the actor capability still binds each command to its chat and lane; tab
+  the runtime still tags each command with its chat and lane; tab
   leases still stop one chat from driving another chat's tab; and reaching a
   remote machine's port through a tunnel still needs its own yes.
 - **Mac Desktop.** The "before" is the observation the target was resolved

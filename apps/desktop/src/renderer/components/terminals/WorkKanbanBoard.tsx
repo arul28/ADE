@@ -85,10 +85,10 @@ export const WORK_BOARD_COLUMNS: readonly BoardColumnSpec[] = [
   {
     key: "waiting",
     label: WORK_BOARD_COLUMN_LABEL.waiting,
-    emptyHint: "Nothing is snoozed or waiting on CI.",
+    emptyHint: "Nothing is snoozed, scheduled or waiting on CI.",
     accent: COLORS.textMuted,
     droppable: false,
-    hint: "Snoozed, or waiting on CI or review",
+    hint: "Snoozed, waiting on a scheduled wake or a subagent, or on CI or review",
   },
   {
     key: "done",
@@ -107,6 +107,8 @@ const WAITING_REASON_LABEL: Record<WorkBoardWaitingReason, string> = {
   snoozed: "Snoozed",
   ci: "CI running",
   review: "Review requested",
+  scheduled: "Wake scheduled",
+  subagent: "Subagent working",
 };
 
 export type WorkKanbanBoardProps = {
@@ -450,6 +452,8 @@ function BoardCard({
           >
             {waitingReason === "snoozed" ? (
               <Moon size={9} weight="fill" aria-hidden />
+            ) : waitingReason === "scheduled" || waitingReason === "subagent" ? (
+              <Clock size={9} aria-hidden />
             ) : (
               <GitPullRequest size={9} aria-hidden />
             )}

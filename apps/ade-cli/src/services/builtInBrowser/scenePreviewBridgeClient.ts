@@ -30,7 +30,6 @@ export type ScenePreviewer = {
 
 export function createScenePreviewBridgeClient(args: {
   socketPath: string;
-  getAuthToken: () => string | null;
 }): ScenePreviewer {
   const connection = createDesktopBridgeConnection({
     ...args,

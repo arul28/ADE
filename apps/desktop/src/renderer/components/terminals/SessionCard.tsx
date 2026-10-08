@@ -71,6 +71,7 @@ import {
   type SessionHoverCardRow,
 } from "./SessionHoverCard";
 import { ToolLogo } from "./ToolLogos";
+import { useTurnStallClock } from "../../lib/useTurnStallClock";
 import { HarnessLogo } from "../shared/HarnessLogo";
 import { harnessBodyLabel } from "../../../shared/harnessPresets";
 import {
@@ -495,6 +496,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   suppressMachineChip = false,
   suppressStatusLabel = false,
   nestedSubagent = false,
+  subagentBusy = false,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
@@ -606,6 +608,8 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
    * glyph (word only for Needs you / Failed). Distinct from a compact shell.
    */
   nestedSubagent?: boolean;
+  /** A nested subagent still keeps this chat busy, so a finished row reads Waiting. */
+  subagentBusy?: boolean;
 }) {
   const navigate = useNavigate();
   // Hover INTENT, not hover: a one-second rest on the row, cancelled by any
@@ -677,11 +681,16 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   // where the row is filed and what it says can never disagree.
   const snoozed = isSessionSnoozed(session);
   const wokeMarker = sessionWokeMarker(session);
+  // A live turn can go quiet, and a scheduled wake can come due, with no new
+  // data at all, so the card re-renders exactly when this session crosses the
+  // stall bar or its wake turns overdue.
+  const statusClockSessions = React.useMemo(() => [session], [session]);
+  const statusClockMs = useTurnStallClock(statusClockSessions);
   const presentation = sessionStatusDisplay(sessionAttentionInput, {
     snoozed,
     woke: !snoozed && Boolean(wokeMarker),
     snoozeWakeLabel: snoozed ? snoozeWakeLabel(session.snoozedUntil) : null,
-  });
+  }, { subagentBusy });
 
   // Pulse once when an already-mounted row transitions into the loud Needs-you
   // state. First render stays calm, and motion-safe suppresses it for users who
@@ -1333,6 +1342,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       compact={compact}
       runtimePin={runtimePin}
       hideLabelUnlessShout={nestedSubagent}
+      clockMs={statusClockMs}
     />
   );
   /* Live activity, not a property of the session: the agent is driving the
