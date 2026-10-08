@@ -159,6 +159,7 @@ import {
 } from "../../../shared/deeplinks";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { useHomeAppEffects } from "../home/useHomeAppEffects";
 import { findOnOtherMachines, readOtherMachines, type OtherMachines } from "../../lib/otherMachineNavigation";
 import type {
   AppNavigationRequest,
@@ -1504,6 +1505,8 @@ export function App() {
   // Mounted here, once, because it binds the ROOT store: a project-scoped mount
   // would hydrate one window and leave the next stale.
   useAccountSettingsSync();
+  // Home layouts across windows, and when main may watch the clipboard.
+  useHomeAppEffects();
 
   React.useEffect(() => {
     const w = window as Window & { __ADE_GET_DIRTY_FILE_TEXT__?: (p: string) => string | undefined };

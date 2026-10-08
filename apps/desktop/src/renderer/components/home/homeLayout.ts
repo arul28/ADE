@@ -140,7 +140,8 @@ export type HomeLayouts = { version: 2; activeId: string; presets: HomeLayoutPre
 
 export const DEFAULT_PRESET_ID = "default";
 const PRESET_NAME_MAX = 40;
-const PRESETS_MAX = 12;
+/** Saved layouts the page keeps; "Save as…" is off at the limit. */
+export const HOME_LAYOUT_PRESETS_MAX = 12;
 
 function defaultLayouts(layout: HomeLayout = defaultHomeLayout()): HomeLayouts {
   return { version: 2, activeId: DEFAULT_PRESET_ID, presets: [{ id: DEFAULT_PRESET_ID, name: "Default", layout }] };
@@ -164,7 +165,7 @@ export function normalizeHomeLayouts(stored: unknown, legacy: unknown): HomeLayo
     const seen = new Set<string>();
     const presets: HomeLayoutPreset[] = [];
     for (const entry of raw.presets) {
-      if (!entry || typeof entry !== "object" || presets.length >= PRESETS_MAX) continue;
+      if (!entry || typeof entry !== "object" || presets.length >= HOME_LAYOUT_PRESETS_MAX) continue;
       const preset = entry as Record<string, unknown>;
       const id = typeof preset.id === "string" && preset.id ? preset.id.slice(0, 64) : null;
       if (!id || seen.has(id)) continue;
@@ -402,7 +403,7 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
     savePresetAs: (rawName) => {
       const { presets, layout } = get();
       const name = cleanPresetName(rawName);
-      if (!name || presets.length >= PRESETS_MAX) return null;
+      if (!name || presets.length >= HOME_LAYOUT_PRESETS_MAX) return null;
       const preset: HomeLayoutPreset = { id: newPresetId(), name: uniqueName(name, presets), layout: structuredClone(layout) };
       save([...presets, preset], preset.id);
       return preset;
@@ -422,30 +423,8 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
   };
 });
 
-/**
- * The clipboard watch in main runs only while a Clipboard widget is on the
- * layout. Removing the widget (or a reset) stops it; so does finding no
- * widget a few seconds after launch, which covers a layout lost outside the
- * store (cleared storage, another profile). One small IPC, off the boot path.
- */
-function stopClipboardWatchWhenUnused() {
-  if (typeof window === "undefined") return;
-  const hasClipboard = (items: readonly HomeLayoutItem[]) => items.some((item) => item.type === "clipboard");
-  let had = hasClipboard(useHomeLayoutStore.getState().layout.items);
-  const stop = () => {
-    const bridge = window.ade?.home?.clipboard;
-    if (!bridge) return;
-    void bridge.getState()
-      .then((state) => (state.enabled ? bridge.configure({ enabled: false }) : null))
-      .catch(() => {});
-  };
-  useHomeLayoutStore.subscribe((state) => {
-    const has = hasClipboard(state.layout.items);
-    if (had && !has) stop();
-    had = has;
-  });
-  if (!had) window.setTimeout(() => {
-    if (!hasClipboard(useHomeLayoutStore.getState().layout.items)) stop();
-  }, 6_000);
+/** Another window saved layouts: show what it saved (edit mode stays as it is here). */
+export function reloadHomeLayoutsFromStorage(): void {
+  const layouts = readStoredLayouts();
+  useHomeLayoutStore.setState({ presets: layouts.presets, activeId: layouts.activeId, layout: activeLayout(layouts) });
 }
-stopClipboardWatchWhenUnused();

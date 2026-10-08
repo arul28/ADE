@@ -36,6 +36,7 @@ import {
 } from "../homeFeed";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { FitList } from "../HomeFitList";
+import { Banner } from "../../ui/notice";
 import { relativeTimeShort } from "./widgetHooks";
 import "../homeWidgets.css";
 
@@ -145,6 +146,14 @@ function readPresence(): PresenceStore {
  */
 function useMachinePresence(rows: readonly MachineRow[], onlineSince: ReadonlyMap<string, number>): MachinePresenceEntry[] {
   const [log, setLog] = useState<MachinePresenceEntry[]>(() => readPresence().log);
+  // Another window logged a transition: show it here too.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === PRESENCE_KEY) setLog(readPresence().log);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   useEffect(() => {
     const now = Date.now();
     const store = readPresence();
@@ -368,7 +377,13 @@ export default function FeedWidget({ item }: HomeWidgetProps) {
             {feedRows(groups, now, open)}
           </FitList>
         )}
-        {error ? <div className="ade-feed-error" role="alert">{error}</div> : null}
+        {error ? (
+          <Banner
+            layout="inline"
+            style={{ margin: "4px 10px 10px" }}
+            model={{ id: "home-feed-open", tone: "error", title: "Couldn't open that", detail: error, dismiss: { onDismiss: () => setError(null) } }}
+          />
+        ) : null}
       </div>
     </section>
   );

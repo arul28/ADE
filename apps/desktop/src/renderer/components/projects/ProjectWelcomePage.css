@@ -208,6 +208,11 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 }
 .ade-home-hidden-note:hover { color: var(--color-fg); }
 .ade-home-hidden-note > span { overflow: hidden; text-overflow: ellipsis; }
+/* Edit mode: the hidden widgets by name, each with its own remove. */
+.ade-home-hidden-note[data-editing] { cursor: default; padding-right: 4px; }
+.ade-home-hidden-note[data-editing]:hover { color: var(--kit-text-2); }
+.ade-home-hidden-note .ade-home-hidden-chip { display: inline-flex; align-items: center; gap: 2px; overflow: visible; color: var(--color-fg); }
+.ade-home-hidden-chip .ade-home-edit-btn { width: 16px; height: 16px; }
 
 @media (prefers-reduced-motion: no-preference) {
   .ade-home-grid[data-editing="true"] .ade-home-cell { transition: opacity 0.15s ease; }

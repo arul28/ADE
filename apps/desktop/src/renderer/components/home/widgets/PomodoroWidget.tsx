@@ -11,7 +11,7 @@ import "../homeWidgets.css";
 /**
  * Focus timer. One timer for the whole app, kept by end time rather than by
  * ticking, so it survives leaving the home page and a restart (it is stored
- * in localStorage). Completed focus sessions are logged per day; consecutive
+ * in localStorage, and every window follows the stored timer). Completed focus sessions are logged per day; consecutive
  * days with at least one session make the focus streak.
  *
  * Cost: one timeout to the end of the current phase; the card repaints once a
@@ -90,6 +90,13 @@ const useFocusStore = create<FocusStore>((set, get) => {
     setFocusMinutes: (minutes) => save({ focusMinutes: minutes, ...(get().phase === "focus" ? { endsAt: null, pausedMs: null } : {}) }),
     complete: () => {
       const state = get();
+      // Another window may have completed this phase already: take its state.
+      const stored = readState();
+      if (stored.phase !== state.phase || stored.endsAt !== state.endsAt) {
+        set(stored);
+        schedule();
+        return;
+      }
       if (state.phase === "focus") {
         // Credit the day the session ended on.
         const day = localDayKey(new Date(state.endsAt ?? Date.now()));
@@ -118,6 +125,15 @@ function schedule() {
 }
 // A phase that ended while ADE was closed completes on first load.
 schedule();
+
+// Another ADE window started, paused or finished the timer: show the same one.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== STORAGE_KEY) return;
+    useFocusStore.setState(readState());
+    schedule();
+  });
+}
 
 function focusStreak(log: FocusState["log"], today: string): number {
   let streak = 0;

@@ -1,6 +1,7 @@
 import type { AttentionItem } from "../../../shared/types/attention";
 import type { AutoUpdateSnapshot, NormalizedLinearIssue } from "../../../shared/types";
 import type { HomePr } from "../projects/ProjectWelcomeHome";
+import { normalizePathForComparison } from "../../lib/pathUtils";
 
 /**
  * The home feed: one timeline of what happened across projects and machines,
@@ -41,6 +42,8 @@ export type HomeFeedEvent = {
   /** Project, machine or state, already joined for the second line. */
   detail: string | null;
   project: HomeFeedProject | null;
+  /** The machine a machine_online / machine_offline event is about. */
+  machineName?: string;
   target: HomeFeedTarget;
 };
 
@@ -173,6 +176,7 @@ export function feedFromMachines(entries: readonly MachinePresenceEntry[]): Home
     title: `${entry.name} ${entry.online ? "came online" : "went offline"}`,
     detail: null,
     project: null,
+    machineName: entry.name,
     target: { kind: "machines" },
   }));
 }
@@ -188,9 +192,10 @@ export function mergeFeed(...sources: HomeFeedEvent[][]): HomeFeedEvent[] {
   return [...byId.values()].sort((a, b) => b.at - a.at);
 }
 
+/** Folds case only for Windows-shaped paths: a Linux checkout's case is significant. */
 function normalizePath(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
-  return trimmed ? trimmed.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() : null;
+  return trimmed ? normalizePathForComparison(trimmed) || null : null;
 }
 
 export type PinnedProjectRef = { name: string; rootPaths: string[] };
@@ -260,7 +265,7 @@ export function awaySummary(events: readonly HomeFeedEvent[], awaySince: number 
   for (const event of events) {
     if (event.at < awaySince) continue;
     counts.set(event.kind, (counts.get(event.kind) ?? 0) + 1);
-    if (event.kind === "machine_online") cameOnline.add(event.title.replace(/ came online$/, ""));
+    if (event.kind === "machine_online" && event.machineName) cameOnline.add(event.machineName);
   }
   const parts: string[] = [];
   const add = (kind: HomeFeedKind, text: (n: number) => string) => {

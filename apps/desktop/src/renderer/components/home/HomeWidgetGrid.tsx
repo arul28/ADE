@@ -19,7 +19,9 @@ import {
   useHomeLayoutStore,
   type HomeLayoutCell,
   type HomeLayoutItem,
+  type HomeWidgetType,
 } from "./homeLayout";
+import { stopClipboardWatch } from "./useHomeAppEffects";
 import { HOME_CLASS_LABEL, HOME_WIDGET_CATALOG, widgetShape } from "./homeWidgetCatalog";
 import {
   classSpan,
@@ -108,20 +110,20 @@ function useVisibility(ref: React.RefObject<HTMLElement | null>): boolean {
   return inView && pageVisible;
 }
 
-class WidgetBoundary extends Component<{ title: string; children: ReactNode }, { error: Error | null }> {
+class WidgetBoundary extends Component<{ type: HomeWidgetType; children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
   static getDerivedStateFromError(error: Error) {
     return { error };
   }
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.warn("[home] widget failed", this.props.title, error, info.componentStack);
+    console.warn("[home] widget failed", this.props.type, error, info.componentStack);
   }
   render() {
     if (!this.state.error) return this.props.children;
-    const meta = Object.values(HOME_WIDGET_CATALOG).find((entry) => entry.title === this.props.title);
+    const meta = HOME_WIDGET_CATALOG[this.props.type];
     return (
-      <section className="kit-card ade-home-card" aria-label={this.props.title}>
-        {meta ? <WelcomeCardHead icon={meta.icon} title={this.props.title} /> : null}
+      <section className="kit-card ade-home-card" aria-label={meta.title}>
+        <WelcomeCardHead icon={meta.icon} title={meta.title} />
         <div className="ade-home-empty" role="alert">
           <span>This widget stopped working.</span>
           <button type="button" className="kit-btn" onClick={() => this.setState({ error: null })}>Try again</button>
@@ -182,7 +184,7 @@ function WidgetFrame({
       <div ref={contentRef} className="ade-home-widget-content">
         <WidgetVisibleContext.Provider value={visible}>
           <WidgetSpanContext.Provider value={spanValue}>
-          <WidgetBoundary title={meta.title}>
+          <WidgetBoundary type={item.type}>
             {content ?? (
               <section className="kit-card ade-home-card" aria-label={meta.title}>
                 <WelcomeCardHead icon={meta.icon} title={meta.title} />
@@ -320,6 +322,15 @@ export function HomeWidgetGrid({
     ? "minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 0.9fr)"
     : `repeat(${columns}, minmax(0, 1fr))`;
   const hidden = packed?.hidden ?? [];
+  const remove = useHomeLayoutStore((s) => s.remove);
+  // A Clipboard widget the layout had no room for does not record: the watch
+  // stops while it is hidden, and the widget turns it back on when it shows.
+  const clipboardHidden = !single && packed != null
+    && cells.some((cell) => cell.host.type === "clipboard" || cell.stacked.some((item) => item.type === "clipboard"))
+    && !packed.placed.some(({ cell }) => cell.host.type === "clipboard" || cell.stacked.some((item) => item.type === "clipboard"));
+  useEffect(() => {
+    if (clipboardHidden) stopClipboardWatch();
+  }, [clipboardHidden]);
   const shown: Array<{ cell: HomeLayoutCell; x: number; y: number; w: number; h: number; cls?: HomeSizeClass }> = single
     ? cells.map((cell) => ({ cell, x: 0, y: 0, w: 1, h: 1 }))
     : packed?.placed ?? [];
@@ -414,7 +425,30 @@ export function HomeWidgetGrid({
             <div className="ade-home-grid-empty">Your home page is empty. Add a widget to start.</div>
           ) : null}
         </div>
-        {hidden.length > 0 ? (
+        {hidden.length > 0 && editing ? (
+          <div className="ade-home-hidden-note" data-editing="true" role="group" aria-label="Hidden widgets">
+            <EyeSlash size={12} aria-hidden />
+            <span>{hidden.length} hidden, no room:</span>
+            {hidden.map((cell) => {
+              const title = HOME_WIDGET_CATALOG[cell.host.type].title;
+              return (
+                <span key={cell.host.id} className="ade-home-hidden-chip">
+                  {title}
+                  <button
+                    type="button"
+                    className="ade-home-edit-btn"
+                    data-danger="true"
+                    title={`Remove ${title}`}
+                    aria-label={`Remove ${title}`}
+                    onClick={() => remove(cell.host.id)}
+                  >
+                    <X size={11} weight="bold" />
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        ) : hidden.length > 0 ? (
           <button
             type="button"
             className="ade-home-hidden-note"
@@ -422,9 +456,7 @@ export function HomeWidgetGrid({
             onClick={() => setEditing(true)}
           >
             <EyeSlash size={12} aria-hidden />
-            <span>
-              {hidden.length} hidden — {editing ? hidden.map((cell) => HOME_WIDGET_CATALOG[cell.host.type].title).join(", ") : "enlarge the window or edit"}
-            </span>
+            <span>{hidden.length} hidden — enlarge the window or edit</span>
           </button>
         ) : null}
       </div>
