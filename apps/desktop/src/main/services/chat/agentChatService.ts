@@ -685,6 +685,9 @@ import {
 } from "../../../shared/chatTurnStatus";
 import {
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
+  QUESTION_DECLINED_MODEL_MESSAGE,
+  answersForModel,
+  declineMessageForModel,
   flattenAnswerForSingleStringProvider,
   formatPendingInputAnswersAsMessage,
   isSteeringPendingRequest,
@@ -11463,7 +11466,10 @@ export function createAgentChatService(args: {
     request: PendingInputRequest,
     response: { answers?: Record<string, string | string[]>; responseText?: string | null },
   ): Record<string, unknown> => {
-    const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
+    const normalizedAnswers = answersForModel(
+      request,
+      normalizePendingInputAnswers(request, response.answers, response.responseText),
+    );
     const mappedAnswers = Object.fromEntries(
       Object.entries(normalizedAnswers)
         .map(([questionId, values]) => {
@@ -11814,7 +11820,7 @@ export function createAgentChatService(args: {
       if (response.decision === "cancel" || response.decision === "decline") {
         return {
           behavior: "deny",
-          message: "The user declined to answer the questions.",
+          message: QUESTION_DECLINED_MODEL_MESSAGE,
         };
       }
 
@@ -46510,7 +46516,10 @@ export function createAgentChatService(args: {
       responseText?: string | null;
     },
   ): string => {
-    const normalized = normalizePendingInputAnswers(request, response.answers, response.responseText);
+    const normalized = answersForModel(
+      request,
+      normalizePendingInputAnswers(request, response.answers, response.responseText),
+    );
     const lines = Object.entries(normalized).flatMap(([id, values]) => {
       if (!values.length) return [];
       const question = request.questions.find((entry) => entry.id === id);
@@ -46716,13 +46725,17 @@ export function createAgentChatService(args: {
         responseText?: string | null;
       }) => {
         const accepted = response.decision === "accept" || response.decision === "accept_for_session";
+        // The follow-up is a whole new turn. A cancel is Escape or a settle /
+        // teardown ("make this quiet"), so it must not start one; only an
+        // answer or an explicit decline does.
+        if (response.decision === "cancel") return;
         const answerText = formatCursorControlAnswers(request, response);
         queueCursorControlFollowup(
           managed,
           runtime,
           accepted
             ? `The user answered the Cursor planning question:\n${answerText}\n\nContinue from this answer.`
-            : "The user declined the Cursor planning question. Continue with reasonable assumptions or ask a narrower question.",
+            : QUESTION_DECLINED_MODEL_MESSAGE,
         );
       },
     });
@@ -57760,12 +57773,22 @@ export function createAgentChatService(args: {
         return;
       }
       if (pending.kind === "structured_question") {
+        const questions = pending.request?.questions ?? [];
         if (resolvedDecision === "decline" || resolvedDecision === "cancel") {
-          // Native Codex request_user_input only accepts an answers map.
-          // Empty answers represent a declined/cancelled prompt without
-          // interrupting the surrounding turn.
+          // Native Codex request_user_input only accepts an answers map, and an
+          // empty map reads to the model as "no preference" — it then picks for
+          // the user. Each question carries the decline instead. A blocking
+          // question tells the model to stop and ask in plain text; a live
+          // (non-blocking) one never paused the turn, so it is told to keep
+          // working. The receipt is built from the user's own (empty) answers,
+          // not this payload.
+          const declineText = declineMessageForModel(pending.request);
           ensureWritable();
-          runtime.sendResponse(pending.requestId, { answers: {} });
+          runtime.sendResponse(pending.requestId, {
+            answers: Object.fromEntries(
+              questions.map((question) => [question.id, { answers: [declineText] }]),
+            ),
+          });
           completeCodexPendingInput();
           return;
         }
@@ -57773,7 +57796,8 @@ export function createAgentChatService(args: {
         ensureWritable();
         runtime.sendResponse(pending.requestId, {
           answers: Object.fromEntries(
-            Object.entries(normalizedAnswers).map(([questionId, values]) => [questionId, { answers: values }]),
+            Object.entries(answersForModel(pending.request, normalizedAnswers))
+              .map(([questionId, values]) => [questionId, { answers: values }]),
           ),
         });
         completeCodexPendingInput();

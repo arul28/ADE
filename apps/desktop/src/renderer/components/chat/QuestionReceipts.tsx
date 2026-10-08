@@ -23,8 +23,8 @@ import {
  * line: the header verb and what was sent, with the per-question detail
  * (header · answer · note) behind a click.
  *
- * A declined request records as declined rather than vanishing: the model
- * proceeded on its own assumption and the transcript should say so.
+ * A declined request records as declined rather than vanishing. The model is
+ * told to stop and ask in plain text, not to choose for the user.
  *
  * The answers come off the `pending_input_resolved` event, which is durable,
  * so this survives a reload. An `isSecret` question's answer never reaches
@@ -96,7 +96,7 @@ export function AnsweredQuestionReceipt({
           ) : (
             <ChatCardSub>
               {resolution === "declined"
-                ? `${provider} asked — you declined, it proceeded on its own assumption`
+                ? `${provider} asked — you declined to answer`
                 : `${provider} asked — the request closed before it was answered`}
             </ChatCardSub>
           )}
