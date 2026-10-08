@@ -22,10 +22,10 @@ One visual language in three sizes (`MusicPlayer.tsx`):
   the tab's bottom edge. There is no other top-bar music control.
 - **Home Now Playing widget** (`home/widgets/NowPlayingWidget.tsx`): a frosted
   card after `tmp/refs/audio-player.reference.tsx`, built from the same
-  `MusicSlider` and `PlayerIconButton`. It shows ADE's player when a song is
-  loaded (real seek, shuffle, repeat; the cover opens the tab) and otherwise the
-  computer's media session (`HomeNowPlayingState.source` and `session.app` say
-  which, ready for more sources).
+  `MusicSlider` and `PlayerIconButton`. ADE's player is one of its sources
+  (real seek, shuffle, repeat; the cover opens the tab), first while it
+  plays; the others are built-in browser tabs and other apps. See "Now
+  Playing" in `docs/plans/ade-dev-home.md`.
 
 The scrubber and volume are `MusicSlider`: click or drag anywhere (the pointer
 is captured, so a drag may leave the track), or use the arrow, Page, Home and

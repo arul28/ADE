@@ -362,11 +362,29 @@ want it).**
   assigned issues (when connected) + machine transitions, Today / Yesterday
   / This week, "While you were away" after four hours, all or pinned
   projects (the recents pin).
-- **Now Playing:** OS media session. Windows: `ade-now-playing.exe`
-  (`native/ADENowPlayingWin`, C++/WinRT, built by `build:now-playing:win`).
-  macOS: mediaremote-adapter via /usr/bin/perl when bundled, else Music.app
-  over AppleScript (not yet run on a Mac). Runs only while the widget is on
-  screen. The Music tab can take over with `getNowPlayingService().setOverride`.
+- **Now Playing:** one merged source in `home/nowPlayingService.ts`, best
+  first: a playing ADE Apple Music player, a playing built-in browser tab, a
+  playing app, ADE's paused player, then the most recent paused. A pick in
+  the widget's corner switcher (or pressing a control) holds until that source
+  goes away or something else starts playing.
+  - ADE Apple Music: `musicNowPlayingBridge.ts` through `setOverride`.
+  - Browser tabs (`home/browserMediaSessions.ts`): event-driven
+    (`media-started-playing`, `media-paused`, `audio-state-changed`, title and
+    navigation); a tab is read only when one fires, and only the shown playing
+    tab is re-read, once a second, while a widget is on screen. Title, artist
+    and artwork from `navigator.mediaSession`, else the tab title; the icon is
+    the site's largest favicon. Play and pause go to the media element; next
+    and previous press the page's own media session handlers, which the
+    session preload `preload/browserMedia.ts` records (shown only where the
+    page registered them). The cover jumps to the tab in the Browser top tab.
+    A tab whose media started while it was on screen (or that was played from
+    the widget) keeps its sound when hidden; other hidden tabs stay muted.
+  - Other apps: Windows `ade-now-playing.exe` (`native/ADENowPlayingWin`,
+    C++/WinRT, built by `build:now-playing:win`) lists every SMTC session with
+    the app's shell icon and name; ADE's own sessions (`com.ade.desktop*`, the
+    Music host) are skipped. macOS: mediaremote-adapter via /usr/bin/perl when
+    bundled, else Music.app over AppleScript, with the app icon from its
+    bundle (not yet run on a Mac). Runs only while the widget is on screen.
 - **Shipped share:** a canvas-drawn PNG, copied or saved by main; no upload.
 - **Clipboard:** main watches the clipboard only while the widget is on the
   page. Optional history file: `<userData>/home-widgets/`.
