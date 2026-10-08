@@ -16,6 +16,7 @@ import {
   createMachineRemoteConnection,
   executePlanAcrossMachines,
   extractMachineTargeting,
+  flagNamesOutsideFreeText,
   formatMachineFanOut,
   formatMachinesRoster,
   isMachineFanOutResult,
@@ -10207,7 +10208,8 @@ function buildChatPlan(args: string[]): CliPlan {
       { flags: ["--retry"], label: "chat handoff retry", action: "retryCrossMachineHandoff" },
       { flags: ["--options", "--where"], label: "chat handoff options", action: "getCrossMachineHandoffOptions" },
     ];
-    const control = controls.find((entry) => readFlag(args, entry.flags)) ?? null;
+    const flagNames = flagNamesOutsideFreeText(args);
+    const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
     const handoffMachine = readValue(args, ["--machine", "--to-machine"]);
     if (handoffMachine !== null && !handoffMachine.trim()) {
       throw new CliUsageError("--machine needs a machine name or key (see `ade machines list`).");

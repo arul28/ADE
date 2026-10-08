@@ -4375,6 +4375,11 @@ final class SyncService: ObservableObject {
   /// list and chat detail screens so the LA reconcile can read `modelId`
   /// + a real `lastActivityAt` without round-tripping for each running chat.
   private(set) var chatSummaryCache: [String: AgentChatSessionSummary] = [:]
+  /// Chats whose move record the brain cleared (`crossMachineHandoffState:
+  /// null`). An absent record alone can't clear a live one, because older hosts
+  /// omit the field; this says the absence is a clear. Dropped when a record
+  /// for the chat arrives again.
+  private(set) var crossMachineHandoffClearedSessionIds: Set<String> = []
   /// Host-stamped `parentIdentityKey`, kept out of the database on purpose.
   ///
   /// The field is a PROJECTION on the desktop (`chatSessionProjection` resolves
@@ -23177,8 +23182,15 @@ extension SyncService {
     refreshActiveSessionsAndSnapshot()
   }
 
+  func markCrossMachineHandoffCleared(sessionId: String) {
+    crossMachineHandoffClearedSessionIds.insert(sessionId)
+  }
+
   func cacheChatSummary(_ summary: AgentChatSessionSummary) {
     chatSummaryCache[summary.sessionId] = summary
+    if summary.crossMachineHandoff != nil {
+      crossMachineHandoffClearedSessionIds.remove(summary.sessionId)
+    }
     refreshActiveSessionsAndSnapshot()
   }
 

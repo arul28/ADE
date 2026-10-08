@@ -1772,10 +1772,16 @@ struct WorkSessionDestinationView: View {
     // A cross-machine move record folded from a live notice (or an action's
     // answer). Newer wins, so a fetched summary is never rolled back by an
     // older cache entry.
-    current.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
-      current: current.crossMachineHandoff,
-      incoming: cached.crossMachineHandoff
-    )
+    // The brain's explicit clear drops the live record too; a merely absent
+    // cached record (an older host) does not.
+    if cached.crossMachineHandoff == nil, syncService.crossMachineHandoffClearedSessionIds.contains(sessionId) {
+      current.crossMachineHandoff = nil
+    } else {
+      current.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+        current: current.crossMachineHandoff,
+        incoming: cached.crossMachineHandoff
+      )
+    }
     if current != chatSummary {
       chatSummary = current
     }

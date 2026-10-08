@@ -15,7 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { CROSS_MACHINE_PERMISSION_FIELDS } from "../../../shared/crossMachineHandoff";
+import { CROSS_MACHINE_PERMISSION_FIELDS, pickNewerCrossMachineHandoffRecord } from "../../../shared/crossMachineHandoff";
 import type {
   AgentChatCrossMachineHandoffCapsule,
   AgentChatCrossMachineHandoffRecord,
@@ -57,7 +57,7 @@ afterEach(() => {
 
 type AcceptBehavior = (capsule: AgentChatCrossMachineHandoffCapsule) => unknown;
 
-function createHarness(options: { permissionLevel?: string; turnActive?: boolean; userMessageIds?: string[] } = {}) {
+function createHarness(options: { permissionLevel?: string; turnActive?: boolean; userMessageIds?: string[]; now?: () => string } = {}) {
   const dir = makeTempDir("ade-cm-orchestrator-");
   const kv = new Map<string, unknown>();
   const store = createCrossMachineHandoffSource({
@@ -101,6 +101,7 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
   const waiters: Array<() => void> = [];
 
   const orchestrator = createCrossMachineHandoffOrchestrator({
+    ...(options.now ? { now: options.now } : {}),
     transport: () => ({
       listMachines: async () => [
         { machineKey: "mk-mini", name: "Mac mini", online: true, isThisMachine: false },
@@ -453,6 +454,27 @@ describe("cross-machine move orchestrator", () => {
     expect(h.accepted).toHaveLength(accepts);
     expect(h.notices.map((notice) => notice.state)).toEqual([state]);
     expect(h.outcomes).toEqual([{ handoffId: started.handoffId, outcome: state }]);
+  });
+
+  it("orders every write of a move after the one before, even when the clock stalls", async () => {
+    const h = createHarness({ now: () => "2026-10-07T10:00:00.000Z" });
+    const writes: AgentChatCrossMachineHandoffRecord[] = [];
+    const writeMove = h.store.writeMove;
+    h.store.writeMove = (sessionId, value) => {
+      if (value) writes.push(structuredClone(value.record));
+      writeMove(sessionId, value);
+    };
+    await h.start();
+    const ended = await h.settled();
+    expect(ended?.state).toBe("continued");
+    expect(writes.length).toBeGreaterThan(2);
+    // Clients keep the newer of two records; a late earlier write must never
+    // replace a later one, or new messages stop going to the destination.
+    for (let index = 1; index < writes.length; index += 1) {
+      for (const earlier of writes.slice(0, index)) {
+        expect(pickNewerCrossMachineHandoffRecord(writes[index], earlier)).toBe(writes[index]);
+      }
+    }
   });
 
   // A move that may have landed: its answer was lost, or it failed after

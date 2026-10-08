@@ -85,12 +85,13 @@ function SendSteps({ checkpoint }: { checkpoint: AgentChatCrossMachineHandoffChe
   );
 }
 
-type BannerAction = "cancel" | "approve" | "deny" | "retry" | "workHere";
+type BannerAction = "cancel" | "approve" | "deny" | "retry" | "workHere" | "brief";
 
 export function CrossMachineHandoffBanner({
   sessionId,
   record,
   runtimePin,
+  continuationPrompt,
   onRecord,
   style,
 }: {
@@ -98,6 +99,8 @@ export function CrossMachineHandoffBanner({
   record: AgentChatCrossMachineHandoffRecord | null | undefined;
   /** The machine the chat runs on; every call goes to that brain. */
   runtimePin: OpenProjectBinding | null;
+  /** Kept by the pane after setup so a failed fork can be retried as a brief. */
+  continuationPrompt?: string | null;
   /** The brain's answer, applied before the live event arrives. */
   onRecord: (next: AgentChatCrossMachineHandoffRecord | null) => void;
   style?: CSSProperties;
@@ -132,13 +135,25 @@ export function CrossMachineHandoffBanner({
           { ...session, handoffId: record.handoffId, approve: false },
           runtimePin,
         ),
+        brief: () => api.startCrossMachineHandoff({
+          sourceSessionId: sessionId,
+          machine: record.targetMachineKey,
+          targetModelId: record.targetModelId,
+          mode: "brief",
+          continuationPrompt: continuationPrompt ?? null,
+          ...(record.includeChanges ? { includeChanges: true } : {}),
+        }, runtimePin),
       };
       const next = await calls[action]();
       onRecord(next);
     } catch (error) {
       showToast({
         tone: "warning",
-        title: action === "retry" ? `Couldn't retry the move to ${machine}` : `Couldn't update the move to ${machine}`,
+        title: action === "retry"
+          ? `Couldn't retry the move to ${machine}`
+          : action === "brief"
+            ? `Couldn't send a brief to ${machine}`
+            : `Couldn't update the move to ${machine}`,
         message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
       });
     } finally {
@@ -262,6 +277,17 @@ export function CrossMachineHandoffBanner({
           : alreadyContinues ?? undefined,
         actions: [
           { label: "Retry", busy: busy === "retry", onClick: () => void run("retry") },
+          // Only a fork that failed while packing (no checkpoint yet): one
+          // that went further may have arrived, and blocks a new move.
+          ...(record.mode === "fork" && record.checkpoint == null
+            ? [{
+              label: "Send as brief instead",
+              variant: "secondary" as const,
+              busy: busy === "brief",
+              disabled: Boolean(busy),
+              onClick: () => void run("brief"),
+            }]
+            : []),
           ...(alreadyContinues && openContinuation ? [{ ...openContinuation, variant: "link" as const }] : []),
           ...workHereAction,
           // A failed move that reached acceptance blocks a new one until it is

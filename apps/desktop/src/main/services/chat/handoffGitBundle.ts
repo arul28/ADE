@@ -44,8 +44,9 @@ export function githubExtraHeaderGitEnv(token: string | null | undefined): NodeJ
 
 /** Raw bundle cap. Past this the branch should simply be pushed. */
 export const HANDOFF_GIT_BUNDLE_MAX_BYTES = 50 * 1024 * 1024;
+/** No size in the copy: the raw cap, the transport frame and the untracked precheck all refuse with it. */
 export const HANDOFF_GIT_BUNDLE_TOO_LARGE_MESSAGE =
-  "This branch's changes are over 50 MB. Push the branch, then hand off again.";
+  "This branch's changes are too large to send. Push the branch, then hand off again.";
 
 /**
  * Untracked bytes past which packing is refused before hashing anything. Files

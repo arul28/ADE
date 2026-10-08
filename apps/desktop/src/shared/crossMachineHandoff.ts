@@ -67,14 +67,17 @@ export function pickNewerCrossMachineHandoffRecord(
 ): AgentChatCrossMachineHandoffRecord | null {
   if (!incoming) return current ?? null;
   if (!current) return incoming;
-  const time = (value: string) => {
+  // A missing or unparseable timestamp falls back to the record's other one.
+  const time = (value: string, fallback: string) => {
     const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? parsed : 0;
+    if (Number.isFinite(parsed)) return parsed;
+    const other = Date.parse(fallback);
+    return Number.isFinite(other) ? other : 0;
   };
   if (current.handoffId !== incoming.handoffId) {
-    return time(incoming.requestedAt) >= time(current.requestedAt) ? incoming : current;
+    return time(incoming.requestedAt, incoming.updatedAt) >= time(current.requestedAt, current.updatedAt) ? incoming : current;
   }
-  return time(incoming.updatedAt) >= time(current.updatedAt) ? incoming : current;
+  return time(incoming.updatedAt, incoming.requestedAt) >= time(current.updatedAt, current.requestedAt) ? incoming : current;
 }
 
 /**

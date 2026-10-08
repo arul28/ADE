@@ -58,6 +58,21 @@ const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "l
 const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--title", "--reason"]);
 
 /**
+ * The flag names in `args`, skipping each free-text flag's value: in
+ * `--prompt --cancel` the prompt is the text "--cancel", not a flag.
+ */
+export function flagNamesOutsideFreeText(args: readonly string[]): Set<string> {
+  const flags = new Set<string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") break;
+    if (FREE_TEXT_VALUE_FLAGS.has(token)) { index += 1; continue; }
+    flags.add(token.split("=")[0]!);
+  }
+  return flags;
+}
+
+/**
  * Pull `--machine <name>`, `--all-machines`, `--machine-project <sel>`,
  * `--clone` and (for chat and lanes, while targeting a machine)
  * `--project <sel>` out of a supported command's own arguments into the
@@ -71,9 +86,9 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   // never forwarded. The other handoff forms act on this machine's own move,
   // so --machine with them is a mistake, not a target.
   if (primary === "chat" && parsed.command[1]?.toLowerCase() === "handoff") {
-    const flags = new Set(parsed.command.map((token) => token.split("=")[0]!));
+    const flags = flagNamesOutsideFreeText(parsed.command);
     if ((flags.has("--machine") || flags.has("--to-machine")) && ["--cancel", "--retry", "--options", "--where"].some((flag) => flags.has(flag))) {
-      throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options.");
+      throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options/--where.");
     }
     return parsed;
   }

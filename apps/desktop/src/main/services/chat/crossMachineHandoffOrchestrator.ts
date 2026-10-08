@@ -388,6 +388,21 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
   /** Outbox capsules `retry` just checked against the chat; runOnce skips re-checking them once. */
   const checkedOutbox = new Set<string>();
 
+  /**
+   * `now()`, but strictly after `previous`: clients keep the record with the
+   * later `updatedAt`, so two writes in one millisecond (or a stalled clock)
+   * must not tie, or a late `sending` could replace the `continued` after it.
+   */
+  const laterThan = (previous: string): string => {
+    const at = now();
+    const previousMs = Date.parse(previous);
+    const atMs = Date.parse(at);
+    if (Number.isFinite(previousMs) && Number.isFinite(atMs) && atMs <= previousMs) {
+      return new Date(previousMs + 1).toISOString();
+    }
+    return at;
+  };
+
   const write = (
     sessionId: string,
     persisted: CrossMachineHandoffPersisted,
@@ -395,7 +410,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
   ): CrossMachineHandoffPersisted => {
     const next: CrossMachineHandoffPersisted = {
       request: persisted.request,
-      record: { ...persisted.record, ...patch, updatedAt: now() },
+      record: { ...persisted.record, ...patch, updatedAt: laterThan(persisted.record.updatedAt) },
     };
     // A chat deleted mid-move has nowhere to keep its move: clear its row and
     // its capsule, or the startup sweep would keep finding (and resuming) it.

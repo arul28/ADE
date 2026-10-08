@@ -240,6 +240,9 @@ extension SyncService {
 
   /// Drops the chat's move record: the brain said `crossMachineHandoffState: null`.
   func clearCrossMachineHandoffRecord(sessionId: String) {
+    // Marked even when the cache holds no record: the open chat's live
+    // summary may still hold one.
+    markCrossMachineHandoffCleared(sessionId: sessionId)
     guard var summary = chatSummaryCache[sessionId], summary.crossMachineHandoff != nil else { return }
     summary.crossMachineHandoff = nil
     cacheChatSummary(summary)

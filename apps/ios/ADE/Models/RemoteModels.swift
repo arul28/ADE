@@ -8219,11 +8219,14 @@ struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
   ) -> AgentChatCrossMachineHandoffRecord? {
     guard let incoming else { return current }
     guard let current else { return incoming }
-    func time(_ value: String) -> TimeInterval { workParsedDate(value)?.timeIntervalSince1970 ?? 0 }
-    if current.handoffId != incoming.handoffId {
-      return time(incoming.requestedAt) >= time(current.requestedAt) ? incoming : current
+    // A missing or unparseable timestamp falls back to the record's other one.
+    func time(_ value: String, _ fallback: String) -> TimeInterval {
+      (workParsedDate(value) ?? workParsedDate(fallback))?.timeIntervalSince1970 ?? 0
     }
-    return time(incoming.updatedAt) >= time(current.updatedAt) ? incoming : current
+    if current.handoffId != incoming.handoffId {
+      return time(incoming.requestedAt, incoming.updatedAt) >= time(current.requestedAt, current.updatedAt) ? incoming : current
+    }
+    return time(incoming.updatedAt, incoming.requestedAt) >= time(current.updatedAt, current.requestedAt) ? incoming : current
   }
 
   /// The machine's display name, falling back to its key.

@@ -44507,7 +44507,9 @@ export function createAgentChatService(args: {
     chatExists: (sessionId) => tryManagedSession(sessionId) !== null,
     listPersisted: crossMachineSource.listMoves,
     inspectSource: async (sessionId) => {
-      const managed = ensureManagedSession(sessionId);
+      // Deleted between getSource and here: the same answer getSource gives.
+      const managed = tryManagedSession(sessionId);
+      if (!managed) throw new Error("The source chat could not be loaded.");
       return crossMachineSource.inspect(sessionId, managed.session.laneId);
     },
     listUserMessageIds: (sessionId) => {

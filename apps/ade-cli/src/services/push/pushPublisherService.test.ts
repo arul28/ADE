@@ -2193,14 +2193,19 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("delivers a standalone session notice beside account Activity and retries only what it sent", async () => {
+  it.each([
+    ["the relay delivers nothing", (publish: ReturnType<typeof vi.fn>) =>
+      publish.mockResolvedValueOnce({ ok: true, delivered: 0, suppressed: 0, failed: 1 })],
+    ["the relay call throws", (publish: ReturnType<typeof vi.fn>) =>
+      publish.mockRejectedValueOnce(new Error("network down"))],
+  ])("delivers a standalone session notice beside account Activity and retries only what it sent when %s", async (_label, failOnce) => {
     const { publisher, publish, publishAttention, emit } = makeHarness();
     // Account Activity publishes once, then is unreachable (null), so the
     // retry flush falls back to plain alerts for whatever is still queued.
     publishAttention.mockResolvedValueOnce({ ok: true, revision: 1 });
     await publisher.start();
-    // Every phone send fails once (HTTP 200, nothing delivered), then succeeds.
-    publish.mockResolvedValueOnce({ ok: true, delivered: 0, suppressed: 0, failed: 1 });
+    // The first phone send fails, then sends succeed.
+    failOnce(publish);
     const alertTitles = (call: unknown[]) =>
       ((call[0] as { notifications?: Array<{ title: string }> }).notifications ?? [])
         .map((item) => item.title)

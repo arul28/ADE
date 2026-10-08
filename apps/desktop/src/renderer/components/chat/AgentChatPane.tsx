@@ -4487,6 +4487,11 @@ export function AgentChatPane({
   // longer preselects one; defaulted to the source session model on tab open.
   const [remoteHandoffModelId, setRemoteHandoffModelId] = useState("");
   const [crossMachineHandoffOpen, setCrossMachineHandoffOpen] = useState(false);
+  const [crossMachineHandoffFallback, setCrossMachineHandoffFallback] = useState<{
+    sessionId: string;
+    handoffId: string;
+    continuationPrompt: string | null;
+  } | null>(null);
   /** Machine the session menu's "Choose in full setup…" picked, if any. */
   const [crossMachinePreselectedMachine, setCrossMachinePreselectedMachine] = useState<string | null>(null);
   const [localHandoffOpen, setLocalHandoffOpen] = useState(false);
@@ -12698,7 +12703,9 @@ export function AgentChatPane({
       ?? (holders.length === 1 && !laneOnActiveBinding ? holders[0] : null);
     const pin = destination?.binding ?? null;
     const routesPinned = pin != null;
-    const routesUnpinned = !routesPinned && laneOnActiveBinding;
+    const routesUnpinned = !routesPinned
+      && laneOnActiveBinding
+      && machineNameForBinding(projectBinding) === continuation.targetMachineName;
     const routable = routesPinned || routesUnpinned;
     /**
      * Hand the words over rather than lose them: files and attached context
@@ -12780,6 +12787,7 @@ export function AgentChatPane({
     draft,
     iosElementContextItems.length,
     lanes,
+    projectBinding,
     selectedSession,
     selectedSessionId,
   ]);
@@ -16372,7 +16380,18 @@ export function AgentChatPane({
       sessionId={selectedSessionId}
       record={selectedSession?.crossMachineHandoff}
       runtimePin={chatRuntimePin}
-      onRecord={(next) => applyCrossMachineHandoffRecord(selectedSessionId, next)}
+      continuationPrompt={crossMachineHandoffFallback?.sessionId === selectedSessionId
+        && crossMachineHandoffFallback.handoffId === selectedSession?.crossMachineHandoff?.handoffId
+        ? crossMachineHandoffFallback.continuationPrompt
+        : null}
+      onRecord={(next) => {
+        applyCrossMachineHandoffRecord(selectedSessionId, next);
+        setCrossMachineHandoffFallback((current) => {
+          if (!current || current.sessionId !== selectedSessionId
+            || current.handoffId !== selectedSession?.crossMachineHandoff?.handoffId) return current;
+          return next ? { ...current, handoffId: next.handoffId } : null;
+        });
+      }}
       style={composerBannerStyle}
     />
   ) : null;
@@ -16931,6 +16950,8 @@ export function AgentChatPane({
                         {composerStatusStrip}
                         {takeoverBanner}
                         {stalledTurnBanner}
+                        {crossMachineMoveBanner}
+                        {crossMachineArrivalBanner}
                         {usageLimitPill}
                         {composerElement}
                       </div>
@@ -17271,8 +17292,13 @@ export function AgentChatPane({
             setCrossMachineHandoffOpen(false);
             setCrossMachinePreselectedMachine(null);
           }}
-          onStarted={(record) => {
+          onStarted={(record, continuationPrompt) => {
             setHandoffNote("");
+            setCrossMachineHandoffFallback({
+              sessionId: selectedSessionId,
+              handoffId: record.handoffId,
+              continuationPrompt,
+            });
             applyCrossMachineHandoffRecord(selectedSessionId, record);
           }}
         />

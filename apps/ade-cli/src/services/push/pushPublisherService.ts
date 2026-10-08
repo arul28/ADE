@@ -1812,6 +1812,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // suppression absorbs unchanged resends. Quiet hours block it too — the
     // setting promises "no pushes on a schedule", and a stale badge self-heals
     // on the next foreground (which clears it) or the first post-window flush.
+    // A failed publish requeues only what it carried. Alerts the account
+    // Activity already published, or that had no phone to reach, were not
+    // sent here; requeueing them would publish them again next flush.
+    const requeueAttemptedAlerts = (): void => {
+      const attemptedAlerts = new Set<PendingAlert>();
+      for (const attempt of alertAttempts) if (attempt.alert) attemptedAlerts.add(attempt.alert);
+      pendingAlerts = [...attemptedAlerts, ...pendingAlerts];
+    };
+
     const alertCoveredDeviceIds = new Set(alertItems.flatMap((item) => item.deviceIds ?? []));
     const badgeSyncDeviceIds = devices
       .filter((device) =>
@@ -1867,12 +1876,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const failed = readOutcomeCount(result, "failed");
       const alertOutcomes = readAlertOutcomes(result);
       if (alertOutcomes == null && delivered === 0 && suppressed === 0 && failed > 0) {
-        // Only what this publish carried goes back. Alerts the account
-        // Activity already published, or that had no phone to reach, were not
-        // sent here; requeueing them would publish them again next flush.
-        const attemptedAlerts = new Set<PendingAlert>();
-        for (const attempt of alertAttempts) if (attempt.alert) attemptedAlerts.add(attempt.alert);
-        pendingAlerts = [...attemptedAlerts, ...pendingAlerts];
+        requeueAttemptedAlerts();
         deps.store.recordPublishResult({ at: new Date().toISOString(), error: `relay delivered 0 of ${failed} targets` });
         logWarn("push.publish_undelivered", new Error(`0 of ${failed} targets delivered`));
         scheduleRetry();
@@ -2004,7 +2008,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       }
       // Re-queue the alerts we attempted so a transient relay failure retries;
       // the relay's dedupeKey suppression makes a resend idempotent.
-      pendingAlerts = [...consumedAlerts, ...pendingAlerts];
+      requeueAttemptedAlerts();
       deps.store.recordPublishResult({ at: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) });
       logWarn("push.publish_failed", error);
       scheduleRetry();
