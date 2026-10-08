@@ -406,16 +406,17 @@ monotonic deltas — the worker atomically writes an `event-loop-wedge.json`
 breadcrumb (wedged command, blocked ms, threshold, and the latest event-loop,
 memory, and resource snapshot) under the runtime dir, requests a best-effort
 Node diagnostic report, and `SIGKILL`s the brain after a one-second report
-grace so launchd restarts it. The worker also reports any of its own checks
-that run 1.5 s or more late, which means the whole process was off the CPU. A
+grace so launchd restarts it. The worker also reports any of its own 1 s checks
+that run 0.5 s or more late, which means the whole process was off the CPU. A
 recovered heartbeat delay of 2 s or more is logged as info `brain.suspend_gap`
 when it used little CPU (at most 2 s, or a tenth of the delay if that is
 longer), faulted no more than 10 major pages (paging is not checked on Windows,
-nor for gaps of 60 s or more), and the worker's own pauses cover at least 75%
-of it. That is a sleep, App Nap, or a stopped process. Every other delay of 2 s
-or more is logged as warn `brain.event_loop_near_miss`. Both carry `pid`,
-`socketPath`, `workerPauseCoverage`, `cpuDeltaMs`, and `majorPageFaultsDelta`,
-so brains that share `brain.jsonl` can be told apart. The kill decision does
+nor for gaps of 60 s or more), and the worker was also late for all of it
+except at most one heartbeat or a quarter of the delay, whichever is longer.
+That is a sleep, App Nap, or a stopped process. Every other delay of 2 s or
+more is logged as warn `brain.event_loop_near_miss`. Both carry `pid`,
+`socketPath`, `workerPauseCoverage`, `workerPausedMs`, `cpuDeltaMs`, and
+`majorPageFaultsDelta`, so brains that share `brain.jsonl` can be told apart. The kill decision does
 not change.
 
 On the next boot the watchdog promotes any breadcrumb and generated report to

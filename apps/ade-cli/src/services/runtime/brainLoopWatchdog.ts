@@ -59,7 +59,7 @@ export type BrainLoopWatchdogEvaluation = {
    * been suspended, and 0 otherwise. It is non-zero exactly when `slept` is true,
    * and `slept` is what gates the worker's forgiveness of a stale heartbeat. The
    * worker does not send this value: the main thread's suspension label comes
-   * from the separate pause report (see BRAIN_LOOP_WORKER_PAUSE_REPORT_MS).
+   * from the separate pause report (see BRAIN_LOOP_WORKER_LATE_REPORT_MS).
    */
   sleepGapMs: number;
 };
@@ -113,18 +113,20 @@ export function evaluateBrainLoopWatchdog(args: {
 export const BRAIN_LOOP_SLEEP_PROOF_GRACE_MS = 3_000;
 
 /**
- * The worker's own check normally runs every second, so a check at least this
- * long after the previous one means the worker thread was not running either:
- * the whole process was off the CPU, not just the main thread blocked.
+ * How late the worker's own 1 s check must run before it reports a pause. A late
+ * check means this thread was not running either: the whole process was off the
+ * CPU, not just the main thread blocked.
  */
-export const BRAIN_LOOP_WORKER_PAUSE_REPORT_MS = 1_500;
+export const BRAIN_LOOP_WORKER_LATE_REPORT_MS = 500;
 
 /**
- * The share of a lag the worker's own pauses must cover before the lag counts
- * as a suspension. The pause has to account for most of the lag; a main-thread
- * block that merely contained a short scheduling hiccup stays a stall.
+ * The share of a long lag the worker's lateness may leave unexplained. See
+ * {@link brainLoopPauseExplainsLag}.
  */
-export const BRAIN_LOOP_PAUSE_MIN_COVERAGE = 0.75;
+export const BRAIN_LOOP_PAUSE_UNEXPLAINED_FRACTION = 0.25;
+
+/** Pause reports kept: the grace window only ever consults a few seconds of them. */
+const BRAIN_LOOP_WORKER_PAUSE_HISTORY = 16;
 
 /**
  * Major page faults a lag may take and still be a suspension.
@@ -308,8 +310,6 @@ export type BrainLoopLagVerdict = {
    */
   suspensionShaped: boolean;
   observedLagMs: number;
-  /** Fraction (0..1) of the lag during which the worker thread was also not running. */
-  workerPauseCoverage: number;
 };
 
 /**
@@ -329,12 +329,12 @@ export function classifyBrainLoopLag(args: {
   cpuDeltaMs: number;
   /** Major page faults across the lag, or null where the count is not meaningful (Windows). */
   majorPageFaultsDelta: number | null;
-  /** Fraction (0..1) of the lag interval during which the worker thread was also not running. */
-  workerPauseCoverage: number;
+  /** Milliseconds of the lag during which the worker thread was also late. */
+  workerPausedMs: number;
   nearMissMs?: number;
 }): BrainLoopLagVerdict {
   const nearMissMs = args.nearMissMs ?? BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS;
-  const observedLagMs = Math.max(0, Math.max(args.heartbeatLagMs, args.eventLoopDelayMaxMs));
+  const observedLagMs = observedBrainLoopLagMs(args.heartbeatLagMs, args.eventLoopDelayMaxMs);
   // A suspended process still burns a little CPU on the way out and back in, so
   // the floor is absolute rather than proportional; the fraction is what rules
   // out a busy loop, which spends the whole gap running.
@@ -344,46 +344,64 @@ export function classifyBrainLoopLag(args: {
     || args.majorPageFaultsDelta <= BRAIN_LOOP_PAUSE_MAX_MAJOR_FAULTS;
   const suspensionShaped = observedLagMs >= nearMissMs && idleAcrossLag && pagingFree;
   if (observedLagMs < nearMissMs) {
-    return {
-      verdict: "normal",
-      suspensionShaped,
-      observedLagMs,
-      workerPauseCoverage: args.workerPauseCoverage,
-    };
+    return { verdict: "normal", suspensionShaped, observedLagMs };
   }
   return {
-    verdict: suspensionShaped && args.workerPauseCoverage >= BRAIN_LOOP_PAUSE_MIN_COVERAGE
+    verdict: suspensionShaped && brainLoopPauseExplainsLag(observedLagMs, args.workerPausedMs)
       ? "suspended"
       : "stall",
     suspensionShaped,
     observedLagMs,
-    workerPauseCoverage: args.workerPauseCoverage,
   };
 }
 
-/** One report from the worker that its own thread was off the CPU. */
-export type BrainLoopWorkerPause = { gapMs: number; resumedAtMonotonicMs: number };
+/** The observed lag: the larger of the heartbeat gap and the event-loop delay maximum. */
+export function observedBrainLoopLagMs(
+  heartbeatLagMs: number,
+  eventLoopDelayMaxMs: number,
+): number {
+  return Math.max(0, heartbeatLagMs, eventLoopDelayMaxMs);
+}
 
 /**
- * Fraction of [lagEnd - lagMs, lagEnd] covered by the worker's own pauses.
- * Pauses never overlap each other.
+ * Whether the worker's lateness explains a lag.
+ *
+ * The worker's lateness can start up to one heartbeat after the pause did, so up
+ * to a heartbeat (or a quarter of a long lag, whichever is larger) may go
+ * unexplained. A main-thread block needs the worker to have been late for nearly
+ * all of it, which a scheduling hiccup never is.
  */
-export function brainLoopWorkerPauseCoverage(args: {
+export function brainLoopPauseExplainsLag(lagMs: number, workerPausedMs: number): boolean {
+  const unexplainedMs = Math.max(
+    BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
+    lagMs * BRAIN_LOOP_PAUSE_UNEXPLAINED_FRACTION,
+  );
+  return workerPausedMs >= lagMs - unexplainedMs;
+}
+
+/** One report from the worker that its own thread was late: the process was off the CPU. */
+export type BrainLoopWorkerPause = { pausedMs: number; resumedAtMonotonicMs: number };
+
+/**
+ * Milliseconds of [lagEnd - lagMs, lagEnd] covered by the worker's pauses. A
+ * pause is [resumedAt - pausedMs, resumedAt]. Pauses never overlap each other.
+ */
+export function brainLoopWorkerPausedMs(args: {
   lagMs: number;
   lagEndMonotonicMs: number;
   pauses: readonly BrainLoopWorkerPause[];
 }): number {
   if (args.lagMs <= 0) return 0;
   const lagStartMonotonicMs = args.lagEndMonotonicMs - args.lagMs;
-  let coveredMs = 0;
+  let overlapMs = 0;
   for (const pause of args.pauses) {
-    coveredMs += Math.max(
+    overlapMs += Math.max(
       0,
       Math.min(args.lagEndMonotonicMs, pause.resumedAtMonotonicMs)
-        - Math.max(lagStartMonotonicMs, pause.resumedAtMonotonicMs - pause.gapMs),
+        - Math.max(lagStartMonotonicMs, pause.resumedAtMonotonicMs - pause.pausedMs),
     );
   }
-  return Math.min(1, Math.max(0, coveredMs / args.lagMs));
+  return Math.min(args.lagMs, Math.max(0, overlapMs));
 }
 
 export function resolveBrainLoopWatchdogThresholdMs(
@@ -520,7 +538,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     const path = require("node:path");
     const { parentPort, workerData } = require("node:worker_threads");
     const BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS = ${BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS};
-    const BRAIN_LOOP_WORKER_PAUSE_REPORT_MS = ${BRAIN_LOOP_WORKER_PAUSE_REPORT_MS};
+    const BRAIN_LOOP_WORKER_LATE_REPORT_MS = ${BRAIN_LOOP_WORKER_LATE_REPORT_MS};
     const evaluateBrainLoopWatchdog = ${evaluateBrainLoopWatchdog.toString()};
 
     const monotonicMs = () => Number(process.hrtime.bigint() / 1000000n);
@@ -611,15 +629,18 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       });
       previousCheckWallMs = nowWallMs;
       previousCheckMonotonicMs = nowMonotonicMs;
-      // This thread's own timer ran late, so the whole process was off the CPU
-      // for that gap. Nothing on the main thread can observe its own absence, so
-      // report the pause whether or not it is long enough to forgive below. The
-      // main thread matches it against its own lag.
-      if (monotonicSinceCheck >= BRAIN_LOOP_WORKER_PAUSE_REPORT_MS) {
+      // This thread's own 1 s timer ran late, so the whole process was off the CPU
+      // for the lateness. Nothing on the main thread can observe its own absence,
+      // so report it whether or not it is long enough to forgive below. The
+      // timer was due at previousCheck + interval and fired now, so the paused
+      // interval is [now - lateMs, now]. The main thread matches it against its
+      // own lag.
+      const lateMs = monotonicSinceCheck - workerData.checkIntervalMs;
+      if (lateMs >= BRAIN_LOOP_WORKER_LATE_REPORT_MS) {
         try {
           parentPort.postMessage({
             type: "sleep",
-            gapMs: Math.floor(monotonicSinceCheck),
+            pausedMs: Math.floor(lateMs),
             resumedAtMonotonicMs: nowMonotonicMs,
           });
         } catch {}
@@ -750,7 +771,6 @@ export function startBrainLoopWatchdog(args: {
 
   /** The worker's recent pause reports, newest last. Only a pause near a lag can explain it. */
   const recentWorkerPauses: BrainLoopWorkerPause[] = [];
-  const WORKER_PAUSE_HISTORY = 16;
   /** A lag as the watchdog observed it, before the worker has had its say. */
   type ObservedLag = {
     observedAtMonotonicMs: number;
@@ -759,7 +779,6 @@ export function startBrainLoopWatchdog(args: {
     diagnostics: BrainLoopWatchdogDiagnostics;
     cpuDeltaMs: number;
     majorPageFaultsDelta: number | null;
-    suspensionShaped: boolean;
   };
   /**
    * A suspension-shaped lag held back until the worker's verdict can arrive.
@@ -769,23 +788,28 @@ export function startBrainLoopWatchdog(args: {
   let heldLag: ObservedLag | null = null;
   const report = info ?? warn;
 
-  const coverageOf = (lag: Pick<ObservedLag, "lagMs" | "observedAtMonotonicMs">): number =>
-    brainLoopWorkerPauseCoverage({
+  const workerPausedMsOf = (lag: Pick<ObservedLag, "lagMs" | "observedAtMonotonicMs">): number =>
+    brainLoopWorkerPausedMs({
       lagMs: lag.lagMs,
       lagEndMonotonicMs: lag.observedAtMonotonicMs,
       pauses: recentWorkerPauses,
     });
   const provenSuspension = (lag: ObservedLag): boolean =>
-    coverageOf(lag) >= BRAIN_LOOP_PAUSE_MIN_COVERAGE;
+    brainLoopPauseExplainsLag(lag.lagMs, workerPausedMsOf(lag));
 
   const emitLag = (held: ObservedLag, verdict: "stall" | "suspended"): void => {
-    const workerPauseCoverage = coverageOf(held);
+    const workerPausedMs = workerPausedMsOf(held);
+    // Log only: the verdict is decided on milliseconds, not on this rounded share.
+    const workerPauseCoverage = held.lagMs > 0
+      ? Math.round((workerPausedMs / held.lagMs) * 100) / 100
+      : 0;
     if (verdict === "suspended") {
       report?.("brain.suspend_gap", {
         lastCommand: held.lastCommand,
         gapMs: held.lagMs,
         diagnostics: held.diagnostics,
         workerPauseCoverage,
+        workerPausedMs,
         cpuDeltaMs: held.cpuDeltaMs,
         majorPageFaultsDelta: held.majorPageFaultsDelta,
       });
@@ -796,6 +820,7 @@ export function startBrainLoopWatchdog(args: {
       thresholdMs,
       observedLagMs: held.lagMs,
       workerPauseCoverage,
+      workerPausedMs,
       cpuDeltaMs: held.cpuDeltaMs,
       majorPageFaultsDelta: held.majorPageFaultsDelta,
       diagnostics: held.diagnostics,
@@ -904,13 +929,16 @@ export function startBrainLoopWatchdog(args: {
         }
       }
     }
-    const observedLagMs = Math.max(0, diagnostics.heartbeatLagMs, diagnostics.eventLoopDelay.maxMs);
+    const observedLagMs = observedBrainLoopLagMs(
+      diagnostics.heartbeatLagMs,
+      diagnostics.eventLoopDelay.maxMs,
+    );
     const lag = classifyBrainLoopLag({
       heartbeatLagMs: diagnostics.heartbeatLagMs,
       eventLoopDelayMaxMs: diagnostics.eventLoopDelay.maxMs,
       cpuDeltaMs,
       majorPageFaultsDelta,
-      workerPauseCoverage: coverageOf({
+      workerPausedMs: workerPausedMsOf({
         lagMs: observedLagMs,
         observedAtMonotonicMs: nowMonotonicMs,
       }),
@@ -923,7 +951,6 @@ export function startBrainLoopWatchdog(args: {
         diagnostics,
         cpuDeltaMs,
         majorPageFaultsDelta,
-        suspensionShaped: lag.suspensionShaped,
       };
       // Only one lag is held at a time. An older one goes out now, with the
       // verdict its pauses support, rather than being overwritten.
@@ -954,19 +981,23 @@ export function startBrainLoopWatchdog(args: {
 
   worker.on("message", (message: unknown) => {
     if (!message || typeof message !== "object") return;
-    const record = message as { type?: unknown; gapMs?: unknown; resumedAtMonotonicMs?: unknown };
+    const record = message as {
+      type?: unknown;
+      pausedMs?: unknown;
+      resumedAtMonotonicMs?: unknown;
+    };
     if (record.type !== "sleep") return;
-    const gapMs = Number(record.gapMs);
-    if (!Number.isFinite(gapMs) || gapMs <= 0) return;
+    const pausedMs = Number(record.pausedMs);
+    if (!Number.isFinite(pausedMs) || pausedMs <= 0) return;
     const receivedAtMonotonicMs = monotonicMs();
     const resumedAtMonotonicMs = Number(record.resumedAtMonotonicMs);
     recentWorkerPauses.push({
-      gapMs: Math.floor(gapMs),
+      pausedMs: Math.floor(pausedMs),
       resumedAtMonotonicMs: Number.isFinite(resumedAtMonotonicMs) && resumedAtMonotonicMs > 0
         ? resumedAtMonotonicMs
         : receivedAtMonotonicMs,
     });
-    if (recentWorkerPauses.length > WORKER_PAUSE_HISTORY) recentWorkerPauses.shift();
+    if (recentWorkerPauses.length > BRAIN_LOOP_WORKER_PAUSE_HISTORY) recentWorkerPauses.shift();
     // The held lag may now have its answer; do not make it wait out the grace.
     resolveHeldLag(receivedAtMonotonicMs);
   });
