@@ -3775,7 +3775,7 @@ function subscribeAgentChatEvents(
       label: "chat",
       suppressReplay: pin.kind === "remote",
       dispatch: (event) => {
-        if (pin.kind === "local" && isPinnedRuntimeEventStale(startedAtMs, event.timestamp)) return;
+        if (isPinnedRuntimeEventStale(startedAtMs, event.timestamp)) return;
         const envelope = toAgentChatEventEnvelope(event.payload);
         if (!envelope) return;
         if (pin.kind === "local") agentChatSummaryCache.clear();

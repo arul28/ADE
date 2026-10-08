@@ -48,7 +48,7 @@ export function useThreadCommentActions(
   };
   const update = async (commentId: string, patch: { body?: string; includeInNextSend?: boolean }) => {
     // A comment still being created has no host id yet.
-    if (!sessionId || isLocalThreadComment({ id: commentId })) return null;
+    if (!sessionId || isLocalThreadComment(commentId)) return null;
     // The change shows at once; if the host refuses it, show the host's list again.
     patchThreadComment(sessionId, commentId, patch);
     const result = await run(() => threadCommentsApi()?.update({ sessionId, commentId, ...patch }, pin ?? null));
@@ -56,7 +56,7 @@ export function useThreadCommentActions(
     return result;
   };
   const remove = async (commentId: string) => {
-    if (!sessionId || isLocalThreadComment({ id: commentId })) return null;
+    if (!sessionId || isLocalThreadComment(commentId)) return null;
     removeThreadCommentLocally(sessionId, commentId);
     const result = await run(() => threadCommentsApi()?.delete({ sessionId, commentId }, pin ?? null));
     // The row went early; if the host kept it, show the host's list again.

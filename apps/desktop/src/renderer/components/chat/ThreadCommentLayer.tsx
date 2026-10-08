@@ -406,7 +406,8 @@ export function ThreadCommentLayer({
       settle(await api.create({ sessionId, ...fields }, pin ?? null));
     } catch (error) {
       settle(null);
-      setDraft({ ...saving, body });
+      // Reopen the box with the text, unless another comment was started since.
+      setDraft((current) => current ?? { ...saving, body });
       setDraftError(threadCommentErrorText(error));
     }
   };

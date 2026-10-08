@@ -44,8 +44,8 @@ export function setThreadComments(sessionId: string, comments: ChatThreadComment
 const LOCAL_ID_PREFIX = "local:";
 
 /** True for a comment shown before its host has it; it has no host id to act on yet. */
-export function isLocalThreadComment(comment: Pick<ChatThreadComment, "id">): boolean {
-  return comment.id.startsWith(LOCAL_ID_PREFIX);
+export function isLocalThreadComment(commentId: string): boolean {
+  return commentId.startsWith(LOCAL_ID_PREFIX);
 }
 
 /**
