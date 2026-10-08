@@ -290,22 +290,37 @@
 }
 .ade-music-search-field input::placeholder { color: var(--kit-text-3); }
 
+.ade-music-ideas-label {
+  margin: 18px 0 8px;
+  color: var(--kit-text-3);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+/* Equal tiles in even rows: a balanced 4 x 2 block, 2 columns when narrow. */
 .ade-music-ideas {
-  display: flex;
-  max-width: 560px;
-  flex-wrap: wrap;
-  justify-content: center;
+  display: grid;
+  width: min(100%, 560px);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
-  margin: 4px auto 0;
+  margin: 0 auto;
+}
+@container (max-width: 520px) {
+  .ade-music-ideas { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .ade-music-idea {
-  height: 30px;
+  height: 34px;
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--kit-card-edge);
-  border-radius: 999px;
+  border-radius: 10px;
   background: var(--music-soft);
-  padding: 0 14px;
+  padding: 0 12px;
   color: var(--kit-text-2);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition: background-color 120ms, color 120ms, border-color 120ms, transform 120ms;
 }
 .ade-music-idea:hover {
@@ -868,6 +883,7 @@
 /* Search with nothing typed: the prompt and its ideas sit at the panel's
    optical centre, not stuck to the top of an empty pane. */
 .ade-music-search-start {
+  container-type: inline-size;
   display: flex;
   min-height: 100%;
   flex-direction: column;

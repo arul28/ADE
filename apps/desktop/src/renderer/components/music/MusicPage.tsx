@@ -440,6 +440,7 @@ function SearchView({
           authorized ? (
             <div className="ade-music-search-start">
               <MusicEmpty icon={<MagnifyingGlass size={22} />} title="Search songs, albums, playlists and artists" hint="Results play straight from Apple Music." />
+              <div className="ade-music-ideas-label">Try</div>
               <div className="ade-music-ideas" aria-label="Search ideas">
                 {SEARCH_IDEAS.map((idea) => (
                   <button key={idea} type="button" className="ade-music-idea" onClick={() => setTerm(idea)}>
