@@ -199,6 +199,7 @@ Copyright:  Copyright (c) Kedhareswer Naidu
 License:    MIT
 Ported as:  apps/desktop/src/renderer/components/ui/ContributionSkyline.tsx
             apps/desktop/src/renderer/components/ui/contributionSkylineModel.ts
+            apps/desktop/src/renderer/components/ui/contributionSkylineRender.ts
             (rewritten for ADE's theme tokens and sizing)
 
 MIT License
