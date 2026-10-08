@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CircleNotch, GithubLogo, MagnifyingGlass } from "@phosphor-icons/react";
 
 import {
@@ -7,6 +7,7 @@ import {
 } from "../../../shared/laneGitHubIssue";
 import type { LaneGitHubIssue } from "../../../shared/types";
 import { openLinkFromUi } from "../../lib/openExternal";
+import { useLatestCallback } from "../../lib/stableIdentity";
 import { cn } from "../ui/cn";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { fgTint } from "../lanes/laneDesignTokens";
@@ -55,18 +56,28 @@ export function GitHubIssueBrowser({
   const [stateFilter, setStateFilter] = useState<IssueStateFilter>("open");
   const [focusedIssueId, setFocusedIssueId] = useState<string | null>(selectedIssue?.id ?? null);
 
+  // Parents pass inline callbacks and update their own state from them, so a
+  // load that depended on their identity re-ran after every load: an endless
+  // listRepoIssues loop that tripped GitHub's secondary rate limit.
+  const notifyLoadingChange = useLatestCallback(onLoadingChange);
+  const notifyRepoChange = useLatestCallback(onRepoChange);
+  const selectedIssueRef = useRef(selectedIssue);
+  selectedIssueRef.current = selectedIssue;
+  const selectedIssueId = selectedIssue?.id ?? null;
+
   const setBusy = useCallback((next: boolean) => {
     setLoading(next);
-    onLoadingChange?.(next);
-  }, [onLoadingChange]);
+    notifyLoadingChange?.(next);
+  }, [notifyLoadingChange]);
 
   const load = useCallback(async () => {
+    const selectedIssue = selectedIssueRef.current;
     setError(null);
     setBusy(true);
     try {
       const detected = await window.ade.github.detectRepo();
       setRepo(detected);
-      onRepoChange?.(detected);
+      notifyRepoChange?.(detected);
       if (!detected) {
         setIssues(selectedIssue ? [selectedIssue] : []);
         return;
@@ -90,11 +101,12 @@ export function GitHubIssueBrowser({
     } finally {
       setBusy(false);
     }
-  }, [onRepoChange, selectedIssue, setBusy, stateFilter]);
+  }, [notifyRepoChange, setBusy, stateFilter]);
 
+  // Reload when the selection changes, not on every new object with the same id.
   useEffect(() => {
     void load();
-  }, [load, refreshKey]);
+  }, [load, refreshKey, selectedIssueId]);
 
   useEffect(() => {
     setFocusedIssueId(selectedIssue?.id ?? null);
