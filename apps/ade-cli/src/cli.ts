@@ -14539,7 +14539,9 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
   if (sub === "claim") {
     // A personal (project-less) chat has no lane: the runtime puts its claim
     // in the personal tab collection, owned by its chat id.
-    const personal = readFlag(args, ["--personal"]) || process.env.ADE_CHAT_SCOPE?.trim() === "personal";
+    // The runtime decides personal scope from ADE_CHAT_SCOPE alone, so a flag
+    // here would only skip the lane check without changing where the claim goes.
+    const personal = process.env.ADE_CHAT_SCOPE?.trim() === "personal";
     const claimArgs: JsonObject = personal ? { ...readToolClaimArgs(args) } : readRequiredToolClaimArgs(args, "browser");
     Object.assign(claimArgs, readBrowserTabTargetArgs(args));
     Object.assign(claimArgs, readBrowserLeaseArgs(args));

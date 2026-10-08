@@ -38685,7 +38685,9 @@ export function createAgentChatService(args: {
     // The SDK-host personal surface keeps its own branch below. An `assistant`
     // personal chat takes the work-chat branch (tool gate, approval and dialog
     // cards, hooks, the user's settings and MCP servers) with its own prompt.
-    const personalSession = isEmbeddedPersonalSession(managed.session);
+    // The embedded (SDK) launch branch: its own prompt and setting sources. Which
+    // skills a chat gets is a separate question, answered by adeSkillCatalogFor.
+    const embeddedPersonal = isEmbeddedPersonalSession(managed.session);
     const assistantSession = isAssistantPersonalSession(managed.session);
     // The preset decides the model id and the built-in agent pins. Its env is
     // already inside `buildAgentRuntimeEnv`; what is read here is the rest.
@@ -38832,7 +38834,7 @@ export function createAgentChatService(args: {
       source: claudeExecutable.source,
       path: claudeExecutable.path,
     });
-    if (personalSession) {
+    if (embeddedPersonal) {
       opts.systemPrompt = resolvePersonalSystemPrompt(managed.session);
       // Set for all four values, including "none" → []. An omitted
       // `settingSources` and an empty array are not documented to be the same

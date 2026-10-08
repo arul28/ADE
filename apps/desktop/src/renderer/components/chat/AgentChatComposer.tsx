@@ -752,6 +752,8 @@ export type ComposerMachineChipAction = {
  * The machine chip gives up width first in a narrow composer (a dock): its
  * name truncates down to the icon instead of crowding the pickers beside it.
  */
+// Clips the label as the chip shrinks; the button draws an inset focus ring
+// so the clip cannot cut it off.
 const MACHINE_CHIP_WRAPPER = "min-w-[1.5rem] shrink-[8] overflow-hidden";
 
 function ComposerMachineChip({
@@ -774,6 +776,7 @@ function ComposerMachineChip({
             onClick={action.onClick}
             className={cn(
               "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md px-1 transition-colors",
+              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60",
               "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-fg/[0.05] hover:text-fg/85",
               action.offline && "opacity-60",
             )}

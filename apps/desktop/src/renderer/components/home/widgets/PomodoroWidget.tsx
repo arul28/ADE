@@ -102,7 +102,20 @@ const useFocusStore = create<FocusStore>((set, get) => {
       const claim = window.ade?.home?.focus?.claimCompletion;
       if (ending.endsAt != null && claim) {
         const won = await claim(ending.endsAt).catch(() => true);
-        if (!won) return;
+        if (!won) {
+          // The winner's write normally arrives as a storage event. If that
+          // window closed first, settle locally rather than sitting at 0:00.
+          window.setTimeout(() => {
+            const after = get();
+            if (after.phase === ending.phase && after.endsAt === ending.endsAt) {
+              const latest = readState();
+              if (latest.phase !== ending.phase || latest.endsAt !== ending.endsAt) set(latest);
+              else save({ phase: ending.phase === "focus" ? "break" : "focus", endsAt: null, pausedMs: null });
+            }
+            schedule();
+          }, 2_000);
+          return;
+        }
       }
       const state = get();
       if (state.phase !== ending.phase || state.endsAt !== ending.endsAt) return;

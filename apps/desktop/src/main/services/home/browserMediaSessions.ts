@@ -2,7 +2,7 @@ import type { WebContents, WebFrameMain } from "electron";
 
 import type { HomeNowPlayingCommand, HomeNowPlayingSession } from "../../../shared/types/homeWidgets";
 import { cleanTabTitle, siteSourceName } from "./nowPlayingSources";
-import { sniffFaviconMime } from "../chat/sourceFaviconService";
+import { sniffFaviconMime } from "../shared/imageMime";
 
 /**
  * Now Playing sessions from ADE's built-in browser tabs (YouTube, YouTube

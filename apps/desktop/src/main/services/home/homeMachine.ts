@@ -515,7 +515,7 @@ export function createMachineMonitor(deps: {
           ports: [...ports].sort((a, b) => a - b),
           dev: DEV_PROCESS_NAMES.has(base),
           protected: own.has(pid) || ADE_PROCESS_NAME.test(base) || base === "electron",
-          system: systemPids.has(pid) || (platform === "win32" && WINDOWS_SYSTEM_PROCESS_NAMES.has(base)),
+          system: systemPids.has(pid),
         };
       })
       .sort((a, b) => Number(b.dev) - Number(a.dev) || (a.ports[0] ?? 0) - (b.ports[0] ?? 0));
@@ -551,7 +551,11 @@ export function createMachineMonitor(deps: {
 
   const kill = async (pid: number): Promise<HomeKillResult> => {
     if (!Number.isInteger(pid) || pid <= 4) return { ok: false, error: "Not a process ADE can stop." };
-    // Only a process the last scan listed: the widget cannot be used to stop arbitrary pids.
+    // Only a process a fresh scan lists: the widget cannot be used to stop
+    // arbitrary pids. Forget the cached names too, so a recycled pid is named
+    // (and flagged system or not) for the process that holds it now.
+    listenersCache = null;
+    processNames.clear();
     const current = await listeners();
     const target = current.ok ? current.processes.find((entry) => entry.pid === pid) : null;
     if (!target) return { ok: false, error: "That process is no longer listening." };
