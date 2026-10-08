@@ -1,4 +1,4 @@
-import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MutableRefObject } from "react";
 import { FolderSimple } from "@phosphor-icons/react";
 import type { RecentProjectGroup } from "../app/projectTabGrouping";
 import type { AppState } from "../../state/appStore";
@@ -102,7 +102,7 @@ export function ProjectsCard({
   preview: boolean;
   rows: readonly ProjectsCardRow[];
   count: number;
-  listRef: RefObject<HTMLDivElement | null>;
+  listRef: MutableRefObject<HTMLDivElement | null>;
   onListKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }) {
   const hasProjects = count > 0;
