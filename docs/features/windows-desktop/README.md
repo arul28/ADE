@@ -169,7 +169,9 @@ CLI and the pane unchanged:
   starts normally.
 - `WINDOWS_DESKTOP_LOCKED` — the PC is locked; unlock resumes.
 - `WINDOWS_DESKTOP_NOT_CONSOLE_SESSION` — the brain is not in the console
-  session (for example, started over SSH), so the private seat is unavailable.
+  session (for example, it started while the user was on Remote Desktop, or
+  over SSH), so the private seat is unavailable. The brain itself runs there
+  normally; signing in at the PC brings that session back to the console.
 - `WINDOWS_DESKTOP_SIGN_IN_FAILED` / `WINDOWS_DESKTOP_WRONG_PASSWORD` /
   `WINDOWS_DESKTOP_CANCELLED` — the interactive sign-in step.
 - `WINDOWS_DESKTOP_CONSENT_REQUIRED` — a shared seat was asked for without the
