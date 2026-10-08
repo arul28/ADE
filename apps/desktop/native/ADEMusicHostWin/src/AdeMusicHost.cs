@@ -3,7 +3,9 @@
 // A hidden WebView2 window that runs MusicKit JS v3 on a tiny local page and is
 // driven by ADE's main process over stdio:
 //   stdin  = one JSON command per line. Forwarded to the page verbatim, except
-//            the host's own commands: {"cmd":"quit"}, {"cmd":"show"}, {"cmd":"hide"}.
+//            the host's own commands: {"cmd":"quit"}, {"cmd":"show"}, {"cmd":"hide"},
+//            {"cmd":"showAuth"} (bring the sign-in window to the front) and
+//            {"cmd":"closeAuth"} (close it, which cancels the sign-in).
 //   stdout = one JSON object per line: page events and command replies, plus the
 //            host's own {"event":"hostReady"|"hostClosing"|"hostError"|"authWindow"}.
 //   stderr = a human log. It never contains tokens: command lines are not logged,
@@ -18,7 +20,9 @@
 // Never pass --disable-component-update to WebView2: it removes the Widevine CDM
 // and Apple Music then plays nothing but 30-second previews.
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -32,6 +36,53 @@ static class Program {
   static Form mainForm;
   static CoreWebView2Environment environment;
   static int popupCount;
+  static string virtualHost = "music.ade.local";
+  static string pageDir;
+  static readonly List<Form> authForms = new List<Form>();
+
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern bool FlashWindowEx(ref FLASHWINFO info);
+  [StructLayout(LayoutKind.Sequential)]
+  struct FLASHWINFO { public uint cbSize; public IntPtr hwnd; public uint dwFlags; public uint uCount; public uint dwTimeout; }
+  const int SW_SHOW = 5;
+  const int SW_RESTORE = 9;
+
+  // Show a window and bring it in front of ADE. ADE starts this host with
+  // windowsHide, so the process's STARTUPINFO says SW_HIDE and Windows applies
+  // that to the first ShowWindow(SW_SHOWNORMAL) the process makes: a plain
+  // Form.Show() of the sign-in window was silently turned into "hidden". An
+  // explicit SW_SHOW is never overridden. A background process may not take the
+  // foreground, so borrow the foreground thread's input for the call, and
+  // flash the taskbar button if Windows still refuses.
+  static void Present(Form form) {
+    IntPtr h = form.Handle;
+    ShowWindow(h, IsIconic(h) ? SW_RESTORE : SW_SHOW);
+    IntPtr fg = GetForegroundWindow();
+    uint fgThread = fg == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fg, IntPtr.Zero);
+    uint me = GetCurrentThreadId();
+    bool attached = fgThread != 0 && fgThread != me && AttachThreadInput(me, fgThread, true);
+    try {
+      BringWindowToTop(h);
+      form.TopMost = true;
+      form.TopMost = false;
+      bool ok = SetForegroundWindow(h);
+      if (!ok) {
+        var info = new FLASHWINFO { hwnd = h, dwFlags = 3 | 12, uCount = 3, dwTimeout = 0 };
+        info.cbSize = (uint)Marshal.SizeOf(info);
+        FlashWindowEx(ref info);
+      }
+      Log("present ok=" + ok + " attached=" + attached);
+    } finally {
+      if (attached) AttachThreadInput(me, fgThread, false);
+    }
+  }
 
   static void Log(string message) {
     lock (OutLock) {
@@ -73,6 +124,8 @@ static class Program {
       return 2;
     }
     page = Path.GetFullPath(page);
+    pageDir = page;
+    virtualHost = vhost;
 
     string runtime;
     try {
@@ -155,30 +208,36 @@ static class Program {
       int n = ++popupCount;
       var features = ev.WindowFeatures;
       var form = new Form {
-        Text = "Connect Apple Music",
+        Text = "Connect Apple Music - ADE",
         StartPosition = FormStartPosition.CenterScreen,
         ShowInTaskbar = true,
-        TopMost = true,
         Width = 520,
         Height = 720,
       };
+      try {
+        form.Icon = System.Drawing.Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule.FileName);
+      } catch (Exception) { }
       if (features.HasSize) {
         form.ClientSize = new System.Drawing.Size((int)Math.Max(features.Width, 440), (int)Math.Max(features.Height, 620));
       }
       var popup = new WebView2 { Dock = DockStyle.Fill };
       form.Controls.Add(popup);
+      authForms.Add(form);
+      form.FormClosed += (a, b) => {
+        authForms.Remove(form);
+        Emit("{\"event\":\"authWindow\",\"state\":\"closed\",\"n\":" + n + "}");
+      };
       form.Show();
-      form.Activate();
-      // TopMost only to land in front of ADE once; afterwards it behaves like any window.
-      form.Shown += (a, b) => form.TopMost = false;
+      Present(form);
       await popup.EnsureCoreWebView2Async(environment);
       popup.CoreWebView2.Settings.AreDevToolsEnabled = false;
+      // Apple's consent page loads ADE's icon from the player page's origin.
+      try { popup.CoreWebView2.SetVirtualHostNameToFolderMapping(virtualHost, pageDir, CoreWebView2HostResourceAccessKind.Allow); } catch (Exception) { }
       popup.CoreWebView2.WindowCloseRequested += (a, b) => form.Close();
       popup.CoreWebView2.NewWindowRequested += OnNewWindowRequested;
       ev.NewWindow = popup.CoreWebView2;
       ev.Handled = true;
       Emit("{\"event\":\"authWindow\",\"state\":\"open\",\"n\":" + n + "}");
-      form.FormClosed += (a, b) => Emit("{\"event\":\"authWindow\",\"state\":\"closed\",\"n\":" + n + "}");
     } catch (Exception ex) {
       Log("popup failed " + ex.Message);
       Emit("{\"event\":\"hostError\",\"code\":\"popup_failed\",\"error\":" + Quote(ex.Message) + "}");
@@ -194,6 +253,16 @@ static class Program {
         line = line.Trim();
         if (line.Length == 0) continue;
         if (line == "{\"cmd\":\"quit\"}") break;
+        if (line == "{\"cmd\":\"showAuth\"}" || line == "{\"cmd\":\"closeAuth\"}") {
+          bool close = line.Contains("close");
+          mainForm.BeginInvoke((Action)(() => {
+            foreach (var f in authForms.ToArray()) {
+              if (f.IsDisposed) continue;
+              if (close) f.Close(); else Present(f);
+            }
+          }));
+          continue;
+        }
         if (line == "{\"cmd\":\"show\"}" || line == "{\"cmd\":\"hide\"}") {
           bool visible = line.Contains("show");
           mainForm.BeginInvoke((Action)(() => {

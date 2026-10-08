@@ -100,6 +100,11 @@ export function registerMusicIpc(args: {
   handle(MUSIC_IPC.library, (input: { kind: MusicLibraryKind; offset?: number; limit?: number }) =>
     service.library({ kind: KINDS.has(input?.kind) ? input.kind : "playlists", offset: input?.offset, limit: input?.limit }));
   handle(MUSIC_IPC.recent, () => service.recent());
+  handle(MUSIC_IPC.charts, () => service.charts());
+  handle(MUSIC_IPC.account, () => service.account());
+  handle(MUSIC_IPC.unload, () => service.unloadPlayer());
+  handle(MUSIC_IPC.showSignIn, () => service.showSignIn());
+  handle(MUSIC_IPC.cancelSignIn, () => service.cancelSignIn());
   handle(MUSIC_IPC.tracks, (input: { kind: "album" | "playlist"; id: string; library: boolean }) =>
     service.tracks({ kind: input?.kind === "album" ? "album" : "playlist", id: str(input?.id), library: Boolean(input?.library) }));
   handle(MUSIC_IPC.rating, (input: { id: string; library: boolean }) =>

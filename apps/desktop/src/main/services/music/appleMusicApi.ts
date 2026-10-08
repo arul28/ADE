@@ -6,6 +6,8 @@ import type {
   MusicRecent,
   MusicSearchResult,
   MusicSearchScope,
+  MusicCharts,
+  MusicAccount,
 } from "../../../shared/types/music";
 
 /**
@@ -229,6 +231,27 @@ export function createAppleMusicApi(args: {
         playlists: normalizeAll(r.playlists?.data),
         artists: normalizeAll(r.artists?.data),
       };
+    },
+
+    async charts(): Promise<MusicCharts> {
+      const sf = await storefrontId();
+      const body = await request<{ results?: Record<string, Array<{ data?: Resource[] }>> }>(
+        `/v1/catalog/${sf}/charts?${qs({ types: "songs,albums,playlists", limit: 24 })}`,
+        { user: false },
+      );
+      const r = body.results ?? {};
+      return {
+        songs: normalizeAll(r.songs?.[0]?.data),
+        albums: normalizeAll(r.albums?.[0]?.data),
+        playlists: normalizeAll(r.playlists?.[0]?.data),
+      };
+    },
+
+    async account(): Promise<MusicAccount> {
+      if (!args.userToken()) return { storefront: null };
+      const body = await request<{ data?: Array<{ id: string; attributes?: { name?: string } }> }>("/v1/me/storefront");
+      const entry = body.data?.[0];
+      return { storefront: entry ? { id: entry.id, name: entry.attributes?.name ?? null } : null };
     },
 
     async library(input: { kind: MusicLibraryKind; offset?: number; limit?: number }): Promise<MusicPage> {

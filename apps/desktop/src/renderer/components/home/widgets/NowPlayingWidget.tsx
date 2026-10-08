@@ -1,17 +1,28 @@
-import { useEffect, useState } from "react";
-import { MusicNotes, Pause, Play, SkipBack, SkipForward } from "@phosphor-icons/react";
+import React, { useEffect, useState } from "react";
+import { motion } from "motion/react";
+import { MusicNotes, Pause, Play, Repeat, RepeatOnce, Shuffle, SkipBack, SkipForward } from "@phosphor-icons/react";
 import type { HomeNowPlayingCommand, HomeNowPlayingState } from "../../../../shared/types/homeWidgets";
-import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
+import type { MusicRepeatMode } from "../../../../shared/types/music";
+import { MusicSlider, PlayerIconButton, useMusicReducedMotion } from "../../music/MusicPlayer";
+import { formatMusicTime, musicActions, useMusicNowPlaying, useMusicPosition, useMusicState } from "../../music/musicStore";
 import { useWidgetPreview, useWidgetSpan, useWidgetVisible } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
+import "../../music/music.css";
 import "../homeWidgets.css";
+import "./NowPlayingWidget.css";
 
 /**
- * Whatever the computer is playing, from any app: title, artist, album art,
- * progress, and play/pause/next/previous. Main reads the OS media session
- * (Windows: a helper on the System Media Transport Controls; macOS: the
- * MediaRemote adapter, or Music.app) only while this card is on screen; it
- * subscribes when visible and lets go when hidden, which stops the helper.
+ * Now Playing, in the Music player's language: a frosted card with the cover
+ * big and rounded, the title, a spring-filled scrubber with times, and a pill
+ * of round ghost buttons (shuffle, back, play/pause, forward, repeat).
+ *
+ * The source is whatever the computer plays. Main reads the OS media session
+ * (Windows: the System Media Transport Controls; macOS: MediaRemote or
+ * Music.app) only while this card is on screen. When ADE's own Music tab has a
+ * song loaded, main hands the card to it (`source: "ade-music"`), and the card
+ * then drives ADE's player directly: real seeking, shuffle and repeat. Another
+ * app's session can only play, pause and skip, so seek, shuffle and repeat are
+ * shown but off for it.
  */
 
 function useNowPlaying(active: boolean): HomeNowPlayingState | null {
@@ -37,12 +48,185 @@ function useNowPlaying(active: boolean): HomeNowPlayingState | null {
   return state;
 }
 
-function clock(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = String(total % 60).padStart(2, "0");
-  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
+const NEXT_REPEAT: Record<MusicRepeatMode, MusicRepeatMode> = { 0: 2, 2: 1, 1: 0 };
+
+type CardModel = {
+  title: string;
+  subtitle: string;
+  artwork: string | null;
+  playing: boolean;
+  canPlayPause: boolean;
+  canNext: boolean;
+  canPrevious: boolean;
+  /** Seek, shuffle and repeat: ADE's own player only. */
+  own: boolean;
+  onToggle: () => void;
+  onNext: () => void;
+  onPrevious: () => void;
+};
+
+/** The scrubber and times for ADE's own player (real seeking). */
+function OwnSeek() {
+  const position = useMusicPosition(500);
+  const duration = useMusicState((s) => s?.playback.duration ?? 0);
+  const [scrub, setScrub] = useState<number | null>(null);
+  const shown = scrub ?? position;
+  return (
+    <SeekLayout
+      fraction={duration > 0 ? shown / duration : 0}
+      elapsed={shown}
+      duration={duration}
+      onInput={(v) => setScrub(v * duration)}
+      onCommit={(v) => {
+        setScrub(v * duration);
+        void musicActions.seek(v * duration).finally(() => setScrub(null));
+      }}
+    />
+  );
+}
+
+/** The read-only scrubber for another app's session, run forward while playing. */
+function SessionSeek({ positionMs, durationMs, updatedAt, playing, ticking }: { positionMs: number; durationMs: number; updatedAt: number; playing: boolean; ticking: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!playing || !ticking) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [playing, ticking]);
+  const position = Math.min(durationMs || Number.POSITIVE_INFINITY, positionMs + (playing ? Math.max(0, now - updatedAt) : 0));
+  const duration = durationMs / 1000;
+  return <SeekLayout fraction={durationMs > 0 ? position / durationMs : 0} elapsed={position / 1000} duration={duration} />;
+}
+
+function SeekLayout({
+  fraction,
+  elapsed,
+  duration,
+  onInput,
+  onCommit,
+}: {
+  fraction: number;
+  elapsed: number;
+  duration: number;
+  onInput?: (v: number) => void;
+  onCommit?: (v: number) => void;
+}) {
+  const disabled = !onCommit || duration <= 0;
+  return (
+    <div className="ade-np2-seek">
+      <MusicSlider
+        value={fraction}
+        onInput={onInput ?? (() => {})}
+        onCommit={onCommit ?? (() => {})}
+        disabled={disabled}
+        label="Seek"
+        valueText={`${formatMusicTime(elapsed)} of ${formatMusicTime(duration)}`}
+        step={duration > 0 ? Math.min(0.1, 5 / duration) : 0.02}
+      />
+      <div className="ade-np2-times kit-num">
+        <span>{formatMusicTime(elapsed)}</span>
+        <span>{duration > 0 ? formatMusicTime(duration) : "--:--"}</span>
+      </div>
+    </div>
+  );
+}
+
+function OwnModes({ which }: { which: "shuffle" | "repeat" }) {
+  const shuffle = useMusicState((s) => Boolean(s?.playback.shuffle));
+  const repeat = useMusicState((s) => s?.playback.repeat ?? 0);
+  if (which === "shuffle") {
+    return (
+      <PlayerIconButton label={shuffle ? "Shuffle on" : "Shuffle"} on={shuffle} onClick={() => void musicActions.setShuffle(!shuffle)}>
+        <Shuffle size={16} weight={shuffle ? "bold" : "regular"} />
+      </PlayerIconButton>
+    );
+  }
+  return (
+    <PlayerIconButton
+      label={repeat === 1 ? "Repeat one" : repeat === 2 ? "Repeat all" : "Repeat"}
+      on={repeat !== 0}
+      onClick={() => void musicActions.setRepeat(NEXT_REPEAT[repeat])}
+    >
+      {repeat === 1 ? <RepeatOnce size={16} weight="bold" /> : <Repeat size={16} weight={repeat ? "bold" : "regular"} />}
+    </PlayerIconButton>
+  );
+}
+
+function PlayerCard({ model, seek, still }: { model: CardModel; seek: React.ReactNode; still: boolean }) {
+  const reduced = useMusicReducedMotion() || still;
+  return (
+    <motion.div
+      className="ade-np2-player"
+      initial={reduced ? false : { opacity: 0, filter: "blur(10px)" }}
+      animate={{ opacity: 1, filter: "blur(0px)" }}
+      transition={{ duration: 0.3, ease: "easeInOut", delay: 0.1 }}
+    >
+      <div className="ade-np2-cover">
+        {model.artwork ? (
+          <motion.img
+            key={model.artwork}
+            src={model.artwork}
+            alt=""
+            draggable={false}
+            initial={reduced ? false : { opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: model.playing || reduced ? 1 : 0.94 }}
+            transition={{ type: "spring", stiffness: 260, damping: 26 }}
+          />
+        ) : (
+          <span className="ade-np2-cover-empty"><MusicNotes size={30} /></span>
+        )}
+      </div>
+      <div className="ade-np2-info">
+        <h3 className="ade-np2-title" title={model.title}>{model.title}</h3>
+        <span className="ade-np2-sub" title={model.subtitle}>{model.subtitle}</span>
+      </div>
+      {seek}
+      <div className="ade-np2-controls">
+        <div className="ade-np2-pill">
+          {model.own ? <OwnModes which="shuffle" /> : (
+            <PlayerIconButton label="Shuffle isn't available for this app" disabled onClick={() => {}}>
+              <Shuffle size={16} />
+            </PlayerIconButton>
+          )}
+          <PlayerIconButton label="Previous" disabled={!model.canPrevious} onClick={model.onPrevious}>
+            <SkipBack size={16} weight="fill" />
+          </PlayerIconButton>
+          <PlayerIconButton label={model.playing ? "Pause" : "Play"} disabled={!model.canPlayPause} onClick={model.onToggle} className="ade-np2-play">
+            {model.playing ? <Pause size={17} weight="fill" /> : <Play size={17} weight="fill" />}
+          </PlayerIconButton>
+          <PlayerIconButton label="Next" disabled={!model.canNext} onClick={model.onNext}>
+            <SkipForward size={16} weight="fill" />
+          </PlayerIconButton>
+          {model.own ? <OwnModes which="repeat" /> : (
+            <PlayerIconButton label="Repeat isn't available for this app" disabled onClick={() => {}}>
+              <Repeat size={16} />
+            </PlayerIconButton>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/** ADE's own player, straight from the Music store. */
+function OwnPlayer({ still }: { still: boolean }) {
+  const view = useMusicNowPlaying();
+  const np = view.nowPlaying;
+  if (!np) return null;
+  const model: CardModel = {
+    title: np.title,
+    subtitle: np.artist,
+    artwork: view.artworkUrl(220),
+    playing: view.isPlaying,
+    canPlayPause: true,
+    canNext: true,
+    canPrevious: true,
+    own: true,
+    onToggle: () => void musicActions.toggle(),
+    onNext: () => void musicActions.next(),
+    onPrevious: () => void musicActions.previous(),
+  };
+  return <PlayerCard model={model} seek={<OwnSeek />} still={still} />;
 }
 
 export default function NowPlayingWidget({ item }: HomeWidgetProps) {
@@ -54,100 +238,68 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
   const state = useNowPlaying(visible);
   const session = state?.session ?? null;
   const playing = session?.status === "playing";
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!playing || !visible) return undefined;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [playing, visible]);
-  const position = session
-    ? Math.min(session.durationMs || Number.POSITIVE_INFINITY, session.positionMs + (playing ? Math.max(0, now - session.updatedAt) : 0))
-    : 0;
-  const progress = session && session.durationMs > 0 ? Math.min(1, position / session.durationMs) : 0;
   const send = (command: HomeNowPlayingCommand) => void window.ade?.home?.nowPlaying?.command(command);
-  const wide = span.w >= 2;
+  const still = !visible || preview;
+  // ADE's own player wins whenever it has a song loaded (main hands the OS
+  // source over the same way); reading the store directly also gives seeking.
+  const music = useMusicNowPlaying();
+  const own = state?.source === "ade-music" || Boolean(music.nowPlaying);
+  const artwork = own ? (music.artworkUrl(220) ?? session?.artwork ?? null) : (session?.artwork ?? null);
+
+  let body: React.ReactNode;
+  if (!window.ade?.home?.nowPlaying) {
+    body = <div className="ade-home-empty"><span>Available in the ADE desktop app.</span></div>;
+  } else if (!state && !own) {
+    body = <div className="ade-home-empty"><span>Listening…</span></div>;
+  } else if (own) {
+    body = <OwnPlayer still={still} />;
+  } else if (!state || !state.available) {
+    body = <div className="ade-home-empty"><MusicNotes size={18} aria-hidden /><span>{state?.error ?? "Now Playing is not available here."}</span></div>;
+  } else if (!session) {
+    body = (
+      <div className="ade-np2-idle">
+        <span className="ade-np2-cover-empty is-small"><MusicNotes size={22} /></span>
+        <span className="ade-np2-title">Nothing playing</span>
+        <span className="ade-np2-sub">Play music in ADE's Music tab or any app and it shows here.</span>
+        {window.ade?.music ? (
+          <button type="button" className="ade-np2-open" onClick={musicActions.open}>Open Music</button>
+        ) : null}
+      </div>
+    );
+  } else {
+    const model: CardModel = {
+      title: session.title || "Untitled",
+      subtitle: session.artist || session.app || "",
+      artwork,
+      playing,
+      canPlayPause: playing ? session.canPause : session.canPlay,
+      canNext: session.canNext,
+      canPrevious: session.canPrevious,
+      own: false,
+      onToggle: () => send(playing ? "pause" : "play"),
+      onNext: () => send("next"),
+      onPrevious: () => send("previous"),
+    };
+    body = (
+      <PlayerCard
+        model={model}
+        still={still}
+        seek={<SessionSeek positionMs={session.positionMs} durationMs={session.durationMs} updatedAt={session.updatedAt} playing={playing} ticking={visible && !preview} />}
+      />
+    );
+  }
 
   return (
     <section
-      className="kit-card ade-home-card ade-np"
+      className="kit-card ade-home-card ade-np2"
       aria-label="Now playing"
       data-size={item.size}
-      data-wide={wide || undefined}
+      data-wide={span.w >= 2 || undefined}
       data-playing={playing || undefined}
-      data-still={!visible || preview ? "true" : undefined}
+      data-still={still ? "true" : undefined}
     >
-      {session?.artwork ? <img className="ade-np-backdrop" src={session.artwork} alt="" aria-hidden /> : null}
-      <WelcomeCardHead icon={MusicNotes} title="Now playing">
-        {session?.app ? <span className="ade-home-card-scope">{session.app}</span> : null}
-        {playing ? (
-          <span className="ade-np-eq" aria-hidden>
-            <i /><i /><i /><i />
-          </span>
-        ) : null}
-      </WelcomeCardHead>
-      <div className="kit-card-body ade-np-body">
-        {!window.ade?.home?.nowPlaying ? (
-          <div className="ade-home-empty"><span>Available in the ADE desktop app.</span></div>
-        ) : !state ? (
-          <div className="ade-home-empty"><span>Listening…</span></div>
-        ) : !state.available ? (
-          <div className="ade-home-empty"><MusicNotes size={18} aria-hidden /><span>{state.error ?? "Now Playing is not available here."}</span></div>
-        ) : !session ? (
-          <div className="ade-np-empty">
-            <span className="ade-np-art ade-np-art-empty"><MusicNotes size={22} /></span>
-            <div className="ade-np-text">
-              <span className="ade-np-title">Nothing playing</span>
-              <span className="ade-np-artist">Play music or a video in any app and it shows here.</span>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="ade-np-main">
-              {session.artwork ? (
-                <img className="ade-np-art" src={session.artwork} alt={session.album ? `${session.album} cover` : "Cover art"} />
-              ) : (
-                <span className="ade-np-art ade-np-art-empty"><MusicNotes size={22} /></span>
-              )}
-              <div className="ade-np-text">
-                <span className="ade-np-title" title={session.title}>{session.title || "Untitled"}</span>
-                <span className="ade-np-artist" title={session.artist}>{session.artist || session.app || ""}</span>
-                {wide && session.album ? <span className="ade-np-album" title={session.album}>{session.album}</span> : null}
-              </div>
-            </div>
-            <div className="ade-np-foot">
-              {session.durationMs > 0 ? (
-                <div className="ade-np-progress">
-                  <div className="ade-np-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>
-                    <span style={{ transform: `scaleX(${progress})` }} />
-                  </div>
-                  <div className="ade-np-times kit-num">
-                    <span>{clock(position)}</span>
-                    <span>−{clock(Math.max(0, session.durationMs - position))}</span>
-                  </div>
-                </div>
-              ) : null}
-              <div className="ade-np-controls">
-                <button type="button" className="ade-np-btn" aria-label="Previous" title="Previous" disabled={!session.canPrevious} onClick={() => send("previous")}>
-                  <SkipBack size={16} weight="fill" />
-                </button>
-                <button
-                  type="button"
-                  className="ade-np-btn ade-np-play"
-                  aria-label={playing ? "Pause" : "Play"}
-                  title={playing ? "Pause" : "Play"}
-                  disabled={playing ? !session.canPause : !session.canPlay}
-                  onClick={() => send(playing ? "pause" : "play")}
-                >
-                  {playing ? <Pause size={18} weight="fill" /> : <Play size={18} weight="fill" />}
-                </button>
-                <button type="button" className="ade-np-btn" aria-label="Next" title="Next" disabled={!session.canNext} onClick={() => send("next")}>
-                  <SkipForward size={16} weight="fill" />
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
+      {artwork ? <img className="ade-np2-backdrop" src={artwork} alt="" aria-hidden /> : null}
+      {body}
     </section>
   );
 }

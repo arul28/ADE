@@ -11,7 +11,6 @@ import {
   ArrowSquareOut,
   ChatCircleDots,
   Globe,
-  MusicNotes,
   CircleNotch,
   DownloadSimple,
   Folder,
@@ -61,6 +60,7 @@ import {
   projectSidebarShortcutLabel,
 } from "./projectSidebar/projectSidebarTabs";
 import { MusicTopBarControl } from "../music/MusicTopBarControl";
+import { closeMusicTab, MusicTabContent } from "../music/MusicTabContent";
 import { MUSIC_TAB_KEYBINDING } from "../music/musicTab";
 import {
   activeMachineForGroup,
@@ -2344,20 +2344,21 @@ export function TopBar({
               <ShellNavTab
                 active={musicRouteActive}
                 label="Music"
+                className="relative max-w-[220px]"
                 onActivate={() => {
                   if (!musicRouteActive) onNavigate?.("/music");
                 }}
                 onClose={() => {
-                  // Closing the tab does not stop the music; the mini player keeps it.
+                  // The tab is the player: closing it turns the music off.
+                  closeMusicTab();
                   setMusicTabOpen(false);
                   if (musicRouteActive) {
                     onNavigate?.("/work", { replace: true });
                   }
                 }}
-                closeTitle="Close music"
+                closeTitle="Close music (stops playback)"
               >
-                <MusicNotes size={15} weight="duotone" className="shrink-0 text-accent" />
-                <span className="min-w-0 flex-1 truncate text-center text-[12px]">Music</span>
+                <MusicTabContent active={musicRouteActive} />
               </ShellNavTab>
             ) : null}
             {isSettingsTabOpen && (
@@ -2532,8 +2533,8 @@ export function TopBar({
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />
 
-        {/* Music: a mini player while something is loaded, else a button to the Music tab. */}
-        {!webMode ? <MusicTopBarControl shortcutLabel={musicShortcut ?? undefined} active={musicRouteActive} /> : null}
+        {/* Music: the Music tab is the player; while it is closed, one button opens it. */}
+        {!webMode && !musicTabOpen ? <MusicTopBarControl shortcutLabel={musicShortcut ?? undefined} active={musicRouteActive} /> : null}
 
         <div className="hidden md:flex items-center gap-1.5">
           {renderDesktopIntegrationControls()}

@@ -162,6 +162,35 @@ export function useMusicPosition(intervalMs = 500): number {
   return playback ? musicPositionNow(playback) : 0;
 }
 
+/**
+ * Plain words for a Music failure. Raw exception text (IPC wrappers, Electron
+ * internals, HTTP codes) never reaches the Music UI: known causes get their own
+ * sentence and anything else a generic one.
+ */
+export function friendlyMusicError(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const text = raw.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "").trim();
+  const rules: Array<[RegExp, string]> = [
+    [/safeStorage|decrypt|ciphertext|credential/i, "ADE couldn't read your saved Apple Music sign-in. Connect again to fix it."],
+    [/cancel/i, "Sign-in was cancelled."],
+    [/already open/i, "The Apple sign-in window is already open."],
+    [/closed before it finished/i, "The Apple sign-in window was closed before it finished."],
+    [/connect again|401/i, "Apple Music needs you to connect again."],
+    [/subscription|403/i, "Playing full songs needs an Apple Music subscription."],
+    [/connect apple music to play/i, "Connect Apple Music to play songs."],
+    [/connect apple music to see/i, "Connect Apple Music to see your library."],
+    [/rate limit|429/i, "Apple Music is busy right now. Try again in a minute."],
+    [/timed? ?out|timeout|took too long|didn't load in time/i, "Apple Music took too long to answer. Try again."],
+    [/reach|network|fetch failed|ENOTFOUND|ECONN|offline|connection/i, "Couldn't reach Apple Music. Check your connection and try again."],
+    [/musickit/i, "Couldn't load Apple's music player. Check your connection and try again."],
+    [/couldn't find|404/i, "Apple Music couldn't find that."],
+  ];
+  for (const [pattern, message] of rules) if (pattern.test(text)) return message;
+  // Already a sentence written for people (the main process writes these).
+  const looksRaw = /Error|exception|\bat \S+ \(|[{}<>]|_[A-Z]{3,}|^[A-Z_]{4,}/.test(text) || text.length > 140;
+  return looksRaw ? "Something went wrong with Apple Music. Try again." : text;
+}
+
 async function run(command: MusicCommand): Promise<MusicCommandResult> {
   if (devPreview) return applyPreviewCommand(command);
   const bridge = musicBridge();
@@ -170,7 +199,7 @@ async function run(command: MusicCommand): Promise<MusicCommandResult> {
     ok: false as const,
     error: error instanceof Error ? error.message : String(error),
   }));
-  useMusicStore.setState({ lastError: result.ok ? null : result.error });
+  useMusicStore.setState({ lastError: result.ok ? null : friendlyMusicError(result.error) });
   return result;
 }
 
@@ -199,9 +228,25 @@ export const musicActions = {
   connect: async (): Promise<MusicConnectResult> => {
     const bridge = musicBridge();
     if (!bridge) return { ok: false, error: "Music isn't available in this window." };
-    const result = await bridge.connect();
-    useMusicStore.setState({ lastError: result.ok || result.cancelled ? null : result.error });
+    const result = await bridge.connect().catch((error: unknown) => ({
+      ok: false as const,
+      error: error instanceof Error ? error.message : String(error),
+      cancelled: false,
+    }));
+    useMusicStore.setState({ lastError: result.ok || result.cancelled ? null : friendlyMusicError(result.error) });
     return result;
+  },
+  /** Bring Apple's sign-in window to the front (it can open behind ADE). */
+  showSignIn: () => {
+    void musicBridge()?.showSignIn().catch(() => {});
+  },
+  /** Close Apple's sign-in window, which cancels Connect. */
+  cancelSignIn: () => {
+    void musicBridge()?.cancelSignIn().catch(() => {});
+  },
+  /** Music closed (the tab): pause and unload the player, keeping the queue to resume. */
+  unload: () => {
+    void musicBridge()?.unload().catch(() => {});
   },
   disconnect: async () => {
     await musicBridge()?.disconnect();

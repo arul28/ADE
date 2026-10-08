@@ -14,7 +14,6 @@ import {
   Playlist,
   Queue,
   Shuffle,
-  SignOut,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -31,7 +30,9 @@ import {
   SONG_ROW_HEIGHT,
   SongRow,
 } from "./musicParts";
-import { musicActions, useMusicLastError, useMusicState } from "./musicStore";
+import { friendlyMusicError, musicActions, useMusicLastError, useMusicState } from "./musicStore";
+import { ConnectButton, ConnectHero, MusicSignedOutHome, SignInControls } from "./MusicWelcome";
+import { MusicAccountArea } from "./MusicAccount";
 import "./music.css";
 
 type View =
@@ -89,8 +90,7 @@ function useWideEnough(ref: React.RefObject<HTMLElement | null>, minWidth: numbe
 
 function errorText(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  // IPC wraps a main-process throw as "Error invoking remote method '…': Error: <message>".
-  return raw.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "");
+  return friendlyMusicError(raw) ?? "Something went wrong with Apple Music. Try again.";
 }
 
 /** Run an async read whenever `deps` change; keep the last result while the next loads. */
@@ -237,13 +237,13 @@ export function MusicPage() {
       case "recent":
         return authorized ? (
           <RecentView nowPlayingId={nowPlayingId} isPlaying={isPlaying} onOpen={openDetail} onPlayContainer={playContainer} />
-        ) : <ConnectHero />;
+        ) : <div className="ade-music-scroll"><ConnectHero compact /></div>;
       case "queue":
         return <QueueView nowPlayingId={nowPlayingId} isPlaying={isPlaying} revision={queueRevision} hostStatus={hostStatus} />;
       case "library":
         return authorized ? (
           <LibraryView kind={view.library} nowPlayingId={nowPlayingId} isPlaying={isPlaying} onOpen={openDetail} onPlayContainer={playContainer} />
-        ) : <ConnectHero />;
+        ) : <div className="ade-music-scroll"><ConnectHero compact /></div>;
       case "detail":
         return (
           <DetailView
@@ -283,13 +283,12 @@ export function MusicPage() {
           </nav>
           <div className="ade-music-rail-foot">
             {authorized ? (
-              <button type="button" className="ade-music-account" onClick={() => void musicActions.disconnect()} title="Disconnect Apple Music from ADE">
-                <span className="kit-dot" data-state="ok" />
-                <span className="min-w-0 flex-1 truncate">Apple Music connected</span>
-                <SignOut size={13} />
-              </button>
+              <MusicAccountArea />
             ) : (
-              <ConnectButton compact />
+              <>
+                <ConnectButton compact />
+                <div className="ade-music-rail-signin"><SignInControls compact /></div>
+              </>
             )}
           </div>
         </aside>
@@ -297,7 +296,17 @@ export function MusicPage() {
           {message || lastError ? (
             <div role="alert" className="ade-music-alert">
               <WarningCircle size={14} weight="fill" />
-              <span className="min-w-0 flex-1 truncate" title={lastError ?? message ?? undefined}>{lastError ?? message}</span>
+              <span className="min-w-0 flex-1 truncate">{lastError ?? friendlyMusicError(message)}</span>
+              <button
+                type="button"
+                className="ade-music-alert-action"
+                onClick={() => {
+                  musicActions.clearError();
+                  void musicActions.refresh();
+                }}
+              >
+                <ArrowClockwise size={12} /> Try again
+              </button>
               {lastError ? (
                 <button type="button" className="kit-icon-btn" onClick={musicActions.clearError} aria-label="Dismiss"><X size={12} /></button>
               ) : null}
@@ -335,43 +344,6 @@ function RailItem({ icon, label, active, onClick }: { icon: React.ReactNode; lab
       {icon}
       <span>{label}</span>
     </button>
-  );
-}
-
-function ConnectButton({ compact = false }: { compact?: boolean }) {
-  const connecting = useMusicState((s) => Boolean(s?.connecting));
-  const hostStarting = useMusicState((s) => s?.host.status === "starting");
-  const busy = connecting || hostStarting;
-  return (
-    <button
-      type="button"
-      className={compact ? "ade-music-connect is-compact" : "ade-music-connect"}
-      onClick={() => void musicActions.connect()}
-      disabled={busy}
-      data-testid="music-connect"
-    >
-      {busy ? <CircleNotch size={14} className="animate-spin" /> : <MusicNotes size={14} weight="fill" />}
-      {connecting ? "Waiting for Apple…" : hostStarting ? "Starting…" : "Connect Apple Music"}
-    </button>
-  );
-}
-
-function ConnectHero() {
-  const connecting = useMusicState((s) => Boolean(s?.connecting));
-  return (
-    <div className="ade-music-connect-hero" data-testid="music-connect-hero">
-      <div className="ade-music-connect-glow" aria-hidden />
-      <span className="ade-music-connect-glyph"><MusicNotes size={34} weight="fill" /></span>
-      <h1>Your music, inside ADE</h1>
-      <p>Connect Apple Music to play songs, albums and your playlists while you work. Playback needs an Apple Music subscription.</p>
-      <ConnectButton />
-      <ul className="ade-music-connect-points">
-        <li><Playlist size={14} /> Your library and playlists</li>
-        <li><Queue size={14} /> A queue that keeps playing on every tab</li>
-        <li><MagnifyingGlass size={14} /> Search the whole catalog</li>
-      </ul>
-      {connecting ? <p className="ade-music-connect-note">Finish signing in to Apple in its own window. It may be behind ADE.</p> : null}
-    </div>
   );
 }
 
@@ -465,52 +437,186 @@ function SearchView({
       <div className="ade-music-scroll">
         {error ? <MusicEmpty icon={<WarningCircle size={22} />} title="Search failed" hint={error} /> : null}
         {!debounced ? (
-          <>
-            {authorized ? (
+          authorized ? (
+            <>
               <MusicEmpty icon={<MagnifyingGlass size={22} />} title="Search songs, albums, playlists and artists" hint="Results play straight from Apple Music." />
-            ) : (
-              <ConnectHero />
-            )}
-            <div className="ade-music-ideas" aria-label="Search ideas">
-              {SEARCH_IDEAS.map((idea) => (
-                <button key={idea} type="button" className="ade-music-idea" onClick={() => setTerm(idea)}>
-                  {idea}
-                </button>
-              ))}
-            </div>
-          </>
+              <div className="ade-music-ideas" aria-label="Search ideas">
+                {SEARCH_IDEAS.map((idea) => (
+                  <button key={idea} type="button" className="ade-music-idea" onClick={() => setTerm(idea)}>
+                    {idea}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <MusicSignedOutHome
+              renderSongs={(items) => (
+                <section className="ade-music-section">
+                  <h3 className="ade-music-section-title">
+                    Popular songs <span className="kit-tag">30-second previews</span>
+                  </h3>
+                  <div className="ade-music-songs" role="table">
+                    {items.map((item, index) => (
+                      <SongRow
+                        key={item.id}
+                        item={item}
+                        index={index}
+                        current={item.id === nowPlayingId}
+                        playing={isPlaying}
+                        onPlay={() => void musicActions.playItems(items.map((s) => s.id), index)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+              renderAlbums={(items) => (
+                <TileSection title="Popular albums" items={items} onOpen={onOpen} onPlay={onPlayContainer} />
+              )}
+            />
+          )
         ) : null}
+        {debounced && loading && !results ? <SearchSkeleton /> : null}
         {results && !error && songs.length + results.albums.length + results.playlists.length + results.artists.length === 0 && !loading ? (
-          <MusicEmpty icon={<MagnifyingGlass size={22} />} title={`Nothing found for “${debounced}”`} />
+          <MusicEmpty
+            icon={<MagnifyingGlass size={22} />}
+            title={`Nothing found for “${debounced}”`}
+            hint={effectiveScope === "library" ? "Try Apple Music instead of your library." : "Check the spelling, or try an artist or album name."}
+          />
         ) : null}
-        {songs.length ? (
+        {results && songs.length + results.albums.length + results.playlists.length + results.artists.length > 0 ? (
+          <SearchResults
+            term={debounced}
+            results={results}
+            authorized={authorized}
+            nowPlayingId={nowPlayingId}
+            isPlaying={isPlaying}
+            onOpen={onOpen}
+            onPlayContainer={onPlayContainer}
+            onPlaySong={playSongs}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** The best single match: an artist named exactly that, an album with it in the title, else the first song. */
+function pickTopResult(term: string, results: MusicSearchResult): MusicItem | null {
+  const t = term.trim().toLowerCase();
+  const artist = results.artists.find((a) => a.title.toLowerCase() === t);
+  if (artist) return artist;
+  const album = results.albums.find((a) => a.title.toLowerCase().includes(t));
+  if (album) return album;
+  return results.songs[0] ?? results.albums[0] ?? results.artists[0] ?? results.playlists[0] ?? null;
+}
+
+const KIND_LABEL: Record<MusicItem["kind"], string> = { song: "Song", album: "Album", playlist: "Playlist", artist: "Artist", station: "Station" };
+
+function SearchResults({
+  term,
+  results,
+  authorized,
+  nowPlayingId,
+  isPlaying,
+  onOpen,
+  onPlayContainer,
+  onPlaySong,
+}: RowProps & {
+  term: string;
+  results: MusicSearchResult;
+  authorized: boolean;
+  onOpen: (item: MusicItem) => void;
+  onPlayContainer: (item: MusicItem, shuffle?: boolean) => void;
+  onPlaySong: (index: number) => void;
+}) {
+  const top = pickTopResult(term, results);
+  const songs = results.songs;
+  const firstSongs = songs.slice(0, 5);
+  const moreSongs = songs.slice(5, 15);
+  const playTop = () => {
+    if (!top) return;
+    if (top.kind === "song") onPlaySong(Math.max(0, songs.findIndex((s) => s.id === top.id)));
+    else if (top.kind !== "artist") onPlayContainer(top);
+  };
+  const songRow = (item: MusicItem, index: number) => (
+    <SongRow
+      key={item.id}
+      item={item}
+      index={index}
+      current={item.id === nowPlayingId}
+      playing={isPlaying}
+      showAlbum={false}
+      onPlay={() => onPlaySong(index)}
+      onPlayNext={authorized ? () => void musicActions.playNext([item.id]) : undefined}
+      onPlayLater={authorized ? () => void musicActions.playLater([item.id]) : undefined}
+    />
+  );
+  return (
+    <div className="ade-music-results">
+      <div className="ade-music-results-top">
+        {top ? (
           <section className="ade-music-section">
-            <h3 className="ade-music-section-title">Songs</h3>
-            <div className="ade-music-songs" role="table">
-              {songs.slice(0, 10).map((item, index) => (
-                <SongRow
-                  key={item.id}
-                  item={item}
-                  index={index}
-                  current={item.id === nowPlayingId}
-                  playing={isPlaying}
-                  onPlay={() => playSongs(index)}
-                  onPlayNext={authorized ? () => void musicActions.playNext([item.id]) : undefined}
-                  onPlayLater={authorized ? () => void musicActions.playLater([item.id]) : undefined}
-                />
-              ))}
+            <h3 className="ade-music-section-title">Top result</h3>
+            <div
+              className={`ade-music-top-result${top.kind === "artist" ? " is-artist" : ""}`}
+              style={top.artwork?.bgColor ? ({ "--music-tint": `#${top.artwork.bgColor}` } as React.CSSProperties) : undefined}
+            >
+              <button type="button" className="ade-music-top-open" onClick={() => (top.kind === "song" ? playTop() : onOpen(top))}>
+                <MusicArt artwork={top.artwork} size={104} round={top.kind === "artist"} eager className="ade-music-top-art" />
+                <span className="ade-music-top-title">{top.title}</span>
+                <span className="ade-music-top-sub">
+                  <span className="kit-tag">{KIND_LABEL[top.kind]}</span>
+                  {top.kind !== "artist" ? <span className="truncate">{top.subtitle}</span> : null}
+                </span>
+              </button>
+              {top.kind !== "artist" ? (
+                <button type="button" className="ade-music-top-play" onClick={playTop} aria-label={`Play ${top.title}`} title="Play">
+                  <Play size={18} weight="fill" />
+                </button>
+              ) : null}
             </div>
           </section>
         ) : null}
-        {results?.artists.length ? (
-          <TileSection title="Artists" items={results.artists.slice(0, 8)} onOpen={onOpen} />
+        {firstSongs.length ? (
+          <section className="ade-music-section ade-music-results-songs">
+            <h3 className="ade-music-section-title">Songs</h3>
+            <div className="ade-music-songs" role="table">
+              {firstSongs.map(songRow)}
+            </div>
+          </section>
         ) : null}
-        {results?.albums.length ? (
-          <TileSection title="Albums" items={results.albums} onOpen={onOpen} onPlay={authorized ? onPlayContainer : undefined} />
-        ) : null}
-        {results?.playlists.length ? (
-          <TileSection title="Playlists" items={results.playlists} onOpen={onOpen} onPlay={authorized ? onPlayContainer : undefined} />
-        ) : null}
+      </div>
+      {results.artists.length ? <TileSection title="Artists" items={results.artists.slice(0, 10)} onOpen={onOpen} shelf /> : null}
+      {results.albums.length ? <TileSection title="Albums" items={results.albums} onOpen={onOpen} onPlay={onPlayContainer} shelf /> : null}
+      {moreSongs.length ? (
+        <section className="ade-music-section">
+          <h3 className="ade-music-section-title">More songs</h3>
+          <div className="ade-music-songs" role="table">
+            {moreSongs.map((item, i) => songRow(item, i + 5))}
+          </div>
+        </section>
+      ) : null}
+      {results.playlists.length ? <TileSection title="Playlists" items={results.playlists} onOpen={onOpen} onPlay={onPlayContainer} shelf /> : null}
+    </div>
+  );
+}
+
+function SearchSkeleton() {
+  return (
+    <div className="ade-music-skeleton" aria-label="Searching" role="status">
+      <div className="ade-music-results-top">
+        <div className="ade-music-section">
+          <i className="is-heading" />
+          <i className="is-top" />
+        </div>
+        <div className="ade-music-section">
+          <i className="is-heading" />
+          {[0, 1, 2, 3, 4].map((n) => <i key={n} className="is-row" />)}
+        </div>
+      </div>
+      <div className="ade-music-section">
+        <i className="is-heading" />
+        <div className="ade-music-skeleton-tiles">{[0, 1, 2, 3, 4, 5].map((n) => <i key={n} className="is-tile" />)}</div>
       </div>
     </div>
   );
@@ -521,16 +627,19 @@ function TileSection({
   items,
   onOpen,
   onPlay,
+  shelf = false,
 }: {
   title: string;
   items: MusicItem[];
   onOpen: (item: MusicItem) => void;
   onPlay?: (item: MusicItem) => void;
+  /** One scrolling row instead of a grid. */
+  shelf?: boolean;
 }) {
   return (
     <section className="ade-music-section">
       <h3 className="ade-music-section-title">{title}</h3>
-      <div className="ade-music-tiles is-grid">
+      <div className={shelf ? "ade-music-tiles is-shelf" : "ade-music-tiles is-grid"}>
         {items.slice(0, 12).map((item) => (
           <CollectionTile key={`${item.kind}:${item.id}`} item={item} onOpen={() => onOpen(item)} onPlay={onPlay ? () => onPlay(item) : undefined} />
         ))}

@@ -136,7 +136,7 @@
       if (!mk) {
         mk = await MusicKit.configure({
           developerToken: c.developerToken,
-          app: { name: "ADE", build: c.appBuild || "1.0.0" },
+          app: { name: "ADE", build: c.appBuild || "1.0.0", icon: location.origin + "/ade-icon.png" },
         });
         wire();
       }

@@ -104,6 +104,8 @@ try {
     "/platform:x64",
     "/optimize+",
     `/out:${exe}`,
+    // The sign-in window and the taskbar show ADE's icon, not a blank one.
+    `/win32icon:${path.join(desktopRoot, "build", "icon.ico")}`,
     `/r:${coreDll}`,
     `/r:${winFormsDll}`,
     "/r:System.Windows.Forms.dll",

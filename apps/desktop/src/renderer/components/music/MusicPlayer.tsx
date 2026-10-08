@@ -20,7 +20,7 @@ import {
 import { musicArtworkUrl, type MusicArtwork, type MusicRepeatMode } from "../../../shared/types/music";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import { AppleMusicMark, MusicArt } from "./musicParts";
+import { AppleMusicBadge, MusicArt } from "./musicParts";
 import { formatMusicTime, musicActions, useMusicLike, useMusicPosition, useMusicState } from "./musicStore";
 
 /**
@@ -29,7 +29,7 @@ import { formatMusicTime, musicActions, useMusicLike, useMusicPosition, useMusic
  * scrubber, a pill of round ghost buttons that grow on hover and press, and the
  * song's own artwork as a blurred tint behind it.
  *
- * Position ticks re-render only `MusicSeek` and `MusicMiniProgress`, never a
+ * Position ticks re-render only `MusicSeek` (and the tab's progress line), never a
  * whole card. Motion follows ADE's Reduce motion setting and the OS one.
  */
 
@@ -259,18 +259,6 @@ export function MusicSeek({ layout = "stacked", disabled = false }: { layout?: "
         {remaining}
       </div>
     </div>
-  );
-}
-
-/** A 2px progress line for the top-bar mini player (one render a second). */
-export function MusicMiniProgress() {
-  const position = useMusicPosition(1000);
-  const duration = useMusicState((s) => s?.playback.duration ?? 0);
-  const fraction = duration > 0 ? Math.min(1, position / duration) : 0;
-  return (
-    <span className="ade-mini-player-progress" aria-hidden>
-      <span style={{ transform: `scaleX(${fraction})` }} />
-    </span>
   );
 }
 
@@ -505,7 +493,7 @@ export function MusicPlayerCard({
           </PlayerIconButton>
         </div>
         <div className="ade-music-player-mark">
-          <AppleMusicMark compact />
+          <AppleMusicBadge height={24} />
         </div>
       </div>
     </motion.aside>

@@ -1,0 +1,139 @@
+/* Now Playing (home widget), after the Music player's language and the
+   21st.dev audio player reference: a frosted dark card, the cover big and
+   rounded, a centred title, a thin spring scrubber with times, and a pill of
+   round ghost buttons. A size container: wide or short cards lay out sideways. */
+
+.ade-np2 {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  container: np2 / size;
+  padding: 12px;
+  background: color-mix(in srgb, var(--color-bg) 62%, transparent);
+}
+[data-theme="dark"] .ade-np2,
+html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60%, transparent); }
+
+.ade-np2-backdrop {
+  position: absolute;
+  inset: -30%;
+  z-index: -1;
+  width: 160%;
+  height: 160%;
+  object-fit: cover;
+  filter: blur(42px) saturate(1.6) opacity(0.55);
+  pointer-events: none;
+  will-change: transform;
+}
+.ade-np2::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-bg) 10%, transparent), color-mix(in srgb, var(--color-bg) 45%, transparent));
+  pointer-events: none;
+}
+
+.ade-np2-player {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+.ade-np2-cover {
+  position: relative;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-fg) 12%, transparent);
+  box-shadow: 0 16px 34px -18px rgb(0 0 0 / 0.7), 0 0 0 1px color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+.ade-np2-cover > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ade-np2-cover-empty {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  border-radius: 16px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 28%, transparent), color-mix(in srgb, var(--color-fg) 6%, transparent));
+  color: var(--color-fg);
+}
+.ade-np2-cover-empty.is-small { width: 56px; height: 56px; border-radius: 14px; }
+
+.ade-np2-info { display: flex; min-width: 0; flex: none; flex-direction: column; align-items: center; gap: 1px; padding-top: 2px; text-align: center; }
+.ade-np2-title {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-fg);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ade-np2-sub { max-width: 100%; overflow: hidden; color: var(--kit-text-2); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+.ade-np2-seek { display: flex; flex: none; flex-direction: column; gap: 2px; }
+.ade-np2-times { display: flex; justify-content: space-between; color: var(--kit-text-2); font-size: 10.5px; }
+
+.ade-np2-controls { display: flex; flex: none; justify-content: center; }
+.ade-np2-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 16px;
+  background: color-mix(in srgb, #111 45%, transparent);
+  padding: 6px;
+}
+[data-theme="light"] .ade-np2-pill { background: color-mix(in srgb, var(--color-fg) 8%, transparent); }
+.ade-np2 .ade-music-ibtn { background: transparent; color: var(--color-fg); }
+.ade-np2 .ade-music-ibtn:hover:not(:disabled) { background: color-mix(in srgb, #111 55%, transparent); color: var(--color-fg); }
+[data-theme="light"] .ade-np2 .ade-music-ibtn:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 10%, transparent); }
+.ade-np2 .ade-music-ibtn.is-on { background: color-mix(in srgb, #111 55%, transparent); color: var(--color-accent); }
+[data-theme="light"] .ade-np2 .ade-music-ibtn.is-on { background: color-mix(in srgb, var(--color-accent) 14%, transparent); }
+.ade-np2 .ade-music-ibtn:disabled { opacity: 0.32; }
+.ade-np2 .ade-np2-play { background: color-mix(in srgb, var(--color-fg) 12%, transparent); }
+
+.ade-np2-idle {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+}
+.ade-np2-idle .ade-np2-sub { white-space: normal; }
+.ade-np2-open {
+  margin-top: 6px;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 999px;
+  padding: 5px 14px;
+  color: var(--color-fg);
+  font-size: 12px;
+  font-weight: 560;
+}
+.ade-np2-open:hover { background: var(--kit-hover); }
+
+/* Wide or short: cover on the left, everything else beside it. */
+@container np2 (min-aspect-ratio: 13/10) {
+  .ade-np2-player {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: 1fr auto auto auto 1fr;
+    column-gap: 16px;
+    row-gap: 8px;
+  }
+  .ade-np2-cover { grid-row: 1 / -1; height: 100%; aspect-ratio: 1; flex: none; }
+  .ade-np2-info { grid-row: 2; align-items: flex-start; text-align: left; }
+  .ade-np2-seek { grid-row: 3; }
+  .ade-np2-controls { grid-row: 4; justify-content: flex-start; }
+}
+@container np2 (max-height: 190px) {
+  .ade-np2-info { padding-top: 0; }
+  .ade-np2-title { font-size: 13.5px; }
+  .ade-np2-pill { gap: 2px; padding: 3px; }
+}

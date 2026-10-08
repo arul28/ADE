@@ -13416,6 +13416,11 @@ const adeBridge = {
     tracks: (args) => ipcRenderer.invoke(MUSIC_IPC.tracks, args),
     rating: (args) => ipcRenderer.invoke(MUSIC_IPC.rating, args),
     setRating: (args) => ipcRenderer.invoke(MUSIC_IPC.setRating, args),
+    charts: () => ipcRenderer.invoke(MUSIC_IPC.charts),
+    account: () => ipcRenderer.invoke(MUSIC_IPC.account),
+    unload: () => ipcRenderer.invoke(MUSIC_IPC.unload),
+    showSignIn: () => ipcRenderer.invoke(MUSIC_IPC.showSignIn),
+    cancelSignIn: () => ipcRenderer.invoke(MUSIC_IPC.cancelSignIn),
     onState: (cb: (state: MusicState) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, state: MusicState) => cb(state);
       ipcRenderer.on(MUSIC_IPC.stateEvent, listener);

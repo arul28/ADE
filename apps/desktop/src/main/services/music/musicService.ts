@@ -476,11 +476,6 @@ export function createMusicService(args: {
     }
   };
 
-  const requireAuthorized = async () => {
-    await loadUserToken();
-    if (!userToken) throw new Error("Connect Apple Music to play music.");
-  };
-
   const command = async (cmd: MusicCommand): Promise<MusicCommandResult> => {
     try {
       return await withBusy(async () => {
@@ -491,7 +486,8 @@ export function createMusicService(args: {
           emit();
           return { ok: true } as const;
         }
-        await requireAuthorized();
+        // Before Connect, MusicKit plays catalog songs as 30-second previews.
+        await loadUserToken();
         if (fresh) snapshot = null;
         const h = await ensurePlayer(!fresh);
         let result: HostState | undefined;
@@ -665,6 +661,27 @@ export function createMusicService(args: {
     tracks: (input: { kind: "album" | "playlist"; id: string; library: boolean }): Promise<MusicItem[]> =>
       browse(() => api.tracks(input)),
     rating: (input: { id: string; library: boolean }) => browse(() => api.rating(input)),
+    charts: () => browse(() => api.charts()),
+    account: () => browse(() => api.account()),
+    /** The Music tab closed: pause and unload now; the snapshot resumes it later. */
+    unloadPlayer: async () => {
+      if (!host) return;
+      try {
+        if (state.playback.isPlaying) await host.request("pause", {}, 5_000);
+      } catch {
+        // Unloading stops it regardless.
+      }
+      state.playback.isPlaying = false;
+      await unload("idle");
+    },
+    /** Bring Apple's sign-in window to the front (it can open behind ADE). */
+    showSignIn: async () => {
+      if (state.connecting) host?.send({ cmd: "showAuth" });
+    },
+    /** Close Apple's sign-in window; Connect then ends as cancelled. */
+    cancelSignIn: async () => {
+      if (state.connecting) host?.send({ cmd: "closeAuth" });
+    },
     setRating: (input: { id: string; library: boolean; liked: boolean | null }) => browse(() => api.setRating(input)),
     /** For diagnostics and measurement: the host's pids. */
     hostPid: () => host?.pid ?? null,

@@ -3,6 +3,7 @@ import { MusicNotesSimple, Pause, Play, Queue, ListPlus } from "@phosphor-icons/
 
 import { musicArtworkUrl, type MusicArtwork, type MusicItem } from "../../../shared/types/music";
 import { formatMusicTime } from "./musicStore";
+import appleMusicBadgeUrl from "./assets/listen-on-apple-music-badge.svg";
 
 /**
  * Artwork sizes are snapped to a few steps so the same picture is requested at
@@ -56,15 +57,33 @@ export function MusicArt({
   );
 }
 
-/** Apple's identity guidelines ask for "Apple Music" attribution near the content. */
+/**
+ * The Music tab's own mark: ADE's neutral glyph and the word "Music". It is
+ * deliberately not an Apple Music icon look-alike; Apple's identity guidelines
+ * allow only their official, unmodified artwork (see `AppleMusicBadge`).
+ */
 export function AppleMusicMark({ compact = false }: { compact?: boolean }) {
   return (
     <span className={`ade-music-mark${compact ? " is-compact" : ""}`} title="Music from Apple Music">
       <span className="ade-music-mark-glyph" aria-hidden>
-        <MusicNotesSimple size={compact ? 10 : 12} weight="fill" />
+        <MusicNotesSimple size={compact ? 10 : 13} weight="bold" />
       </span>
-      <span className="ade-music-mark-label">Apple Music</span>
+      <span className="ade-music-mark-label">Music</span>
     </span>
+  );
+}
+
+/** Apple's official "Listen on Apple Music" badge, unmodified, as attribution. */
+export function AppleMusicBadge({ height = 28, className }: { height?: number; className?: string }) {
+  return (
+    <img
+      className={`ade-music-badge${className ? ` ${className}` : ""}`}
+      src={appleMusicBadgeUrl}
+      alt="Listen on Apple Music"
+      height={height}
+      style={{ height, width: "auto" }}
+      draggable={false}
+    />
   );
 }
 

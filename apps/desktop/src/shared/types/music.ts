@@ -20,6 +20,11 @@ export const MUSIC_IPC = {
   tracks: "ade.music.tracks",
   rating: "ade.music.rating",
   setRating: "ade.music.setRating",
+  charts: "ade.music.charts",
+  account: "ade.music.account",
+  unload: "ade.music.unload",
+  showSignIn: "ade.music.showSignIn",
+  cancelSignIn: "ade.music.cancelSignIn",
   stateEvent: "ade.music.state",
 } as const;
 
@@ -163,6 +168,12 @@ export type MusicPage = {
 
 export type MusicRecent = { containers: MusicItem[]; tracks: MusicItem[] };
 
+/** Popular catalog items for the storefront; needs only the developer token. */
+export type MusicCharts = { songs: MusicItem[]; albums: MusicItem[]; playlists: MusicItem[] };
+
+/** The connected account, as far as Apple's API says. */
+export type MusicAccount = { storefront: { id: string; name: string | null } | null };
+
 export type MusicConnectResult = { ok: true } | { ok: false; error: string; cancelled?: boolean };
 
 /** What `window.ade.music` exposes to the renderer. */
@@ -181,6 +192,16 @@ export type MusicBridge = {
   /** The like state of a song: true liked, false disliked, null neither. */
   rating: (args: { id: string; library: boolean }) => Promise<boolean | null>;
   setRating: (args: { id: string; library: boolean; liked: boolean | null }) => Promise<void>;
+  /** Popular albums, playlists and songs (works before Connect). */
+  charts: () => Promise<MusicCharts>;
+  /** The connected account's storefront (region); null fields before Connect. */
+  account: () => Promise<MusicAccount>;
+  /** Stop playback and unload the player now, keeping the queue to resume. */
+  unload: () => Promise<void>;
+  /** Bring Apple's sign-in window to the front while Connect waits. */
+  showSignIn: () => Promise<void>;
+  /** Close Apple's sign-in window, which ends Connect as cancelled. */
+  cancelSignIn: () => Promise<void>;
   onState: (cb: (state: MusicState) => void) => () => void;
 };
 
