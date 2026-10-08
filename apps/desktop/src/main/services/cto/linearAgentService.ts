@@ -389,6 +389,8 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
           await deps.chat.respondToInput({
             sessionId: chatSessionId,
             itemId: pending.itemId,
+            // A missing decision reads as a decline downstream.
+            decision: "accept",
             ...(pending.questionId ? { answers: { [pending.questionId]: matched?.value ?? answer } } : { responseText: answer }),
           });
         }

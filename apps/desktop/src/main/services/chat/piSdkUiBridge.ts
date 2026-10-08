@@ -11,7 +11,7 @@
  * the worker, which loads the user's Pi installation only after init validation.
  */
 import { waitingOnYouDescription } from "../../../shared/types/chat";
-import { QUESTION_DECLINED_MODEL_MESSAGE } from "../../../shared/pendingInputAnswers";
+import { QUESTION_UNANSWERED_MODEL_MESSAGE, withTypedReplyNote } from "../../../shared/pendingInputAnswers";
 import { PI_APPROVAL_ALLOW, PI_APPROVAL_ALLOW_SESSION } from "./piSdkEventMapper";
 import {
   PI_SDK_PROTOCOL_VERSION,
@@ -528,10 +528,11 @@ export function piAskUserRequestFromArgs(args: unknown): PiSdkUiRequestPayload {
 /** Map an ADE card answer back to the text the model receives. */
 export function piAskUserResultText(request: PiSdkUiRequestPayload, answer: string | null): string {
   if (answer === null) {
-    return QUESTION_DECLINED_MODEL_MESSAGE;
+    return QUESTION_UNANSWERED_MODEL_MESSAGE;
   }
   const chosen = request.options?.find((option) => option.value === answer);
-  return `The user answered: ${chosen ? chosen.label : answer}`;
+  if (chosen) return `The user answered: ${chosen.label}`;
+  return `The user answered: ${withTypedReplyNote(request.options ?? [], [answer]).join(" ")}`;
 }
 
 /**

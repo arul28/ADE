@@ -684,13 +684,12 @@ import {
   type ChatTurnStatusSnapshot,
 } from "../../../shared/chatTurnStatus";
 import {
-  LIVE_QUESTION_DECLINED_MODEL_MESSAGE,
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
   QUESTION_DECLINED_MODEL_MESSAGE,
-  answerValuesForModel,
+  answersForModel,
+  declineMessageForModel,
   flattenAnswerForSingleStringProvider,
   formatPendingInputAnswersAsMessage,
-  isNonBlockingPendingRequest,
   isSteeringPendingRequest,
   normalizePendingInputAnswers,
   ownQuestionValue,
@@ -11467,16 +11466,17 @@ export function createAgentChatService(args: {
     request: PendingInputRequest,
     response: { answers?: Record<string, string | string[]>; responseText?: string | null },
   ): Record<string, unknown> => {
-    const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
+    const normalizedAnswers = answersForModel(
+      request,
+      normalizePendingInputAnswers(request, response.answers, response.responseText),
+    );
     const mappedAnswers = Object.fromEntries(
       Object.entries(normalizedAnswers)
-        .map(([questionId, rawValues]) => {
+        .map(([questionId, values]) => {
           // Map internal question ID back to the original question text
           // so Claude's SDK receives answers keyed the way it expects.
-          const questionIndex = request.questions.findIndex((q) => q.id === questionId);
-          const question = questionIndex >= 0 ? request.questions[questionIndex] : undefined;
+          const question = request.questions.find((q) => q.id === questionId);
           const originalKey = question?.question ?? questionId;
-          const values = question ? answerValuesForModel(request, question, questionIndex, rawValues) : rawValues;
           // Preserve array structure for multi-select questions
           const answer: string | string[] = question?.multiSelect ? values : values.join(", ").trim();
           return [originalKey, answer] as const;
@@ -46516,7 +46516,10 @@ export function createAgentChatService(args: {
       responseText?: string | null;
     },
   ): string => {
-    const normalized = normalizePendingInputAnswers(request, response.answers, response.responseText);
+    const normalized = answersForModel(
+      request,
+      normalizePendingInputAnswers(request, response.answers, response.responseText),
+    );
     const lines = Object.entries(normalized).flatMap(([id, values]) => {
       if (!values.length) return [];
       const question = request.questions.find((entry) => entry.id === id);
@@ -46722,6 +46725,10 @@ export function createAgentChatService(args: {
         responseText?: string | null;
       }) => {
         const accepted = response.decision === "accept" || response.decision === "accept_for_session";
+        // The follow-up is a whole new turn. A cancel is Escape or a settle /
+        // teardown ("make this quiet"), so it must not start one; only an
+        // answer or an explicit decline does.
+        if (response.decision === "cancel") return;
         const answerText = formatCursorControlAnswers(request, response);
         queueCursorControlFollowup(
           managed,
@@ -57775,9 +57782,7 @@ export function createAgentChatService(args: {
           // (non-blocking) one never paused the turn, so it is told to keep
           // working. The receipt is built from the user's own (empty) answers,
           // not this payload.
-          const declineText = isNonBlockingPendingRequest(pending.request)
-            ? LIVE_QUESTION_DECLINED_MODEL_MESSAGE
-            : QUESTION_DECLINED_MODEL_MESSAGE;
+          const declineText = declineMessageForModel(pending.request);
           ensureWritable();
           runtime.sendResponse(pending.requestId, {
             answers: Object.fromEntries(
@@ -57791,13 +57796,8 @@ export function createAgentChatService(args: {
         ensureWritable();
         runtime.sendResponse(pending.requestId, {
           answers: Object.fromEntries(
-            Object.entries(normalizedAnswers).map(([questionId, values]) => {
-              const questionIndex = questions.findIndex((question) => question.id === questionId);
-              const question = questionIndex >= 0 ? questions[questionIndex] : undefined;
-              return [questionId, {
-                answers: question ? answerValuesForModel(pending.request, question, questionIndex, values) : values,
-              }];
-            }),
+            Object.entries(answersForModel(pending.request, normalizedAnswers))
+              .map(([questionId, values]) => [questionId, { answers: values }]),
           ),
         });
         completeCodexPendingInput();
