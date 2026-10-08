@@ -93,20 +93,29 @@ export async function resolvePrBranchLane(args: {
 
 /**
  * Fast-forward a lane's worktree to the PR's current head. `pull/<n>/head`
- * names the PR's head on GitHub for a same-repo or a fork PR alike. Never
+ * names the PR's head on GitHub for a same-repo or a fork PR alike; it is
+ * fetched into `refs/ade/pr-head/<n>` and merged by its commit id. Never
  * discards work: uncommitted changes or a lane that has diverged from the PR
  * fail the run with a reason instead.
  */
 export async function advanceLaneToPrHead(worktreePath: string, laneName: string, prNumber: number): Promise<void> {
-  const fetch = await runGit(["fetch", "--no-tags", "origin", `pull/${prNumber}/head`], { cwd: worktreePath, timeoutMs: 60_000 });
+  // A private ref, not FETCH_HEAD: another fetch in this worktree (the user's
+  // Fetch button) rewrites FETCH_HEAD and would change what we merge.
+  const privateRef = `refs/ade/pr-head/${prNumber}`;
+  const fetch = await runGit(["fetch", "--no-tags", "origin", `+pull/${prNumber}/head:${privateRef}`], { cwd: worktreePath, timeoutMs: 60_000 });
   if (fetch.exitCode !== 0) {
     throw new Error(`Could not fetch PR #${prNumber} into lane '${laneName}': ${fetch.stderr.trim() || "git fetch failed"}.`);
+  }
+  const resolved = await runGit(["rev-parse", "--verify", `${privateRef}^{commit}`], { cwd: worktreePath, timeoutMs: 15_000 });
+  const prHead = resolved.stdout.trim();
+  if (resolved.exitCode !== 0 || !prHead) {
+    throw new Error(`Could not read PR #${prNumber}'s latest commit in lane '${laneName}'.`);
   }
   const status = await runGit(["status", "--porcelain"], { cwd: worktreePath, timeoutMs: 15_000 });
   if (status.exitCode !== 0 || status.stdout.trim()) {
     throw new Error(`Lane '${laneName}' has uncommitted changes, so ADE will not move it to PR #${prNumber}'s latest commit.`);
   }
-  const merge = await runGit(["merge", "--ff-only", "FETCH_HEAD"], { cwd: worktreePath, timeoutMs: 30_000 });
+  const merge = await runGit(["merge", "--ff-only", prHead], { cwd: worktreePath, timeoutMs: 30_000 });
   if (merge.exitCode !== 0) {
     throw new Error(`Lane '${laneName}' has diverged from PR #${prNumber}'s branch, so ADE will not run in it.`);
   }
