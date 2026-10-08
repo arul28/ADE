@@ -38,7 +38,7 @@ export const GITHUB_ISSUE_LIST_QUERY = `query RepoIssueList($owner: String!, $na
         author { login avatarUrl }
         assignees(first: 10) { nodes { login avatarUrl } }
         labels(first: 20) { nodes { name color } }
-        milestone { title }
+        milestone { title number }
         comments { totalCount }
       }
     }
@@ -91,7 +91,12 @@ export function githubIssueListFromGraphql(data: unknown): GitHubIssueLike[] {
       user: login(node.author),
       assignees: nodes(node.assignees).map(login).filter((entry): entry is { login: string; avatar_url: string | null } => entry != null),
       labels: nodes(node.labels).map((label) => ({ name: text(label.name), color: text(label.color) ?? null })),
-      milestone: record(node.milestone) ? { title: text(record(node.milestone)?.title) ?? null } : null,
+      milestone: record(node.milestone)
+        ? {
+          title: text(record(node.milestone)?.title) ?? null,
+          number: typeof record(node.milestone)?.number === "number" ? record(node.milestone)!.number as number : null,
+        }
+        : null,
       comments: typeof record(node.comments)?.totalCount === "number" ? record(node.comments)!.totalCount as number : 0,
     };
   });

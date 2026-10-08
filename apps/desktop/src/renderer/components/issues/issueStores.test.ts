@@ -149,6 +149,31 @@ describe("issue edits: the newest edit wins", () => {
   });
 });
 
+describe("a read that started before an edit", () => {
+  afterEach(() => {
+    delete (window as any).ade;
+  });
+
+  it("does not put the pre-edit copy back when it lands after the edit", async () => {
+    const root = `/root/${Math.random()}`;
+    const read = deferred<unknown>();
+    (window as any).ade = {
+      github: {
+        getIssue: vi.fn(() => read.promise),
+        updateIssue: vi.fn(async () => rawGitHubIssue(5, "Saved title")),
+      },
+    };
+    const refresh = loadGitHubIssue(root, "acme", "ade", 5, { force: true });
+    const issue = normalizeGitHubIssue("acme", "ade", rawGitHubIssue(5, "Old title"))!;
+    await editGitHubIssue(root, issue, { title: "Saved title" }, { title: "Saved title" });
+    expect(peekGitHubIssue(root, "acme", "ade", 5)?.title).toBe("Saved title");
+
+    read.resolve(rawGitHubIssue(5, "Old title"));
+    await refresh;
+    expect(peekGitHubIssue(root, "acme", "ade", 5)?.title).toBe("Saved title");
+  });
+});
+
 describe("GitHub list rows are partial copies", () => {
   afterEach(() => {
     delete (window as any).ade;

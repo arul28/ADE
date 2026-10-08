@@ -17,7 +17,7 @@ export type IssueRef =
 
 export type IssueProvider = IssueRef["provider"];
 
-const LINEAR_IDENTIFIER_RE = /^[A-Z][A-Z0-9]+-\d+$/;
+const LINEAR_IDENTIFIER_RE = /^[A-Z][A-Z0-9]{0,9}-\d+$/;
 
 export function normalizeLinearIdentifier(value: string | null | undefined): string | null {
   const identifier = value?.trim().toUpperCase() ?? "";

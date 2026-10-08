@@ -68,6 +68,21 @@ function githubRepoTarget(explicit: GithubRepoRef | null): {
   };
 }
 
+/**
+ * A sub-issue link is made inside one repository: the child is read and linked
+ * through the parent's repo. A child or parent named in another repo is
+ * refused instead of silently resolving the same number in the wrong one.
+ */
+function requireSameRepo(repo: GithubRepoRef, other: GithubRepoRef | null, what: string): void {
+  if (!other) return;
+  if (other.owner.toLowerCase() !== repo.owner.toLowerCase() || other.name.toLowerCase() !== repo.name.toLowerCase()) {
+    throw new CliUsageError(
+      `The ${what} is in ${other.owner}/${other.name}, but the issue is in ${repo.owner}/${repo.name}. `
+        + "Sub-issues are linked within one repository.",
+    );
+  }
+}
+
 function githubIssueReceipt(verb: string): (result: unknown) => string {
   return (result) => {
     const value = isRecord(result) ? result : {};
@@ -282,7 +297,8 @@ export function buildGithubIssuePlan(args: string[]): CliPlan {
     const parent = readValue(args, ["--parent"]);
     const attachments = readGithubAttachments(args);
     const finalTitle = requireValue(title ?? firstPositional(args), "--title");
-    const parentNumber = parent != null ? asUsage(() => parseGithubIssueRef(parent).number) : null;
+    const parentRef = parent != null ? asUsage(() => parseGithubIssueRef(parent)) : null;
+    const parentNumber = parentRef?.number ?? null;
     const target = githubRepoTarget(explicitRepo);
     const milestoneByName = milestone != null && !/^\d+$/.test(milestone.trim());
     return {
@@ -300,9 +316,13 @@ export function buildGithubIssuePlan(args: string[]): CliPlan {
             input.milestone = resolveGithubMilestone(unwrapActionEnvelope(values.milestones), milestone);
           }
           if (type != null && type.trim()) input.type = type.trim();
-          if (parentNumber != null) input.parentNumber = parentNumber;
+          const repo = target.repo(values);
+          if (parentNumber != null) {
+            requireSameRepo(repo, parentRef?.repo ?? null, "parent");
+            input.parentNumber = parentNumber;
+          }
           if (attachments.length) input.attachments = attachments;
-          return { args: { ...target.repo(values), input } };
+          return { args: { ...repo, input } };
         }),
       ],
       formatText: githubIssueReceipt("Created"),
@@ -453,9 +473,11 @@ export function buildGithubIssuePlan(args: string[]): CliPlan {
       label: "github issue sub-issue",
       steps: [
         ...target.steps,
-        derivedActionStep("result", "github", "linkSubIssue", (values) => ({
-          args: { ...target.repo(values), parentNumber: parent.number, childNumber: child.number },
-        })),
+        derivedActionStep("result", "github", "linkSubIssue", (values) => {
+          const repo = target.repo(values);
+          requireSameRepo(repo, child.repo, "child");
+          return { args: { ...repo, parentNumber: parent.number, childNumber: child.number } };
+        }),
       ],
       formatText: () => `Linked #${child.number} under #${parent.number}.`,
     };

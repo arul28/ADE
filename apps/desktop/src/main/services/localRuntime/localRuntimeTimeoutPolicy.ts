@@ -198,6 +198,12 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // daemon later created an empty session (ADE-122 class).
   ["ai.openCursorCloudChat", 120_000],
   ["ai.createCursorCloudRun", 120_000],
+  // An issue with pictures runs `gh issue create --attach` (up to 120s), then
+  // a PATCH, a read and a sub-issue link. Timing out first would report a
+  // failure while the issue is created, and a retry would file it twice.
+  ["github.createIssue", 180_000],
+  // Up to 10 MB of picture bytes to Linear's storage.
+  ["linear_issue_tracker.uploadFile", 120_000],
   // See USAGE_REFRESH_HISTORY_TIMEOUT_MS: in runtime-backed (production) mode
   // the Usage page's Refresh reaches the ledger worker through this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_TIMEOUT_MS],

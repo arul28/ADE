@@ -17016,6 +17016,19 @@ describe("ade github issue writes", () => {
     expect(params.arguments.args).toMatchObject({ owner: "arul28", name: "ADE", number: 12 });
   });
 
+  it.each([
+    ["sub-issue", ["sub-issue", "12", "acme/app#10"]],
+    ["create --parent", ["create", "--title", "Child", "--parent", "acme/app#10"]],
+  ])("%s refuses an issue from another repository", (_name, argv) => {
+    const plan = buildCliPlan(["github", "issue", ...argv, "--repo", "arul28/ADE"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    const write = plan.steps.find((step) => step.key === "result");
+    expect(typeof write?.params).toBe("function");
+    expect(() => (write!.params as (values: Record<string, unknown>) => unknown)({}))
+      .toThrow(/is in acme\/app, but the issue is in arul28\/ADE/);
+  });
+
   it("refuses a write when the issue cannot be read", () => {
     const send = writeStep(["close", "12"]);
     expect(() => send(null as unknown as Record<string, unknown>)).toThrow(/was not found, or ADE could not read it/);

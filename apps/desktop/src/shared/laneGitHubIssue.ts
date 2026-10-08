@@ -100,7 +100,7 @@ export type GitHubIssueLike = {
   labels?: Array<string | { name?: string; color?: string | null }>;
   assignees?: Array<{ login?: string; avatar_url?: string | null }>;
   user?: { login?: string; avatar_url?: string | null } | null;
-  milestone?: { title?: string | null } | null;
+  milestone?: { title?: string | null; number?: number | null } | null;
   comments?: number;
   created_at?: string;
   updated_at?: string;

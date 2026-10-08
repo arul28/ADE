@@ -259,7 +259,11 @@ export function GitHubIssueView({
 
   const assigned = new Set(issue.assignees.map((entry) => entry.login));
   const labelled = new Set(issue.labels.map((entry) => entry.name));
-  const currentMilestone = catalog?.milestones.find((entry) => entry.title === issue.milestone)?.number ?? null;
+  // From the issue itself: the catalog lists open milestones only, and an
+  // issue on a closed one must still be able to clear it.
+  const currentMilestone = issue.milestoneNumber
+    ?? catalog?.milestones.find((entry) => entry.title === issue.milestone)?.number
+    ?? null;
 
   return (
     <div className="ade-issue-view" data-github-issue-view="true">
@@ -376,7 +380,7 @@ export function GitHubIssueView({
               const milestone = id ? Number(id) : null;
               if (milestone === currentMilestone) return;
               const title = catalog?.milestones.find((entry) => entry.number === milestone)?.title ?? null;
-              editing.onPatch({ milestone }, { milestone: title });
+              editing.onPatch({ milestone }, { milestone: title, milestoneNumber: milestone });
             }}
           />
         </>

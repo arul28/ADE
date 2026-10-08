@@ -67,8 +67,16 @@ export function createIssueEntryCache<T>(options: { maxEntries: number; staleMs:
       write(key, { status: "error", error: messages.unavailable, promise: null });
       return Promise.resolve(null);
     }
+    // A read that started before an edit carries the pre-edit copy; when the
+    // edit landed first, the reply must not put the old copy back.
+    const sequenceAtStart = current?.editSequence ?? 0;
     const promise = fetch()
       .then((issue) => {
+        const latest = entries.get(key);
+        if ((latest?.editSequence ?? 0) !== sequenceAtStart) {
+          write(key, { promise: null });
+          return latest?.issue ?? issue;
+        }
         write(key, { status: issue ? "ready" : "missing", issue, error: null, fetchedAt: Date.now(), promise: null });
         return issue;
       })

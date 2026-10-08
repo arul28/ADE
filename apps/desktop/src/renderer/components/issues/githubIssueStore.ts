@@ -43,6 +43,8 @@ export type GitHubIssueDetail = {
   assignees: GitHubIssuePerson[];
   author: GitHubIssuePerson | null;
   milestone: string | null;
+  /** The milestone's number: what a PATCH sends, and closed milestones keep it. */
+  milestoneNumber: number | null;
   commentCount: number;
   createdAt: string;
   updatedAt: string;
@@ -84,6 +86,7 @@ export function normalizeGitHubIssue(owner: string, repo: string, raw: GitHubIss
     assignees: (raw.assignees ?? []).map(person).filter((entry): entry is GitHubIssuePerson => entry != null),
     author: person(raw.user),
     milestone: raw.milestone?.title ?? null,
+    milestoneNumber: typeof raw.milestone?.number === "number" ? raw.milestone.number : null,
     commentCount: typeof raw.comments === "number" ? raw.comments : 0,
     createdAt: raw.created_at ?? "",
     updatedAt: raw.updated_at ?? "",
