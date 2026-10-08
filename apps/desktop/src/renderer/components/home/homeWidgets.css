@@ -837,3 +837,7 @@
 .ade-np-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 .ade-np-play { width: 40px; height: 40px; background: var(--color-fg); color: var(--color-bg); }
 .ade-np-play:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 86%, var(--color-accent)); }
+
+/* The clock card has no head; in edit mode the tile's controls sit where a
+   head would be, so its content moves below them. */
+.ade-home-grid[data-editing="true"] .ade-hw-body { padding-top: 48px; }
