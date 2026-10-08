@@ -220,7 +220,9 @@ _Playback architecture: filled in from the research pass. See the
 - **Sign-in:** a one-time "Connect Apple Music". The developer token is minted
   by an ADE Cloudflare worker from a MusicKit key in the existing Apple
   Developer account; the key never ships in the app. The user token comes from
-  MusicKit authorization and is stored in ADE's credential store.
+  MusicKit authorization and is stored in the Music service's own
+  safeStorage-encrypted file (`musicTokenStore.ts`, in the app's user data),
+  never in the player's WebView2 profile.
 
 ### Apple Music research (2026-10-07)
 
@@ -382,9 +384,11 @@ want it).**
   - Other apps: Windows `ade-now-playing.exe` (`native/ADENowPlayingWin`,
     C++/WinRT, built by `build:now-playing:win`) lists every SMTC session with
     the app's shell icon and name; ADE's own sessions (`com.ade.desktop*`, the
-    Music host) are skipped. macOS: mediaremote-adapter via /usr/bin/perl when
-    bundled, else Music.app over AppleScript, with the app icon from its
-    bundle (not yet run on a Mac). Runs only while the widget is on screen.
+    Music host) are skipped. If the helper exits on its own the widget clears
+    its sessions and the next subscribe starts a new one. macOS (unverified,
+    never run on a Mac): Music.app over AppleScript, asked only while Music is
+    already running, with Music's icon; other Mac apps are not listed. Runs
+    only while the widget is on screen.
 - **Shipped share:** a canvas-drawn PNG, copied or saved by main; no upload.
 - **Clipboard:** main watches the clipboard only while the widget is on the
   page. Optional history file: `<userData>/home-widgets/`.

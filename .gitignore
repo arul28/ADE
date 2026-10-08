@@ -125,3 +125,7 @@ apps/web/public/images/updatedImages/
 # `git add -A` would otherwise sweep them into a PR (AGENTS.md work-artifacts
 # rule). Anything worth keeping goes under docs/.
 T3CODE_RESEARCH_*.md
+
+# MusicKit / App Store Connect private keys. Never in the repo.
+*.p8
+AuthKey_*.p8

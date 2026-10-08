@@ -59,8 +59,12 @@ Apple Music artwork. ADE uses Apple's "Listen on Apple Music" badge
 (`music/assets/listen-on-apple-music-badge.svg`, downloaded unmodified from
 `toolbox.marketingtools.apple.com/api/badges/listen-on-apple-music/badge/en-us`)
 for attribution and as the Apple Music buttons (home header, Now Playing
-widget). Everything else uses ADE's own neutral glyph, never a look-alike of
-Apple's icon.
+widget). Everything else uses ADE's own neutral glyph, except one: the Music
+tab and the welcome page's Music card use `AppleMusicAppIcon` in
+`musicParts.tsx`, a hand-drawn SVG of the Apple Music app icon. **Swap it for
+the official app icon from Apple Music Marketing Tools
+(tools.applemediaservices.com) before a public release**; a redrawn icon does
+not meet the guidelines.
 
 Status (2026-10-08): **Windows plays full tracks after sign-in (verified by the
 user).** macOS shows "Music on Mac is coming".
@@ -95,11 +99,14 @@ Main process: musicService
 | Token | Where it comes from | Where it lives |
 |---|---|---|
 | MusicKit private key (`.p8`) | Apple Developer account, key `3NNQ5Y43RA`, team `VQ372F39G6`, media id `media.com.ade.music` | Production: the account-directory Worker secret `MUSICKIT_PRIVATE_KEY`. Dev only: `%USERPROFILE%\.ade\secrets\musickit\AuthKey_3NNQ5Y43RA.p8` or `ADE_MUSICKIT_KEY_PATH`. Never in the app, the repo or a log. |
-| Developer token (ES256 JWT, 24 h) | Production: `GET /music/developer-token` on the account directory, signed-in ADE users only. Dev (unpackaged builds): minted locally from the `.p8`. A packaged build never reads a local key. | Main-process memory; refreshed 2 h before expiry. Logged only as its first 6 characters. |
-| Music-User-Token | MusicKit `authorize()` in the player host, after the user signs in with Apple | ADE's desktop credential store (`music.appleMusic.userToken`, the Electron safeStorage store the API keys use, not the file store the brain shares). Sent to the host over stdin on each start. |
+| Developer token (ES256 JWT, 30 days) | Production: `GET /music/developer-token` on the account directory, signed-in ADE users only; the Worker reissues once its cached token has under 7 days left. Dev (unpackaged builds): minted locally from the `.p8`. A packaged build never reads a local key. | Main-process memory; refreshed with 24 h left (or half the life a short token arrived with). Logged only as its first 6 characters. |
+| Music-User-Token | MusicKit `authorize()` in the player host, after the user signs in with Apple | `musicTokenStore.ts`: one file, `<userData>/music-player/apple-music-user-token.enc`, encrypted with this app's Electron safeStorage key (not the shared machine credential files). Sent to the host over stdin on each start. MusicKit also saves it in the WebView2 profile's localStorage (`music.<team id>.media-user-token`); `player.js` deletes that copy before MusicKit loads and after every write, so the profile never keeps it. |
 
-Disconnect calls MusicKit `unauthorize()`, deletes the stored token and stops
-the host. A 401 from Apple on a `/v1/me` call drops the token too (a 403 does
+Disconnect calls MusicKit `unauthorize()` when the host runs, deletes the
+stored token and stops the host without keeping a queue snapshot. When the host
+is not running there is nothing else to clear: the profile holds no token (a
+token an older build left there is deleted before MusicKit loads on the next
+start). A 401 from Apple on a `/v1/me` call drops the token too (a 403 does
 not: it can mean "no subscription").
 
 ## The player host (Windows)
@@ -113,7 +120,11 @@ not: it can mean "no subscription").
   as a real popup that shares the environment (so `window.opener` works), and
   the profile prefers the light colour scheme because Apple's dark sign-in has
   near-invisible buttons. Exits on stdin EOF, `{"cmd":"quit"}`, or when the
-  ADE process it was given (`--parent-pid`) exits.
+  ADE process it was given (`--parent-pid`) exits. Both pipes are UTF-8
+  whatever the ANSI code page is. Only the player page's origin may post to
+  ADE, and the player and sign-in webviews navigate only to that page and
+  `https://*.apple.com` / `*.icloud.com`; `page/index.html` carries a CSP that
+  loads scripts only from the page and `https://*.apple.com`.
 - **The sign-in window must be shown with an explicit `SW_SHOW`.** ADE spawns
   the host with `windowsHide`, so its STARTUPINFO says `SW_HIDE`, and Windows
   applies that to the process's first plain `Form.Show()`: the form reports
@@ -134,8 +145,8 @@ not: it can mean "no subscription").
   `ADE_MUSIC_HOST_GPU=1` keeps the GPU process; `ADE_MUSIC_HOST_MUTED=1` mutes
   the host (test instances and automation).
 - `page/player.js`: the MusicKit control script. Commands: `configure`,
-  `authorize`, `unauthorize`, `state`, `queue`, `playItems`, `playCollection`,
-  `pause`, `resume`, `toggle`, `stop`, `next`, `prev`, `seek`, `volume`,
+  `authorize`, `unauthorize`, `queue`, `playItems`, `playCollection`,
+  `pause`, `resume`, `toggle`, `next`, `prev`, `seek`, `volume`,
   `shuffle`, `repeat`, `playAt`, `playNext`, `playLater`, `snapshot`. Events:
   `loaded`, `state`, `time` (once a second while playing), `queueChanged`,
   `authorization`, `playbackError`, `loadFailed`; the host adds `hostReady`,
@@ -145,7 +156,7 @@ Wire format, one JSON object per line: `{"rid":"r1","cmd":"seek","position":60}`
 in, `{"reply":"r1","ok":true,"result":{…}}` or `{"event":"time",…}` out.
 
 macOS implements the same protocol later (a WKWebView helper with FairPlay).
-`resolveMusicHostExecutable` returns null off Windows today, which is what puts
+`resolveMusicHostExecutable` (`services/native/nativeHelperPaths.ts`) returns null off Windows today, which is what puts
 the tab in the "coming" state.
 
 ### Building and shipping it
@@ -216,7 +227,7 @@ formatMusicTime(seconds)
 | `apps/desktop/src/main/services/music/appleMusicApi.ts` | Apple Music API client and item normalization. |
 | `apps/desktop/src/main/services/music/musicDeveloperToken.ts` | Dev-only local minting and the Worker fetch. |
 | `apps/desktop/src/main/services/music/registerMusicIpc.ts` | IPC handlers (ADE renderer only) and app wiring. |
-| `apps/desktop/src/renderer/components/music/` | `MusicPage`, `MusicPlayer` (card, slider, transport, volume, Love, artwork backdrop), `MusicNowPlayingBar`, `MusicTabContent` (the tab as player), `MusicWelcome` (signed-out page, Connect, sign-in controls), `MusicAccount` (rail account menu), `musicParts`, `musicStore`, `musicTab`, `music.css`, `assets/`. |
+| `apps/desktop/src/renderer/components/music/` | `MusicPage` (the shell: rail, alert, player card or bar), one file per view (`MusicSearchView`, `MusicLibraryView` with Recently played, `MusicDetailView`, `MusicQueueView`) and their shared `musicViewParts`, `musicQueue` (every song play: catalog ids, queue windows, Play Next / Later), `MusicPlayer` (card, slider, transport, volume, Love, artwork backdrop), `MusicNowPlayingBar`, `MusicTabContent` (the tab as player), `MusicWelcome` (signed-out page, Connect, sign-in controls), `MusicAccount` (rail account menu), `musicParts`, `musicStore`, `musicTab`, `music.css` (imports `music-*.css` in cascade order), `assets/`. |
 | `apps/desktop/native/ADEMusicHostWin/` | The Windows player host and its page. |
 | `apps/desktop/scripts/build-music-host-win.mjs` | Reproducible host build. |
 | `apps/account-directory/src/musicDeveloperToken.ts` | The Worker route that mints developer tokens. |
@@ -233,9 +244,11 @@ formatMusicTime(seconds)
 - **MusicKit CDN unreachable:** `loadFailed` after 20 s, shown in the tab.
 - **Sign-in closed:** the window closing ends the wait after 2.5 s as
   "cancelled"; MusicKit's own promise can otherwise hang.
-- **Token expiry mid-session:** the developer token is refreshed before each
-  host start; a host that has played for more than 22 hours straight without an
-  unload could hit an expired token (not handled beyond the next restart).
+- **Token expiry mid-session:** a host keeps the developer token it was
+  configured with (MusicKit has no way to swap it), so every token it gets has
+  at least 24 h left and usually days; a host that played without a single
+  idle unload for longer than that would hit an expired token (fixed by the
+  next restart).
 - **Resume after unload** restores the queue in its current order with shuffle
   off (re-enabling shuffle in MusicKit would reshuffle) and repeat restored.
 - **Apple rate limits** (429) show as a message; browse results are cached 60 s.
