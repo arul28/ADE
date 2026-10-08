@@ -17206,7 +17206,7 @@ export function createAgentChatService(args: {
                 steerId: s.steerId,
                 uuid: s.uuid,
                 text: s.text,
-                ...(s.displayText ? { displayText: s.displayText } : {}),
+                ...(s.displayText != null && s.displayText !== s.text ? { displayText: s.displayText } : {}),
                 ...(s.attachments.length ? { attachments: s.attachments } : {}),
                 ...(s.contextAttachments.length ? { contextAttachments: s.contextAttachments } : {}),
                 ...(s.metadata ? { metadata: s.metadata } : {}),
@@ -39504,7 +39504,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return false;
     }
-    const displayText = nextSteer.displayText?.trim().length ? nextSteer.displayText.trim() : trimmed;
+    const displayText = nextSteer.displayText != null ? nextSteer.displayText.trim() : trimmed;
 
     claimSteerSettlement(managed, nextSteer.steerId);
     emitChatEvent(managed, {
@@ -39972,22 +39972,24 @@ export function createAgentChatService(args: {
       const contextAttachments = normalizeChatContextAttachments(entry.contextAttachments);
       let resolvedAttachments: ResolvedAgentChatFileRef[] = [];
       try {
-        resolvedAttachments = attachments.map((attachment) => {
-          if (attachment.type === "image-url") {
+        resolvedAttachments = attachments
+          .filter((attachment) => !(attachment.type === "file" && attachment.intent === "user_prompt"))
+          .map((attachment) => {
+            if (attachment.type === "image-url") {
+              return {
+                ...attachment,
+                _resolvedPath: attachment.url,
+                _rootPath: projectRoot,
+              };
+            }
+            const located = resolveLocalAttachmentPath(managed, attachment.path);
+            if (!located) throw new Error(`Attachment path is outside every allowed root: ${attachment.path}`);
             return {
               ...attachment,
-              _resolvedPath: attachment.url,
-              _rootPath: projectRoot,
+              _resolvedPath: located.resolvedPath,
+              _rootPath: located.rootPath,
             };
-          }
-          const located = resolveLocalAttachmentPath(managed, attachment.path);
-          if (!located) throw new Error(`Attachment path is outside every allowed root: ${attachment.path}`);
-          return {
-            ...attachment,
-            _resolvedPath: located.resolvedPath,
-            _rootPath: located.rootPath,
-          };
-        });
+          });
       } catch (err) {
         logger.warn("agent_chat.pending_steer_attachment_resolve_failed", {
           sessionId: managed.session.id,
@@ -40000,7 +40002,7 @@ export function createAgentChatService(args: {
         steerId: entry.steerId,
         uuid: typeof entry.uuid === "string" && entry.uuid.trim().length ? entry.uuid.trim() : randomUUID(),
         text,
-        ...(entry.displayText?.trim().length ? { displayText: entry.displayText.trim() } : {}),
+        ...(typeof entry.displayText === "string" ? { displayText: entry.displayText.trim() } : {}),
         attachments,
         contextAttachments,
         resolvedAttachments,
@@ -45867,7 +45869,9 @@ export function createAgentChatService(args: {
       : null;
     const autoTitleSeed = codexGoalTitleSeed ?? (providerSlashCommand && !personalSession
       ? expandedSlashCommandPrompt ?? null
-      : visibleText || trimmed);
+      : hasPastedPromptAttachment
+        ? visibleText || null
+        : visibleText || trimmed);
     if (!managed.autoTitleSeed && autoTitleSeed) {
       managed.autoTitleSeed = autoTitleSeed;
       void maybeAutoTitleSession(managed, {
