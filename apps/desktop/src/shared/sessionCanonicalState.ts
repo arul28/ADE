@@ -574,6 +574,11 @@ export function canonicalStatusBucket(phase: CanonicalSessionPhase): CanonicalSt
  * or a drag's host-authored "you moved this chat from <column>" message names a
  * column the user never saw.
  *
+ * `failed` is the one exception to "ended files under Done": a turn that
+ * stopped on an error is the user's move, so the board files it under Needs
+ * you (with its own red status dot) until the user settles it or sends a new
+ * turn. Every Activity surface uses the same rule (`activityBoardColumn`).
+ *
  * One known divergence, predating this mapping and confined to helper rows:
  * `effectiveSessionFilingBuckets` files a non-chat helper under its settled
  * parent, which the host's single-row derivation does not model.
@@ -581,6 +586,38 @@ export function canonicalStatusBucket(phase: CanonicalSessionPhase): CanonicalSt
 export function canonicalBoardColumnForPhase(
   phase: CanonicalSessionPhase,
 ): "needs_you" | "working" | "done" {
-  if (phase === "needs_you") return "needs_you";
+  if (phase === "needs_you" || phase === "failed") return "needs_you";
   return canonicalStatusBucket(phase) === "running" ? "working" : "done";
+}
+
+/** The PR facts `lanePrWaitingReason` reads. `PrSummary` satisfies it. */
+export type LanePrWaitSignal = {
+  state: "draft" | "open" | "merged" | "closed" | string;
+  checksStatus?: string | null;
+  reviewStatus?: string | null;
+};
+
+/**
+ * Does this lane's PR park a running session in Waiting?
+ *
+ * Only live PRs count: a merged or closed PR's last check state is history, and
+ * a lane whose PR landed hours ago is not "waiting on CI". `pending` is the
+ * only checks value that means work is in flight — `none`/`not_run` mean nobody
+ * looked, which is not the same claim (ADE-135), and `failing` is the agent's
+ * problem, not a wait.
+ *
+ * Shared because two hosts answer it: the renderer's board reads `PrSummary`
+ * rows, and the brain's roster reads the `pull_requests` table so Activity on
+ * every device can show the same Waiting column.
+ */
+export function lanePrWaitingReason(
+  prs: readonly LanePrWaitSignal[],
+): "ci" | "review" | null {
+  let sawReviewRequest = false;
+  for (const pr of prs) {
+    if (pr.state !== "open" && pr.state !== "draft") continue;
+    if (pr.checksStatus === "pending") return "ci";
+    if (pr.reviewStatus === "requested") sawReviewRequest = true;
+  }
+  return sawReviewRequest ? "review" : null;
 }

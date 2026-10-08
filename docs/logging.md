@@ -895,7 +895,7 @@ banner copy and in local logs. A per-outcome one-hour deduplication key bounds a
 click-loop to at most 24 accepted events per outcome — 48 across both — per
 installation per UTC day, inside the existing `ade_feature_used` and shared
 ceilings. The Activity feed's polling, rendering, section collapse, filters, and
-acknowledgements, notch and iOS widget updates, pairing-grant mint and redeem,
+acknowledgements, iOS widget updates, pairing-grant mint and redeem,
 and relay control sweeps remain untracked: they are high-frequency reads and UI
 mechanics, or they run on the relay and account-directory surfaces that have no
 analytics path.

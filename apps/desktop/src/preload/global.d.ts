@@ -1868,38 +1868,6 @@ declare global {
           ) => void,
         ) => () => void;
       };
-      attentionNotch: {
-        publishSnapshot: (
-          snapshot: import("../shared/types").AttentionSnapshot,
-        ) => Promise<void>;
-        // Optional like `onRefreshRequested`: the web adapter has no notch at
-        // all, so every call site must optional-chain through it.
-        publishToast?: (
-          toast: import("../shared/types").AttentionNotchToast,
-        ) => Promise<void>;
-        updateSettings: (
-          settings: import("../shared/types").AttentionNotchSettings,
-        ) => Promise<void>;
-        getHealth: () => Promise<
-          import("../shared/types").AttentionNotchHealth
-        >;
-        retry: () => Promise<
-          import("../shared/types").AttentionNotchHealth
-        >;
-        onAcknowledgeRequested: (
-          cb: (
-            request: import("../shared/types").AttentionNotchAcknowledgeRequest,
-          ) => void,
-        ) => () => void;
-        onRefreshRequested?: (
-          cb: (request?: { force?: boolean }) => void,
-        ) => () => void;
-        onSettingsChanged?: (
-          cb: (
-            settings: import("../shared/types").AttentionNotchSettings,
-          ) => void,
-        ) => () => void;
-      };
       usage: {
         getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;
         getSnapshot: () => Promise<UsageSnapshot | null>;

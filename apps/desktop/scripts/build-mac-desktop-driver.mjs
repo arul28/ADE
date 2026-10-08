@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// The Mac Desktop native helper, built exactly the way the attention notch
-// helper is: a universal binary in resources/native, materialized before
-// electron-builder runs, so the packaged app carries one file per helper and
-// both are signed by the same pass over Contents/Resources/native.
+// The Mac Desktop native helper: a universal binary in resources/native,
+// materialized before electron-builder runs, so the packaged app carries one
+// file per helper and every helper is signed by the same pass over
+// Contents/Resources/native.
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");

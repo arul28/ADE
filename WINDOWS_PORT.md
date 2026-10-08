@@ -60,8 +60,8 @@ working branch:
   download links and release assets remain disabled until the public gates
   are explicitly enabled.
 - Windows chrome, AppUserModelID, microphone-denial guidance, sync health, and
-  platform-aware copy/navigation are implemented. macOS-native Notch,
-  computer-use, and iOS Simulator actions are hidden or capability-blocked
+  platform-aware copy/navigation are implemented. macOS-native computer-use
+  and iOS Simulator actions are hidden or capability-blocked
   while App Control, Browser, and proof ingestion remain available.
 - The Windows developer loop now uses a per-user named pipe, invokes local
   JavaScript CLI entry points instead of fragile global `.cmd` shims, strips
@@ -293,7 +293,7 @@ The build PR should also include a focused platform pass:
   `hiddenInset`, macOS traffic-light positioning, and a renderer header with
   80 px of left padding. Verify caption buttons, dragging, double-click
   maximize, Snap Layouts, and DPI scaling.
-- Hide or clearly disable iOS Simulator, Xcode Preview, native Notch, and local
+- Hide or clearly disable iOS Simulator, Xcode Preview, and local
   OS computer-use actions.
 - Keep browser/App Control capture and proof-file ingestion enabled where
   supported.

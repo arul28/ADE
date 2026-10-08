@@ -146,7 +146,6 @@ const KEYCHAIN_SERVICES = [
   "ade-desktop Safe Storage",
 ] as const;
 const NATIVE_HELPER_NAMES = [
-  "ade-attention-notch",
   "ade-desktop-driver",
   "ade-media",
   "ade-capture-helper",

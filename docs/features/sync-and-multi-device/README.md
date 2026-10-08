@@ -2821,7 +2821,7 @@ Account Activity and push:
   to `stale`/`idle` unless it is failed or needs-you), the title/preview tables, the
   2 h / 24 h / 7-day lifetimes, and `attentionProjectRef`. The `needs_you`
   privacy preview reads "An ADE agent needs you." — the same two words the status
-  label, the title suffix, and the notch's section heading use.
+  label and the title suffix use.
 - `apps/ade-cli/src/services/push/pushRegistrationStore.ts` — durable device,
   delivery, machine-revocation, and machine-acknowledgment state. Machine
   acknowledgments are keyed by account owner + item and remain pending until a
@@ -2862,7 +2862,7 @@ Account Activity and push:
   the D1 write when the roster did not move; item `revision` is excluded because
   it is a republish timestamp.
 - `apps/desktop/src/shared/types/attention.ts` — cross-client item, snapshot,
-  destination, availability, preference, and native-presentation contract.
+  destination, availability, and preference contract.
   `ATTENTION_CONTRACT_VERSION` is the *item* contract; the publish protocol
   version is separate (see `push-notifications.md`). It also owns the
   acknowledgment mechanics every shell shares:
@@ -2870,10 +2870,16 @@ Account Activity and push:
   bound), `chunkAttentionAcknowledgmentItemIds`, `runAcknowledgmentChunks` (with
   the abort-on-first-failing-chunk policy), and
   `AttentionAcknowledgmentOutcome`.
+- `apps/desktop/src/shared/attention/activityBoardColumn.ts` and
+  `activityBoardColumn.cases.json` — the four states every Activity surface
+  counts by (needs you, working, waiting, done; the Work board's columns), and
+  the fixture that pins the TypeScript, Swift and relay copies of the rule. The
+  brain writes the column on each agent item as `boardColumn`; see
+  [push-notifications.md › The four states](push-notifications.md#the-four-states).
 - `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the
-  cross-language conformance fixture for the six-group state table. The mapping
-  is implemented four times (renderer TypeScript, native notch Swift, iOS Swift,
-  and the hermetic relay Worker) because the surfaces cannot share code, and
+  cross-language conformance fixture for the older six-group state table. The mapping
+  is implemented three times (renderer TypeScript, iOS Swift, and the hermetic
+  relay Worker) because the surfaces cannot share code, and
   documentation alone did not keep them in step. Every implementation runs these
   cases through its own mapper. Canonical source of truth:
   `activityStateGroup` in
@@ -2892,9 +2898,9 @@ Account Activity and push:
   `stale` and `unreached` each roll back only their own rows, with different
   copy.
 - `apps/desktop/src/renderer/components/activity/useActivitySync.ts` — the
-  single account poller, mounted in `AppShell` so the header control and ADE
-  Notch stay truthful while `/activity` is closed. It also derives the notch
-  toast stream.
+  single account poller, mounted in `AppShell` so the header control stays
+  truthful while `/activity` is closed. It also loads the account's Activity
+  preferences, and clears the localStorage keys the removed notch left behind.
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx` —
   the global-header count (the `needs-you` group and nothing else) and its
   popover preview, which shows every state section except the two resting bands
@@ -2928,19 +2934,15 @@ Account Activity and push:
   `ACTIVITY_STATE_GROUPS` (also the priority order), `activityStateGroup`, plus
   the per-item label/tone/glyph derivation and the detail sheet's
   `activityStateSentence` / `activityStateElapsed`. Change the rule here first;
-  the notch, iOS, and relay mirrors follow.
+  the iOS and relay mirrors follow.
 - `apps/desktop/src/renderer/components/activity/activityPriority.ts` — the
   projection every surface reads: `activityFeedItems` (agents only),
   `activitySections` (one per state group, empties included),
   `activityNotificationItems` (non-agent, inbox-eligible),
-  `activityFeedOrder` (what the notch mirrors), and the counts/leading-group
+  `activityFeedOrder`, and the counts/leading-group
   helpers that replaced four hand-written priority ladders.
 - `apps/desktop/src/renderer/components/activity/useProgressiveRows.ts` — the
   bounded row budget (60, stepped by 60) that keeps long columns cheap.
-- `apps/desktop/src/renderer/components/activity/activityNotchLocalSettings.ts`
-  — this Mac's offline cache of the notch presentation. Account preferences win
-  when loaded. The three original `ade:attention:notch-*` localStorage keys are
-  frozen wire for anyone who already made a choice; new settings got new keys.
 - `apps/desktop/src/renderer/components/activity/ActivitySettingsPopover.tsx` —
   the gear in both the popover and the pane. It mounts
   `settings/ActivitySettingsControls.tsx` in its `popover` variant, which

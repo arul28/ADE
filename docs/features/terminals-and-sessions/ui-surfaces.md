@@ -522,12 +522,10 @@ that count at `AppShell`, so it remains live outside Work.
 The same canonical session phase feeds the account-wide Activity UI, where it is
 grouped by the six shared state groups — Needs you, Failed, Planning, Working,
 Idle, Done — defined by `activityStateGroup` in the renderer's
-`activity/activityPresentation.ts` and mirrored by the notch, iOS, and the relay.
-The desktop header popover omits Idle and Done; the full pane, Hub tree, and Mac
-notch compact strip keep them. Activity's session column is agents only; pull
-requests and checks render in its Notifications column. ADE Notch shows the same
-ordering as a compact strip of clickable state-glyph badges and can flash a
-needs-you card. The hook and wire-level `attention` vocabulary remain
+`activity/activityPresentation.ts` and mirrored by iOS and the relay.
+The desktop header popover omits Idle and Done; the full pane and Hub tree keep
+them. Activity's session column is agents only; pull requests and checks render
+in its Notifications column. The hook and wire-level `attention` vocabulary remain
 compatibility names; user-facing surfaces call the feature Activity.
 
 Planning is the one state the phase vocabulary cannot express. `AttentionPhase`

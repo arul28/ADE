@@ -457,7 +457,7 @@ export function spawnCompletionDeliveryFailedNoticeMessage(): string {
  * question text to show instead.
  *
  * One definition because this copy is not local to the chat pane: it becomes
- * the notch card's subtitle, the phone's push body and the lock screen preview.
+ * the Activity row's subtitle, the phone's push body and the lock screen preview.
  * Every provider used to spell its own variant of "<Provider> needs input
  * before it can continue" — a sentence about the agent where the user wanted a
  * sentence about them, and six places to fix when the wording changed.
@@ -1079,6 +1079,30 @@ export type WorkBoardMoveTarget = "needs_you" | "working" | "done";
 /** Every column a card can currently BE in, including the derived one. */
 export type WorkBoardColumn = WorkBoardMoveTarget | "waiting";
 
+/** Every column in board order. */
+export const WORK_BOARD_COLUMNS = ["needs_you", "working", "waiting", "done"] as const;
+
+export function isWorkBoardColumn(value: unknown): value is WorkBoardColumn {
+  return typeof value === "string"
+    && (WORK_BOARD_COLUMNS as readonly string[]).includes(value);
+}
+
+/**
+ * Why a row sits in Waiting. Rendered as the card's reason chip. `scheduled`
+ * is a finished chat parked on a wake that has not come due yet
+ * (`scheduledWakeState`), so it is out of Done until it runs again. `subagent`
+ * is a finished chat whose subagent is still busy (`subagentKeepsParentBusy`):
+ * the subagent wakes it when its turn ends, so its Done is still to come.
+ */
+export type WorkBoardWaitingReason = "snoozed" | "ci" | "review" | "scheduled" | "subagent";
+
+export const WORK_BOARD_WAITING_REASONS = ["snoozed", "ci", "review", "scheduled", "subagent"] as const;
+
+export function isWorkBoardWaitingReason(value: unknown): value is WorkBoardWaitingReason {
+  return typeof value === "string"
+    && (WORK_BOARD_WAITING_REASONS as readonly string[]).includes(value);
+}
+
 /** The three columns a card can be dropped on, in board order. */
 export const WORK_BOARD_MOVE_TARGETS = ["needs_you", "working", "done"] as const;
 
@@ -1425,7 +1449,7 @@ export type AgentChatEvent =
        * `kind` above describes the *shape* of the thing being confirmed and has
        * no word for "the agent asked you a question" — so Claude's
        * AskUserQuestion rode this event as a `tool_call` approval, and every
-       * downstream surface (push, the notch, the lock screen) offered
+       * downstream surface (push, Activity, the lock screen) offered
        * "Approve/Deny" for something that wants prose. The answer branches were
        * unreachable code.
        *

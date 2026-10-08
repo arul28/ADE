@@ -27,7 +27,6 @@ import {
 import { AgentCompletionSoundSection } from "./AgentCompletionSoundSection";
 import {
   ActivityMachinesSection,
-  ActivityNotchSection,
   ActivityPrivacySection,
   useActivitySettings,
 } from "./ActivitySettingsControls";
@@ -165,9 +164,7 @@ export function NotificationsSection() {
             {signedOut ? (
               <div className="ade-nt-note">
                 <Info size={15} />
-                {model.notchSupported
-                  ? "Sign in to sync these across your machines. Sound and the notch still apply here."
-                  : "Sign in to sync these across your machines. Sound still applies here."}
+                Sign in to sync these across your machines. Sound still applies here.
               </div>
             ) : null}
             {model.error ? (
@@ -297,7 +294,6 @@ export function NotificationsSection() {
                 />
               </ModernRows>
             </ModernSection>
-            <ActivityNotchSection model={model} />
             <ActivityMachinesSection model={model} />
           </div>
           <div className="ade-nt-col">

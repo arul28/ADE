@@ -493,45 +493,12 @@ async function recordSuppression(
     .run();
 }
 
-function liveActivitySuppressionKey(dedupeKey: string, deviceId: string): string {
-  return `liveactivity:${deviceId.length}:${deviceId}:${dedupeKey}`;
-}
-
+/**
+ * Older relays stored Live Activity suppression rows under this prefix. A
+ * re-registration that clears the push-to-start token still deletes them.
+ */
 function liveActivitySuppressionPrefix(deviceId: string): string {
   return `liveactivity:${deviceId.length}:${deviceId}:`;
-}
-
-async function recordLiveActivitySuppressionIfCurrent(
-  env: PushRelayEnv,
-  machineKey: string,
-  device: DeviceRow,
-  dedupeKey: string,
-  contentHash: string,
-): Promise<void> {
-  await env.DB.prepare(`
-    insert into publish_suppression(
-      machine_key, suppression_key, content_hash, published_at
-    )
-    select ?, ?, ?, ?
-    where exists (
-      select 1
-      from device_registrations
-      where machine_key = ?
-        and device_id = ?
-        and generation = ?
-    )
-    on conflict(machine_key, suppression_key) do update set
-      content_hash = excluded.content_hash,
-      published_at = excluded.published_at
-  `).bind(
-    machineKey,
-    liveActivitySuppressionKey(dedupeKey, device.device_id),
-    contentHash,
-    new Date().toISOString(),
-    machineKey,
-    device.device_id,
-    device.generation,
-  ).run();
 }
 
 async function clearInvalidToken(
@@ -651,30 +618,16 @@ function alertApnsPayload(item: AlertPublishItem): Record<string, unknown> {
 // event-driven, not periodic); 10 minutes is the proven sweet spot.
 const DEFAULT_STALE_AFTER_SECONDS = 10 * 60;
 
-function liveActivityApnsPayload(item: LiveActivityPublishItem, nowSeconds: number): Record<string, unknown> {
+/** The APNs body that ends an activity an older brain started. */
+function liveActivityEndApnsPayload(item: LiveActivityPublishItem, nowSeconds: number): Record<string, unknown> {
   const aps: Record<string, unknown> = {
     timestamp: nowSeconds,
-    event: item.event,
+    event: "end",
     "content-state": item.contentState,
   };
-  if (item.event !== "end") {
-    aps["stale-date"] = item.staleDate != null ? Math.floor(item.staleDate) : nowSeconds + DEFAULT_STALE_AFTER_SECONDS;
-  } else if (item.staleDate != null) {
-    aps["stale-date"] = Math.floor(item.staleDate);
-  }
+  if (item.staleDate != null) aps["stale-date"] = Math.floor(item.staleDate);
   if (item.relevanceScore != null) aps["relevance-score"] = item.relevanceScore;
-  if (item.event === "start") {
-    // Asks APNs/ActivityKit to mint and deliver the per-activity update token.
-    aps["input-push-token"] = 1;
-    if (item.attributesType) aps["attributes-type"] = item.attributesType;
-    if (item.attributes) aps.attributes = item.attributes;
-    if (item.alert) {
-      aps.alert = { title: item.alert.title, ...(item.alert.body ? { body: item.alert.body } : {}) };
-    }
-  }
-  if (item.event === "end" && item.dismissalDate != null) {
-    aps["dismissal-date"] = Math.floor(item.dismissalDate);
-  }
+  if (item.dismissalDate != null) aps["dismissal-date"] = Math.floor(item.dismissalDate);
   return { aps };
 }
 
@@ -754,7 +707,12 @@ async function deliverAlertItem(
   return outcomes;
 }
 
-async function deliverLiveActivityItem(
+/**
+ * Ends the per-machine Live Activity an older brain started, on every phone
+ * that reported its per-activity token. Start and update frames never get here
+ * (see `handleMachinePublish`): the account route owns the only activity.
+ */
+async function deliverLegacyLiveActivityEnd(
   env: PushRelayEnv,
   config: ApnsKeyConfig,
   machineKey: string,
@@ -764,95 +722,8 @@ async function deliverLiveActivityItem(
 ): Promise<DeliveryOutcome[]> {
   const outcomes: DeliveryOutcome[] = [];
   const nowSeconds = Math.floor(Date.now() / 1000);
-  const payload = liveActivityApnsPayload(item, nowSeconds);
+  const payload = liveActivityEndApnsPayload(item, nowSeconds);
   const expiration = phaseExpiration(item.phase, nowSeconds);
-  const targets = selectTargets(devices, item.deviceIds);
-
-  const suppressionHash = item.dedupeKey
-    ? await sha256Hex(JSON.stringify({ event: item.event, contentState: item.contentState }))
-    : null;
-  const isSuppressedForDevice = async (deviceId: string): Promise<boolean> => {
-    return Boolean(
-      item.dedupeKey
-      && suppressionHash
-      && await shouldSuppress(
-        env,
-        machineKey,
-        liveActivitySuppressionKey(item.dedupeKey, deviceId),
-        suppressionHash,
-      ),
-    );
-  };
-  const recordDeliveredForDevice = async (device: DeviceRow): Promise<void> => {
-    if (!item.dedupeKey || !suppressionHash) return;
-    await recordLiveActivitySuppressionIfCurrent(
-      env,
-      machineKey,
-      device,
-      item.dedupeKey,
-      suppressionHash,
-    );
-  };
-
-  if (item.event === "start") {
-    for (const device of targets) {
-      if (await isSuppressedForDevice(device.device_id)) {
-        outcomes.push({
-          deviceId: device.device_id,
-          kind: "liveactivity",
-          delivered: false,
-          suppressed: true,
-          skipped: null,
-          status: null,
-          reason: null,
-        });
-        continue;
-      }
-      if (!device.push_to_start_token) {
-        outcomes.push({
-          deviceId: device.device_id,
-          kind: "liveactivity",
-          delivered: false,
-          suppressed: false,
-          skipped: "no push-to-start token",
-          status: null,
-          reason: null,
-        });
-        continue;
-      }
-      const environment = normalizeEnvironment(device.aps_environment) ?? "production";
-      const result = await sendApnsPush(config, {
-        environment,
-        deviceToken: device.push_to_start_token,
-        topic: liveActivityTopic(device.bundle_id || defaultTopic),
-        pushType: "liveactivity",
-        priority: 10,
-        expiration,
-        collapseId: item.activityId,
-        payload,
-      });
-      if (result.tokenInvalid) {
-        await clearInvalidToken(env, machineKey, device.device_id, "push_to_start_token");
-      }
-      if (!result.ok) {
-        logEvent("apns_error", { push: "la_start", device: device.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
-      } else {
-        await recordDeliveredForDevice(device);
-      }
-      outcomes.push({
-        deviceId: device.device_id,
-        kind: "liveactivity",
-        delivered: result.ok,
-        suppressed: false,
-        skipped: null,
-        status: result.status,
-        reason: result.reason,
-      });
-    }
-    return outcomes;
-  }
-
-  // update / end target the per-activity tokens the phones reported.
   const activityTokens = await loadActivityTokens(env, machineKey, item.activityId);
   const deviceById = new Map(devices.map((device) => [device.device_id, device]));
   const wanted = item.deviceIds ? new Set(item.deviceIds) : null;
@@ -860,36 +731,23 @@ async function deliverLiveActivityItem(
     if (wanted && !wanted.has(tokenRow.device_id)) continue;
     const device = deviceById.get(tokenRow.device_id);
     if (!device) continue;
-    if (await isSuppressedForDevice(tokenRow.device_id)) {
-      outcomes.push({
-        deviceId: tokenRow.device_id,
-        kind: "liveactivity",
-        delivered: false,
-        suppressed: true,
-        skipped: null,
-        status: null,
-        reason: null,
-      });
-      continue;
-    }
     const environment = normalizeEnvironment(device.aps_environment) ?? "production";
     const result = await sendApnsPush(config, {
       environment,
       deviceToken: tokenRow.token,
       topic: liveActivityTopic(device.bundle_id || defaultTopic),
       pushType: "liveactivity",
-      priority: item.event === "end" || item.phase === "waiting" ? 10 : 5,
+      priority: 10,
       expiration,
       collapseId: item.activityId,
       payload,
     });
-    if (result.tokenInvalid || (item.event === "end" && result.ok)) {
+    // A delivered end, or a dead token, leaves nothing to end next time.
+    if (result.ok || result.tokenInvalid) {
       await deleteActivityToken(env, machineKey, tokenRow.device_id, item.activityId);
     }
     if (!result.ok) {
-      logEvent("apns_error", { push: `la_${item.event}`, device: tokenRow.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
-    } else {
-      await recordDeliveredForDevice(device);
+      logEvent("apns_error", { push: "la_end", device: tokenRow.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
     }
     outcomes.push({
       deviceId: tokenRow.device_id,
@@ -1186,7 +1044,26 @@ async function handlePublish(request: Request, env: PushRelayEnv, machineKey: st
     outcomes.push(...await deliverAlertItem(env, config, machineKey, devices, item, defaultTopic));
   }
   for (const item of liveActivities) {
-    outcomes.push(...await deliverLiveActivityItem(env, config, machineKey, devices, item, defaultTopic));
+    // The Live Activity is account-wide and owned by the account route. A
+    // per-machine one from an older brain is how a phone showed two, so this
+    // route only lets such a brain END the activity it already started. Start
+    // and update report as suppressed, so the old brain stops retrying.
+    if (item.event !== "end") {
+      for (const device of devices) {
+        if (item.deviceIds && !item.deviceIds.includes(device.device_id)) continue;
+        outcomes.push({
+          deviceId: device.device_id,
+          kind: "liveactivity",
+          delivered: false,
+          suppressed: true,
+          skipped: null,
+          status: null,
+          reason: "account_live_activity_only",
+        });
+      }
+      continue;
+    }
+    outcomes.push(...await deliverLegacyLiveActivityEnd(env, config, machineKey, devices, item, defaultTopic));
   }
   // Publishes far outnumber device re-registrations, so prune here too or a
   // chatty machine holds expired suppression rows past their retention.

@@ -14,6 +14,8 @@ import {
   accountChangeMarks,
   apnsConfig,
   boundedText,
+  isActivityBoardColumn,
+  isActivityWaitingReason,
   isRecord,
   json,
   logAttentionDeliveryError,
@@ -136,14 +138,47 @@ const ACTION_KINDS = new Set([
 
 const PR_TABS = new Set(["overview", "activity", "checks", "files"]);
 
+/**
+ * Only urgent events push by default: a question, a failure, and red CI. The
+ * rest show in Activity and the Live Activity. Mirrors the `defaultPolicy`
+ * column of `apps/desktop/src/shared/activityCatalog.ts`.
+ */
 const DEFAULT_NOTIFY_EVENTS = new Set([
   "agent_needs_you",
   "agent_failed",
   "pr_checks_failing",
+]);
+
+/**
+ * Events that notified by default before policy-defaults version 2. A saved
+ * "notify" for one of them, in preferences saved before version 2, was the old
+ * default rather than a choice, so it reads as the new default ("ambient").
+ * Mirrors `upgradeAttentionEventPolicies` in the desktop shared types.
+ */
+const EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2 = new Set([
   "pr_review_requested",
   "pr_changes_requested",
   "pr_merge_ready",
 ]);
+
+function effectiveEventPolicy(
+  eventKind: string,
+  eventPolicies: Record<string, unknown>,
+  scope: Record<string, unknown>,
+): string {
+  const saved = typeof eventPolicies[eventKind] === "string"
+    ? eventPolicies[eventKind] as string
+    : null;
+  const defaultsVersion = Number(scope.eventPolicyDefaultsVersion);
+  const savedUnderOldDefaults = !Number.isFinite(defaultsVersion) || defaultsVersion < 2;
+  if (
+    saved
+    && !(savedUnderOldDefaults && saved === "notify" && EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2.has(eventKind))
+  ) {
+    return saved;
+  }
+  return DEFAULT_NOTIFY_EVENTS.has(eventKind) ? "notify" : "ambient";
+}
 
 function deepLinkForItem(item: ParsedAttentionItem): string | null {
   const destination = item.destination;
@@ -1113,7 +1148,7 @@ async function deliverAttentionNotifications(
     }
     // Give a desktop surface that actually contains this item the first chance
     // to surface it. A merely foreground ADE window is not enough: the header,
-    // full center, or native notch must report the exact visible item.
+    // or the full center must report the exact visible item.
     // The machine heartbeat republishes the full snapshot every 30s; if the
     // item remains unseen, the next pass escalates it to the phone.
     if (
@@ -1136,11 +1171,7 @@ async function deliverAttentionNotifications(
       const eventPolicies = isRecord(override.eventPolicies)
         ? override.eventPolicies
         : {};
-      const policy = typeof eventPolicies[item.eventKind] === "string"
-        ? eventPolicies[item.eventKind]
-        : DEFAULT_NOTIFY_EVENTS.has(item.eventKind)
-          ? "notify"
-          : "ambient";
+      const policy = effectiveEventPolicy(item.eventKind, eventPolicies, override);
       if (policy !== "notify") continue;
       const notificationsEnabled = preferenceBoolean(
         override,
@@ -1190,9 +1221,11 @@ async function deliverAttentionNotifications(
 
       const hideDetails = preferenceBoolean(override, accountPreferences, "hideDetails", false);
       const soundsEnabled = preferenceBoolean(override, accountPreferences, "soundsEnabled", false);
-      const body = hideDetails
-        ? boundedText(item.privacyPreview, MAX_PREVIEW_LENGTH)
-        : boundedText(item.preview, MAX_PREVIEW_LENGTH);
+      const copy = attentionAlertCopy(item, hideDetails);
+      const approvalCategory = item.kind === "agent"
+        && Array.isArray(item.actions)
+        && item.actions.some((action) => isRecord(action) && action.kind === "approve")
+        && item.actions.some((action) => isRecord(action) && action.kind === "deny");
       let result: ApnsSendResult;
       try {
         result = await sendPush(config, {
@@ -1206,9 +1239,12 @@ async function deliverAttentionNotifications(
           payload: {
             aps: {
               alert: {
-                title: notificationTitle(item, hideDetails),
-                ...(body ? { body } : {}),
+                title: copy.title,
+                ...(copy.body ? { body: copy.body } : {}),
               },
+              // Approve and Deny on the banner. The payload's
+              // `accountMachineKey` tells the phone which machine to answer.
+              ...(approvalCategory ? { category: "ADE_APPROVAL" } : {}),
               ...(soundsEnabled ? { sound: "default" } : {}),
               // Wakes the app for a background snapshot refresh alongside the
               // visible alert; foreground polling remains the guaranteed path.
@@ -1297,9 +1333,67 @@ async function deliverAttentionNotifications(
   }
 }
 
-function notificationTitle(item: ParsedAttentionItem, hideDetails: boolean): string {
-  if (!hideDetails) return boundedText(item.title, MAX_TITLE_LENGTH) ?? "ADE needs you";
-  return item.kind === "pull_request" ? "ADE pull request update" : "ADE agent update";
+/** The longest title or body a push shows. Longer text is cut with "…". */
+const ALERT_LINE_MAX = 64;
+
+const ALERT_STATE_LABEL: Record<string, string> = {
+  agent_needs_you: "Needs you",
+  agent_failed: "Failed",
+  agent_completed: "Done",
+  agent_running: "Working",
+  pr_checks_failing: "Checks failing",
+  pr_review_requested: "Review requested",
+  pr_changes_requested: "Changes requested",
+  pr_merge_ready: "Ready to merge",
+  pr_merged: "Merged",
+  pr_opened: "Opened",
+  pr_closed: "Closed",
+};
+
+function alertLine(value: unknown): string | null {
+  const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  if (!text) return null;
+  return text.length > ALERT_LINE_MAX ? `${text.slice(0, ALERT_LINE_MAX - 1).trimEnd()}…` : text;
+}
+
+/**
+ * A push is two short lines: what it is about, and its state and where.
+ *
+ *   Agent:  "Provider SDK inventory review"  /  "Needs you · ADE · Mac Studio"
+ *   PR:     "#1514 Keep Cloudflare under $10"  /  "Checks failing · ADE"
+ *
+ * Agent text (the preview) never goes in a push: it is a paragraph nobody reads
+ * on a lock screen, and the row it opens shows it in full. With hide-details on,
+ * the title is the state alone and nothing else is named.
+ */
+function attentionAlertCopy(
+  item: ParsedAttentionItem,
+  hideDetails: boolean,
+): { title: string; body: string | null } {
+  const state = ALERT_STATE_LABEL[item.eventKind] ?? "Update";
+  if (hideDetails) {
+    return {
+      title: item.kind === "pull_request" ? `Pull request: ${state}` : `Agent: ${state}`,
+      body: null,
+    };
+  }
+  const project = alertLine(item.project?.name);
+  const machine = alertLine(item.machine?.name);
+  if (item.kind === "pull_request") {
+    const number = isRecord(item.destination) ? Number(item.destination.number) : Number.NaN;
+    const prTitle = alertLine(item.preview);
+    const title = Number.isSafeInteger(number) && number > 0
+      ? alertLine(prTitle ? `#${number} ${prTitle}` : `Pull request #${number}`)
+      : alertLine(item.title);
+    return {
+      title: title ?? "Pull request",
+      body: alertLine([state, project].filter(Boolean).join(" · ")),
+    };
+  }
+  return {
+    title: alertLine(item.title) ?? "ADE agent",
+    body: alertLine([state, project, machine].filter(Boolean).join(" · ")),
+  };
 }
 
 /** Length-independent comparison so a wrong secret leaks no timing signal. */
@@ -1432,6 +1526,13 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
   // treated as absent, which degrades to the phase-derived group instead of
   // dropping the whole item.
   const chatActivityMode = value.chatActivityMode === "planning" ? "planning" : undefined;
+  // Same leniency: an unknown column degrades to the phase-derived one.
+  const boardColumn = value.kind === "agent" && isActivityBoardColumn(value.boardColumn)
+    ? value.boardColumn
+    : undefined;
+  const waitingReason = boardColumn === "waiting" && isActivityWaitingReason(value.waitingReason)
+    ? value.waitingReason
+    : undefined;
   const kind = value.kind;
   const eventKind = requiredString(value.eventKind, 64);
   const phase = requiredString(value.phase, 64);
@@ -1662,6 +1763,8 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     alertFingerprint,
     ...(activityTier ? { activityTier } : {}),
     ...(chatActivityMode ? { chatActivityMode } : {}),
+    ...(boardColumn ? { boardColumn } : {}),
+    ...(waitingReason ? { waitingReason } : {}),
     kind,
     eventKind,
     phase,
@@ -2457,6 +2560,11 @@ export async function handleAttentionMachinePublish(
       now,
     );
     await deliverAttentionNotifications(env, account.userId, storedItems);
+    // The heartbeat is also the retry for Live Activity counts the 5-minute
+    // window held back: without it, a Working-to-Waiting change made just
+    // after a push would sit unsent until the next real change. When nothing
+    // is pending, this only reads.
+    await deliverAccountLiveActivity(env, account.userId);
     const [current, acks, accountChanges] = await Promise.all([
       env.DB
         .prepare("select revision from attention_revisions where user_id = ? limit 1")
@@ -2757,7 +2865,7 @@ async function handleAcknowledgment(
         return json({ ok: false, error: "invalid alert fingerprints" }, { status: 400 });
       }
       const normalized = value.trim();
-      // 1024 matches the notch snapshot parser's bound on the same field.
+      // 1024 matches the desktop Activity item parser's bound on the same field.
       if (!normalized || normalized.length > 1024) {
         return json({ ok: false, error: "invalid alert fingerprints" }, { status: 400 });
       }
@@ -3981,7 +4089,7 @@ export const attentionTestInternals = Object.freeze({
   resolvedMutedSessionIds,
   implicitFullSnapshotTombstone,
   linkMachineToAccount,
-  notificationTitle,
+  attentionAlertCopy,
   normalizedSnapshotCursor,
   parseAttentionItem,
   purgeAccountMachineActivity,

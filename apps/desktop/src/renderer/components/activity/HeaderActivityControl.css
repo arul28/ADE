@@ -226,22 +226,6 @@ button.activity-hdr-freshness {
   background: color-mix(in srgb, var(--color-fg) 4%, transparent);
 }
 
-.activity-hdr-notch-health span {
-  flex: 1;
-}
-
-.activity-hdr-notch-health button {
-  flex: 0 0 auto;
-  color: var(--color-accent);
-  font-weight: 650;
-}
-
-.activity-hdr-notch-health button:hover,
-.activity-hdr-notch-health button:focus-visible {
-  text-decoration: underline;
-  outline: none;
-}
-
 .activity-hdr-body {
   display: flex;
   min-height: 0;

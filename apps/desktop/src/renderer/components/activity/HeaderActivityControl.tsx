@@ -14,7 +14,6 @@ import {
 import {
   attentionDestinationDeepLink,
   type AttentionItem,
-  type AttentionNotchHealth,
 } from "../../../shared/types";
 import { useAccountStatus } from "../../lib/account";
 import { relativeWhen } from "../../lib/format";
@@ -204,7 +203,6 @@ export function HeaderActivityControl({
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [navigationError, setNavigationError] = useState<string | null>(null);
-  const [notchHealth, setNotchHealth] = useState<AttentionNotchHealth | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
 
@@ -254,9 +252,6 @@ export function HeaderActivityControl({
     if (!open) return;
     setNavigationError(null);
     void refreshActivitySnapshot();
-    void window.ade?.attentionNotch?.getHealth?.()
-      .then(setNotchHealth)
-      .catch(() => setNotchHealth(null));
   }, [open]);
 
   useEffect(() => {
@@ -265,12 +260,6 @@ export function HeaderActivityControl({
       activityStore.getState().setHeaderSurfaceVisible(false);
     };
   }, [open]);
-
-  const retryNotch = useCallback(async () => {
-    const retry = window.ade?.attentionNotch?.retry;
-    if (!retry) return;
-    setNotchHealth(await retry());
-  }, []);
 
   // An embedded BrowserView paints above the DOM, so tell it to step aside for
   // as long as this popover is up.
@@ -385,11 +374,6 @@ export function HeaderActivityControl({
         : generatedAt
           ? { tone: "ready" as const, label: `Synced ${relativeWhen(generatedAt)}`, retry: false }
           : null;
-  const notchNeedsAttention = notchHealth != null
-    && notchHealth.state !== "disabled"
-    && notchHealth.state !== "starting"
-    && notchHealth.state !== "running"
-    && notchHealth.state !== "unsupported";
 
   // The dropdown is live work only. Done is the most final and the most common
   // state there is, and letting it in turns a glance into a scroll past
@@ -522,20 +506,6 @@ export function HeaderActivityControl({
               tone: "neutral",
               title: availability?.message
                 ?? "Showing work from this machine. Sign in to combine every ADE machine.",
-            }}
-            layout="inline"
-            style={{ margin: "0 12px 8px" }}
-          />
-        ) : null}
-
-        {notchNeedsAttention ? (
-          <Banner
-            model={{
-              id: "activity-header-notch-health",
-              tone: "warning",
-              title: notchHealth.title,
-              detail: notchHealth.message,
-              actions: [{ label: "Check again", onClick: () => void retryNotch() }],
             }}
             layout="inline"
             style={{ margin: "0 12px 8px" }}

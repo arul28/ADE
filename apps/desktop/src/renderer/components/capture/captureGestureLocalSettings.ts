@@ -1,8 +1,7 @@
 /**
  * Where the capture gesture's on/off switch lives.
  *
- * localStorage on this machine, exactly like `activityNotchLocalSettings` —
- * and for the same reason: what a native helper does on THIS computer is not a
+ * localStorage on this machine, because what a native helper does on THIS computer is not a
  * preference that should travel to another machine through the account. A
  * second Mac has its own Screen Recording grant and its own opinion about
  * whether a global key gesture is welcome.

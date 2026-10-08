@@ -496,39 +496,6 @@ describe("HeaderActivityControl", () => {
     await waitFor(() => expect(getSnapshot).toHaveBeenCalledTimes(2));
   });
 
-  it("surfaces a missing native notch helper with recovery guidance", async () => {
-    seedItems([]);
-    const retry = vi.fn(async () => ({
-      state: "missing" as const,
-      title: "ADE Notch needs reinstalling",
-      message: "Reinstall or update ADE, then restart the app.",
-      recovery: "reinstall_or_update" as const,
-      surface: null,
-    }));
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      writable: true,
-      value: {
-        ...(window.ade ?? {}),
-        attentionNotch: {
-          publishSnapshot: vi.fn(),
-          updateSettings: vi.fn(),
-          getHealth: retry,
-          retry,
-          onAcknowledgeRequested: vi.fn(() => () => {}),
-        },
-      },
-    });
-    renderControl();
-
-    fireEvent.click(screen.getByTestId("header-activity-trigger"));
-
-    expect(await screen.findByText("ADE Notch needs reinstalling")).toBeTruthy();
-    expect(screen.getByText(/Reinstall or update ADE/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
-    await waitFor(() => expect(retry).toHaveBeenCalledTimes(2));
-  });
-
   it("stays honest when signed out instead of showing an empty account", () => {
     publishAccountStatus(SIGNED_OUT_ACCOUNT);
     renderControl();

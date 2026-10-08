@@ -93,7 +93,7 @@ Expected account owner alias:
     denial guidance clears. Do not record actual speech containing private data.
 12. Trigger a harmless ADE notification and click it. Confirm it carries ADE's
     app identity and returns focus to the correct session.
-13. Confirm iOS Simulator, Xcode Preview, macOS Attention Notch, and native OS
+13. Confirm iOS Simulator, Xcode Preview, and native OS
     computer-use actions are hidden or capability-blocked. Browser/App Control
     and proof ingestion must remain available.
 

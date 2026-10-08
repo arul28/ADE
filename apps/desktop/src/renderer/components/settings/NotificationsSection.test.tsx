@@ -12,16 +12,14 @@ vi.mock("../../lib/account", () => ({
 }));
 
 // Activity's settings now live on this page too, so the notifications section
-// mounts the notch, privacy, machine, sound, and scheduled-work sections as
+// mounts the privacy, machine, sound, and scheduled-work sections as
 // well as the event policy rows.
 function installAdeMock() {
   const putPreferences = vi.fn(async (_ownerId: string, _prefs: any) => {});
   const getPreferences = vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES);
-  const updateSettings = vi.fn(async (_settings: any) => {});
   const saveProjectConfig = vi.fn(async (_candidate: any) => {});
   (window as any).ade = {
     attention: { getPreferences, putPreferences },
-    attentionNotch: { updateSettings },
     ai: { updateConfig: vi.fn(async () => {}) },
     agentChat: {
       listScheduledWork: vi.fn(async () => []),
@@ -40,7 +38,7 @@ function installAdeMock() {
       save: saveProjectConfig,
     },
   };
-  return { getPreferences, putPreferences, updateSettings, saveProjectConfig };
+  return { getPreferences, putPreferences, saveProjectConfig };
 }
 
 afterEach(() => {

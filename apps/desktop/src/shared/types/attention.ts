@@ -1,4 +1,5 @@
 import { ACTIVITY_EVENT_CATALOG } from "../activityCatalog";
+import type { WorkBoardColumn, WorkBoardWaitingReason } from "./chat";
 
 export const ATTENTION_CONTRACT_VERSION = 1 as const;
 
@@ -146,6 +147,20 @@ export type AttentionItem = {
    * validate it at the boundary (`activityStateGroup`) rather than trusting it.
    */
   chatActivityMode?: "planning" | null;
+  /**
+   * The Work-board column this agent item files under, computed by the
+   * publishing brain with the board's own rules (a failure is Needs you, a
+   * snoozed row or a lane PR mid-CI or awaiting review is Waiting). Every
+   * Activity surface groups by it, so the board, the desktop panel, the phone
+   * and the Live Activity count the same four states.
+   *
+   * Optional and additive: older publishers omit it, and readers then derive a
+   * column from the phase through `activityBoardColumn`. Pull-request items
+   * never carry it; they are notifications, not agents.
+   */
+  boardColumn?: WorkBoardColumn | null;
+  /** Why the item is in Waiting. Present only when `boardColumn` is `waiting`. */
+  waitingReason?: WorkBoardWaitingReason | null;
   title: string;
   preview: string;
   privacyPreview: string;
@@ -185,10 +200,6 @@ export type AttentionItem = {
  * currently unused by any phase; it stays in the union and the stylesheets as
  * the spare for the next PR-side distinction, and must never be handed to a
  * session state — those five hues are settled.
- *
- * It lives here rather than beside the phase table because the native notch
- * protocol carries it on the wire (`NotchStatusTone` in `AttentionModels.swift`
- * mirrors this union), so main-process code has to name it too.
  */
 export type AttentionTone =
   | "amber"
@@ -213,38 +224,6 @@ export type AttentionTombstone = {
   id: string;
   revision: number;
   deletedAt: string;
-};
-
-/**
- * The whole account's shape, sent alongside a bounded projection of its items.
- *
- * Load-bearing: the renderer publishes only the top-priority slice to stay
- * inside the native pipe's byte budget, so "5 working · 2 need you · 61 total"
- * can only be honest if the totals travel separately from the rows.
- */
-export type AttentionCounts = {
-  needsYou: number;
-  /**
-   * The six state groups of `ACTIVITY_STATE_GROUPS`, of which three were here
-   * from the start. `failed`, `planning` and `idle` are optional only because
-   * an older publisher cannot send them — a reader that has them must floor its
-   * own groups from them rather than inventing a residual, which is what the
-   * deleted `notchStripUnattributedCount` was doing to paper over the gap.
-   *
-   * A reader that does NOT get `idle` falls back to counting the rows it can
-   * see, and the projection is capped — so a machine with fifty resting
-   * sessions would under-report until the publisher catches up. That is the
-   * same transitional gap `failed` and `planning` had, and it resolves the
-   * moment both sides ship together.
-   */
-  failed?: number;
-  planning?: number;
-  idle?: number;
-  working: number;
-  done: number;
-  total: number;
-  machinesOnline: number;
-  machinesTotal: number;
 };
 
 export type AttentionSnapshot = {
@@ -279,12 +258,6 @@ export type AttentionSnapshot = {
   machines?: AttentionMachineRef[];
   items: AttentionItem[];
   itemsTruncated?: boolean;
-  /**
-   * Totals over the full item set, so a surface receiving a truncated
-   * projection can still state how much work the account actually has.
-   * Optional: publishers older than this build omit it.
-   */
-  counts?: AttentionCounts;
   tombstones?: AttentionTombstone[];
 };
 
@@ -300,6 +273,12 @@ export type AttentionPresence = {
 
 export type AttentionPreferenceScope = {
   eventPolicies: Record<AttentionEventKind, AttentionDeliveryPolicy>;
+  /**
+   * Which default event policies `eventPolicies` was saved against. Absent
+   * means version 1, when review requests, requested changes and merge-ready
+   * PRs notified by default. See `upgradeAttentionEventPolicies`.
+   */
+  eventPolicyDefaultsVersion?: number;
   notificationsEnabled: boolean;
   liveActivitiesEnabled: boolean;
   desktopFirstEnabled: boolean;
@@ -308,21 +287,6 @@ export type AttentionPreferenceScope = {
   celebrationsEnabled: boolean;
   hideDetails: boolean;
   dockBadgeScope: "local" | "account";
-  /**
-   * Notch presentation, synced so a second Mac inherits the choice instead of
-   * starting from the shipped default. Optional because every relay and
-   * publisher older than this build omits them, and because localStorage
-   * remains the offline cache of record — readers take the synced value when
-   * it is present and the local one otherwise. The localStorage key strings
-   * are unchanged; only the source of truth moved.
-   *
-   * `notchAutomaticReveal` and `notchTicker` used to sit here too. They are
-   * gone rather than deprecated: the native helper reads neither, so a synced
-   * value for either was a preference that travelled between Macs and then
-   * changed nothing. An older peer may still send them; they are ignored.
-   */
-  notchRevealMode?: AttentionNotchRevealMode;
-  notchExpandedPanel?: boolean;
   quietHours: {
     enabled: boolean;
     startMinute: number;
@@ -337,127 +301,6 @@ export type AttentionPreferences = {
   machines: Record<string, Partial<AttentionPreferenceScope>>;
   projects: Record<string, Partial<AttentionPreferenceScope>>;
   mutedSessionIds: string[];
-};
-
-/**
- * How this computer exposes its notch surface. Events never override the selected
- * interaction mode.
- * - `always`: the compact strip stays visible on the menu bar.
- * - `hover`: the same compact strip appears when the pointer enters the top-edge
- *   hot zone, and retreats when it leaves.
- *
- * The two modes are deliberately indistinguishable once the strip is on screen:
- * both render the identical compact chrome, and in both a click — and only a
- * click — opens the full panel. The retired `minimal`/`click` values described a
- * third "peek" layout that no longer exists; they normalize to `always` so an
- * upgrade keeps a visible strip rather than silently hiding it.
- */
-export type AttentionNotchRevealMode = "always" | "hover";
-
-export const ATTENTION_NOTCH_REVEAL_MODES: readonly AttentionNotchRevealMode[] = [
-  "always",
-  "hover",
-];
-
-/** Matches the shipped surface, so an upgrade changes nothing on its own. */
-export const DEFAULT_ATTENTION_NOTCH_REVEAL_MODE: AttentionNotchRevealMode = "hover";
-
-export function isAttentionNotchRevealMode(
-  value: unknown,
-): value is AttentionNotchRevealMode {
-  return (
-    typeof value === "string"
-    && ATTENTION_NOTCH_REVEAL_MODES.includes(value as AttentionNotchRevealMode)
-  );
-}
-
-/**
- * Accepts anything a persisted setting, an older host, or an older helper can
- * carry and lands on a live mode. `minimal` and `click` both kept the strip on
- * screen, so both become `always`; anything unrecognized takes the default.
- */
-export function normalizeAttentionNotchRevealMode(
-  value: unknown,
-): AttentionNotchRevealMode {
-  if (isAttentionNotchRevealMode(value)) return value;
-  if (value === "minimal" || value === "click") return "always";
-  return DEFAULT_ATTENTION_NOTCH_REVEAL_MODE;
-}
-
-/**
- * Per-kind delight for an event that just happened, rendered by the native
- * surface as a transient rather than a row. `celebration` earns the confetti;
- * everything else rides the alert layout with a calmer tone.
- */
-export type AttentionNotchToastTreatment =
-  | "celebration"
-  | "success"
-  | "alert"
-  | "info";
-
-export const ATTENTION_NOTCH_TOAST_TREATMENTS: readonly AttentionNotchToastTreatment[] = [
-  "celebration",
-  "success",
-  "alert",
-  "info",
-];
-
-/**
- * A one-shot event pushed to the native notch. Unlike every other helper
- * command this is not state-setting: it is never replayed on restart, because
- * a toast for something that happened before the crash is a lie.
- */
-export type AttentionNotchToast = {
-  itemId?: string | null;
-  eventKind: AttentionEventKind;
-  treatment: AttentionNotchToastTreatment;
-  title: string;
-  subtitle?: string | null;
-  /** Host-chosen hue; the native side falls back to the treatment's own. */
-  tone?: AttentionTone | null;
-  /** Natively clamped to 800..15000; out-of-range values are rejected here. */
-  durationMs?: number | null;
-};
-
-/** Matches the native clamp, so the router can reject rather than silently bend. */
-export const ATTENTION_NOTCH_TOAST_MIN_DURATION_MS = 800;
-export const ATTENTION_NOTCH_TOAST_MAX_DURATION_MS = 15_000;
-
-export type AttentionNotchSettings = {
-  enabled: boolean;
-  revealMode: AttentionNotchRevealMode;
-  /**
-   * When false the tall expanded panel is never shown, so the surface can
-   * never grow far enough to sit over menu-bar content.
-   */
-  expandedPanelEnabled: boolean;
-  // `automaticRevealEnabled` and `tickerEnabled` were retired: the native
-  // helper stopped reading them (`AttentionModels.swift`), so carrying them
-  // through the wire, the validators and the settings UI moved no pixel.
-  preferredDisplayId?: number | null;
-  hideDetails: boolean;
-  celebrationsEnabled: boolean;
-  soundsEnabled: boolean;
-};
-
-export type AttentionNotchHealth = {
-  state:
-    | "disabled"
-    | "starting"
-    | "running"
-    | "missing"
-    | "crash_loop"
-    | "protocol_error"
-    | "unsupported";
-  title: string;
-  message: string;
-  recovery: "retry" | "reinstall_or_update" | null;
-  surface: "physical_notch" | "menu_bar" | null;
-};
-
-export type AttentionNotchAcknowledgeRequest = {
-  itemId: string;
-  mode: "seen" | "dismiss";
 };
 
 /**
@@ -634,9 +477,52 @@ export const BALANCED_ATTENTION_EVENT_POLICIES: Record<
   ACTIVITY_EVENT_CATALOG.map(({ kind, defaultPolicy }) => [kind, defaultPolicy]),
 ) as Record<AttentionEventKind, AttentionDeliveryPolicy>;
 
+/**
+ * Version 2: only the urgent events (a question, a failure, red CI) notify by
+ * default. Bump it when a default policy changes, and add the change to
+ * `upgradeAttentionEventPolicies`. The push relay applies the same rule.
+ */
+export const ATTENTION_EVENT_POLICY_DEFAULTS_VERSION = 2;
+
+/** Events that notified under version 1 defaults and are ambient from version 2. */
+const EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2: readonly AttentionEventKind[] = [
+  "pr_review_requested",
+  "pr_changes_requested",
+  "pr_merge_ready",
+];
+
+/**
+ * Bring saved event policies onto the current defaults.
+ *
+ * Every save writes the whole `eventPolicies` map, so a "notify" saved under an
+ * older version cannot tell a user's choice apart from the default it was
+ * saved with. Version 2 treats it as the default and moves it to "ambient".
+ * After that the scope carries the current version, so any later choice stays.
+ */
+export function upgradeAttentionEventPolicies<T extends Partial<AttentionPreferenceScope>>(
+  scope: T,
+): T {
+  const version = typeof scope.eventPolicyDefaultsVersion === "number"
+    ? scope.eventPolicyDefaultsVersion
+    : 1;
+  if (version >= ATTENTION_EVENT_POLICY_DEFAULTS_VERSION) return scope;
+  const eventPolicies = scope.eventPolicies ? { ...scope.eventPolicies } : undefined;
+  if (eventPolicies) {
+    for (const kind of EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2) {
+      if (eventPolicies[kind] === "notify") eventPolicies[kind] = "ambient";
+    }
+  }
+  return {
+    ...scope,
+    ...(eventPolicies ? { eventPolicies } : {}),
+    eventPolicyDefaultsVersion: ATTENTION_EVENT_POLICY_DEFAULTS_VERSION,
+  };
+}
+
 export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
   account: {
     eventPolicies: BALANCED_ATTENTION_EVENT_POLICIES,
+    eventPolicyDefaultsVersion: ATTENTION_EVENT_POLICY_DEFAULTS_VERSION,
     notificationsEnabled: true,
     liveActivitiesEnabled: true,
     desktopFirstEnabled: true,

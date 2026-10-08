@@ -2412,7 +2412,7 @@ both files are pinned to the extension's iOS 17 deployment target.
 table (`ActivityStateGroup`: needs-you, failed, planning, working, idle, done),
 pinned
 to `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the same
-fixture the renderer, the native notch, and the relay run, because this copy
+fixture the renderer and the relay run, because this copy
 drifted on `merge_ready`, on idle-tier demotion, and on how planning is derived
 in the very commit that created it. Its wire spelling is kept separate from the
 Swift case name and decoding accepts aliases. A row opens with a state mark —
@@ -2457,8 +2457,8 @@ Activity pane. `blocked` is a neutral Working item with an Open action, distinct
 amber `awaitingInput` kind; running uses the shared dotted-circle glyph, and a
 stale run says `Stale` with a clock rather than claiming the host is offline.
 
-Acknowledgments write through the account relay so desktop, ADE Notch, and
-mobile settle together. A device never executes a current-host App Intent for
+Acknowledgments write through the account relay so desktop and mobile settle
+together. A device never executes a current-host App Intent for
 an item that originated on another machine; those items expose exact Open or
 Reply navigation instead.
 

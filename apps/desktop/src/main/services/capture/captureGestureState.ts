@@ -13,9 +13,8 @@ import type {
 /**
  * Everything about the capture gesture that is a decision rather than an effect.
  *
- * Split out of `captureHelper.ts` for the same reason the notch splits
- * `attentionNotchRouter` out of `attentionNotchHelper`: the interesting bugs in
- * a supervised child process live in "should this chord fire", "is this line
+ * Split out of `captureHelper.ts` because the interesting bugs in a supervised
+ * child process live in "should this chord fire", "is this line
  * the helper sent me actually a capture", and "what do we tell the user when it
  * stopped" — none of which need a process to test.
  */
@@ -28,8 +27,7 @@ export function captureHelperExecutableName(platform: NodeJS.Platform | string):
 /**
  * Where the helper lives, packaged and in development.
  *
- * The two-branch shape is lifted wholesale from
- * `resolveAttentionNotchExecutablePath`: packaged builds put extraResources
+ * Two branches: packaged builds put extraResources
  * under `process.resourcesPath`, while a dev run resolves them relative to
  * `app.getAppPath()`, which is the `apps/desktop` checkout. Getting this wrong
  * is invisible in dev and fatal in the DMG.
@@ -272,7 +270,7 @@ export type CaptureHealthInput = {
 /**
  * One health verdict, in the order the user can act on it.
  *
- * Platform first, exactly as the notch does it: "turn the gesture on" is not an
+ * Platform first: "turn the gesture on" is not an
  * actionable instruction on a machine where no helper was ever built, and
  * showing the disabled state there tells the user to do something impossible.
  */

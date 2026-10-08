@@ -54,8 +54,8 @@ SOFTWARE.
 Upstream:   https://github.com/lobehub/lobe-icons
 Copyright:  Copyright (c) 2023 LobeHub
 License:    MIT
-Bundled as: apps/desktop/native/ADEAttentionNotch/Sources/ADEAttentionNotch/
-            Resources/ProviderIcons/*.svg
+Bundled as: the @lobehub/icons and @lobehub/icons-static-svg packages
+            (provider marks in the desktop app)
 
 MIT License
 
