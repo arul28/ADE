@@ -2387,13 +2387,15 @@ export function TopBar({
                 onClose={() => {
                   if (isProjectBusy) return;
                   cancelNewTab();
-                  if (!hasProject && personalChatsTabOpen) {
-                    onNavigate?.("/chats");
-                  } else if (!hasProject && browserTabOpen) {
-                    onNavigate?.("/browser");
-                  } else if (!hasProject && musicTabOpen) {
-                    onNavigate?.("/music");
-                  }
+                  // With no project, fall back to the first machine tab still open.
+                  const machineTabRoute = hasProject
+                    ? null
+                    : ([
+                      [personalChatsTabOpen, "/chats"],
+                      [browserTabOpen, "/browser"],
+                      [musicTabOpen, "/music"],
+                    ] as const).find(([open]) => open)?.[1];
+                  if (machineTabRoute) onNavigate?.(machineTabRoute);
                 }}
                 closeTitle="Close new tab"
                 closeDisabled={isProjectBusy}

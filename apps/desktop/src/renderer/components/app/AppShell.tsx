@@ -17,6 +17,7 @@ import type {
   AiSettingsStatus,
   GitHubStatus,
   ProjectInfo,
+  KeybindingsSnapshot,
   OpenProjectBinding,
   SyncRoleSnapshot,
   SyncRouteHealth,
@@ -81,6 +82,35 @@ import {
   musicTabAvailable,
 } from "../music/musicTab";
 import { setMusicTabOpener } from "../music/musicStore";
+
+/**
+ * A shortcut that opens a machine tab (Browser, Music) from anywhere, project
+ * or not. Like the command palette it works while a field has focus; a handler
+ * that already used the chord wins by calling preventDefault first.
+ */
+function useOpenMachineTabShortcut(
+  keybindings: KeybindingsSnapshot | null,
+  shortcut: { id: string; fallback: string },
+  available: boolean,
+  open: () => void,
+): void {
+  const binding = useMemo(
+    () => getEffectiveBinding(keybindings, shortcut.id, shortcut.fallback),
+    [keybindings, shortcut.fallback, shortcut.id],
+  );
+  useEffect(() => {
+    if (!available) return undefined;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
+      if (!eventMatchesBinding(e, binding)) return;
+      e.preventDefault();
+      if (e.repeat) return;
+      open();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [available, binding, open]);
+}
 
 function primaryTabPath(pathname: string): string {
   const roots = ["/hub", "/activity", "/attention", "/lanes", "/files", "/work", "/prs", "/history", "/automations", "/cto", "/settings"];
@@ -963,28 +993,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [commandPaletteBinding]);
 
-  // Mod+Shift+B opens the Browser tab from anywhere, project or not. Like the
-  // command palette it works while a field has focus; a handler that already
-  // used the chord wins by calling preventDefault first.
+  // Mod+Shift+B opens the Browser tab from anywhere.
   const isBrowserRouteRef = useRef(isBrowserRoute);
   isBrowserRouteRef.current = isBrowserRoute;
-  const browserTabBinding = useMemo(
-    () => getEffectiveBinding(keybindings, BROWSER_TAB_KEYBINDING.id, BROWSER_TAB_KEYBINDING.fallback),
-    [keybindings],
-  );
-  useEffect(() => {
-    if (!browserTabAvailable()) return undefined;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.isComposing) return;
-      if (!eventMatchesBinding(e, browserTabBinding)) return;
-      e.preventDefault();
-      if (e.repeat) return;
-      setBrowserTabOpen(true);
-      if (!isBrowserRouteRef.current) navigate(BROWSER_TAB_ROUTE);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [browserTabBinding, navigate, setBrowserTabOpen]);
+  const openBrowserTab = useCallback(() => {
+    setBrowserTabOpen(true);
+    if (!isBrowserRouteRef.current) navigate(BROWSER_TAB_ROUTE);
+  }, [navigate, setBrowserTabOpen]);
+  useOpenMachineTabShortcut(keybindings, BROWSER_TAB_KEYBINDING, browserTabAvailable(), openBrowserTab);
 
   // Mod+Shift+M opens the Music tab from anywhere, the same way. The top-bar
   // mini player and the home page's Now Playing widget open it through
@@ -999,22 +1015,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setMusicTabOpener(openMusicTab);
     return () => setMusicTabOpener(null);
   }, [openMusicTab]);
-  const musicTabBinding = useMemo(
-    () => getEffectiveBinding(keybindings, MUSIC_TAB_KEYBINDING.id, MUSIC_TAB_KEYBINDING.fallback),
-    [keybindings],
-  );
-  useEffect(() => {
-    if (!musicTabAvailable()) return undefined;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.isComposing) return;
-      if (!eventMatchesBinding(e, musicTabBinding)) return;
-      e.preventDefault();
-      if (e.repeat) return;
-      openMusicTab();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [musicTabBinding, openMusicTab]);
+  useOpenMachineTabShortcut(keybindings, MUSIC_TAB_KEYBINDING, musicTabAvailable(), openMusicTab);
 
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
