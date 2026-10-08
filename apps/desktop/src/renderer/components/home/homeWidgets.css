@@ -345,6 +345,18 @@
 @keyframes ade-wx-flash { 0% { opacity: 0; } 62% { opacity: 1; } 66% { opacity: 0.2; } 70% { opacity: 1; } 80% { opacity: 0; } }
 @keyframes ade-wx-breathe { from { transform: translateX(-1.5px); opacity: 0.55; } to { transform: translateX(1.5px); opacity: 0.95; } }
 
+/* SVG part animations run on the main thread (style, layout and paint each
+   frame): smooth, a weather card cost about 100 ms/s and 55 layouts/s while
+   idle. Only the big "now" glyph moves, and it moves in steps; the hour and
+   day glyphs hold still. */
+.ade-wx2-hours .ade-wx *, .ade-wx2-days-fit .ade-wx * { animation: none !important; }
+.ade-wx2-now .ade-wx .ade-wx-rays { animation-timing-function: steps(32, end); }
+.ade-wx2-now .ade-wx .ade-wx-drift { animation-timing-function: steps(6, end); }
+.ade-wx2-now .ade-wx .ade-wx-star { animation-timing-function: steps(4, end); }
+.ade-wx2-now .ade-wx .ade-wx-drop,
+.ade-wx2-now .ade-wx .ade-wx-flake { animation-timing-function: steps(4, end); }
+.ade-wx2-now .ade-wx .ade-wx-fog line { animation-timing-function: steps(6, end); }
+
 /* Off screen, in a preview, or under reduced motion: hold still. */
 [data-still] .ade-wx * { animation-play-state: paused !important; }
 /* On a light card the night glyphs and white clouds need ink of their own. */

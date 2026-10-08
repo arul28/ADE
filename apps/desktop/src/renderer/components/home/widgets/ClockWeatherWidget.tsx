@@ -17,9 +17,10 @@ import "../homeWidgets.css";
  * the next days as fit. No coloured panels; colour is only in the glyphs.
  *
  * The clock repaints once a minute, on the minute. Weather is
- * Open-Meteo (free, no key) for a place the user types: no location prompt,
- * no precise position, and only the place's rounded coordinates leave the
- * machine. Main caches each place for 15 minutes; this card asks every 30
+ * Open-Meteo (free, no key) for a place the user types, or until they do, the
+ * city in the system time zone's name: no location prompt, no precise
+ * position, and only a city name and the place's rounded coordinates leave
+ * the machine. Main caches each place for 15 minutes; this card asks every 30
  * while it is on screen. Glyphs hold still off screen.
  */
 
