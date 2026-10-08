@@ -2656,6 +2656,9 @@ function renderEvent(
   if (event.type === "user_message") {
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
     if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
+    const hasPastedTextPromptAttachment = event.attachments?.some(
+      (attachment) => attachment.type === "file" && attachment.intent === "user_prompt",
+    ) === true;
     const metadataKind = event.metadata?.hideFullPrompt === true && typeof event.metadata?.kind === "string"
       ? event.metadata.kind
       : null;
@@ -2713,7 +2716,14 @@ function renderEvent(
                 <span aria-hidden>↶</span>
               </button>
             ) : null}
-            <MessageCopyButton value={event.displayText?.trim() || (event.metadata?.hideFullPrompt === true ? "" : event.text)} />
+            <MessageCopyButton
+              value={event.displayText?.trim() || (
+                event.metadata?.hideFullPrompt === true
+                || (hasPastedTextPromptAttachment && event.displayText !== undefined)
+                  ? ""
+                  : event.text
+              )}
+            />
           </div>
           {(() => {
             const displayText = event.displayText?.trim();
@@ -2726,7 +2736,9 @@ function renderEvent(
             // the user typed (if anything) under it.
             const review = parseThreadReviewBlock(event.text);
             if (review) {
-              const typed = displayText || review.rest.trim();
+              const typed = hasPastedTextPromptAttachment && event.displayText !== undefined
+                ? displayText
+                : displayText || review.rest.trim();
               return (
                 <div className="flex min-w-0 flex-col gap-2">
                   <ThreadReviewSentCard comments={review.comments} />
@@ -2736,6 +2748,11 @@ function renderEvent(
             }
             // `text` is what the provider received (mention blocks expanded);
             // `displayText` is what the user typed. Show only what they typed.
+            if (hasPastedTextPromptAttachment && event.displayText !== undefined) {
+              return displayText ? (
+                <UserTypedText text={displayText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+              ) : null;
+            }
             if (displayText && displayText !== event.text.trim()) {
               return userTextLooksLikeMarkdown(displayText) ? (
                 <MarkdownBlock markdown={displayText} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />

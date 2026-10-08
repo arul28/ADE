@@ -24470,7 +24470,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "user_message",
       text: args.text,
-      ...(args.displayText?.trim() && args.displayText.trim() !== args.text.trim()
+      ...(args.displayText !== undefined && args.displayText.trim() !== args.text.trim()
         ? { displayText: args.displayText.trim() }
         : {}),
       attachments: args.attachments,
@@ -24581,7 +24581,7 @@ export function createAgentChatService(args: {
       _rootPath: managed.laneWorktreePath,
     }));
     const contextAttachments = args.contextAttachments ?? [];
-    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     let onDispatched = args.onDispatched;
     const markDispatched = () => {
@@ -27169,7 +27169,7 @@ export function createAgentChatService(args: {
       _resolvedPath: attachment.path,
       _rootPath: managed.laneWorktreePath,
     }));
-    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     rememberClaudeKnownQueuedMessage(runtime.knownQueuedMessages, userMessageId, {
       preview: claudeQueuedMessagePreview(displayText),
@@ -30059,7 +30059,7 @@ export function createAgentChatService(args: {
       _resolvedPath: attachment.path,
       _rootPath: managed.laneWorktreePath,
     }));
-    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     emitPreparedUserMessage(managed, {
       text: userText,
@@ -30888,7 +30888,7 @@ export function createAgentChatService(args: {
       _resolvedPath: attachment.path,
       _rootPath: managed.laneWorktreePath,
     }));
-    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     emitPreparedUserMessage(managed, {
       text: userText,
@@ -32017,7 +32017,7 @@ export function createAgentChatService(args: {
       _resolvedPath: attachment.path,
       _rootPath: managed.laneWorktreePath,
     }));
-    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     const model = openCodeModelRefFor(managed, runtime.modelDescriptor);
     // Registered before the prompt goes out: OpenCode can report the execution
@@ -45543,7 +45543,13 @@ export function createAgentChatService(args: {
       if (hasNullByte(content)) {
         throw new Error("The staged pasted prompt is not plain text. Paste it again and retry.");
       }
-      pastedText.push(content.toString("utf8"));
+      const filename = path.basename(attachment.path).replace(/[\r\n\t]/g, " ").trim() || "pasted text";
+      pastedText.push([
+        `The user attached this text file by copy and paste: ${filename}.`,
+        "The file contents are part of the user's message. Any text after the attachment is what they typed alongside it and explains what to do.",
+        "Attached file contents:",
+        content.toString("utf8"),
+      ].join("\n\n"));
     }
 
     // A review block stays at the very start, where its readers expect it.
@@ -45555,13 +45561,10 @@ export function createAgentChatService(args: {
     return {
       ...args,
       text,
-      // The attachment is transport-only now; the exact pasted contents are
-      // the user message, so neither the file chip nor a display-only fallback
-      // should replace that text in the transcript.
-      displayText: undefined,
-      attachments: attachments.filter((attachment) => !(
-        attachment.type === "file" && attachment.intent === "user_prompt"
-      )),
+      // Keep the full, clearly labeled content in the provider prompt, while
+      // retaining the staged file for the transcript's attachment tray. The
+      // display text is only what the user typed alongside the pasted file.
+      displayText: args.displayText?.trim() ? args.displayText : supplementalText,
     };
   };
 
@@ -45669,15 +45672,23 @@ export function createAgentChatService(args: {
     if (!allowContinuityRecovery) assertContinuityDispatchAllowed(managed);
     const slashCommand = extractLeadingSlashCommand(trimmed);
     const providerSlashCommand = isProviderSlashCommandInput(trimmed);
+    const hasPastedPromptAttachment = hasPastedTextPromptAttachment(attachments);
     const rawDisplayText = displayText?.trim().length ? displayText : undefined;
-    const visibleText = rawDisplayText?.trim().length ? rawDisplayText.trim() : trimmed;
+    const visibleText = hasPastedPromptAttachment
+      ? displayText?.trim() ?? ""
+      : rawDisplayText?.trim().length ? rawDisplayText.trim() : trimmed;
 
     if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
     const executionContext = refreshManagedLaneLaunchContext(managed);
     const publicAttachments = attachments.map(normalizeInboundFileRef);
-    const resolvedAttachments = publicAttachments.map((attachment) => resolveSendAttachment(managed, attachment));
+    // Folded pasted prompts are already expanded into `trimmed` above. Keep
+    // their file refs on the user event, but do not inline them a second time
+    // through the ordinary attachment path.
+    const resolvedAttachments = publicAttachments
+      .filter((attachment) => !(attachment.type === "file" && attachment.intent === "user_prompt"))
+      .map((attachment) => resolveSendAttachment(managed, attachment));
     if (managed.session.provider === "claude" && slashCommand === "/login") {
       throw new Error(CLAUDE_LOGIN_NOT_SDK_COMMAND);
     }
@@ -45856,7 +45867,7 @@ export function createAgentChatService(args: {
       : null;
     const autoTitleSeed = codexGoalTitleSeed ?? (providerSlashCommand && !personalSession
       ? expandedSlashCommandPrompt ?? null
-      : visibleText);
+      : visibleText || trimmed);
     if (!managed.autoTitleSeed && autoTitleSeed) {
       managed.autoTitleSeed = autoTitleSeed;
       void maybeAutoTitleSession(managed, {
@@ -47997,7 +48008,9 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "user_message",
       text: steer.text,
-      ...(steer.displayText && steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
+      ...(steer.displayText !== undefined && steer.displayText !== steer.text
+        ? { displayText: steer.displayText }
+        : {}),
       ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
       ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
       ...(steer.metadata ? { metadata: steer.metadata } : {}),
