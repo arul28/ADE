@@ -401,6 +401,14 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   /* ── Device emulation ──────────────────────────────────────────────────── */
 
   /**
+   * The view scale each emulating tab's override was last applied at. The pane
+   * changes `emulationViewScale()` at once and re-sends the override after, so
+   * until that lands Chromium still draws the page at the old scale, and mouse
+   * input must be mapped with the scale Chromium is drawing at.
+   */
+  const appliedEmulationScales = new WeakMap<BrowserTabState, number>();
+
+  /**
    * Sends the CDP commands that make a device preset visible.
    *
    * `setDeviceMetricsOverride` alone is not enough: without `screenWidth` /
@@ -410,9 +418,10 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
    * what "iPhone 17" means.
    */
   const sendEmulationCommands = async (
-    wc: WebContents,
+    tab: BrowserTabState,
     next: BuiltInBrowserEmulationState | null,
   ): Promise<void> => {
+    const wc = tab.webContents;
     const hasTouch = next?.hasTouch ?? false;
     await sendDebuggerCommand(wc, "Emulation.setTouchEmulationEnabled", {
       enabled: hasTouch,
@@ -426,11 +435,13 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     }).catch(() => {});
     if (!next) {
       await sendDebuggerCommand(wc, "Emulation.clearDeviceMetricsOverride");
+      appliedEmulationScales.delete(tab);
       // CDP has no "clear UA override"; an empty string is Chromium's reset.
       await sendDebuggerCommand(wc, "Emulation.setUserAgentOverride", { userAgent: "" }).catch(() => {});
       return;
     }
     const metrics = builtInBrowserEmulationMetrics(next);
+    const scale = clampBuiltInBrowserEmulationViewScale(emulationViewScale());
     await sendDebuggerCommand(wc, "Emulation.setDeviceMetricsOverride", {
       width: metrics.width,
       height: metrics.height,
@@ -440,7 +451,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       // width and is CROPPED by the narrower native view. With it the page
       // still reports the device's width and Chromium draws it smaller, which
       // is what the pane's letterbox already assumed.
-      scale: clampBuiltInBrowserEmulationViewScale(emulationViewScale()),
+      scale,
       screenWidth: metrics.width,
       screenHeight: metrics.height,
       positionX: 0,
@@ -449,6 +460,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         ? { type: "landscapePrimary", angle: 90 }
         : { type: "portraitPrimary", angle: 0 },
     });
+    appliedEmulationScales.set(tab, scale);
     if (next.userAgent) {
       const userAgentMetadata = builtInBrowserEmulationUserAgentMetadata(next);
       await sendDebuggerCommand(wc, "Emulation.setUserAgentOverride", {
@@ -469,13 +481,18 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     if (!tab.emulation) return;
     const wc = tab.webContents;
     if (wc.isDestroyed() || !wc.debugger.isAttached()) return;
-    void sendEmulationCommands(wc, tab.emulation).catch((error) => {
+    void sendEmulationCommands(tab, tab.emulation).catch((error) => {
       logger()?.debug("built_in_browser.emulation_reapply_failed", {
         tabId: tab.id,
         err: errorMessage(error),
       });
     });
   };
+
+  /** The scale Chromium draws an emulating tab at: what its override last applied. */
+  const emulationInputScale = (tab: BrowserTabState): number => (
+    appliedEmulationScales.get(tab) ?? clampBuiltInBrowserEmulationViewScale(emulationViewScale())
+  );
 
   async function setEmulation(
     input: BuiltInBrowserSetEmulationArgs,
@@ -494,19 +511,19 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         // the toolbar without ever re-laying-out the page.
         await acquireDebuggerHold(tab, "emulation");
         try {
-          await sendEmulationCommands(wc, next);
+          await sendEmulationCommands(tab, next);
         } catch (error) {
           releaseDebuggerHold(tab, "emulation");
           throw error;
         }
       } else if (tab.debuggerHolds.has("emulation")) {
         try {
-          await sendEmulationCommands(wc, null);
+          await sendEmulationCommands(tab, null);
         } finally {
           releaseDebuggerHold(tab, "emulation");
         }
       } else {
-        await withTemporaryDebugger(wc, () => sendEmulationCommands(wc, null));
+        await withTemporaryDebugger(wc, () => sendEmulationCommands(tab, null));
       }
       tab.emulation = next;
     });
@@ -1535,6 +1552,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   return {
     setEmulation,
     reapplyTabEmulation,
+    emulationInputScale,
     setZoom,
     applyTabZoom,
     findInPage,

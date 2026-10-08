@@ -8,7 +8,7 @@ import {
   allowBuiltInBrowserBackgroundAudio,
   isBuiltInBrowserWebContents,
   onBuiltInBrowserWebContents,
-} from "../builtInBrowser/builtInBrowserService";
+} from "../builtInBrowser/builtInBrowserMediaHooks";
 import { createBrowserMediaSessions } from "./browserMediaSessions";
 import { createNowPlayingService, type NowPlayingService } from "./nowPlayingService";
 
