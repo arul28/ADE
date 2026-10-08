@@ -252,13 +252,31 @@ describe("cross-machine move orchestrator", () => {
     { label: "a delivery update of a known steer", ids: { steerId: "steer-old", messageId: "m-fresh" }, metadata: null, cancels: false },
     { label: "a scheduled wake", ids: { messageId: "m-wake" }, metadata: { scheduledWake: { id: "wake-1" } }, cancels: false },
     { label: "another agent's relay", ids: { messageId: "m-relay" }, metadata: { agentRelay: { fromSessionId: "chat-2" } }, cancels: false },
-  ])("a queued move: $label (cancels: $cancels)", async ({ ids, metadata, cancels }) => {
+  ].flatMap((row) => (["after it is queued", "while its checks run"] as const).map((phase) => ({ ...row, phase }))))(
+    "a queued move, $phase: $label (cancels: $cancels)", async ({ ids, metadata, cancels, phase }) => {
     const h = createHarness({ turnActive: true, userMessageIds: ["m-old", "steer-old"] });
-    const queued = await h.start({ whenTurnEnds: true });
-    expect(queued.state).toBe("pending");
-
     // The host routes only person-authored messages to the orchestrator.
-    if (isPersonAuthoredUserMessage(metadata as never)) h.orchestrator.onUserMessage(SESSION, ids);
+    const deliver = () => {
+      if (isPersonAuthoredUserMessage(metadata as never)) h.orchestrator.onUserMessage(SESSION, ids);
+    };
+    let queued: AgentChatCrossMachineHandoffRecord;
+    if (phase === "while its checks run") {
+      // No record exists yet: the start is still awaiting the machine and git checks.
+      const starting = h.start({ whenTurnEnds: true });
+      deliver();
+      if (cancels) {
+        await expect(starting).rejects.toThrow(/new message/);
+        expect(h.record()).toBeNull();
+        expect(h.prepared).toHaveLength(0);
+        return;
+      }
+      queued = await starting;
+    } else {
+      queued = await h.start({ whenTurnEnds: true });
+      expect(queued.state).toBe("pending");
+      deliver();
+    }
+    expect(queued.state).toBe("pending");
 
     if (cancels) {
       expect(h.record()).toMatchObject({ handoffId: queued.handoffId, state: "cancelled" });

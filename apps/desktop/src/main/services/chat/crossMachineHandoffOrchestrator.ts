@@ -592,12 +592,37 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     return existing;
   };
 
+  /**
+   * Starts still awaiting their checks, per chat. A person's message during
+   * those awaits has no record to cancel yet, so it is noted here and a move
+   * that would be queued is refused instead of saved.
+   */
+  const startsInFlight = new Map<string, Set<{ before: Set<string>; newMessage: boolean }>>();
+
   const start = async (
     args: AgentChatStartCrossMachineHandoffArgs,
     caller: { requestedBy: "user" | "agent" },
   ): Promise<AgentChatCrossMachineHandoffRecord> => {
     const sourceSessionId = args.sourceSessionId?.trim();
     if (!sourceSessionId) throw new Error("A source chat is required.");
+    const watch = { before: new Set(deps.listUserMessageIds(sourceSessionId)), newMessage: false };
+    const watches = startsInFlight.get(sourceSessionId) ?? new Set();
+    watches.add(watch);
+    startsInFlight.set(sourceSessionId, watches);
+    try {
+      return await startWatched(sourceSessionId, args, caller, watch);
+    } finally {
+      watches.delete(watch);
+      if (!watches.size) startsInFlight.delete(sourceSessionId);
+    }
+  };
+
+  const startWatched = async (
+    sourceSessionId: string,
+    args: AgentChatStartCrossMachineHandoffArgs,
+    caller: { requestedBy: "user" | "agent" },
+    watch: { newMessage: boolean },
+  ): Promise<AgentChatCrossMachineHandoffRecord> => {
     const source = deps.getSource(sourceSessionId);
     if (!source) throw new Error("The source chat could not be loaded.");
     if (!source.isWorkChat) throw new Error("Only Work chats can be sent to another machine.");
@@ -646,6 +671,10 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       : current.turnActive
         ? "pending"
         : "sending";
+    // The person wrote while the checks ran: a queued move would ignore it.
+    if (state !== "sending" && watch.newMessage) {
+      throw new Error("You sent a new message, so the chat stayed here.");
+    }
     const requestedAt = now();
     const { sourceSessionId: _source, machine: _machine, whenTurnEnds: _when, ...requested } = args;
     const target = agentPermissions
@@ -783,6 +812,11 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     sessionId: string,
     ids: { messageId?: string | null; steerId?: string | null },
   ): void => {
+    const isNew = (known: Set<string>) =>
+      !((ids.messageId && known.has(ids.messageId)) || (ids.steerId && known.has(ids.steerId)));
+    for (const watch of startsInFlight.get(sessionId) ?? []) {
+      if (isNew(watch.before)) watch.newMessage = true;
+    }
     const persisted = deps.readPersisted(sessionId);
     if (persisted?.record.state !== "pending" && persisted?.record.state !== "awaiting_approval") return;
     // After a restart the snapshot is gone. The caller runs this BEFORE the
