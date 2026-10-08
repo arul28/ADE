@@ -79,6 +79,7 @@ function props(): WorkToolPanelProps {
     onAttachBrowserTab: undefined,
     onAddAppControlContext: undefined,
     onAddIosContext: undefined,
+    onAddContextAttachment: undefined,
     onInsertDraft: undefined,
     onResumeEndedSession: vi.fn(),
     onToolChange: vi.fn(),

@@ -1895,7 +1895,7 @@ describe("linearClient", () => {
                     id: "comment-1",
                     body: "Looks good",
                     createdAt: "2026-03-05T12:00:00.000Z",
-                    user: { id: "u1", name: "alex", displayName: "Alex M" },
+                    user: { id: "u1", name: "alex", displayName: "Alex M", avatarUrl: "https://avatars.linear.app/alex.png" },
                   },
                   {
                     id: "comment-2",
@@ -1930,6 +1930,7 @@ describe("linearClient", () => {
       createdAt: "2026-03-05T12:00:00.000Z",
       userName: "alex",
       userDisplayName: "Alex M",
+      userAvatarUrl: "https://avatars.linear.app/alex.png",
     });
     expect(comments[1]).toEqual({
       id: "comment-2",
@@ -1937,6 +1938,7 @@ describe("linearClient", () => {
       createdAt: "2026-03-05T13:00:00.000Z",
       userName: "bot",
       userDisplayName: "bot",
+      userAvatarUrl: null,
     });
   });
 

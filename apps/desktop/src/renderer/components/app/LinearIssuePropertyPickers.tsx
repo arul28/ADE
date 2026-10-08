@@ -1,12 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Plus, Tag } from "@phosphor-icons/react";
+import React, { useMemo, useRef, useState } from "react";
+import { Plus, Tag } from "@phosphor-icons/react";
 import type { CtoGetLinearIssuePickerDataResult } from "../../../shared/types";
-import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
-import { MENU_ITEM_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
-import { Z_LAYERS } from "../ui/zLayers";
 import { LinearPriorityIcon, LinearStateIcon } from "../lanes/linearBrand";
 import { LinearAssigneeAvatar } from "./LinearIssueBrowserRows";
+import { PickerMenu, type PickerOption } from "../issues/IssuePickerMenu";
 import {
   PRIORITY_CHOICES,
   issueLabelEntries,
@@ -16,133 +14,7 @@ import {
   type LinearIssueEdit,
 } from "./linearIssueBrowserModel";
 
-type PickerOption = {
-  id: string;
-  label: string;
-  icon?: React.ReactNode;
-  keywords?: string;
-};
-
-const MAX_VISIBLE_OPTIONS = 120;
-
-/**
- * A filterable option list in an `AnchoredMenu`. Escape closes the menu only:
- * a window capture listener stops the key before the host dialog's own
- * Escape handler (Radix listens on the document in capture) can close the pane.
- */
-function PickerMenu({
-  open,
-  anchorRef,
-  onClose,
-  options,
-  selectedIds,
-  multi = false,
-  placeholder,
-  onPick,
-}: {
-  open: boolean;
-  anchorRef: React.RefObject<HTMLElement | null>;
-  onClose: () => void;
-  options: PickerOption[];
-  selectedIds: Set<string>;
-  multi?: boolean;
-  placeholder: string;
-  onPick: (id: string) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [highlight, setHighlight] = useState(0);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    const matches = needle
-      ? options.filter((option) => `${option.label} ${option.keywords ?? ""}`.toLowerCase().includes(needle))
-      : options;
-    return matches.slice(0, MAX_VISIBLE_OPTIONS);
-  }, [options, query]);
-
-  useEffect(() => {
-    if (!open) return;
-    setQuery("");
-    setHighlight(0);
-    const frame = requestAnimationFrame(() => inputRef.current?.focus());
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      event.preventDefault();
-      onCloseRef.current();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("keydown", onKey, true);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    setHighlight((current) => Math.min(current, Math.max(0, filtered.length - 1)));
-  }, [filtered.length]);
-
-  return (
-    <AnchoredMenu
-      open={open}
-      anchorRef={anchorRef}
-      onClose={onClose}
-      zIndex={Z_LAYERS.dialogPopover}
-      remeasureKey={filtered.length}
-      className={cn(MENU_SURFACE_CLASS, "w-[240px]")}
-    >
-      <input
-        ref={inputRef}
-        value={query}
-        placeholder={placeholder}
-        onChange={(event) => {
-          setQuery(event.target.value);
-          setHighlight(0);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown") {
-            event.preventDefault();
-            setHighlight((current) => Math.min(filtered.length - 1, current + 1));
-          } else if (event.key === "ArrowUp") {
-            event.preventDefault();
-            setHighlight((current) => Math.max(0, current - 1));
-          } else if (event.key === "Enter") {
-            event.preventDefault();
-            const option = filtered[highlight];
-            if (option) onPick(option.id);
-          }
-        }}
-        className="mb-1 h-7 w-full rounded-[var(--radius-sm)] border border-fg/[0.07] bg-black/20 px-2 text-[11.5px] text-fg outline-none placeholder:text-muted-fg/40 focus:border-fg/18"
-      />
-      <div className="max-h-[260px] overflow-y-auto overscroll-contain" role="listbox" aria-multiselectable={multi || undefined}>
-        {filtered.length === 0 ? (
-          <div className="px-2 py-2 text-[11px] text-muted-fg/50">No matches</div>
-        ) : filtered.map((option, index) => {
-          const selected = selectedIds.has(option.id);
-          return (
-            <button
-              key={option.id || "__none__"}
-              type="button"
-              role="option"
-              aria-selected={selected}
-              data-highlighted={index === highlight ? "" : undefined}
-              className={cn(MENU_ITEM_CLASS, "w-full text-left")}
-              onMouseEnter={() => setHighlight(index)}
-              onClick={() => onPick(option.id)}
-            >
-              {option.icon ? <span className="grid w-4 shrink-0 place-items-center">{option.icon}</span> : null}
-              <span className="min-w-0 flex-1 truncate">{option.label}</span>
-              {selected ? <Check size={11} weight="bold" className="shrink-0 text-fg/70" /> : null}
-            </button>
-          );
-        })}
-      </div>
-    </AnchoredMenu>
-  );
-}
+export type LinearIssuePropertyLayout = "bar" | "rows";
 
 function PropertyChip({
   label,
@@ -151,6 +23,7 @@ function PropertyChip({
   pending,
   onClick,
   anchorRef,
+  layout,
   children,
 }: {
   label: string;
@@ -159,9 +32,10 @@ function PropertyChip({
   pending?: boolean;
   onClick: () => void;
   anchorRef: React.RefObject<HTMLButtonElement>;
+  layout: LinearIssuePropertyLayout;
   children: React.ReactNode;
 }) {
-  return (
+  const chip = (
     <button
       ref={anchorRef}
       type="button"
@@ -170,13 +44,29 @@ function PropertyChip({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-fg/[0.07] bg-fg/[0.02] px-2 text-[11.5px] text-fg/85 transition-colors",
-        disabled ? "cursor-default" : "hover:border-fg/[0.14] hover:bg-fg/[0.05]",
+        "inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 text-[11.5px] text-fg/85 transition-colors",
+        layout === "bar"
+          ? "border border-fg/[0.07] bg-fg/[0.02]"
+          : "-ml-2 w-[calc(100%+8px)] justify-start border border-transparent",
+        disabled
+          ? "cursor-default"
+          : layout === "bar"
+            ? "hover:border-fg/[0.14] hover:bg-fg/[0.05]"
+            : "hover:bg-[color:var(--kit-hover)]",
         pending && "opacity-70",
       )}
     >
       {children}
     </button>
+  );
+  if (layout === "bar") return chip;
+  // A labeled row of the issue viewer's property sidebar: the label names the
+  // field, the chip is the value and the picker trigger.
+  return (
+    <div className="grid grid-cols-[76px_minmax(0,1fr)] items-center gap-2">
+      <span className="text-[11px] text-[color:var(--kit-text-3)]">{label}</span>
+      <div className="min-w-0">{chip}</div>
+    </div>
   );
 }
 
@@ -190,11 +80,14 @@ export function LinearIssuePropertyBar({
   catalog,
   onEdit,
   pending,
+  layout = "bar",
 }: {
   issue: BrowserIssue;
   catalog: CtoGetLinearIssuePickerDataResult;
   onEdit?: (edit: LinearIssueEdit) => void;
   pending?: boolean;
+  /** `bar` is a wrapping row of chips; `rows` is one labeled row per field. */
+  layout?: LinearIssuePropertyLayout;
 }) {
   const [openPicker, setOpenPicker] = useState<"status" | "priority" | "assignee" | "labels" | null>(null);
   const statusRef = useRef<HTMLButtonElement>(null);
@@ -250,20 +143,23 @@ export function LinearIssuePropertyBar({
   const avatarUrl = "raw" in issue ? issue.assigneeAvatarUrl ?? null : null;
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5" data-linear-property-bar="true">
-      <PropertyChip label="Status" value={issue.stateName} disabled={!editable || stateOptions.length === 0} pending={pending} anchorRef={statusRef} onClick={() => setOpenPicker("status")}>
+    <div
+      className={layout === "bar" ? "flex flex-wrap items-center gap-1.5" : "flex flex-col gap-0.5"}
+      data-linear-property-bar="true"
+    >
+      <PropertyChip layout={layout} label="Status" value={issue.stateName} disabled={!editable || stateOptions.length === 0} pending={pending} anchorRef={statusRef} onClick={() => setOpenPicker("status")}>
         <LinearStateIcon stateType={issue.stateType} size={12} />
         <span className="truncate">{issue.stateName}</span>
       </PropertyChip>
-      <PropertyChip label="Priority" value={priorityText} disabled={!editable} pending={pending} anchorRef={priorityRef} onClick={() => setOpenPicker("priority")}>
+      <PropertyChip layout={layout} label="Priority" value={priorityText} disabled={!editable} pending={pending} anchorRef={priorityRef} onClick={() => setOpenPicker("priority")}>
         <LinearPriorityIcon priority={issue.priority} size={12} />
         <span className="truncate">{priorityText}</span>
       </PropertyChip>
-      <PropertyChip label="Assignee" value={issue.assigneeName ?? "Unassigned"} disabled={!editable} pending={pending} anchorRef={assigneeRef} onClick={() => setOpenPicker("assignee")}>
+      <PropertyChip layout={layout} label="Assignee" value={issue.assigneeName ?? "Unassigned"} disabled={!editable} pending={pending} anchorRef={assigneeRef} onClick={() => setOpenPicker("assignee")}>
         <LinearAssigneeAvatar name={issue.assigneeName} avatarUrl={avatarUrl} size={14} />
         <span className="truncate">{issue.assigneeName ?? "Unassigned"}</span>
       </PropertyChip>
-      <PropertyChip label="Labels" value={currentLabels.map((label) => label.name).join(", ") || "None"} disabled={!editable || labelOptions.length === 0} pending={pending} anchorRef={labelsRef} onClick={() => setOpenPicker("labels")}>
+      <PropertyChip layout={layout} label="Labels" value={currentLabels.map((label) => label.name).join(", ") || "None"} disabled={!editable || labelOptions.length === 0} pending={pending} anchorRef={labelsRef} onClick={() => setOpenPicker("labels")}>
         {currentLabels.length === 0 ? (
           <>
             {editable ? <Plus size={11} /> : <Tag size={11} />}

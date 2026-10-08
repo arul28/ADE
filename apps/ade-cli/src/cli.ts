@@ -20,6 +20,20 @@ import {
   isMachineFanOutResult,
   withMachineColumns,
 } from "./cliMachineTargeting";
+import {
+  isNoneValue,
+  linearLookupNeeds,
+  looksLikeLinearId,
+  milestoneProjectId,
+  parseDueDate,
+  parseLinearEstimate,
+  parseLinearPriority,
+  resolveLinearFields,
+  teamKeyFromIdentifier,
+  type LinearFieldInput,
+  type LinearLookupContext,
+} from "./issueCliFields";
+import { buildGithubIssuePlan } from "./cliGithubIssue";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -489,7 +503,7 @@ const MIN_RUNTIME_IDLE_EXIT_MS = 5_000;
 // off before answering with why nothing hosts sync.
 const REPAIR_SYNC_HOST_START_TIMEOUT_MS = 20_000;
 
-type InvocationStep = {
+export type InvocationStep = {
   key: string;
   method: string;
   params?: JsonObject | ((values: JsonObject) => JsonObject);
@@ -710,6 +724,14 @@ export type CliPlan =
        */
       exitCodeFromResult?: (result: unknown) => number;
       /**
+       * Build the command's result from every step's value. The steps before
+       * `result` are lookups (a repo, an issue, a catalog); this picks what
+       * the caller sees and may throw when a lookup came back empty.
+       */
+      shapeResult?: (values: JsonObject) => unknown;
+      /** The `--text` rendering of the result, when no shared formatter fits. */
+      formatText?: (result: unknown) => string;
+      /**
        * Marks a plan that files a proof record, so its result is summarized
        * into an explicit confirmation line and its failures are prefixed with
        * "<command> failed —".
@@ -816,7 +838,7 @@ export function asCliUsageError(error: unknown): CliUsageError {
   throw error;
 }
 
-class CliToolError extends Error {
+export class CliToolError extends Error {
   details: unknown;
 
   constructor(message: string, details: unknown) {
@@ -1092,8 +1114,10 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Work with ADE agent chats
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
-    $ ade linear attach | comment | set-state | issue | graphql
-                                                    Read and write attached Linear issues
+    $ ade linear create | edit | comment | set-state | assign | issue | graphql
+                                                    Create, read, and edit Linear issues
+    $ ade github issue list | view | create | edit | comment | close
+                                                    Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -1169,7 +1193,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
   Start with: ade doctor --text
 `;
 
-function topLevelHelpText(): string {
+export function topLevelHelpText(): string {
   let text = TOP_LEVEL_HELP;
   if (!automationsCliEnabled()) {
     text = text.replace(
@@ -1447,6 +1471,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text
                                                 Show active read/write credentials and cooldowns
 
+  Issues (see \`ade github issue --help\`):
+    $ ade github issue list --text              List open issues in this project's repo
+    $ ade github issue view 12 --comments --text
+    $ ade github issue create --title "Crash on launch" --label bug
+
   Notes:
     - login, clear (and the raw start/poll actions) require --role cto.
     - login keeps one connection open for the whole device flow because the
@@ -1465,6 +1494,41 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Flags (login):
     --max-wait <seconds>    Give up waiting after N seconds (default: GitHub's
                             device-code expiry, ~15 min).
+`,
+  "github issue": `${ADE_BANNER}
+  GitHub issues
+
+  Read, create, and edit issues in a GitHub repo. ADE uses the GitHub
+  connection of the running brain, so no token is needed here. Every command
+  works on this project's origin repo; pass --repo owner/name for another one.
+  An issue can be 12, #12, owner/name#12, or an issue URL.
+
+  Read:
+    $ ade github issue list --text              Open issues, newest activity first
+        [--state open|closed|all] [--label bug]... [--assignee <login|none>] [--limit 30]
+    $ ade github issue view 12 --text           Title, state, labels, assignees, milestone, body
+        [--comments]                            Also print the comments
+
+  Create:
+    $ ade github issue create --title "Crash on launch" --body-file notes.md --text
+        [--body "..." | --body-file <path|->]   Body inline, from a file, or from stdin with -
+        [--label bug]... [--assignee octocat]... [--milestone "v1.2"|<number>]
+        [--type Bug] [--parent 10]             Issue type (organization repos); parent issue
+        [--attach shot.png]...                  Attach files (needs GitHub CLI on the ADE machine)
+
+  Edit:
+    $ ade github issue edit 12 --title "New title" [--body "..." | --body-file <path|->]
+    $ ade github issue comment 12 "Fixed in #40"
+    $ ade github issue comment 12 --body-file reply.md
+    $ ade github issue close 12 [--reason completed|not-planned|duplicate]
+    $ ade github issue reopen 12
+    $ ade github issue label 12 --add bug --remove triage
+    $ ade github issue assign 12 --add octocat [--remove hubot] [--clear]
+    $ ade github issue milestone 12 "v1.2"      Milestone by title or number, or none
+    $ ade github issue type 12 Bug              Issue type by name, or none
+    $ ade github issue sub-issue 10 12          Put #12 under #10
+
+  Output is JSON by default. Add --text for a short summary.
 `,
   open: `${ADE_BANNER}
   ADE Open
@@ -3390,15 +3454,40 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
     $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
     $ ade linear comment ENG-431 "Done"             Comment on a specific issue
-    $ ade linear set-state ENG-431 <state-id>       Move an issue to a workflow state
-    $ ade linear assign ENG-431 <user-id|none>      Assign or clear an issue assignee
+    $ ade linear set-state ENG-431 "In Progress"    Move an issue to a state (name in the issue's team, or id)
+    $ ade linear assign ENG-431 me                  Assign: me, none, a name, an email, or a user id
     $ ade linear label ENG-431 "needs-review"       Add a label to an issue
+    $ ade linear unlabel ENG-431 "needs-review"     Remove a label from an issue
     $ ade linear graphql --query 'query { viewer { id name } }'
                                                     Run Linear GraphQL through the project connection
     $ ade linear graphql --query-file query.graphql --variables-file vars.json
                                                     Use files for larger GraphQL operations
     $ ade linear detach --this-session [--issue-id ENG-431]
                                                     Detach one issue (or all) from this session
+
+  Create and edit issues. Names work where Linear has names: states, users,
+  labels, projects, milestones, cycles, and templates. Ids work too.
+
+    $ ade linear create --team ENG --title "Fix login redirect" --text
+                                                    Create an issue; prints its id and URL
+        [--description "..." | --description-file <path|->]
+        [--state "Todo"] [--assignee me|<name|email|id>] [--priority urgent|high|normal|low|none|0-4]
+        [--label bug]... [--project "Mobile"] [--milestone "Beta"] [--cycle current|next|<n>]
+        [--estimate 3] [--due 2026-11-01] [--parent ENG-400] [--template "Bug report"]
+        Inside a session with an attached issue, the new issue is linked to it
+        as related. --blocks, --blocked-by, --sub-issue, or --duplicate pick the
+        link. --standalone skips it. A near-duplicate of an open issue is not
+        created unless you pass --allow-duplicate.
+    $ ade linear edit ENG-431 --title "New title" --description-file notes.md
+                                                    Change any field; takes the create flags plus --remove-label
+    $ ade linear set-priority ENG-431 high          Priority: urgent, high, normal, low, none, or 0-4
+    $ ade linear set-estimate ENG-431 3             Estimate in the team's scale, or none
+    $ ade linear set-cycle ENG-431 current          Cycle: current, next, a number, an id, or none
+    $ ade linear set-project ENG-431 "Mobile"       Project by name or id, or none
+    $ ade linear set-milestone ENG-431 "Beta"       Milestone in the issue's project, or none
+    $ ade linear set-due ENG-431 2026-11-01         Due date as YYYY-MM-DD, or none
+    $ ade linear set-parent ENG-431 ENG-400         Make it a sub-issue, or none to detach it
+    $ ade linear relate ENG-431 --blocks ENG-432    Link issues: --blocks, --blocked-by, --related, --duplicate-of
 
   Workspace + automation (typically run with --role cto):
     $ ade --role cto linear quick-view --text      Show connected workspace, projects, and issues
@@ -3715,7 +3804,7 @@ export function readValue(args: string[], names: readonly string[]): string | nu
 }
 
 /** Repeatable option (`--file a --file b`), consumed like `readValue`. */
-function readRepeatedValues(args: string[], names: readonly string[]): string[] {
+export function readRepeatedValues(args: string[], names: readonly string[]): string[] {
   const values: string[] = [];
   for (;;) {
     const value = readValue(args, names);
@@ -3815,7 +3904,7 @@ function readCommandTextValue(args: string[], names: readonly string[]): string 
   return null;
 }
 
-function firstPositional(args: string[]): string | null {
+export function firstPositional(args: string[]): string | null {
   const index = args.findIndex((arg) => arg !== "--" && !arg.startsWith("-"));
   if (index < 0) return null;
   const [value] = args.splice(index, 1);
@@ -4463,7 +4552,7 @@ function parseReviewerRequestValues(args: string[]): {
   return { reviewers, teamReviewers };
 }
 
-function readIntOption(
+export function readIntOption(
   args: string[],
   names: readonly string[],
   fallback?: number,
@@ -16959,6 +17048,204 @@ function buildAutomationsPlan(args: string[]): CliPlan {
   );
 }
 
+/** Run a shared field parser, reporting its failure as a usage error. */
+export function asUsage<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    throw error instanceof CliUsageError ? error : asCliUsageError(error);
+  }
+}
+
+/**
+ * A `run_ade_action` step whose arguments come from earlier steps (a repo, an
+ * issue, a catalog). A lookup that cannot resolve what was typed stops the
+ * plan with a usage error before the write is sent.
+ */
+export function derivedActionStep(
+  key: string,
+  domain: string,
+  action: string,
+  build: (values: JsonObject) => { args: JsonObject } | { argsList: unknown[] },
+): InvocationStep {
+  return {
+    key,
+    method: "ade/actions/call",
+    unwrapToolResult: true,
+    params: (values) => asUsage(() => ({
+      name: "run_ade_action",
+      arguments: { domain, action, ...build(values) },
+    })),
+  };
+}
+
+/**
+ * Text from an inline flag or a file flag. A file of `-` reads stdin, so a
+ * long body can be piped in on any shell.
+ */
+export function readTextOrFileOption(
+  args: string[],
+  inlineNames: readonly string[],
+  fileNames: readonly string[],
+): string | undefined {
+  const inline = readValue(args, inlineNames);
+  const filePath = readValue(args, fileNames);
+  if (inline != null && filePath != null) {
+    throw new CliUsageError(`Use either ${inlineNames[0]} or ${fileNames[0]}, not both.`);
+  }
+  if (inline != null) return inline;
+  if (filePath == null) return undefined;
+  if (filePath === "-") return fs.readFileSync(0, "utf8");
+  try {
+    return fs.readFileSync(path.resolve(filePath), "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(`Could not read ${fileNames[0]} file '${filePath}': ${message}`);
+  }
+}
+
+const LINEAR_TRACKER = "linear_issue_tracker";
+
+/** Every field flag `ade linear create` and `ade linear edit` accept. */
+function readLinearFieldFlags(args: string[], mode: "create" | "update"): LinearFieldInput {
+  const input: LinearFieldInput = {};
+  const put = <K extends keyof LinearFieldInput>(key: K, value: LinearFieldInput[K] | null | undefined) => {
+    if (value != null) input[key] = value;
+  };
+  put("title", readValue(args, ["--title", "-t"]));
+  put("description", readTextOrFileOption(args, ["--description", "--body", "-d"], ["--description-file", "--body-file"]));
+  put("state", readValue(args, ["--state", "--status", "--state-id"]));
+  put("assignee", readValue(args, ["--assignee", "--assignee-id"]));
+  put("priority", readValue(args, ["--priority"]));
+  const labels = readRepeatedValues(args, ["--label", "--add-label"]);
+  if (labels.length) input.labels = labels;
+  if (mode === "update") {
+    const removeLabels = readRepeatedValues(args, ["--remove-label", "--unlabel"]);
+    if (removeLabels.length) input.removeLabels = removeLabels;
+  }
+  put("project", readValue(args, ["--project", "--project-id"]));
+  put("milestone", readValue(args, ["--milestone"]));
+  put("cycle", readValue(args, ["--cycle"]));
+  put("estimate", readValue(args, ["--estimate"]));
+  put("due", readValue(args, ["--due", "--due-date"]));
+  put("parent", readValue(args, ["--parent"]));
+  if (mode === "create") put("template", readValue(args, ["--template"]));
+  // Values that need no lookup fail here, before ADE connects.
+  asUsage(() => {
+    if (input.priority !== undefined) parseLinearPriority(input.priority);
+    if (input.estimate !== undefined) parseLinearEstimate(input.estimate);
+    if (input.due !== undefined) parseDueDate(input.due);
+  });
+  return input;
+}
+
+/**
+ * The lookups a Linear write needs (issue, picker catalog, viewer, team
+ * options, milestones, parent), then the write itself as the `result` step.
+ */
+function linearFieldWriteSteps(
+  input: LinearFieldInput,
+  target:
+    | { mode: "update"; issueId: string }
+    | { mode: "create"; teamKey: string; action: string; base: JsonObject },
+): InvocationStep[] {
+  const needs = linearLookupNeeds(input, target.mode);
+  const issueRef = target.mode === "update" ? target.issueId : null;
+  const steps: InvocationStep[] = [];
+  if (needs.issue && issueRef) steps.push(actionArgsListStep("issue", LINEAR_TRACKER, "fetchIssueById", [issueRef]));
+  if (needs.picker) steps.push(actionStep("picker", LINEAR_TRACKER, "getIssuePickerData"));
+  if (needs.viewer) steps.push(actionStep("viewer", LINEAR_TRACKER, "getConnectionStatus"));
+  if (needs.parent && input.parent) {
+    steps.push(actionArgsListStep("parent", LINEAR_TRACKER, "fetchIssueById", [input.parent.trim()]));
+  }
+  const context = (values: JsonObject): LinearLookupContext => {
+    const issue = needs.issue ? unwrapActionEnvelope(values.issue) : null;
+    if (needs.issue && !isRecord(issue)) throw new Error(`Linear issue ${issueRef} was not found.`);
+    const viewer = unwrapActionEnvelope(values.viewer);
+    const milestones = unwrapActionEnvelope(values.milestones);
+    const options = unwrapActionEnvelope(values.options);
+    const picker = unwrapActionEnvelope(values.picker);
+    const parentIssue = unwrapActionEnvelope(values.parent);
+    return {
+      issue: isRecord(issue) ? issue : null,
+      teamKey: target.mode === "create" ? target.teamKey : isRecord(issue) ? asString(issue.teamKey) : null,
+      picker: isRecord(picker) ? picker : null,
+      viewerId: isRecord(viewer) ? asString(viewer.viewerId) : null,
+      options: isRecord(options) ? options : null,
+      milestones: Array.isArray(milestones) ? milestones.filter(isRecord) : null,
+      parentIssue: isRecord(parentIssue) ? parentIssue : null,
+    };
+  };
+  if (needs.options) {
+    steps.push(derivedActionStep("options", LINEAR_TRACKER, "getIssueCreateOptions", (values) => {
+      const team = context(values).teamKey;
+      if (!team) throw new Error("ADE could not tell which Linear team this issue is in.");
+      return { argsList: [team] };
+    }));
+  }
+  if (needs.milestones) {
+    steps.push(derivedActionStep("milestones", LINEAR_TRACKER, "listProjectMilestones", (values) => ({
+      argsList: [milestoneProjectId(input, context(values))],
+    })));
+  }
+  if (target.mode === "update") {
+    steps.push(derivedActionStep("result", LINEAR_TRACKER, "updateIssue", (values) => ({
+      argsList: [target.issueId, resolveLinearFields(input, context(values), "update")],
+    })));
+  } else {
+    steps.push(derivedActionStep("result", LINEAR_TRACKER, target.action, (values) => ({
+      args: { ...resolveLinearFields(input, context(values), "create"), ...target.base },
+    })));
+  }
+  return steps;
+}
+
+function hasLinearFieldInput(input: LinearFieldInput): boolean {
+  return Object.values(input).some((value) => (Array.isArray(value) ? value.length > 0 : value !== undefined));
+}
+
+/** `Updated ADE-12: Title` plus the state line and URL; `fallbackId` when the action returns nothing. */
+function formatLinearIssueWrite(verb: string, fallbackId: string | null = null): (result: unknown) => string {
+  return (result) => {
+    const value = isRecord(result) ? result : {};
+    if (value.created === false && isRecord(value.duplicateOf)) {
+      const duplicate = value.duplicateOf;
+      return [
+        `Not created. An open issue looks the same: ${asString(duplicate.identifier) ?? ""} ${asString(duplicate.title) ?? ""}`.trim(),
+        asString(duplicate.url),
+        "Pass --allow-duplicate to create it anyway.",
+      ].filter(Boolean).join("\n");
+    }
+    const issue = isRecord(value.issue) ? value.issue : value;
+    const identifier = asString(issue.identifier);
+    if (!identifier) return fallbackId ? `${verb} ${fallbackId}.` : `${verb}.`;
+    const facts = [
+      asString(issue.stateName),
+      asString(issue.assigneeName) ? `assigned to ${asString(issue.assigneeName)}` : null,
+      asString(issue.priorityLabel) && issue.priority !== 0 ? `${asString(issue.priorityLabel)} priority` : null,
+      asString(issue.cycleName) ? `cycle ${asString(issue.cycleName)}` : null,
+      asString(issue.projectName),
+    ].filter(Boolean);
+    return [
+      `${verb} ${identifier}: ${asString(issue.title) ?? ""}`.trimEnd(),
+      facts.length ? facts.join(" · ") : null,
+      asString(issue.url),
+    ].filter(Boolean).join("\n");
+  };
+}
+
+/** `ade linear set-<field> <id> <value>`: the field each shorthand edits. */
+const LINEAR_SET_FIELD_COMMANDS: Record<string, { field: keyof LinearFieldInput; flags: string[]; noun: string }> = {
+  "set-priority": { field: "priority", flags: ["--priority"], noun: "priority" },
+  "set-estimate": { field: "estimate", flags: ["--estimate"], noun: "estimate" },
+  "set-cycle": { field: "cycle", flags: ["--cycle"], noun: "cycle" },
+  "set-project": { field: "project", flags: ["--project", "--project-id"], noun: "project" },
+  "set-milestone": { field: "milestone", flags: ["--milestone"], noun: "milestone" },
+  "set-due": { field: "due", flags: ["--due", "--due-date"], noun: "due date" },
+  "set-parent": { field: "parent", flags: ["--parent"], noun: "parent issue" },
+  "set-title": { field: "title", flags: ["--title", "-t"], noun: "title" },
+};
+
 function buildLinearPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "quick-view";
   // --- Daemon-bridge commands for a CLI-session agent ---
@@ -17069,25 +17356,89 @@ function buildLinearPlan(args: string[]): CliPlan {
   }
   if (sub === "set-state" || sub === "status" || sub === "state" || sub === "move") {
     const { issueId, value } = resolveLinearWriteCommand(args, ["--state-id", "--state", "--status"]);
-    const stateId = requireValue(value, "state id");
+    const state = requireValue(value, "state name or id");
+    // A state id goes straight through; a name ("In Progress") is matched
+    // within the issue's team first.
+    if (looksLikeLinearId(state)) {
+      return {
+        kind: "execute",
+        label: "linear set-state",
+        steps: [actionArgsListStep("result", LINEAR_TRACKER, "updateIssueState", [issueId, state])],
+        formatText: formatLinearIssueWrite("Updated", issueId),
+      };
+    }
     return {
       kind: "execute",
       label: "linear set-state",
-      steps: [actionArgsListStep("result", "linear_issue_tracker", "updateIssueState", [issueId, stateId])],
+      steps: linearFieldWriteSteps({ state }, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
     };
   }
   if (sub === "assign") {
     const { issueId, value } = resolveLinearWriteCommand(args, ["--assignee", "--assignee-id", "--user"]);
     // `none`/`null`/`unassigned` (or an omitted assignee) clears the assignee.
-    const normalized = (value ?? "").trim().toLowerCase();
-    const assigneeId =
-      value == null || normalized === "none" || normalized === "null" || normalized === "unassigned"
-        ? null
-        : value.trim();
+    const assignee = value?.trim() ?? "";
+    if (!assignee || isNoneValue(assignee) || looksLikeLinearId(assignee)) {
+      return {
+        kind: "execute",
+        label: "linear assign",
+        steps: [
+          actionArgsListStep("result", LINEAR_TRACKER, "updateIssueAssignee", [
+            issueId,
+            assignee && !isNoneValue(assignee) ? assignee : null,
+          ]),
+        ],
+        formatText: formatLinearIssueWrite("Updated", issueId),
+      };
+    }
+    // `me`, a name, or an email is matched against the workspace's users.
     return {
       kind: "execute",
       label: "linear assign",
-      steps: [actionArgsListStep("result", "linear_issue_tracker", "updateIssueAssignee", [issueId, assigneeId])],
+      steps: linearFieldWriteSteps({ assignee }, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
+    };
+  }
+  if (sub === "unlabel" || sub === "remove-label") {
+    const { issueId, value } = resolveLinearWriteCommand(args, ["--label", "--label-name", "--name"]);
+    const label = requireValue(value, "label name");
+    return {
+      kind: "execute",
+      label: "linear unlabel",
+      steps: linearFieldWriteSteps({ removeLabels: [label] }, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
+    };
+  }
+  if (sub === "edit" || sub === "update") {
+    const input = readLinearFieldFlags(args, "update");
+    const issueId = requireLinearIssueId(args);
+    if (!hasLinearFieldInput(input)) {
+      throw new CliUsageError(
+        "linear edit needs at least one field to change, like --title, --description, --state, or --priority.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "linear edit",
+      steps: linearFieldWriteSteps(input, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
+    };
+  }
+  const setField = LINEAR_SET_FIELD_COMMANDS[sub];
+  if (setField) {
+    const { issueId, value } = resolveLinearWriteCommand(args, setField.flags);
+    const fieldValue = requireValue(value, setField.noun);
+    const input: LinearFieldInput = { [setField.field]: fieldValue };
+    asUsage(() => {
+      if (input.priority !== undefined) parseLinearPriority(input.priority);
+      if (input.estimate !== undefined) parseLinearEstimate(input.estimate);
+      if (input.due !== undefined) parseDueDate(input.due);
+    });
+    return {
+      kind: "execute",
+      label: `linear ${sub}`,
+      steps: linearFieldWriteSteps(input, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
     };
   }
   if (sub === "label" || sub === "add-label") {
@@ -17097,6 +17448,7 @@ function buildLinearPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "linear add-label",
       steps: [actionArgsListStep("result", "linear_issue_tracker", "addLabel", [issueId, labelName])],
+      formatText: formatLinearIssueWrite("Updated", issueId),
     };
   }
   if (sub === "issue" || sub === "show-issue" || sub === "get-issue") {
@@ -17209,13 +17561,14 @@ function buildLinearPlan(args: string[]): CliPlan {
     // Files a follow-up issue. By default it links to the session's attached
     // issue (the one being worked on) as "related", in the same team/project,
     // and refuses near-duplicates of open issues unless --allow-duplicate.
-    const title = requireValue(asString(readValue(args, ["--title", "-t"]) ?? firstPositional(args)), "--title");
-    const input: JsonObject = { title };
-    maybePut(input, "description", readValue(args, ["--description", "--body", "-d"]));
+    // Every field flag is read before the positional title, so a flag's value
+    // (`--team ADE`) is never taken for the title.
+    const fields = readLinearFieldFlags(args, "create");
+    const base: JsonObject = {};
     const sourceIssueId = readFlag(args, ["--standalone", "--no-link"])
       ? null
       : asString(readValue(args, ["--from", "--source", "--source-issue"])) ?? sessionLinearIssueId();
-    if (sourceIssueId) input.sourceIssueId = sourceIssueId;
+    if (sourceIssueId) base.sourceIssueId = sourceIssueId;
     const relationFlags: Array<[string[], string]> = [
       [["--blocks"], "blocks"],
       [["--blocked-by"], "blocked_by"],
@@ -17223,18 +17576,29 @@ function buildLinearPlan(args: string[]): CliPlan {
       [["--duplicate"], "duplicate"],
     ];
     const relationFlag = relationFlags.find(([flags]) => readFlag(args, flags))?.[1];
-    if (relationFlag) input.relation = relationFlag;
+    if (relationFlag) base.relation = relationFlag;
     const teamKey = asString(readValue(args, ["--team", "--team-key"]))
-      ?? (sourceIssueId?.match(/^([A-Za-z0-9]+)-\d+$/)?.[1]?.toUpperCase() ?? null);
-    input.teamKey = requireValue(teamKey, "--team (or a --from issue to take the team from)");
-    maybePut(input, "projectId", readValue(args, ["--project-id"]));
-    const priority = readNumberOption(args, ["--priority"]);
-    if (priority !== undefined) input.priority = priority;
-    if (readFlag(args, ["--allow-duplicate", "--force"])) input.allowDuplicate = true;
+      ?? teamKeyFromIdentifier(sourceIssueId)
+      ?? teamKeyFromIdentifier(fields.parent);
+    base.teamKey = requireValue(teamKey, "--team (or a --from or --parent issue to take the team from)");
+    if (readFlag(args, ["--allow-duplicate", "--force"])) base.allowDuplicate = true;
+    Object.assign(base, collectGenericObjectArgs(args));
+    if (fields.title === undefined) {
+      const words: string[] = [];
+      for (let next = firstPositional(args); next != null; next = firstPositional(args)) words.push(next);
+      if (words.length) fields.title = words.join(" ");
+    }
+    requireValue(fields.title ?? null, "--title");
     return {
       kind: "execute",
       label: "linear create",
-      steps: [actionStep("result", "linear_issue_tracker", "createFollowUpIssue", collectGenericObjectArgs(args, input))],
+      steps: linearFieldWriteSteps(fields, {
+        mode: "create",
+        teamKey: String(base.teamKey),
+        action: "createFollowUpIssue",
+        base,
+      }),
+      formatText: formatLinearIssueWrite("Created"),
     };
   }
   if (sub === "relate" || sub === "link") {
@@ -17253,6 +17617,7 @@ function buildLinearPlan(args: string[]): CliPlan {
           kind: "execute",
           label: "linear relate",
           steps: [actionStep("result", "linear_issue_tracker", "createIssueRelation", { issueId, relatedIssueId, type })],
+          formatText: () => `Linked: ${issueId} ${({ blocks: "blocks", blocked_by: "is blocked by", related: "is related to", duplicate: "duplicates" } as Record<string, string>)[type]} ${relatedIssueId}.`,
         };
       }
     }
@@ -17283,7 +17648,9 @@ function buildLinearPlan(args: string[]): CliPlan {
   }
   throw new CliUsageError(
     `Unknown linear command '${sub}'. Supported: quick-view, picker-data, issues, my-issues, `
-      + `search-issues, issue, comments, attach, detach, comment, assign, label, set-state, create, relate, inbox, project-update, graphql.`,
+      + `search-issues, issue, comments, attach, detach, create, edit, comment, assign, label, unlabel, set-state, `
+      + `set-priority, set-estimate, set-cycle, set-project, set-milestone, set-due, set-parent, relate, inbox, `
+      + `project-update, graphql.`,
   );
 }
 
@@ -18360,10 +18727,14 @@ function buildGithubPlan(args: string[]): CliPlan {
       "github app-auth supports status, login, or clear.",
     );
   }
+  if (sub === "issue" || sub === "issues") {
+    return buildGithubIssuePlan(args);
+  }
   throw new CliUsageError(
-    "github supports app-auth (status | login | clear) and actions.",
+    "github supports issue, app-auth (status | login | clear), and actions.",
   );
 }
+
 
 function buildCursorPlan(args: string[]): CliPlan {
   // ade cursor <surface> <group> <sub> ... — only "cloud" is wired today.
@@ -30427,6 +30798,10 @@ function summarizeExecution(args: {
     };
   }
 
+  if (plan.shapeResult) {
+    return plan.shapeResult(values);
+  }
+
   if (plan.proofFiling) {
     return summarizeProofFiling(plan.proofFiling, values);
   }
@@ -32154,9 +32529,13 @@ async function runParsedCli(
     }
     const formatter = inferFormatter(plan);
     const flagEffects = applySyncWebPairingFlags(plan, parsed.options, result);
+    const output =
+      parsed.options.text && plan.formatText && !isMachineFanOutResult(result)
+        ? `${plan.formatText(result)}\n`
+        : formatOutput(result, parsed.options, formatter);
     return {
       output: appendOutputSuffix(
-        formatOutput(result, parsed.options, formatter),
+        output,
         flagEffects.outputSuffix,
       ),
       exitCode:

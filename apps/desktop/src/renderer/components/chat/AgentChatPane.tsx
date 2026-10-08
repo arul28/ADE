@@ -9620,6 +9620,12 @@ export function AgentChatPane({
       if (!detail?.item) return;
       void addBuiltInBrowserContext(detail.item);
     };
+    const onAddContextAttachment = (event: Event) => {
+      const detail = composerDetail(event);
+      const incoming = normalizeChatContextAttachments([detail?.attachment]);
+      if (incoming.length === 0) return;
+      setContextAttachments((prev) => mergeChatContextAttachments(prev, incoming));
+    };
     const onInsertBrowserTab = (event: Event) => {
       const detail = composerDetail(event);
       if (!detail || typeof detail.token !== "string" || !detail.token) return;
@@ -9628,6 +9634,7 @@ export function AgentChatPane({
       setBrowserTabInsertRequest((current) => ({ id: (current?.id ?? 0) + 1, token }));
     };
     window.addEventListener("ade:agent-chat:add-attachment", onAddAttachment);
+    window.addEventListener("ade:agent-chat:add-context-attachment", onAddContextAttachment);
     window.addEventListener("ade:agent-chat:insert-draft", onInsertDraft);
     window.addEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
     window.addEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
@@ -9635,6 +9642,7 @@ export function AgentChatPane({
     window.addEventListener("ade:agent-chat:insert-browser-tab", onInsertBrowserTab);
     return () => {
       window.removeEventListener("ade:agent-chat:add-attachment", onAddAttachment);
+      window.removeEventListener("ade:agent-chat:add-context-attachment", onAddContextAttachment);
       window.removeEventListener("ade:agent-chat:insert-draft", onInsertDraft);
       window.removeEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
       window.removeEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);

@@ -3,6 +3,9 @@ import path from "node:path";
 import type { Logger } from "../logging/logger";
 import type {
   LinearIssueCreateInput,
+  LinearIssueCreateOptions,
+  LinearProjectMilestone,
+  LinearUploadResult,
   LinearIssueRelationKind,
   CtoLinearProject,
   LinearCatalogLabel,
@@ -30,6 +33,9 @@ import { createLinearInbox } from "./linearInbox";
 
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
 const MAX_LINEAR_ID_LENGTH = 128;
+// Linear's own limits are generous; these bound what an IPC caller can send.
+const MAX_LINEAR_TITLE_LENGTH = 512;
+const MAX_LINEAR_DESCRIPTION_LENGTH = 200_000;
 const MAX_LABEL_IDS_PER_UPDATE = 50;
 
 function toAuthorizationHeaderValue(token: string, authMode: "manual" | "oauth" | null | undefined): string {
@@ -688,6 +694,18 @@ export function createLinearClient(args: LinearClientArgs) {
     const removed = readIds(patch.removedLabelIds);
     if (added.length > 0) input.addedLabelIds = added;
     if (removed.length > 0) input.removedLabelIds = removed;
+    if (typeof patch.title === "string" && patch.title.trim()) input.title = patch.title.trim().slice(0, MAX_LINEAR_TITLE_LENGTH);
+    if (typeof patch.description === "string") input.description = patch.description.slice(0, MAX_LINEAR_DESCRIPTION_LENGTH);
+    // Clearable ids: `null` clears, a well-formed id sets, anything else is ignored.
+    for (const key of ["projectId", "projectMilestoneId", "cycleId", "parentId"] as const) {
+      const value = patch[key];
+      if (value === null) input[key] = null;
+      else if (typeof value === "string" && value.trim() && value.trim().length <= MAX_LINEAR_ID_LENGTH) input[key] = value.trim();
+    }
+    if (patch.estimate === null) input.estimate = null;
+    else if (typeof patch.estimate === "number" && Number.isFinite(patch.estimate) && patch.estimate >= 0) input.estimate = patch.estimate;
+    if (patch.dueDate === null) input.dueDate = null;
+    else if (typeof patch.dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(patch.dueDate.trim())) input.dueDate = patch.dueDate.trim();
     if (Object.keys(input).length === 0) return;
     const data = await request<{ issueUpdate?: { success?: boolean } }>({
       query: `
@@ -753,6 +771,135 @@ export function createLinearClient(args: LinearClientArgs) {
     return teamId;
   };
 
+  /**
+   * What the create form needs from one team: whether it uses cycles and
+   * estimates (and on which scale), its current and upcoming cycles, and its
+   * issue templates. One query, read when the form picks a team.
+   */
+  const getIssueCreateOptions = async (teamKeyOrId: string): Promise<LinearIssueCreateOptions> => {
+    const teamId = await resolveTeamId(teamKeyOrId);
+    const data = await request<{ team?: Record<string, unknown> }>({
+      query: `
+        query IssueCreateOptions($id: String!, $now: DateTimeOrDuration!) {
+          team(id: $id) {
+            id key cyclesEnabled issueEstimationType issueEstimationAllowZero issueEstimationExtended
+            activeCycle { id }
+            cycles(first: 8, filter: { endsAt: { gt: $now } }, orderBy: createdAt) {
+              nodes { id number name startsAt endsAt }
+            }
+            templates(first: 50) { nodes { id name description type templateData } }
+          }
+        }
+      `,
+      variables: { id: teamId, now: new Date().toISOString() },
+      maxRetries: 2,
+    });
+    const team = isRecord(data.team) ? data.team : null;
+    if (!team) throw new Error(`Linear team "${teamKeyOrId}" was not found.`);
+    const activeCycleId = isRecord(team.activeCycle) ? asString(team.activeCycle.id) : null;
+    const cycles = (isRecord(team.cycles) ? asArray(team.cycles.nodes) : [])
+      .filter(isRecord)
+      .map((cycle) => ({
+        id: asString(cycle.id) ?? "",
+        number: typeof cycle.number === "number" ? cycle.number : 0,
+        name: asString(cycle.name) ?? null,
+        startsAt: asString(cycle.startsAt) ?? "",
+        endsAt: asString(cycle.endsAt) ?? "",
+        active: asString(cycle.id) === activeCycleId,
+      }))
+      .filter((cycle) => cycle.id)
+      .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    const templates = (isRecord(team.templates) ? asArray(team.templates.nodes) : [])
+      .filter(isRecord)
+      .filter((template) => asString(template.type) === "issue")
+      .map((template) => {
+        const templateData = isRecord(template.templateData) ? template.templateData : {};
+        return {
+          id: asString(template.id) ?? "",
+          name: asString(template.name) ?? "Template",
+          description: asString(template.description) ?? null,
+          title: asString(templateData.title) ?? null,
+          priority: typeof templateData.priority === "number" ? templateData.priority : null,
+          labelIds: asArray(templateData.labelIds).filter((id): id is string => typeof id === "string"),
+        };
+      })
+      .filter((template) => template.id);
+    return {
+      teamId,
+      teamKey: asString(team.key) ?? teamKeyOrId,
+      cyclesEnabled: team.cyclesEnabled === true,
+      estimationType: asString(team.issueEstimationType) ?? "notUsed",
+      estimationAllowZero: team.issueEstimationAllowZero === true,
+      estimationExtended: team.issueEstimationExtended === true,
+      cycles,
+      templates,
+    };
+  };
+
+  const listProjectMilestones = async (projectId: string): Promise<LinearProjectMilestone[]> => {
+    const data = await request<{ project?: { projectMilestones?: { nodes?: unknown[] } } }>({
+      query: `
+        query ProjectMilestones($id: String!) {
+          project(id: $id) { projectMilestones(first: 50) { nodes { id name targetDate } } }
+        }
+      `,
+      variables: { id: projectId.trim() },
+      maxRetries: 2,
+    });
+    return asArray(data.project?.projectMilestones?.nodes)
+      .filter(isRecord)
+      .map((milestone) => ({
+        id: asString(milestone.id) ?? "",
+        name: asString(milestone.name) ?? "Milestone",
+        targetDate: asString(milestone.targetDate) ?? null,
+      }))
+      .filter((milestone) => milestone.id);
+  };
+
+  /**
+   * Put one file on Linear's storage and return the asset URL to use in
+   * markdown. `fileUpload` takes its arguments directly (no input object) with
+   * an integer size; the signed URL then takes a PUT with the returned headers.
+   */
+  const uploadFileBytes = async (params: { filename: string; contentType: string; bytes: Uint8Array }): Promise<LinearUploadResult> => {
+    const size = params.bytes.byteLength;
+    if (size > 50 * 1024 * 1024) throw new Error(`${params.filename} is over Linear's 50 MB upload limit.`);
+    const data = await request<{
+      fileUpload?: {
+        success?: boolean;
+        uploadFile?: { uploadUrl?: string; assetUrl?: string; headers?: Array<{ key?: string; value?: string }> };
+      };
+    }>({
+      query: `
+        mutation FileUpload($contentType: String!, $filename: String!, $size: Int!) {
+          fileUpload(contentType: $contentType, filename: $filename, size: $size) {
+            success
+            uploadFile { uploadUrl assetUrl headers { key value } }
+          }
+        }
+      `,
+      variables: { contentType: params.contentType, filename: params.filename, size },
+      maxRetries: 1,
+    });
+    const uploadFile = data.fileUpload?.uploadFile;
+    const uploadUrl = asString(uploadFile?.uploadUrl);
+    const assetUrl = asString(uploadFile?.assetUrl);
+    if (!uploadUrl || !assetUrl) throw new Error("Linear did not return an upload URL.");
+    const headers: Record<string, string> = {
+      "content-type": params.contentType,
+      "cache-control": "public, max-age=31536000",
+    };
+    for (const header of asArray(uploadFile?.headers)) {
+      if (!isRecord(header)) continue;
+      const key = asString(header.key);
+      const value = asString(header.value);
+      if (key && value) headers[key] = value;
+    }
+    const response = await fetchImpl(uploadUrl, { method: "PUT", headers, body: Buffer.from(params.bytes) });
+    if (!response.ok) throw new Error(`Linear file upload failed (HTTP ${response.status}).`);
+    return { assetUrl, filename: params.filename, contentType: params.contentType };
+  };
+
   /** Creates an issue and returns it normalized. `teamKey` accepts a key ("VER") or a team id. */
   const createIssue = async (params: LinearIssueCreateInput): Promise<NormalizedLinearIssue> => {
     const title = params.title.trim();
@@ -768,6 +915,13 @@ export function createLinearClient(args: LinearClientArgs) {
     if (params.assigneeId?.trim()) input.assigneeId = params.assigneeId.trim();
     if (priorityIsValid(params.priority)) input.priority = params.priority;
     if (params.labelIds?.length) input.labelIds = params.labelIds;
+    if (params.projectMilestoneId?.trim()) input.projectMilestoneId = params.projectMilestoneId.trim();
+    if (params.cycleId?.trim()) input.cycleId = params.cycleId.trim();
+    if (typeof params.estimate === "number" && Number.isFinite(params.estimate) && params.estimate >= 0) {
+      input.estimate = params.estimate;
+    }
+    if (params.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(params.dueDate.trim())) input.dueDate = params.dueDate.trim();
+    if (params.templateId?.trim()) input.templateId = params.templateId.trim();
     const data = await request<{ issueCreate?: { success?: boolean; issue?: Record<string, unknown> } }>({
       query: `
         mutation CreateIssue($input: IssueCreateInput!) {
@@ -906,57 +1060,11 @@ export function createLinearClient(args: LinearClientArgs) {
     };
     const contentType = CONTENT_TYPE_MAP[ext] ?? "application/octet-stream";
 
-    const uploadInit = await request<{
-      fileUpload?: {
-        uploadUrl?: string;
-        assetUrl?: string;
-        headers?: Array<{ key?: string; value?: string }>;
-      };
-    }>({
-      query: `
-        mutation RequestFileUpload($filename: String!, $size: Float!, $contentType: String!) {
-          fileUpload(input: { filename: $filename, size: $size, contentType: $contentType }) {
-            uploadUrl
-            assetUrl
-            headers { key value }
-          }
-        }
-      `,
-      variables: {
-        filename,
-        size,
-        contentType,
-      },
-      maxRetries: 1,
+    const { assetUrl } = await uploadFileBytes({
+      filename,
+      contentType,
+      bytes: new Uint8Array(fs.readFileSync(absPath)),
     });
-
-    const uploadUrl = asString(uploadInit.fileUpload?.uploadUrl);
-    const assetUrl = asString(uploadInit.fileUpload?.assetUrl);
-    if (!uploadUrl || !assetUrl) {
-      throw new Error("Linear fileUpload did not return uploadUrl/assetUrl.");
-    }
-
-    const headerMap: Record<string, string> = {};
-    for (const header of asArray(uploadInit.fileUpload?.headers)) {
-      if (!isRecord(header)) continue;
-      const key = asString(header.key);
-      const value = asString(header.value);
-      if (!key || !value) continue;
-      headerMap[key] = value;
-    }
-
-    const bytes = fs.readFileSync(absPath);
-    const uploadRes = await fetchImpl(uploadUrl, {
-      method: "PUT",
-      headers: {
-        "content-type": contentType,
-        ...headerMap,
-      },
-      body: bytes,
-    });
-    if (!uploadRes.ok) {
-      throw new Error(`Linear file upload failed (HTTP ${uploadRes.status}).`);
-    }
 
     const attachment = await request<{
       attachmentCreate?: {
@@ -1180,6 +1288,7 @@ export function createLinearClient(args: LinearClientArgs) {
     createdAt: string;
     userName: string;
     userDisplayName: string;
+    userAvatarUrl: string | null;
   }>> => {
     const data = await request<{
       issue?: {
@@ -1200,6 +1309,7 @@ export function createLinearClient(args: LinearClientArgs) {
                   id
                   name
                   displayName
+                  avatarUrl
                 }
               }
             }
@@ -1228,6 +1338,7 @@ export function createLinearClient(args: LinearClientArgs) {
           createdAt,
           userName: user ? asString(user.name) ?? "" : "",
           userDisplayName: user ? asString(user.displayName) ?? asString(user.name) ?? "" : "",
+          userAvatarUrl: user ? asString(user.avatarUrl) ?? null : null,
         };
       })
       .filter((entry): entry is NonNullable<typeof entry> => entry != null);
@@ -1241,6 +1352,9 @@ export function createLinearClient(args: LinearClientArgs) {
     runGraphQL,
     getViewer,
     getConnectionIdentity,
+    getIssueCreateOptions,
+    listProjectMilestones,
+    uploadFileBytes,
     listProjects,
     listUsers,
     listLabels,

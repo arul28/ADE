@@ -1906,6 +1906,26 @@ describe("product analytics producers", () => {
     })).toEqual({ feature: "work", action: "focus_mode" });
   });
 
+  it("keeps the issue-created tracker through the sanitizer and nothing about the issue", () => {
+    for (const outcome of ["tracker_linear", "tracker_github"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "issues",
+        action: "issue_created",
+        outcome,
+        source: "renderer_route",
+      })).toEqual({ feature: "issues", action: "issue_created", outcome, source: "renderer_route" });
+    }
+    // Another tracker, the repository, the title, or the issue's number does not cross.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "issues",
+      action: "issue_created",
+      outcome: "tracker_jira",
+      repo: "arul28/ADE",
+      title: "Crash on launch",
+      issue_number: 1520,
+    })).toEqual({ feature: "issues", action: "issue_created" });
+  });
+
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {
     // The pane is a picker plus one active tool, so the closed id set IS the
     // dimension. `WORK_TOOL_IDS` is the source of truth; a tool added there and

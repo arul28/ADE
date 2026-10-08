@@ -1,5 +1,5 @@
 import React, { useLayoutEffect, useState } from "react";
-import { ChatTeardropText, Quotes } from "@phosphor-icons/react";
+import { ChatTeardropText, Quotes, Ticket } from "@phosphor-icons/react";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 import { cn } from "../ui/cn";
 import { cssZoomOf } from "../../lib/webZoom";
@@ -21,14 +21,17 @@ export function AssistantOutputSelectionToolbar({
   rootRef,
   onAddToChat,
   onComment,
+  onCreateIssue,
 }: {
   rootRef: { current: HTMLElement | null };
   onAddToChat?: (text: string) => void;
+  /** Starts a Linear or GitHub issue from the selected text. */
+  onCreateIssue?: (text: string) => void;
   /** Opens a comment on the selection. Absent where comments are not offered. */
   onComment?: (selection: AssistantOutputSelection) => void;
 }) {
   const [state, setState] = useState<ToolbarState | null>(null);
-  const enabled = Boolean(onAddToChat || onComment);
+  const enabled = Boolean(onAddToChat || onComment || onCreateIssue);
 
   const sync = () => {
     if (!enabled) {
@@ -41,7 +44,7 @@ export function AssistantOutputSelectionToolbar({
         setState(null);
         return;
       }
-      const width = onComment ? 196 : 118;
+      const width = (onAddToChat ? 118 : 0) + (onComment ? 78 : 0) + (onCreateIssue ? 108 : 0);
       // Rects are zoomed under the hosted web client's body zoom; styles are
       // not (see `cssZoomOf`).
       const zoom = cssZoomOf();
@@ -75,7 +78,7 @@ export function AssistantOutputSelectionToolbar({
       window.removeEventListener("keydown", handleKey);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `sync` reads the latest props each call
-  }, [enabled, onAddToChat, onComment, rootRef]);
+  }, [enabled, onAddToChat, onComment, onCreateIssue, rootRef]);
 
   if (!state || !enabled) return null;
 
@@ -133,6 +136,24 @@ export function AssistantOutputSelectionToolbar({
           >
             <ChatTeardropText size={13} weight="fill" className={state.canComment ? "text-[var(--chat-accent)]" : undefined} aria-hidden />
             {state.canComment ? "Comment" : "Wait for turn"}
+          </button>
+        ) : null}
+        {onCreateIssue ? (
+          <button
+            type="button"
+            data-testid="assistant-output-create-issue"
+            className={cn(BUTTON_CLASS, (onAddToChat || onComment) && "border-l border-fg/[0.08]", "hover:bg-fg/[0.07]")}
+            title="Start a Linear or GitHub issue from this text"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCreateIssue(state.selection.text);
+              window.getSelection()?.removeAllRanges();
+              setState(null);
+            }}
+          >
+            <Ticket size={13} weight="fill" className="text-[var(--chat-accent)]" aria-hidden />
+            Create issue
           </button>
         ) : null}
       </div>

@@ -37,6 +37,23 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // keeps the read-only pane.
   "cto.getLinearIssue",
   "cto.updateLinearIssue",
+  // Issue viewer: Linear comments, and GitHub issues read and edited the way
+  // the desktop's Issues tab does. Optional: an older brain omits them.
+  "cto.createLinearIssueComment",
+  "github.getRepoIssueSummary",
+  "github.listRepoIssueList",
+  "github.listIssueComments",
+  "github.getIssueWriteAccess",
+  "github.listRepoMilestones",
+  "github.updateIssue",
+  "github.commentOnIssue",
+  "github.createIssue",
+  "github.listIssueTemplates",
+  "github.listIssueTypes",
+  "cto.createLinearIssue",
+  "cto.getLinearIssueCreateOptions",
+  "cto.listLinearProjectMilestones",
+  "cto.uploadLinearFile",
   "cto.countLinearIssues",
   "cto.getLinearCustomViews",
   // Whether the CTO thread is blocked on the user. The CTO chat is hidden from

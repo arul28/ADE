@@ -87,6 +87,7 @@ import {
   userTextLooksLikeMarkdown,
 } from "./chatUserMessageCards";
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
+import { issueCreateRequestFromSelection, requestIssueCreate } from "../../lib/issueCreateRequests";
 import { ThreadCommentLayer } from "./ThreadCommentLayer";
 import { parseThreadReviewBlock, type ChatThreadComment } from "../../../shared/threadComments";
 import {
@@ -5674,6 +5675,12 @@ function AgentChatMessageListMain({
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const listRootRef = useRef<HTMLDivElement | null>(null);
+  // The lane is read from the chat's own machine, which a remote chat's tab
+  // does not hold.
+  const scopeLaneName = chatScope.lane?.id === laneId ? chatScope.lane?.name ?? null : null;
+  const createIssueFromSelection = useCallback((text: string) => {
+    requestIssueCreate(issueCreateRequestFromSelection(text, { sessionId: sessionId ?? null, laneId: laneId ?? null, laneName: scopeLaneName }));
+  }, [laneId, scopeLaneName, sessionId]);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const olderHistorySentinelRef = useRef<HTMLDivElement | null>(null);
   const lastHandledScrollToRowRequestIdRef = useRef<number | null>(null);
@@ -8390,9 +8397,10 @@ function AgentChatMessageListMain({
           comments={threadComments.comments}
           layoutVersion={`${groupedRows.length}:${shouldVirtualize ? `${startIndex}-${endIndex}` : "all"}`}
           onAddToChat={onInsertDraft}
+          onCreateIssue={createIssueFromSelection}
         />
       ) : (
-        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />
+        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} onCreateIssue={createIssueFromSelection} />
       )}
     </div>
     </ProofCitationProvider>

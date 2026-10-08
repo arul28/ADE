@@ -304,7 +304,12 @@ export function matchInlineCodeEntity(
 const PROSE_UUID_RE = new RegExp(`(?<![\\w/.-])${UUID_SOURCE}(?![\\w/-])`, "gi");
 const PROSE_ISO_RE = new RegExp(`(?<![\\w-])${ISO_SOURCE}${ISO_RANGE_END_SOURCE}(?![\\w:])`, "g");
 const PROSE_PR_RE = /\b(?:PR|pull request)\s+(#\d{1,6})\b/gi;
-const PROSE_LINEAR_RE = /(?<![\w/#-])([A-Za-z][A-Za-z0-9]{0,9}-\d{1,9})(?![\w-])/g;
+// Linear's identifier is a team key (a letter, then up to 9 letters or digits)
+// and a number. Prose matches only the uppercase form Linear itself prints, and
+// never inside a path, branch name or version: `feat/ADE-1`, `ade-1-fix` and
+// `ADE-1.2` are not issue references. The key must also be one of this
+// workspace's teams (`linearChip`), so `SHA-256` and `UTF-8` never match.
+const PROSE_LINEAR_RE = /(?<![\w/#.-])([A-Z][A-Z0-9]{0,9}-\d{1,9})(?![\w-]|\.\d)/g;
 
 /**
  * Entities in plain prose (text outside code), in document order, with no

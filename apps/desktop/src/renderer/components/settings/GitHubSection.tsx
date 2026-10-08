@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
 import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
   CheckCircle,
@@ -31,7 +32,21 @@ import {
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
-import { ModernSection, SettingsTextField } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsTextField, SettingsToggle } from "./primitives";
+import { setIssueTopBarVisible, useIssueTopBarPreferences } from "../issues/issueTopBarPreferences";
+import { useGitHubIssueWriteAccess, useProjectGitHubRepo } from "../issues/githubIssueStore";
+import type { GitHubIssueWriteAccess } from "../../../shared/types";
+
+/** One line on which credential edits issues here, and what would change it. */
+function issueAccessHint(access: GitHubIssueWriteAccess): string {
+  const via = issueWriteSourceLabel(access.writeSource);
+  if (access.app?.needsApproval) {
+    return via
+      ? `Edits use ${via}. ADE's GitHub App needs its Issues permission approved on GitHub to edit issues itself.`
+      : "ADE's GitHub App needs its Issues permission approved on GitHub before ADE can edit issues.";
+  }
+  return via ? `Edits use ${via}.` : "Connect GitHub CLI or add a token to edit issues.";
+}
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./IntegrationsSettings.css";
 import { Banner } from "../ui/notice";
@@ -149,6 +164,9 @@ function credentialStateBadge(
 type StatusTone = "ok" | "warn" | "neutral";
 
 export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
+  const issueTopBar = useIssueTopBarPreferences();
+  const { repo: issueRepo } = useProjectGitHubRepo();
+  const issueAccess = useGitHubIssueWriteAccess(issueRepo);
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
@@ -468,6 +486,42 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
         ) : null}
       </ModernSection>
 
+      <ModernSection group="GitHub" anchor="github-issues-top-bar" title="Issues">
+        <ModernRows>
+          {issueAccess ? (
+            <ModernRow
+              title="Editing issues in ADE"
+              hint={issueAccessHint(issueAccess)}
+              control={issueAccess.app?.needsApproval && issueAccess.app.manageUrl ? (
+                <button
+                  type="button"
+                  className="ade-modern-btn"
+                  onClick={() => {
+                    const url = issueAccess.app?.manageUrl;
+                    if (url) void window.ade?.app?.openExternal?.(url);
+                  }}
+                >
+                  Review on GitHub
+                </button>
+              ) : (
+                <span className="ade-modern-muted">{issueAccess.writeSource ? "Ready" : "Read-only"}</span>
+              )}
+            />
+          ) : null}
+          <ModernRow
+            title="Show GitHub issues in the top bar"
+            hint="On this computer. Appears when this project's repository has open issues. Issue links still open in the Issues tab and the issue sheet."
+            control={(
+              <SettingsToggle
+                label="Show GitHub issues in the top bar"
+                checked={issueTopBar.github}
+                onChange={(next) => setIssueTopBarVisible("github", next)}
+              />
+            )}
+          />
+        </ModernRows>
+      </ModernSection>
+
       {showPatSetup ? (
         <ModernSection
           group="GitHub"
@@ -552,7 +606,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
         <ModernSection
           group="GitHub"
           title="Access order"
-          hint="ADE uses the first working connection. Reads can use the GitHub App; writes skip it and use the first connection that can write."
+          hint="ADE uses the first working connection. Reads can use the GitHub App, and so can issue edits once its Issues permission is approved; other writes skip it and use the first connection that can write."
         >
           <div className="ade-modern-rows">
             {credentialStates.map((credential, index) => {

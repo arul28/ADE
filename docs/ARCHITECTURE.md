@@ -1204,7 +1204,8 @@ pattern, in two shapes that are deliberately not one primitive:
 request, so a consumer that has not mounted yet drains it on mount; a live
 consumer clears the hold so the next mount does not re-open something nobody
 asked for; a nonce makes asking twice two requests rather than one swallowed
-duplicate) backs `workToolRequests.ts`, `filesOpenRequests.ts`, and
+duplicate) backs `workToolRequests.ts`, `filesOpenRequests.ts`,
+`issueNavigation.ts` (tool tab and sheet), `linearLaunchRequests.ts`, and
 `linearIssueQuickViewNavigation.ts`; `createKeyedPendingStore` (no listeners,
 one held value per key, taken by the surface that owns that key when it mounts)
 backs `pendingReveals.ts` and `pendingSessionAnchors.ts`.

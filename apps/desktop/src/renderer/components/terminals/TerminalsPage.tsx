@@ -31,6 +31,7 @@ import {
 import { holdRemoteBrowserOpen, remoteBrowserOpenMatchesOwner } from "../../lib/pendingRemoteBrowserOpens";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
+import { registerIssueInPlaceHost, subscribeIssueToolRequests } from "../../lib/issueNavigation";
 import {
   SessionContextMenu,
   type SessionContextMenuLaneActions,
@@ -1265,6 +1266,23 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     return subscribeFilesOpenInTools(() => {
       setWorkSidebarTool("files");
     });
+  }, [active, setWorkSidebarTool]);
+
+  // An issue link clicked anywhere while this page is the active one opens in
+  // the tools pane's Issues tab, beside the chat. Registering only while active
+  // matters: this page stays mounted behind Lanes and PRs, and a click there
+  // must open the issue sheet instead of a tab nobody can see. As with files,
+  // this only reveals the tool; the Issues panel drains the request itself.
+  useEffect(() => {
+    if (!active) return undefined;
+    const release = registerIssueInPlaceHost();
+    const unsubscribe = subscribeIssueToolRequests(() => {
+      setWorkSidebarTool("issues");
+    });
+    return () => {
+      unsubscribe();
+      release();
+    };
   }, [active, setWorkSidebarTool]);
 
   const toggleWorkSidebar = useCallback(() => {

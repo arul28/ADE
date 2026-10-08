@@ -853,6 +853,26 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "Linear",
   },
+  {
+    id: "integrations.linear-top-bar",
+    label: "Show Linear in the top bar",
+    keywords: ["linear", "issues", "top bar", "header", "hide", "button"],
+    tab: "integrations",
+    anchor: "linear-top-bar",
+    scope: "machine",
+    web: "hidden",
+    group: "Linear",
+  },
+  {
+    id: "integrations.github-issues-top-bar",
+    label: "Show GitHub issues in the top bar",
+    keywords: ["github", "issues", "top bar", "header", "hide", "button", "count"],
+    tab: "integrations",
+    anchor: "github-issues-top-bar",
+    scope: "machine",
+    web: "hidden",
+    group: "GitHub",
+  },
   // ── Notifications ───────────────────────────────────────────────────────
   {
     id: "notifications.events",

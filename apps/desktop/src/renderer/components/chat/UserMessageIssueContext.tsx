@@ -1,9 +1,9 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
-import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
-import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueRef } from "../../lib/issueNavigation";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
@@ -24,24 +24,32 @@ export function UserMessageIssueContext({
   // identical pin, and the prop form drilled that same value through four
   // layers of transcript row plumbing to arrive here unchanged.
   const machinePin = useChatRuntimeScope().pin;
-  const [linearDetailsIssueId, setLinearDetailsIssueId] = useState<string | null>(null);
-  const [githubDetailsIssueId, setGitHubDetailsIssueId] = useState<string | null>(null);
   const [hiddenContextKeys, setHiddenContextKeys] = useState<string[]>([]);
 
   const visibleContextAttachments = useMemo(
     () => contextAttachments.filter((attachment) => !hiddenContextKeys.includes(chatContextAttachmentKey(attachment))),
     [contextAttachments, hiddenContextKeys],
   );
-  const linearIssue = visibleContextAttachments.find(
-    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
-      attachment.type === "linear_issue" && attachment.issue.id === linearDetailsIssueId
-    ),
-  )?.issue ?? null;
-  const githubIssue = visibleContextAttachments.find(
-    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
-      attachment.type === "github_issue" && attachment.issue.id === githubDetailsIssueId
-    ),
-  )?.issue ?? null;
+
+  // Detaching an issue from the chat used to live in the Linear details modal
+  // this chip opened. The chip opens the issue viewer now, so the action moved
+  // onto the chip itself.
+  const detachContext = useCallback((key: string) => {
+    const attachment = visibleContextAttachments.find((entry) => chatContextAttachmentKey(entry) === key);
+    if (!attachment || !sessionId) return;
+    setHiddenContextKeys((current) => [...current, key]);
+    if (attachment.type === "linear_issue") {
+      void window.ade?.lanes?.detachLinearIssueFromSession?.({
+        chatSessionId: sessionId,
+        issueId: attachment.issue.id,
+      }, machinePin);
+    } else {
+      void window.ade?.lanes?.detachGitHubIssueFromSession?.({
+        chatSessionId: sessionId,
+        issueId: attachment.issue.id,
+      }, machinePin);
+    }
+  }, [machinePin, sessionId, visibleContextAttachments]);
 
   return (
     <>
@@ -53,65 +61,21 @@ export function UserMessageIssueContext({
         className="mt-1 px-0 py-0"
         onOpenContext={(attachment) => {
           if (attachment.type === "linear_issue") {
-            setLinearDetailsIssueId(attachment.issue.id);
+            // The issue itself, where you are: the Issues tab beside this chat.
+            const ref = linearIssueRef(attachment.issue.identifier, attachment.issue.url ?? null);
+            if (ref) openIssueRef({ ref, source: "chip" });
             return;
           }
           if (attachment.type === "github_issue") {
-            setGitHubDetailsIssueId(attachment.issue.id);
+            const issue = attachment.issue;
+            openIssueRef({
+              ref: { provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url },
+              source: "chip",
+            });
             return;
           }
         }}
-      />
-      <LinearIssueSelectModal
-        open={linearIssue != null}
-        ariaLabel="Linear issue"
-        selectedIssue={linearIssue}
-        mode="details"
-        showBranchPreview={false}
-        onOpenChange={(open) => {
-          if (!open) setLinearDetailsIssueId(null);
-        }}
-        onSelectIssue={() => undefined}
-        onRemoveIssue={(issue) => {
-          const attachment = visibleContextAttachments.find(
-            (entry) => entry.type === "linear_issue" && entry.issue.id === issue.id,
-          );
-          if (attachment) {
-            setHiddenContextKeys((current) => [...current, chatContextAttachmentKey(attachment)]);
-          }
-          if (sessionId) {
-            void window.ade?.lanes?.detachLinearIssueFromSession?.({
-              chatSessionId: sessionId,
-              issueId: issue.id,
-            }, machinePin);
-          }
-          setLinearDetailsIssueId(null);
-        }}
-      />
-      <GitHubIssueSelectModal
-        open={githubIssue != null}
-        ariaLabel="GitHub issue"
-        selectedIssue={githubIssue}
-        mode="details"
-        onOpenChange={(open) => {
-          if (!open) setGitHubDetailsIssueId(null);
-        }}
-        onSelectIssue={() => undefined}
-        onRemoveIssue={(issue) => {
-          const attachment = visibleContextAttachments.find(
-            (entry) => entry.type === "github_issue" && entry.issue.id === issue.id,
-          );
-          if (attachment) {
-            setHiddenContextKeys((current) => [...current, chatContextAttachmentKey(attachment)]);
-          }
-          if (sessionId) {
-            void window.ade?.lanes?.detachGitHubIssueFromSession?.({
-              chatSessionId: sessionId,
-              issueId: issue.id,
-            }, machinePin);
-          }
-          setGitHubDetailsIssueId(null);
-        }}
+        onRemoveContext={sessionId ? detachContext : undefined}
       />
     </>
   );

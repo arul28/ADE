@@ -11192,6 +11192,25 @@ export function createPrService({
 
     try {
       const fallbackRepo = githubWebhookRepoFromPayload(payload);
+      // An issue (not a pull request) changed: tell open issue views to re-read
+      // it. GitHub sends `issue_comment` for both, so a PR's comment is skipped.
+      if (
+        (eventName === "issues" || eventName === "issue_comment")
+        && isRecord(payload.issue)
+        && payload.issue.pull_request == null
+        && fallbackRepo
+      ) {
+        const issueNumber = Number(payload.issue.number);
+        if (Number.isInteger(issueNumber) && issueNumber > 0) {
+          emitPrEvent?.({
+            type: "github-issue-changed",
+            repoOwner: fallbackRepo.owner,
+            repoName: fallbackRepo.name,
+            issueNumber,
+            action: asString(payload.action).trim() || null,
+          });
+        }
+      }
       const rawPull = readWebhookPullPayload(eventName, payload);
       const projection = rawPull ? projectionFromRawPull(rawPull, eventName, deliveryId, fallbackRepo) : null;
       let linkedPrIds: string[] = [];

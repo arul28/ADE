@@ -4,6 +4,8 @@ import { navigateToAppTarget, openAdeDeeplink } from "../../lib/openExternal";
 import { rootAppStoreApi } from "../../state/appStore";
 import { machineEntryForBinding } from "../../state/crossMachineLanes";
 import type { ChatRuntimeScope } from "./ChatRuntimeScope";
+import { openIssueRef } from "../../lib/issueNavigation";
+import { resolveProjectGitHubIssueNumber } from "../issues/githubIssueStore";
 
 /**
  * Opening the `ade://` links that appear inside a chat — a chip in a reply, a
@@ -56,8 +58,34 @@ export function openChatDeeplinkTarget(
   // `#1407` in an agent's reply names a PR with no repo. A deeplink must name
   // the repo to parse, so that one opens through the in-app PR route, which
   // resolves the number against this project's PRs.
+  //
+  // GitHub numbers issues and pull requests from one sequence, so `#1407` may
+  // be an issue. On the tab's own machine (where the project's repo is known)
+  // ask first: an issue opens in the issue viewer, where you are; anything else
+  // keeps the PR route.
   if (target.kind === "pr" && !target.repoOwner) {
-    navigateToAppTarget({ kind: "pr", prNumber: target.prNumber });
+    const prNumber = target.prNumber;
+    const openPr = () => navigateToAppTarget({ kind: "pr", prNumber });
+    const state = rootAppStoreApi.getState();
+    const projectRoot = state.projectBinding?.kind === "remote"
+      ? state.projectBinding.rootPath ?? null
+      : state.project?.rootPath ?? null;
+    if (scope.pin || !projectRoot) {
+      openPr();
+      return;
+    }
+    void resolveProjectGitHubIssueNumber(projectRoot, prNumber)
+      .then((resolved) => {
+        if (!resolved) {
+          openPr();
+          return;
+        }
+        openIssueRef({
+          ref: { provider: "github", owner: resolved.owner, repo: resolved.repo, number: prNumber, url: resolved.issue.url },
+          source: "chip",
+        });
+      })
+      .catch(openPr);
     return;
   }
   // A lane id names a lane on the chat's machine; a pinned chat's lane is not

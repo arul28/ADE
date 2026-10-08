@@ -1,4 +1,7 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
+import type { LinearIssueCreateInput } from "../../../../desktop/src/shared/types";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
 import fs from "node:fs";
@@ -998,6 +1001,13 @@ function parseGitHubGetIssueArgs(value: Record<string, unknown>): {
   };
 }
 
+function parseGitHubRepoArgs(value: Record<string, unknown>, command: string): { owner: string; name: string } {
+  return {
+    owner: requireString(value.owner, `${command} requires owner.`),
+    name: requireString(value.name, `${command} requires name.`),
+  };
+}
+
 function parseAttachGitHubIssueToSessionArgs(value: Record<string, unknown>): {
   chatSessionId: string;
   issues: LaneGitHubIssue[];
@@ -1689,6 +1699,9 @@ function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
   };
 }
 
+/** 10 MB of bytes as base64 (4 characters per 3 bytes). */
+const LINEAR_REMOTE_UPLOAD_MAX_BASE64 = Math.ceil((10 * 1024 * 1024) / 3) * 4;
+
 function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
   return {
     name: requireString(value.name, "lanes.create requires name."),
@@ -1698,6 +1711,7 @@ function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
+    ...(isRecord(value.githubIssue) ? { githubIssue: value.githubIssue as CreateLaneArgs["githubIssue"] } : {}),
   };
 }
 
@@ -6450,7 +6464,48 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
       ...(priority !== undefined ? { priority } : {}),
       ...(addedLabelIds.length ? { addedLabelIds } : {}),
       ...(removedLabelIds.length ? { removedLabelIds } : {}),
+      ...(typeof payload.title === "string" && payload.title.trim() ? { title: payload.title } : {}),
+      ...(typeof payload.description === "string" ? { description: payload.description } : {}),
     });
+  });
+  register("cto.createLinearIssue", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    // The tracker reads the request (`parseLinearIssueCreateInput`).
+    return linearIssueTracker.createIssue(payload as unknown as LinearIssueCreateInput);
+  });
+  register("cto.getLinearIssueCreateOptions", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.getIssueCreateOptions(requireString(payload.teamKey, "cto.getLinearIssueCreateOptions requires teamKey."));
+  });
+  register("cto.listLinearProjectMilestones", { viewerAllowed: true }, async (payload) => {
+    const projectId = asTrimmedString(payload.projectId);
+    const linearIssueTracker = projectId ? await getConnectedLinearIssueTracker(args) : null;
+    return linearIssueTracker && projectId ? linearIssueTracker.listProjectMilestones(projectId) : [];
+  });
+  // A picture pasted into the create form on the web client or a phone. The
+  // bytes cross the sync channel, so they are capped well below Linear's own
+  // 50 MB limit.
+  register("cto.uploadLinearFile", { viewerAllowed: true }, async (payload) => {
+    const dataBase64 = requireString(payload.dataBase64, "cto.uploadLinearFile requires dataBase64.");
+    if (dataBase64.length > LINEAR_REMOTE_UPLOAD_MAX_BASE64) {
+      throw new Error("That file is over the 10 MB limit for uploads from another device.");
+    }
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.uploadFile({
+      filename: asTrimmedString(payload.filename) ?? "upload",
+      contentType: asTrimmedString(payload.contentType) ?? "application/octet-stream",
+      dataBase64,
+    });
+  });
+  register("cto.createLinearIssueComment", { viewerAllowed: true }, async (payload) => {
+    const issueId = requireString(payload.issueId, "cto.createLinearIssueComment requires issueId.");
+    const body = requireString(payload.body, "cto.createLinearIssueComment requires body.");
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.createComment(issueId, body);
   });
   register("cto.getLinearIssueComments", { viewerAllowed: true }, async (payload) => {
     const issueId = asTrimmedString(payload.issueId);
@@ -6669,6 +6724,76 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       parsed.owner,
       parsed.name,
       parsed.number,
+    );
+  });
+  // The issue viewer and the GitHub Issues pane (see docs/features/issues).
+  register("github.getRepoIssueSummary", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.getRepoIssueSummary");
+    return requireService(args.githubService, "GitHub service not available.").getRepoIssueSummary(owner, name);
+  });
+  register("github.listRepoIssueList", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoIssueList");
+    return requireService(args.githubService, "GitHub service not available.").listRepoIssueList(owner, name, parseGitHubIssueListState(payload.state));
+  });
+  register("github.listIssueComments", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").listIssueComments(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+    );
+  });
+  register("github.getIssueWriteAccess", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.getIssueWriteAccess");
+    return requireService(args.githubService, "GitHub service not available.").getIssueWriteAccess(owner, name, {
+      force: payload.force === true,
+    });
+  });
+  register("github.listRepoMilestones", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoMilestones");
+    return requireService(args.githubService, "GitHub service not available.").listRepoMilestones(owner, name);
+  });
+  register("github.listRepoLabels", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoLabels");
+    return requireService(args.githubService, "GitHub service not available.").listRepoLabels(owner, name);
+  });
+  register("github.listRepoCollaborators", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoCollaborators");
+    return requireService(args.githubService, "GitHub service not available.").listRepoCollaborators(owner, name);
+  });
+  register("github.createIssue", { viewerAllowed: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.createIssue");
+    return requireService(args.githubService, "GitHub service not available.").createIssue(
+      owner,
+      name,
+      parseGitHubIssueCreateInput(payload.input),
+    );
+  });
+  register("github.listIssueTemplates", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listIssueTemplates");
+    return requireService(args.githubService, "GitHub service not available.").listIssueTemplates(owner, name);
+  });
+  register("github.listIssueTypes", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner } = parseGitHubRepoArgs(payload, "github.listIssueTypes");
+    return requireService(args.githubService, "GitHub service not available.").listIssueTypes(owner);
+  });
+  register("github.updateIssue", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").updateIssue(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+      parseGitHubIssueUpdate(payload.patch),
+    );
+  });
+  register("github.commentOnIssue", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    const body = requireString(payload.body, "github.commentOnIssue requires body.");
+    return requireService(args.githubService, "GitHub service not available.").commentOnIssue(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+      body,
     );
   });
   register("github.publishCurrentProject", { viewerAllowed: true }, async (payload): Promise<PublishProjectResult> => {

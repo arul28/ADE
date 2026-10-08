@@ -1,4 +1,5 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
+import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
   ChatThreadComment,
@@ -449,6 +450,11 @@ import type {
   CtoCountLinearIssuesArgs,
   CtoCountLinearIssuesResult,
   CtoGetLinearIssueArgs,
+  CtoCreateLinearIssueCommentArgs,
+  LinearIssueCreateInput,
+  LinearIssueCreateOptions,
+  LinearProjectMilestone,
+  LinearUploadResult,
   CtoLinearCustomView,
   LinearAgentOverview,
   LinearInboxNotification,
@@ -504,6 +510,11 @@ import type {
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
+  GitHubRepoIssueSummary,
+  GitHubIssueWriteAccess,
+  GitHubIssueCreateInput,
+  GitHubIssueCreateResult,
+  GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
@@ -998,7 +1009,7 @@ import type {
   ApiCredentialStoreArgs,
   ApiCredentialSummary,
 } from "../shared/types/apiCredentials";
-import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
+import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "../shared/laneGitHubIssue";
 import type {
   AgentChatCopyTempAttachmentArgs,
   ChatAttachmentStagingMode,
@@ -3992,6 +4003,19 @@ declare global {
           name?: string;
           number: number;
         }) => Promise<GitHubIssueLike | null>;
+        /** Issues enabled + open count, one GraphQL point. */
+        getRepoIssueSummary: (args: { owner: string; name: string }) => Promise<GitHubRepoIssueSummary>;
+        listIssueComments: (args: { owner: string; name: string; number: number }) => Promise<GitHubIssueCommentLike[]>;
+        createIssue: (args: { owner: string; name: string; input: GitHubIssueCreateInput }) => Promise<GitHubIssueCreateResult>;
+        listIssueTemplates: (args: { owner: string; name: string }) => Promise<GitHubIssueTemplateSet>;
+        listIssueTypes: (args: { owner: string; name: string }) => Promise<GitHubIssueTypeOption[]>;
+        /** Which credential an issue edit would use, and the App's issues permission. */
+        getIssueWriteAccess: (args: { owner: string; name: string; force?: boolean }) => Promise<GitHubIssueWriteAccess>;
+        updateIssue: (args: { owner: string; name: string; number: number; patch: GitHubIssuePatch }) => Promise<GitHubIssueLike | null>;
+        commentOnIssue: (args: { owner: string; name: string; number: number; body: string }) => Promise<GitHubIssueCommentLike | null>;
+        listRepoMilestones: (args: { owner: string; name: string }) => Promise<Array<{ number: number; title: string }>>;
+        /** Issues only (no pull requests), newest activity first, one GraphQL page. */
+        listRepoIssueList: (args: { owner: string; name: string; state: "open" | "closed" | "all" }) => Promise<GitHubIssueLike[]>;
         listRepoAutolinks: (args?: {
           owner?: string;
           name?: string;
@@ -4449,6 +4473,11 @@ declare global {
         getLinearIssueComments: (
           args: { issueId: string },
         ) => Promise<CtoLinearIssueComment[]>;
+        createLinearIssueComment: (args: CtoCreateLinearIssueCommentArgs) => Promise<{ commentId: string }>;
+        createLinearIssue: (args: LinearIssueCreateInput) => Promise<NormalizedLinearIssue>;
+        getLinearIssueCreateOptions: (args: { teamKey: string }) => Promise<LinearIssueCreateOptions>;
+        listLinearProjectMilestones: (args: { projectId: string }) => Promise<LinearProjectMilestone[]>;
+        uploadLinearFile: (args: { filename: string; contentType: string; dataBase64: string }) => Promise<LinearUploadResult>;
         /** Full detail read (relations, parent, sub-issues). */
         getLinearIssue: (
           args: CtoGetLinearIssueArgs,

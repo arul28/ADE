@@ -29,6 +29,7 @@ import {
 import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { TranscriptChip } from "./ChipText";
+import { useLinearWorkspaceTeamKeys } from "../issues/linearIssueStore";
 
 const ThreadEntityLookupContext = createContext<ThreadEntityLookup>(EMPTY_THREAD_ENTITY_LOOKUP);
 
@@ -46,10 +47,13 @@ export function ThreadEntityProvider({
   const scope = useChatRuntimeScope();
   const lanes = useLanesForPin(scope.binding);
   const sessions = useSessionsForPin(scope.binding);
+  const workspaceTeamKeys = useLinearWorkspaceTeamKeys();
 
   // Matching only needs ids, names and keys, so reduce to that index first.
   const index = useMemo<ThreadEntityIndex>(() => {
-    const linearTeamKeys = new Set<string>();
+    // The connected workspace's teams, plus any key a lane's linked issue
+    // carries (a team renamed since keeps its old issues reachable).
+    const linearTeamKeys = new Set<string>(workspaceTeamKeys);
     for (const lane of lanes ?? []) {
       const identifiers = [lane.linearIssue?.identifier, ...(lane.linearIssueLinks ?? []).map((link) => link.issue?.identifier)];
       for (const identifier of identifiers) {
@@ -63,7 +67,7 @@ export function ThreadEntityProvider({
       linearTeamKeys: [...linearTeamKeys].sort(),
       skillNames: [...(skillNames ?? [])].sort(),
     };
-  }, [lanes, sessions, skillNames]);
+  }, [lanes, sessions, skillNames, workspaceTeamKeys]);
 
   // Lane status refreshes replace the lane and session arrays every few
   // seconds without changing the index's VALUE. Rebuilding the lookup changes

@@ -91,6 +91,7 @@ import { AccountBalanceIndicator } from "./AccountBalanceIndicator";
 import { ChannelBadge } from "./ChannelBadge";
 import { HeaderSheet } from "./HeaderSheet";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
+import { GitHubIssuesButton } from "../issues/GitHubIssuesButton";
 import { CloudAgentsQuickViewButton } from "./cloudAgents/CloudAgentsQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { ConnectionsPanel } from "./ConnectionsPanel";
@@ -1873,6 +1874,7 @@ export function TopBar({
         onOpenHarnessSettings={openHarnessSettings}
         showTrigger={projectSurfaceVisible}
       />
+      <GitHubIssuesButton showTrigger={projectSurfaceVisible} />
     </>
   );
 
@@ -1920,6 +1922,7 @@ export function TopBar({
         onOpenHarnessSettings={openHarnessSettings}
         showTrigger={projectSurfaceVisible}
       />
+      <GitHubIssuesButton variant="menu-row" onMenuActivate={onActivate} showTrigger={projectSurfaceVisible} />
       {usageHeaderPreferences.showInHeader ? (
         <HeaderUsageControl
           variant="menu-row"

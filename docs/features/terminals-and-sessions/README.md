@@ -912,8 +912,9 @@ Renderer surfaces:
   label, a three-to-five-word `hint` for a tool that has measured nothing yet,
   and a `contextLabel` rule for the header's one fact), `workToolAvailability`
   (available, or a reason: desktop-only, macOS-only), and
-  `isReadOnlyWorkTool` for the hosted web client. Six tools, no Pull request
-  tool — PRs have their own tab. Availability is decided from capability flags,
+  `isReadOnlyWorkTool` for the hosted web client. The Issues tool shows Linear
+  issues opened from this lane's chats ([Issues](../issues/README.md)); its
+  card status is the count of open issue tabs, a local read. Availability is decided from capability flags,
   never `process.platform` — the web client renders the same components.
 - `apps/desktop/src/renderer/components/terminals/WorkToolPicker.tsx`,
   `WorkToolPickerBackdrop.tsx`, `WorkToolHeader.tsx`,
@@ -2642,7 +2643,10 @@ in-memory reset stays separate.
   `ade.workViewState.v1`. The sidebar fields are
   `workSidebarOpen: boolean`, `workSidebarWidthPct: number` (clamped to
   26–55), and `workSidebarTool: "terminal" | "browser" | "git" | "pr" | "files" |
-  "ios" | "app-control" | null` (null = the picker page). The PR tool is
+  "ios" | "app-control" | "mac-desktop" | "windows-desktop" | "issues" | null`
+  (null = the picker page). The Issues tool's open issues are stored
+  separately, per lane, under `ade.work.issueTabs.v1` (see
+  [Issues](../issues/README.md)). The PR tool is
   per lane: no pull request, one open, or several.
   `workSidebarTool` is read and written on the **lane** scope, falling back
   to the project scope when no lane is bound; the other two are always

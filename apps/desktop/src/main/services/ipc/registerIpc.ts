@@ -1,4 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
+import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import { execFile } from "node:child_process";
 import type { MachineResetOptions, MachineResetPlan } from "../../../shared/types/machineReset";
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
@@ -695,6 +697,11 @@ import type {
   CtoCountLinearIssuesArgs,
   CtoCountLinearIssuesResult,
   CtoGetLinearIssueArgs,
+  CtoCreateLinearIssueCommentArgs,
+  LinearIssueCreateInput,
+  LinearIssueCreateOptions,
+  LinearProjectMilestone,
+  LinearUploadResult,
   CtoLinearCustomView,
   CtoUpdateLinearIssueArgs,
   NormalizedLinearIssue,
@@ -7305,6 +7312,7 @@ export function registerIpc({
       baseBranch: arg.baseBranch,
       branchName: arg.branchName,
       linearIssue: arg.linearIssue ?? null,
+      githubIssue: arg.githubIssue ?? null,
     });
     await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -11563,6 +11571,67 @@ export function registerIpc({
     return await ctx.githubService.getIssue(owner, name, arg.number);
   });
 
+  ipcMain.handle(IPC.githubGetRepoIssueSummary, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.getRepoIssueSummary(owner, name);
+  });
+
+  ipcMain.handle(IPC.githubListRepoIssueList, async (_event, arg: { owner?: string; name?: string; state?: "open" | "closed" | "all" }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoIssueList(owner, name, parseGitHubIssueListState(arg?.state));
+  });
+
+  ipcMain.handle(IPC.githubCreateIssue, async (_event, arg: { owner?: string; name?: string; input: unknown }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.createIssue(owner, name, parseGitHubIssueCreateInput(arg?.input));
+  });
+
+  ipcMain.handle(IPC.githubListIssueTemplates, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listIssueTemplates(owner, name);
+  });
+
+  ipcMain.handle(IPC.githubListIssueTypes, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listIssueTypes(owner);
+  });
+
+  ipcMain.handle(IPC.githubGetIssueWriteAccess, async (_event, arg: { owner?: string; name?: string; force?: boolean }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.getIssueWriteAccess(owner, name, { force: arg?.force === true });
+  });
+
+  ipcMain.handle(IPC.githubUpdateIssue, async (_event, arg: { owner?: string; name?: string; number: number; patch: unknown }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.updateIssue(owner, name, arg.number, parseGitHubIssueUpdate(arg?.patch));
+  });
+
+  ipcMain.handle(IPC.githubCommentOnIssue, async (_event, arg: { owner?: string; name?: string; number: number; body: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    if (typeof arg?.body !== "string" || !arg.body.trim()) throw new Error("A comment needs some text.");
+    return await ctx.githubService.commentOnIssue(owner, name, arg.number, arg.body);
+  });
+
+  ipcMain.handle(IPC.githubListRepoMilestones, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoMilestones(owner, name);
+  });
+
+  ipcMain.handle(IPC.githubListIssueComments, async (_event, arg: { owner?: string; name?: string; number: number }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listIssueComments(owner, name, arg.number);
+  });
+
   ipcMain.handle(
     IPC.githubListMyRepos,
     async (_event, arg: ListMyGitHubReposInput = {}): Promise<ListMyGitHubReposResult> => {
@@ -13375,6 +13444,58 @@ export function registerIpc({
       const ctx = getCtx();
       if (!ctx.linearIssueTracker) return [];
       return ctx.linearIssueTracker.fetchIssueComments(arg.issueId);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoCreateLinearIssue,
+    async (_event, arg: LinearIssueCreateInput): Promise<NormalizedLinearIssue> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      return ctx.linearIssueTracker.createIssue(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoGetLinearIssueCreateOptions,
+    async (_event, arg: { teamKey: string }): Promise<LinearIssueCreateOptions> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      return ctx.linearIssueTracker.getIssueCreateOptions(String(arg?.teamKey ?? ""));
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoListLinearProjectMilestones,
+    async (_event, arg: { projectId: string }): Promise<LinearProjectMilestone[]> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker || typeof arg?.projectId !== "string") return [];
+      return ctx.linearIssueTracker.listProjectMilestones(arg.projectId);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoUploadLinearFile,
+    async (_event, arg: { filename: string; contentType: string; dataBase64: string }): Promise<LinearUploadResult> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      if (typeof arg?.dataBase64 !== "string") throw new Error("Nothing to upload.");
+      return ctx.linearIssueTracker.uploadFile({
+        filename: String(arg.filename ?? "upload"),
+        contentType: String(arg.contentType ?? "application/octet-stream"),
+        dataBase64: arg.dataBase64,
+      });
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoCreateLinearIssueComment,
+    async (_event, arg: CtoCreateLinearIssueCommentArgs): Promise<{ commentId: string }> => {
+      if (typeof arg?.issueId !== "string" || !arg.issueId.trim()) throw new Error("A comment needs an issue.");
+      if (typeof arg?.body !== "string" || !arg.body.trim()) throw new Error("A comment needs some text.");
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      return ctx.linearIssueTracker.createComment(arg.issueId.trim(), arg.body);
     }
   );
 

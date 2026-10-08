@@ -759,6 +759,12 @@ apps/ios/
 │   │   │                            # LinearOAuthRunner (worker-bounce OAuth via
 │   │   │                            #   ASWebAuthenticationSession, ade:// capture),
 │   │   │                            #   all gated on supportsRemoteAction.
+│   │   ├── GitHubIssues/             # GitHub Issues pane from the Work ⋯ menu:
+│   │   │                            #   GitHubIssuesPaneSheet (list → detail with
+│   │   │                            #   close/reopen/comment) + GitHubIssuesPaneStore
+│   │   │                            #   (github.* remote commands, menu shown only
+│   │   │                            #   when the repo has open issues; see
+│   │   │                            #   docs/features/issues).
 │   │   ├── CursorCloud/              # Cursor Cloud fleet pane: CursorCloudPaneSheet
 │   │   │                            #   (full-screen sheet mirroring the Linear
 │   │   │                            #   pane's presentation) +
