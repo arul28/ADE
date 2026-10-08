@@ -3326,7 +3326,7 @@ describe("createAgentChatService", () => {
       )).toBe(true);
     });
 
-    it("caches SubagentStop hooks without publishing lifecycle edges before task notifications", async () => {
+    it("hook-only subagent entries never keep the runtime busy", async () => {
       const events: AgentChatEventEnvelope[] = [];
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn(),
@@ -3371,10 +3371,11 @@ describe("createAgentChatService", () => {
 
       // Hooks are cache/enrichment signals only. The SDK task_started and
       // task_notification messages own visible lifecycle edges so the hook and
-      // stream cannot produce duplicate rows.
+      // stream cannot produce duplicate rows. A hook-only entry has no terminal
+      // edge, so it must not hold the runtime busy.
       expect(events.some((event) => event.event.type === "subagent_started")).toBe(false);
       expect(events.some((event) => event.event.type === "subagent_result")).toBe(false);
-      expect(service.hasActiveWorkloads()).toBe(true);
+      expect(service.hasActiveWorkloads()).toBe(false);
     });
   });
 });

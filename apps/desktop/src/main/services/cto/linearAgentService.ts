@@ -19,6 +19,7 @@ import { buildDeeplink } from "../../../shared/deeplinks";
 import { normalizedLinearIssueToLaneIssue } from "../../../shared/laneLinearIssue";
 import type { LinearAgentActivityContent, LinearAgentPlanStep, LinearAgentRelayClient } from "./linearAgentRelayClient";
 import { getErrorMessage, isRecord, toOptionalString as asString } from "../shared/utils";
+import { unwrapShell } from "../chat/sessionActivityDetector";
 
 /**
  * Runs the ADE side of the Linear agent.
@@ -120,6 +121,40 @@ function lastParagraph(text: string): string {
   return parts.at(-1) ?? "";
 }
 
+/**
+ * Drops the lane worktree prefix from paths: every step runs inside it, so it
+ * only hides the part that differs. Anchored to the start of a token: unanchored,
+ * the lazy prefix rescans a long token from every position (a pasted base64 blob
+ * took ~600 ms per step on the main process at 50 KB).
+ */
+function shortenWorktreePaths(text: string): string {
+  return text.replace(/(?<![^\s'"`])(?:[A-Za-z]:)?[^\s'"`]*?[\\/]\.ade[\\/]worktrees[\\/][^\\/\s'"`]+(?:[\\/]|(?=[\s'"`]|$))/g, "");
+}
+
+/**
+ * The part of a shell command that says what it does. Agents start most
+ * commands with `cd <lane worktree> &&`, and Codex wraps them in `bash -lc '…'`
+ * (PowerShell or cmd on Windows); shown raw, every step reads the same. A bare
+ * `cd` says nothing, so the tool's own description stands in for it.
+ */
+export function describeShellCommand(command: string, description = ""): string {
+  let text = unwrapShell(command);
+  // `cmd /c "…"` hands back the command still inside the quotes cmd wrapped it in.
+  if (text !== command.trim() && /^"[^"]*"$/.test(text)) text = text.slice(1, -1);
+  for (;;) {
+    const cd = /^cd\s+("[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*/.exec(text);
+    if (!cd) break;
+    // A cd into the lane is the agent's usual preamble; a cd into another checkout says which repository the command ran in.
+    const target = cd[1]!.replace(/^["']|["']$/g, "");
+    if (/^(?:[\\/]|~|[A-Za-z]:|\.\.)/.test(target) && !/\.ade[\\/]worktrees[\\/]/.test(target)) break;
+    text = text.slice(cd[0].length);
+  }
+  if (!text || /^cd(?:\s+(?:"[^"]*"|'[^']*'|\S+))?\s*$/.test(text)) {
+    return truncate(description || shortenWorktreePaths(text), 200);
+  }
+  return truncate(shortenWorktreePaths(text).replace(/\s+/g, " "), 200);
+}
+
 /** A short, human label for a tool call, in the style of Linear's own agents. */
 export function describeToolCall(tool: string, args: unknown): { action: string; parameter: string } {
   const record = isRecord(args) ? args : {};
@@ -131,9 +166,11 @@ export function describeToolCall(tool: string, args: unknown): { action: string;
     return "";
   };
   const name = tool.toLowerCase();
-  if (/(^|_)(bash|shell|exec|command|terminal)/.test(name)) return { action: "Ran", parameter: truncate(pick("command", "cmd"), 200) };
-  if (/(edit|write|patch|apply|create_file|str_replace)/.test(name)) return { action: "Edited", parameter: pick("file_path", "path", "filePath", "file") };
-  if (/(read|view|open|cat)/.test(name)) return { action: "Read", parameter: pick("file_path", "path", "filePath", "file") };
+  if (/(^|_)(bash|shell|exec|command|terminal)/.test(name)) {
+    return { action: "Ran", parameter: describeShellCommand(pick("command", "cmd"), pick("description")) };
+  }
+  if (/(edit|write|patch|apply|create_file|str_replace)/.test(name)) return { action: "Edited", parameter: shortenWorktreePaths(pick("file_path", "path", "filePath", "file")) };
+  if (/(read|view|open|cat)/.test(name)) return { action: "Read", parameter: shortenWorktreePaths(pick("file_path", "path", "filePath", "file")) };
   if (/(grep|search|find|glob|rg)/.test(name)) return { action: "Searched", parameter: truncate(pick("pattern", "query", "q", "glob"), 160) };
   if (/(web|fetch|browse)/.test(name)) return { action: "Fetched", parameter: truncate(pick("url", "query"), 200) };
   if (/(todo|plan)/.test(name)) return { action: "Planned", parameter: "" };
@@ -199,6 +236,8 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
     finalText: string;
     /** Tool items already shown in Linear; a call is re-emitted when its arguments arrive. */
     postedToolItems: Set<string>;
+    /** The last step shown, so back-to-back identical steps show once. */
+    lastActionLabel: string | null;
     /** The last problem this turn, reported only if the turn fails. */
     lastError: string | null;
   }>();
@@ -512,10 +551,35 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
   const stateFor = (chatSessionId: string) => {
     let state = turnState.get(chatSessionId);
     if (!state) {
-      state = { text: "", lastThoughtAt: 0, lastActionAt: 0, thoughtTimer: null, finalText: "", postedToolItems: new Set(), lastError: null };
+      state = { text: "", lastThoughtAt: 0, lastActionAt: 0, thoughtTimer: null, finalText: "", postedToolItems: new Set(), lastActionLabel: null, lastError: null };
       turnState.set(chatSessionId, state);
     }
     return state;
+  };
+
+  /** Shows one step of the turn in Linear: each item once, and never the same line twice in a row. */
+  const postStep = (
+    agentSessionId: string,
+    chatSessionId: string,
+    itemKey: string,
+    described: { action: string; parameter: string },
+  ): void => {
+    const state = stateFor(chatSessionId);
+    if (state.text.trim()) flushThought(agentSessionId, chatSessionId);
+    state.finalText = "";
+    // The first emission of an item often has no arguments yet; wait for the
+    // one that does, and show each item once.
+    if (!described.parameter || state.postedToolItems.has(itemKey)) return;
+    state.postedToolItems.add(itemKey);
+    const label = `${described.action}\u0000${described.parameter}`;
+    if (label === state.lastActionLabel) return;
+    state.lastActionLabel = label;
+    const now = Date.now();
+    // Reads and searches are cheap and many: show them as ephemeral so the
+    // timeline keeps only the meaningful steps.
+    const ephemeral = described.action === "Read" || described.action === "Searched" || now - state.lastActionAt < ACTION_MIN_INTERVAL_MS;
+    state.lastActionAt = now;
+    post(agentSessionId, { type: "action", action: described.action, parameter: described.parameter }, { ephemeral });
   };
 
   const pendingFromApproval = (event: { itemId: string; description: string; detail?: unknown; requestKind?: string }) => {
@@ -558,21 +622,22 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
         }
         break;
       }
+      // Claude, Cursor, Droid and OpenCode report steps as tool calls; Codex
+      // reports shell commands and file edits as their own events.
       case "tool_call": {
-        if (state.text.trim()) flushThought(agentSessionId, envelope.sessionId);
-        state.finalText = "";
-        const now = Date.now();
-        const described = describeToolCall(event.tool, event.args);
-        // The first emission of a call often has no arguments yet; wait for
-        // the one that does, and show each tool item once.
-        const toolItemKey = event.logicalItemId ?? event.itemId;
-        if (!described.parameter || state.postedToolItems.has(toolItemKey)) break;
-        state.postedToolItems.add(toolItemKey);
-        // Reads and searches are cheap and many: show them as ephemeral so the
-        // timeline keeps only the meaningful steps.
-        const ephemeral = described.action === "Read" || described.action === "Searched" || now - state.lastActionAt < ACTION_MIN_INTERVAL_MS;
-        state.lastActionAt = now;
-        post(agentSessionId, { type: "action", action: described.action, parameter: described.parameter }, { ephemeral });
+        postStep(agentSessionId, envelope.sessionId, event.logicalItemId ?? event.itemId, describeToolCall(event.tool, event.args));
+        break;
+      }
+      case "command": {
+        // A `!` run typed into the chat is the user's own shell, not a step the agent took.
+        if (event.source === "userShell") break;
+        postStep(agentSessionId, envelope.sessionId, event.logicalItemId ?? event.itemId, { action: "Ran", parameter: describeShellCommand(event.command) });
+        break;
+      }
+      case "file_change": {
+        const action = event.kind === "create" ? "Created" : event.kind === "delete" ? "Deleted" : "Edited";
+        // One Codex item can carry several files, each emitted with the same item id: key by path too.
+        postStep(agentSessionId, envelope.sessionId, `${event.logicalItemId ?? event.itemId}:${event.path}`, { action, parameter: shortenWorktreePaths(event.path) });
         break;
       }
       case "plan": {
