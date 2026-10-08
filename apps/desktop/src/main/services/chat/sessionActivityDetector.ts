@@ -138,7 +138,7 @@ const ADE_CLI_PATH_SPELLING = /^(?:\S*[\\/])?ade(?:\.exe|\.cmd)?(?=\s|$)/i;
  */
 const MAX_UNWRAPPED_COMMAND_CHARS = 64_000;
 
-function unwrapShell(command: string): string {
+export function unwrapShell(command: string): string {
   let text = command.slice(0, MAX_UNWRAPPED_COMMAND_CHARS).trim();
   // Two passes cover one wrapper inside another (`cmd /c powershell -Command …`).
   for (let pass = 0; pass < 2; pass += 1) {

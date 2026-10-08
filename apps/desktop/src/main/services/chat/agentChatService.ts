@@ -21824,7 +21824,9 @@ export function createAgentChatService(args: {
       if (isClaudeAgentBackgroundTaskType(task.task_type)) {
         const existing = resolveClaudeActiveSubagent(runtime, taskId, taskId);
         if (!existing || existing.background === true) continue;
-        runtime.activeSubagents.set(taskId, { ...existing, background: true });
+        // The level signal proves the task is real: a hook-only stub stops being
+        // one, so the interrupt still stops it.
+        runtime.activeSubagents.set(taskId, { ...existing, background: true, hookOnly: false });
 
         // The level signal usually precedes task_started, but ordering is
         // intentionally unspecified. If it arrives second, append an enriched

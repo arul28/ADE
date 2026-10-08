@@ -19,6 +19,7 @@ import { buildDeeplink } from "../../../shared/deeplinks";
 import { normalizedLinearIssueToLaneIssue } from "../../../shared/laneLinearIssue";
 import type { LinearAgentActivityContent, LinearAgentPlanStep, LinearAgentRelayClient } from "./linearAgentRelayClient";
 import { getErrorMessage, isRecord, toOptionalString as asString } from "../shared/utils";
+import { unwrapShell } from "../chat/sessionActivityDetector";
 
 /**
  * Runs the ADE side of the Linear agent.
@@ -120,27 +121,32 @@ function lastParagraph(text: string): string {
   return parts.at(-1) ?? "";
 }
 
-/** Drops the lane worktree prefix from paths: every step runs inside it, so it only hides the part that differs. */
+/**
+ * Drops the lane worktree prefix from paths: every step runs inside it, so it
+ * only hides the part that differs. Anchored to the start of a token: unanchored,
+ * the lazy prefix rescans a long token from every position (a pasted base64 blob
+ * took ~600 ms per step on the main process at 50 KB).
+ */
 function shortenWorktreePaths(text: string): string {
-  return text.replace(/(?:[A-Za-z]:)?[^\s'"`]*?[\\/]\.ade[\\/]worktrees[\\/][^\\/\s'"`]+(?:[\\/]|(?=[\s'"`]|$))/g, "");
+  return text.replace(/(?<![^\s'"`])(?:[A-Za-z]:)?[^\s'"`]*?[\\/]\.ade[\\/]worktrees[\\/][^\\/\s'"`]+(?:[\\/]|(?=[\s'"`]|$))/g, "");
 }
 
 /**
  * The part of a shell command that says what it does. Agents start most
- * commands with `cd <lane worktree> &&`, and Codex wraps them in
- * `bash -lc '…'`; shown raw, every step reads the same.
+ * commands with `cd <lane worktree> &&`, and Codex wraps them in `bash -lc '…'`
+ * (PowerShell or cmd on Windows); shown raw, every step reads the same. A bare
+ * `cd` says nothing, so the tool's own description stands in for it.
  */
-export function describeShellCommand(command: string): string {
-  let text = command.trim();
-  const wrapped = /^(?:\/\S*\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/.exec(text);
-  if (wrapped) text = wrapped[2]!.trim();
+export function describeShellCommand(command: string, description = ""): string {
+  let text = unwrapShell(command);
   for (;;) {
     const next = text.replace(/^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*/, "");
     if (next === text) break;
     text = next;
   }
-  // A bare `cd` says nothing; the caller falls back to the tool's description.
-  if (/^cd(?:\s+(?:"[^"]*"|'[^']*'|\S+))?\s*$/.test(text)) return "";
+  if (!text || /^cd(?:\s+(?:"[^"]*"|'[^']*'|\S+))?\s*$/.test(text)) {
+    return truncate(description || shortenWorktreePaths(text), 200);
+  }
   return truncate(shortenWorktreePaths(text).replace(/\s+/g, " "), 200);
 }
 
@@ -156,8 +162,7 @@ export function describeToolCall(tool: string, args: unknown): { action: string;
   };
   const name = tool.toLowerCase();
   if (/(^|_)(bash|shell|exec|command|terminal)/.test(name)) {
-    const command = pick("command", "cmd");
-    return { action: "Ran", parameter: describeShellCommand(command) || truncate(pick("description") || shortenWorktreePaths(command), 200) };
+    return { action: "Ran", parameter: describeShellCommand(pick("command", "cmd"), pick("description")) };
   }
   if (/(edit|write|patch|apply|create_file|str_replace)/.test(name)) return { action: "Edited", parameter: shortenWorktreePaths(pick("file_path", "path", "filePath", "file")) };
   if (/(read|view|open|cat)/.test(name)) return { action: "Read", parameter: shortenWorktreePaths(pick("file_path", "path", "filePath", "file")) };
@@ -619,12 +624,15 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
         break;
       }
       case "command": {
-        postStep(agentSessionId, envelope.sessionId, event.logicalItemId ?? event.itemId, { action: "Ran", parameter: describeShellCommand(event.command) || truncate(shortenWorktreePaths(event.command), 200) });
+        // A `!` run typed into the chat is the user's own shell, not a step the agent took.
+        if (event.source === "userShell") break;
+        postStep(agentSessionId, envelope.sessionId, event.logicalItemId ?? event.itemId, { action: "Ran", parameter: describeShellCommand(event.command) });
         break;
       }
       case "file_change": {
         const action = event.kind === "create" ? "Created" : event.kind === "delete" ? "Deleted" : "Edited";
-        postStep(agentSessionId, envelope.sessionId, event.logicalItemId ?? event.itemId, { action, parameter: shortenWorktreePaths(event.path) });
+        // One Codex item can carry several files, each emitted with the same item id: key by path too.
+        postStep(agentSessionId, envelope.sessionId, `${event.logicalItemId ?? event.itemId}:${event.path}`, { action, parameter: shortenWorktreePaths(event.path) });
         break;
       }
       case "plan": {
