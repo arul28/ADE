@@ -57,7 +57,10 @@ export function startOfLocalWeek(now: Date = new Date()): Date {
   return start;
 }
 
-/** Midnight that starts today, updated when the day turns while mounted. */
+/**
+ * Midnight that starts today, updated when the day turns while mounted (the
+ * week, from `startOfLocalWeek`, follows it).
+ */
 export function useLocalDayStart(): number {
   const today = () => {
     const now = new Date();
@@ -67,9 +70,21 @@ export function useLocalDayStart(): number {
   useEffect(() => {
     const next = new Date(dayStart);
     next.setDate(next.getDate() + 1);
-    // A second past midnight; a sleeping laptop wakes late and the timer catches up then.
-    const timer = window.setTimeout(() => setDayStart(today()), Math.max(1_000, next.getTime() - Date.now() + 1_000));
-    return () => window.clearTimeout(timer);
+    const recheck = () => setDayStart(today());
+    // A second past midnight. A timer's clock can stop while the computer
+    // sleeps, so it may fire late after a wake; showing or focusing the
+    // window checks the day again at once.
+    const timer = window.setTimeout(recheck, Math.max(1_000, next.getTime() - Date.now() + 1_000));
+    const onVisible = () => {
+      if (document.visibilityState === "visible") recheck();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", recheck);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", recheck);
+    };
   }, [dayStart]);
   return dayStart;
 }
