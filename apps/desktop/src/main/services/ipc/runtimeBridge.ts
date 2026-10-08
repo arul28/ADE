@@ -1625,6 +1625,12 @@ export function registerRuntimeBridge({
       const result = withRendererVisibleEvents(
         await remoteConnectionService.streamEvents(target.id, projectId, request),
       );
+      // A pump that started live already has a push stream for this binding and
+      // category. A second, replaying one would send every event over the wire
+      // twice (and through the paid relay when that is the route), so a caught-up
+      // poll only keeps the live one alive.
+      const liveRequestKey = runtimeEventRequestKey(bindingKey, { ...request, replay: false });
+      if (refreshRuntimeEventSubscription(event.sender.id, liveRequestKey)) return result;
       void ensureRuntimeEventSubscription(
         event.sender,
         bindingKey,

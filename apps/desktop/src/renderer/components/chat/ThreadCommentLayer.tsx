@@ -22,7 +22,7 @@ import {
   threadCommentErrorText,
   useThreadCommentActions,
 } from "./ThreadCommentControls";
-import { THREAD_COMMENT_FOCUS_EVENT, threadCommentsApi } from "./threadCommentsStore";
+import { addLocalThreadComment, THREAD_COMMENT_FOCUS_EVENT, threadCommentsApi } from "./threadCommentsStore";
 
 const HIGHLIGHT_PENDING = "ade-thread-comment";
 const HIGHLIGHT_HELD = "ade-thread-comment-held";
@@ -40,6 +40,8 @@ type Draft = {
   rect: DOMRect;
   /** The text being commented on; it stays highlighted while the box is open. */
   range: Range;
+  /** What the box holds when it reopens after a failed save. */
+  body?: string;
 };
 
 type Resolved = {
@@ -143,9 +145,8 @@ export function ThreadCommentLayer({
   onAddToChat?: (text: string) => void;
   onCreateIssue?: (text: string) => void;
 }) {
-  const actions = useThreadCommentActions(sessionId, pin, comments);
+  const actions = useThreadCommentActions(sessionId, pin);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [draftBusy, setDraftBusy] = useState(false);
   const [draftError, setDraftError] = useState<string | null>(null);
   const [openCommentId, setOpenCommentId] = useState<string | null>(null);
   const { editingId, stopEditing } = actions;
@@ -389,21 +390,24 @@ export function ThreadCommentLayer({
       setDraftError("This version of ADE cannot save comments.");
       return;
     }
-    setDraftBusy(true);
+    // The comment shows (highlight, margin card, send badge) the moment it is
+    // saved; the host's answer only confirms it. A refusal puts the box back.
+    const saving = draft;
+    const fields = {
+      messageKey: saving.messageKey,
+      messageExcerpt: saving.messageExcerpt,
+      anchor: saving.anchor,
+      body,
+    };
+    const settle = addLocalThreadComment(sessionId, fields);
+    setDraft(null);
     setDraftError(null);
     try {
-      await api.create({
-        sessionId,
-        messageKey: draft.messageKey,
-        messageExcerpt: draft.messageExcerpt,
-        anchor: draft.anchor,
-        body,
-      }, pin ?? null);
-      setDraft(null);
+      settle(await api.create({ sessionId, ...fields }, pin ?? null));
     } catch (error) {
+      settle(null);
+      setDraft({ ...saving, body });
       setDraftError(threadCommentErrorText(error));
-    } finally {
-      setDraftBusy(false);
     }
   };
 
@@ -517,7 +521,7 @@ export function ThreadCommentLayer({
               style={{ ...placeNear(draft.rect, "above"), width: POPOVER_WIDTH_PX }}
             >
               <ThreadCommentEditor
-                busy={draftBusy}
+                initialBody={draft.body}
                 error={draftError}
                 placeholder="Comment for the agent. It goes with your next message."
                 onSave={(body) => void saveDraft(body)}

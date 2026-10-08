@@ -9,9 +9,17 @@ import type { ChatThreadComment } from "../../../shared/threadComments";
  * `list` call on open fills it, and every `session_meta_updated` event that
  * carries `threadComments` replaces it, so every client of the chat sees
  * the same list without merging anything.
+ *
+ * One exception keeps commenting instant: a comment this client is still
+ * creating shows at once (`addLocalThreadComment`) and stays on top of
+ * whatever list the host reports until its create call answers.
  */
 const EMPTY: ChatThreadComment[] = [];
 const bySession = new Map<string, ChatThreadComment[]>();
+/** Comments this client created whose create call has not answered yet. */
+const localBySession = new Map<string, ChatThreadComment[]>();
+/** Host list plus local comments, rebuilt on every write so reads stay stable. */
+const visibleBySession = new Map<string, ChatThreadComment[]>();
 /** Bumped on every write, so a list that started before a live update cannot overwrite it. */
 const writeVersion = new Map<string, number>();
 const listeners = new Set<() => void>();
@@ -20,10 +28,75 @@ function notify(): void {
   for (const listener of listeners) listener();
 }
 
+function publish(sessionId: string): void {
+  const host = bySession.get(sessionId) ?? EMPTY;
+  const local = localBySession.get(sessionId) ?? EMPTY;
+  visibleBySession.set(sessionId, local.length ? [...host, ...local] : host);
+  notify();
+}
+
 export function setThreadComments(sessionId: string, comments: ChatThreadComment[]): void {
   bySession.set(sessionId, comments);
   writeVersion.set(sessionId, (writeVersion.get(sessionId) ?? 0) + 1);
-  notify();
+  publish(sessionId);
+}
+
+const LOCAL_ID_PREFIX = "local:";
+
+/** True for a comment shown before its host has it; it has no host id to act on yet. */
+export function isLocalThreadComment(comment: Pick<ChatThreadComment, "id">): boolean {
+  return comment.id.startsWith(LOCAL_ID_PREFIX);
+}
+
+/**
+ * Shows a comment before the host has saved it. Returns `settle`: pass the
+ * host's comment on success (it joins the list unless an update already
+ * brought it) or nothing on failure (it disappears).
+ */
+export function addLocalThreadComment(
+  sessionId: string,
+  fields: Omit<ChatThreadComment, "id" | "sessionId" | "includeInNextSend" | "createdAt" | "updatedAt">,
+): (saved?: ChatThreadComment | null) => void {
+  const at = new Date().toISOString();
+  const local: ChatThreadComment = {
+    ...fields,
+    id: `${LOCAL_ID_PREFIX}${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`,
+    sessionId,
+    includeInNextSend: true,
+    createdAt: at,
+    updatedAt: at,
+  };
+  localBySession.set(sessionId, [...(localBySession.get(sessionId) ?? EMPTY), local]);
+  publish(sessionId);
+  return (saved) => {
+    const remaining = (localBySession.get(sessionId) ?? EMPTY).filter((comment) => comment.id !== local.id);
+    if (remaining.length) localBySession.set(sessionId, remaining);
+    else localBySession.delete(sessionId);
+    const host = bySession.get(sessionId) ?? EMPTY;
+    if (saved && !host.some((comment) => comment.id === saved.id)) {
+      setThreadComments(sessionId, [...host, saved]);
+      return;
+    }
+    publish(sessionId);
+  };
+}
+
+/** Removes a comment at once; the host's next list confirms or restores it. */
+export function removeThreadCommentLocally(sessionId: string, commentId: string): void {
+  const host = bySession.get(sessionId);
+  if (!host?.some((comment) => comment.id === commentId)) return;
+  setThreadComments(sessionId, host.filter((comment) => comment.id !== commentId));
+}
+
+/** Applies an edit at once; the host's next list confirms or replaces it. */
+export function patchThreadComment(
+  sessionId: string,
+  commentId: string,
+  patch: Partial<Pick<ChatThreadComment, "body" | "includeInNextSend">>,
+): void {
+  const host = bySession.get(sessionId);
+  if (!host?.some((comment) => comment.id === commentId)) return;
+  setThreadComments(sessionId, host.map((comment) => (comment.id === commentId ? { ...comment, ...patch } : comment)));
 }
 
 /** Loads the host's list, unless a live update lands while the call is out. */
@@ -41,7 +114,7 @@ export function refreshThreadComments(sessionId: string, pin: OpenProjectBinding
 }
 
 function getThreadComments(sessionId: string | null | undefined): ChatThreadComment[] {
-  return sessionId ? bySession.get(sessionId) ?? EMPTY : EMPTY;
+  return sessionId ? visibleBySession.get(sessionId) ?? EMPTY : EMPTY;
 }
 
 function subscribe(listener: () => void): () => void {
