@@ -40,6 +40,8 @@ struct HubScreen: View {
   @State private var composerExpanded = false
   @State private var composerSwitchingMachine = false
   @State private var projectOpenFailureToast: ADEToastMessage?
+  /// The Hub notice waiting for a covering pane to close.
+  @State private var heldHubNoticeId: UUID?
   // Set when a hub chat row is tapped — drives the chat cover (wired in
   // HubScreen+ChatNavigation).
   @State var openChatTarget: HubChatTarget?
@@ -121,17 +123,12 @@ struct HubScreen: View {
     .adeToast($projectOpenFailureToast)
     // A tap from outside the app that could not land where it pointed lands
     // here and says why ("Arul's Mac Studio is offline.").
-    .onChange(of: syncService.hubNotice, initial: true) { _, notice in
-      guard let notice else { return }
-      // A notice raised while the Hub could not show (signed out, still
-      // launching) is about a tap the user has long moved past.
-      guard notice.isFresh() else {
-        syncService.hubNotice = nil
-        return
-      }
-      openChatTarget = nil
-      projectOpenFailureToast = ADEToastMessage(text: notice.message, kind: .info)
-      syncService.hubNotice = nil
+    .onChange(of: syncService.hubNotice, initial: true) { _, _ in
+      showHubNoticeIfVisible()
+    }
+    // A notice that arrived while a pane covered the Hub waits for it to close.
+    .onChange(of: syncService.hubIsCoveredBySheet) { _, _ in
+      showHubNoticeIfVisible()
     }
     .onChange(of: syncService.projectOpenFailure) { _, failure in
       guard let failure else { return }
@@ -147,6 +144,26 @@ struct HubScreen: View {
     .task(id: workSessionDeepLinkKey) {
       handleRequestedWorkSessionNavigation()
     }
+  }
+
+  /// Shows the pending Hub notice as a toast, once the Hub is what the user
+  /// sees. While the Linear, Cursor Cloud or GitHub Issues pane is up (it may
+  /// hold a draft, so it is never closed for this), the notice is held and
+  /// shown when the pane closes, however long that takes.
+  private func showHubNoticeIfVisible() {
+    guard let notice = syncService.hubNotice else { return }
+    if syncService.hubIsCoveredBySheet {
+      heldHubNoticeId = notice.id
+      return
+    }
+    let wasHeld = heldHubNoticeId == notice.id
+    heldHubNoticeId = nil
+    syncService.hubNotice = nil
+    // A notice raised while the Hub could not show at all (signed out, still
+    // launching) is about a tap the user has long moved past.
+    guard wasHeld || notice.isFresh() else { return }
+    openChatTarget = nil
+    projectOpenFailureToast = ADEToastMessage(text: notice.message, kind: .info)
   }
 
   private func handleCreated(_ created: HubCreatedChat) {

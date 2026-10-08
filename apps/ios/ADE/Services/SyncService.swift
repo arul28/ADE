@@ -4911,6 +4911,11 @@ final class SyncService: ObservableObject {
     hubNotice = HubNotice(message: notice)
   }
 
+  /// A pane is up over the Hub. A Hub notice waits until it closes.
+  var hubIsCoveredBySheet: Bool {
+    linearPanePresented || cursorCloudPanePresented || githubIssuesPanePresented
+  }
+
   /// Starts (or stops) the timer for the current session request. Only an
   /// external request is timed: an in-app producer is already on its machine.
   func armWorkSessionNavigationWatchdog() {
