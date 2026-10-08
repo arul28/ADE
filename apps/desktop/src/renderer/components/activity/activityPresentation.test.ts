@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-
 import { describe, expect, it } from "vitest";
 
 import {
@@ -10,14 +8,15 @@ import {
 import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
 import { sessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
 import {
-  ACTIVITY_STATE_GLYPHS,
-  ACTIVITY_STATE_GROUPS,
+  ACTIVITY_COLUMN_PRESENTATION,
+  ACTIVITY_COLUMNS,
   activityPhaseIsSessionDerived,
   activityPhasePresentation,
   activityItemPresentation,
+  activityRowStatus,
   activityStateElapsed,
-  activityStateGroup,
   activityStateSentence,
+  activityWaitingReasonLabel,
   SESSION_DERIVED_ACTIVITY_PHASES,
   type AttentionTone,
 } from "./activityPresentation";
@@ -204,131 +203,57 @@ describe("Activity phase presentation", () => {
 });
 
 /**
- * The state glyph language. Other surfaces — the notch strip, the iOS widget
- * rows, the Live Activity — mirror this table by hand, so the rules it encodes
- * have to be asserted here or they drift into four different ambers.
+ * Activity groups agents by the Work board's four columns. The column a row
+ * sits in comes from `activityBoardColumn` (pinned by its own cross-language
+ * fixture); these are the rules for how a column and a row in it read.
  */
-describe("Activity state glyphs", () => {
-  it("gives every state exactly one glyph and one hue", () => {
-    expect(ACTIVITY_STATE_GROUPS).toEqual([
-      "needs-you",
-      "failed",
-      "planning",
-      "working",
-      "idle",
-      "done",
-    ]);
-    expect(ACTIVITY_STATE_GROUPS.map((group) => [
-      group,
-      ACTIVITY_STATE_GLYPHS[group].tone,
-      ACTIVITY_STATE_GLYPHS[group].glyph,
+describe("Activity columns", () => {
+  it("names the four columns in board order, one hue each, amber only for Needs you", () => {
+    expect(ACTIVITY_COLUMNS.map((column) => [
+      column,
+      ACTIVITY_COLUMN_PRESENTATION[column].label,
+      ACTIVITY_COLUMN_PRESENTATION[column].tone,
     ])).toEqual([
-      ["needs-you", "amber", "needs-you"],
-      ["failed", "red", "failed"],
-      ["planning", "violet", "planning"],
-      ["working", "blue", "working"],
-      ["idle", "neutral", "stale"],
-      ["done", "emerald", "done"],
+      ["needs_you", "Needs you", "amber"],
+      ["working", "Working", "blue"],
+      ["waiting", "Waiting", "neutral"],
+      ["done", "Done", "emerald"],
     ]);
-  });
-
-  /**
-   * The split that made this six states. `idle` must stay neutral: giving the
-   * gone-quiet band a live hue is how the island came to claim agents were
-   * working hours after they stopped.
-   */
-  it("keeps idle neutral and distinct from done", () => {
-    expect(ACTIVITY_STATE_GLYPHS.idle.tone).toBe("neutral");
-    expect(ACTIVITY_STATE_GLYPHS.idle.tone).not.toBe(ACTIVITY_STATE_GLYPHS.done.tone);
-    expect(ACTIVITY_STATE_GROUPS.indexOf("idle")).toBeLessThan(
-      ACTIVITY_STATE_GROUPS.indexOf("done"),
-    );
-  });
-
-  it("spends amber on the raised hand and nothing else", () => {
-    const amber = ACTIVITY_STATE_GROUPS.filter(
-      (group) => ACTIVITY_STATE_GLYPHS[group].tone === "amber",
-    );
-    expect(amber).toEqual(["needs-you"]);
-  });
-
-  /**
-   * `cyan` is the spare for a future pull-request distinction. Handing it to a
-   * session state would settle it by accident — those five hues are decided.
-   */
-  it("never hands cyan to a session state", () => {
-    const tones = ACTIVITY_STATE_GROUPS.map((group) => ACTIVITY_STATE_GLYPHS[group].tone);
-    expect(tones).not.toContain("cyan");
+    const tones = ACTIVITY_COLUMNS.map((column) => ACTIVITY_COLUMN_PRESENTATION[column].tone);
     expect(new Set(tones).size).toBe(tones.length);
-  });
-
-  it("files every phase into a state group, and idle rows into idle", () => {
-    const group = (phase: AttentionPhase, patch: Partial<AttentionItem> = {}) =>
-      activityStateGroup({ phase, kind: "agent", ...patch } as AttentionItem);
-
-    expect(group("needs_you")).toBe("needs-you");
-    expect(group("failed")).toBe("failed");
-    expect(group("checks_failing")).toBe("failed");
-    expect(group("running")).toBe("working");
-    // Went quiet mid-work: neither live nor finished.
-    expect(group("stale")).toBe("idle");
-    expect(group("completed")).toBe("done");
-    expect(group("running", { chatActivityMode: "planning" })).toBe("planning");
-    // A preserved phase does not rescue a row from the quiet tail — and the
-    // quiet tail is `idle`, not `done`, so week-old roster rows can never be
-    // mistaken for work that actually finished.
-    expect(group("running", { activityTier: "idle" })).toBe("idle");
-    expect(group("completed", { activityTier: "idle" })).toBe("idle");
-    // Nobody else's move may borrow the amber heading.
-    expect(group("review_requested")).toBe("working");
+    expect(tones).not.toContain("cyan");
   });
 
   /**
-   * The pin for the four mirrors.
-   *
-   * `activityStateGroup` is implemented once here and copied three more times —
-   * the native notch (Swift), the iOS app (Swift), and the push relay (a
-   * hermetic Worker that imports nothing from this repo). Prose in a doc
-   * comment did not hold them together: the iOS copy drifted three separate
-   * ways (`merge_ready`, idle-tier demotion, how `planning` is derived) in the
-   * commit that created it. Each implementation now runs the SAME fixture, so a
-   * change made here fails the other three until they follow.
-   *
-   * This suite is the canonical side: if a case here fails, the fixture is
-   * right and this function is wrong, or the rule genuinely changed and the
-   * fixture must be updated first.
+   * A row reads its column, not its phase: a failure sits under Needs you but
+   * keeps a red Failed mark, and a running agent whose lane waits on CI reads
+   * Waiting with its reason, matching the heading above it.
    */
-  it("matches the cross-language state-group fixture on every case", () => {
-    const fixture = JSON.parse(readFileSync(
-      new URL("../../../shared/attention/activityStateGroup.cases.json", import.meta.url),
-      "utf8",
-    )) as {
-      cases: {
-        name: string;
-        phase: AttentionPhase;
-        tier: "signal" | "ambient" | "idle";
-        chatActivityMode: string | null;
-        expected: string;
-      }[];
-    };
+  it.each([
+    ["a raised hand", { phase: "needs_you" }, "Needs you", "amber", null, true],
+    ["a failure, with its red mark", { phase: "failed" }, "Failed", "red", null, true],
+    ["a running turn", { phase: "running" }, "Working", "blue", null, true],
+    ["a planning turn, folded into Working", { phase: "running", chatActivityMode: "planning" }, "Working", "blue", null, true],
+    ["a running turn waiting on CI", { phase: "running", boardColumn: "waiting", waitingReason: "ci" }, "Waiting", "neutral", "CI running", false],
+    ["a snoozed session", { phase: "stale", boardColumn: "waiting", waitingReason: "snoozed" }, "Waiting", "neutral", "Snoozed", false],
+    ["a requested review", { phase: "completed", boardColumn: "waiting", waitingReason: "review" }, "Waiting", "neutral", "Review requested", false],
+    ["a session gone quiet, folded into Done", { phase: "running", activityTier: "idle" }, "Done", "emerald", null, true],
+    ["a finished turn", { phase: "completed" }, "Done", "emerald", null, true],
+  ] as const)("reads %s", (_name, patch, label, tone, reason, showsTime) => {
+    const item = { kind: "agent", ...patch } as unknown as AttentionItem;
+    const status = activityRowStatus(item);
+    expect(status?.label).toBe(label);
+    expect(status?.tone).toBe(tone);
+    // A Waiting row's statusSince predates the wait, so it shows no time.
+    expect(status?.showsElapsed).toBe(showsTime);
+    expect(activityWaitingReasonLabel(item)).toBe(reason);
+  });
 
-    expect(fixture.cases.length).toBeGreaterThan(0);
-    for (const testCase of fixture.cases) {
-      const actual = activityStateGroup({
-        kind: "agent",
-        phase: testCase.phase,
-        activityTier: testCase.tier,
-        chatActivityMode: testCase.chatActivityMode,
-      } as AttentionItem);
-      expect(`${testCase.name}: ${actual}`).toBe(`${testCase.name}: ${testCase.expected}`);
-    }
-
-    // Every group the fixture claims to produce is a group that exists, so a
-    // typo in `expected` fails here rather than quietly asserting nothing.
-    const expected = new Set(fixture.cases.map((testCase) => testCase.expected));
-    for (const group of expected) {
-      expect(ACTIVITY_STATE_GROUPS).toContain(group);
-    }
+  it("keeps a pull request on its own phase vocabulary, outside the columns", () => {
+    const pr = { kind: "pull_request", phase: "checks_failing" } as AttentionItem;
+    expect(activityRowStatus(pr)).toMatchObject({ label: "Checks failing", tone: "red" });
+    expect(activityWaitingReasonLabel(pr)).toBeNull();
+    expect(activityStateSentence(pr)).toBe("Checks failing");
   });
 
   it("reads a planning turn with the sidebar's own words", () => {
@@ -349,11 +274,11 @@ describe("Activity state glyphs", () => {
         ...patch,
       } as AttentionItem);
 
-    expect(sentence("needs_you")).toBe("Claude is asking a question");
-    expect(sentence("running")).toBe("Claude is working");
-    expect(sentence("running", { chatActivityMode: "planning" })).toBe("Claude is planning");
+    expect(sentence("needs_you")).toBe("Claude needs you");
     expect(sentence("failed")).toBe("Claude stopped on an error");
-    expect(sentence("stale")).toBe("Claude is idle");
+    expect(sentence("running")).toBe("Claude is working");
+    expect(sentence("running", { boardColumn: "waiting", waitingReason: "ci" })).toBe("Claude is waiting on CI");
+    expect(sentence("stale", { boardColumn: "waiting", waitingReason: "snoozed" })).toBe("Claude is snoozed");
     expect(sentence("completed")).toBe("Claude is done");
     // A pull request has no agent to name, so it says what it is instead.
     expect(activityStateSentence({
@@ -385,6 +310,18 @@ describe("Activity state glyphs", () => {
       statusSince: "2026-08-01T12:30:00.000Z",
       occurredAt: "2026-08-01T12:30:00.000Z",
       updatedAt: "2026-08-01T12:30:00.000Z",
+    } as AttentionItem, now)).toBeNull();
+
+    // A Waiting row's statusSince is when the chat entered its status, not
+    // when the wait began, so it shows no duration rather than a wrong one.
+    expect(activityStateElapsed({
+      kind: "agent",
+      phase: "running",
+      boardColumn: "waiting",
+      waitingReason: "ci",
+      statusSince: "2026-08-01T10:00:00.000Z",
+      occurredAt: "2026-08-01T10:00:00.000Z",
+      updatedAt: "2026-08-01T11:59:00.000Z",
     } as AttentionItem, now)).toBeNull();
   });
 });

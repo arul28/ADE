@@ -341,6 +341,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getPreferences",
     "putPreferences",
     "putMachinePreferences",
+    // `ade notify`. Not CTO-only, so agents and automation steps can call it;
+    // the relay caps it at 60 an hour per account.
+    "sendNotification",
   ],
   lane: [
     "archive",

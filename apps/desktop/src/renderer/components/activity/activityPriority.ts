@@ -4,19 +4,20 @@ import {
   type AttentionItem,
   type AttentionTone,
 } from "../../../shared/types/attention";
+import { activityBoardColumn } from "../../../shared/attention/activityBoardColumn";
 import {
-  ACTIVITY_STATE_GLYPHS,
-  ACTIVITY_STATE_GROUPS,
-  activityStateGroup,
-  type ActivityStateGroup,
+  ACTIVITY_COLUMN_PRESENTATION,
+  ACTIVITY_COLUMNS,
+  activityItemFailed,
+  type ActivityColumn,
 } from "./activityPresentation";
 
 /**
- * A section IS a state group. They were separate vocabularies once — three
- * sections over five states — and the drift showed up as a "Working 0" heading
- * above rows that were plainly working. One table now decides both.
+ * A section IS a Work-board column. Activity, the board, the phone and the Live
+ * Activity count by the same four columns, so "2 need you" means the same rows
+ * on every surface.
  */
-export type ActivitySectionId = ActivityStateGroup;
+export type ActivitySectionId = ActivityColumn;
 
 export type ActivitySectionDescriptor = {
   id: ActivitySectionId;
@@ -24,22 +25,9 @@ export type ActivitySectionDescriptor = {
   order: number;
 };
 
-export const ACTIVITY_SECTION_DESCRIPTORS = ACTIVITY_STATE_GROUPS.map(
-  (id, order) => ({ id, label: ACTIVITY_STATE_GLYPHS[id].label, order }),
+export const ACTIVITY_SECTION_DESCRIPTORS = ACTIVITY_COLUMNS.map(
+  (id, order) => ({ id, label: ACTIVITY_COLUMN_PRESENTATION[id].label, order }),
 ) as readonly ActivitySectionDescriptor[];
-
-/**
- * The sections the header popover is allowed to show: everything live or
- * actionable, and nothing resting. Done and idle are the two most common
- * states by far, and a dropdown that opens onto a wall of finished and
- * gone-quiet work buries the two rows that wanted a human. Both stay one click
- * away in the full pane, and the footer keeps counting them, so hiding them
- * here costs no information.
- */
-const ACTIVITY_RESTING_SECTION_IDS: readonly ActivitySectionId[] = ["idle", "done"];
-
-export const ACTIVITY_POPOVER_SECTION_IDS: readonly ActivitySectionId[] =
-  ACTIVITY_STATE_GROUPS.filter((id) => !ACTIVITY_RESTING_SECTION_IDS.includes(id));
 
 export type ActivitySection = ActivitySectionDescriptor & {
   items: AttentionItem[];
@@ -102,99 +90,61 @@ export function activityNotificationItems(
 }
 
 /**
- * Priority-flat Activity projection over AGENT items. Every call returns the
- * same ordered descriptors, including empty sections, so popover, pane, and
- * notch views can share headings without re-declaring their order.
+ * Agent items grouped by column. Every call returns all four sections in board
+ * order, including empty ones, so the popover and the pane share headings
+ * without re-declaring their order.
  */
 export function activitySections(
   input: ActivityItemsInput,
   now = Date.now(),
 ): ActivitySection[] {
   const grouped = Object.fromEntries(
-    ACTIVITY_STATE_GROUPS.map((id) => [id, [] as AttentionItem[]]),
+    ACTIVITY_COLUMNS.map((id) => [id, [] as AttentionItem[]]),
   ) as Record<ActivitySectionId, AttentionItem[]>;
 
   for (const item of activityFeedItems(input, now)) {
-    grouped[activityStateGroup(item)].push(item);
+    const column = activityBoardColumn(item);
+    if (column) grouped[column].push(item);
   }
 
-  // Idle-tier rows used to need re-sorting to the tail of `done`, because they
-  // shared that section with genuinely finished work. They have their own
-  // section now, so priority order alone is correct for every section.
   return ACTIVITY_SECTION_DESCRIPTORS.map((descriptor) => ({
     ...descriptor,
     items: sortAttentionItems(grouped[descriptor.id]),
   }));
 }
 
-/**
- * Every row a mirror surface should carry, in the order Activity files them:
- * the agent sections flattened, then the notification tail. The notch projects
- * from this so its Agents and Events views read from one ordering rather than
- * re-deriving priority in Swift.
- */
-export function activityFeedOrder(
-  input: ActivityItemsInput,
-  now = Date.now(),
-): AttentionItem[] {
-  return [
-    ...activitySections(input, now).flatMap((section) => section.items),
-    ...activityNotificationItems(input, now),
-  ];
-}
-
-/** The Activity badge is intentionally only the needs-you section. */
+/** The Activity badge is the Needs you column, failures included, and nothing else. */
 export function activityBadgeCount(input: ActivityItemsInput, now = Date.now()): number {
-  return activitySectionCounts(activitySections(input, now))["needs-you"];
+  return activitySectionCounts(activitySections(input, now)).needs_you;
 }
 
 export type ActivitySectionCounts = Record<ActivitySectionId, number>;
 
-/**
- * One count per state group, built once from the sections. Everything that used
- * to walk the section list looking for a single id reads this instead: five
- * linear `find`s over the same array, three hand-written priority ladders, and
- * a five-deep ternary for the tone were all the same table written four ways,
- * and they had already drifted (the headline folded `planning` into "working"
- * while the trigger label reported it separately).
- */
+/** One count per column, built once from the sections. */
 export function activitySectionCounts(sections: ActivitySection[]): ActivitySectionCounts {
   const counts = Object.fromEntries(
-    ACTIVITY_STATE_GROUPS.map((id) => [id, 0]),
+    ACTIVITY_COLUMNS.map((id) => [id, 0]),
   ) as ActivitySectionCounts;
   for (const section of sections) counts[section.id] = section.items.length;
   return counts;
 }
 
-/**
- * The highest-priority group that has anything in it — `ACTIVITY_STATE_GROUPS`
- * is already the priority order, so "which state does this surface lead with"
- * is a `find`, not a ladder.
- */
+/** The first column, in board order, that has anything in it. */
 export function activityLeadingGroup(
   counts: ActivitySectionCounts,
 ): ActivitySectionId | null {
-  return ACTIVITY_STATE_GROUPS.find((id) => counts[id] > 0) ?? null;
+  return ACTIVITY_COLUMNS.find((id) => counts[id] > 0) ?? null;
 }
 
-/**
- * How one group is said out loud. The headline, the trigger tooltip and the
- * pane all use this, so `planning` cannot be its own state in one sentence and
- * be folded into "working" in the next — the fold was the drift, and the glyph
- * language names planning (violet notepad) as its own group, so it is named.
- */
+/** How one column's count is said out loud: the headline, the tooltip and the chips. */
 export function activityCountPhrase(group: ActivitySectionId, count: number): string {
   switch (group) {
-    case "needs-you":
+    case "needs_you":
       return `${count} need${count === 1 ? "s" : ""} you`;
-    case "failed":
-      return `${count} failed`;
-    case "planning":
-      return `${count} planning`;
     case "working":
       return `${count} working`;
-    case "idle":
-      return `${count} idle`;
+    case "waiting":
+      return `${count} waiting`;
     case "done":
       return `${count} done`;
   }
@@ -210,14 +160,12 @@ export function activityHeadline(input: ActivityItemsInput, now = Date.now()): s
 }
 
 /**
- * The one hue per section, and the reason the badge can only ever be amber:
- * amber means "your move" and nothing else, blue means work is happening,
- * emerald means it finished cleanly. Derived from `ACTIVITY_STATE_GLYPHS` so a
- * hue can only be chosen once — the same table `shared/sessionStatusPresentation.ts`
- * governs, via the one-hue-one-meaning rule documented there.
+ * The one hue per column: amber is "your move" and nothing else, blue is work
+ * happening, neutral is waiting on something outside the agent, emerald is
+ * finished.
  */
 export const ACTIVITY_SECTION_TONE = Object.fromEntries(
-  ACTIVITY_STATE_GROUPS.map((id) => [id, ACTIVITY_STATE_GLYPHS[id].tone]),
+  ACTIVITY_COLUMNS.map((id) => [id, ACTIVITY_COLUMN_PRESENTATION[id].tone]),
 ) as Record<ActivitySectionId, AttentionTone>;
 
 export type ActivityOfflineMachine = {
@@ -256,19 +204,16 @@ export function activityOfflineMachines(
 }
 
 export type ActivitySummary = {
-  /** Every section, always, in priority order. Agent items only. */
+  /** Every section, always, in board order. Agent items only. */
   sections: ActivitySection[];
-  /**
-   * One count per state group. The five flat fields below are the same numbers
-   * spelled out for existing readers; anything that wants to iterate the groups
-   * reads this table rather than reassembling one from the flat fields.
-   */
+  /** One count per column. */
   counts: ActivitySectionCounts;
+  /** The Needs you column, failures included — the header badge. */
   needsYouCount: number;
+  /** Failed agents inside Needs you, the ones drawn with the red mark. */
   failedCount: number;
-  planningCount: number;
   workingCount: number;
-  idleCount: number;
+  waitingCount: number;
   doneCount: number;
   /** Live AGENT rows — the "N sessions" figure, and only sessions. */
   trackedCount: number;
@@ -315,19 +260,19 @@ export function summarizeActivity(
     0,
   );
 
-  // One hue per group, read off the same table the glyphs come from — a summary
-  // can no longer paint a colour the section headings do not use.
+  // One hue per column, read off the same table the headings use.
   const leading = activityLeadingGroup(counts);
-  const tone: AttentionTone = leading ? ACTIVITY_STATE_GLYPHS[leading].tone : "neutral";
+  const tone: AttentionTone = leading ? ACTIVITY_SECTION_TONE[leading] : "neutral";
 
   return {
     sections,
     counts,
-    needsYouCount: counts["needs-you"],
-    failedCount: counts.failed,
-    planningCount: counts.planning,
+    needsYouCount: counts.needs_you,
+    failedCount: sections
+      .find((section) => section.id === "needs_you")
+      ?.items.filter(activityItemFailed).length ?? 0,
     workingCount: counts.working,
-    idleCount: counts.idle,
+    waitingCount: counts.waiting,
     doneCount: counts.done,
     trackedCount,
     notificationCount: activityNotificationItems(input, now).length,
@@ -341,13 +286,12 @@ export function summarizeActivity(
 }
 
 /**
- * Every populated group said out loud, in priority order. Callers choose the
- * separator and nothing else, so the header trigger and the pane's state strip
- * cannot end up naming the same account with two different vocabularies — the
- * exact drift `activityCountPhrase` was extracted to stop, one caller ago.
+ * Every populated column said out loud, in board order. Callers choose the
+ * separator and nothing else, so the header trigger and the chips cannot name
+ * the same account with two different vocabularies.
  */
 export function activityCountPhrases(counts: ActivitySectionCounts): string[] {
-  return ACTIVITY_STATE_GROUPS
+  return ACTIVITY_COLUMNS
     .filter((group) => counts[group] > 0)
     .map((group) => activityCountPhrase(group, counts[group]));
 }
@@ -355,7 +299,7 @@ export function activityCountPhrases(counts: ActivitySectionCounts): string[] {
 /** Tooltip and accessible name for the Activity header trigger. */
 export function activityTriggerLabel(summary: ActivitySummary): string {
   const parts = activityCountPhrases(summary.counts);
-  if (parts.length === 0) return "Activity · all agents idle";
+  if (parts.length === 0) return "Activity · nothing running";
   return `Activity · ${parts.join(" · ")}`;
 }
 

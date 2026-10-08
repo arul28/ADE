@@ -170,6 +170,28 @@ export class PushRelayRequestError extends Error {
   }
 }
 
+/** What the relay did with one custom notification. */
+export type AccountNotificationResult = {
+  /** Phones registered on the account. */
+  devices: number;
+  delivered: number;
+  /** Phones whose notifications are off, in quiet hours, or muting this machine. */
+  skipped: number;
+  failed: number;
+  /** Custom notifications left in this hour, when the relay says. */
+  remaining: number | null;
+};
+
+/** The account sent its hourly allowance of custom notifications. */
+export class PushRelayNotifyRateLimitedError extends PushRelayRequestError {
+  readonly code = "notify_rate_limited" as const;
+
+  constructor(readonly retryAfterSeconds: number | null) {
+    super("sendAccountNotification", 429, "the hourly limit of 60 notifications is used up");
+    this.name = "PushRelayNotifyRateLimitedError";
+  }
+}
+
 /**
  * The account owner removed this machine. Distinct from every other 4xx because
  * it is TERMINAL: retrying cannot succeed, and a caller that treats it as a
@@ -686,6 +708,51 @@ export function createPushRelayClient(args: {
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
       requireOk("reportAttentionPresence", response);
+    },
+
+    /**
+     * Send a push the caller wrote to every phone on the account
+     * (`POST /attention/account/notify`). The relay applies the account's
+     * notification switches, quiet hours and this machine's mute, and caps an
+     * account at 60 an hour: past that it throws `PushRelayNotifyRateLimitedError`
+     * with the relay's retry hint.
+     */
+    async sendAccountNotification(notification: {
+      title: string;
+      body?: string | null;
+      deepLink?: string | null;
+      machineKey?: string | null;
+    }): Promise<AccountNotificationResult> {
+      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+      if (!args.getAccountAccessToken || !expectedAccountUserId) {
+        throw new PushRelayRequestError("sendAccountNotification", 401, "ADE account is not signed in");
+      }
+      const response = await request("POST", "/attention/account/notify", {
+        body: {
+          title: notification.title,
+          ...(notification.body ? { body: notification.body } : {}),
+          ...(notification.deepLink ? { deepLink: notification.deepLink } : {}),
+          ...(notification.machineKey ? { machineKey: notification.machineKey } : {}),
+        },
+        accountAuthorized: true,
+        expectedAccountUserId,
+      });
+      if (response.status === 429) {
+        const retryAfter = Number(response.body?.retryAfterSeconds);
+        throw new PushRelayNotifyRateLimitedError(
+          Number.isFinite(retryAfter) && retryAfter > 0 ? Math.ceil(retryAfter) : null,
+        );
+      }
+      const body = requireOk("sendAccountNotification", response);
+      const count = (value: unknown): number =>
+        Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
+      return {
+        devices: count(body.devices),
+        delivered: count(body.delivered),
+        skipped: count(body.skipped),
+        failed: count(body.failed),
+        remaining: Number.isSafeInteger(body.remaining) ? Number(body.remaining) : null,
+      };
     },
 
     async getAttentionPreferences(

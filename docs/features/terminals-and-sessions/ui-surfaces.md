@@ -519,19 +519,19 @@ tells the states apart. Only canonical `needs_you` contributes to the Work-tab
 highlight, notifications, and Dock badge. `useAppWideSessionAttention` owns
 that count at `AppShell`, so it remains live outside Work.
 
-The same canonical session phase feeds the account-wide Activity UI, where it is
-grouped by the six shared state groups — Needs you, Failed, Planning, Working,
-Idle, Done — defined by `activityStateGroup` in the renderer's
-`activity/activityPresentation.ts` and mirrored by iOS and the relay.
-The desktop header popover omits Idle and Done; the full pane and Hub tree keep
-them. Activity's session column is agents only; pull requests and checks render
-in its Notifications column. The hook and wire-level `attention` vocabulary remain
-compatibility names; user-facing surfaces call the feature Activity.
-
-Planning is the one state the phase vocabulary cannot express. `AttentionPhase`
-is frozen push wire, so a planning turn publishes as `running` and carries the
-additive `chatActivityMode: "planning"` alongside it; readers that do not
-understand it fall back to Working.
+The same session state feeds the account-wide Activity UI, which groups agents
+by the Work board's four columns — Needs you, Working, Waiting, Done — through
+`activityBoardColumn` (`shared/attention/activityBoardColumn.ts`), so the board,
+Activity, the phone and the Live Activity count the same rows. A failed agent
+files under Needs you with a red **Failed** mark; a Waiting row carries its
+reason (Snoozed, CI running, Review requested, shared with the board through
+`WORK_BOARD_WAITING_REASON_LABEL`). Planning folds into Working and a resting
+session into Done. The top-bar popover and the "Open all" view are one panel in
+two sizes (`activity/ActivityPanel.tsx`); see
+[push-notifications.md](../sync-and-multi-device/push-notifications.md#desktop-activity).
+Activity's Sessions list is agents only; pull requests and checks render in its
+Inbox. The hook and wire-level `attention` vocabulary remain compatibility
+names; user-facing surfaces call the feature Activity.
 
 ## Work view: `WorkViewArea.tsx`
 

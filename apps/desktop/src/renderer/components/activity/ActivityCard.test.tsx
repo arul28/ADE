@@ -116,12 +116,6 @@ describe("ActivityCard", () => {
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: "item-a" }));
   });
 
-  it("keeps the status word visible in compact form", () => {
-    render(<ActivityCard item={item()} onOpen={vi.fn()} compact />);
-
-    expect(screen.getByRole("status").textContent).toBe("Working");
-  });
-
   it("marks a pull request seen-state without pretending it has a provider", () => {
     render(
       <ActivityCard

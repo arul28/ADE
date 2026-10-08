@@ -329,6 +329,27 @@ describe("{{trigger.session.*}} placeholders", () => {
   });
 });
 
+describe("variables the step editor offers for every trigger", () => {
+  // The context keeps the run's lane flat (`laneId` / `laneName`), and
+  // `{{date}}` / `{{time}}` read the scheduled time (local, as in lane names).
+  const trigger: TriggerContext = {
+    triggerType: "lane.merged",
+    laneId: "ce3acd58-0736-4316-af65-1dd2dcaf2bba",
+    laneName: "Activity overhaul",
+    scheduledAt: "2026-10-08T09:30:00",
+  };
+
+  it.each([
+    ["{{trigger.lane.id}}", "ce3acd58-0736-4316-af65-1dd2dcaf2bba"],
+    ["ade://lane/{{trigger.lane.id}}", "ade://lane/ce3acd58-0736-4316-af65-1dd2dcaf2bba"],
+    ["{{trigger.lane.name}} / {{trigger.laneName}}", "Activity overhaul / Activity overhaul"],
+    ["Merged on {{date}} at {{time}}", "Merged on 2026-10-08 at 09:30"],
+    ["{{date}}", "2026-10-08"],
+  ])("resolves %s", (template, expected) => {
+    expect(resolvePlaceholders(template, trigger)).toBe(expected);
+  });
+});
+
 describe("webhook request placeholders", () => {
   const trigger: TriggerContext = {
     triggerType: "webhook",

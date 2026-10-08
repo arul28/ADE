@@ -140,6 +140,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   attention: {
+    sendNotification: {
+      description:
+        "Send a push you write to every phone on the ADE account: title up to 64 characters, optional body up to 160, "
+        + "optional ade:// link a tap opens. Respects notifications off, quiet hours and a muted machine. "
+        + "At most 60 per account per hour. Open to agents and automations.",
+      input: "object { title: string, body?: string, open?: string }",
+      example: "ade notify --title \"Deploy finished\" --body \"ADE 1.4.2 is live\" --open \"ade://pr/1514\"",
+    },
     getSnapshot: {
       description: "Read the account-wide Activity stream across every connected machine and project.",
       input: "object { since?: non-negative integer, streamId?: string | null }",

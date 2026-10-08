@@ -48,7 +48,7 @@ import {
   type WorkLaneSortMode,
   type WorkLaneTier,
 } from "../../../desktop/src/renderer/components/terminals/workLaneOrder";
-import { ACTIVITY_STATE_GLYPHS, activityStateGroup } from "../../../desktop/src/renderer/components/activity/activityPresentation";
+import { activityRowStatus } from "../../../desktop/src/renderer/components/activity/activityPresentation";
 import type { TuiChatSessionSummary } from "./adeApi";
 import type { AdeCodeProvider } from "./types";
 import { getPreviewLine, toWorkSessionSummary, type SessionPreviewLine } from "./workRow";
@@ -479,7 +479,9 @@ export function foreignRowsFromAttention(args: {
     const dedupeKey = `${machineKey}:${sessionId}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
-    const glyph = ACTIVITY_STATE_GLYPHS[activityStateGroup(item)];
+    // The row says its Work-board column, like the Activity panel row: a
+    // failed agent reads "Failed" under Needs you, a parked one "Waiting".
+    const status = activityRowStatus(item);
     rows.push({
       sessionId,
       machine: {
@@ -496,14 +498,11 @@ export function foreignRowsFromAttention(args: {
       preview: item.preview?.trim() || null,
       provider: item.provider ?? null,
       status: {
-        label: glyph.label,
-        // `ACTIVITY_STATE_GLYPHS` only ever names the five session hues, so the
-        // narrowing below cannot lose a tone; it exists because AttentionTone
-        // also carries two PR-only hues this pane never receives.
-        tone: glyph.tone as SessionStatusTone,
-        glyph: glyph.glyph,
+        label: status?.label ?? "Done",
+        tone: status?.tone ?? "emerald",
+        glyph: status?.glyph ?? "done",
         showsElapsed: false,
-        prominent: glyph.tone === "amber" || glyph.tone === "red",
+        prominent: status?.prominent ?? false,
       },
       lastActivityAt: item.statusSince ?? item.updatedAt ?? null,
       projectCanonicalId: canonical,

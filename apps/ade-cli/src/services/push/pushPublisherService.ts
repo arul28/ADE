@@ -26,10 +26,12 @@ import type {
 } from "../../../../desktop/src/shared/types/push";
 import type { PushRegistrationStore } from "./pushRegistrationStore";
 import type {
+  AccountNotificationResult,
   ActivityPublishResult,
   PushRelayAlertItem,
   PushRelayClient,
 } from "./pushRelayClient";
+import { stampCustomNotificationLinkOwner } from "../../../../desktop/src/shared/customNotificationLink";
 import { PushRelayMachineRevokedError, PushRelayRequestError } from "./pushRelayClient";
 import {
   activityPublishFingerprint,
@@ -2658,6 +2660,30 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     async reportAttentionPresence(presence: AttentionPresence): Promise<void> {
       await deps.relayClient.reportAttentionPresence?.(presence);
+    },
+
+    /**
+     * A push the caller wrote (`ade notify`, an agent, an automation step),
+     * sent as this machine so a phone that muted this machine stays quiet.
+     */
+    async sendCustomNotification(notification: {
+      title: string;
+      body?: string | null;
+      deepLink?: string | null;
+      /** The canonical project a chat or PR link belongs to. */
+      projectId?: string | null;
+    }): Promise<AccountNotificationResult> {
+      const { projectId, ...rest } = notification;
+      return await deps.relayClient.sendAccountNotification({
+        ...rest,
+        deepLink: rest.deepLink
+          ? stampCustomNotificationLinkOwner(rest.deepLink, {
+            accountMachineKey: deps.getAccountMachineIdentity?.()?.machineKey,
+            projectId,
+          })
+          : null,
+        machineKey: deps.store.getOrCreateIdentity().machineKey,
+      });
     },
 
     async getAttentionPreferences(accountOwnerId: string): Promise<AttentionPreferences> {

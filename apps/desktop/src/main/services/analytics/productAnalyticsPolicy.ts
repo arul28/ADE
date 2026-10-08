@@ -239,6 +239,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "secret_requested",
   // ADE's one-click update of a user-installed provider CLI. Never the version.
   "provider_cli_updated",
+  // A custom notification (`ade notify`, an agent, an automation's "Send
+  // notification to mobile app" step): sent, refused by the hourly cap, or
+  // failed. Never the title, the body, the link, or which phones got it.
+  "notification_sent",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {

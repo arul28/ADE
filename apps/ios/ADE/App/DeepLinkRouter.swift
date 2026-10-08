@@ -340,6 +340,12 @@ final class DeepLinkRouter {
   }
 
   private func routeNotificationUserInfo(_ userInfo: [AnyHashable: Any]) {
+    // A custom push (`ade notify`) with no link points nowhere on purpose:
+    // opening ADE is the whole job, not a failed tap.
+    if userInfo["customNotification"] as? Bool == true, userInfo["deepLink"] == nil {
+      routedCount += 1
+      return
+    }
     let attentionItemId = stringValue(from: userInfo["attentionItemId"])
     if let raw = userInfo["deepLink"] as? String, let url = URL(string: raw) {
       handle(url, attentionItemId: attentionItemId)

@@ -5,7 +5,6 @@ import {
   BellRinging,
   BellSimpleSlash,
   CaretDown,
-  WarningCircle,
   WifiHigh,
   WifiSlash,
   X,
@@ -24,6 +23,7 @@ import {
 } from "../../lib/workSidebarBrowserResize";
 import {
   acknowledgeActivityItem,
+  acknowledgeActivityItems,
   activityStore,
   selectActivityHideDetails,
   useActivityStore,
@@ -31,95 +31,23 @@ import {
 import { cn } from "../ui/cn";
 import { HeaderSheet } from "../app/HeaderSheet";
 import { Banner } from "../ui/notice/Banner";
-import { ActivityAllClear } from "./ActivityAllClear";
-import { ActivityCard } from "./ActivityCard";
-import { ActivitySectionHeader } from "./ActivitySectionHeader";
+import { ActivityPanel } from "./ActivityPanel";
 import { ActivitySettingsPopover } from "./ActivitySettingsPopover";
 import {
-  ACTIVITY_POPOVER_SECTION_IDS,
-  ACTIVITY_SECTION_TONE,
   activityFooterLine,
   activityTriggerLabel,
   summarizeActivity,
   type ActivityOfflineMachine,
-  type ActivitySection,
 } from "./activityPriority";
-import { useActivitySectionCollapse } from "./activitySectionCollapse";
-import { useAllClearBeat } from "./useAllClearBeat";
 import { refreshActivitySnapshot } from "./useActivitySync";
 import "./HeaderActivityControl.css";
 
-/**
- * Rows shown per section before the overflow line hands off to the pane. Six,
- * not four: the sections are now priority-flat, so a single "Working" section
- * routinely carries what three buckets used to split.
- */
-const MAX_ROWS_PER_SECTION = 6;
 const RELATIVE_TIME_TICK_MS = 30_000;
 const IDLE_TICK_MS = 120_000;
 
 function navigationErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
   return "ADE couldn’t open the exact machine and project for this item.";
-}
-
-function ActivityHeaderSection({
-  section,
-  hideDetails,
-  collapsed,
-  onToggleCollapsed,
-  onOpenItem,
-  onDismissItem,
-  onOpenPane,
-}: {
-  section: ActivitySection;
-  hideDetails: boolean;
-  collapsed: boolean;
-  onToggleCollapsed: () => void;
-  onOpenItem: (item: AttentionItem) => void;
-  onDismissItem: (item: AttentionItem) => void;
-  onOpenPane: () => void;
-}) {
-  const shown = section.items.slice(0, MAX_ROWS_PER_SECTION);
-  const overflow = section.items.length - shown.length;
-  const regionId = `activity-hdr-section-${section.id}`;
-  return (
-    <section
-      className={cn("activity-hdr-section", `activity-tone-${ACTIVITY_SECTION_TONE[section.id]}`)}
-    >
-      <ActivitySectionHeader
-        variant="popover"
-        sectionId={section.id}
-        regionId={regionId}
-        label={section.label}
-        count={section.items.length}
-        group={section.id}
-        collapsed={collapsed}
-        onToggle={onToggleCollapsed}
-      />
-      <div id={regionId} className="activity-section-rows" hidden={collapsed}>
-        {collapsed ? null : (
-          <>
-            {shown.map((item) => (
-              <ActivityCard
-                key={item.id}
-                item={item}
-                hideDetails={hideDetails}
-                onOpen={onOpenItem}
-                onDismiss={onDismissItem}
-              />
-            ))}
-            {overflow > 0 ? (
-              <button type="button" className="activity-hdr-overflow" onClick={onOpenPane}>
-                {overflow} more
-                <ArrowRight size={11} weight="bold" />
-              </button>
-            ) : null}
-          </>
-        )}
-      </div>
-    </section>
-  );
 }
 
 /**
@@ -180,10 +108,10 @@ function ActivityOfflineDisclosure({
 }
 
 /**
- * Account-wide Activity, promoted into the global header so live work, things
- * that need you, and finished-but-unreviewed outcomes are one glance away from
- * every tab and every project. Three priority-flat sections — needs you,
- * working, done — and a handoff to the full pane for everything past the cap.
+ * Account-wide Activity in the global header: the compact size of the Activity
+ * panel, one glance away from every tab and every project. The same panel,
+ * wider and with filters, multi-select and the detail sheet, is the "Open all"
+ * view (`ActivityPane`).
  */
 export function HeaderActivityControl({
   onOpenPane,
@@ -207,10 +135,7 @@ export function HeaderActivityControl({
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   const summary = useMemo(() => summarizeActivity(itemsById, now), [itemsById, now]);
-  const collapse = useActivitySectionCollapse("popover");
-  // The beat only plays while the popover is up: a celebration nobody is
-  // looking at is a wasted one, and firing it on open would make it a greeting.
-  const allClear = useAllClearBeat(summary.needsYouCount, open);
+  const items = useMemo(() => Object.values(itemsById), [itemsById]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -297,6 +222,23 @@ export function HeaderActivityControl({
     });
   }, []);
 
+  const clearInbox = useCallback((rows: readonly AttentionItem[]) => {
+    if (rows.length === 0) return;
+    setNavigationError(null);
+    void acknowledgeActivityItems(rows.map((item) => item.id), "dismiss")
+      .then((outcome) => {
+        const missed = outcome.stale.length + outcome.unreached.length;
+        if (missed > 0) {
+          setNavigationError(
+            `${missed} of ${rows.length} notifications didn’t clear. Open all to see them.`,
+          );
+        }
+      })
+      .catch(() => {
+        setNavigationError("ADE couldn’t clear the inbox. Refresh Activity, then try again.");
+      });
+  }, []);
+
   const openPane = useCallback(() => {
     setOpen(false);
     onOpenPane();
@@ -375,11 +317,6 @@ export function HeaderActivityControl({
           ? { tone: "ready" as const, label: `Synced ${relativeWhen(generatedAt)}`, retry: false }
           : null;
 
-  // The dropdown is live work only. Done is the most final and the most common
-  // state there is, and letting it in turns a glance into a scroll past
-  // yesterday's finished runs. The count below still tells the truth about it.
-  const populatedSections = summary.sections.filter((section) =>
-    section.items.length > 0 && ACTIVITY_POPOVER_SECTION_IDS.includes(section.id));
   const footerLine = activityFooterLine(summary);
 
   return (
@@ -431,11 +368,11 @@ export function HeaderActivityControl({
         panelRef={panelRef}
         title="Activity"
         bare
-        width="w-[min(420px,calc(100vw-24px))]"
+        width="w-[min(440px,calc(100vw-24px))]"
         panelStyle={{
           right: 12,
           top: 40,
-          width: "min(420px, calc(100vw - 24px))",
+          width: "min(440px, calc(100vw - 24px))",
           maxHeight: "min(600px, calc(100vh - 72px))",
           WebkitAppRegion: "no-drag",
         } as React.CSSProperties}
@@ -519,56 +456,28 @@ export function HeaderActivityControl({
           />
         ) : null}
 
-        <div className="activity-hdr-body">
-          {allClear ? <ActivityAllClear compact /> : null}
-          {signedOutEmpty ? (
-            <div className="activity-hdr-empty">
-              <BellSimpleSlash size={22} weight="duotone" />
-              <strong>Signed out</strong>
-              <p>
-                Sign in to ADE to follow agents and pull requests across every
-                machine on your account.
-              </p>
-            </div>
-          ) : populatedSections.length === 0 ? (
-            <div className="activity-hdr-empty" data-activity-empty="all-clear">
-              <span className="activity-hdr-calm-dot" aria-hidden />
-              <strong>All agents idle</strong>
-              <p>
-                {syncStatus === "error"
-                  ? syncError ?? "Activity couldn’t sync, so this may be stale."
-                  : summary.doneCount > 0
-                    ? "Nothing needs you. Finished work is in the full list."
-                    : "Nothing needs you."}
-              </p>
-            </div>
-          ) : (
-            populatedSections.map((section) => (
-              <ActivityHeaderSection
-                key={section.id}
-                section={section}
-                hideDetails={hideDetails}
-                collapsed={collapse.isCollapsed(section.id)}
-                onToggleCollapsed={() => collapse.toggle(section.id)}
-                onOpenItem={(item) => void openItem(item)}
-                onDismissItem={dismissItem}
-                onOpenPane={openPane}
-              />
-            ))
-          )}
-          {/* Done is hidden here, so the handoff has to be explicit:
-              the count is the promise that nothing was thrown away. */}
-          {populatedSections.length > 0 && summary.doneCount > 0 ? (
-            <button
-              type="button"
-              className="activity-hdr-done-handoff"
-              onClick={openPane}
-            >
-              {summary.doneCount} done in the full list
-              <ArrowRight size={11} weight="bold" />
-            </button>
-          ) : null}
-        </div>
+        {signedOutEmpty ? (
+          <div className="activity-hdr-empty">
+            <BellSimpleSlash size={22} weight="duotone" />
+            <strong>Signed out</strong>
+            <p>
+              Sign in to ADE to follow agents and pull requests across every
+              machine on your account.
+            </p>
+          </div>
+        ) : (
+          <ActivityPanel
+            size="compact"
+            items={items}
+            now={now}
+            hideDetails={hideDetails}
+            loading={items.length === 0 && !generatedAt && syncStatus !== "error"}
+            onOpenItem={(item) => void openItem(item)}
+            onDismissItem={dismissItem}
+            onClearInbox={clearInbox}
+            onOpenPane={openPane}
+          />
+        )}
 
         <footer className="activity-hdr-panel-foot">
           <span>{footerLine}</span>

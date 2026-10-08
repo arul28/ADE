@@ -62,11 +62,19 @@ import type {
   AutomationSaveDraftRequest,
   AutomationSaveDraftResult,
 } from "../../../shared/types/automations";
-import type {
-  AttentionPreferenceScope,
-  AttentionPreferences,
-  AttentionPresence,
+import {
+  CUSTOM_NOTIFICATION_HOURLY_LIMIT,
+  customNotificationProblem,
+  type AttentionPreferenceScope,
+  type AttentionPreferences,
+  type AttentionPresence,
 } from "../../../shared/types/attention";
+import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
+import { deriveProjectId } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import {
+  PushRelayNotifyRateLimitedError,
+  PushRelayRequestError,
+} from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
 import { buildMacDesktopDomainService } from "../macDesktop/macDesktopActionDomain";
 import { normalizeExternalSessionDetailArgs } from "../externalSessions/externalSessionDetail";
@@ -209,6 +217,7 @@ import { createAccountActionDomainService } from "../../../../../ade-cli/src/ser
 import { createProxyActionDomainService } from "../../../../../ade-cli/src/services/proxy/proxyService";
 import {
   captureSecretRequestedAnalytics,
+  captureNotificationSentAnalytics,
   captureProviderCliUpdateAnalytics,
   captureWebhookUrlCreatedAnalytics,
   providerAccountAnalyticsCapture,
@@ -1340,9 +1349,89 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
   };
 }
 
+/**
+ * `ade notify`: a push the caller wrote, to every phone on the account. Open to
+ * agents and automation steps; the relay caps an account at
+ * `CUSTOM_NOTIFICATION_HOURLY_LIMIT` an hour.
+ */
+/**
+ * `attention.sendNotification`, and `notify.send` for `ade notify` (which runs
+ * machine-wide, outside any project). `projectRoot` names the project a chat
+ * or PR link belongs to; it defaults to the runtime's own, and null stamps no
+ * project.
+ */
+export function buildSendNotificationAction(
+  runtime: Pick<AdeRuntime, "accountAuthService" | "projectRoot" | "productAnalyticsService">,
+  send: NonNullable<AdeRuntime["sendCustomNotification"]>,
+  options: { projectRoot?: string | null } = {},
+) {
+  const projectRoot = options.projectRoot === undefined ? runtime.projectRoot : options.projectRoot;
+  return async (args?: { title?: unknown; body?: unknown; open?: unknown }) => {
+    // The link is checked apart from the text: an automation whose trigger
+    // left a link value empty still sends its notification, opening ADE, and
+    // says why the link was left off. `ade notify` refuses a bad link itself.
+    const problem = customNotificationProblem({ title: args?.title, body: args?.body });
+    if (problem) throw new Error(problem);
+    if (args?.open != null && typeof args.open !== "string") {
+      throw new Error("The open link must be text.");
+    }
+    // A process without the account service (desktop automations) learns the
+    // sign-in state from the relay's 401 below instead.
+    if (runtime.accountAuthService && !runtime.accountAuthService.getStatus().signedIn) {
+      throw new Error(
+        "Sign in to ADE first: run `ade login`. Notifications go to the phones on your ADE account.",
+      );
+    }
+    const body = typeof args?.body === "string" ? args.body.trim() : "";
+    const rawOpen = typeof args?.open === "string" ? args.open.trim() : "";
+    const link = rawOpen ? normalizeCustomNotificationLink(rawOpen) : null;
+    try {
+      const result = await send({
+        title: String(args?.title).trim(),
+        body: body || null,
+        deepLink: link?.ok ? link.link : null,
+        // The sender stamps its machine onto a chat or PR link; the project
+        // is this one, by the id every machine derives the same way.
+        projectId: projectRoot ? deriveProjectId(projectRoot) : null,
+      });
+      captureNotificationSentAnalytics({
+        analytics: runtime.productAnalyticsService,
+        surface: "api",
+        outcome: result.devices > 0 && result.failed === 0 ? "completed" : "failed",
+      });
+      return {
+        sent: result.delivered > 0,
+        ...result,
+        ...(link && !link.ok ? { linkSkipped: link.problem } : {}),
+      };
+    } catch (error) {
+      captureNotificationSentAnalytics({
+        analytics: runtime.productAnalyticsService,
+        surface: "api",
+        outcome: error instanceof PushRelayNotifyRateLimitedError ? "skipped_budget" : "failed",
+      });
+      if (error instanceof PushRelayNotifyRateLimitedError) {
+        const minutes = error.retryAfterSeconds ? Math.max(1, Math.ceil(error.retryAfterSeconds / 60)) : null;
+        throw new Error(
+          `This account has sent ${CUSTOM_NOTIFICATION_HOURLY_LIMIT} notifications in the last hour.`
+            + (minutes ? ` Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.` : " Try again later."),
+        );
+      }
+      if (error instanceof PushRelayRequestError && error.status === 401) {
+        throw new Error("Your ADE sign-in did not work. Run `ade login`, then try again.");
+      }
+      throw error;
+    }
+  };
+}
+
 function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null {
   const publisher = runtime.pushPublisherService;
-  if (!publisher) return null;
+  if (!publisher) {
+    // Desktop automations run without a publisher; they can still notify.
+    const send = runtime.sendCustomNotification;
+    return send ? { sendNotification: buildSendNotificationAction(runtime, send) } : null;
+  }
   const requireCurrentAccountOwner = (value: unknown): string => {
     const accountOwnerId = typeof value === "string" ? value.trim() : "";
     const status = runtime.accountAuthService?.getStatus();
@@ -1404,6 +1493,8 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
         args.preferences,
       );
     },
+    sendNotification: buildSendNotificationAction(runtime, (notification) =>
+      publisher.sendCustomNotification(notification)),
     putMachinePreferences: (args?: {
       accountOwnerId?: unknown;
       machineKey?: unknown;

@@ -12,12 +12,14 @@ import { relativeWhen } from "../../lib/format";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
 import { activityCardPreview } from "./ActivityCard";
-import { ActivityStateGlyphMark } from "./ActivityStateGlyphMark";
+import { activityBoardColumn } from "../../../shared/attention/activityBoardColumn";
+import { ActivityColumnMark } from "./ActivityColumnMark";
 import {
-  activityItemPresentation,
+  activityItemFailed,
+  activityRowStatus,
   activityStateElapsed,
-  activityStateGroup,
   activityStateSentence,
+  activityWaitingReasonLabel,
 } from "./activityPresentation";
 
 /**
@@ -61,9 +63,10 @@ export function ActivityDetailSheet({
   onAction: (item: AttentionItem, action: AttentionAction) => void;
 }) {
   const sheetRef = useRef<HTMLDivElement | null>(null);
-  const presentation = activityItemPresentation(item);
+  const presentation = activityRowStatus(item);
   const tone = presentation?.tone ?? "neutral";
-  const group = activityStateGroup(item);
+  const column = activityBoardColumn(item);
+  const waitingReason = activityWaitingReasonLabel(item);
   const note = activityCardPreview(item, hideDetails);
   const elapsed = activityStateElapsed(item);
   const planTotal = Math.max(0, item.planProgress?.total ?? 0);
@@ -123,15 +126,18 @@ export function ActivityDetailSheet({
               exist. The glyph and hue repeat it for the eye; the elapsed
               reading comes off `statusSince`, so it is time in THIS state
               rather than time since the last cosmetic republish. */}
-          <div className="activity-sheet-state" data-activity-state={group}>
-            <span className="activity-sheet-state-mark" aria-hidden>
-              <ActivityStateGlyphMark group={group} size={13} />
-            </span>
+          <div className="activity-sheet-state" data-activity-state={column ?? item.phase}>
+            {column ? (
+              <span className="activity-sheet-state-mark" aria-hidden>
+                <ActivityColumnMark column={column} failed={activityItemFailed(item)} size={13} />
+              </span>
+            ) : null}
             <span className="activity-sheet-state-copy">
               <strong>{activityStateSentence(item)}</strong>
               {elapsed ? (
                 <span>
                   {presentation?.label ?? "Tracked"} for {elapsed}
+                  {waitingReason ? ` · ${waitingReason}` : ""}
                 </span>
               ) : null}
             </span>

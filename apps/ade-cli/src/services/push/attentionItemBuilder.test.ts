@@ -214,6 +214,12 @@ describe("buildAttentionItems", () => {
     ]);
   });
 
+  /**
+   * A running chat whose lane's PR waits on CI files under Waiting, and the
+   * live run keeps that wait. Its time in Waiting starts when the wait did
+   * (the roster's anchor for the waiting column), not when the run started
+   * working: "Waiting for 1h" must not count the hour it worked.
+   */
   it("does not let a stuck live run bury a roster failure", async () => {
     const items = await buildAttentionItems(context({
       includeRoster: true,

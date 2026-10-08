@@ -302,6 +302,10 @@ They are two separate signals on the row the user is looking at:
 - **The next accepted user message clears the hand-raise** and the row returns
   to **Working** while the reply is handled. If the reply does not unblock you,
   leave an updated note and `ask` again.
+- **`ade notify --title "<t>" [--body "<b>"] [--open <ade link>]` pushes to the
+  user's phone**, only when they asked to be told (for example "tell me when the
+  deploy is done"). The account allows 60 an hour; the command exits non-zero
+  past that or when signed out.
 
 #### Activity detail on the card
 

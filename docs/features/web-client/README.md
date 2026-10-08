@@ -641,7 +641,8 @@ Reused desktop renderer (web-mode adaptation):
   vertical math never mixes `window.innerHeight` with a CSS-zoomed rect.
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx`
   and `ActivityPane.tsx` - the project-independent header popover and the
-  expanded pane its "Open all" raises. Activity is a global utility surface, not
+  expanded pane its "Open all" raises: one `ActivityPanel` in two sizes, grouped
+  by the Work board's four columns exactly as on desktop. Activity is a global utility surface, not
   another selected-machine tab, so it is intentionally separate from
   `WEB_CLIENT_TAB_PATHS`. Its `/activity` pathname (and the `/attention` name it
   replaced) is a deep link that opens the pane over the current tab; both are in

@@ -105,12 +105,18 @@ afterEach(() => {
   });
 });
 
+/** The Sessions list, switching to it first if the Inbox is showing. */
 function agentsColumn(): HTMLElement {
-  return screen.getByRole("region", { name: "Agents" });
+  const tab = screen.getByRole("tab", { name: /^Sessions/ });
+  if (tab.getAttribute("aria-selected") !== "true") fireEvent.click(tab);
+  return screen.getByTestId("activity-sessions-scroll");
 }
 
+/** The Inbox list, switching to it first if Sessions is showing. */
 function notificationsColumn(): HTMLElement {
-  return screen.getByRole("region", { name: "Notifications" });
+  const tab = screen.getByRole("tab", { name: /^Inbox/ });
+  if (tab.getAttribute("aria-selected") !== "true") fireEvent.click(tab);
+  return screen.getByTestId("activity-inbox-scroll");
 }
 
 function openDetail(title: string) {
@@ -147,11 +153,11 @@ describe("ActivityPane", () => {
     render(<ActivityPane open onClose={() => {}} />);
 
     const agents = agentsColumn();
-    const notifications = notificationsColumn();
     expect(within(agents).getByTitle(/^Task approval —/)).toBeTruthy();
     expect(within(agents).getByTitle(/^Task running —/)).toBeTruthy();
     // The pull request is a notification, not a session — and it appears once.
     expect(within(agents).queryByTitle(/^PR checks —/)).toBeNull();
+    const notifications = notificationsColumn();
     expect(within(notifications).getByText("PR checks")).toBeTruthy();
     // A raised hand is a session, so it does not double as a notification row.
     expect(within(notifications).queryByText("Task approval")).toBeNull();
@@ -197,17 +203,17 @@ describe("ActivityPane", () => {
 
     // Opening the pane kicks a refresh, so the all-clear is what is left once
     // that settles — not what shows while it is in flight.
-    expect(await screen.findByText("All agents idle")).toBeTruthy();
-    expect(screen.getByText("Inbox zero")).toBeTruthy();
+    expect(await screen.findByText("Nothing running")).toBeTruthy();
+    expect(within(notificationsColumn()).getByText("Inbox zero")).toBeTruthy();
   });
 
   it("holds placeholders rather than claiming all-clear before the first snapshot", () => {
     activityStore.setState({ syncStatus: "syncing" });
     render(<ActivityPane open onClose={() => {}} />);
 
-    // "All agents idle" is a claim, and before a snapshot lands it is one ADE
+    // "Nothing running" is a claim, and before a snapshot lands it is one ADE
     // has no grounds for — a user would read it and stop looking.
-    expect(screen.queryByText("All agents idle")).toBeNull();
+    expect(screen.queryByText("Nothing running")).toBeNull();
     expect(
       document.body.querySelectorAll("[data-activity-skeleton]").length,
     ).toBeGreaterThan(0);
@@ -221,7 +227,7 @@ describe("ActivityPane", () => {
 
     const sheet = screen.getByRole("dialog", { name: "Task approval detail" });
     // The state, in words, is the first thing the sheet says.
-    expect(within(sheet).getByText("Codex is asking a question")).toBeTruthy();
+    expect(within(sheet).getByText("Codex needs you")).toBeTruthy();
     expect(within(sheet).getByText("Waiting for a safe decision")).toBeTruthy();
     expect(within(sheet).getByText("GPT-5")).toBeTruthy();
     expect(within(sheet).getByText("Edited AuthService.ts")).toBeTruthy();
@@ -404,6 +410,7 @@ describe("ActivityPane", () => {
     });
     render(<ActivityPane open onClose={() => {}} />);
 
+    notificationsColumn();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
 
     await waitFor(() => {
@@ -426,6 +433,7 @@ describe("ActivityPane", () => {
     });
     render(<ActivityPane open onClose={() => {}} />);
 
+    notificationsColumn();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
 
     await waitFor(() => {
@@ -453,6 +461,7 @@ describe("ActivityPane", () => {
     });
     render(<ActivityPane open onClose={() => {}} />);
 
+    notificationsColumn();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
 
     await waitFor(() => {
@@ -484,6 +493,7 @@ describe("ActivityPane", () => {
     });
     render(<ActivityPane open onClose={() => {}} />);
 
+    notificationsColumn();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
 
     await waitFor(() => {
@@ -522,34 +532,14 @@ describe("ActivityPane", () => {
     });
     render(<ActivityPane open onClose={() => {}} />);
 
+    // A session gone quiet rests under Done, folded until it is opened.
+    fireEvent.click(agentsColumn().querySelector<HTMLButtonElement>("[data-activity-done-fold]")!);
     fireEvent.click(within(agentsColumn())
       .getByRole("button", { name: "Dismiss Task idle" }));
 
     await waitFor(() => {
       expect(activityStore.getState().itemsById.idle?.dismissedAt).not.toBeNull();
     });
-  });
-
-  it("collapses a section and remembers it for the next open", () => {
-    activityStore.setState({ itemsById: { approval: item("approval") } });
-    const view = render(<ActivityPane open onClose={() => {}} />);
-
-    const header = () => document.body.querySelector<HTMLButtonElement>(
-      '[data-activity-section-toggle="needs-you"]',
-    )!;
-    expect(header().getAttribute("aria-expanded")).toBe("true");
-    expect(sessionRow("Task approval")).toBeTruthy();
-
-    fireEvent.click(header());
-    expect(header().getAttribute("aria-expanded")).toBe("false");
-    expect(sessionRow("Task approval")).toBeNull();
-    // The region the header claims to control is the one that went away.
-    expect(document.getElementById(header().getAttribute("aria-controls")!)?.hidden).toBe(true);
-
-    view.unmount();
-    render(<ActivityPane open onClose={() => {}} />);
-    expect(header().getAttribute("aria-expanded")).toBe("false");
-    expect(sessionRow("Task approval")).toBeNull();
   });
 
   it("filters both columns by machine and says so when nothing matches", async () => {
@@ -627,44 +617,7 @@ describe("ActivityPane", () => {
    * same set. A heading for a state the filter just excluded is the drift this
    * covers.
    */
-  it("narrows the sections to the one state the strip selected", async () => {
-    activityStore.setState({
-      itemsById: {
-        approval: item("approval"),
-        running: item("running", {
-          phase: "running",
-          eventKind: "agent_running",
-          title: "Task running",
-        }),
-        broke: item("broke", {
-          phase: "failed",
-          eventKind: "agent_failed",
-          title: "Task broke",
-        }),
-      },
-    });
-    render(<ActivityPane open onClose={() => {}} />);
-
-    const sectionIds = () =>
-      [...agentsColumn().querySelectorAll("[data-activity-section]")]
-        .map((node) => node.getAttribute("data-activity-section"));
-    expect(sectionIds()).toEqual(["needs-you", "failed", "working"]);
-
-    fireEvent.click(screen.getByRole("button", { name: "1 working" }));
-
-    await waitFor(() => expect(sectionIds()).toEqual(["working"]));
-    expect(sessionRow("Task running")).toBeTruthy();
-    expect(sessionRow("Task approval")).toBeNull();
-    // The strip still reports the whole account, so the two states it just hid
-    // are still the way back out of the filter it just applied.
-    expect(screen.getByRole("button", { name: "1 needs you" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "1 failed" })).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "1 working" }));
-    await waitFor(() => expect(sectionIds()).toEqual(["needs-you", "failed", "working"]));
-  });
-
-  it("composes the state strip with an older filter axis", async () => {
+  it("composes the column chips with the machine filter", async () => {
     activityStore.setState({
       itemsById: {
         studio: item("studio", {
@@ -700,7 +653,7 @@ describe("ActivityPane", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Filter by machine" }));
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "MacBook" }));
-    fireEvent.click(screen.getByRole("button", { name: "2 working" }));
+    fireEvent.click(within(screen.getByTestId("activity-column-chips")).getByRole("radio", { name: /Working/ }));
 
     // AND across axes: the one MacBook row that is also working.
     await waitFor(() => expect(sessionRow("Task laptop")).toBeTruthy());
@@ -735,8 +688,8 @@ describe("ActivityPane", () => {
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Notes" }));
 
     await waitFor(() => expect(screen.getByText("No sessions match")).toBeTruthy());
-    expect(screen.queryByText("All agents idle")).toBeNull();
-    expect(screen.getByText("Nothing here matches")).toBeTruthy();
+    expect(screen.queryByText("Nothing running")).toBeNull();
+    expect(within(notificationsColumn()).getByText("Nothing here matches")).toBeTruthy();
   });
 
   it("counts machines and sessions in the header", () => {

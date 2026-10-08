@@ -1055,6 +1055,24 @@ snapshot refresh, acknowledgements, delivery retries, APNs/ActivityKit frames,
 and native presentation changes remain untracked because they are either
 high-frequency mechanics or can expose work-specific interaction patterns.
 
+Sending a custom notification — `ade notify`, an agent, or an automation's
+**Send notification to mobile app** step — records the same `ade_feature_used`
+event at the brain's `attention.sendNotification` / `notify.send` boundary
+(`buildSendNotificationAction` in `adeActions/registry.ts`, through
+`captureNotificationSentAnalytics`), with `feature: "attention"`,
+`action: "notification_sent"`, `surface: "api"`, and a coarse `outcome`:
+`completed` (the relay took it for at least one phone and no delivery failed),
+`skipped_budget` (the account's hourly cap refused it), or `failed` (no phone on
+the account, a delivery failed, or the call failed). Input the caller got wrong
+(no title, a link ADE cannot open) and a signed-out machine are refused before
+anything is sent and emit nothing. The title, body, link, phone count and the
+sending project never cross the boundary. The product question is only whether
+people and agents use custom pushes and whether the cap bites. A per-outcome
+one-hour deduplication key bounds a looping automation to at most 72 accepted
+events per installation per UTC day, inside the existing `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling; no ceiling
+was raised. The dashboard spec is deliberately untouched: no card asks this yet.
+
 ### The capture gesture
 
 The capture gesture records one `ade_feature_used` event from the main-process handler that

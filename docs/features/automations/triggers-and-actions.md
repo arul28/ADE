@@ -220,6 +220,39 @@ Action types (`AutomationActionType`):
   - `args` — object or array passed to the domain method. Strings may contain `{{trigger.*}}` placeholders resolved from the trigger context at dispatch time.
   - `resolvers` — optional explicit `{ key: "trigger.path" }` mapping for placeholders that are not embedded in `args` strings.
 
+**Send notification to mobile app** has its own entry in the Add step menu and
+its own editor (`builder/NotifyStepEditor.tsx`), but it is stored as an ordinary
+`ade-action` step for `attention.sendNotification`, so saving and running it are
+not special. `args` are `title` (up to 64 characters), optional `body` (up to
+160) and optional `open`, the link a tap opens; all three take `{{…}}` values,
+for example `PR {{trigger.pr.number}} is ready to merge`.
+
+The editor builds `open` for the user instead of asking for a link. **When
+tapped, open** offers what the phone opens itself (just ADE, Activity on one
+column, a chat, a pull request, a Linear issue) and what it hands to the
+computer through its "Send to your computer" card (a lane, a file, a commit, a
+branch, proof), plus **Paste a link** for any ADE link, `https://ade-app.dev/open`
+forms included. Each choice has a **Choose** list of this project's chats,
+pull requests, lanes or branches and one-click **From the trigger** values
+(the PR, chat, lane or branch that started the run). `notifyLink.ts` builds the
+link from those fields, reads a saved link back into them, and checks it with
+the trigger values swapped for samples. A preview shows the banner and what a
+tap does, and **Send a test to my phone** sends it now: trigger values show as
+their names (`‹PR number›`), and a link that needs trigger values is left off
+the test.
+
+Saving checks the step (`sendNotificationStepProblem` in
+`automationPlannerService.ts`): a title is required, and text and links without
+`{{…}}` values must be within limits and openable. At run time the push goes to
+every phone on the ADE account, skipping phones with notifications off, in
+quiet hours, or muting this machine; an account may send 60 an hour, and past
+that the step fails with the time to wait. A link that resolves to something
+ADE cannot open (a trigger value that was empty makes `ade://pr/`) is left off
+and named in the step's `linkSkipped` output, so the notification still
+arrives. An `agent-session` step can do the same from its shell with
+`ade notify`. See
+[Custom notifications](../sync-and-multi-device/push-notifications.md#custom-notifications).
+
 `isAllowedAdeAction(domain, action)` gates every `ade-action` dispatch; `listAllowedAdeActionNames(domain, service)` powers the picker in `AdeActionEditor`. The full allowlist lives in `apps/desktop/src/main/services/adeActions/actionPolicy.ts`.
 
 Rule config is not a trusted author of chat-message provenance. Before dispatching any `chat` domain action, the automation service runs `stripHostAuthoredMessageProvenance` (from `apps/desktop/src/main/services/chat/spawnMissionOwnership.ts`) over each resolved argument's `metadata`, deleting `spawnDispatch`, `orchestrationOrigin`, `scheduledWake`, `spawnCompletion`, `agentRelay`, and `hostContinuation`. Those keys decide whether a spawned agent's turn completion wakes another agent, and the host derives them from observed identity — see [Chat](../chat/README.md#mission-ownership-decides-the-wake).
@@ -277,7 +310,7 @@ The planner output JSON is extracted with `extractFirstJsonObject` — it handle
 - **`session.*` rules scoped to a chat must set `trigger.sessionId`.** Without it the rule fires for every chat in the project, which is rarely what a chat-menu rule means.
 - **Built-in shell actions validate cwd.** Don't pass absolute paths that escape the allowed roots — `validateAutomationCwd` rejects them.
 - **ADE actions are allowlisted at compile time.** A `(domain, action)` pair must appear in `ADE_ACTION_ALLOWLIST`. Adding an internal service method doesn't expose it to automations until the allowlist is updated; this is intentional — the allowlist is the audit surface.
-- **`{{trigger.*}}` placeholders only interpolate from the current trigger context.** There is no cross-run state; if a placeholder resolves to `undefined`, the ADE action receives `undefined` rather than an empty string. Prefer explicit `resolvers` when a placeholder is load-bearing.
+- **`{{trigger.*}}` placeholders only interpolate from the current trigger context.** There is no cross-run state. A string that is one whole placeholder keeps the raw value (a number stays a number) and stays as written when the value is missing; a placeholder inside longer text becomes an empty string when missing. `{{trigger.lane.id}}` and `{{trigger.lane.name}}` read the run's lane (the context keeps it as `laneId` / `laneName`), and `{{date}}` / `{{time}}` resolve in step arguments and prompts as they do in lane names. Prefer explicit `resolvers` when a placeholder is load-bearing.
 - **Planner JSON extraction is lossy on malformed output.** Budget extra validation on fields the planner set; rely on `validateDraft` rather than trusting raw output.
 
 ## Cross-links

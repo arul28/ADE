@@ -1,4 +1,5 @@
 import { ACTIVITY_EVENT_CATALOG } from "../activityCatalog";
+import { normalizeCustomNotificationLink } from "../customNotificationLink";
 import type { WorkBoardColumn, WorkBoardWaitingReason } from "./chat";
 
 export const ATTENTION_CONTRACT_VERSION = 1 as const;
@@ -144,7 +145,7 @@ export type AttentionItem = {
    * It exists because "planning" is a state the Activity glyph language names
    * (violet notepad) but `AttentionPhase` cannot carry — the phase vocabulary is
    * frozen push wire, and widening it would break every older client. Readers
-   * validate it at the boundary (`activityStateGroup`) rather than trusting it.
+   * validate it at the boundary (`activityChatMode`) rather than trusting it.
    */
   chatActivityMode?: "planning" | null;
   /**
@@ -684,4 +685,92 @@ export function sanitizeAttentionPreview(value: string, maxLength = 160): string
     .trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+/**
+ * A custom notification — `ade notify`, an agent, or an automation's "Send
+ * notification" step. The relay sends the text exactly as written, to every
+ * phone on the account, and enforces the same limits
+ * (apps/push-relay/src/attention.ts keeps its own copy: it imports nothing).
+ */
+export const CUSTOM_NOTIFICATION_TITLE_MAX = 64;
+export const CUSTOM_NOTIFICATION_BODY_MAX = 160;
+export const CUSTOM_NOTIFICATION_HOURLY_LIMIT = 60;
+
+export type CustomNotificationInput = {
+  title: string;
+  body?: string | null;
+  /** Where a tap goes. ADE links only (`ade://…`). */
+  open?: string | null;
+};
+
+/**
+ * The reason a custom notification cannot be sent as written, in words a CLI
+ * user or an automation author can act on, or null when it is valid.
+ */
+export function customNotificationProblem(input: {
+  title?: unknown;
+  body?: unknown;
+  open?: unknown;
+}): string | null {
+  const title = typeof input.title === "string" ? input.title.trim() : "";
+  if (!title) return "A notification needs a title.";
+  if (title.length > CUSTOM_NOTIFICATION_TITLE_MAX) {
+    return `The title is ${title.length} characters; the limit is ${CUSTOM_NOTIFICATION_TITLE_MAX}.`;
+  }
+  if (input.body != null) {
+    if (typeof input.body !== "string") return "The body must be text.";
+    const body = input.body.trim();
+    if (body.length > CUSTOM_NOTIFICATION_BODY_MAX) {
+      return `The body is ${body.length} characters; the limit is ${CUSTOM_NOTIFICATION_BODY_MAX}.`;
+    }
+  }
+  if (input.open != null && input.open !== "") {
+    if (typeof input.open !== "string") return "The open link must be text.";
+    const link = normalizeCustomNotificationLink(input.open);
+    if (!link.ok) return link.problem;
+  }
+  return null;
+}
+
+/** What `attention.sendNotification` answers. */
+export type CustomNotificationResult = {
+  sent?: boolean;
+  devices: number;
+  delivered: number;
+  skipped: number;
+  failed: number;
+  remaining: number | null;
+  /** Why the link was left off, when it could not be opened. */
+  linkSkipped?: string;
+};
+
+/**
+ * One sentence about what a custom notification did, for `ade notify --text`
+ * and the automation editor's test send, so the two say it the same way.
+ */
+export function describeCustomNotificationResult(
+  result: Partial<CustomNotificationResult>,
+): { tone: "ok" | "warn"; message: string } {
+  const devices = Number(result.devices) || 0;
+  const delivered = Number(result.delivered) || 0;
+  const skipped = Number(result.skipped) || 0;
+  if (devices === 0) {
+    return {
+      tone: "warn",
+      message: "No phone is signed in to this ADE account, so nothing was sent. Sign in on the ADE iPhone app to get notifications.",
+    };
+  }
+  if (delivered === 0) {
+    return {
+      tone: "warn",
+      message: skipped > 0
+        ? "Nothing was sent: every phone on the account has notifications off, is in quiet hours, or muted this machine."
+        : "ADE couldn't deliver the notification to any phone. Try again in a moment.",
+    };
+  }
+  const quiet = skipped > 0 ? ` · ${skipped} quiet` : "";
+  const left = typeof result.remaining === "number" ? ` · ${result.remaining} left this hour` : "";
+  const link = result.linkSkipped ? `. The link was left off: ${result.linkSkipped}` : "";
+  return { tone: "ok", message: `Sent to ${delivered} phone${delivered === 1 ? "" : "s"}${quiet}${left}${link}` };
 }

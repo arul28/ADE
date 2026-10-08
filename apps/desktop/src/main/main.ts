@@ -363,6 +363,8 @@ import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
+import { getOrCreateLocalAccountMachineIdentity } from "./services/account/localMachineIdentity";
+import { stampCustomNotificationLinkOwner } from "../shared/customNotificationLink";
 import {
   buildRendererCspPolicy,
   isRendererFrameNavigationAllowed,
@@ -5910,8 +5912,58 @@ app.whenReady().then(async () => {
     // locally-created services so that the registry's service map resolves.
     // Using a function closure means this stays reactive to late-bound refs
     // like CTO state bindings.
+    // Desktop automations run in this process, where no push publisher lives.
+    // A "Send notification" step still reaches the relay directly, with the
+    // same account sign-in and machine identity the brain's publisher uses.
+    let automationNotifyRelay: {
+      client: ReturnType<typeof createPushRelayClient>;
+      store: ReturnType<typeof createPushRegistrationStore>;
+    } | null = null;
+    const sendCustomNotificationFromDesktop: NonNullable<AdeRuntime["sendCustomNotification"]> = async (
+      notification,
+    ) => {
+      if (!automationNotifyRelay) {
+        const authService = getSharedAccountAuthService();
+        const store = createPushRegistrationStore({
+          filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
+        });
+        const client = createPushRelayClient({
+          store,
+          logger: localRuntimeLogger,
+          getAccountAccessToken: (options) => getSignedInAccountAccessToken(authService, options),
+          getAccountUserId: () => {
+            const status = authService.getStatus();
+            return status.signedIn ? status.userId?.trim() || null : null;
+          },
+        });
+        automationNotifyRelay = { client, store };
+      }
+      const { projectId, ...rest } = notification;
+      let accountMachineKey: string | null = null;
+      try {
+        accountMachineKey = getOrCreateLocalAccountMachineIdentity({
+          secretsDir: machineAdeLayout.secretsDir,
+        }).machineKey;
+      } catch {
+        // No machine identity: the link goes out as written.
+      }
+      return await automationNotifyRelay.client.sendAccountNotification({
+        ...rest,
+        deepLink: rest.deepLink
+          ? stampCustomNotificationLinkOwner(rest.deepLink, { accountMachineKey, projectId })
+          : null,
+        machineKey: automationNotifyRelay.store.getOrCreateIdentity().machineKey,
+      });
+    };
+
     function buildAdeActionRuntimeForAutomations(): AdeRuntime {
       return {
+        // The notification step names its project (so a chat or PR link opens
+        // on this machine), refuses while signed out, and is counted.
+        projectRoot,
+        accountAuthService,
+        productAnalyticsService,
+        sendCustomNotification: sendCustomNotificationFromDesktop,
         laneService,
         gitService,
         diffService,
