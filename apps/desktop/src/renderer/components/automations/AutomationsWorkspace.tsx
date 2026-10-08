@@ -33,6 +33,8 @@ import { machineRuleKey, useAutomationMachines, type MachineRule } from "./useAu
 import type { LaneMachine } from "../../state/laneMachineRouting";
 import { onMachine } from "../../state/projectMachines";
 import { parseMachineScopedId } from "../../state/foreignMachineReads";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { clearStoredAutomationDraft, loadStoredAutomationDraft, storeAutomationDraft } from "./automationDraftStore";
 
 const CHOOSE_MACHINE_HINT = "Choose the machine this automation runs on.";
 
@@ -120,6 +122,16 @@ export async function readCursorCloudConnectionForAutomation(
   }
 }
 
+/** "3:42 PM" today, else "Oct 7, 3:42 PM". */
+function formatRestoredDraftTime(iso: string): string {
+  const at = new Date(iso);
+  if (!Number.isFinite(at.getTime())) return "earlier";
+  const sameDay = at.toDateString() === new Date().toDateString();
+  return at.toLocaleString(undefined, sameDay
+    ? { hour: "numeric", minute: "2-digit" }
+    : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
 export function AutomationsWorkspace({
   active = true,
   pendingDraft,
@@ -171,6 +183,13 @@ export function AutomationsWorkspace({
   const [cursorCloudConnected, setCursorCloudConnected] = useState(false);
   const loadRef = useRef<(() => Promise<void>) | null>(null);
   const savedSnapshotRef = useRef<string | null>(null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  /** True once the first rule list has loaded, so a stored draft can find its rule. */
+  const [rulesLoadedOnce, setRulesLoadedOnce] = useState(false);
+  /** Set once the stored draft was restored or found absent; persisting waits for it. */
+  const draftRestoreDoneRef = useRef(false);
+  /** When the restored draft was last edited; shown until it is saved or discarded. */
+  const [restoredDraftAt, setRestoredDraftAt] = useState<string | null>(null);
 
   // ── Machines ────────────────────────────────────────────────
   const {
@@ -266,6 +285,7 @@ export function AutomationsWorkspace({
       setLanes(nextLanes);
       setIngressStatus(nextIngress);
       setCursorCloudConnected(aiStatus);
+      setRulesLoadedOnce(true);
       setSelectedRuleId((current) => {
         // A rule on another machine stays selected while that machine can still
         // list it; this refresh only speaks for the tab's own rules.
@@ -383,6 +403,72 @@ export function AutomationsWorkspace({
       setSelectedRuleId(key);
     })();
   }, [confirmDiscardIfDirty, entryByKey, foreignLoads, requestedRuleId, searchParams, selectedRuleId, setSearchParams]);
+
+  // Bring back an unsaved draft from an earlier visit (another tab, a restart).
+  // A live edit in this session always wins over the stored copy.
+  useEffect(() => {
+    if (!active || draftRestoreDoneRef.current || !projectRoot || !rulesLoadedOnce) return;
+    const stored = loadStoredAutomationDraft(projectRoot);
+    if (!stored || isDirtyRef.current) {
+      draftRestoreDoneRef.current = true;
+      return;
+    }
+    const storedTarget = stored.targetMachineId
+      ? machines.find((machine) => machine.machineId === stored.targetMachineId) ?? null
+      : null;
+    if (stored.ruleKey) {
+      const entry = entryByKey.get(stored.ruleKey);
+      if (!entry) {
+        // The rule may live on a machine whose rules are still loading.
+        if (Object.values(foreignLoads).some((load) => load.status === "loading")) return;
+        // The rule is gone; its draft has nothing to save into.
+        clearStoredAutomationDraft(projectRoot);
+        draftRestoreDoneRef.current = true;
+        return;
+      }
+      const origin = entry.machine.isActiveBinding ? null : entry.machine;
+      loadedRuleKeyRef.current = stored.ruleKey;
+      setDraftOrigin({ machine: origin });
+      setDraftTarget(stored.targetMachineId ? storedTarget ?? origin : null);
+      setDraftMachineChosen(true);
+      setSelectedRuleId(stored.ruleKey);
+    } else {
+      draftingNewRef.current = true;
+      loadedRuleKeyRef.current = null;
+      setDraftOrigin(null);
+      setSelectedRuleId(null);
+      setDraftTarget(storedTarget && !storedTarget.isActiveBinding ? storedTarget : null);
+      // A machine that has gone since asks to be chosen again.
+      setDraftMachineChosen(stored.machineChosen && (!stored.targetMachineId || Boolean(storedTarget)));
+    }
+    savedSnapshotRef.current = stored.savedSnapshot;
+    setDraft(stored.draft);
+    setIssues([]);
+    setSimulationNotes([]);
+    setRequiredConfirmations([]);
+    setAcceptedConfirmations(new Set());
+    setDetailView("builder");
+    setRestoredDraftAt(stored.savedAt);
+    draftRestoreDoneRef.current = true;
+  }, [active, entryByKey, foreignLoads, machines, projectRoot, rulesLoadedOnce]);
+
+  // Keep the stored copy in step with the draft: written on every unsaved
+  // change, removed once the draft matches its saved rule (Save, Discard).
+  useEffect(() => {
+    if (!draftRestoreDoneRef.current) return;
+    if (!draft || !isDirty || savedSnapshotRef.current == null) {
+      clearStoredAutomationDraft(projectRoot);
+      setRestoredDraftAt(null);
+      return;
+    }
+    storeAutomationDraft(projectRoot, {
+      draft,
+      savedSnapshot: savedSnapshotRef.current,
+      ruleKey: selectedRuleId,
+      targetMachineId: draftTarget?.machineId ?? null,
+      machineChosen: draftMachineChosen,
+    });
+  }, [draft, draftMachineChosen, draftTarget, isDirty, projectRoot, selectedRuleId]);
 
   // The draft's machine supplies its own suites and ingress status; the tab
   // machine's would describe the wrong checkout.
@@ -783,6 +869,20 @@ export function AutomationsWorkspace({
             </div>
           ) : null}
 
+          {draft && detailView === "builder" && restoredDraftAt ? (
+            <Banner
+              layout="inline"
+              testId="automation-draft-restored"
+              style={{ margin: "8px 16px 0" }}
+              model={{
+                id: "automation-draft-restored",
+                tone: "info",
+                title: `Restored your unsaved changes from ${formatRestoredDraftTime(restoredDraftAt)}.`,
+                detail: "Save to keep them.",
+                actions: [{ label: "Discard", onClick: () => void confirmDiscardIfDirty() }],
+              }}
+            />
+          ) : null}
           {draft && detailView === "builder" && draftMachineChosen && draftMachineBlocked ? (
             <Banner
               layout="inline"
