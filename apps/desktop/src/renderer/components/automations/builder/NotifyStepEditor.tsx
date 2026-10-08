@@ -43,6 +43,7 @@ import {
 } from "../notifyLink";
 import { variablesForTrigger } from "../variableCatalog";
 import { VariableInput } from "./VariableMenu";
+import { explainAutomationActionError } from "../../../../shared/automationFeatureVersions";
 
 /**
  * A test send has no trigger to fill `{{…}}` values from, so each one is shown
@@ -715,7 +716,11 @@ export function NotifyStepEditor({
       setTest({
         state: "done",
         tone: "error",
-        message: error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : String(error),
+        message: (() => {
+          const raw = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : String(error);
+          // An older ADE on the rule's machine has no notification action yet.
+          return explainAutomationActionError(raw) ?? raw;
+        })(),
       });
     }
   };
