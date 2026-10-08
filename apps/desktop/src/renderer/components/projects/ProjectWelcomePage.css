@@ -120,25 +120,85 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 .ade-home-action[data-primary] > svg { color: inherit; }
 .ade-home-action[data-primary]:not(:disabled):hover { background: color-mix(in srgb, var(--color-accent) 88%, var(--color-fg) 12%); }
 
-/* Grid of widgets. Columns default to the shipped proportions (projects a
-   touch wider); rows split the page height and never drop below a usable
-   card. A layout taller than the page scrolls inside the grid, not the page.
-   Cells are placed by span (see `sizeSpan`), densely, in layout order. */
+/* Grid of widgets. The page never scrolls: the grid's columns and rows come
+   from the space it has (homeGridPack.ts), every cell is placed explicitly,
+   and what does not fit is hidden behind a quiet note. Three columns keep
+   the shipped proportions (projects a touch wider). */
+.ade-home-grid-host { position: relative; flex: 1 1 auto; min-height: 0; display: flex; justify-content: center; }
 .ade-home-grid {
-  /* Set by the grid from its widgets' declared minimum heights. */
-  --home-row-min: 150px;
-  flex: 1 1 auto;
+  height: 100%;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 0.9fr);
-  grid-auto-rows: minmax(var(--home-row-min), 1fr);
-  grid-auto-flow: row dense;
   gap: var(--welcome-gap);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
+  overflow: hidden;
 }
-.ade-home-grid[data-single="true"] { grid-template-columns: minmax(0, 1fr); grid-auto-rows: minmax(0, 1fr); max-width: 680px; }
+.ade-home-grid[data-single="true"] { width: 100%; grid-template-columns: minmax(0, 1fr); grid-auto-rows: minmax(0, 1fr); max-width: 680px; }
+
+.ade-home-hidden-note {
+  position: absolute;
+  right: 0;
+  bottom: -22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 70%;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg) 55%, transparent);
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ade-home-hidden-note:hover { color: var(--color-fg); }
+.ade-home-hidden-note > span { overflow: hidden; text-overflow: ellipsis; }
+
+/* Drag-resize: a corner grip on each tile in edit mode, snapping to cells. */
+.ade-home-resize-handle {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  z-index: 4;
+  width: 18px;
+  height: 18px;
+  border-radius: 0 0 var(--radius-lg) 0;
+  cursor: nwse-resize;
+  touch-action: none;
+  background:
+    linear-gradient(135deg, transparent 52%, color-mix(in srgb, var(--color-accent) 85%, transparent) 52%, color-mix(in srgb, var(--color-accent) 85%, transparent) 60%, transparent 60%),
+    linear-gradient(135deg, transparent 70%, color-mix(in srgb, var(--color-accent) 85%, transparent) 70%, color-mix(in srgb, var(--color-accent) 85%, transparent) 78%, transparent 78%);
+  opacity: 0.75;
+}
+.ade-home-resize-handle:hover, .ade-home-cell[data-resizing] .ade-home-resize-handle { opacity: 1; }
+.ade-home-cell[data-resizing] { z-index: 3; }
+.ade-home-cell[data-resizing] .ade-home-widget-content > .kit-card {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.ade-home-cell[data-blocked] .ade-home-widget-content > .kit-card { outline-color: var(--kit-crit); }
+.ade-home-resize-badge {
+  position: absolute;
+  right: 26px;
+  bottom: 8px;
+  z-index: 4;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  color: var(--color-bg);
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.ade-home-cell[data-blocked] .ade-home-resize-badge { background: var(--kit-crit); }
+.ade-home-grid[data-resizing="true"] .ade-home-cell { transition: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .ade-home-grid[data-editing="true"] .ade-home-cell:not([data-resizing]) { transition: opacity 0.15s ease; }
+}
 
 /* A cell is one widget plus whatever is stacked under it: the host takes
    what the stack leaves, and a stacked card never grows past its rows. */
@@ -429,9 +489,7 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 
 .ade-home-pr-summary { flex-wrap: wrap; }
 
-/* Narrow: two columns (set by the grid), a lower row floor so the default
-   three rows still fit under the taller hero, and the hero stacks. */
-.ade-home[data-narrow="true"] .ade-home-grid { grid-template-rows: minmax(var(--home-row-min), 1.2fr); }
+/* Narrow: the hero stacks. */
 .ade-home[data-narrow="true"] .ade-home-hero { flex-direction: column; align-items: flex-start; gap: 10px; }
 
 /* Short windows: drop the eyebrow and tighten. */

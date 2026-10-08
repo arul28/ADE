@@ -1,4 +1,5 @@
-import { createContext, useContext } from "react";
+import { createContext, useContext, type ReactNode } from "react";
+import type { WidgetRenderContext } from "./HomeWidgetGrid";
 import type { HomePullRequests, RecentStats } from "../projects/ProjectWelcomeHome";
 import type { MachineRow } from "../projects/ProjectWelcomeSidePanels";
 import type { PinnedProjectRef } from "./homeFeed";
@@ -25,6 +26,9 @@ export type HomeData = {
 };
 
 export const HomeDataContext = createContext<HomeData | null>(null);
+
+/** How the page renders a widget; the Add widget gallery uses it for live previews. */
+export const HomeRenderWidgetContext = createContext<((ctx: WidgetRenderContext) => ReactNode) | null>(null);
 
 export function useHomeData(): HomeData {
   const data = useContext(HomeDataContext);

@@ -4,6 +4,7 @@ import type { HomeClipboardState } from "../../../../shared/types/homeWidgets";
 import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
 import { showToast } from "../../app/toast/toastStore";
 import { useHomeLayoutStore } from "../homeLayout";
+import { useWidgetPreview } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { relativeTimeShort } from "./widgetHooks";
 import "../homeWidgets.css";
@@ -48,7 +49,9 @@ function useClipboardState(paused: boolean): { state: HomeClipboardState | null;
 }
 
 export default function ClipboardWidget({ item }: HomeWidgetProps) {
-  const paused = item.settings?.paused === true;
+  // A gallery preview shows the history but never switches the watch on.
+  const preview = useWidgetPreview();
+  const paused = item.settings?.paused === true || preview;
   const { state, error } = useClipboardState(paused);
   const bridge = window.ade?.home?.clipboard;
   const updateSettings = useHomeLayoutStore((s) => s.updateSettings);

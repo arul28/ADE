@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { sizeClass } from "./homeGridPack";
 
 /**
  * The home page's widget layout: which widgets, in what order, at what size,
@@ -48,7 +49,11 @@ export const HOME_WIDGET_SIZES: readonly HomeWidgetSize[] = ["s", "m", "l", "w"]
 export type HomeLayoutItem = {
   id: string;
   type: HomeWidgetType;
+  /** The nearest size preset (what older builds read). */
   size: HomeWidgetSize;
+  /** Span in grid cells, when resized freely; absent means the size preset's span. */
+  w?: number;
+  h?: number;
   /** Shares the previous widget's cell, below it (Working now under Projects). */
   stacked?: boolean;
   /** Widget-owned options (a weather place, a timer length). */
@@ -105,10 +110,14 @@ export function normalizeHomeLayout(value: unknown): HomeLayout {
     if (!id || !WIDGET_TYPES.has(type) || seen.has(id)) continue;
     seen.add(id);
     const size = HOME_WIDGET_SIZES.includes(item.size as HomeWidgetSize) ? (item.size as HomeWidgetSize) : "s";
+    const cells = (value: unknown) => (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 6 ? value : null);
+    const w = cells(item.w);
+    const h = cells(item.h);
     items.push({
       id,
       type,
       size,
+      ...(w != null && h != null ? { w, h } : {}),
       ...(item.stacked === true && items.length > 0 ? { stacked: true } : {}),
       ...(item.settings && typeof item.settings === "object" ? { settings: item.settings as Record<string, unknown> } : {}),
     });
@@ -270,6 +279,12 @@ function uniqueName(name: string, presets: readonly HomeLayoutPreset[], exceptId
   }
 }
 
+export type HomeAddOptions = {
+  span?: { w: number; h: number };
+  replaceId?: string;
+  shrink?: ReadonlyArray<{ id: string; w: number; h: number }>;
+};
+
 type HomeLayoutStore = {
   /** The active preset's layout: what the page shows. */
   layout: HomeLayout;
@@ -280,8 +295,14 @@ type HomeLayoutStore = {
   moveCell: (fromId: string, toId: string, side: "before" | "after") => void;
   nudgeCell: (id: string, delta: -1 | 1) => void;
   resize: (id: string, size: HomeWidgetSize) => void;
+  /** Free resize, in grid cells (already clamped by the caller). */
+  resizeTo: (id: string, w: number, h: number) => void;
   remove: (id: string) => void;
-  add: (type: HomeWidgetType, size: HomeWidgetSize) => string;
+  /**
+   * Adds a widget at the end, or in place of `replaceId`. `shrink` resizes
+   * other widgets first (the gallery's "make room"), in the same commit.
+   */
+  add: (type: HomeWidgetType, size: HomeWidgetSize, options?: HomeAddOptions) => string;
   setStacked: (id: string, stacked: boolean) => void;
   updateSettings: (id: string, patch: Record<string, unknown>) => void;
   setAppearance: (patch: Partial<HomeAppearance>) => void;
@@ -318,7 +339,12 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
     setEditing: (editing) => set({ editing }),
     moveCell: (fromId, toId, side) => withItems(moveCell(get().layout.items, fromId, toId, side)),
     nudgeCell: (id, delta) => withItems(nudgeCell(get().layout.items, id, delta)),
-    resize: (id, size) => withItems(get().layout.items.map((item) => (item.id === id ? { ...item, size } : item))),
+    resize: (id, size) => withItems(get().layout.items.map((item) => {
+      if (item.id !== id) return item;
+      const { w: _w, h: _h, ...rest } = item;
+      return { ...rest, size };
+    })),
+    resizeTo: (id, w, h) => withItems(get().layout.items.map((item) => (item.id === id ? { ...item, w, h, size: sizeClass(w, h) } : item))),
     remove: (id) => {
       const items = get().layout.items;
       const index = items.findIndex((item) => item.id === id);
@@ -332,9 +358,24 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
       }
       withItems(next);
     },
-    add: (type, size) => {
+    add: (type, size, options) => {
       const id = newItemId(type);
-      withItems([...get().layout.items, { id, type, size }]);
+      const span = options?.span;
+      const added: HomeLayoutItem = span ? { id, type, size: sizeClass(span.w, span.h), w: span.w, h: span.h } : { id, type, size };
+      let items = get().layout.items.map((item) => {
+        const shrink = options?.shrink?.find((entry) => entry.id === item.id);
+        return shrink ? { ...item, w: shrink.w, h: shrink.h, size: sizeClass(shrink.w, shrink.h) } : item;
+      });
+      const replaceAt = options?.replaceId ? items.findIndex((item) => item.id === options.replaceId) : -1;
+      if (replaceAt >= 0) {
+        const replaced = items[replaceAt]!;
+        items = items.filter((item) => item.id !== replaced.id);
+        // The new widget takes the replaced one's place; its stack stays under it.
+        items.splice(replaceAt, 0, replaced.stacked ? { ...added, stacked: true } : added);
+      } else {
+        items = [...items, added];
+      }
+      withItems(items);
       return id;
     },
     setStacked: (id, stacked) => {
@@ -387,14 +428,6 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
     },
   };
 });
-
-/** Grid span for a size: columns × rows, clamped to the grid's width. */
-export function sizeSpan(size: HomeWidgetSize, columns: number, narrow: boolean): { cols: number; rows: number } {
-  const base = size === "s" ? { cols: 1, rows: 1 } : size === "m" ? { cols: 1, rows: 2 } : size === "w" ? { cols: 2, rows: 1 } : { cols: 2, rows: 2 };
-  // Two columns: a tall widget lies down across the top, as the narrow page always did.
-  if (narrow && size === "m") return { cols: Math.min(2, columns), rows: 1 };
-  return { cols: Math.min(base.cols, columns), rows: base.rows };
-}
 
 /**
  * The clipboard watch in main runs only while a Clipboard widget is on the

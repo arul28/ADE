@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowCounterClockwise, CaretDown, Check, Drop, FloppyDisk, PencilSimple, Plus, SquaresFour, Trash } from "@phosphor-icons/react";
-import { Dialog, confirmDialog, promptDialog } from "../ui/dialog";
+import { confirmDialog, promptDialog } from "../ui/dialog";
 import { Z_LAYERS } from "../ui/zLayers";
 import { useAppStore } from "../../state/appStore";
 import { projectSidebarShortcutLabel } from "../app/projectSidebar/projectSidebarTabs";
-import { HOME_LAYOUT_KEYBINDING, useHomeLayoutStore, type HomeWidgetSize, type HomeWidgetType } from "./homeLayout";
-import { HOME_GALLERY_ORDER, HOME_SIZE_LABEL, HOME_WIDGET_CATALOG } from "./homeWidgetCatalog";
+import { HOME_LAYOUT_KEYBINDING, useHomeLayoutStore } from "./homeLayout";
 import "./homeWidgets.css";
+
+const HomeWidgetPicker = lazy(() => import("./HomeWidgetPicker"));
 
 /**
  * Edit mode's toolbar, shown in place of the hero actions: add a widget, set
@@ -25,9 +26,7 @@ function themeCardDefaults(): { opacity: number; blur: number } {
 
 function AppearancePopover({ onClose }: { onClose: () => void }) {
   const appearance = useHomeLayoutStore((s) => s.layout.appearance);
-  const columns = useHomeLayoutStore((s) => s.layout.columns);
   const setAppearance = useHomeLayoutStore((s) => s.setAppearance);
-  const setColumns = useHomeLayoutStore((s) => s.setColumns);
   const defaults = useMemo(themeCardDefaults, []);
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -76,16 +75,6 @@ function AppearancePopover({ onClose }: { onClose: () => void }) {
         />
         <output className="kit-num">{blur}px</output>
       </label>
-      <div className="ade-home-look-row">
-        <span>Columns</span>
-        <div className="kit-seg" role="radiogroup" aria-label="Columns">
-          {([3, 4] as const).map((count) => (
-            <button key={count} type="button" role="radio" aria-checked={columns === count} onClick={() => setColumns(count)}>
-              {count}
-            </button>
-          ))}
-        </div>
-      </div>
       <div className="ade-home-look-foot">
         <span>Only this page. Your theme and wallpaper stay as they are.</span>
         <button
@@ -208,58 +197,6 @@ function LayoutsPopover({ onClose }: { onClose: () => void }) {
   );
 }
 
-function WidgetGallery({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const items = useHomeLayoutStore((s) => s.layout.items);
-  const add = useHomeLayoutStore((s) => s.add);
-  const onPage = new Set(items.map((item) => item.type));
-  const [justAdded, setJustAdded] = useState<HomeWidgetType | null>(null);
-  const desktop = Boolean(window.ade?.home);
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange} title="Add a widget" description="Widgets join the end of your page. Drag them where you want them." size="lg">
-      <div className="ade-home-gallery">
-        {HOME_GALLERY_ORDER.map((type) => {
-          const meta = HOME_WIDGET_CATALOG[type];
-          const Icon = meta.icon;
-          const present = onPage.has(type);
-          const unavailable = meta.comingSoon ?? (meta.desktopOnly && !desktop ? "Needs the ADE desktop app." : null);
-          const sizes = (["s", "m", "l", "w"] as HomeWidgetSize[]).filter((size) => meta.sizes.includes(size));
-          return (
-            <button
-              key={type}
-              type="button"
-              className="ade-home-gallery-tile"
-              data-present={present || undefined}
-              disabled={Boolean(unavailable) || present}
-              onClick={() => {
-                add(type, meta.defaultSize);
-                setJustAdded(type);
-              }}
-            >
-              <span className="ade-home-gallery-icon"><Icon size={18} /></span>
-              <span className="ade-home-gallery-text">
-                <span className="ade-home-gallery-title">{meta.title}</span>
-                <span className="ade-home-gallery-desc">{unavailable ?? meta.description}</span>
-                <span className="ade-home-gallery-sizes">
-                  {sizes.map((size) => (
-                    <i key={size} title={HOME_SIZE_LABEL[size].long} data-default={size === meta.defaultSize || undefined}>{HOME_SIZE_LABEL[size].short}</i>
-                  ))}
-                </span>
-              </span>
-              <span className="ade-home-gallery-state">
-                {present ? (
-                  <><Check size={12} weight="bold" /> {justAdded === type ? "Added" : "On your page"}</>
-                ) : unavailable ? null : (
-                  <><Plus size={12} weight="bold" /> Add</>
-                )}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </Dialog>
-  );
-}
-
 export default function HomeEditTools({ onDone }: { onDone: () => void }) {
   const reset = useHomeLayoutStore((s) => s.reset);
   const activeName = useHomeLayoutStore((s) => s.presets.find((preset) => preset.id === s.activeId)?.name ?? "Default");
@@ -327,7 +264,11 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
         <Check size={14} weight="bold" aria-hidden />
         <span className="ade-home-action-label">Done</span>
       </button>
-      <WidgetGallery open={galleryOpen} onOpenChange={setGalleryOpen} />
+      {galleryOpen ? (
+        <Suspense fallback={null}>
+          <HomeWidgetPicker open={galleryOpen} onOpenChange={setGalleryOpen} />
+        </Suspense>
+      ) : null}
     </div>
   );
 }

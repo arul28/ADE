@@ -56,8 +56,9 @@ import {
   useRecentStats,
 } from "./ProjectWelcomeHome";
 import { HomeWidgetGrid, type WidgetRenderContext } from "../home/HomeWidgetGrid";
+import { gridMetrics } from "../home/homeGridPack";
 import { LazyHomeWidget } from "../home/homeWidgetRegistry";
-import { HomeDataContext, type HomeData } from "../home/homeData";
+import { HomeDataContext, HomeRenderWidgetContext, type HomeData } from "../home/homeData";
 import { HOME_LAYOUT_KEYBINDING, useHomeLayoutStore } from "../home/homeLayout";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { buildHomeHeadline, type HomeHeadline } from "../home/homeHeadline";
@@ -152,6 +153,9 @@ export function ProjectWelcomePage() {
   // The side column folds into a tabbed strip when the page itself is narrow
   // (the page can sit in a pane, so this is the page's width, not the window's).
   const [narrow, setNarrow] = useState(false);
+  // The grid's width: as many columns as the page holds (homeGridPack), so
+  // the hero lines up with the grid at every window size.
+  const [gridWidth, setGridWidth] = useState<number | null>(null);
   useEffect(() => {
     // Measure the page, not the body: the body narrows itself in the
     // one-column layout, which would latch this state on.
@@ -160,6 +164,7 @@ export function ProjectWelcomePage() {
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width ?? element.clientWidth;
       setNarrow(width < 880);
+      setGridWidth(gridMetrics(Math.max(0, width - 40), 0).width);
     });
     observer.observe(element);
     return () => observer.disconnect();
@@ -750,7 +755,7 @@ export function ProjectWelcomePage() {
     }
     return Object.keys(style).length > 0 ? (style as CSSProperties) : undefined;
   }, [homeAppearance.cardBlur, homeAppearance.cardOpacity]);
-  const projectsCard = (
+  const projectsCard = (preview = false) => (
     <section className="kit-card ade-home-card ade-home-projects" aria-label="Recent projects">
       <WelcomeCardHead
         icon={FolderSimple}
@@ -760,7 +765,7 @@ export function ProjectWelcomePage() {
       {hasProjects ? (
         <div
           id="ade-welcome-project-list"
-          ref={listRef}
+          ref={preview ? undefined : listRef}
           className="kit-card-body ade-welcome-list ade-home-scroll"
           data-flush="true"
           onKeyDown={handleListKeyDown}
@@ -837,10 +842,10 @@ export function ProjectWelcomePage() {
     </section>
   );
 
-  const renderWidget = ({ item, stacked, editing }: WidgetRenderContext) => {
+  const renderWidget = ({ item, stacked, editing, preview }: WidgetRenderContext) => {
     switch (item.type) {
       case "projects":
-        return projectsCard;
+        return projectsCard(preview);
       case "running":
         return <RunningCard stacked={stacked && !editing} onOpenActivity={() => navigate("/activity")} />;
       case "activity":
@@ -973,7 +978,14 @@ export function ProjectWelcomePage() {
         </div>
       ) : null}
 
-      <div className="ade-home" data-narrow={narrow ? "true" : undefined} data-editing={editingHome ? "true" : undefined}>
+      <HomeDataContext.Provider value={homeData}>
+      <HomeRenderWidgetContext.Provider value={renderWidget}>
+      <div
+        className="ade-home"
+        data-narrow={narrow ? "true" : undefined}
+        data-editing={editingHome ? "true" : undefined}
+        style={gridWidth ? ({ "--welcome-grid-max": `${gridWidth}px` } as CSSProperties) : undefined}
+      >
         <WelcomeHero
           headline={headline}
           onHeadline={openHeadlineTarget}
@@ -1056,15 +1068,14 @@ export function ProjectWelcomePage() {
         ) : null}
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
 
-        <HomeDataContext.Provider value={homeData}>
-          <HomeWidgetGrid
-            narrow={narrow}
-            single={!showSide}
-            style={appearanceStyle}
-            renderWidget={renderWidget}
-          />
-        </HomeDataContext.Provider>
+        <HomeWidgetGrid
+          single={!showSide}
+          style={appearanceStyle}
+          renderWidget={renderWidget}
+        />
       </div>
+      </HomeRenderWidgetContext.Provider>
+      </HomeDataContext.Provider>
 
       {backgroundMenu.menu}
       <ContextMenu
