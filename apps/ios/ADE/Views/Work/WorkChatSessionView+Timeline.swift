@@ -173,21 +173,15 @@ extension WorkChatSessionView {
       timelineToolGroup(group, entryId: entry.id)
     case .changedFiles(let group):
       timelineChangedFiles(group, entryId: entry.id)
-    case .artifact(let artifact):
-      timelineArtifact(artifact, entryId: entry.id)
+    case .proof(let artifacts):
+      timelineProof(artifacts)
     case .turnEndMarker(let marker):
-      let proofId = workTurnProofExpansionId(turnId: marker.turnId)
-      let proofOpen = cardIsExpanded(proofId, entryId: entry.id)
       WorkTurnEndMarkerView(
         marker: marker,
         work: marker.workSummaryInFold ? .none : turnWorkDisclosure(turnKey: marker.turnId),
         onToggleWork: { toggleTurnWork($0, turnKey: marker.turnId) },
         onToggleWorkItem: { toggleTurnWorkItem($0, turnKey: marker.turnId) },
-        proofOpen: proofOpen,
-        onToggleProof: { toggleNestedCard(proofId) },
-        proofContent: proofOpen ? artifactContent : [:],
-        onLoadProof: { artifact in Task { await onLoadArtifact(artifact, .preview) } },
-        onOpenProofDrawer: { artifactDrawerPresented = true }
+        onOpenProof: { openProofDrawer(.turn(marker.proofArtifacts)) }
       )
     case .turnFold(let model):
       let activityKey = model.turnEndTurnId ?? model.turnId
@@ -195,7 +189,8 @@ extension WorkChatSessionView {
         model: model,
         work: model.isExpanded ? turnWorkDisclosure(turnKey: activityKey) : .none,
         onToggleWork: { toggleTurnWork($0, turnKey: activityKey) },
-        onToggleWorkItem: { toggleTurnWorkItem($0, turnKey: activityKey) }
+        onToggleWorkItem: { toggleTurnWorkItem($0, turnKey: activityKey) },
+        onOpenProof: { openProofDrawer(WorkProofDrawerFocus(label: "This turn", artifactIds: model.proofArtifactIds)) }
       ) {
         toggleCard(model.id, entryId: entry.id)
       }
@@ -298,11 +293,8 @@ extension WorkChatSessionView {
   func timelineToolGroup(_ group: WorkToolGroupModel, entryId: String) -> some View {
     if !group.computerUseActions.isEmpty {
       WorkComputerUseRunView(
-        groupId: group.id,
         actions: group.computerUseActions,
-        compactAll: group.computerUseCompact,
-        expandedIds: cardExpansion.expandedIds,
-        onToggle: { id in toggleNestedCard(id) }
+        compactAll: group.computerUseCompact
       )
     } else {
       toolCallsPanel(group, entryId: entryId)
@@ -416,19 +408,21 @@ extension WorkChatSessionView {
     return card.id == frame?.latestReasoningCardId
   }
 
-  @ViewBuilder
-  func timelineArtifact(_ artifact: ComputerUseArtifactSummary, entryId: String) -> some View {
-    WorkArtifactView(
-      artifact: artifact,
-      content: artifactContent[artifact.id],
-      isExpanded: cardIsExpanded(artifact.id, entryId: entryId),
-      onToggle: { toggleCard(artifact.id, entryId: entryId) },
-      onAppear: { Task { await onLoadArtifact(artifact, .preview) } },
-      onPlay: { Task { await onLoadArtifact(artifact, .play) } },
-      onOpenImage: { image in
-        fullscreenImage = WorkFullscreenImage(title: artifact.title, image: image)
-      }
-    )
+  /// Proof filed mid-turn, as one quiet count line (desktop's inline
+  /// `ChatProofCount`). The pictures live on the rows that filed them and in
+  /// the drawer, which the line opens narrowed to these records.
+  func timelineProof(_ artifacts: [ComputerUseArtifactSummary]) -> some View {
+    HStack(spacing: 0) {
+      WorkProofCountLink(count: artifacts.count, onOpen: { openProofDrawer(.turn(artifacts)) })
+      Spacer(minLength: 0)
+    }
+  }
+
+  /// Opens the proof drawer, narrowed to `focus` when a thread link names the
+  /// records it counted. Dismissing the drawer clears the focus.
+  func openProofDrawer(_ focus: WorkProofDrawerFocus? = nil) {
+    proofDrawerFocus = focus
+    artifactDrawerPresented = true
   }
 }
 

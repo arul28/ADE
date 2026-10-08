@@ -3,11 +3,14 @@
  *
  * An agent drives a screen through its shell tool (`ade screen click …`,
  * `ade browser fill …`). Those calls used to show only in the tools list as
- * shell commands. Here each one becomes a sentence — "Clicked “Checkout” on
- * localhost:5173" — in a quiet run of rows on one grid: [app icon] [text]
- * [status]. The latest action of a run is drawn in full (bigger icon, surface
- * line, failure reason); earlier ones are one muted line with a status dot,
- * and consecutive confirmed actions in one app fold into "Notes · 4 actions".
+ * shell commands. Here each one becomes a sentence naming what it acted on —
+ * "Clicked “Checkout” on localhost:5173", "Pressed “Escape” in ADE" — in a
+ * quiet run of rows on one grid: [action icon] [text] [status]. The latest
+ * action of a run is drawn in full (bigger icon, failure reason); earlier ones
+ * are one muted line with a status dot. Identical actions in a row merge into
+ * one line with a count ("Looked at ADE ×3"). A filed proof shows its picture
+ * small under its line; a click enlarges it in place. No row opens: the line
+ * is all there is to say.
  *
  * The words come from `shared/computerUseActionSummary.ts` and
  * `shared/computerUseActionPresentation.ts`, which the iOS app mirrors; which
@@ -15,14 +18,13 @@
  * `chatComputerUseRows.ts`. Every shell command the parser cannot describe
  * keeps its plain shell row.
  */
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   AppWindow,
   AppleLogo,
   ArrowsDownUp,
   Browser,
   Camera,
-  CaretRight,
   CheckCircle,
   CursorClick,
   DeviceMobile,
@@ -45,14 +47,15 @@ import {
   computerUseActionParts,
   computerUseActionText,
   computerUseOutcomeNote,
-  computerUseSurfaceLabel,
+  computerUseShownProofIds,
   layoutComputerUseRun,
   type ComputerUseSurfaceGlyph,
 } from "../../../shared/computerUseActionPresentation";
 import type { ComputerUseActionOutcome, ComputerUseActionSummary } from "../../../shared/computerUseActionSummary";
 import type { InstalledBrowser } from "../../../shared/browserTargets";
 import { cn } from "../ui/cn";
-import { collectComputerUseActions } from "./chatComputerUseRows";
+import { collectComputerUseActions, PROOF_THUMBNAIL_HEIGHT } from "./chatComputerUseRows";
+import { ProofActionThumbnail } from "./ChatProofCitation";
 import type { ChatWorkLogEntry } from "./chatTranscriptRows";
 
 /* ── App icons ───────────────────────────────────────────────────────────── */
@@ -268,7 +271,7 @@ function actionGlyph(summary: ComputerUseActionSummary): Icon {
   }
 }
 
-/** The "using" icon: the device for an Apple row, else the surface's glyph. */
+/** The surface's icon: the device for an Apple row, else the surface's glyph. */
 function UsingGlyph({ summary, glyph, size }: { summary: ComputerUseActionSummary; glyph: ComputerUseSurfaceGlyph; size: number }) {
   if (glyph === "apple") {
     return (
@@ -286,9 +289,9 @@ function UsingGlyph({ summary, glyph, size }: { summary: ComputerUseActionSummar
 }
 
 /**
- * The action as one line: "Clicked “Save” in [icon] TextEdit using [icon] Mac
- * Desktop". A running action shimmers word by word; its icons stay solid, so
- * the sweep never hides them.
+ * The action as one line: "Clicked “Save” in [icon] TextEdit", "Pressed
+ * “Escape” on [icon] Mac Desktop". A running action shimmers word by word; its
+ * icons stay solid, so the sweep never hides them.
  */
 function ActionLine({ summary, emphasize }: { summary: ComputerUseActionSummary; emphasize: boolean }) {
   const parts = computerUseActionParts(summary);
@@ -339,7 +342,7 @@ function ActionLine({ summary, emphasize }: { summary: ComputerUseActionSummary;
       {parts.using ? (
         <>
           {" "}
-          {words("using", emphasize ? "text-muted-fg" : undefined)}{" "}
+          {words(parts.using.preposition, emphasize ? "text-muted-fg" : undefined)}{" "}
           <span
             className={cn(
               "inline-flex items-baseline gap-1 align-baseline",
@@ -398,17 +401,44 @@ function ActionGlyph({ summary, emphasize }: { summary: ComputerUseActionSummary
   );
 }
 
+/** "×3": how many identical actions one line stands for. */
+function RepeatCount({ count }: { count: number }) {
+  if (count < 2) return null;
+  return (
+    <span className="ml-1.5 shrink-0 tabular-nums text-muted-fg" aria-label={`${count} times`}>
+      ×{count}
+    </span>
+  );
+}
+
+/**
+ * The pictures a filed-proof line filed, small, under the line. They start at
+ * the row's left edge, where the thread's text starts, not under the words.
+ */
+function ProofThumbnails({ summary }: { summary: ComputerUseActionSummary }) {
+  const ids = computerUseShownProofIds(summary);
+  if (!ids.length) return null;
+  return (
+    <span className="col-start-1 col-end-4 mb-1 mt-1 flex min-w-0 gap-1.5" data-testid="computer-use-proof-thumbnails">
+      {ids.map((id) => <ProofActionThumbnail key={id} artifactId={id} height={PROOF_THUMBNAIL_HEIGHT} />)}
+    </span>
+  );
+}
+
 /** The newest action: the full line, its status, and what went wrong. */
-function FullActionRow({ summary, nested = false }: { summary: ComputerUseActionSummary; nested?: boolean }) {
+function FullActionRow({ summary, count }: { summary: ComputerUseActionSummary; count: number }) {
   const note = computerUseOutcomeNote(summary);
   return (
     <div
-      className={cn(ROW_GRID, nested ? "py-0.5" : "py-1")}
+      className={cn(ROW_GRID, "py-1")}
       data-testid="computer-use-action-full"
       data-outcome={summary.outcome}
     >
       <ActionGlyph summary={summary} emphasize />
-      <ActionLine summary={summary} emphasize />
+      <span className="inline-flex min-w-0 items-center text-[length:calc(var(--chat-font-size)*12/14)]">
+        <ActionLine summary={summary} emphasize />
+        <RepeatCount count={count} />
+      </span>
       <StatusIcon summary={summary} />
       {note ? (
         <span
@@ -421,99 +451,22 @@ function FullActionRow({ summary, nested = false }: { summary: ComputerUseAction
           {note.text}
         </span>
       ) : null}
+      <ProofThumbnails summary={summary} />
     </div>
   );
 }
 
-function CompactActionRow({ summary, interactive }: { summary: ComputerUseActionSummary; interactive: boolean }) {
-  const [open, setOpen] = useState(false);
-  const toggle = useCallback(() => setOpen((value) => !value), []);
-  const body = (
-    <>
+function CompactActionRow({ summary, count }: { summary: ComputerUseActionSummary; count: number }) {
+  return (
+    <div className={cn(ROW_GRID, "py-0.5")} data-testid="computer-use-action-compact">
       <ActionGlyph summary={summary} emphasize={false} />
-      <span className={cn("inline-flex min-w-0 items-center", interactive && "group-hover:[&>span]:text-fg")}>
+      <span className="inline-flex min-w-0 items-center text-[length:calc(var(--chat-font-size)*12/14)]">
         <ActionLine summary={summary} emphasize={false} />
-        {interactive ? (
-          <CaretRight
-            size={9}
-            weight="bold"
-            aria-hidden
-            className={cn("ml-1 shrink-0 text-muted-fg transition-transform", open && "rotate-90")}
-          />
-        ) : null}
+        <RepeatCount count={count} />
       </span>
       <Dot outcome={summary.outcome} />
-    </>
-  );
-  if (!interactive) {
-    return <div className={cn(ROW_GRID, "py-0.5")} data-testid="computer-use-action-compact">{body}</div>;
-  }
-  return (
-    <>
-      <button
-        type="button"
-        onClick={toggle}
-        aria-expanded={open}
-        className={cn(ROW_GRID, "group w-full py-0.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-accent/40")}
-        data-testid="computer-use-action-compact"
-      >
-        {body}
-      </button>
-      {open ? (
-        <div className="mb-1.5 ml-7 border-l border-border pl-3">
-          <FullActionRow summary={summary} nested />
-        </div>
-      ) : null}
-    </>
-  );
-}
-
-function AppFoldRow({
-  appName,
-  actions,
-}: {
-  appName: string;
-  actions: Array<{ action: ChatWorkLogEntry; summary: ComputerUseActionSummary }>;
-}) {
-  const [open, setOpen] = useState(false);
-  const first = actions[0]!.summary;
-  const using = computerUseSurfaceLabel(first);
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        className={cn(ROW_GRID, "group w-full py-0.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-accent/40")}
-        data-testid="computer-use-app-fold"
-      >
-        <ComputerUseAppIcon summary={first} size={14} />
-        <span className="inline-flex min-w-0 items-center text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-muted-fg group-hover:text-fg">
-          <span className="min-w-0 truncate">
-            {actions.length} actions in {appName}
-            <span className="text-muted-fg/80"> using </span>
-            <span className={cn("inline-flex items-baseline gap-1 align-baseline", using.warning && "text-warning")}>
-              <span className="self-center"><UsingGlyph summary={first} glyph={using.glyph} size={12} /></span>
-              {using.label}
-            </span>
-          </span>
-          <CaretRight
-            size={9}
-            weight="bold"
-            aria-hidden
-            className={cn("ml-1 shrink-0 text-muted-fg transition-transform", open && "rotate-90")}
-          />
-        </span>
-        <Dot outcome="observed" />
-      </button>
-      {open ? (
-        <div className="mb-1.5 ml-7 border-l border-border pl-3">
-          {actions.map(({ action, summary }) => (
-            <CompactActionRow key={action.id} summary={summary} interactive={false} />
-          ))}
-        </div>
-      ) : null}
-    </>
+      <ProofThumbnails summary={summary} />
+    </div>
   );
 }
 
@@ -536,16 +489,12 @@ export const ChatComputerUseActionRun = React.memo(function ChatComputerUseActio
       className="w-full min-w-0 max-w-[var(--chat-content-width,52rem)] font-sans"
       data-testid="computer-use-actions"
     >
-      {layout.earlier.map((item) =>
-        item.kind === "action" ? (
-          <CompactActionRow key={item.action.id} summary={item.summary} interactive />
-        ) : (
-          <AppFoldRow key={item.actions[0]!.action.id} appName={item.appName} actions={item.actions} />
-        ),
-      )}
+      {layout.earlier.map((line) => (
+        <CompactActionRow key={line.action.id} summary={line.summary} count={line.count} />
+      ))}
       {compactAll
-        ? <CompactActionRow summary={layout.latest.summary} interactive />
-        : <FullActionRow summary={layout.latest.summary} />}
+        ? <CompactActionRow summary={layout.latest.summary} count={layout.latest.count} />
+        : <FullActionRow summary={layout.latest.summary} count={layout.latest.count} />}
     </div>
   );
 });

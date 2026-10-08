@@ -35,6 +35,8 @@ export type ParsedOutput = {
   /** `target: …` (or JSON `userBrowserTarget`): "your Google Chrome on studio-mac". */
   userBrowserTarget: string | null;
   prNumber: number | null;
+  /** Proof ids the output named: `cite: ![…](ade-proof://<id>)`, or the JSON record. */
+  proofIds: string[];
 };
 
 export function readString(value: unknown): string | null {
@@ -109,6 +111,7 @@ export function parseOutput(output: string): ParsedOutput {
     attachedLine: null,
     userBrowserTarget: null,
     prNumber: null,
+    proofIds: [],
   };
   if (!output) return parsed;
   const lines = output.split(/\r?\n/);
@@ -167,6 +170,9 @@ export function parseOutput(output: string): ParsedOutput {
     if (kv && !parsed.values.has(kv[1]!)) parsed.values.set(kv[1]!, kv[2]!.trim());
   }
   if (parsed.values.get("ok") === "false") parsed.okFalse = true;
+  for (const match of output.matchAll(/ade-proof:\/{0,2}([\w-]+)/gi)) {
+    if (!parsed.proofIds.includes(match[1]!)) parsed.proofIds.push(match[1]!);
+  }
   const json = tryParseJson(output);
   if (json) {
     parsed.json = json;
@@ -190,6 +196,11 @@ export function parseOutput(output: string): ParsedOutput {
       parsed.attachedLine ??= readString(readRecord(json.attached)?.label) ?? "";
     }
     parsed.userBrowserTarget ??= readString(json.userBrowserTarget);
+    const records = [json, readRecord(json.artifact), ...(Array.isArray(json.artifacts) ? json.artifacts.map(readRecord) : [])];
+    for (const record of records) {
+      const id = readString(record?.proofArtifactId) ?? readString(record?.artifactId) ?? (record === json ? null : readString(record?.id));
+      if (id && !parsed.proofIds.includes(id)) parsed.proofIds.push(id);
+    }
   }
   return parsed;
 }

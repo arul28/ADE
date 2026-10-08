@@ -498,7 +498,6 @@ struct WorkChatScrollBenchScreen: View {
       switch open {
       case "tools": ids.insert(workTurnWorkExpansionId(.tools, turnKey: turnId))
       case "files": ids.insert(workTurnWorkExpansionId(.files, turnKey: turnId))
-      case "proof": ids.insert(workTurnProofExpansionId(turnId: turnId))
       default: break
       }
       cardExpansion = WorkCardExpansionState(expandedIds: ids)

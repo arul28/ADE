@@ -41,10 +41,10 @@ struct WorkComputerUseAction: Identifiable, Hashable {
   let past: String
   let progressive: String
   let infinitive: String
-  let target: String?
-  let targetQuoted: Bool
-  let place: WorkComputerUsePlace?
-  let appName: String?
+  var target: String?
+  var targetQuoted: Bool
+  var place: WorkComputerUsePlace?
+  var appName: String?
   let browserName: String?
   let hostLabel: String?
   var deviceName: String?
@@ -54,6 +54,11 @@ struct WorkComputerUseAction: Identifiable, Hashable {
   let outcome: WorkComputerUseOutcome
   let reason: String?
   let prNumber: Int?
+  /// Proof ids the output named: the record a capture or attach filed, or the
+  /// records a publish posted.
+  var proofIds: [String] = []
+  /// Set by the run layout: a later `proof publish` posted this record to that PR.
+  var postedToPr: Int? = nil
 }
 
 // MARK: - Regex helper
@@ -147,6 +152,10 @@ private struct CUInvocation {
   /// the exit code is another command's), `.and` after a `&&` (skipped when
   /// the command before it failed), nil otherwise.
   var conditional: CUShellConditional? = nil
+  /// What reached the transcript of its output: `.none` as printed, `.cite`
+  /// when only its `cite:` lines were kept (`| grep cite:`), `.other` when a
+  /// pipe or redirect cut or hid it.
+  var outputFilter: CUOutputFilter = .none
 
   func flag(_ names: String...) -> String? {
     for name in names {
@@ -163,10 +172,14 @@ private struct CUInvocation {
 
 private enum CUShellConditional { case or, and }
 
-/// One simple command and whether a `||` or `&&` makes it conditional.
+private enum CUOutputFilter { case none, cite, other }
+
+/// One simple command, whether a `||` or `&&` makes it conditional, and the
+/// command its output is piped into.
 private struct CUShellCommand {
   let tokens: [String]
   let conditional: CUShellConditional?
+  var pipedInto: [String]? = nil
 }
 
 private enum CUParseResult {
@@ -198,6 +211,7 @@ private func cuSplitShellCommands(_ source: String) -> [CUShellCommand] {
       let conditional: CUShellConditional? = before == "||" || after == "||"
         ? .or
         : before == "&&" ? .and : nil
+      if before == "|", !commands.isEmpty { commands[commands.count - 1].pipedInto = tokens }
       commands.append(CUShellCommand(tokens: tokens, conditional: conditional))
       tokens = []
       before = after
@@ -442,6 +456,8 @@ private struct CUOutput {
   /// `target: …` (or JSON `userBrowserTarget`): "your Google Chrome on studio-mac".
   var userBrowserTarget: String?
   var prNumber: Int?
+  /// Proof ids the output named: `cite: ![…](ade-proof://<id>)`, or the JSON record.
+  var proofIds: [String] = []
 }
 
 private func cuReadString(_ value: Any?) -> String? {
@@ -546,6 +562,13 @@ private func cuParseOutput(_ output: String) -> CUOutput {
     }
   }
   if parsed.values["ok"] == "false" { parsed.okFalse = true }
+  if let regex = WorkCURegexCache.shared.regex(#"ade-proof:/{0,2}([\w-]+)"#, [.caseInsensitive]) {
+    for match in regex.matches(in: output, range: NSRange(output.startIndex..., in: output)) {
+      if let range = Range(match.range(at: 1), in: output), !parsed.proofIds.contains(String(output[range])) {
+        parsed.proofIds.append(String(output[range]))
+      }
+    }
+  }
   if let json = cuParseJSON(output) {
     parsed.json = json
     let match = json["match"] as? [String: Any]
@@ -563,6 +586,12 @@ private func cuParseOutput(_ output: String) -> CUOutput {
       parsed.attachedLine = parsed.attachedLine ?? cuReadString((json["attached"] as? [String: Any])?["label"]) ?? ""
     }
     if parsed.userBrowserTarget == nil { parsed.userBrowserTarget = cuReadString(json["userBrowserTarget"]) }
+    let nested = [json["artifact"] as? [String: Any]] + ((json["artifacts"] as? [Any]) ?? []).map { $0 as? [String: Any] }
+    for (index, record) in ([json as [String: Any]?] + nested).enumerated() {
+      let id = cuReadString(record?["proofArtifactId"]) ?? cuReadString(record?["artifactId"])
+        ?? (index == 0 ? nil : cuReadString(record?["id"]))
+      if let id, !parsed.proofIds.contains(id) { parsed.proofIds.append(id) }
+    }
   }
   return parsed
 }
@@ -686,11 +715,23 @@ private func cuFindInvocations(_ source: String, depth: Int = 0) -> [CUInvocatio
     case .control: return nil
     case .invocation(var invocation):
       invocation.conditional = command.conditional
+      invocation.outputFilter = cuOutputFilter(command)
       found.append(invocation)
     case .none: break
     }
   }
   return found
+}
+
+/// Desktop `outputFilterOf`: stdout sent to a file (`>out`, `&>/dev/null`, not
+/// `2>&1`), or piped into a filter.
+private func cuOutputFilter(_ command: CUShellCommand) -> CUOutputFilter {
+  if command.tokens.contains(where: { cuTests(#"^(?:1|&)?>>?(?!&)"#, $0) }) { return .other }
+  guard let pipe = command.pipedInto else { return .none }
+  let head = cuBasename(pipe.first ?? "")
+  let keepsCites = ["grep", "egrep", "rg"].contains(head)
+    && pipe.dropFirst().contains(where: { !$0.hasPrefix("-") && cuTests("cite|ade-proof", $0, [.caseInsensitive]) })
+  return keepsCites ? .cite : .other
 }
 
 /// The less certain of two: `.or` over `.and` over unconditional.
@@ -795,8 +836,10 @@ private func cuDescribeTarget(spec: CUVerbSpec, verbKey: String, invocation: CUI
     shape.target = parsed.hitName ?? elementFlag
   case .app:
     var target: String?
+    // `app-control launch` takes a shell command (`npm run dev`), which is no
+    // name for the app: it reads as its label or window title, or none.
     if verbKey == "launch", invocation.domain == "app-control" {
-      target = invocation.flag("--command", "--app") ?? invocation.positionals.joined(separator: " ")
+      return CUTargetShape(target: invocation.flag("--label", "--name") ?? appName, quoted: false, direction: nil, point: false)
     } else {
       target = invocation.positionals.first ?? invocation.flag("--app", "--bundle-id") ?? appName
     }
@@ -846,19 +889,35 @@ private func cuBuildSummary(invocations: [CUInvocation], output: String, status:
   // which a failed call cannot tell apart from the action failing. Either way
   // the row would state something the call does not show: keep the shell row.
   if invocation.conditional == .or || (invocation.conditional == .and && commandFailed) { return nil }
-  let outcome: WorkComputerUseOutcome
+  var outcome: WorkComputerUseOutcome
   if commandFailed { outcome = .failed }
   else if status == "running", parsed.effect == nil { outcome = .running }
   else if parsed.effect == "observed" { outcome = .observed }
   else if parsed.effect == "unconfirmed" || parsed.effect == "waiting" { outcome = .unconfirmed }
   else { outcome = .notChecked }
+  // A filed proof prints its id. A call that exits 0 without one did not file
+  // it: the exit code can be a later command's in the same call. No output at
+  // all says nothing either way (the transcript may not have carried it).
+  let filesProof = cuFilesProof.contains(verbKey)
+  var missingProof: String?
+  let sawOutput = !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || invocation.outputFilter == .cite
+  if filesProof, sawOutput, outcome != .failed, outcome != .running, parsed.proofIds.isEmpty {
+    if invocation.outputFilter == .other {
+      outcome = .unconfirmed
+      missingProof = "Its output was cut off, so ADE could not see the proof filed."
+    } else {
+      outcome = .failed
+      missingProof = "No proof was filed."
+    }
+  }
   var reason: String?
   if outcome == .failed {
     reason = parsed.errorMessage
       ?? (parsed.okFalse ? (parsed.values["message"] ?? cuReadString(json?["message"])) : nil)
       ?? (status == "interrupted" ? "Stopped before it finished." : nil)
+      ?? missingProof
   } else if outcome == .unconfirmed {
-    reason = parsed.effectReason
+    reason = missingProof ?? parsed.effectReason
   }
 
   // Surface and browser.
@@ -938,9 +997,18 @@ private func cuBuildSummary(invocations: [CUInvocation], output: String, status:
   }
 
   var prNumber: Int?
+  var proofIds: [String] = []
   if verbKey.hasPrefix("proof") {
     prNumber = parsed.prNumber ?? invocation.flag("--pr").flatMap { value in
       (cuMatch(#"(\d+)\s*$"#, value)?[1] ?? nil).flatMap { Int($0) }
+    }
+    // A publish names the records it posts; anything else, the one it filed.
+    if verbKey == "proof publish" {
+      for id in invocation.positionals.filter({ cuTests(cuProofIdPattern, $0) }) + parsed.proofIds where !proofIds.contains(id) {
+        proofIds.append(id)
+      }
+    } else if filesProof {
+      proofIds = parsed.proofIds
     }
   }
   return WorkComputerUseAction(
@@ -963,6 +1031,13 @@ private func cuBuildSummary(invocations: [CUInvocation], output: String, status:
       : (invocation.alias.hasPrefix("mac") || invocation.alias.hasPrefix("desk")) ? "mac" : nil,
     outcome: outcome,
     reason: reason.flatMap { $0.isEmpty ? nil : cuClip($0, 240) },
-    prNumber: prNumber
+    prNumber: prNumber,
+    proofIds: proofIds
   )
 }
+
+/// Verbs that file one proof record and print its id.
+private let cuFilesProof: Set<String> = ["proof", "proof capture", "proof attach"]
+
+/// A proof record id as `proof publish` takes it.
+private let cuProofIdPattern = #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"#

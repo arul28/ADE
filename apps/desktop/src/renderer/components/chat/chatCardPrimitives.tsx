@@ -6,15 +6,10 @@ import {
   Cube,
   Prohibit,
   SpinnerGap,
-  VideoCamera,
-  WarningCircle,
   XCircle,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
-import type { ComputerUseArtifactView } from "../../../shared/types";
-import { isImageArtifact, isVideoArtifact, useArtifactPreview } from "./useArtifactPreview";
-import { ProofVideoPoster } from "./ProofVideoPoster";
 
 /**
  * The chat transcript's card primitives.
@@ -376,192 +371,35 @@ export function ChatTurnRule({ label, children }: { label?: React.ReactNode; chi
 /* ── Proof ──────────────────────────────────────────────────────────────── */
 
 /**
- * Collapsible proof filmstrip: a `▣ Proof · N` head plus a horizontally
- * scrollable thumbnail strip. Rendered inline at the point of capture — proof
- * is a chronological transcript row, not a thread footer.
- *
- * Exported for the proof drawer to reuse. An image tile resolves from the
- * image `src` each caller supplies; a video tile resolves through the same
- * runtime preview the drawer uses, because a recording is not an `<img>`. Every
- * non-image tile the caller cannot supply a picture for falls back to its kind
- * label rather than a broken image.
+ * Proof in the thread is a count, not a strip of pictures: "3 proof filed ›".
+ * The pictures live on the rows that filed them and in the proof drawer, which
+ * this opens narrowed to the same records. `compact` drops the word for a line
+ * that has little room (the turn fold), so the count never wraps.
  */
-export function ChatProofFilmstrip({
-  artifacts,
-  title = "Proof",
-  defaultOpen = true,
-  onOpenAll,
-  onOpenArtifact,
-  resolveThumbnailSrc,
-  allowLocalArtifactProtocol = false,
-}: {
-  artifacts: ComputerUseArtifactView[];
-  title?: string;
-  defaultOpen?: boolean;
-  onOpenAll?: () => void;
-  onOpenArtifact?: (artifact: ComputerUseArtifactView) => void;
-  /** Returns a renderable image URL, or null when the artifact has no picture. */
-  resolveThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
-  /** Local proof can stream through the artifact protocol and media server. */
-  allowLocalArtifactProtocol?: boolean;
-}) {
-  const [open, setOpen] = React.useState(defaultOpen);
-  if (!artifacts.length) return null;
-
-  return (
-    <ChatCard skin="inset" data-chat-proof-filmstrip="">
-      <ChatCardRow
-        icon={Cube}
-        tone="neutral"
-        action={onOpenAll ? <ChatCardAction onClick={onOpenAll}>open all</ChatCardAction> : null}
-      >
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
-          className="min-w-0 text-left"
-        >
-          <ChatCardTitle>
-            {title} <ChatCardFaint>· {artifacts.length}</ChatCardFaint>
-          </ChatCardTitle>
-        </button>
-      </ChatCardRow>
-      {open ? (
-        <div className="mt-2.5 flex gap-1.5 overflow-x-auto">
-          {artifacts.map((artifact) => {
-            const broken = artifact.availability != null && artifact.availability !== "available";
-            if (!broken && isVideoArtifact(artifact)) {
-              return (
-                <ProofFilmstripPreviewTile
-                  key={artifact.id}
-                  artifact={artifact}
-                  media="video"
-                  allowLocalArtifactProtocol={allowLocalArtifactProtocol}
-                  onOpen={onOpenArtifact}
-                />
-              );
-            }
-            const src = broken || !isImageArtifact(artifact) ? null : (resolveThumbnailSrc?.(artifact) ?? null);
-            if (!broken && !src && isImageArtifact(artifact)) {
-              return (
-                <ProofFilmstripPreviewTile
-                  key={artifact.id}
-                  artifact={artifact}
-                  media="image"
-                  allowLocalArtifactProtocol={allowLocalArtifactProtocol}
-                  onOpen={onOpenArtifact}
-                />
-              );
-            }
-            return (
-              <button
-                key={artifact.id}
-                type="button"
-                title={artifact.title || artifact.uri || artifact.id}
-                onClick={() => onOpenArtifact?.(artifact)}
-                data-chat-proof-broken={broken ? "true" : undefined}
-                className={cn(
-                  "w-24 shrink-0 overflow-hidden rounded-[7px] border bg-black/25 transition-colors",
-                  broken
-                    ? "border-amber-200/[0.16] bg-amber-300/[0.04] hover:border-amber-200/30"
-                    : "border-fg/[0.07] hover:border-fg/[0.16]",
-                )}
-              >
-                {src ? (
-                  <img src={src} alt={artifact.title || "Proof"} className="aspect-[16/10] w-full object-cover" />
-                ) : broken ? (
-                  <span
-                    className={cn(
-                      "flex aspect-[16/10] w-full flex-col items-center justify-center gap-1 px-1 text-center text-amber-200/60",
-                      CHAT_CARD_MICRO_TEXT,
-                    )}
-                  >
-                    <WarningCircle size={14} weight="duotone" aria-hidden />
-                    Missing proof
-                  </span>
-                ) : (
-                  <ProofFilmstripKindLabel artifact={artifact} />
-                )}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </ChatCard>
-  );
-}
-
-/** What a tile shows where it has no picture: the artifact's kind. */
-function ProofFilmstripKindLabel({ artifact, icon }: { artifact: ComputerUseArtifactView; icon?: React.ReactNode }) {
-  return (
-    <span
-      className={cn(
-        "flex aspect-[16/10] w-full flex-col items-center justify-center gap-1 px-1 text-center text-fg/35",
-        CHAT_CARD_MICRO_TEXT,
-      )}
-    >
-      {icon}
-      {artifact.kind.replace(/_/g, " ")}
-    </span>
-  );
-}
-
-/**
- * A proof tile whose picture comes through the drawer's preview path (the
- * media server or artifact protocol on this computer, the runtime on a paired
- * one), so it shows what the drawer shows. A recording shows its first frame
- * behind a play badge; a picture shows itself. Until the preview resolves, and
- * when it cannot, the tile shows the kind instead of a broken image. Clicking
- * opens the drawer.
- */
-function ProofFilmstripPreviewTile({
-  artifact,
-  media,
-  allowLocalArtifactProtocol,
+export function ChatProofCount({
+  count,
   onOpen,
+  compact = false,
 }: {
-  artifact: ComputerUseArtifactView;
-  media: "video" | "image";
-  allowLocalArtifactProtocol: boolean;
-  onOpen?: (artifact: ComputerUseArtifactView) => void;
+  count: number;
+  onOpen?: () => void;
+  compact?: boolean;
 }) {
-  const { containerRef, preview, failed, onMediaError } = useArtifactPreview<HTMLButtonElement>(
-    artifact,
-    allowLocalArtifactProtocol,
-  );
-  const ready = !failed ? preview : null;
+  if (count <= 0) return null;
+  const label = compact ? `${count} proof` : `${count} proof filed`;
   return (
     <button
-      ref={containerRef}
       type="button"
-      title={artifact.title || artifact.uri || artifact.id}
-      aria-label={artifact.title || artifact.uri || "Open proof"}
-      onClick={() => onOpen?.(artifact)}
-      data-chat-proof-video={media === "video" ? "" : undefined}
-      className="w-24 shrink-0 overflow-hidden rounded-[7px] border border-fg/[0.07] bg-black/25 transition-colors hover:border-fg/[0.16]"
+      onClick={onOpen}
+      disabled={!onOpen}
+      title="Show this proof in the proof drawer"
+      aria-label={`${count} proof filed. Show in the proof drawer`}
+      data-chat-proof-count=""
+      className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] tabular-nums text-fg/50 transition-colors hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35 disabled:cursor-default disabled:hover:text-fg/50"
     >
-      {ready && media === "video" ? (
-        <ProofVideoPoster
-          artifact={artifact}
-          preview={ready}
-          badgeSize="sm"
-          interactive={false}
-          className="aspect-[16/10] w-full"
-          onError={onMediaError}
-        />
-      ) : ready ? (
-        <img
-          src={ready}
-          alt={artifact.title || "Proof"}
-          className="aspect-[16/10] w-full object-cover"
-          onError={onMediaError}
-        />
-      ) : (
-        <ProofFilmstripKindLabel
-          artifact={artifact}
-          icon={media === "video" ? <VideoCamera size={14} weight="duotone" aria-hidden /> : undefined}
-        />
-      )}
+      <Cube size={10} weight="bold" className="shrink-0 text-fg/40" aria-hidden />
+      {label}
+      {onOpen ? <CaretRight size={9} weight="bold" className="shrink-0" aria-hidden /> : null}
     </button>
   );
 }
