@@ -91,6 +91,8 @@ export function startMusicHost(args: {
       // The host runs without a GPU process (half the memory). Escape hatch if
       // some machine's DRM playback ever needs it.
       ...(process.env.ADE_MUSIC_HOST_GPU === "1" ? ["--gpu"] : []),
+      // Silent playback for test instances and automation.
+      ...(process.env.ADE_MUSIC_HOST_MUTED === "1" ? ["--muted"] : []),
     ],
     { stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
   );

@@ -15,7 +15,7 @@
 // see apps/desktop/scripts/build-music-host-win.mjs.
 //
 // Usage: ade-music-host.exe --udf <dir> --page <dir> [--host music.ade.local]
-//                           [--parent-pid <pid>] [--show] [--gpu]
+//                           [--parent-pid <pid>] [--show] [--gpu] [--muted]
 //
 // Never pass --disable-component-update to WebView2: it removes the Widevine CDM
 // and Apple Music then plays nothing but 30-second previews.
@@ -112,6 +112,7 @@ static class Program {
     int parentPid = 0;
     bool show = false;
     bool gpu = false;
+    bool muted = false;
     for (int i = 0; i < argv.Length; i++) {
       string a = argv[i];
       if (a == "--udf" && i + 1 < argv.Length) udf = argv[++i];
@@ -120,6 +121,7 @@ static class Program {
       else if (a == "--parent-pid" && i + 1 < argv.Length) int.TryParse(argv[++i], out parentPid);
       else if (a == "--show") show = true;
       else if (a == "--gpu") gpu = true;
+      else if (a == "--muted") muted = true;
     }
     if (string.IsNullOrEmpty(udf)) {
       Emit("{\"event\":\"hostError\",\"code\":\"usage\",\"error\":\"--udf is required\"}");
@@ -173,6 +175,8 @@ static class Program {
         // buttons nearly invisible. The profile is shared with the popup, and the
         // player page has no UI, so light everywhere is free.
         core.Profile.PreferredColorScheme = CoreWebView2PreferredColorScheme.Light;
+        // Test instances play silently (--muted); playback still runs.
+        if (muted) core.IsMuted = true;
         core.Settings.AreDevToolsEnabled = show;
         core.Settings.AreDefaultContextMenusEnabled = show;
         core.Settings.IsStatusBarEnabled = false;
