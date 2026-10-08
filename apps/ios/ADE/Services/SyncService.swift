@@ -4379,8 +4379,9 @@ final class SyncService: ObservableObject {
   /// null`), keyed by session, with the cleared move's handoffId ("" when the
   /// phone held none). An absent record alone can't clear a live one, because
   /// older hosts omit the field; this says the absence is a clear. A summary
-  /// fetched before the clear still carries the cleared move and is stripped;
-  /// a different move ends the clear.
+  /// fetched before the clear still carries the cleared move and is stripped
+  /// (any move, when the id is unknown); a different move in a summary, or
+  /// any live record, ends the clear.
   private(set) var crossMachineHandoffClears: [String: String] = [:]
   /// Host-stamped `parentIdentityKey`, kept out of the database on purpose.
   ///
@@ -23189,6 +23190,10 @@ extension SyncService {
     crossMachineHandoffClears[sessionId] = handoffId ?? ""
   }
 
+  func endCrossMachineHandoffClear(sessionId: String) {
+    crossMachineHandoffClears.removeValue(forKey: sessionId)
+  }
+
   /// The summary as the phone should keep it: a record for a move the brain
   /// already cleared (a fetch that started before the clear) is dropped, and
   /// a different move ends the clear.
@@ -23196,7 +23201,9 @@ extension SyncService {
     guard let cleared = crossMachineHandoffClears[summary.sessionId],
           let record = summary.crossMachineHandoff
     else { return summary }
-    if record.handoffId == cleared {
+    // An empty marker: the phone didn't know which move was cleared, so every
+    // fetched record waits until a live one arrives (see foldCrossMachineHandoffRecord).
+    if cleared.isEmpty || record.handoffId == cleared {
       var stripped = summary
       stripped.crossMachineHandoff = nil
       return stripped

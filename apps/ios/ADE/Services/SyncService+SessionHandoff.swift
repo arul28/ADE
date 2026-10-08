@@ -229,6 +229,8 @@ extension SyncService {
   /// cannot roll the card back. No-op when the chat has no cached summary
   /// (the next summary fetch carries the record).
   func foldCrossMachineHandoffRecord(_ record: AgentChatCrossMachineHandoffRecord, sessionId: String) {
+    // A live record is newer than the brain's clear: the clear is over.
+    endCrossMachineHandoffClear(sessionId: sessionId)
     guard var summary = chatSummaryCache[sessionId] else { return }
     summary.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
       current: summary.crossMachineHandoff,
