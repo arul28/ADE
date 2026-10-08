@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -39,7 +39,10 @@ import { HOME_WIDGETS_IPC } from "../../../shared/types/homeWidgets";
  *   (≈0.03 ms), and an image with no PNG copy (Print Screen) is re-read at
  *   most every few seconds.
  * - Machine health is `os` counters plus one async `statfs`, answered when the
- *   widget asks (every few seconds while it is on screen).
+ *   widget asks (every 3 s while it is on screen). The Regular and Large views
+ *   add detail: `netstat -e` for network bytes (~5 ms of main CPU per call),
+ *   drives re-listed every 30 s, and `tasklist` (Windows) or `ps` for the
+ *   biggest memory users every 30 s (~45 ms of main CPU to spawn and read).
  * - Listening ports come from `netstat -ano` and `tasklist` on Windows (native
  *   tools, ~50 ms and ~400 ms, async) and `lsof` elsewhere, cached for 5 s and
  *   single-flight, so two windows asking at once run one scan.
@@ -75,6 +78,8 @@ export type HomeWidgetsServiceDeps = {
   /** Pids of ADE's own processes, which the kill action refuses. */
   ownPids: () => number[];
   broadcast: (channel: string, payload: unknown) => void;
+  /** Electron's `powerMonitor.isOnBatteryPower()`: one cheap OS call, no polling service. */
+  onBatteryPower?: () => boolean;
   logger?: { warn: (event: string, data?: Record<string, unknown>) => void };
   platform?: NodeJS.Platform;
 };
@@ -95,6 +100,7 @@ const CLIPBOARD_IMAGE_SLOW_REREAD_MS = 10_000;
 /** The PNG format apps put beside a bitmap: Windows' registered "PNG", macOS' UTI. */
 const PNG_CLIPBOARD_FORMAT: Partial<Record<NodeJS.Platform, string>> = { win32: "PNG", darwin: "public.png" };
 const LISTENERS_TTL_MS = 5_000;
+const PROCESS_LIST_TTL_MS = 30_000;
 const WEATHER_TTL_MS = 15 * 60_000;
 const FETCH_TIMEOUT_MS = 8_000;
 
@@ -143,6 +149,8 @@ export function looksLikeSecret(text: string): boolean {
   if (!trimmed) return false;
   if (SECRET_PATTERNS.some((pattern) => pattern.test(trimmed))) return true;
   if (/\s/.test(trimmed) || trimmed.length < 12 || trimmed.length > 128) return false;
+  // A link or a file path mixes every character class too; a token inside one was caught above.
+  if (/^(?:https?:\/\/|[a-z]:\\|\/|~\/)/i.test(trimmed)) return false;
   const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((re) => re.test(trimmed)).length;
   return classes >= 4 && shannonBitsPerChar(trimmed) >= 3.5;
 }
@@ -158,7 +166,7 @@ function processBaseName(name: string | null): string {
   return (name ?? "").toLowerCase().replace(/\.exe$/, "");
 }
 
-function runText(command: string, args: string[], timeoutMs = 6_000): Promise<string> {
+function runPiped(command: string, args: string[], timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       command,
@@ -173,6 +181,45 @@ function runText(command: string, args: string[], timeoutMs = 6_000): Promise<st
       },
     );
   });
+}
+
+let outputFileCounter = 0;
+
+/**
+ * Windows console tools write their output in many small pieces, and each
+ * one wakes Electron's main loop through the pipe: reading `tasklist` (18 KB)
+ * that way cost the main process ~240 ms of CPU, against ~15 ms when the tool
+ * writes to a file that is read once at the end.
+ */
+async function runToFile(command: string, args: string[], timeoutMs: number): Promise<string> {
+  outputFileCounter += 1;
+  const file = path.join(os.tmpdir(), `ade-home-${process.pid}-${outputFileCounter}.txt`);
+  const handle = await fs.open(file, "w");
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(command, args, { windowsHide: true, stdio: ["ignore", handle.fd, "ignore"] });
+      const timer = setTimeout(() => child.kill(), timeoutMs);
+      child.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  } finally {
+    await handle.close();
+  }
+  try {
+    return await fs.readFile(file, "utf8");
+  } finally {
+    void fs.rm(file, { force: true }).catch(() => {});
+  }
+}
+
+function runText(command: string, args: string[], timeoutMs = 6_000): Promise<string> {
+  return process.platform === "win32" ? runToFile(command, args, timeoutMs) : runPiped(command, args, timeoutMs);
 }
 
 function windowsSystemTool(name: string): string {
@@ -305,8 +352,11 @@ function groupProcesses(rows: Array<{ name: string; memBytes: number; cpu: numbe
 /** `tasklist /FO CSV /NH`, grouped by name: memory is the last column ("123,456 K", separators vary by locale). */
 export function parseTasklistMemory(text: string): HomeMachineProcessGroup[] {
   const rows: Array<{ name: string; memBytes: number; cpu: null }> = [];
-  for (const line of text.split(/\r?\n/)) {
-    const cells = [...line.trim().matchAll(/"([^"]*)"/g)].map((match) => match[1]!);
+  for (const line of text.split("\n")) {
+    // `"name","pid","session","#","mem"`: a plain split is several times faster than a regex per cell.
+    const trimmed = line.trim();
+    if (trimmed.length < 2 || trimmed[0] !== '"') continue;
+    const cells = trimmed.slice(1, -1).split('","');
     if (cells.length < 5 || !/^\d+$/.test(cells[1]!)) continue;
     const pid = Number(cells[1]);
     const kb = Number(cells[cells.length - 1]!.replace(/[^\d]/g, ""));
@@ -730,7 +780,8 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
   };
 
   const refreshProcesses = () => {
-    if (processInFlight || (processCache && Date.now() - processCache.at < 10_000)) return;
+    // tasklist costs the main process ~45 ms of CPU to spawn and read, so the list is refreshed every 30 s.
+    if (processInFlight || (processCache && Date.now() - processCache.at < PROCESS_LIST_TTL_MS)) return;
     processInFlight = (async () => {
       try {
         const groups = platform === "win32"
@@ -749,7 +800,7 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
   const readDetail = async (cpuPercent: number | null, cores: number[]): Promise<HomeMachineDetail> => {
     const at = Date.now();
     // Two windows asking at once share one reading.
-    if (lastDetail && at - lastDetail.at < 1_500) return lastDetail.detail;
+    if (lastDetail && at - lastDetail.at < 2_000) return lastDetail.detail;
     refreshProcesses();
     const [drives, totals] = await Promise.all([readDrives(), readNetTotals()]);
     let rx: number | null = null;
@@ -807,6 +858,7 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
       uptimeSec: Math.round(os.uptime()),
       hostname: os.hostname(),
       platform,
+      onBattery: deps.onBatteryPower?.() ?? false,
       ...(args?.detail ? { detail: await readDetail(cpuPercent, cores) } : {}),
     };
   };

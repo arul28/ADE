@@ -148,7 +148,7 @@ export type HomeMachineDetail = {
   /** The latest throughput; null until two readings exist or where it cannot be read. */
   net: { rxBps: number; txBps: number } | null;
   drives: HomeMachineDrive[];
-  /** Biggest memory users first; refreshed every ~10 s. Null while the first list is read. */
+  /** Biggest memory users first; refreshed every ~30 s. Null while the first list is read. */
   processes: HomeMachineProcessGroup[] | null;
   /** Memory the OS can hand out now (free + reclaimable cache on Windows). */
   memAvailableBytes: number;
@@ -165,6 +165,8 @@ export type HomeMachineHealth = {
   uptimeSec: number;
   hostname: string;
   platform: NodeJS.Platform;
+  /** Running on battery power (a laptop off its charger); false on AC or with no battery. */
+  onBattery?: boolean;
   /** Present when the widget asked for detail (Regular and Large). */
   detail?: HomeMachineDetail;
 };

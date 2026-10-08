@@ -123,7 +123,7 @@ export default function ClipboardWidget({ item }: HomeWidgetProps) {
       return (
         <div key={entry.id} role="listitem" className="ade-clip-row" data-kind="image">
           <button type="button" className="ade-clip-main ade-clip-image-main" title="Copy this image again" onClick={() => copyEntry(entry.id, "Image")}>
-            <span className="ade-clip-thumb" style={{ aspectRatio: `${Math.max(0.6, Math.min(2.4, image.width / Math.max(1, image.height)))}` }}>
+            <span className="ade-clip-thumb">
               <img src={image.thumb} alt="" draggable={false} decoding="async" />
             </span>
             <span className="ade-clip-image-text">

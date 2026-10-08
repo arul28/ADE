@@ -455,14 +455,14 @@
 .ade-clip-row[data-kind="code"] .ade-clip-text, .ade-clip-row[data-kind="path"] .ade-clip-text, .ade-clip-row[data-kind="color"] .ade-clip-text { font-family: var(--font-mono); font-size: 11.5px; }
 .ade-clip-row[data-kind="link"] .ade-clip-text { -webkit-line-clamp: 1; color: var(--kit-text-2); }
 .ade-clip-meta { font-size: 10px; color: var(--kit-text-3); }
-/* A copied picture: its thumbnail in the glyph's place, at the picture's own
-   shape (clamped), then "Image" and its size. */
+/* A copied picture: a thumbnail of one fixed shape (so the rows line up),
+   then "Image" and its size. */
 .ade-clip-image-main { flex-direction: row; align-items: center; gap: 10px; padding-left: 0; }
 .ade-clip-thumb {
   flex: none;
   position: relative;
+  width: 64px;
   height: 40px;
-  max-width: 96px;
   border-radius: 6px;
   overflow: hidden;
   background:
@@ -553,8 +553,6 @@
    Large the memory users) share what is left and show "N more". */
 .ade-mh-head-meta { margin-left: auto; display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
 .ade-mh-battery { display: inline-flex; align-items: center; gap: 3px; flex: none; font-size: 11px; color: var(--kit-text-2); }
-.ade-mh-battery[data-level="warn"] { color: var(--kit-warn); }
-.ade-mh-battery[data-level="crit"] { color: var(--kit-crit); }
 .ade-mh[data-view="regular"] .ade-mh-body,
 .ade-mh[data-view="large"] .ade-mh-body { gap: 0; }
 .ade-mh[data-view="regular"] .ade-mh-body > * + *,
@@ -573,14 +571,23 @@
    their charts stretching to fill it. */
 .ade-mh-large .ade-mh-col:first-child .ade-mh-cpu { flex: 3 1 0; min-height: 0; }
 .ade-mh-large .ade-mh-col:first-child .ade-mh-net { flex: 2 1 0; min-height: 0; }
-.ade-mh-chart-wrap { position: relative; display: flex; flex-direction: column; min-height: 0; }
+.ade-mh-chart-wrap { position: relative; display: flex; flex-direction: column; min-height: 0; contain: layout paint; }
+/* Fixed-height charts: the wrapper sets the height and the SVG, a block
+   child with strict containment, is its own relayout boundary. */
+.ade-mh-chart-wrap:not([data-fill]) { display: block; flex: none; }
+.ade-mh-chart-wrap:not([data-fill]) > .ade-mh-chart { height: 100%; contain: strict; }
 .ade-mh-chart-wrap[data-fill], .ade-mh-chart-empty[data-fill] { flex: 1 1 auto; min-height: 28px; }
 .ade-mh-chart-wrap[data-fill] .ade-mh-chart { flex: 1 1 auto; min-height: 0; height: 100%; }
 .ade-mh-chart-scale { position: absolute; top: 4px; left: 0; font-size: 9px; line-height: 1; color: var(--kit-text-3); pointer-events: none; }
 .ade-mh-large .ade-mh-ring { width: 54px; }
 
-.ade-mh-section { flex: none; display: flex; flex-direction: column; gap: 5px; min-width: 0; padding-top: 9px; border-top: 1px solid var(--kit-rule); }
-.ade-mh-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+/* Each section repaints every few seconds; containing it keeps a new number
+   or chart from re-laying-out and repainting the rest of the card. */
+.ade-mh-section { flex: none; display: flex; flex-direction: column; gap: 5px; min-width: 0; padding-top: 9px; border-top: 1px solid var(--kit-rule); contain: layout paint; }
+/* The head's numbers change on every reading: a fixed-height head with size
+   containment re-lays-out alone instead of the whole card. */
+.ade-mh-box { flex: none; display: block; min-width: 0; }
+.ade-mh-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; height: 16px; contain: strict; }
 .ade-mh-section-aside { min-width: 0; font-size: 11px; color: var(--kit-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ade-mh-large .ade-mh-col:first-child .ade-mh-gauges + .ade-mh-section { margin-top: 4px; }
 
@@ -595,8 +602,9 @@
 
 .ade-mh-cores { display: flex; align-items: flex-end; gap: 2px; height: 16px; }
 .ade-mh-large .ade-mh-cores { height: 22px; }
-.ade-mh-cores i { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; border-radius: 2px; background: var(--kit-track); overflow: hidden; }
-.ade-mh-cores b { display: block; width: 100%; border-radius: 2px; background: color-mix(in srgb, var(--color-fg) 52%, transparent); }
+.ade-mh-cores i { flex: 1 1 0; min-width: 0; height: 100%; border-radius: 2px; background: var(--kit-track); overflow: hidden; }
+/* Full height, scaled from the bottom: a new reading is a transform, not a layout. */
+.ade-mh-cores b { display: block; width: 100%; height: 100%; border-radius: 2px; background: color-mix(in srgb, var(--color-fg) 52%, transparent); transform-origin: bottom; }
 .ade-mh-cores i[data-level="warn"] b { background: var(--kit-warn); }
 .ade-mh-cores i[data-level="crit"] b { background: var(--kit-crit); }
 .ade-mh-cpu-model { font-size: 10.5px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -607,7 +615,9 @@
 .ade-mh-net-legend .kit-legend > i[data-tone="accent"] { background: var(--color-accent); }
 .ade-mh-net-legend .kit-legend > i[data-tone="fg"] { background: color-mix(in srgb, var(--color-fg) 62%, transparent); }
 
-.ade-mh-mem-bar { flex: none; margin: 1px 0 3px; }
+.ade-mh-mem-bar { display: block; margin: 1px 0 3px; contain: strict; }
+/* Readings snap: a width transition would lay the card out on every frame. */
+.ade-mh .kit-meter > span { transition: none; }
 .ade-mh-proc-list { display: flex; flex-direction: column; margin: 0 -6px; }
 .ade-mh-proc {
   display: grid;

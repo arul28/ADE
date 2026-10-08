@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, webContents, type IpcMainInvokeEvent, type WebContents } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, powerMonitor, webContents, type IpcMainInvokeEvent, type WebContents } from "electron";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -111,6 +111,7 @@ export function registerHomeWidgetsIpc(args: {
       },
     },
     ownPids: () => app.getAppMetrics().map((metric) => metric.pid),
+    onBatteryPower: () => powerMonitor.isOnBatteryPower(),
     broadcast: (channel, payload) => {
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send(channel, payload);
