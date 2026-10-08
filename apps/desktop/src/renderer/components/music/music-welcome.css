@@ -1,0 +1,134 @@
+/* The signed-out welcome page. Imported by music.css, in order. */
+
+/* ---------- Signed-out welcome ---------- */
+
+.ade-music-signedout { padding-top: 14px; }
+
+.ade-music-welcome {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: calc(var(--music-radius) + 4px);
+  background: color-mix(in srgb, var(--color-bg) 40%, transparent);
+}
+.ade-music-welcome.is-compact { margin-top: 18px; }
+
+.ade-music-mosaic {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ade-music-mosaic-grid {
+  position: absolute;
+  top: -18%;
+  left: -6%;
+  display: grid;
+  width: 112%;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 10px;
+  transform: rotate(-8deg);
+  transform-origin: 50% 40%;
+  filter: saturate(1.25);
+}
+.ade-music-mosaic-tile .ade-music-art {
+  width: 100% !important;
+  height: auto !important;
+  aspect-ratio: 1;
+  border-radius: 12px;
+}
+.ade-music-mosaic::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(60% 72% at 50% 46%, color-mix(in srgb, var(--color-bg) 92%, transparent) 0%, color-mix(in srgb, var(--color-bg) 78%, transparent) 55%, color-mix(in srgb, var(--color-bg) 48%, transparent) 100%),
+    linear-gradient(180deg, transparent 60%, color-mix(in srgb, var(--color-bg) 70%, transparent) 100%);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+.ade-music-welcome-body {
+  display: flex;
+  max-width: 600px;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin: 0 auto;
+  padding: 46px 28px 26px;
+  text-align: center;
+}
+.ade-music-welcome.is-compact .ade-music-welcome-body { padding-top: 36px; }
+.ade-music-welcome-body h1 { margin: 10px 0 0; font-size: 30px; font-weight: 760; letter-spacing: -0.035em; }
+.ade-music-welcome-body > p { max-width: 470px; margin: 0; color: var(--kit-text-2); font-size: 13px; line-height: 1.55; }
+.ade-music-welcome-cta { display: flex; gap: 10px; margin-top: 10px; }
+.ade-music-welcome-cta .ade-music-connect { height: 40px; padding: 0 24px; font-size: 13px; }
+
+.ade-music-welcome-points {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 22px 0 4px;
+  padding: 0;
+  list-style: none;
+}
+.ade-music-welcome-points > li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 10px;
+  align-items: center;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-bg) 55%, transparent);
+  padding: 10px 12px;
+  text-align: left;
+}
+.ade-music-welcome-points > li > span {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  grid-row: span 2;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+}
+.ade-music-welcome-points b { color: var(--color-fg); font-size: 12px; font-weight: 620; }
+.ade-music-welcome-points i { color: var(--kit-text-3); font-size: 11px; font-style: normal; }
+.ade-music-welcome-privacy {
+  display: flex;
+  max-width: 520px !important;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px !important;
+  color: var(--kit-text-3) !important;
+  font-size: 11px !important;
+  line-height: 1.5 !important;
+  text-align: left;
+}
+.ade-music-welcome-privacy > svg { flex: none; margin-top: 2px; }
+
+.ade-music-signin-help {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 12px;
+  margin-top: 6px;
+  color: var(--kit-text-2);
+  font-size: 12px;
+}
+.ade-music-signin-actions { display: inline-flex; gap: 6px; }
+.ade-music-signin-hint { color: var(--kit-text-3); }
+.ade-music-rail-signin .ade-music-signin-help { flex-direction: column; align-items: stretch; margin-top: 8px; font-size: 11px; text-align: center; }
+.ade-music-rail-signin .ade-music-signin-actions { flex-direction: column; }
+.ade-music-pill.is-small { height: 28px; padding: 0 12px; font-size: 11.5px; justify-content: center; }
+.ade-music-pill.is-quiet { background: transparent; }
+
+
+.ade-music-section-title .kit-tag { margin-left: 4px; font-weight: 500; }
