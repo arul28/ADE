@@ -176,18 +176,20 @@ function PickerTile({ type, present, metrics, onOpen }: { type: HomeWidgetType; 
   const meta = HOME_WIDGET_CATALOG[type];
   const Icon = meta.icon;
   const unavailable = meta.comingSoon ?? (meta.desktopOnly && !window.ade?.home ? "Needs the ADE desktop app." : null);
+  // The live preview renders the widget's own buttons, so the tile is not a
+  // button: its title is, stretched over the whole tile (CSS).
   return (
-    <button type="button" className="ade-picker-tile" onClick={onOpen} data-present={present || undefined} data-unavailable={unavailable ? "true" : undefined}>
+    <div className="ade-picker-tile" data-present={present || undefined} data-unavailable={unavailable ? "true" : undefined}>
       <FluidPreview type={type} cls={tileClass(type)} metrics={metrics} stageHeight={176} />
-      <span className="ade-picker-tile-text">
+      <button type="button" className="ade-picker-tile-text" onClick={onOpen}>
         <span className="ade-picker-tile-title">
           <Icon size={13} aria-hidden />
           {meta.title}
           {present ? <span className="ade-picker-state" data-tone="ok"><CheckCircle size={11} weight="fill" /> On page</span> : null}
         </span>
         <span className="ade-picker-tile-desc">{unavailable ?? meta.description}</span>
-      </span>
-    </button>
+      </button>
+    </div>
   );
 }
 

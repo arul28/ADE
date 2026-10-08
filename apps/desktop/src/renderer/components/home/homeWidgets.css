@@ -111,6 +111,7 @@
   scrollbar-width: thin;
 }
 .ade-picker-tile {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -125,12 +126,18 @@
   transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
 .ade-picker-tile:hover { background: var(--kit-hover); border-color: var(--kit-rule); }
-.ade-picker-tile:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.ade-picker-tile:has(.ade-picker-tile-text:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 @media (prefers-reduced-motion: no-preference) {
   .ade-picker-tile:hover { transform: translateY(-1px); }
 }
 .ade-picker-tile[data-unavailable] .ade-picker-stage { opacity: 0.55; }
-.ade-picker-tile-text { display: flex; flex-direction: column; gap: 3px; padding: 0 4px; min-width: 0; }
+.ade-picker-tile-text {
+  display: flex; flex-direction: column; gap: 3px; padding: 0 4px; min-width: 0;
+  border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.ade-picker-tile-text:focus-visible { outline: none; }
+/* The title's button covers the whole tile, preview included. */
+.ade-picker-tile-text::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
 .ade-picker-tile-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
 .ade-picker-tile-title > svg { color: var(--kit-text-2); }
 .ade-picker-tile-desc { font-size: 11.5px; line-height: 1.4; color: var(--kit-text-3); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
