@@ -40,14 +40,23 @@ function storage(): Storage | null {
 
 export function loadStoredAutomationDraft(projectRoot: string | null): StoredAutomationDraft | null {
   if (!projectRoot) return null;
-  const raw = storage()?.getItem(storageKey(projectRoot));
-  if (!raw) return null;
   try {
+    const raw = storage()?.getItem(storageKey(projectRoot));
+    if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StoredAutomationDraft>;
-    if (parsed?.version !== 1 || !parsed.draft || typeof parsed.savedSnapshot !== "string") return null;
+    const draft = parsed?.draft as Partial<AutomationRuleDraft> | undefined;
+    if (
+      parsed?.version !== 1
+      || !draft || typeof draft !== "object" || !Array.isArray(draft.triggers)
+      || typeof parsed.savedSnapshot !== "string"
+    ) {
+      // A record this window cannot use would fail again on every restore.
+      clearStoredAutomationDraft(projectRoot);
+      return null;
+    }
     return {
       version: 1,
-      draft: parsed.draft,
+      draft: draft as AutomationRuleDraft,
       savedSnapshot: parsed.savedSnapshot,
       ruleKey: typeof parsed.ruleKey === "string" && parsed.ruleKey ? parsed.ruleKey : null,
       targetMachineId: typeof parsed.targetMachineId === "string" && parsed.targetMachineId ? parsed.targetMachineId : null,

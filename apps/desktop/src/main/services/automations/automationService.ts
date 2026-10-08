@@ -4384,37 +4384,37 @@ export function createAutomationService({
     const trigger = await testRuns.buildTestTrigger(rule, request.event, mode);
     const { problems } = testRuns.problemsAndWarnings(rule, trigger, mode);
     if (problems.length) throw new Error(problems.join(" "));
-    if (mode === "safe") await testRuns.createSafeTestLane(rule, trigger);
-    const ruleForTest = mode === "safe" ? safeTestRule(rule) : rule;
-    const kind = resolveExecutionKind(ruleForTest);
-    if (kind !== "built-in" && kind !== "agent-session") throw new Error(`Unsupported automation execution kind: ${kind}`);
-
-    let resolveStarted!: (run: AutomationRun) => void;
-    const started = new Promise<AutomationRun>((resolve) => { resolveStarted = resolve; });
-    testRunStartedListeners.set(trigger, resolveStarted);
-    const finished = (kind === "built-in"
-      ? runLegacyRule(ruleForTest, trigger, UNBOUNDED_RUN_BUDGET)
-      : dispatchAgentSessionRun({ rule: ruleForTest, trigger, budget: UNBOUNDED_RUN_BUDGET }))
-      .finally(() => {
-        // Lanes a step made after the run row was written.
-        const runId = trigger.run?.id;
-        if (runId && loadRunRow(runId)) {
-          updateRun(runId, { trigger_metadata: JSON.stringify(buildTriggerMetadata(trigger)) });
-          emit({ type: "runs-updated", automationId: rule.id, runId });
-        }
-      });
-    finished.catch((error) => {
-      logger.warn("automations.test.failed", {
-        automationId: rule.id,
-        mode,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
     try {
+      if (mode === "safe") await testRuns.createSafeTestLane(rule, trigger);
+      const ruleForTest = mode === "safe" ? safeTestRule(rule) : rule;
+      const kind = resolveExecutionKind(ruleForTest);
+      if (kind !== "built-in" && kind !== "agent-session") throw new Error(`Unsupported automation execution kind: ${kind}`);
+
+      let resolveStarted!: (run: AutomationRun) => void;
+      const started = new Promise<AutomationRun>((resolve) => { resolveStarted = resolve; });
+      testRunStartedListeners.set(trigger, resolveStarted);
+      const finished = (kind === "built-in"
+        ? runLegacyRule(ruleForTest, trigger, UNBOUNDED_RUN_BUDGET)
+        : dispatchAgentSessionRun({ rule: ruleForTest, trigger, budget: UNBOUNDED_RUN_BUDGET }))
+        .finally(() => {
+          // Lanes a step made after the run row was written.
+          const runId = trigger.run?.id;
+          if (runId && loadRunRow(runId)) {
+            updateRun(runId, { trigger_metadata: JSON.stringify(buildTriggerMetadata(trigger)) });
+            emit({ type: "runs-updated", automationId: rule.id, runId });
+          }
+        });
+      finished.catch((error) => {
+        logger.warn("automations.test.failed", {
+          automationId: rule.id,
+          mode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
       return await Promise.race([started, finished]);
     } catch (error) {
-      // The run never started (no row), so History has no Clean up for the
-      // test lane: remove it here.
+      // The run never started (no row), so History has no Clean up for a lane
+      // the test already made: remove it here.
       if (!trigger.run?.id) {
         for (const lane of trigger.test?.lanes ?? []) {
           await laneService.delete({ laneId: lane.id, deleteBranch: true, force: true }).catch(() => undefined);

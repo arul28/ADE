@@ -3868,9 +3868,78 @@ describe("run values and test runs", () => {
     }
   });
 
+  function safeTestService(projectRoot: string, rule: any) {
+    const lanes = new Map<string, { id: string; name: string; branchRef: string; laneType: string }>();
+    const deleted: string[] = [];
+    const service = createAutomationService({
+      db: createInMemoryAdeDb().db as any,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot,
+      laneService: {
+        list: async () => [...lanes.values()],
+        create: async (args: Record<string, unknown>) => {
+          const lane = { id: `lane-test-${lanes.size + 1}`, name: String(args.name), branchRef: String(args.branchName), laneType: "worktree" };
+          lanes.set(lane.id, lane);
+          return lane;
+        },
+        delete: async ({ laneId }: { laneId: string }) => {
+          deleted.push(laneId);
+          lanes.delete(laneId);
+        },
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot }),
+      } as any,
+      projectConfigService: { get: () => ({ trust: { sharedHash: "", localHash: "" }, effective: { automations: [rule], providerMode: "guest" } }) } as any,
+    });
+    return { service, lanes, deleted };
+  }
+
+  it.each([
+    ["git push origin HEAD", "would-run"],
+    ["git -C ../other push origin HEAD", "would-run"],
+    ["cd src && git -c push.default=current push", "would-run"],
+    ["gh -R owner/repo pr create --fill", "would-run"],
+    ["npm publish", "would-run"],
+    ["curl -X POST https://example.com/hook", "would-run"],
+    ["git status --short && npm test", "runs"],
+    ["echo push", "runs"],
+  ])("a safe test plans `%s` as %s", async (command, effect) => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-safe-plan-"));
+    const rule = builtInRule("plan-check", [{ type: "run-command", command, timeoutMs: 10_000 }]);
+    const { service, lanes } = safeTestService(projectRoot, rule);
+    try {
+      const plan = await service.planTest({ id: rule.id, mode: "safe" });
+      expect(plan.problems).toEqual([]);
+      expect(plan.steps).toHaveLength(1);
+      expect(plan.steps[0]!.effect).toBe(effect);
+      // Planning makes nothing.
+      expect(lanes.size).toBe(0);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("refuses a safe test and removes its lane when pushes from the lane cannot be blocked", async () => {
+    // Not a git repo, so the push block cannot be written.
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-safe-noblock-"));
+    const rule = builtInRule("noblock", [{ type: "run-command", command: "echo hi", timeoutMs: 10_000 }]);
+    const { service, lanes, deleted } = safeTestService(projectRoot, rule);
+    try {
+      await expect(service.runTest({ id: rule.id, mode: "safe" })).rejects.toThrow(/Could not block pushes/);
+      expect(deleted).toEqual(["lane-test-1"]);
+      expect(lanes.size).toBe(0);
+      expect(service.listRuns({ automationId: rule.id })).toEqual([]);
+    } finally {
+      service.dispose();
+    }
+  });
+
   it("runs a safe test in a throwaway lane, reports outward steps, and cleans up only its own lane", async () => {
     const { db, raw } = createInMemoryAdeDb();
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-safe-test-"));
+    // A real repo: the safe test refuses to start when it cannot block pushes.
+    execFileSync("git", ["init", "-q"], { cwd: projectRoot });
     const lanes = new Map<string, { id: string; name: string; branchRef: string; laneType: string }>([
       ["lane-real", { id: "lane-real", name: "Real lane", branchRef: "feature", laneType: "worktree" }],
     ]);

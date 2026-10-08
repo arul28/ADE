@@ -48,10 +48,12 @@ function TestRunNotice({
     setCleanupError(null);
     try {
       const result = await window.ade.automations.cleanUpTestRun({ runId: detail.run.id }, pin);
+      // A partial cleanup keeps this notice and its error; the reload would clear them.
       if (result.failed.length) {
         setCleanupError(result.failed.map((lane) => `${lane.name}: ${lane.error}`).join(" "));
+      } else {
+        onChanged();
       }
-      onChanged();
     } catch (err) {
       setCleanupError(err instanceof Error ? err.message : String(err));
     } finally {

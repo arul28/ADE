@@ -46,8 +46,10 @@ export const SAFE_TEST_AGENT_NOTICE =
 /** Commands that reach outside the machine: a safe test reports them instead of running them. */
 const OUTWARD_COMMAND = new RegExp(
   [
-    String.raw`\bgit\s+push\b`,
-    String.raw`\bgh\s+(?:pr|issue|release|api|repo|workflow|run)\b`,
+    // Any git or gh invocation with the subcommand later in the same command,
+    // so options before it (`git -C <dir> push`, `gh -R <repo> pr`) still count.
+    String.raw`\bgit\b[^\n;&|]*?\spush\b`,
+    String.raw`\bgh\b[^\n;&|]*?\s(?:pr|issue|release|api|repo|workflow|run)\b`,
     String.raw`\b(?:npm|pnpm|yarn|bun)\s+publish\b`,
     String.raw`\bcurl\b[^\n]*\s(?:-X|--request)\s*(?:POST|PUT|PATCH|DELETE)\b`,
     String.raw`\bcurl\b[^\n]*\s(?:-d|--data(?:-\w+)?|-F|--form)\b`,
@@ -497,7 +499,10 @@ export function createAutomationTestRuns({
     trigger.test?.lanes.push({ id: lane.id, name: lane.name });
     // A plain `git push` from the lane goes to a remote that does not exist.
     const branch = (lane.branchRef ?? branchName).replace(/^refs\/heads\//, "");
-    await runGit(["config", `branch.${branch}.pushRemote`, SAFE_TEST_PUSH_REMOTE], { cwd: projectRoot, timeoutMs: 10_000 });
+    const blocked = await runGit(["config", `branch.${branch}.pushRemote`, SAFE_TEST_PUSH_REMOTE], { cwd: projectRoot, timeoutMs: 10_000 });
+    if (blocked.exitCode !== 0) {
+      throw new Error(`Could not block pushes from the test lane, so the safe test did not start. ${blocked.stderr.trim()}`.trim());
+    }
     trigger.laneId = lane.id;
     trigger.laneName = lane.name;
     if (trigger.session) trigger.session = { ...trigger.session, laneId: lane.id };
