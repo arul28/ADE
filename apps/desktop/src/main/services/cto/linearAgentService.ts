@@ -142,9 +142,12 @@ export function describeShellCommand(command: string, description = ""): string 
   // `cmd /c "…"` hands back the command still inside the quotes cmd wrapped it in.
   if (text !== command.trim() && /^"[^"]*"$/.test(text)) text = text.slice(1, -1);
   for (;;) {
-    const next = text.replace(/^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*/, "");
-    if (next === text) break;
-    text = next;
+    const cd = /^cd\s+("[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*/.exec(text);
+    if (!cd) break;
+    // A cd into the lane is the agent's usual preamble; a cd into another checkout says which repository the command ran in.
+    const target = cd[1]!.replace(/^["']|["']$/g, "");
+    if (/^(?:[\\/]|~|[A-Za-z]:|\.\.)/.test(target) && !/\.ade[\\/]worktrees[\\/]/.test(target)) break;
+    text = text.slice(cd[0].length);
   }
   if (!text || /^cd(?:\s+(?:"[^"]*"|'[^']*'|\S+))?\s*$/.test(text)) {
     return truncate(description || shortenWorktreePaths(text), 200);

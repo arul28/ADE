@@ -212,6 +212,9 @@ describe("Linear agent step lines", () => {
     ["a Codex bash -lc wrapper", "/bin/zsh -lc 'cd /Users/admin/Projects/ADE/.ade/worktrees/lane-1 && git status'", "git status"],
     ["a PowerShell -Command wrapper", "powershell.exe -NoProfile -Command \"cd 'C:\\Users\\me\\.ade\\worktrees\\lane-1'; npm test\"", "npm test"],
     ["a cmd /c wrapper", "cmd /c \"cd C:\\Users\\me\\.ade\\worktrees\\lane-1 && npm test\"", "npm test"],
+    ["a cd into another checkout, which names the repository", "cd /Users/admin/Projects/other-repo && git status", "cd /Users/admin/Projects/other-repo && git status"],
+    ["a cd up into a sibling checkout", "cd ../other-repo && git status", "cd ../other-repo && git status"],
+    ["a relative cd inside the lane", "cd apps/desktop && npx vitest run", "npx vitest run"],
   ])("shows the command itself for %s", (_label, command, parameter) => {
     expect(describeToolCall("Bash", { command })).toEqual({ action: "Ran", parameter });
   });
