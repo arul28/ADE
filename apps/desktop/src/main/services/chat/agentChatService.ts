@@ -4328,6 +4328,13 @@ type ManagedChatSession = {
   endedNotified: boolean;
   /** Set when deleteSession begins — persistence paths bail to avoid re-creating deleted files. */
   deleted: boolean;
+  /**
+   * The chat's personal profile changed while its provider process was
+   * mid-turn (`adoptLegacyPersonalSessionAsAssistant`). That process was built
+   * for the old profile (prompt, skills, settings), so the next fresh turn
+   * tears it down first. In memory only: a restarted brain builds a new one.
+   */
+  profileRestartPending?: boolean;
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
   /**
@@ -51932,6 +51939,12 @@ export function createAgentChatService(args: {
         mentionsExpandedHere ? markChatMentionsExpanded(rerouted) : rerouted,
       );
     }
+    // A profile adopted mid-turn left a provider process built for the old
+    // profile; a fresh turn starts a new one (a steer above stays on it).
+    if (managed.profileRestartPending && !runtimeMidTurn(managed) && managed.session.status !== "active") {
+      managed.profileRestartPending = false;
+      if (managed.runtime) teardownRuntime(managed, "restart");
+    }
     if (!options?.pastedPromptAlreadyMaterialized) {
       args = await materializePastedTextPrompt(args);
     }
@@ -56215,8 +56228,9 @@ export function createAgentChatService(args: {
     managed.session.personalProfile = "assistant";
     // Same session profile a new assistant chat is created with.
     if (managed.session.sessionProfile === "light") managed.session.sessionProfile = "workflow";
-    if (managed.runtime && !runtimeMidTurn(managed) && managed.session.status !== "active") {
-      teardownRuntime(managed, "restart");
+    if (managed.runtime) {
+      if (!runtimeMidTurn(managed) && managed.session.status !== "active") teardownRuntime(managed, "restart");
+      else managed.profileRestartPending = true;
     }
     persistChatState(managed);
     logger.info("agent_chat.personal_profile_adopted", { sessionId, personalProfile: "assistant" });
