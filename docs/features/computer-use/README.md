@@ -362,9 +362,12 @@ on connect, and the user answers it there.
   minutes; the chat's next browser command says which, and later commands go
   to ADE's browser again. Ending or deleting the chat releases it too.
   `ade browser detach` while an attach is still waiting on the browser's
-  prompt cancels that attach: when the browser answers, the connection is
-  closed and the chat stays on ADE's browser. Attaching again likewise
-  supersedes a waiting attach. `ade browser status` shows the attachment.
+  prompt cancels that attach: ADE ends the WebSocket handshake at once
+  (`CdpClient.connect` takes an `AbortSignal`), which also takes down the
+  browser's "Allow remote debugging?" prompt, and the chat stays on ADE's
+  browser. Attaching again, ending the chat, or shutting the runtime down
+  cancels a waiting attach the same way. The service keeps an entry only for
+  an attach that is still pending. `ade browser status` shows the attachment.
 - **Who may act in it.** Only the chat that attached. The runtime decides once
   whether a call goes to the user's browser, authorizes it for that, and the
   router obeys that decision, so an attachment that ends mid-call never sends
