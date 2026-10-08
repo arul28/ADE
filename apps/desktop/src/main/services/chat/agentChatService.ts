@@ -16159,8 +16159,10 @@ export function createAgentChatService(args: {
       : undefined;
     // OpenCode's own `skills.paths` key, so its agents get ADE's bundled skills
     // through native discovery instead of having to read a path out of prose.
-    // A personal chat deliberately gets none — ADE capabilities are not part of
-    // that surface.
+    // A personal chat deliberately gets none here, `assistant` included: every
+    // personal chat shares one OpenCode server and so one config, and an
+    // `embedded` chat must not see ADE skills. An `assistant` chat learns them
+    // from its prompt's skill roots instead (docs/features/personal-chats).
     const openCodeAgentSkillRoots = isPersonalSession(managed.session)
       ? []
       : existingAgentSkillRoots(agentSkillRootEnv());
@@ -49490,6 +49492,10 @@ export function createAgentChatService(args: {
     persistChatState(managed);
     let cloudComposed = args.promptText;
     if (!isFollowUp) {
+      // A personal chat gets the neutral prompt in the cloud, `assistant` or
+      // not: the assistant prompt describes this machine (its shell, working
+      // directory, skill roots and `ade` CLI), none of which a Cursor cloud VM
+      // has. The local Cursor path above uses `resolvePersonalPromptFor`.
       const injected = isPersonalSession(managed.session)
         ? resolvePersonalSystemPrompt(managed.session)
         : await buildCursorSdkInjectedSystemPrompt({

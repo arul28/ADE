@@ -294,7 +294,11 @@ only; the composer hides plan options), lane guidance and lane memory, the
 lane worktree directive, and the computer-use proof directive (the skill covers
 it). OpenCode keeps sharing
 one personal server, so an assistant OpenCode chat learns its skills from the
-prompt's skill roots rather than OpenCode's own `skills.paths`.
+prompt's skill roots rather than OpenCode's own `skills.paths` (that server's
+one config also serves `embedded` chats, which must not see ADE skills). A
+Cursor run that moves to the cloud gets the neutral prompt for both profiles:
+the assistant prompt describes this machine's shell, folder, skill roots and
+`ade` CLI, which a cloud VM does not have.
 
 ## Agent behavior
 
