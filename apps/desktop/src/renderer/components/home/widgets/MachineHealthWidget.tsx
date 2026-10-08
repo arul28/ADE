@@ -411,6 +411,8 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
                     </span>
                     {entry.protected ? (
                       <span className="ade-mh-own" title="One of ADE's own processes">ADE</span>
+                    ) : entry.system ? (
+                      <span className="ade-mh-own" title="A system or service process; ADE does not stop it">System</span>
                     ) : (
                       <button
                         type="button"

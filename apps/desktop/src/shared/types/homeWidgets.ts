@@ -184,6 +184,8 @@ export type HomeListeningProcess = {
   dev: boolean;
   /** One of ADE's own processes: never offered for killing. */
   protected: boolean;
+  /** A system or service process (Windows session 0 or a core Windows process; root on macOS): listed, never offered for killing. */
+  system?: boolean;
 };
 
 export type HomeListenersResult =

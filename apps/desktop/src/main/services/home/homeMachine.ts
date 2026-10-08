@@ -126,19 +126,37 @@ export function parseNetstatListeners(text: string): Map<number, Set<number>> {
   return byPid;
 }
 
-/** `tasklist /FO CSV /NH`: `"name","pid",…` per line. */
-export function parseTasklist(text: string): Map<number, string> {
-  const names = new Map<number, string>();
+/**
+ * Windows processes the ports list never offers to stop, by name: the ones a
+ * stop would crash or log off the machine, and service hosts.
+ */
+const WINDOWS_SYSTEM_PROCESS_NAMES = new Set([
+  "system", "registry", "smss", "csrss", "wininit", "winlogon", "services", "lsass", "lsaiso", "svchost",
+  "spoolsv", "dwm", "fontdrvhost", "memory compression", "msmpeng", "searchindexer", "wudfhost",
+]);
+
+/**
+ * `tasklist /FO CSV /NH`: `"name","pid","session name","session#",…` per
+ * line. `system` is a process in session 0 (Windows services) or one named
+ * in `WINDOWS_SYSTEM_PROCESS_NAMES`.
+ */
+export function parseTasklist(text: string): Map<number, { name: string; system: boolean }> {
+  const processes = new Map<number, { name: string; system: boolean }>();
   for (const line of text.split(/\r?\n/)) {
-    const match = /^"([^"]*)","(\d+)"/.exec(line.trim());
-    if (match) names.set(Number(match[2]), match[1]!);
+    const match = /^"([^"]*)","(\d+)"(?:,"[^"]*","(\d+)")?/.exec(line.trim());
+    if (!match) continue;
+    const name = match[1]!;
+    const system = match[3] === "0" || WINDOWS_SYSTEM_PROCESS_NAMES.has(processBaseName(name));
+    processes.set(Number(match[2]), { name, system });
   }
-  return names;
+  return processes;
 }
 
-function parseLsof(text: string): { byPid: Map<number, Set<number>>; names: Map<number, string> } {
+/** `lsof -F pcnu`: ports, names and owner uids by pid. */
+function parseLsof(text: string): { byPid: Map<number, Set<number>>; names: Map<number, string>; uids: Map<number, number> } {
   const byPid = new Map<number, Set<number>>();
   const names = new Map<number, string>();
+  const uids = new Map<number, number>();
   let pid: number | null = null;
   for (const line of text.split(/\r?\n/)) {
     if (!line) continue;
@@ -149,6 +167,9 @@ function parseLsof(text: string): { byPid: Map<number, Set<number>>; names: Map<
       pid = Number.isInteger(parsed) && parsed > 0 ? parsed : null;
     } else if (tag === "c" && pid != null) {
       names.set(pid, value);
+    } else if (tag === "u" && pid != null) {
+      const uid = Number(value);
+      if (Number.isInteger(uid)) uids.set(pid, uid);
     } else if (tag === "n" && pid != null) {
       const port = portOf(value);
       if (port == null) continue;
@@ -157,7 +178,7 @@ function parseLsof(text: string): { byPid: Map<number, Set<number>>; names: Map<
       byPid.set(pid, ports);
     }
   }
-  return { byPid, names };
+  return { byPid, names, uids };
 }
 
 /**
@@ -442,6 +463,8 @@ export function createMachineMonitor(deps: {
   };
 
   const processNames = new Map<number, string>();
+  /** Pids of system and service processes (Windows session 0, root on macOS): listed, never stopped. */
+  const systemPids = new Set<number>();
   let listenersCache: { at: number; result: HomeListenersResult } | null = null;
   let listenersInFlight: Promise<HomeListenersResult> | null = null;
 
@@ -463,14 +486,22 @@ export function createMachineMonitor(deps: {
       const unknown = [...byPid.keys()].some((pid) => !processNames.has(pid));
       if (unknown) {
         // Names only change when pids do; one tasklist covers every new pid.
-        const names = parseTasklist(await runTasklistCsv());
+        const tasks = parseTasklist(await runTasklistCsv());
         processNames.clear();
-        for (const [pid, name] of names) processNames.set(pid, name);
+        systemPids.clear();
+        for (const [pid, task] of tasks) {
+          processNames.set(pid, task.name);
+          if (task.system) systemPids.add(pid);
+        }
       }
     } else {
-      const parsed = parseLsof(await runText("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"]));
+      const parsed = parseLsof(await runText("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcnu"]));
       byPid = parsed.byPid;
       for (const [pid, name] of parsed.names) processNames.set(pid, name);
+      // Root's processes, when ADE is not root: a stop would only be refused.
+      const ownUid = process.getuid?.() ?? -1;
+      systemPids.clear();
+      for (const [pid, uid] of parsed.uids) if (uid === 0 && ownUid !== 0) systemPids.add(pid);
     }
     const own = protectedPids(byPid);
     const processes: HomeListeningProcess[] = [...byPid.entries()]
@@ -484,6 +515,7 @@ export function createMachineMonitor(deps: {
           ports: [...ports].sort((a, b) => a - b),
           dev: DEV_PROCESS_NAMES.has(base),
           protected: own.has(pid) || ADE_PROCESS_NAME.test(base) || base === "electron",
+          system: systemPids.has(pid) || (platform === "win32" && WINDOWS_SYSTEM_PROCESS_NAMES.has(base)),
         };
       })
       .sort((a, b) => Number(b.dev) - Number(a.dev) || (a.ports[0] ?? 0) - (b.ports[0] ?? 0));
@@ -524,6 +556,7 @@ export function createMachineMonitor(deps: {
     const target = current.ok ? current.processes.find((entry) => entry.pid === pid) : null;
     if (!target) return { ok: false, error: "That process is no longer listening." };
     if (target.protected) return { ok: false, error: "That is one of ADE's own processes." };
+    if (target.system) return { ok: false, error: "That is a system process." };
     if (platform !== "win32") {
       try {
         process.kill(pid, "SIGTERM");
