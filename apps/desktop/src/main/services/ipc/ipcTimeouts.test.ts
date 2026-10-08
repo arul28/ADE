@@ -385,6 +385,56 @@ describe("ipcInvokeTimeoutMs", () => {
       request: { domain: "chat", action: "suggestLaneNameFromPrompt", args: {} },
     }])).toBe(405_000);
   });
+
+  // A project that is not runtime-backed calls the direct channel for the same
+  // work, so it must wait at least as long as the daemon would. On the 30s
+  // default these rejected while the work went on.
+  it.each([
+    [IPC.lanesUnarchive, "lane.unarchive"],
+    [IPC.archiveRestore, "archive.restore"],
+    [IPC.archiveDelete, "archive.delete"],
+    [IPC.githubCreateIssue, "github.createIssue"],
+    [IPC.agentChatSuggestLaneName, "chat.suggestLaneNameFromPrompt"],
+    [IPC.agentChatGenerateAutoLaneIdentity, "chat.generateAutoLaneIdentity"],
+    [IPC.appControlStopRecording, "app_control.stopRecording"],
+    [IPC.builtInBrowserStopRecording, "built_in_browser.stopRecording"],
+    [IPC.macDesktopStopRecording, "mac_desktop.stopRecording"],
+    [IPC.iosSimulatorRecordStop, "ios_simulator.recordStop"],
+    [IPC.iosSimulatorDeviceCleanup, "ios_simulator.deviceCleanup"],
+  ] as const)("waits on direct channel %s at least as long as %s does in the daemon", (channel, actionKey) => {
+    const daemonBudgetMs = longRunningLocalRuntimeActionTimeoutMs(actionKey);
+    expect(daemonBudgetMs, "the action has a long daemon budget").toBeGreaterThan(LOCAL_RUNTIME_ACTION_TIMEOUT_MS);
+    expect(ipcInvokeTimeoutMs(channel)).toBeGreaterThanOrEqual(daemonBudgetMs!);
+  });
+
+  it("gives a remote iOS device cleanup the same budget as a local one", () => {
+    const remote = ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      request: { domain: "ios_simulator", action: "deviceCleanup", args: {} },
+    }]);
+    expect(remote).toBe(ipcInvokeTimeoutMs(IPC.iosSimulatorDeviceCleanup));
+    expect(remote).toBeGreaterThanOrEqual(longRunningLocalRuntimeActionTimeoutMs("ios_simulator.deviceCleanup")!);
+  });
+
+  // These wait on a person at a native dialog, or on a download that can run
+  // for many minutes. The renderer must not report a failure while either is
+  // still going; the reset confirmation in particular stayed answerable after
+  // the window had already reported it failed.
+  it.each([
+    IPC.transcriptionDownloadModel,
+    IPC.aiEnsureToolsCache,
+    IPC.updateCheckForUpdates,
+    IPC.projectClone,
+    IPC.adeCliInstallForUser,
+    IPC.projectChooseDirectory,
+    IPC.projectChooseIcon,
+    IPC.projectSecretsChooseEnvFile,
+    IPC.machineResetChooseRescueDir,
+    IPC.historyExportOperations,
+    IPC.projectOpenRepo,
+    IPC.machineResetStart,
+  ])("keeps %s open well past a person or a slow download", (channel) => {
+    expect(ipcInvokeTimeoutMs(channel)).toBeGreaterThanOrEqual(5 * 60_000);
+  });
 });
 
 describe("readRuntimeActionRequest", () => {
