@@ -64,6 +64,38 @@ function useNowPlaying(active: boolean): HomeNowPlayingState | null {
 }
 
 /**
+ * Images that failed to load (a site's "favicon" that was really an error
+ * page, a cover URL that went away), so the card shows the source's glyph
+ * instead of a broken image. Shared by every card; small.
+ */
+const BROKEN_IMAGES = new Set<string>();
+const LOADED_IMAGES = new Set<string>();
+
+/** `src` while it loads or once it has loaded; null when it is absent or failed. */
+function useImageOk(src: string | null | undefined): string | null {
+  const [, setFailed] = useState(0);
+  useEffect(() => {
+    if (!src || LOADED_IMAGES.has(src) || BROKEN_IMAGES.has(src)) return undefined;
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (LOADED_IMAGES.size > 128) LOADED_IMAGES.clear();
+      LOADED_IMAGES.add(src);
+    };
+    image.onerror = () => {
+      if (BROKEN_IMAGES.size > 128) BROKEN_IMAGES.clear();
+      BROKEN_IMAGES.add(src);
+      if (!cancelled) setFailed((value) => value + 1);
+    };
+    image.src = src;
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+  return src && !BROKEN_IMAGES.has(src) ? src : null;
+}
+
+/**
  * The cover's shape, read from the image itself once it loads: "wide" for a
  * video thumbnail (16:9, 4:3), "square" for album art and anything else.
  * Cached per source, so a re-render or a switch back costs nothing.
@@ -212,6 +244,9 @@ function OwnModes({ which }: { which: "shuffle" | "repeat" }) {
 }
 
 function Cover({ model, reduced }: { model: CardModel; reduced: boolean }) {
+  // The Music tab's own cover arrives here unchecked; a source's was checked by the card.
+  const artwork = useImageOk(model.artwork);
+  const fallbackIcon = useImageOk(model.fallbackIcon);
   return (
     <div
       className={model.onOpen ? "ade-np2-cover is-link" : "ade-np2-cover"}
@@ -227,13 +262,13 @@ function Cover({ model, reduced }: { model: CardModel; reduced: boolean }) {
         }
       }}
     >
-      {model.artwork ? (
+      {artwork ? (
         <>
-          <img className="ade-np2-cover-fill" src={model.artwork} alt="" aria-hidden draggable={false} />
+          <img className="ade-np2-cover-fill" src={artwork} alt="" aria-hidden draggable={false} />
           <motion.img
-            key={model.artwork}
+            key={artwork}
             className="ade-np2-cover-img"
-            src={model.artwork}
+            src={artwork}
             alt=""
             draggable={false}
             initial={reduced ? false : { opacity: 0, scale: 0.96 }}
@@ -241,8 +276,8 @@ function Cover({ model, reduced }: { model: CardModel; reduced: boolean }) {
             transition={{ type: "spring", stiffness: 260, damping: 26 }}
           />
         </>
-      ) : model.fallbackIcon ? (
-        <span className="ade-np2-cover-empty is-icon"><img src={model.fallbackIcon} alt="" draggable={false} /></span>
+      ) : fallbackIcon ? (
+        <span className="ade-np2-cover-empty is-icon"><img src={fallbackIcon} alt="" draggable={false} /></span>
       ) : (
         <span className="ade-np2-cover-empty"><MusicNotes size={30} /></span>
       )}
@@ -300,7 +335,8 @@ function PlayerCard({ model, seek, still, top }: { model: CardModel; seek: React
 
 /** A source's icon: its own (app icon, favicon), or a note. */
 function SourceIcon({ session, size }: { session: HomeNowPlayingSession; size: number }) {
-  if (session.appIcon) return <img className="ade-np2-src-icon" src={session.appIcon} alt="" width={size} height={size} draggable={false} />;
+  const icon = useImageOk(session.appIcon);
+  if (icon) return <img className="ade-np2-src-icon" src={icon} alt="" width={size} height={size} draggable={false} />;
   return <MusicNotes className="ade-np2-src-icon" size={size} weight="fill" aria-hidden />;
 }
 
@@ -410,10 +446,11 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
   const music = useMusicNowPlaying();
   const own = session?.kind === "ade-music"
     || (Boolean(music.nowPlaying) && ((music.isPlaying && !state?.picked) || !session));
-  const artwork = own ? (music.artworkUrl(320) ?? session?.artwork ?? null) : (session?.artwork ?? null);
+  const artwork = useImageOk(own ? (music.artworkUrl(320) ?? session?.artwork ?? null) : (session?.artwork ?? null));
+  const appIcon = useImageOk(session?.appIcon);
   const shape = useArtShape(artwork);
   // A source with no cover tints the card with its own icon (YouTube red, Spotify green).
-  const backdrop = artwork ?? (own ? null : session?.appIcon ?? null);
+  const backdrop = artwork ?? (own ? null : appIcon);
   const hasBridge = Boolean(window.ade?.home?.nowPlaying);
   const top = hasBridge ? <TopRow current={own ? null : session} sessions={sessions} appleMusic={own && Boolean(window.ade?.music)} /> : null;
 
@@ -447,7 +484,7 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
       onOpen: tabId ? () => void showTabInBrowserTab(tabId, navigate) : undefined,
       openLabel: tabId ? `Show ${session.app ?? "this tab"} in the browser` : undefined,
       openButton: Boolean(tabId),
-      fallbackIcon: session.appIcon,
+      fallbackIcon: appIcon,
     };
     body = (
       <PlayerCard

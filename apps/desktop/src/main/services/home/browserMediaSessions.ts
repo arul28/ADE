@@ -2,6 +2,7 @@ import type { WebContents, WebFrameMain } from "electron";
 
 import type { HomeNowPlayingCommand, HomeNowPlayingSession } from "../../../shared/types/homeWidgets";
 import { cleanTabTitle, siteSourceName } from "./nowPlayingSources";
+import { sniffFaviconMime } from "../chat/sourceFaviconService";
 
 /**
  * Now Playing sessions from ADE's built-in browser tabs (YouTube, YouTube
@@ -218,12 +219,17 @@ async function fetchImageDataUrl(wc: WebContents, url: string): Promise<string |
     const response = await wc.session.fetch(url, { signal: controller.signal, credentials: "include", redirect: "follow" });
     if (!response.ok) return null;
     const mime = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-    const type = mime.startsWith("image/") ? mime : /\.ico(\?|$)/i.test(url) ? "image/x-icon" : null;
-    if (!type) return null;
+    // A server that names a type other than an image (an HTML error page for
+    // /favicon.ico) is not an image. No type, or a generic one, is decided by
+    // the bytes.
+    const untyped = mime === "" || mime === "application/octet-stream" || mime === "binary/octet-stream";
+    if (!mime.startsWith("image/") && !untyped) return null;
     const declared = Number(response.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) return null;
     const bytes = Buffer.from(await response.arrayBuffer());
     if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) return null;
+    const type = mime.startsWith("image/") ? mime : sniffFaviconMime(bytes);
+    if (!type) return null;
     return `data:${type};base64,${bytes.toString("base64")}`;
   } catch {
     return null;
