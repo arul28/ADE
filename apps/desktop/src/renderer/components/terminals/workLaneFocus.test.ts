@@ -172,6 +172,19 @@ describe("summarizeLaneFocus — the fold rule", () => {
     expect(onlyDone.status).toBe("done");
     expect(onlyDone.folds).toBe(false);
 
+    // A plain shell (a dev server, an App Control shell) runs forever, so it is
+    // not busy work: it cannot keep a done chat's lane folded, or fold on its own.
+    const shell = session({ id: "shell", toolType: "shell", chatSessionId: "chat" });
+    const doneChatWithShell = focus({
+      sessions: [idleChat("chat"), shell],
+      seen: { chat: SEEN_ISO },
+      nested: ["shell"],
+    });
+    expect(doneChatWithShell.status).toBe("working");
+    expect(doneChatWithShell.folds).toBe(false);
+    expect(focus({ sessions: [shell] }).folds).toBe(false);
+    expect(focus({ sessions: [running("run"), shell], nested: ["shell"] }).folds).toBe(true);
+
     // A snoozed-only lane has no live rows at all.
     const snoozedOnly = focus({
       sessions: [running("snoozed")],

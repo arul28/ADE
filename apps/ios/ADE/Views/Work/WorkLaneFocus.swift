@@ -39,6 +39,10 @@ struct WorkRowFocus: Equatable {
   /// An overdue scheduled wake is a finish that must remain visible even
   /// after it is seen, including when the row is nested under another chat.
   let missedWake: Bool
+  /// Whether a Working/Waiting row counts as busy work for the fold. Only agent
+  /// rows do: a plain shell (a dev server, an App Control shell) runs forever,
+  /// so it must not keep a lane folded once its chat is done.
+  var countsAsBusy = true
 }
 
 /// Has the user left this row since it last finished?
@@ -150,6 +154,7 @@ func workCountedRowFocus(
     focus = WorkRowFocus(status: .waiting, holdsOut: false, missedWake: false)
   }
   if focus.status == .done, !focus.missedWake, nestedChild { return nil }
+  if !isWorkAgentToolType(session.toolType) { focus.countsAsBusy = false }
   return focus
 }
 
@@ -163,7 +168,7 @@ func workLaneFoldsIntoWorking(_ rows: [WorkRowFocus?]) -> Bool {
   for row in rows {
     guard let row else { continue }
     if row.holdsOut { return false }
-    if row.status == .working || row.status == .waiting { busy += 1 }
+    if (row.status == .working || row.status == .waiting) && row.countsAsBusy { busy += 1 }
   }
   return busy > 0
 }

@@ -2038,6 +2038,31 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(seen?.holdsOut, false)
     XCTAssertTrue(workLaneFoldsIntoWorking([seen, runningFocus]))
     XCTAssertFalse(workLaneFoldsIntoWorking([seen]))
+
+    // A plain shell (a dev server, an App Control shell) runs forever, so it is
+    // not busy work: it cannot keep a seen Done row's lane folded, or fold alone.
+    let shell = makeSession(
+      status: "running",
+      runtimeState: "running",
+      toolType: "shell",
+      startedAt: iso(now)
+    )
+    let shellFocus = workCountedRowFocus(
+      session: shell,
+      summary: nil,
+      archived: false,
+      laneWaiting: false,
+      seen: false,
+      busySubagentParent: false,
+      nestedChild: true,
+      now: now
+    )
+    XCTAssertEqual(shellFocus?.status, .working)
+    XCTAssertEqual(shellFocus?.holdsOut, false)
+    XCTAssertFalse(workLaneFoldsIntoWorking([seen, shellFocus]))
+    XCTAssertFalse(workLaneFoldsIntoWorking([shellFocus]))
+    XCTAssertTrue(workLaneFoldsIntoWorking([runningFocus, shellFocus]))
+    XCTAssertEqual(workRollUpLaneFocus([seen, shellFocus]), .working)
   }
 
   func testLaneFocusFoldRuleHandlesScheduledAndMissedWakesAndSubagents() {

@@ -129,6 +129,11 @@ function workRowFocus(args: {
   }
 }
 
+/** Agent chats and tracked agent CLIs; plain shells are not agents. */
+function isAgentSession(session: TerminalSessionSummary): boolean {
+  return isChatToolType(session.toolType) || isTrackedAgentCliToolType(session.toolType);
+}
+
 export type WorkLaneFocus = {
   /** Highest-priority status among the lane's live rows; null when it has none. */
   status: WorkLaneFocusStatus | null;
@@ -143,8 +148,10 @@ export const EMPTY_WORK_SEEN_AT: Readonly<Record<string, string>> = {};
  *
  * It folds when every live row is busy (Working/Waiting) or already-seen Done,
  * and at least one is actually busy: a lane holding only finished rows is not
- * working, it is waiting to be settled. `launching` counts launches with no
- * session row yet, which are busy by definition.
+ * working, it is waiting to be settled. Only agent rows count as busy: a plain
+ * shell (a dev server, an App Control shell) can run forever, so it must not
+ * keep a lane folded once its chat is done. `launching` counts launches with
+ * no session row yet, which are busy by definition.
  *
  * Nested rows (attached shells, subagents) can raise a hand and so hold their
  * lane out, but a finished nested row cannot: nobody opens a helper to mark it
@@ -185,7 +192,7 @@ export function summarizeLaneFocus(args: {
     }
     if (status === null || STATUS_RANK[row.status] < STATUS_RANK[status]) status = row.status;
     if (row.holdsOut) heldOut = true;
-    else if (row.status === "working" || row.status === "waiting") busy += 1;
+    else if ((row.status === "working" || row.status === "waiting") && isAgentSession(session)) busy += 1;
   }
   return { status, folds: !heldOut && busy > 0 };
 }
@@ -312,7 +319,7 @@ export function workFocusQueue(args: {
   const ids: string[] = [];
   for (const session of args.sessions) {
     if (args.foldedLaneIds.has(session.laneId)) continue;
-    if (!isChatToolType(session.toolType) && !isTrackedAgentCliToolType(session.toolType)) continue;
+    if (!isAgentSession(session)) continue;
     const row = workRowFocus({
       session,
       filingBucket: args.filingBuckets.get(session.id),
