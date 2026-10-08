@@ -530,6 +530,8 @@ function SearchResults({
   onPlaySong: (index: number) => void;
 }) {
   const top = pickTopResult(term, results);
+  // The top result is not repeated in the shelves below it.
+  const artists = results.artists.filter((a) => a.id !== top?.id);
   const songs = results.songs;
   const firstSongs = songs.slice(0, 5);
   const moreSongs = songs.slice(5, 15);
@@ -586,7 +588,7 @@ function SearchResults({
           </section>
         ) : null}
       </div>
-      {results.artists.length ? <TileSection title="Artists" items={results.artists.slice(0, 10)} onOpen={onOpen} shelf /> : null}
+      {artists.length ? <TileSection title="Artists" items={artists.slice(0, 10)} onOpen={onOpen} shelf /> : null}
       {results.albums.length ? <TileSection title="Albums" items={results.albums} onOpen={onOpen} onPlay={onPlayContainer} shelf /> : null}
       {moreSongs.length ? (
         <section className="ade-music-section">

@@ -1,9 +1,9 @@
 # Music
 
-The Music top tab plays Apple Music inside ADE with ADE's own UI: search,
-library, recently played, an Up Next queue and a player. A mini player sits in
-the top bar on every tab while a song is loaded. The home page's Now Playing
-widget reads the same renderer store.
+The Apple Music top tab plays Apple Music inside ADE with ADE's own UI: search,
+library, recently played, an Up Next queue and a player. The tab exists only
+while music is on, and the tab itself is the mini player. The home page's Now
+Playing widget reads the same renderer store.
 
 ## The player
 
@@ -17,12 +17,19 @@ One visual language in three sizes (`MusicPlayer.tsx`):
   choice is remembered (`localStorage` `ade.music.playerCard`).
 - **Bottom bar** when the card is folded or the window is narrow: the same
   parts in one row. Only one of the two is mounted at a time.
-- **Top-bar mini player** on every tab: round artwork, title and artist (opens
-  the Music tab), play/pause and next, and a 2px progress line.
+- **The Apple Music tab** in the tab strip (`MusicTabContent.tsx`): the whole
+  cover (never cropped), the title, play/pause, and a 2px progress line along
+  the tab's bottom edge. There is no other top-bar music control.
+- **Home Now Playing widget** (`home/widgets/NowPlayingWidget.tsx`): a frosted
+  card after `tmp/refs/audio-player.reference.tsx`, built from the same
+  `MusicSlider` and `PlayerIconButton`. It shows ADE's player when a song is
+  loaded (real seek, shuffle, repeat; the cover opens the tab) and otherwise the
+  computer's media session (`HomeNowPlayingState.source` and `session.app` say
+  which, ready for more sources).
 
 The scrubber and volume are `MusicSlider`: click or drag anywhere (the pointer
 is captured, so a drag may leave the track), or use the arrow, Page, Home and
-End keys. Only `MusicSeek` and `MusicMiniProgress` re-render on the position
+End keys. Only `MusicSeek` and the tab's progress line re-render on the position
 tick (twice and once a second); the store keeps `nowPlaying` and `host` objects
 stable across the main process's once-a-second pushes, so nothing else does.
 Buttons grow on hover and press and the fill springs on a real jump; all of
@@ -36,8 +43,27 @@ the preview locally. It is remembered in `localStorage`
 (`ade.music.devPreview`); `window.__adeMusicPreview(null)` turns it off. A
 packaged build compiles the hook out.
 
-Status (2026-10-08): **Windows works up to sign-in; playback after sign-in is
-not yet verified by a person.** macOS shows "Music on Mac is coming".
+**Before Connect** the tab is not dead: catalog search, album and playlist
+pages and the charts (`/v1/catalog/{sf}/charts`, developer token only) work,
+and MusicKit plays catalog songs as 30-second previews. The signed-out page is
+a hero over a mosaic of chart album art with Connect, what you get and a
+privacy line, then popular songs and albums.
+
+**Errors** never reach the UI raw: `friendlyMusicError` in `musicStore.ts` maps
+known causes (a credential that can't be decrypted, cancelled sign-in, no
+subscription, rate limits, no network) to a sentence, and the alert offers Try
+again.
+
+**Branding.** Apple's identity guidelines allow only official, unmodified
+Apple Music artwork. ADE uses Apple's "Listen on Apple Music" badge
+(`music/assets/listen-on-apple-music-badge.svg`, downloaded unmodified from
+`toolbox.marketingtools.apple.com/api/badges/listen-on-apple-music/badge/en-us`)
+for attribution and as the Apple Music buttons (home header, Now Playing
+widget). Everything else uses ADE's own neutral glyph, never a look-alike of
+Apple's icon.
+
+Status (2026-10-08): **Windows plays full tracks after sign-in (verified by the
+user).** macOS shows "Music on Mac is coming".
 
 ## How it works
 
@@ -88,6 +114,25 @@ not: it can mean "no subscription").
   the profile prefers the light colour scheme because Apple's dark sign-in has
   near-invisible buttons. Exits on stdin EOF, `{"cmd":"quit"}`, or when the
   ADE process it was given (`--parent-pid`) exits.
+- **The sign-in window must be shown with an explicit `SW_SHOW`.** ADE spawns
+  the host with `windowsHide`, so its STARTUPINFO says `SW_HIDE`, and Windows
+  applies that to the process's first plain `Form.Show()`: the form reports
+  Visible while Win32 keeps it hidden. `Present()` shows it with `SW_SHOW` and
+  brings it in front by attaching to the foreground thread's input (a
+  background process may not take the foreground otherwise), flashing the
+  taskbar button if Windows still refuses. Host commands `{"cmd":"showAuth"}`
+  and `{"cmd":"closeAuth"}` back the tab's "Show sign-in window" and "Cancel".
+- **Apple's Allow access screen** takes the app name from `app.name` and the
+  icon from `<link rel="apple-music-app-icon">` on the page; the page sets
+  "ADE" and serves `page/ade-icon.png` from its own https origin. The line
+  under the name on that screen comes from the Media ID's description in the
+  Apple Developer portal (Certificates, Identifiers & Profiles → Identifiers →
+  Media IDs → `media.com.ade.music`), not from code.
+- **Memory.** WebView2 runs with `--disable-gpu --renderer-process-limit=1
+  --disable-extensions` and a few Edge features off: 248 MB → 141 MB private
+  across the process tree while a song plays (measured 2026-10-08).
+  `ADE_MUSIC_HOST_GPU=1` keeps the GPU process; `ADE_MUSIC_HOST_MUTED=1` mutes
+  the host (test instances and automation).
 - `page/player.js`: the MusicKit control script. Commands: `configure`,
   `authorize`, `unauthorize`, `state`, `queue`, `playItems`, `playCollection`,
   `pause`, `resume`, `toggle`, `stop`, `next`, `prev`, `seek`, `volume`,
@@ -137,11 +182,13 @@ useMusicNowPlaying(): {
 useMusicPosition(intervalMs = 500): number  // seconds, ticks while playing
 useMusicState(selector)                      // the full MusicState; select fields, not the whole object
 useMusicLike(): { liked, canLike, toggle }   // Love for the playing song, shared by every button
+friendlyMusicError(raw): string | null       // plain words for any Music failure
 musicActions.toggle() / play() / pause() / next() / previous() / seek(s)
 musicActions.setVolume(0..1) / setShuffle(bool) / setRepeat(0|1|2)
 musicActions.playItems(ids, index?, shuffle?) / playCollection(kind, id, index?, shuffle?)
 musicActions.playNext(ids) / playLater(ids) / playAt(index)
 musicActions.connect() / disconnect() / warm() / open()  // open() shows the Music tab
+musicActions.showSignIn() / cancelSignIn() / unload()
 formatMusicTime(seconds)
 ```
 
@@ -150,10 +197,13 @@ formatMusicTime(seconds)
 
 ## Entry points
 
-- Top bar: the music-note button (no song loaded) or the mini player.
+- Home page: the Apple Music badge button beside Browser, and the Now Playing
+  widget (its Apple Music badge, or its cover while ADE's player is loaded).
 - Shortcut: **Mod+Shift+M** (`shell.music.open`, rebindable).
-- The Music top tab (`/music`) is machine-level like Chats and Browser; closing
-  the tab does not stop the music.
+- The Apple Music tab (`/music`) is machine-level like Chats and Browser. The
+  tab open is music on: **closing it pauses and unloads the player** (no
+  confirm: closing is the stop gesture, and nothing is lost), keeping the queue
+  and second, so reopening shows the last song paused where it stopped.
 - Space toggles play/pause while the Music tab is in front and no field has focus.
 
 ## Source file map
@@ -166,7 +216,7 @@ formatMusicTime(seconds)
 | `apps/desktop/src/main/services/music/appleMusicApi.ts` | Apple Music API client and item normalization. |
 | `apps/desktop/src/main/services/music/musicDeveloperToken.ts` | Dev-only local minting and the Worker fetch. |
 | `apps/desktop/src/main/services/music/registerMusicIpc.ts` | IPC handlers (ADE renderer only) and app wiring. |
-| `apps/desktop/src/renderer/components/music/` | `MusicPage`, `MusicPlayer` (card, slider, transport, volume, Love, artwork backdrop), `MusicNowPlayingBar`, `MusicTopBarControl`, `musicParts`, `musicStore`, `musicTab`, `music.css`. |
+| `apps/desktop/src/renderer/components/music/` | `MusicPage`, `MusicPlayer` (card, slider, transport, volume, Love, artwork backdrop), `MusicNowPlayingBar`, `MusicTabContent` (the tab as player), `MusicWelcome` (signed-out page, Connect, sign-in controls), `MusicAccount` (rail account menu), `musicParts`, `musicStore`, `musicTab`, `music.css`, `assets/`. |
 | `apps/desktop/native/ADEMusicHostWin/` | The Windows player host and its page. |
 | `apps/desktop/scripts/build-music-host-win.mjs` | Reproducible host build. |
 | `apps/account-directory/src/musicDeveloperToken.ts` | The Worker route that mints developer tokens. |
