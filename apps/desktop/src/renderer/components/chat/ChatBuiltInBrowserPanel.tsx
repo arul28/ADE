@@ -814,7 +814,7 @@ export function ChatBuiltInBrowserPanel({
     }
     setMessage({ tone: "info", text: messageText });
     return contextItem;
-  }, [onAddAttachment, onAddContext, runtimePin, sessionId]);
+  }, [agentChatApi, onAddAttachment, onAddContext, runtimePin, sessionId]);
 
   /**
    * Capture the frame the underlay paints, without touching the UI.
@@ -1567,7 +1567,7 @@ export function ChatBuiltInBrowserPanel({
       label: domItem ? "Browser capture + DOM attached." : "Browser capture attached.",
     });
     restoreLiveBrowserView();
-  }, [attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, runtimePin, sessionId, withBrowserScope]);
+  }, [agentChatApi, attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, runtimePin, sessionId, withBrowserScope]);
 
   const handleBrowserCapturePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (!captureImageDataUrl || !captureBase?.width || !captureBase.height) return;
@@ -2827,7 +2827,7 @@ export function ChatBuiltInBrowserPanel({
       onKeyDownCapture={handlePanelKeyDown}
       className="flex h-full min-h-0 min-w-0 flex-col font-sans text-[12px] text-fg/75"
     >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-fg/[0.08] bg-[var(--color-bg)]">
+      <div className="ade-browser-frame flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-fg/[0.08] bg-[var(--color-bg)]">
         <BrowserTabStrip
           stripRef={tabStripRef}
           tabs={orderedBrowserTabs}

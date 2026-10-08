@@ -93,7 +93,7 @@ html[data-scene="image"] .ade-chat-scene {
 html[data-scene="image"] .ade-chat-scene .ade-chat-timeline-pane { background: transparent; }
 /* The Browser top tab: the frame and toolbar are a plane on the picture too;
    the page itself keeps its solid surface (sites draw on it). */
-html[data-scene="image"] .ade-chat-scene [data-testid="browser-panel"] > div:first-child {
+html[data-scene="image"] .ade-chat-scene .ade-browser-frame {
   border-color: var(--kit-card-edge);
   background: var(--kit-card-bg);
   backdrop-filter: var(--kit-card-blur);
