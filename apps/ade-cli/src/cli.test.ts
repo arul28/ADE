@@ -1981,6 +1981,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "list"])).toEqual({
       kind: "execute",
       label: "projects list",
+      machineOnly: true,
+      machineAutoStart: true,
       // The list `--all-machines` merges; `projects add` below must not carry it.
       machineList: "projects",
       formatter: "projects-list",
@@ -1989,6 +1991,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["project", "add", "/tmp/project"])).toEqual({
       kind: "execute",
       label: "projects add",
+      machineOnly: true,
+      machineAutoStart: true,
       formatter: "projects-list",
       steps: [
         {
@@ -2005,6 +2009,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "remove", "project_abc"])).toEqual({
       kind: "execute",
       label: "projects remove",
+      machineOnly: true,
+      machineAutoStart: true,
       steps: [
         {
           key: "result",
@@ -2018,6 +2024,8 @@ describe("ADE CLI", () => {
     ).toEqual({
       kind: "execute",
       label: "projects touch",
+      machineOnly: true,
+      machineAutoStart: true,
       formatter: "projects-list",
       steps: [
         {
@@ -2030,6 +2038,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "inspect", "/tmp/worktree"])).toEqual({
       kind: "execute",
       label: "projects inspect",
+      machineOnly: true,
+      machineAutoStart: true,
       steps: [
         {
           key: "result",
