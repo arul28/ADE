@@ -3221,6 +3221,20 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   }
 }
 
+/// One notice for the Hub. The id lets the same words show twice in a row.
+struct HubNotice: Equatable, Identifiable {
+  let id = UUID()
+  let message: String
+  let createdAt = Date()
+
+  /// A notice older than this is about a tap the user has moved past.
+  static let maxAge: TimeInterval = 60
+
+  func isFresh(now: Date = Date()) -> Bool {
+    now.timeIntervalSince(createdAt) < Self.maxAge
+  }
+}
+
 enum WorkSessionNavigationDestination: Equatable {
   case activeWork
   case hub
@@ -4269,7 +4283,13 @@ final class SyncService: ObservableObject {
   /// host confirms that a Cursor API key/OAuth credential is available.
   @Published private(set) var cursorCloudConnectionStatus: CursorCloudConnectionStatus?
   @Published var requestedWorkLaneNavigation: WorkLaneNavigationRequest?
-  @Published var requestedWorkSessionNavigation: WorkSessionNavigationRequest?
+  @Published var requestedWorkSessionNavigation: WorkSessionNavigationRequest? {
+    didSet { armWorkSessionNavigationWatchdog() }
+  }
+  /// A short line the Hub shows once: why a tap landed on the Hub instead of
+  /// where it pointed. The Hub consumes it and sets it back to nil.
+  @Published var hubNotice: HubNotice?
+  var workSessionNavigationWatchdog: Task<Void, Never>?
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
   @Published var requestedPrNavigation: PrNavigationRequest?
@@ -4867,6 +4887,92 @@ final class SyncService: ObservableObject {
   func closeProjectHub() {
     guard activeProjectId != nil else { return }
     projectHubPresented = false
+  }
+
+  // MARK: - Taps that cannot land
+
+  /// How long a session link from outside the app (a push, a widget, the Live
+  /// Activity, a deep link) may stay unresolved before the phone stops waiting
+  /// and says why.
+  static let workSessionNavigationTimeout: TimeInterval = 10
+
+  /// The longest the watchdog waits on a machine switch still in flight.
+  static let machineSwitchWaitCap: TimeInterval = 60
+
+  /// Every tap must land somewhere visible. When one cannot reach where it
+  /// pointed, drop the pending request, close the drawer, show the Hub, and
+  /// tell the user why in one line.
+  func landOnHub(notice: String) {
+    if requestedWorkSessionNavigation != nil {
+      requestedWorkSessionNavigation = nil
+    }
+    // Only the Activity drawer closes: it holds nothing the user typed. The
+    // Linear, Cursor Cloud and GitHub Issues panes can hold a draft, and a
+    // timed-out tap must never throw that away to show a notice.
+    attentionDrawerPresented = false
+    showProjectHub()
+    hubNotice = HubNotice(message: notice)
+  }
+
+  /// A pane is up over the Hub. A Hub notice waits until it closes.
+  var hubIsCoveredBySheet: Bool {
+    linearPanePresented || cursorCloudPanePresented || githubIssuesPanePresented
+  }
+
+  /// Starts (or stops) the timer for the current session request. Only an
+  /// external request is timed: an in-app producer is already on its machine.
+  func armWorkSessionNavigationWatchdog() {
+    workSessionNavigationWatchdog?.cancel()
+    workSessionNavigationWatchdog = nil
+    guard let request = requestedWorkSessionNavigation, request.origin == .external else { return }
+    workSessionNavigationWatchdog = Task { @MainActor [weak self] in
+      var deadline = Date().addingTimeInterval(Self.workSessionNavigationTimeout)
+      while true {
+        let wait = deadline.timeIntervalSinceNow
+        if wait > 0 {
+          try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        }
+        guard !Task.isCancelled, let self,
+              self.requestedWorkSessionNavigation?.id == request.id else { return }
+        // Never pull the Wake & open prompt away from someone reading it, and
+        // never call a machine switch that is still connecting a failure (a
+        // move to another machine, or a push for one, can take longer than
+        // the window). Wait for either to finish, then give the open a fresh
+        // window. The switch wait is capped: the connect has its own budget,
+        // and this only guards against a marker nobody cleared.
+        let switchWaitEnds = Date().addingTimeInterval(Self.machineSwitchWaitCap)
+        @MainActor func stillBusy() -> Bool {
+          self.pendingMachineWake != nil
+            || (self.accountNavigationInFlight != nil && Date() < switchWaitEnds)
+        }
+        guard stillBusy() else { break }
+        while stillBusy() {
+          try? await Task.sleep(nanoseconds: 500_000_000)
+          if Task.isCancelled { return }
+        }
+        deadline = Date().addingTimeInterval(Self.workSessionNavigationTimeout)
+      }
+      self?.landOnHub(notice: self?.unresolvedNavigationNotice(for: request) ?? "ADE could not open that chat.")
+    }
+  }
+
+  /// Why a session request did not open, naming the machine when one is known:
+  /// "Arul's Mac Studio is offline."
+  func unresolvedNavigationNotice(for request: WorkSessionNavigationRequest) -> String {
+    let machineKey = navigationMachineKey(
+      rawMachineKey: request.accountMachineKey,
+      sessionId: request.ownerResolutionSessionId
+    )
+    guard let machineKey,
+          let machine = AccountService.shared.machines.first(where: { $0.machineKey == machineKey })
+    else {
+      return "ADE could not open that chat."
+    }
+    let name = machine.displayName
+    if accountMachineIsCurrent(machineKey) {
+      return "ADE could not find that chat on \(name)."
+    }
+    return machine.online ? "ADE could not reach \(name)." : "\(name) is offline."
   }
 
   func applyIncomingProjectHostSnapshot(_ snapshot: SyncHostReadinessSnapshot?, retriesExhausted: Bool = false) {
@@ -8478,6 +8584,23 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Is this account machine the one the phone is attached to, whether or not
+  /// the socket is up yet? Lets a cold launch tell "the owner is the machine we
+  /// are reconnecting to" apart from "the owner is another machine".
+  func accountMachineIsFocused(_ rawMachineKey: String?) -> Bool {
+    guard let machine = syncAccountMachineNavigationTarget(
+      rawMachineKey: rawMachineKey,
+      machines: AccountService.shared.machines
+    ) else { return false }
+    return syncAccountMachineNavigationIsCurrent(
+      targetDeviceId: syncNonEmpty(machine.deviceId),
+      activeHostIdentity: syncNonEmpty(
+        activeHostProfile?.hostIdentity ?? activeHostProfile?.lastHostDeviceId
+      ),
+      connectionState: .connected
+    )
+  }
+
   /// Live wake prompt, or nil. The app root presents it; the only writer is
   /// `SyncService+MachineWake.swift`, which is why the setter is internal
   /// rather than `private(set)` — Swift's access control cannot scope a setter
@@ -8511,9 +8634,14 @@ final class SyncService: ObservableObject {
   ///     machine of a link minted before links carried one. Callers holding a
   ///     `WorkSessionNavigationRequest` must use the overload above rather than
   ///     reading a session id off it here.
+  ///   - promptToWake: false for an action that runs with ADE in the
+  ///     background (a notification's Approve or Deny). Nobody can answer the
+  ///     Wake & open sheet there, so a sleeping machine gets one bounded
+  ///     connect attempt instead of a prompt.
   func ensureAccountMachineForNavigation(
     _ rawMachineKey: String?,
-    sessionId: String? = nil
+    sessionId: String? = nil,
+    promptToWake: Bool = true
   ) async -> Bool {
     // "The link named no machine" is not "the current machine is fine". It used
     // to be, and that is how a lock-screen tap opened a MacBook chat against a
@@ -8537,7 +8665,7 @@ final class SyncService: ObservableObject {
     let id = UUID()
     let task = Task { @MainActor [weak self] in
       guard let self else { return false }
-      return await self.performAccountMachineNavigation(machineKey)
+      return await self.performAccountMachineNavigation(machineKey, promptToWake: promptToWake)
     }
     accountNavigationInFlight = (id, machineKey, task)
     let result = await task.value
@@ -8547,7 +8675,10 @@ final class SyncService: ObservableObject {
     return result
   }
 
-  private func performAccountMachineNavigation(_ machineKey: String) async -> Bool {
+  private func performAccountMachineNavigation(
+    _ machineKey: String,
+    promptToWake: Bool
+  ) async -> Bool {
     var machine = syncAccountMachineNavigationTarget(
       rawMachineKey: machineKey,
       machines: AccountService.shared.machines
@@ -8595,7 +8726,7 @@ final class SyncService: ObservableObject {
       lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt),
       sleepState: machine.sleepState,
       sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt)
-    ) else {
+    ), promptToWake else {
       return await pairWithAccountMachine(machine, authorization: authorization)
     }
     // Loops so a failed wake retries from the same card. Every pass ends in a

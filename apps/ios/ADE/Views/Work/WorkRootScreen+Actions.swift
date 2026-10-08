@@ -819,10 +819,16 @@ extension WorkRootListScreen {
     fresh.append(WorkSessionRoute(sessionId: request.sessionId))
     path = fresh
     syncService.persistOpenWorkSessionRoute(sessionId: request.sessionId)
+    // The chat is open: clear the request now, which also stops the outside-tap
+    // watchdog. The acknowledgement below can take as long as the relay's
+    // timeout, and holding the request across it let the watchdog close a chat
+    // that had already opened.
+    if syncService.requestedWorkSessionNavigation?.id == request.id {
+      syncService.requestedWorkSessionNavigation = nil
+    }
     await AccountService.shared.acknowledgeAttentionNavigation(
       request.attentionItemId
     )
-    syncService.requestedWorkSessionNavigation = nil
   }
 
   @MainActor

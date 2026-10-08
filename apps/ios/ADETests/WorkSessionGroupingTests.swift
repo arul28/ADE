@@ -1580,23 +1580,25 @@ final class WorkSessionGroupingTests: XCTestCase {
 
   /// Every canonical phase answers to exactly one of the three phase-derived
   /// chips — the totality the two old switches each had to maintain separately.
+  /// The desktop board's column for each phase: a failure is the user's move
+  /// (Needs you), a quiet run is still Working, and every resting phase is
+  /// Done. Waiting is never phase-derived.
   func testEveryPhaseFilesUnderExactlyOnePhaseDerivedChip() {
-    let phases: [CanonicalSessionPhase] = [
-      .starting, .running, .needsYou, .failed, .stale, .ready, .idle, .stopped, .ended, .settled,
+    let expected: [(CanonicalSessionPhase, WorkSessionStatusFilter)] = [
+      (.needsYou, .needsYou),
+      (.failed, .needsYou),
+      (.starting, .working),
+      (.running, .working),
+      (.stale, .working),
+      (.ready, .done),
+      (.idle, .done),
+      (.stopped, .done),
+      (.ended, .done),
+      (.settled, .done),
     ]
-    let phaseDerivedChips: [WorkSessionStatusFilter] = [.needsYou, .working, .done]
-    for phase in phases {
-      let chip = workStatusFilterPartition(phase: phase)
-      XCTAssertTrue(
-        phaseDerivedChips.contains(chip),
-        "\(phase) filed under \(chip.title), which is not a phase-derived chip"
-      )
+    for (phase, chip) in expected {
+      XCTAssertEqual(workStatusFilterPartition(phase: phase), chip, "\(phase)")
     }
-    XCTAssertEqual(workStatusFilterPartition(phase: .needsYou), .needsYou)
-    XCTAssertEqual(workStatusFilterPartition(phase: .stale), .working)
-    XCTAssertEqual(workStatusFilterPartition(phase: .ready), .done)
-    XCTAssertEqual(workStatusFilterPartition(phase: .idle), .done)
-    XCTAssertEqual(workStatusFilterPartition(phase: .failed), .done)
   }
 
   // MARK: - Machine filter

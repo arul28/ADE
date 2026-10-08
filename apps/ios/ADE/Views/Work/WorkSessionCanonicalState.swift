@@ -58,7 +58,7 @@ extension SessionBadgeKind {
   /// `CanonicalSessionPhase.stale`, `AccountAttentionPhase.stale`,
   /// `sessionStaleAfterSeconds`. The WORD a reader sees is a separate question
   /// and it is answered by `label` on the group below, which says "Idle" — the
-  /// same word the publisher, the notch and the Activity sheet use. Renaming the
+  /// same word the publisher and the Activity sheet use. Renaming the
   /// case would put a third spelling into the derivation chain; mapping it puts
   /// none.
   ///
@@ -357,8 +357,8 @@ private func workSessionPhasePresentation(
 /// The phase table (`ActivityPhaseVocabulary`) answers RAW WIRE PHASES and is
 /// shared with the widget extension, so it still calls the gone-quiet phase
 /// "Stale" — correct for a publisher that literally sends that word. A Work row
-/// is not answering a wire phase: it is one of the six states the notch, the
-/// Activity sheet and the widget header all count by, where that state is
+/// is not answering a wire phase: it is one of the six states the Activity
+/// sheet and the widget header have counted by, where that state is
 /// `idle` and reads "Idle". Rendering the phase word here is what left a row
 /// saying "Stale" beside a sheet counting the same session under "Idle".
 ///
@@ -1073,7 +1073,7 @@ func workSnoozeWakeLabel(
 ///
 /// The glyph is drawn for every state, not just the two whose word is ambiguous.
 /// Shape carries as much of the meaning as hue does, and the six marks are the
-/// notch/dropdown/Activity-sheet language verbatim — a capsule that showed the
+/// desktop Activity and Activity-sheet language verbatim — a capsule that showed the
 /// mark for only `stale` and `planning` meant a reader who had learnt the six
 /// glyphs elsewhere met a different vocabulary here.
 struct WorkSessionStatusCapsule: View {

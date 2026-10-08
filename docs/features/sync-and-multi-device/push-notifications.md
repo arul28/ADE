@@ -883,10 +883,11 @@ inboxes. Tapping an item follows its exact destination. Remote items expose only
 actions that are safe without assuming the currently paired host owns them.
 
 Rows are unified across the drawer, the widgets, and the Live Activity through
-`ActivityRowPresentation.swift`, which owns iOS's copy of the six-group table
-(`ActivityStateGroup`, with its wire spelling kept separate from the Swift case
-name and lenient aliases on decode) and is pinned by the shared conformance
-fixture. A row leads with a state mark — the group's glyph on a tone-tinted disc,
+`ActivityRowPresentation.swift`, which owns iOS's copy of the four-column rule
+(`activityBoardColumn`, pinned by `activityBoardColumn.cases.json`) and of the
+older six-group table (`ActivityStateGroup`, pinned by its own fixture). The
+drawer and the Hub filter with the same five chips (All plus the four
+columns); the drawer groups Sessions by column with Done folded. A row leads with a state mark — the group's glyph on a tone-tinted disc,
 with a pulse while the work is live — rather than a provider logo plus a separate
 status dot, and the model is a compact brand chip. `chatActivityMode` decodes
 losslessly into `planning` or an unrecognized value, and no `planning` member was
@@ -941,6 +942,22 @@ that does not receive them derives the tally locally. The relay's tally counts
 agent rows only and is account-wide rather than derived from the capped roster —
 counting PR rows there inflated every group they touched, because a pull request
 is not planning.
+
+**iOS rendering.** The Lock Screen is four equal tiles in one row — Needs you,
+Working, Waiting, Done — each an SF Symbol, a big number and a label in the
+column colour; a zero tile dims, and each tile links to
+`ade://activity?state=<column>`. The Dynamic Island's compact leading is the
+Needs-you count (amber) when it is above zero, else the Working count (blue);
+the compact trailing is Working when the leading shows Needs you; the expanded
+island is the four tiles. A frame without `columns` (an older relay) is counted
+from `groups`, or from the run roster. On launch and on foreground the app ends
+every machine-scoped activity at once and never observes its tokens, and keeps
+one account-wide activity. Home Screen small and medium widgets show the same
+four tiles; the rectangular accessory shows four count pairs, the circular one
+the Needs-you count (or Working), and the inline one "2 need you · 5 working".
+
+The rest of this section describes the older row layout that builds predating
+the four tiles still render.
 
 The Lock Screen and Dynamic Island lead with one focused item and show a small
 overflow count instead of presenting a miniature monitoring dashboard. The

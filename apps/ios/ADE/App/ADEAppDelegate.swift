@@ -20,6 +20,10 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         // A push-to-start notification wakes the process before SwiftUI scene
         // tasks are guaranteed to run. Install ActivityKit observers at launch
         // so the newly-created activity and its update token cannot be missed.
+        #if DEBUG
+        // Fixture-screen mode starts none of the app's live machinery.
+        if ADEPreviewScreen.requested != nil { return true }
+        #endif
         MainActor.assumeIsolated {
             LiveActivityService.shared.start()
         }
@@ -256,7 +260,7 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
             }
             await ADEIntentCommandRegistry.dispatch(
                 .approveSession,
-                payload: ["sessionId": sessionId, "itemId": itemId]
+                payload: Self.approvalPayload(sessionId: sessionId, itemId: itemId, userInfo: userInfo)
             )
         case ADEAppDelegate.denyActionIdentifier where !sessionId.isEmpty && !itemId.isEmpty:
             await MainActor.run {
@@ -269,7 +273,7 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
             }
             await ADEIntentCommandRegistry.dispatch(
                 .denySession,
-                payload: ["sessionId": sessionId, "itemId": itemId]
+                payload: Self.approvalPayload(sessionId: sessionId, itemId: itemId, userInfo: userInfo)
             )
         default:
             // Default tap (and any action we don't handle) routes through the
@@ -284,6 +288,22 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
                 DeepLinkRouter.shared.handleNotificationUserInfo(userInfo)
             }
         }
+    }
+
+    /// The Approve/Deny command payload. Carries the push's `accountMachineKey`
+    /// so the command goes to the machine that asked, not the focused one.
+    static func approvalPayload(
+        sessionId: String,
+        itemId: String,
+        userInfo: [AnyHashable: Any]
+    ) -> [String: Any] {
+        var payload: [String: Any] = ["sessionId": sessionId, "itemId": itemId]
+        if let machineKey = (userInfo["accountMachineKey"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !machineKey.isEmpty {
+            payload["accountMachineKey"] = machineKey
+        }
+        return payload
     }
 
     /// Extract a session id from the APNs payload — either the explicit

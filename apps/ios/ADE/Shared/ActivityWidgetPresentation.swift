@@ -42,6 +42,33 @@ public enum ActivityWidgetPresentation {
         URL(string: "ade://activity?state=\(group.wireValue)") ?? activityURL
     }
 
+    /// Where one column tile lands: the Activity drawer, filtered to it.
+    public static func activityURL(for column: ActivityBoardColumn) -> URL {
+        URL(string: "ade://activity?state=\(column.wireValue)") ?? activityURL
+    }
+
+    /// Agent items per board column across the visible feed, all four present.
+    public static func columnCounts(
+        for items: [AccountAttentionItem],
+        now: Date = Date()
+    ) -> [ActivityBoardColumn: Int] {
+        countActivityBoardColumns(agentItems(visibleItems(items, now: now)))
+    }
+
+    /// "2 need you · 5 working" — the live columns in words, nil when all
+    /// three are zero. Done is left out: it is the resting tail, not news.
+    public static func columnSummary(_ counts: [ActivityBoardColumn: Int]) -> String? {
+        let needsYou = counts[.needsYou, default: 0]
+        let working = counts[.working, default: 0]
+        let waiting = counts[.waiting, default: 0]
+        let parts = [
+            needsYou > 0 ? "\(needsYou) need\(needsYou == 1 ? "s" : "") you" : nil,
+            working > 0 ? "\(working) working" : nil,
+            waiting > 0 ? "\(waiting) waiting" : nil,
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     /// One rendered row. The same anatomy on every surface: state glyph in the
     /// phase's tone, then the title, then the phase word, with the scope line
     /// underneath wherever the family has the height for it.
@@ -104,8 +131,7 @@ public enum ActivityWidgetPresentation {
 
     /// The single events line (#21): PR/CI traffic compressed to one sentence,
     /// living inside the agents widget rather than in a widget of its own.
-    /// Agent rows stay agent-only; this is the mirror of the notch's right-wing
-    /// signal slot.
+    /// Agent rows stay agent-only.
     public struct EventSignal: Identifiable, Hashable, Sendable {
         public let id: String
         /// "#1038 checks failing" — already includes the PR number when there

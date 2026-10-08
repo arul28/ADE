@@ -270,7 +270,7 @@ struct HubProjectPresentation: Equatable, Identifiable {
   /// drawn and never what is counted. Child rows are counted too — see
   /// `HubChatRowPresentation.accumulateStateTally`.
   var stateCounts: [HubStateCount] {
-    var tally: [ActivityStateGroup: Int] = [:]
+    var tally: [ActivityBoardColumn: Int] = [:]
     for lane in lanes { lane.accumulateStateTally(into: &tally) }
     return hubTreeStateCounts(tally)
   }
@@ -331,14 +331,14 @@ struct HubLanePresentation: Equatable, Identifiable {
   ///
   /// Every state, not just the live ones, because this summary is now the only
   /// thing the divider says about its rows — the total that used to sit beside
-  /// it is gone. Dropping `idle` and `done` here would leave a lane of quiet
+  /// it is gone. Dropping `done` here would leave a lane of quiet
   /// chats with a blank header instead of the count it used to carry.
   ///
   /// Computed rather than stored, and deliberately outside `renderSignature`:
-  /// every input is a row `stateGroup`, which each row's own signature already
+  /// every input is a row `boardState`, which each row's own signature already
   /// covers, so a stored copy could only ever be a second thing to keep in sync.
   var stateCounts: [HubStateCount] {
-    var tally: [ActivityStateGroup: Int] = [:]
+    var tally: [ActivityBoardColumn: Int] = [:]
     accumulateStateTally(into: &tally)
     return hubTreeStateCounts(tally)
   }
@@ -346,7 +346,7 @@ struct HubLanePresentation: Equatable, Identifiable {
   /// Adds this lane's whole subtree to a running tally, so the project card can
   /// sum its lanes instead of re-walking the tree with its own rules and
   /// arriving at a number the divider below it contradicts.
-  func accumulateStateTally(into tally: inout [ActivityStateGroup: Int]) {
+  func accumulateStateTally(into tally: inout [ActivityBoardColumn: Int]) {
     for row in rows { row.accumulateStateTally(into: &tally) }
   }
 
@@ -377,13 +377,13 @@ struct HubChatRowPresentation: Equatable, Identifiable {
   let providerKey: String?
   let activityLabel: String?
   let statusString: String
-  /// Which of the six canonical states this row is in — the vocabulary the notch,
-  /// the Activity sheet and the widget header all count by.
+  /// Which board column this row is in — the four states the Activity drawer,
+  /// the widgets and the Live Activity all count by.
   ///
-  /// Derived from the chat, not from `statusString`: that string files a failed
-  /// session under the same "ended" bucket as a clean one, so the tree drew the
-  /// identical neutral mark on a run that crashed and a run that finished.
-  let stateGroup: ActivityStateGroup
+  /// Derived from the chat and its lane, not from `statusString`: that string
+  /// files a failed session under the same "ended" bucket as a clean one, and
+  /// cannot see the lane's pull request.
+  let boardState: HubChatBoardState
   let childRows: [HubChatRowPresentation]
   fileprivate let renderSignature: Int
 
@@ -396,13 +396,14 @@ struct HubChatRowPresentation: Equatable, Identifiable {
   /// spawned from a chat is folded into its parent row, so counting only the
   /// top level is how a run that needs you goes unreported on both the lane
   /// divider and the project card.
-  func accumulateStateTally(into tally: inout [ActivityStateGroup: Int]) {
-    tally[stateGroup, default: 0] += 1
+  func accumulateStateTally(into tally: inout [ActivityBoardColumn: Int]) {
+    tally[boardState.column, default: 0] += 1
     for child in childRows { child.accumulateStateTally(into: &tally) }
   }
 
   init(
     chat: RemoteRosterChat,
+    lane: RemoteRosterLane?,
     title: String,
     preview: String?,
     providerKey: String?,
@@ -416,11 +417,11 @@ struct HubChatRowPresentation: Equatable, Identifiable {
     self.providerKey = providerKey
     self.activityLabel = activityLabel
     self.statusString = statusString
-    // Not an init parameter: it is a pure function of `chat`, and a caller that
-    // could pass a different one is a caller that could make the mark disagree
-    // with the row it sits on.
-    let stateGroup = hubChatStateGroup(chat)
-    self.stateGroup = stateGroup
+    // Not an init parameter: it is a pure function of the chat and its lane,
+    // and a caller that could pass a different one is a caller that could make
+    // the mark disagree with the row it sits on.
+    let boardState = hubChatBoardState(chat, lane: lane)
+    self.boardState = boardState
     self.childRows = childRows
     self.renderSignature = hubChatRowRenderSignature(
       chat: chat,
@@ -429,16 +430,21 @@ struct HubChatRowPresentation: Equatable, Identifiable {
       providerKey: providerKey,
       activityLabel: activityLabel,
       statusString: statusString,
-      stateGroup: stateGroup,
+      boardState: boardState,
       childRows: childRows
     )
   }
 
-  static func make(chat: RemoteRosterChat, childRows: [HubChatRowPresentation] = []) -> HubChatRowPresentation {
+  static func make(
+    chat: RemoteRosterChat,
+    lane: RemoteRosterLane? = nil,
+    childRows: [HubChatRowPresentation] = []
+  ) -> HubChatRowPresentation {
     let trimmedTitle = chat.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     let trimmedPreview = chat.preview?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return HubChatRowPresentation(
       chat: chat,
+      lane: lane,
       title: trimmedTitle.isEmpty ? "Untitled chat" : trimmedTitle,
       preview: trimmedPreview.isEmpty ? nil : trimmedPreview,
       providerKey: chat.providerKey,
@@ -520,7 +526,7 @@ private func hubChatRowRenderSignature(
   providerKey: String?,
   activityLabel: String?,
   statusString: String,
-  stateGroup: ActivityStateGroup,
+  boardState: HubChatBoardState,
   childRows: [HubChatRowPresentation]
 ) -> Int {
   var hasher = Hasher()
@@ -536,7 +542,7 @@ private func hubChatRowRenderSignature(
   // string cannot tell apart — a clean end and a failed one — are the two whose
   // marks differ most, so a run that crashed under a row that had ended would
   // keep the wrong glyph until some unrelated field moved.
-  hasher.combine(stateGroup)
+  hasher.combine(boardState)
   hasher.combine(chat.pinned)
   hasher.combine(chat.archived)
   hasher.combine(chat.lastActivityAt)
@@ -586,7 +592,7 @@ func buildHubProjectPresentation(
     .mapValues { chats in
       chats
         .sorted { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
-        .map { HubChatRowPresentation.make(chat: $0) }
+        .map { HubChatRowPresentation.make(chat: $0, lane: laneById[$0.laneId]) }
     }
   let topLevelChats = visibleChats.filter { !isChildRow($0) }
   let topLevelChatsByLane = Dictionary(grouping: topLevelChats, by: \.laneId)
@@ -596,7 +602,7 @@ func buildHubProjectPresentation(
       .sorted { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
     guard !laneChats.isEmpty else { return nil }
     let rows = laneChats.map { chat in
-      HubChatRowPresentation.make(chat: chat, childRows: childRowsByParentId[chat.id] ?? [])
+      HubChatRowPresentation.make(chat: chat, lane: lane, childRows: childRowsByParentId[chat.id] ?? [])
     }
     return HubLanePresentation(
       lane: lane,
@@ -614,8 +620,8 @@ func buildHubProjectPresentation(
     laneCount: safeRoster.lanes.count,
     chatCount: chatCount,
     lanes: lanes,
-    attentionCount: safeRoster.attentionCount,
-    runningCount: safeRoster.runningCount
+    attentionCount: hubLaneColumnCount(lanes, .needsYou),
+    runningCount: hubLaneColumnCount(lanes, .working)
   )
 }
 
@@ -927,14 +933,14 @@ struct HubChatRow: View, Equatable {
         // whole group is what stops a long chat name from eating the state —
         // the title's flexible frame above is the only child allowed to give.
         HStack(spacing: 5) {
-          if let status = hubChatStateLabel(row.stateGroup) {
+          if let status = row.boardState.label {
             Text(status)
               .font(.system(size: 11, weight: .medium))
-              .foregroundStyle(activityToneColor(row.stateGroup.tone))
+              .foregroundStyle(activityToneColor(row.boardState.tone))
               .lineLimit(1)
           }
 
-          HubStateGlyph(group: row.stateGroup)
+          HubStateGlyph(state: row.boardState)
 
           if let activity = row.activityLabel {
             Text(activity)
@@ -952,7 +958,7 @@ struct HubChatRow: View, Equatable {
     // Always the state word, including the resting ones the row shows as a glyph
     // alone. The button overrides its children's labels, so a mark with no word
     // beside it is silent unless the word is stated here.
-    .accessibilityLabel("\(row.title), \(row.stateGroup.label)")
+    .accessibilityLabel("\(row.title), \(row.boardState.accessibilityLabel)")
     .accessibilityHint(row.chat.isChatTool ? "Opens chat." : "Opens session.")
     // The hub uses a scrolling LazyVStack (not a List), where SwiftUI
     // `.swipeActions` are unavailable — so pin/archive/close are offered through

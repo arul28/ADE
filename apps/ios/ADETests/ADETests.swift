@@ -12414,32 +12414,6 @@ final class ADETests: XCTestCase {
     XCTAssertNil(state.runs[1].accountMachineKey)
   }
 
-  func testAgentRunsContentStateDecodesPullRequestRows() throws {
-    let json = Data("""
-    {
-      "updatedAt": 1720000000,
-      "activeCount": 0,
-      "runs": [],
-      "prs": [
-        { "id": "pr-42", "prNumber": 42, "title": "Ship mobile PR view", "phase": "merge_ready", "lane": "Mobile PR lane", "repoOwner": "arul28", "repoName": "ADE", "accountMachineKey": "machine-studio", "updatedAt": 1720000000 }
-      ]
-    }
-    """.utf8)
-
-    let state = try JSONDecoder().decode(ADEAgentRunsAttributes.ContentState.self, from: json)
-    XCTAssertEqual(state.prs.count, 1)
-    XCTAssertEqual(state.prs[0].prNumber, 42)
-    XCTAssertEqual(state.prs[0].resolvedPhase, .mergeReady)
-    XCTAssertEqual(state.prs[0].subtitle, "Mobile PR lane")
-    XCTAssertEqual(state.prs[0].repoOwner, "arul28")
-    XCTAssertEqual(state.prs[0].repoName, "ADE")
-    XCTAssertEqual(state.prs[0].accountMachineKey, "machine-studio")
-    XCTAssertEqual(
-      state.prs[0].deepLinkURL?.absoluteString,
-      "ade://pr/arul28/ADE/42?accountMachineKey=machine-studio"
-    )
-  }
-
   func testAgentRunPhaseLabelsMatchTheDesktopVocabulary() {
     // The widgets mirror `sessionStatusPresentation.ts` word-for-word: the
     // in-flight phase reads "Working" (not "Running") and the terminal one

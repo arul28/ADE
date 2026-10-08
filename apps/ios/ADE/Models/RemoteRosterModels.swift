@@ -104,6 +104,9 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   var snoozedAt: String? = nil
   var wokeAt: String? = nil
   var wokeReason: String? = nil
+  /// The chat's next scheduled wake, from a booted host. A finished chat with a
+  /// pending wake files under Waiting. Optional: older hosts omit it.
+  var nextWakeAt: String? = nil
   /// CTO/identity sessions have a dedicated surface and must not enter the
   /// ordinary project roster. The field is optional so older hosts remain
   /// decodable; clients use it to reject stale or legacy leaked rows.
@@ -244,6 +247,10 @@ struct RemoteRosterLane: Codable, Equatable, Identifiable {
   var icon: String?
   var laneType: String?
   var branchRef: String?
+  /// Why a running chat in this lane waits rather than works: the lane's open
+  /// PR has CI running (`ci`) or a review requested (`review`). Older hosts
+  /// omit it.
+  var prWaitingReason: String? = nil
 }
 
 struct RemoteRosterProject: Codable, Equatable, Identifiable {

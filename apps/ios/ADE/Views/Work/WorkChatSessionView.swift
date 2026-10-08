@@ -112,6 +112,70 @@ struct WorkChatOpeningSessionPlaceholder: View {
   }
 }
 
+/// The chat's own frame while it connects: the destination's header stays on
+/// top (title and machine), a centred "Connecting to <machine>…" line fills the
+/// thread, and the composer sits at the bottom, disabled until the chat loads.
+/// It replaces a bare top-aligned skeleton that showed no header and no
+/// composer, and read as a broken screen.
+struct WorkChatConnectingFrame: View {
+  let machineName: String?
+
+  private var connectingText: String {
+    guard let machineName = machineName?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !machineName.isEmpty else { return "Connecting…" }
+    return "Connecting to \(machineName)…"
+  }
+
+  var body: some View {
+    VStack(spacing: 0) {
+      Spacer(minLength: 0)
+      VStack(spacing: 10) {
+        ProgressView()
+          .controlSize(.regular)
+        Text(connectingText)
+          .font(.subheadline.weight(.medium))
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+      }
+      .padding(.horizontal, 32)
+      .accessibilityElement(children: .combine)
+      .accessibilityAddTraits(.updatesFrequently)
+      Spacer(minLength: 0)
+      disabledComposer
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .adeScreenBackground()
+    .adeInspectable("Work.Chat.Connecting")
+  }
+
+  /// The composer's shape with nothing live in it: you cannot send until the
+  /// chat has loaded, and the frame says so instead of hiding the field.
+  private var disabledComposer: some View {
+    HStack(spacing: 8) {
+      Text("Message")
+        .font(.body)
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      Image(systemName: "arrow.up")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 32, height: 32)
+        .background(ADEColor.textMuted.opacity(0.15), in: Circle())
+    }
+    .padding(.leading, 16)
+    .padding(.trailing, 6)
+    .padding(.vertical, 6)
+    .frame(minHeight: 44)
+    .workChatGlass(in: Capsule(style: .continuous))
+    .opacity(0.6)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Message field")
+    .accessibilityValue("Unavailable while connecting")
+  }
+}
+
 /// `distanceFromTop` is how far the reader has scrolled from the first row, so
 /// it grows downward — the inverse of the geometry-probe `topY` this used to
 /// take, which was published from a per-frame `GeometryReader` riding the
