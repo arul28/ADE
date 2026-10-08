@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.97] - 2026-10-08
+
+### Desktop
+
+- Widget dev home with one chat system, Browser tab, Apple Music, and Now Playing (#1544).
+- Instant chat comments, pushed events for pinned views, half the remote event traffic (#1539).
+- Automation test runs, kept drafts, and older-machine warnings (#1546).
+- Chat, proof, question-decline, PR-settle, Linear agent, dictation, Focus, and watchdog fixes (#1540, #1542, #1543, #1545, #1550, #1551, #1552, #1553).
+
+### iOS
+
+- TestFlight build with the latest mobile changes.
+
 ## [1.2.96] - 2026-10-08
 
 ### Desktop
@@ -2395,7 +2408,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.96...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.97...HEAD
+[1.2.97]: https://github.com/arul28/ADE/compare/v1.2.96...v1.2.97
 [1.2.96]: https://github.com/arul28/ADE/compare/v1.2.95...v1.2.96
 [1.2.95]: https://github.com/arul28/ADE/compare/v1.2.94...v1.2.95
 [1.2.94]: https://github.com/arul28/ADE/compare/v1.2.93...v1.2.94
