@@ -47,6 +47,8 @@ export type FeatureAnalyticsAction =
   | "session_continue_cli"
   | "session_copy_cli"
   | "webhook_url_created"
+  | "safe_test_started"
+  | "live_test_started"
   | "secret_requested"
   | "provider_cli_updated"
   | "notification_sent";
@@ -263,6 +265,25 @@ export function captureWebhookUrlCreatedAnalytics(args: {
   surface: ProductAnalyticsSurface;
 }): void {
   captureFeatureUsedAnalytics({ ...args, feature: "automations", action: "webhook_url_created", outcome: "completed" });
+}
+
+/**
+ * A person started a safe or live test of an automation, or it failed to
+ * start. Never the rule, its steps, the event, or the lanes it made.
+ */
+export function captureAutomationTestAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  mode: "safe" | "live";
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "failed">;
+}): void {
+  captureFeatureUsedAnalytics({
+    analytics: args.analytics,
+    surface: args.surface,
+    feature: "automations",
+    action: args.mode === "live" ? "live_test_started" : "safe_test_started",
+    outcome: args.outcome,
+  });
 }
 
 /**

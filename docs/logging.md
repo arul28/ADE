@@ -275,6 +275,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `chat` | `voice_conversation_started` | `completed` | coarse chat provider family |
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
 | `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
+| `automations` | `safe_test_started`, `live_test_started` | `completed`, `failed` | omitted; never the rule, its steps, the event, or the lanes it made |
 | `updates` | `provider_cli_updated` | `completed`, `failed` | coarse provider family (the ACP CLIs report `other`); never the version, install path, or output |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 
@@ -304,6 +305,16 @@ and 30-per-minute ceilings, and the per-action-and-outcome dedupe holds a burst
 (an agent creating several URLs, or re-asking) to one event per outcome per
 interval. Delivery outcomes are high-frequency and stay local, in the
 per-hook delivery log.
+
+Starting a test of an automation from the builder's Test dialog or
+`ade automations test` records `automations/safe_test_started` or
+`automations/live_test_started` where the test starts: the desktop IPC handler
+(`desktop`) or the `automations.runTest` action (`api`). `failed` means the test
+did not start (a problem in its plan, or the throwaway lane could not be made).
+A preview records nothing. A test is a deliberate click, and the per-action
+and per-outcome dedupe holds a burst of tests to one event per outcome per
+interval, inside the existing `ade_feature_used` 140-per-day and 30-per-minute
+ceilings. What the test did stays in the local run history.
 
 Saving a model price or "Map to" on the Usage page (desktop, web, phone or
 `ade usage prices set`) records `model_price_changed` or

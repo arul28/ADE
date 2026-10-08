@@ -132,7 +132,15 @@ export function RuleHistory({
       </div>
 
       <div className="min-w-0 flex-1 overflow-y-auto">
-        <RunDetail detail={detail} loading={detailLoading} />
+        <RunDetail
+          detail={detail}
+          loading={detailLoading}
+          pin={pin}
+          onChanged={() => {
+            void load();
+            if (selectedRunId) void loadDetail(selectedRunId);
+          }}
+        />
       </div>
     </div>
   );

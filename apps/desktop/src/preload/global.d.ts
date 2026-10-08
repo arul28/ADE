@@ -364,6 +364,9 @@ import type {
   AgentChatUpdateSessionArgs,
   AutomationsEventPayload,
   AutomationManualTriggerRequest,
+  AutomationTestCleanupResult,
+  AutomationTestPlan,
+  AutomationTestRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
@@ -1725,6 +1728,18 @@ declare global {
           args: AutomationManualTriggerRequest,
           pin?: OpenProjectBinding | null,
         ) => Promise<AutomationRun>;
+        planTest: (
+          args: AutomationTestRequest,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutomationTestPlan>;
+        runTest: (
+          args: AutomationTestRequest,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutomationRun>;
+        cleanUpTestRun: (
+          args: { runId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutomationTestCleanupResult>;
         getHistory: (
           args: {
             id: string;

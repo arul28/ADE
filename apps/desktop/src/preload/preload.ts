@@ -222,6 +222,9 @@ import type {
   AutomationWebhookTestResult,
   AutomationWebhookGatewayStatus,
   AutomationManualTriggerRequest,
+  AutomationTestCleanupResult,
+  AutomationTestPlan,
+  AutomationTestRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
@@ -5978,6 +5981,27 @@ const adeBridge = {
         "triggerManually",
         { args },
         () => ipcRenderer.invoke(IPC.automationsTriggerManually, args),
+      ),
+    planTest: async (
+      args: AutomationTestRequest,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AutomationTestPlan> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "planTest", { args }, () =>
+        ipcRenderer.invoke(IPC.automationsPlanTest, args),
+      ),
+    runTest: async (
+      args: AutomationTestRequest,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AutomationRun> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "runTest", { args }, () =>
+        ipcRenderer.invoke(IPC.automationsRunTest, args),
+      ),
+    cleanUpTestRun: async (
+      args: { runId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<AutomationTestCleanupResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "cleanUpTestRun", { args }, () =>
+        ipcRenderer.invoke(IPC.automationsCleanUpTestRun, args),
       ),
     getHistory: async (
       args: {

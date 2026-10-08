@@ -14,7 +14,7 @@ updates:
       - /apps/ade-cli
     schedule:
       interval: daily
-      time: "11:00"
+      time: "21:00"
       timezone: "America/New_York"
     allow:
       - dependency-name: "@anthropic-ai/claude-agent-sdk"

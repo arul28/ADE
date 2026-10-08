@@ -3583,6 +3583,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a local rule
     $ ade automations toggle <id> --enabled true|false
+    $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
+          [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
+                                                     Test a rule with an event. preview shows
+                                                     what a real run does; safe runs in a
+                                                     throwaway lane and only reports posts and
+                                                     pushes; live runs for real and needs --yes.
+                                                     --plan shows a test's plan without running it
+    $ ade automations cleanup-test <run-id>         Delete the lanes a test run made
     $ ade automations run <id> [--lane <id>] [--dry-run]
     $ ade automations trigger <id> [--lane <id>]
                                                      Trigger a rule manually
@@ -17128,6 +17136,57 @@ function buildAutomationsPlan(args: string[]): CliPlan {
           ...(laneId ? { laneId } : {}),
         }),
       ],
+    };
+  }
+
+  if (sub === "test") {
+    const id = requireValue(
+      readValue(args, ["--id"]) ?? firstPositional(args),
+      "rule id",
+    );
+    const mode = readEnumOption(args, ["--mode"], ["preview", "safe", "live"] as const, "--mode") ?? "preview";
+    const prNumber = readIntOption(args, ["--pr"]);
+    const issueNumber = readIntOption(args, ["--issue"]);
+    const linearIssueId = readValue(args, ["--linear"]);
+    const sessionId = readValue(args, ["--chat", "--session"]);
+    const laneId = readLaneId(args);
+    const webhookBody = readJsonFileOption(args, ["--body-file"], "--body-file");
+    const event = {
+      ...(typeof prNumber === "number" ? { pr: { number: prNumber, title: "" } } : {}),
+      ...(typeof issueNumber === "number" ? { issue: { number: issueNumber, title: "" } } : {}),
+      ...(linearIssueId ? { linearIssue: { id: linearIssueId } } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(laneId ? { laneId } : {}),
+      ...(webhookBody !== undefined ? { webhookBody } : {}),
+    };
+    // preview and --plan show the plan and run nothing. A live test posts and
+    // pushes for real, so without --yes it only shows the plan too. A preview
+    // shows what a real run does, as the Test dialog's Preview does.
+    const planOnly = mode === "preview" || readFlag(args, ["--plan"]);
+    const runs = !planOnly && (mode === "safe" || readFlag(args, ["--yes", "-y"]));
+    const testMode = mode === "safe" ? "safe" : "live";
+    return {
+      kind: "execute",
+      label: `automations test ${id}`,
+      steps: [
+        actionStep("result", "automations", runs ? "runTest" : "planTest", {
+          id,
+          mode: testMode,
+          ...(Object.keys(event).length ? { event } : {}),
+        }),
+      ],
+    };
+  }
+
+  if (sub === "cleanup-test") {
+    const runId = requireValue(
+      readValue(args, ["--run"]) ?? firstPositional(args),
+      "run id",
+    );
+    return {
+      kind: "execute",
+      label: `automations cleanup-test ${runId}`,
+      steps: [actionStep("result", "automations", "cleanUpTestRun", { runId })],
     };
   }
 

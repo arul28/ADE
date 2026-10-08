@@ -672,6 +672,21 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { id: string, laneId?: string, dryRun?: boolean, verboseTrace?: boolean }",
       example: "ade actions run automations.triggerManually --input-json '{\"id\":\"nightly-review\",\"dryRun\":true}' --text",
     },
+    planTest: {
+      description: "Show what a safe or live test of one automation will do with an event, step by step. Changes nothing.",
+      input: "object { id: string, mode: \"safe\" | \"live\", event?: { triggerType?, laneId?, sessionId?, pr?: { number, title?, url?, repo?, headBranch?, baseBranch? }, issue?: { number, title? }, linearIssue?: { id, title? }, webhookBody?, label? } }",
+      example: "ade actions run automations.planTest --input-json '{\"id\":\"nightly-review\",\"mode\":\"safe\",\"event\":{\"pr\":{\"number\":12,\"title\":\"Bump deps\"}}}' --text",
+    },
+    runTest: {
+      description: "Start a test run of one automation. A safe test works in a throwaway lane and only reports steps that post, push, or call outside ADE. A live test runs for real. Both mark notifications [Test] and use no run budget.",
+      input: "object { id: string, mode: \"safe\" | \"live\", event?: same as planTest }",
+      example: "ade actions run automations.runTest --input-json '{\"id\":\"nightly-review\",\"mode\":\"safe\"}' --text",
+    },
+    cleanUpTestRun: {
+      description: "Delete the lanes a finished test run made, with their local branches.",
+      input: "object { runId: string }",
+      example: "ade actions run automations.cleanUpTestRun --input-json '{\"runId\":\"run-123\"}' --text",
+    },
   },
   automation_planner: {
     parseNaturalLanguage: {

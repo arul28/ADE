@@ -146,6 +146,84 @@ export type AutomationManualTriggerRequest = {
   dryRun?: boolean;
 };
 
+/**
+ * How a test run treats the outside world.
+ * - `safe`: a throwaway lane, no posts or pushes (they are reported as "would"),
+ *   and the agent is told it is a test.
+ * - `live`: the real run, with notifications marked "[Test]" and no run budget used.
+ */
+export type AutomationTestRunMode = "safe" | "live";
+
+/** The event a test pretends set the rule off. Every field is optional. */
+export type AutomationTestEvent = {
+  /** Defaults to the rule's first trigger. */
+  triggerType?: AutomationTriggerType | null;
+  laneId?: string | null;
+  sessionId?: string | null;
+  pr?: AutomationTriggerPrContext | null;
+  issue?: AutomationTriggerIssueContext | null;
+  linearIssue?: AutomationTriggerLinearIssueContext | null;
+  webhookBody?: unknown;
+  /** One line that names the event, e.g. "PR #1542 Bump the provider SDKs". */
+  label?: string | null;
+};
+
+export type AutomationTestRequest = {
+  id: string;
+  mode: AutomationTestRunMode;
+  event?: AutomationTestEvent | null;
+};
+
+/**
+ * What a step does in a test:
+ * - `runs`: it runs as it would for real.
+ * - `labeled`: it runs, marked "[Test]" (notifications).
+ * - `would-run`: it does not run; the run reports what it would do.
+ */
+export type AutomationTestStepEffect = "runs" | "labeled" | "would-run";
+
+export type AutomationTestPlanStep = {
+  index: number;
+  title: string;
+  /** The step's inputs with this event's values filled in. */
+  detail: string | null;
+  effect: AutomationTestStepEffect;
+  /** Why the effect differs from a real run, in plain words. */
+  note: string | null;
+  /** Runs even when an earlier step fails. */
+  alwaysRun: boolean;
+};
+
+/** What a test will do, shown before it runs. Building it changes nothing. */
+export type AutomationTestPlan = {
+  mode: AutomationTestRunMode;
+  ruleName: string;
+  event: string;
+  /** Where the run works, as a sentence. */
+  lane: string;
+  steps: AutomationTestPlanStep[];
+  /** What is left afterwards and how it goes away. */
+  afterwards: string[];
+  /** Things that stop the test. While there are any, the test does not start. */
+  problems: string[];
+  /** Things that make the test less like a real run, which it still runs with. */
+  warnings: string[];
+};
+
+/** Stored on a test run's trigger metadata as `test`. */
+export type AutomationTestRunInfo = {
+  mode: AutomationTestRunMode;
+  event: string | null;
+  /** Lanes the test made. Clean up removes them and their local branches. */
+  lanes: Array<{ id: string; name: string }>;
+  cleanedUpAt: string | null;
+};
+
+export type AutomationTestCleanupResult = {
+  removed: Array<{ id: string; name: string }>;
+  failed: Array<{ id: string; name: string; error: string }>;
+};
+
 export type AutomationRunListArgs = {
   automationId?: string;
   status?: AutomationRunStatus | "all";
