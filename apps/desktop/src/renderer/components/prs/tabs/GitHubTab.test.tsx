@@ -137,20 +137,28 @@ describe("GitHubTab snapshot lifecycle", () => {
       externalPullRequests: [],
     };
     vi.mocked(window.ade.prs.getGitHubSnapshot).mockResolvedValue(stackedSnapshot);
+    window.localStorage.removeItem("ade:prs:stackStrip:expanded:v1");
     renderTab({ selectedPrId: "pr-open" });
 
-    expect(await screen.findByText("GitHub Stack #18")).toBeTruthy();
+    const strip = await screen.findByRole("region", { name: "GitHub Stack #18" });
     expect(screen.getByLabelText("GitHub Stack 1 of 2")).toBeTruthy();
-    expect(screen.getAllByText("Top stack layer")).toHaveLength(2);
+    // Both layers sit on the rail; the selected one is marked current.
+    expect(within(strip).getByRole("button", { name: /#101/ }).getAttribute("aria-current")).toBe("true");
+    expect(within(strip).getByRole("button", { name: /#104/ }).getAttribute("aria-current")).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Review on GitHub" }));
+    // The layer list opens on demand and names each layer.
+    expect(within(strip).queryByText("Top stack layer")).toBeNull();
+    await user.click(within(strip).getByRole("button", { name: "Show the stack's layers" }));
+    expect(within(strip).getByText("Top stack layer")).toBeTruthy();
+
+    await user.click(within(strip).getByRole("button", { name: "Review on GitHub" }));
     expect(window.ade.app.openExternal).toHaveBeenCalledWith(
       "https://github.com/ade-dev/ade/pull/101",
     );
 
-    await user.click(screen.getByRole("button", { name: /Manage stack/i }));
-    await user.type(screen.getByLabelText("Pull request numbers to add"), "105, 106");
-    await user.click(screen.getByRole("button", { name: "Add PRs" }));
+    await user.click(within(strip).getByRole("button", { name: "Manage stack" }));
+    await user.type(within(strip).getByLabelText("Pull request numbers to add"), "105, 106");
+    await user.click(within(strip).getByRole("button", { name: "Add" }));
     await waitFor(() => {
       expect(window.ade.prs.addGitHubStackPullRequests).toHaveBeenCalledWith({
         repo: { owner: "ade-dev", name: "ade" },
@@ -158,6 +166,38 @@ describe("GitHubTab snapshot lifecycle", () => {
         pullRequests: [105, 106],
       });
     });
+  });
+
+  it("shows a finished stack for a selected PR whose list row carries no stack membership", async () => {
+    // Closed history rows arrive without `stack`; the stack is found by member.
+    const finishedStack = {
+      id: "stack-21",
+      number: 21,
+      nodeId: "STACK_21",
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      baseBranch: "main",
+      open: false,
+      createdAt: "2026-07-30T12:00:00.000Z",
+      syncedAt: "2026-07-30T12:10:00.000Z",
+      lastError: null,
+      entries: [
+        { githubPrNumber: 101, position: 1, state: "closed" as const, isDraft: false, mergedAt: "2026-07-30T13:00:00.000Z", headBranch: "feature/open", headSha: "sha-101" },
+        { githubPrNumber: 102, position: 2, state: "closed" as const, isDraft: false, mergedAt: "2026-07-30T13:05:00.000Z", headBranch: "feature/two", headSha: "sha-102" },
+      ],
+    };
+    vi.mocked(window.ade.prs.getGitHubSnapshot).mockResolvedValue({
+      ...snapshot,
+      stacks: [finishedStack],
+      repoPullRequests: [makeGitHubPr({ stack: null })],
+      externalPullRequests: [],
+    });
+    renderTab({ selectedPrId: "pr-open" });
+
+    const strip = await screen.findByRole("region", { name: "GitHub Stack #21" });
+    expect(within(strip).getByTestId("github-stack-summary").textContent).toMatch(/merged/i);
+    // A finished stack cannot be extended, so it offers no management.
+    expect(within(strip).queryByRole("button", { name: "Manage stack" })).toBeNull();
   });
 
   it("does not auto-jump to a different PR when switching filters", async () => {
