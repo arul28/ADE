@@ -2560,6 +2560,11 @@ export async function handleAttentionMachinePublish(
       now,
     );
     await deliverAttentionNotifications(env, account.userId, storedItems);
+    // The heartbeat is also the retry for Live Activity counts the 5-minute
+    // window held back: without it, a Working-to-Waiting change made just
+    // after a push would sit unsent until the next real change. When nothing
+    // is pending, this only reads.
+    await deliverAccountLiveActivity(env, account.userId);
     const [current, acks, accountChanges] = await Promise.all([
       env.DB
         .prepare("select revision from attention_revisions where user_id = ? limit 1")

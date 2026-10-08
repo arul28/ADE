@@ -2018,6 +2018,89 @@ describe("account Attention contract", () => {
     }
   });
 
+  it("retries Live Activity counts the push window held back on a presence heartbeat", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-28T08:10:00.000Z"));
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    const apnsBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      apnsBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(null, { status: 200, headers: { "apns-id": "presence-retry" } });
+    }));
+    try {
+      database.native.prepare(`
+        insert into attention_machine_links(
+          machine_key, user_id, machine_name, last_seen_at, linked_at,
+          legacy_devices_imported_at
+        ) values (?, ?, 'Studio', '2026-07-28T08:00:00.000Z',
+          '2026-07-28T08:00:00.000Z', null)
+      `).run(MACHINE_KEY, authorization.userId);
+      insertAttentionDevice(database, {
+        userId: authorization.userId,
+        deviceId: "phone-1",
+        pushToStartToken: "ab".repeat(32),
+      });
+      const parsed = attentionTestInternals.parseAttentionItem({
+        ...validAgentItem(),
+        updatedAt: "2026-07-28T08:09:00.000Z",
+      }, MACHINE_KEY);
+      expect(parsed, "setup precondition: the item must parse").not.toBeNull();
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (?, ?, ?, ?, 1, ?, ?, ?, ?, null, null, null, ?)
+      `).run(
+        authorization.userId,
+        parsed!.id,
+        MACHINE_KEY,
+        parsed!.revision,
+        parsed!.fingerprint,
+        parsed!.eventKind,
+        parsed!.phase,
+        JSON.stringify(parsed),
+        parsed!.updatedAt,
+      );
+      // The phone holds an activity whose last push carried older counts.
+      database.native.prepare(`
+        insert into attention_activity_tokens(user_id, device_id, activity_id, token, updated_at)
+        values (?, 'phone-1', 'agent-runs', ?, '2026-07-28T08:00:00.000Z')
+      `).run(authorization.userId, "cd".repeat(32));
+      database.native.prepare(`
+        insert into attention_activity_state(user_id, device_id, activity_id, started, fingerprint, updated_at)
+        values (?, 'phone-1', 'agent-runs', 1, 'older|0.1.0.0', '2026-07-28T08:00:00.000Z')
+      `).run(authorization.userId);
+
+      const response = await publishActivityForTest(
+        makeAttentionEnv(database, {
+          CLERK_JWKS_URL: authorization.jwksUrl,
+          CLERK_ISSUER: authorization.issuer,
+          CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+          APNS_KEY: await generateTestP8(),
+          APNS_KEY_ID: "PRESENCE01",
+          APNS_TEAM_ID: "PRESENCET1",
+        }),
+        authorization,
+        { machineName: "Studio", mode: "presence", rosterEpoch: 1, items: [], tombstones: [] },
+      );
+
+      expect(response.status).toBe(200);
+      const liveActivity = apnsBodies.filter((body) =>
+        (body.aps as Record<string, unknown> | undefined)?.event === "update");
+      expect(liveActivity).toHaveLength(1);
+      expect(liveActivity[0]).toMatchObject({
+        aps: { "content-state": { columns: { needsYou: 1, working: 0, waiting: 0, done: 0 } } },
+      });
+    } finally {
+      database.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("reports settings and vault change marks on presence, and omits them when they cannot be read", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));

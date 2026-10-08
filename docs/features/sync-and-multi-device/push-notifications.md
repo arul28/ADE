@@ -920,7 +920,10 @@ included. The relay still sends the older `runs`, `prs`, `groups` and
 - A needs-you change pushes at once. A change to the working, waiting or done
   counts pushes at most once every 5 minutes
   (`LIVE_ACTIVITY_COUNT_REFRESH_MS`), so a busy account cannot use up the
-  ActivityKit budget while every number still settles within minutes.
+  ActivityKit budget while every number still settles within minutes. Each
+  machine's presence heartbeat re-runs the check, so a count the window held
+  back goes out on the first heartbeat after the window, even when nothing else
+  changes. With nothing pending, that check only reads.
 - Completed/merged outcomes remain until seen, then disappear.
 - Disabling Live Activities actively ends an existing account activity.
 - When `hideDetails` is enabled, per-device content is redacted before APNs
