@@ -52226,6 +52226,7 @@ export function createAgentChatService(args: {
             executionMode,
             interactionMode,
             mentionsAlreadyExpanded: true,
+            pastedPromptAlreadyMaterialized: true,
           });
           return { steerId, queued: false };
         }
@@ -52824,6 +52825,8 @@ export function createAgentChatService(args: {
        * itself contains chip syntax would be expanded again.
        */
       mentionsAlreadyExpanded?: boolean;
+      /** Set only when this caller has already expanded pasted-file contents. */
+      pastedPromptAlreadyMaterialized?: boolean;
     },
   ): Promise<void> => {
     const runtime = managed.runtime;
@@ -52870,7 +52873,10 @@ export function createAgentChatService(args: {
     };
     await sendMessage(
       args.mentionsAlreadyExpanded ? markChatMentionsExpanded(sendArgs) : sendArgs,
-      { awaitDispatch: false, pastedPromptAlreadyMaterialized: true },
+        {
+          awaitDispatch: false,
+          ...(args.pastedPromptAlreadyMaterialized ? { pastedPromptAlreadyMaterialized: true } : {}),
+        },
     );
   };
 
@@ -53637,6 +53643,7 @@ export function createAgentChatService(args: {
           interactionMode: promoted.interactionMode,
           // Staged text was expanded when it entered the queue.
           mentionsAlreadyExpanded: true,
+          pastedPromptAlreadyMaterialized: true,
         });
       } catch (error) {
         // Put the row back so the user's message is never silently lost.

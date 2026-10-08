@@ -2285,7 +2285,7 @@ describe("createAgentChatService", () => {
         pendingSteers: [{
           steerId,
           text: `Attached file contents:\n\n${pastedBody}\n\nHandle this restored message`,
-          displayText: "",
+          displayText: "Handle this restored message",
           attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
         }],
         updatedAt: "2026-07-10T12:00:00.000Z",
@@ -2306,11 +2306,11 @@ describe("createAgentChatService", () => {
         event.event.type === "user_message"
         && event.event.attachments?.some((attachment) => attachment.path === pastedPath),
       );
-      expect(deliveredPastedMessage?.event).toMatchObject({ displayText: "" });
+      expect(deliveredPastedMessage?.event).toMatchObject({ displayText: "Handle this restored message" });
       expect(readPersistedChatState(sessionId).pendingSteers).toBeUndefined();
     });
 
-    it("auto-delivers a restored pasted-file queue once after the active turn and keeps transcript text hidden", async () => {
+    it("auto-delivers a restored pasted-file queue once after the active turn and keeps the typed request visible", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       let releaseTurn!: () => void;
@@ -2362,7 +2362,7 @@ describe("createAgentChatService", () => {
         pendingSteers: [{
           steerId,
           text: `Attached file contents:\n\n${pastedBody}\n\nHandle this restored message`,
-          displayText: "",
+          displayText: "Handle this restored message",
           attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
         }],
         updatedAt: "2026-07-10T12:00:00.000Z",
@@ -2389,7 +2389,7 @@ describe("createAgentChatService", () => {
         && event.event.steerId === steerId
         && event.event.attachments?.some((attachment) => attachment.path === pastedPath),
       );
-      expect(deliveredPastedMessage?.event).toMatchObject({ displayText: "" });
+      expect(deliveredPastedMessage?.event).toMatchObject({ displayText: "Handle this restored message" });
       service.forceDisposeAll();
     });
 

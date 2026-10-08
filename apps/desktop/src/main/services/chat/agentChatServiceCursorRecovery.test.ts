@@ -915,19 +915,26 @@ describe("createAgentChatService", () => {
     it("routes messageSession kind interrupt-replace on Cursor through interrupt-and-continue", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service, session } = await startBusyCursorSession(events);
+      const pastedPath = path.join(tmpRoot, "cursor-message-session-replacement.txt");
+      const pastedBody = "Replacement file contents reach the provider once.";
+      fs.writeFileSync(pastedPath, pastedBody);
 
       const result = await service.messageSession({
         sessionId: session.id,
         text: "Stop and take this instead.",
         kind: "interrupt-replace",
+        attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
       });
 
       expect(result.routedAction).toBe("interrupt-replace");
       await vi.waitFor(() => {
         expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
       });
-      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
-        .toContain("Stop and take this instead.");
+      const replacementPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(replacementPrompt).toContain("Stop and take this instead.");
+      expect(replacementPrompt).toContain(path.basename(pastedPath));
+      expect(replacementPrompt.split(pastedBody)).toHaveLength(2);
+      expect(replacementPrompt.match(/copy and paste/gi)).toHaveLength(1);
       expect(events.some((event) =>
         event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
       expect(readPersistedChatState(session.id).cursorSdkAgentId).toBe("cursor-sdk-agent-1");

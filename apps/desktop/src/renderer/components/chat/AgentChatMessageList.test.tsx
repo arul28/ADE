@@ -1667,7 +1667,10 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByTestId("user-message-send-confirmations")).toBeNull();
   });
 
-  it("uses the paperclip icon line for file-only attachments when delivered", async () => {
+  it.each([
+    { label: "empty", displayText: "" },
+    { label: "missing", displayText: undefined },
+  ])("uses the paperclip icon line for pasted files when delivered with $label display text", async ({ displayText }) => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1675,7 +1678,7 @@ describe("AgentChatMessageList transcript rendering", () => {
         event: {
           type: "user_message",
           text: "Attached file contents:\n\nprivate pasted source body",
-          displayText: "",
+          ...(displayText !== undefined ? { displayText } : {}),
           deliveryState: "delivered",
           attachments: [{ path: "/tmp/doc.txt", type: "file", intent: "user_prompt" }],
         },

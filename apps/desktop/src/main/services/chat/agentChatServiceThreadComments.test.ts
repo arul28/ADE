@@ -189,7 +189,7 @@ describe("thread review block ordering", () => {
     expect(pastedIndex).toBeGreaterThan(blockIndex);
     expect(typedIndex).toBeGreaterThan(pastedIndex);
     expect(prompt).toContain(path.basename(pastedPath));
-    expect(prompt.match(/copy and paste/i)).toHaveLength(1);
+    expect(prompt.match(/copy and paste/gi)).toHaveLength(1);
     const userMessage = events.find((entry): entry is AgentChatEventEnvelope & {
       event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
     } =>

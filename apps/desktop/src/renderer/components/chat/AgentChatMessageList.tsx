@@ -2661,7 +2661,7 @@ function renderEvent(
     ) === true;
     const copyText = event.displayText?.trim() || (
       event.metadata?.hideFullPrompt === true
-      || (hasPastedTextPromptAttachment && event.displayText !== undefined)
+      || hasPastedTextPromptAttachment
         ? ""
         : event.text
     );
@@ -2737,7 +2737,7 @@ function renderEvent(
             // the user typed (if anything) under it.
             const review = parseThreadReviewBlock(event.text);
             if (review) {
-              const typed = hasPastedTextPromptAttachment && event.displayText !== undefined
+              const typed = hasPastedTextPromptAttachment
                 ? displayText
                 : displayText || review.rest.trim();
               return (
@@ -2749,7 +2749,7 @@ function renderEvent(
             }
             // `text` is what the provider received (mention blocks expanded);
             // `displayText` is what the user typed. Show only what they typed.
-            if (hasPastedTextPromptAttachment && event.displayText !== undefined) {
+            if (hasPastedTextPromptAttachment) {
               return displayText ? (
                 <UserTypedText text={displayText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
               ) : null;
