@@ -10225,11 +10225,12 @@ function buildChatPlan(args: string[]): CliPlan {
       // Move the chat to another machine on the account. The brain runs the
       // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
       // Never forwarded: --machine names the destination (cliMachineTargeting).
+      // Free text first: a prompt of "--fork" is text, not a flag.
+      const continuationPrompt = readValue(args, ["--prompt", "--note", "--handoff-note"]);
       if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
         throw new CliUsageError("--target-lane is for a handoff on this machine. The other machine picks or creates the lane.");
       }
       const target = readHandoffTarget(args, sub);
-      const continuationPrompt = readValue(args, ["--prompt", "--note", "--handoff-note"]);
       return {
         kind: "execute",
         label: "chat handoff to another machine",
@@ -10250,12 +10251,13 @@ function buildChatPlan(args: string[]): CliPlan {
     }
   }
   if (sub === "handoff" || sub === "fork") {
+    // Free text first: a note of "--fork" is text, not a flag.
+    const handoffNote = readValue(args, ["--handoff-note", "--note"]);
     const { mode, targetModelId, settings } = readHandoffTarget(args, sub);
     const targetLaneId = readValue(args, ["--target-lane", "--target-lane-id"]);
     if (targetLaneId !== null && mode === "fork") {
       throw new CliUsageError("chat fork stays in the source lane; --target-lane is only valid for brief handoffs.");
     }
-    const handoffNote = readValue(args, ["--handoff-note", "--note"]);
     const throughTurnId = readValue(args, ["--through-turn", "--from-turn"]);
     if (throughTurnId !== null && mode !== "fork") {
       throw new CliUsageError("--through-turn only applies to chat fork.");

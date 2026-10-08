@@ -14645,7 +14645,9 @@ final class SyncService: ObservableObject {
     sourceSessionId: String,
     targetModelId: String,
     mode: String = "fork",
-    handoffNote: String? = nil
+    handoffNote: String? = nil,
+    reasoningEffort: String? = nil,
+    fastMode: Bool? = nil
   ) async throws {
     let action = chatActionName("chat.handoff", sessionId: sourceSessionId)
     try requireInvokableRemoteAction(action)
@@ -14656,7 +14658,9 @@ final class SyncService: ObservableObject {
         sourceSessionId: sourceSessionId,
         targetModelId: targetModelId,
         mode: mode,
-        handoffNote: handoffNote
+        handoffNote: handoffNote,
+        reasoningEffort: reasoningEffort,
+        fastMode: fastMode
       ),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath

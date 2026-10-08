@@ -4629,6 +4629,9 @@ struct AgentChatHandoffRequest: Codable, Equatable {
   var targetModelId: String
   var mode: String
   var handoffNote: String?
+  /// Omitted: the new chat inherits the source chat's value.
+  var reasoningEffort: String?
+  var fastMode: Bool?
 }
 
 struct AgentChatRestoreCancelledQueueRequest: Codable, Equatable {

@@ -1199,7 +1199,8 @@ extension WorkRootListScreen {
       title: (summary?.title ?? session.title).trimmingCharacters(in: .whitespacesAndNewlines),
       provider: provider,
       modelId: summary?.modelId ?? summary?.model ?? "",
-      reasoningEffort: summary?.reasoningEffort ?? ""
+      reasoningEffort: summary?.reasoningEffort ?? "",
+      fastMode: summary?.fastMode == true
     )
   }
 

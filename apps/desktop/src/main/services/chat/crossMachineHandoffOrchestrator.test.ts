@@ -31,6 +31,7 @@ import {
 } from "./crossMachineHandoffOrchestrator";
 import { createCrossMachineHandoffSource, isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
 import { applyHandoffGitBundle, landHandoffGitBundle, packHandoffGitBundle } from "./handoffGitBundle";
+import { runGit } from "../git/git";
 
 const SESSION = "chat-1";
 const ORIGIN = "https://github.com/example/ade.git";
@@ -707,6 +708,30 @@ async function packIsolated(args: Parameters<typeof packHandoffGitBundle>[0]) {
 }
 
 describe("handoff git bundle", () => {
+  it("offers bringing changes along for an unpublished branch only when something can travel", async () => {
+    const { source } = makeRepos();
+    git(source, "checkout", "--quiet", "--no-track", "-b", "fresh", "origin/main");
+    const store = createCrossMachineHandoffSource({
+      runGit,
+      laneService: { getSummary: async () => null },
+      db: null,
+      outboxDir: makeTempDir("ade-cm-outbox-"),
+    });
+    const lane = { id: "lane-fresh", name: "fresh", worktreePath: source } as never;
+    const unpublished = async () =>
+      (await store.inspectLane(lane)).blockers.find((blocker) => blocker.id === "no_upstream");
+
+    // Every commit is already on origin: only publishing gives the other machine the branch.
+    expect(await unpublished()).toMatchObject({ clearedByIncludeChanges: false });
+    expect((await unpublished())?.fixHint).not.toMatch(/include-changes/);
+
+    // An edit or a new commit can travel in the bundle.
+    fs.writeFileSync(path.join(source, "edit.txt"), "changed\n");
+    expect(await unpublished()).toMatchObject({ clearedByIncludeChanges: true });
+    git(source, "commit", "--quiet", "-am", "local only");
+    expect(await unpublished()).toMatchObject({ clearedByIncludeChanges: true });
+  });
+
   it("refuses arriving commits that would overwrite an ignored file in the destination lane", async () => {
     const { source, clone } = makeRepos();
     fs.writeFileSync(path.join(source, ".env"), "SOURCE=1\n");

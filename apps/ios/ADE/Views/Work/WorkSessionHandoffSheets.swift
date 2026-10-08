@@ -9,6 +9,7 @@ struct WorkSessionHandoffSubject: Identifiable, Equatable {
   let provider: String
   let modelId: String
   let reasoningEffort: String
+  var fastMode: Bool = false
 }
 
 /// Providers whose chat can fork in place. Mirrors `HANDOFF_FORK_PROVIDERS`
@@ -171,6 +172,11 @@ struct WorkLocalHandoffSheet: View {
   @State private var modelId: String
   @State private var provider: String
   @State private var mode: String
+  @State private var reasoningEffort: String
+  @State private var fastMode: Bool
+  /// Effort and fast mode are sent only once the person picks them; until
+  /// then the new chat inherits the source chat's settings.
+  @State private var settingsPicked = false
   @State private var note = ""
   @State private var modelPickerPresented = false
   @State private var busy = false
@@ -181,6 +187,8 @@ struct WorkLocalHandoffSheet: View {
     _modelId = State(initialValue: subject.modelId)
     _provider = State(initialValue: subject.provider)
     _mode = State(initialValue: workProviderSupportsHandoffFork(subject.provider) ? "fork" : "brief")
+    _reasoningEffort = State(initialValue: subject.reasoningEffort)
+    _fastMode = State(initialValue: subject.fastMode)
   }
 
   private var forkSupported: Bool { workProviderSupportsHandoffFork(subject.provider) }
@@ -243,15 +251,20 @@ struct WorkLocalHandoffSheet: View {
         WorkModelPickerSheet(
           currentModelId: modelId,
           currentProvider: provider,
+          currentReasoningEffort: reasoningEffort,
+          currentCodexFastMode: fastMode,
           isBusy: false,
           modelFilter: mode == "fork"
             ? { [sourceProvider = subject.provider] option in
                 workNormalizedChatProvider(option.provider) == workNormalizedChatProvider(sourceProvider)
               }
             : nil,
-          onSelect: { option, _, runtimeProvider, _ in
+          onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
             modelId = option.id
             provider = workNormalizedChatProvider(runtimeProvider)
+            reasoningEffort = pickedReasoning ?? ""
+            fastMode = pickedFastMode
+            settingsPicked = true
           }
         )
         .environmentObject(syncService)
@@ -268,7 +281,9 @@ struct WorkLocalHandoffSheet: View {
         sourceSessionId: subject.sessionId,
         targetModelId: modelId,
         mode: mode,
-        handoffNote: trimmed.isEmpty ? nil : trimmed
+        handoffNote: trimmed.isEmpty ? nil : trimmed,
+        reasoningEffort: settingsPicked && !reasoningEffort.isEmpty ? reasoningEffort : nil,
+        fastMode: settingsPicked ? fastMode : nil
       )
       ADEHaptics.success()
       busy = false

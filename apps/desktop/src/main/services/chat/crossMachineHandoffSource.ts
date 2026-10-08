@@ -153,12 +153,20 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
       ? (await gitText(["rev-parse", "--abbrev-ref", "@{upstream}"])) || "its upstream"
       : null;
     if (!upstream) {
+      // Bringing changes along carries commits and edits. A clean branch whose
+      // commits are all on origin already has nothing to carry, so only
+      // publishing gives the other machine the branch.
+      const somethingToCarry = unpushedCommits > 0 || changedFiles > 0;
       blockers.push({
         id: "no_upstream",
         title: `${branchRef ?? "This branch"} hasn't been published`,
-        detail: "The other machine fetches the branch from origin.",
-        clearedByIncludeChanges: true,
-        fixHint: `run \`ade git push ${laneFlag}\`, or pass --include-changes`,
+        detail: somethingToCarry
+          ? "The other machine fetches the branch from origin."
+          : "The other machine fetches the branch from origin. It has no new commits to bring along, so publish it.",
+        clearedByIncludeChanges: somethingToCarry,
+        fixHint: somethingToCarry
+          ? `run \`ade git push ${laneFlag}\`, or pass --include-changes`
+          : `run \`ade git push ${laneFlag}\``,
       });
     } else {
       const counts = await gitText(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);

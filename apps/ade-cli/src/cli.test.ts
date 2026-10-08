@@ -8219,6 +8219,7 @@ describe("ADE CLI", () => {
     // A prompt that reads like a flag is text, not --cancel.
     ["prompt that looks like a flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--cancel"]],
     ["handoff note that looks like a flag", ["chat-1", "--machine", "Mac mini", "--handoff-note", "--cancel"]],
+    ["prompt that names a setting flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--fork"]],
   ])("builds a move to another machine with the %s", (_label, head) => {
     const move = expectExecutePlan(buildCliPlan([
       "chat",
@@ -8236,6 +8237,8 @@ describe("ADE CLI", () => {
       machine: "Mac mini",
       targetModelId: "anthropic/claude-haiku-4-5",
       whenTurnEnds: true,
+      // The default mode, whatever the free text says.
+      mode: "brief",
     });
   });
 
