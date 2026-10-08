@@ -94,6 +94,8 @@ apps/desktop/native/ADEDesktopDriver/.build/
 apps/desktop/native/ADEDesktopDriver/.build-*/
 apps/desktop/resources/native/ade-capture-helper
 apps/desktop/resources/native/ade-capture-helper.exe
+apps/desktop/resources/native/ade-now-playing.exe
+apps/desktop/.ade-native-build/
 apps/desktop/native/ADECaptureHelper/.build/
 apps/desktop/native/ADECaptureHelper/.build-*/
 apps/desktop/resources/native/ade-sim-helper

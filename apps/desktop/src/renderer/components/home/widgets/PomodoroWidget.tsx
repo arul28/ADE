@@ -4,7 +4,7 @@ import { create } from "zustand";
 import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
 import { showToast } from "../../app/toast/toastStore";
 import { localDayKey } from "../../usage/ActivityHeatmap";
-import { useWidgetVisible } from "../HomeWidgetGrid";
+import { useWidgetSpan, useWidgetVisible } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import "../homeWidgets.css";
 
@@ -158,13 +158,27 @@ export default function PomodoroWidget({ item }: HomeWidgetProps) {
   const today = localDayKey();
   const todayLog = state.log[today] ?? { sessions: 0, minutes: 0 };
   const streak = useMemo(() => focusStreak(state.log, today), [state.log, today]);
-  const big = item.size !== "s";
+  const span = useWidgetSpan(item);
+  const big = span.w >= 2 || span.h >= 2;
+  // The last seven days, oldest first, for the week strip.
+  const week = useMemo(() => {
+    const days: Array<{ key: string; label: string; sessions: number; today: boolean }> = [];
+    for (let back = 6; back >= 0; back -= 1) {
+      const date = new Date();
+      date.setDate(date.getDate() - back);
+      const key = localDayKey(date);
+      days.push({ key, label: date.toLocaleDateString(undefined, { weekday: "narrow" }), sessions: state.log[key]?.sessions ?? 0, today: back === 0 });
+    }
+    return days;
+  }, [state.log]);
+  const weekMax = Math.max(1, ...week.map((day) => day.sessions));
 
-  const radius = 44;
+  const radius = 42;
   const circumference = 2 * Math.PI * radius;
+  const angle = progress * 2 * Math.PI - Math.PI / 2;
 
   return (
-    <section className="kit-card ade-home-card ade-pomo" aria-label="Focus timer" data-size={item.size} data-phase={state.phase}>
+    <section className="kit-card ade-home-card ade-pomo" aria-label="Focus timer" data-size={item.size} data-phase={state.phase} data-running={running || undefined} data-big={big || undefined}>
       <WelcomeCardHead icon={Timer} title="Focus timer">
         <div className="kit-seg ade-pomo-presets" role="radiogroup" aria-label="Focus length">
           {FOCUS_PRESETS.map((minutes) => (
@@ -177,15 +191,24 @@ export default function PomodoroWidget({ item }: HomeWidgetProps) {
       <div className="kit-card-body ade-pomo-body">
         <div className="ade-pomo-dial">
           <svg viewBox="0 0 100 100" aria-hidden>
+            <defs>
+              <linearGradient id={`pomo-${item.id}`} x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" className="ade-pomo-stop-a" />
+                <stop offset="100%" className="ade-pomo-stop-b" />
+              </linearGradient>
+            </defs>
+            <circle cx="50" cy="50" r="48.5" className="ade-pomo-ticks" strokeDasharray={`0.6 ${(2 * Math.PI * 48.5) / 60 - 0.6}`} transform="rotate(-90 50 50)" />
             <circle cx="50" cy="50" r={radius} className="ade-pomo-track" />
             <circle
               cx="50"
               cy="50"
               r={radius}
               className="ade-pomo-fill"
+              stroke={`url(#pomo-${item.id})`}
               strokeDasharray={`${circumference * progress} ${circumference}`}
               transform="rotate(-90 50 50)"
             />
+            {progress > 0 ? <circle className="ade-pomo-knob" cx={50 + radius * Math.cos(angle)} cy={50 + radius * Math.sin(angle)} r="3.6" /> : null}
           </svg>
           <div className="ade-pomo-center">
             <div className="ade-pomo-time kit-num" role="timer" aria-live="off">{formatClock(left)}</div>
@@ -205,10 +228,20 @@ export default function PomodoroWidget({ item }: HomeWidgetProps) {
             ) : null}
           </div>
           <dl className="ade-pomo-facts">
-            <div><dt className="kit-eyebrow">Today</dt><dd className="kit-num">{todayLog.sessions} {todayLog.sessions === 1 ? "session" : "sessions"}</dd></div>
-            {big ? <div><dt className="kit-eyebrow">Focused</dt><dd className="kit-num">{todayLog.minutes} min</dd></div> : null}
-            <div><dt className="kit-eyebrow">Streak</dt><dd className="kit-num">{streak > 0 ? `${streak} day${streak === 1 ? "" : "s"}` : "—"}</dd></div>
+            <div><dt className="kit-eyebrow">Today</dt><dd className="kit-num">{todayLog.sessions} <span>{todayLog.sessions === 1 ? "session" : "sessions"}</span></dd></div>
+            {big ? <div><dt className="kit-eyebrow">Focused</dt><dd className="kit-num">{todayLog.minutes} <span>min</span></dd></div> : null}
+            <div><dt className="kit-eyebrow">Streak</dt><dd className="kit-num">{streak > 0 ? <>{streak} <span>{streak === 1 ? "day" : "days"}</span></> : "—"}</dd></div>
           </dl>
+          {big ? (
+            <div className="ade-pomo-week" role="img" aria-label={`Focus sessions, last 7 days: ${week.map((day) => day.sessions).join(", ")}`}>
+              {week.map((day) => (
+                <div key={day.key} className="ade-pomo-week-day" data-today={day.today || undefined}>
+                  <div className="ade-pomo-week-track"><i style={{ height: `${day.sessions === 0 ? 0 : Math.max(14, (day.sessions / weekMax) * 100)}%` }} /></div>
+                  <span>{day.label}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
     </section>

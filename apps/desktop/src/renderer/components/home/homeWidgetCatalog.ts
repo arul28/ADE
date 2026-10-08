@@ -174,12 +174,12 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     category: "everyday",
     limits: { minW: 1, maxW: 2, minH: 1, maxH: 1 },
     title: "Now playing",
-    description: "Apple Music, without leaving ADE.",
+    description: "What any app is playing, with play, pause and skip.",
     icon: MusicNotes,
     sizes: ["s", "w"],
     defaultSize: "w",
-    minHeight: { s: 150, m: 180, l: 180, w: 150 },
-    comingSoon: "Arrives with the Music tab.",
+    minHeight: { s: 210, m: 210, l: 210, w: 160 },
+    desktopOnly: true,
   },
 };
 

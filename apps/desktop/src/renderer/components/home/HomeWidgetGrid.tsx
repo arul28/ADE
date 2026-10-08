@@ -56,6 +56,12 @@ export function useWidgetPreview(): boolean {
   return useContext(WidgetPreviewContext);
 }
 
+/** The span the grid placed a widget at (it can grow taller than asked to fit its content). */
+const WidgetSpanContext = createContext<{ w: number; h: number } | null>(null);
+export function useWidgetSpan(item: HomeLayoutItem): { w: number; h: number } {
+  return useContext(WidgetSpanContext) ?? itemSpan(item);
+}
+
 /** The live grid's size, for the gallery's "is there room?" check. */
 export const useHomeGridMetrics = create<{ metrics: GridMetrics | null; set: (metrics: GridMetrics) => void }>((set) => ({
   metrics: null,
@@ -149,6 +155,7 @@ function WidgetFrame({
     <div ref={ref} className="ade-home-widget" data-stacked={stacked || undefined} data-type={item.type}>
       <div ref={contentRef} className="ade-home-widget-content">
         <WidgetVisibleContext.Provider value={visible}>
+          <WidgetSpanContext.Provider value={stacked ? null : span ?? null}>
           <WidgetBoundary title={meta.title}>
             {content ?? (
               <section className="kit-card ade-home-card" aria-label={meta.title}>
@@ -157,6 +164,7 @@ function WidgetFrame({
               </section>
             )}
           </WidgetBoundary>
+          </WidgetSpanContext.Provider>
         </WidgetVisibleContext.Provider>
       </div>
       {editing ? (

@@ -215,6 +215,12 @@ type WeatherCodeSource = {
     is_day?: number;
     wind_speed_10m?: number;
   };
+  hourly?: {
+    time?: string[];
+    temperature_2m?: number[];
+    weather_code?: number[];
+    is_day?: number[];
+  };
   daily?: {
     time?: string[];
     weather_code?: number[];
@@ -536,6 +542,7 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
       const url = "https://api.open-meteo.com/v1/forecast"
         + `?latitude=${latitude.toFixed(2)}&longitude=${longitude.toFixed(2)}`
         + "&current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m"
+        + "&hourly=temperature_2m,weather_code,is_day&forecast_hours=13"
         + "&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=5";
       const raw = (await fetchJson(url)) as WeatherCodeSource;
       const temperatureC = finite(raw.current?.temperature_2m);
@@ -547,6 +554,14 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
         const code = finite(daily.weather_code?.[index]);
         return maxC == null || minC == null || code == null ? [] : [{ date, code, maxC, minC }];
       });
+      const hourly = raw.hourly ?? {};
+      const hours = (hourly.time ?? []).flatMap((time, index) => {
+        const temp = finite(hourly.temperature_2m?.[index]);
+        const code = finite(hourly.weather_code?.[index]);
+        // Local wall time at the place, "2026-10-07T17:00": keep the hour as written.
+        const hour = Number(/T(\d{2}):/.exec(time)?.[1]);
+        return temp == null || code == null || !Number.isFinite(hour) ? [] : [{ hour, code, tempC: temp, isDay: hourly.is_day?.[index] !== 0 }];
+      }).slice(1, 13);
       const weather: HomeWeather = {
         temperatureC,
         apparentC: finite(raw.current?.apparent_temperature),
@@ -556,6 +571,7 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
         todayMaxC: days[0]?.maxC ?? null,
         todayMinC: days[0]?.minC ?? null,
         days,
+        hours,
         fetchedAt: Date.now(),
       };
       weatherCache.set(key, weather);

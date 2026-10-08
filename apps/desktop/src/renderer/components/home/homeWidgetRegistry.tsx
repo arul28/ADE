@@ -21,6 +21,7 @@ const LAZY_WIDGETS: Partial<Record<HomeWidgetType, LazyWidget>> = {
   heatmap: lazy(() => import("./widgets/ContributionsWidget")),
   shipped: lazy(() => import("./widgets/ShippedWidget")),
   feed: lazy(() => import("./widgets/FeedWidget")),
+  nowPlaying: lazy(() => import("./widgets/NowPlayingWidget")),
 };
 
 function WidgetShell({ type, message }: { type: HomeWidgetType; message?: string }) {

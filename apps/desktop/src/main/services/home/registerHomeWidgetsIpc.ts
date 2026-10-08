@@ -1,7 +1,20 @@
-import { app, BrowserWindow, clipboard, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, type IpcMainInvokeEvent } from "electron";
+import fs from "node:fs/promises";
+import path from "node:path";
 
-import { HOME_WIDGETS_IPC } from "../../../shared/types/homeWidgets";
+import { HOME_WIDGETS_IPC, type HomeShareResult } from "../../../shared/types/homeWidgets";
 import { createHomeWidgetsService, type HomeWidgetsService } from "./homeWidgetsService";
+import { createNowPlayingService, type NowPlayingService } from "./nowPlayingService";
+
+let nowPlaying: NowPlayingService | null = null;
+
+/**
+ * The Now Playing source, for an in-app player (the Music tab) to take over
+ * with `setOverride`. Null until the home widgets are registered.
+ */
+export function getNowPlayingService(): NowPlayingService | null {
+  return nowPlaying;
+}
 
 /**
  * Wires the home widgets' main-process service to IPC.
@@ -62,6 +75,76 @@ export function registerHomeWidgetsIpc(args: {
   handle(HOME_WIDGETS_IPC.weatherSearch, (query: string) => service.weather.search(String(query ?? "")));
   handle(HOME_WIDGETS_IPC.weatherGet, (input: { latitude: number; longitude: number }) => service.weather.get(input));
 
+  // Now Playing: a source runs only while some window's widget is subscribed.
+  const playing = createNowPlayingService({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    logger: args.logger,
+    broadcast: (state) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(HOME_WIDGETS_IPC.nowPlayingChanged, state);
+      }
+    },
+  });
+  nowPlaying = playing;
+  const watched = new Set<number>();
+  ipcMain.handle(HOME_WIDGETS_IPC.nowPlayingSubscribe, async (event) => {
+    if (!isAdeRenderer(event)) throw new Error("Home widgets are only available to the ADE window.");
+    const id = event.sender.id;
+    if (!watched.has(id)) {
+      watched.add(id);
+      // A window that closes or reloads without unsubscribing still lets go.
+      const release = () => {
+        watched.delete(id);
+        playing.unsubscribe(id);
+      };
+      event.sender.once("destroyed", release);
+      event.sender.once("did-navigate", release);
+    }
+    return playing.subscribe(id);
+  });
+  ipcMain.handle(HOME_WIDGETS_IPC.nowPlayingUnsubscribe, async (event) => {
+    if (!isAdeRenderer(event)) throw new Error("Home widgets are only available to the ADE window.");
+    playing.unsubscribe(event.sender.id);
+  });
+  handle(HOME_WIDGETS_IPC.nowPlayingCommand, async (command: string) => {
+    if (command === "play" || command === "pause" || command === "toggle" || command === "next" || command === "previous") await playing.command(command);
+  });
+
+  // Share cards: the renderer draws the PNG; main only copies or saves it.
+  const PNG_PREFIX = "data:image/png;base64,";
+  const MAX_PNG_BYTES = 12 * 1024 * 1024;
+  const decodePng = (value: unknown): Buffer | null => {
+    if (typeof value !== "string" || !value.startsWith(PNG_PREFIX)) return null;
+    const bytes = Buffer.from(value.slice(PNG_PREFIX.length), "base64");
+    return bytes.length > 0 && bytes.length <= MAX_PNG_BYTES ? bytes : null;
+  };
+  handle(HOME_WIDGETS_IPC.shareCopyImage, async (pngDataUrl: string): Promise<HomeShareResult> => {
+    const bytes = decodePng(pngDataUrl);
+    if (!bytes) return { ok: false, error: "Not a PNG image." };
+    const image = nativeImage.createFromBuffer(bytes);
+    if (image.isEmpty()) return { ok: false, error: "The image could not be read." };
+    clipboard.writeImage(image);
+    return { ok: true };
+  });
+  ipcMain.handle(HOME_WIDGETS_IPC.shareSaveImage, async (event, input: { pngDataUrl?: string; fileName?: string }): Promise<HomeShareResult> => {
+    if (!isAdeRenderer(event)) throw new Error("Home widgets are only available to the ADE window.");
+    const bytes = decodePng(input?.pngDataUrl);
+    if (!bytes) return { ok: false, error: "Not a PNG image." };
+    const safeName = String(input?.fileName ?? "ade-shipped.png").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 120) || "ade-shipped.png";
+    const owner = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const options = {
+      title: "Save image",
+      defaultPath: path.join(app.getPath("downloads"), safeName.endsWith(".png") ? safeName : `${safeName}.png`),
+      filters: [{ name: "PNG image", extensions: ["png"] }],
+    };
+    const choice = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+    if (choice.canceled || !choice.filePath) return { ok: false, canceled: true };
+    await fs.writeFile(choice.filePath, bytes);
+    return { ok: true, path: choice.filePath };
+  });
+
   // Clipboard capture resumes on launch when the widget was left on, without
   // waiting for the home page to mount. Off the boot path: a few seconds in,
   // and only a small file read.
@@ -69,7 +152,10 @@ export function registerHomeWidgetsIpc(args: {
     void service.load().catch(() => {});
   }, 4_000);
   resume.unref?.();
-  app.once("will-quit", () => service.dispose());
+  app.once("will-quit", () => {
+    service.dispose();
+    playing.dispose();
+  });
 
   return service;
 }

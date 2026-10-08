@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ClipboardText, Copy, Pause, Play, ShieldCheck, Trash, X } from "@phosphor-icons/react";
+import { ClipboardText, Code, Copy, FolderSimple, LinkSimple, Pause, Play, ShieldCheck, TextAlignLeft, Trash, X } from "@phosphor-icons/react";
 import type { HomeClipboardState } from "../../../../shared/types/homeWidgets";
 import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
 import { showToast } from "../../app/toast/toastStore";
@@ -46,6 +46,31 @@ function useClipboardState(paused: boolean): { state: HomeClipboardState | null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return { state, error };
+}
+
+type ClipKind = { kind: "link" | "color" | "code" | "path" | "text"; label: string | null; color?: string };
+
+/** What a copy looks like, for its glyph and how its text is set. */
+function clipKind(text: string): ClipKind {
+  const trimmed = text.trim();
+  if (/^https?:\/\/\S+$/i.test(trimmed)) {
+    try {
+      return { kind: "link", label: new URL(trimmed).host.replace(/^www\./, "") };
+    } catch {
+      return { kind: "link", label: null };
+    }
+  }
+  if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(trimmed) || /^(?:rgb|hsl|oklch)a?\(/i.test(trimmed)) return { kind: "color", label: null, color: trimmed };
+  if (/^(?:[a-z]:\\|\/|~\/)\S*$/i.test(trimmed)) return { kind: "path", label: null };
+  if (/\n/.test(trimmed) && /[{};=<>()]/.test(trimmed)) return { kind: "code", label: null };
+  if (/^[\w.-]+\([^)]*\);?$|^(?:npm|npx|git|cd|ade|node|pnpm|yarn)\s/.test(trimmed)) return { kind: "code", label: null };
+  return { kind: "text", label: null };
+}
+
+function ClipGlyph({ kind }: { kind: ClipKind }) {
+  if (kind.kind === "color") return <span className="ade-clip-glyph" data-kind="color"><i style={{ background: kind.color }} /></span>;
+  const Icon = kind.kind === "link" ? LinkSimple : kind.kind === "code" ? Code : kind.kind === "path" ? FolderSimple : TextAlignLeft;
+  return <span className="ade-clip-glyph" data-kind={kind.kind}><Icon size={12} weight="bold" /></span>;
 }
 
 export default function ClipboardWidget({ item }: HomeWidgetProps) {
@@ -118,8 +143,11 @@ export default function ClipboardWidget({ item }: HomeWidgetProps) {
               </div>
             ) : (
               <div className="ade-home-scroll" role="list">
-                {entries.map((entry) => (
-                  <div key={entry.id} role="listitem" className="ade-clip-row">
+                {entries.map((entry) => {
+                  const kind = clipKind(entry.text);
+                  return (
+                  <div key={entry.id} role="listitem" className="ade-clip-row" data-kind={kind.kind}>
+                    <ClipGlyph kind={kind} />
                     <button
                       type="button"
                       className="ade-clip-main"
@@ -132,6 +160,7 @@ export default function ClipboardWidget({ item }: HomeWidgetProps) {
                     >
                       <span className="ade-clip-text">{entry.text.length > 400 ? `${entry.text.slice(0, 400)}…` : entry.text}</span>
                       <span className="ade-clip-meta kit-num">
+                        {kind.label ? `${kind.label} · ` : ""}
                         {relativeTimeShort(entry.copiedAt)}
                         {entry.length > 120 ? ` · ${entry.length.toLocaleString()} chars` : ""}
                       </span>
@@ -145,7 +174,8 @@ export default function ClipboardWidget({ item }: HomeWidgetProps) {
                       </button>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             <div className="ade-clip-foot">

@@ -18,7 +18,45 @@ export const HOME_WIDGETS_IPC = {
   machineKill: "ade.home.machine.kill",
   weatherSearch: "ade.home.weather.search",
   weatherGet: "ade.home.weather.get",
+  shareCopyImage: "ade.home.share.copyImage",
+  shareSaveImage: "ade.home.share.saveImage",
+  nowPlayingSubscribe: "ade.home.nowPlaying.subscribe",
+  nowPlayingUnsubscribe: "ade.home.nowPlaying.unsubscribe",
+  nowPlayingCommand: "ade.home.nowPlaying.command",
+  nowPlayingChanged: "ade.home.nowPlaying.changed",
 } as const;
+
+export type HomeNowPlayingCommand = "play" | "pause" | "toggle" | "next" | "previous";
+
+export type HomeNowPlayingSession = {
+  /** The player, in words ("Spotify", "Microsoft Edge"), when the OS names it. */
+  app: string | null;
+  title: string;
+  artist: string;
+  album: string;
+  status: "playing" | "paused" | "stopped";
+  /** Position at `updatedAt`; the widget runs it forward while playing. */
+  positionMs: number;
+  durationMs: number;
+  updatedAt: number;
+  canPlay: boolean;
+  canPause: boolean;
+  canNext: boolean;
+  canPrevious: boolean;
+  /** Album art as a data URL, when the player shares one. */
+  artwork: string | null;
+};
+
+export type HomeNowPlayingState = {
+  /** False when this system has no source (or the helper is missing). */
+  available: boolean;
+  session: HomeNowPlayingSession | null;
+  source: "windows-smtc" | "macos-mediaremote" | "macos-music" | "ade-music" | null;
+  error?: string;
+};
+
+/** A PNG the renderer drew (a data URL), to copy or save. Nothing is uploaded. */
+export type HomeShareResult = { ok: true; path?: string } | { ok: false; canceled?: boolean; error?: string };
 
 export type HomeClipboardEntry = {
   id: string;
@@ -79,6 +117,9 @@ export type HomeWeatherPlace = {
 
 export type HomeWeatherDay = { date: string; code: number; maxC: number; minC: number };
 
+/** One forecast hour, in the place's own local hour (0–23). */
+export type HomeWeatherHour = { hour: number; code: number; tempC: number; isDay: boolean };
+
 export type HomeWeather = {
   temperatureC: number;
   apparentC: number | null;
@@ -88,6 +129,8 @@ export type HomeWeather = {
   todayMaxC: number | null;
   todayMinC: number | null;
   days: HomeWeatherDay[];
+  /** The next twelve hours; absent on a cached reading from before hours were read. */
+  hours?: HomeWeatherHour[];
   fetchedAt: number;
 };
 
@@ -111,5 +154,16 @@ export type HomeWidgetsBridge = {
   weather: {
     search: (query: string) => Promise<HomeWeatherSearchResult>;
     get: (args: { latitude: number; longitude: number }) => Promise<HomeWeatherResult>;
+  };
+  nowPlaying: {
+    /** The widget is on screen: start the source (if needed) and get the state now. */
+    subscribe: () => Promise<HomeNowPlayingState>;
+    unsubscribe: () => Promise<void>;
+    command: (command: HomeNowPlayingCommand) => Promise<void>;
+    onChanged: (cb: (state: HomeNowPlayingState) => void) => () => void;
+  };
+  share: {
+    copyImage: (pngDataUrl: string) => Promise<HomeShareResult>;
+    saveImage: (args: { pngDataUrl: string; fileName: string }) => Promise<HomeShareResult>;
   };
 };

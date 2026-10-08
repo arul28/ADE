@@ -1119,7 +1119,7 @@ import type {
   SearchRebuildResult,
 } from "../shared/types";
 import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
-import { HOME_WIDGETS_IPC, type HomeClipboardState } from "../shared/types/homeWidgets";
+import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState } from "../shared/types/homeWidgets";
 
 type ShortIpcCache<T> = {
   clear: () => void;
@@ -13386,6 +13386,20 @@ const adeBridge = {
     weather: {
       search: (query: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherSearch, query),
       get: (args: { latitude: number; longitude: number }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherGet, args),
+    },
+    nowPlaying: {
+      subscribe: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingSubscribe),
+      unsubscribe: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingUnsubscribe),
+      command: (command: HomeNowPlayingCommand) => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingCommand, command),
+      onChanged: (cb: (state: HomeNowPlayingState) => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, state: HomeNowPlayingState) => cb(state);
+        ipcRenderer.on(HOME_WIDGETS_IPC.nowPlayingChanged, listener);
+        return () => ipcRenderer.removeListener(HOME_WIDGETS_IPC.nowPlayingChanged, listener);
+      },
+    },
+    share: {
+      copyImage: (pngDataUrl: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.shareCopyImage, pngDataUrl),
+      saveImage: (args: { pngDataUrl: string; fileName: string }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.shareSaveImage, args),
     },
   },
   perf: {

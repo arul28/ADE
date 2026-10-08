@@ -329,7 +329,9 @@ export default function FeedWidget({ item }: HomeWidgetProps) {
           <div className="ade-feed-away" role="status">
             <div className="ade-feed-away-text">
               <span className="kit-eyebrow">While you were away · {away.gap}</span>
-              <span>{away.parts.join(" · ")}</span>
+              <span className="ade-feed-away-parts">
+                {away.parts.map((part) => <span key={part} className="ade-feed-away-part">{part}</span>)}
+              </span>
             </div>
             <button type="button" className="kit-icon-btn" aria-label="Dismiss summary" title="Dismiss" onClick={dismiss}>
               <X size={12} weight="bold" />
