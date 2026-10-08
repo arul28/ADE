@@ -15,7 +15,7 @@
 | `apps/ade-cli/src/services/runtime/startupTeardown.ts` | `createTeardownStack()` — the LIFO release stack a half-built runtime unwinds. Each acquisition in `createAdeRuntime` registers its own release at the point it acquires, `drain()` pops in reverse order, and a release that throws is caught so it neither stops the drain nor replaces the original startup failure. `runtime.dispose` is now the same `drain()`, which is what stops the failure path and the shutdown path from drifting apart the way two hand-maintained lists always did. |
 | `apps/ade-cli/src/services/runtime/brainMemoryRestart.ts` | `createBrainMemoryRestartGuard` — the planned restart of an idle brain that is holding too much resident memory. See [Brain resilience](#brain-resilience-watchdog-freshness-memory-and-recovery-notice). |
 | `apps/ade-cli/src/services/runtime/runtimeLogMaintenance.ts` | Bounds launchd stdout/stderr with tail-copy plus in-place truncation. |
-| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts` | Worker-thread **event-loop watchdog** for the machine brain. Heartbeats every second with the current command name plus event-loop, memory, and resource diagnostics; a recovered delay over 2 s logs a near-miss. A stall past `ADE_LOOP_WATCHDOG_MS` (30 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb, requests a best-effort Node report, and `SIGKILL`s the brain. On next boot it promotes the evidence to `last-wedge.json` / `last-wedge-report.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. It is also the brain's memory sampler: `brain.memory_sample` every 5 min, `trackBrainMemoryPressure` to decide when RSS has stayed high long enough to act, and `resolveBrainRssRestartBytes` to read the `ADE_BRAIN_RSS_RESTART_BYTES` override. `classifyBrainLoopLag` separates a stall from a suspension, and `currentBrainLoopWatchdogCommand()` is the idleness signal the memory guard shares with it so a restart decision and a wedge breadcrumb can never disagree about what the brain was doing. |
+| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts` | Worker-thread **event-loop watchdog** for the machine brain. Heartbeats every second with the current command name plus event-loop, memory, and resource diagnostics; a recovered delay over 2 s logs a near-miss, or a suspend gap when the worker thread was paused too. A stall past `ADE_LOOP_WATCHDOG_MS` (30 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb, requests a best-effort Node report, and `SIGKILL`s the brain. On next boot it promotes the evidence to `last-wedge.json` / `last-wedge-report.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. It is also the brain's memory sampler: `brain.memory_sample` every 5 min, `trackBrainMemoryPressure` to decide when RSS has stayed high long enough to act, and `resolveBrainRssRestartBytes` to read the `ADE_BRAIN_RSS_RESTART_BYTES` override. `classifyBrainLoopLag` separates a stall from a suspension, and `currentBrainLoopWatchdogCommand()` is the idleness signal the memory guard shares with it so a restart decision and a wedge breadcrumb can never disagree about what the brain was doing. |
 | `apps/ade-cli/src/services/runtime/brainFreshnessMonitor.ts` | The running brain stats its own CLI entrypoint every 5 min (`ADE_BRAIN_FRESHNESS_INTERVAL_MS`), hashes only after the stat changes, and — when the on-disk hash no longer matches the baked runtime hash — waits for the brain to go idle (bounded) before triggering the brain-update service restart so an in-place upgrade takes effect without interrupting active work. Disable with `ADE_DISABLE_BRAIN_FRESHNESS=1`. |
 | `apps/ade-cli/src/services/runtime/runtimeBuildIdentity.ts` | `computeRuntimeBuildHash` / `computeRuntimeBuildHashAsync` — the SHA-256 of the CLI entrypoint used as the brain build identity by the freshness monitor and the desktop compatibility handshake. |
 | `apps/ade-cli/src/services/runtime/brainLogger.ts` | The machine-brain logger: reuses the desktop `createFileLogger` to write `~/.ade/runtime/brain.jsonl` (10 MiB `.1` rotation) and additionally mirrors timestamped `warn`/`error` lines to stderr so launchd captures them. |
@@ -406,8 +406,17 @@ monotonic deltas — the worker atomically writes an `event-loop-wedge.json`
 breadcrumb (wedged command, blocked ms, threshold, and the latest event-loop,
 memory, and resource snapshot) under the runtime dir, requests a best-effort
 Node diagnostic report, and `SIGKILL`s the brain after a one-second report
-grace so launchd restarts it. A recovered heartbeat delay over 2 s logs
-`brain.event_loop_near_miss` with the same diagnostic shape.
+grace so launchd restarts it. The worker also reports any of its own checks
+that run 1.5 s or more late, which means the whole process was off the CPU. A
+recovered heartbeat delay of 2 s or more is logged as info `brain.suspend_gap`
+when it used little CPU (at most 2 s, or a tenth of the delay if that is
+longer), faulted no more than 10 major pages (paging is not checked on Windows,
+nor for gaps of 60 s or more), and the worker's own pauses cover at least 75%
+of it. That is a sleep, App Nap, or a stopped process. Every other delay of 2 s
+or more is logged as warn `brain.event_loop_near_miss`. Both carry `pid`,
+`socketPath`, `workerPauseCoverage`, `cpuDeltaMs`, and `majorPageFaultsDelta`,
+so brains that share `brain.jsonl` can be told apart. The kill decision does
+not change.
 
 On the next boot the watchdog promotes any breadcrumb and generated report to
 `last-wedge.json` / `last-wedge-report.json`,

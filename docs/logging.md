@@ -81,7 +81,11 @@ restarting and handing the answer to the client's reconnect) and the `mobile` /
 whether the repair worked, so one repair is one event no matter which client
 asked for it.
 `brain.suspend_gap` records a sleep the watchdogs would previously have
-mis-reported as an event-loop stall. `brain.memory_sample` (rss, heap,
+mis-reported as an event-loop stall. Sleeps of 2 to 59 seconds are logged as
+`brain.suspend_gap` too, and the watchdog's lines name the `pid` and
+`socketPath` of the brain that wrote them (`brain.recovered_from_wedge` is the
+exception, since it describes the previous process).
+`brain.memory_sample` (rss, heap,
 external, uptime; every five minutes) and `brain.memory_restart` /
 `brain.memory_restart_deferred` record the RSS slope and the planned
 idle restart that mitigates a known native leak. All of these are local
