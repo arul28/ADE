@@ -412,6 +412,12 @@ export function buildWorkBoardModel(args: {
   }
 
   for (const session of args.snoozedFiltered) {
+    // The host never files a failure as snoozed (`buildRosterItems`), so a
+    // snoozed failure stays in Needs you here too, or the counts disagree.
+    if (sessionCanonicalUiState(canonicalInputFromSummary(session)).phase === "failed") {
+      failed.push(session);
+      continue;
+    }
     waitingReasonBySessionId.set(session.id, "snoozed");
     waiting.push(session);
   }
