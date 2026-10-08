@@ -189,3 +189,36 @@ License:    Creative Commons Attribution 4.0 International (CC BY 4.0)
             https://creativecommons.org/licenses/by/4.0/
 Used as:    parakeet-ultra-Q4_K_M.gguf, downloaded on demand into the user's
             ADE data directory. Not modified by ADE.
+
+================================================================================
+7. Contribution Skyline
+================================================================================
+
+Upstream:   the "contribution-skyline" component on 21st.dev
+Copyright:  Copyright (c) Kedhareswer Naidu
+License:    MIT
+Ported as:  apps/desktop/src/renderer/components/ui/ContributionSkyline.tsx
+            apps/desktop/src/renderer/components/ui/contributionSkylineModel.ts
+            (rewritten for ADE's theme tokens and sizing)
+
+MIT License
+
+Copyright (c) Kedhareswer Naidu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
