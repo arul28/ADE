@@ -64,3 +64,13 @@ export async function openChatInBrowserTab(
     await api.switchTab({ tabCollection: "personal", tabId: held.id });
   }
 }
+
+/**
+ * Bring one of the Browser tab's own tabs to the front: the Browser top tab
+ * opens on it. Now Playing uses this for a tab that is playing media.
+ */
+export async function showTabInBrowserTab(tabId: string, navigate: (path: string) => void): Promise<void> {
+  useAppStore.getState().setBrowserTabOpen(true);
+  navigate(BROWSER_TAB_ROUTE);
+  await window.ade?.builtInBrowser?.switchTab({ tabCollection: "personal", tabId }).catch(() => undefined);
+}

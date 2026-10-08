@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { motion } from "motion/react";
+import { useNavigate } from "react-router-dom";
 import { MusicNotes, Pause, Play, Repeat, RepeatOnce, Shuffle, SkipBack, SkipForward } from "@phosphor-icons/react";
-import type { HomeNowPlayingCommand, HomeNowPlayingState } from "../../../../shared/types/homeWidgets";
+import type { HomeNowPlayingCommand, HomeNowPlayingSession, HomeNowPlayingState } from "../../../../shared/types/homeWidgets";
 import type { MusicRepeatMode } from "../../../../shared/types/music";
+import { showTabInBrowserTab } from "../../browser/browserTab";
 import { MusicSlider, PlayerIconButton, useMusicReducedMotion } from "../../music/MusicPlayer";
 import { AppleMusicBadge } from "../../music/musicParts";
 import { formatMusicTime, musicActions, useMusicNowPlaying, useMusicPosition, useMusicState } from "../../music/musicStore";
@@ -17,13 +19,19 @@ import "./NowPlayingWidget.css";
  * big and rounded, the title, a spring-filled scrubber with times, and a pill
  * of round ghost buttons (shuffle, back, play/pause, forward, repeat).
  *
- * The source is whatever the computer plays. Main reads the OS media session
- * (Windows: the System Media Transport Controls; macOS: MediaRemote or
- * Music.app) only while this card is on screen. When ADE's own Music tab has a
- * song loaded, main hands the card to it (`source: "ade-music"`), and the card
- * then drives ADE's player directly: real seeking, shuffle and repeat. Another
- * app's session can only play, pause and skip, so seek, shuffle and repeat are
- * shown but off for it.
+ * The source is whatever plays, merged by main (`nowPlayingService.ts`):
+ * ADE's own Music tab, a built-in browser tab playing media (YouTube,
+ * SoundCloud…), or another app through the OS media session. Main picks the
+ * best one (a playing ADE player, then a playing tab, then a playing app, then
+ * the most recent paused) and lists the rest; a small switcher in the corner
+ * shows another. The corner pill names the source with its own icon (the
+ * app's icon, the site's favicon). Main reads the sources only while this
+ * card is on screen.
+ *
+ * ADE's player is driven directly: real seeking, shuffle and repeat. A tab or
+ * an app shows only the controls it has: play and pause, and next and
+ * previous where the page or app offers them. A browser tab's cover jumps to
+ * that tab in the Browser top tab.
  */
 
 function useNowPlaying(active: boolean): HomeNowPlayingState | null {
@@ -64,8 +72,11 @@ type CardModel = {
   onToggle: () => void;
   onNext: () => void;
   onPrevious: () => void;
-  /** Open where the music lives (ADE's Music tab), when it is ADE's own player. */
+  /** Open where the music lives (ADE's Music tab, or the browser tab). */
   onOpen?: () => void;
+  openLabel?: string;
+  /** Shown big on the cover when the source shares no artwork. */
+  fallbackIcon?: string | null;
 };
 
 /** The scrubber and times for ADE's own player (real seeking). */
@@ -168,7 +179,8 @@ function PlayerCard({ model, seek, still }: { model: CardModel; seek: React.Reac
         className={model.onOpen ? "ade-np2-cover is-link" : "ade-np2-cover"}
         role={model.onOpen ? "button" : undefined}
         tabIndex={model.onOpen ? 0 : undefined}
-        title={model.onOpen ? "Open Music" : undefined}
+        title={model.onOpen ? model.openLabel ?? "Open Music" : undefined}
+        aria-label={model.onOpen ? model.openLabel ?? "Open Music" : undefined}
         onClick={model.onOpen}
         onKeyDown={(event) => {
           if (model.onOpen && (event.key === "Enter" || event.key === " ")) {
@@ -187,6 +199,8 @@ function PlayerCard({ model, seek, still }: { model: CardModel; seek: React.Reac
             animate={{ opacity: 1, scale: model.playing || reduced ? 1 : 0.94 }}
             transition={{ type: "spring", stiffness: 260, damping: 26 }}
           />
+        ) : model.fallbackIcon ? (
+          <span className="ade-np2-cover-empty is-icon"><img src={model.fallbackIcon} alt="" draggable={false} /></span>
         ) : (
           <span className="ade-np2-cover-empty"><MusicNotes size={30} /></span>
         )}
@@ -198,28 +212,62 @@ function PlayerCard({ model, seek, still }: { model: CardModel; seek: React.Reac
       {seek}
       <div className="ade-np2-controls">
         <div className="ade-np2-pill">
-          {model.own ? <OwnModes which="shuffle" /> : (
-            <PlayerIconButton label="Shuffle isn't available for this app" disabled onClick={() => {}}>
-              <Shuffle size={16} />
+          {model.own ? <OwnModes which="shuffle" /> : null}
+          {model.own || model.canPrevious ? (
+            <PlayerIconButton label="Previous" disabled={!model.canPrevious} onClick={model.onPrevious}>
+              <SkipBack size={16} weight="fill" />
             </PlayerIconButton>
-          )}
-          <PlayerIconButton label="Previous" disabled={!model.canPrevious} onClick={model.onPrevious}>
-            <SkipBack size={16} weight="fill" />
-          </PlayerIconButton>
+          ) : null}
           <PlayerIconButton label={model.playing ? "Pause" : "Play"} disabled={!model.canPlayPause} onClick={model.onToggle} className="ade-np2-play">
             {model.playing ? <Pause size={17} weight="fill" /> : <Play size={17} weight="fill" />}
           </PlayerIconButton>
-          <PlayerIconButton label="Next" disabled={!model.canNext} onClick={model.onNext}>
-            <SkipForward size={16} weight="fill" />
-          </PlayerIconButton>
-          {model.own ? <OwnModes which="repeat" /> : (
-            <PlayerIconButton label="Repeat isn't available for this app" disabled onClick={() => {}}>
-              <Repeat size={16} />
+          {model.own || model.canNext ? (
+            <PlayerIconButton label="Next" disabled={!model.canNext} onClick={model.onNext}>
+              <SkipForward size={16} weight="fill" />
             </PlayerIconButton>
-          )}
+          ) : null}
+          {model.own ? <OwnModes which="repeat" /> : null}
         </div>
       </div>
     </motion.div>
+  );
+}
+
+/** A source's icon: its own (app icon, favicon), or a note. */
+function SourceIcon({ session, size }: { session: HomeNowPlayingSession; size: number }) {
+  if (session.appIcon) return <img className="ade-np2-src-icon" src={session.appIcon} alt="" width={size} height={size} draggable={false} />;
+  return <MusicNotes className="ade-np2-src-icon" size={size} weight="fill" aria-hidden />;
+}
+
+/**
+ * The corner pill: which source this is, by its own icon and name, then the
+ * other sources as small icons to switch to. ADE's own player is named by the
+ * Apple Music badge in the other corner instead.
+ */
+function SourceSwitcher({ current, sessions }: { current: HomeNowPlayingSession | null; sessions: HomeNowPlayingSession[] }) {
+  const others = sessions.filter((entry) => entry.id !== current?.id && !(current === null && entry.kind === "ade-music")).slice(0, 3);
+  const showCurrent = current !== null && current.kind !== "ade-music";
+  if (!showCurrent && others.length === 0) return null;
+  const select = (id: string) => void window.ade?.home?.nowPlaying?.select(id).catch(() => {});
+  return (
+    <div className="ade-np2-sources">
+      {showCurrent ? (
+        <span className="ade-np2-src is-current" title={current.app ?? undefined}>
+          <SourceIcon session={current} size={14} />
+          {current.app ? <span className="ade-np2-src-name">{current.app}</span> : null}
+        </span>
+      ) : null}
+      {others.map((entry) => {
+        const name = entry.kind === "ade-music" ? "Apple Music" : entry.app ?? "Another app";
+        const label = `Show ${name}${entry.title ? `: ${entry.title}` : ""}`;
+        return (
+          <button key={entry.id} type="button" className="ade-np2-src is-other" title={label} aria-label={label} onClick={() => select(entry.id)}>
+            <SourceIcon session={entry} size={14} />
+            {entry.status === "playing" ? <i className="ade-np2-src-live" aria-hidden /> : null}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -249,25 +297,32 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
   const visible = useWidgetVisible();
   const preview = useWidgetPreview();
   const span = useWidgetSpan(item);
+  const navigate = useNavigate();
   // A gallery preview shows the live state but must not hold the source open
   // after the gallery closes; it unsubscribes on unmount like the card does.
   const state = useNowPlaying(visible);
   const session = state?.session ?? null;
+  const sessions = state?.sessions ?? [];
   const playing = session?.status === "playing";
-  const send = (command: HomeNowPlayingCommand) => void window.ade?.home?.nowPlaying?.command(command);
+  const send = (command: HomeNowPlayingCommand) => void window.ade?.home?.nowPlaying?.command(command, session?.id);
   const still = !visible || preview;
-  // ADE's own player wins whenever it has a song loaded (main hands the OS
-  // source over the same way); reading the store directly also gives seeking.
+  // ADE's own player is read straight from the Music store, which also gives
+  // seeking. It wins while it plays (main ranks it first the same way) unless
+  // the user picked another source; before main has answered, or with nothing
+  // else loaded, a loaded song shows at once.
   const music = useMusicNowPlaying();
-  const own = state?.source === "ade-music" || Boolean(music.nowPlaying);
+  const own = session?.kind === "ade-music"
+    || (Boolean(music.nowPlaying) && ((music.isPlaying && !state?.picked) || !session));
   const artwork = own ? (music.artworkUrl(220) ?? session?.artwork ?? null) : (session?.artwork ?? null);
+  // A source with no cover tints the card with its own icon (YouTube red, Spotify green).
+  const backdrop = artwork ?? (own ? null : session?.appIcon ?? null);
 
   let body: React.ReactNode;
   if (!window.ade?.home?.nowPlaying) {
     body = <div className="ade-home-empty"><span>Available in the ADE desktop app.</span></div>;
   } else if (!state && !own) {
     body = <div className="ade-home-empty"><span>Listening…</span></div>;
-  } else if (own) {
+  } else if (own && music.nowPlaying) {
     body = <OwnPlayer still={still} />;
   } else if (!state || !state.available) {
     body = <div className="ade-home-empty"><MusicNotes size={18} aria-hidden /><span>{state?.error ?? "Now Playing is not available here."}</span></div>;
@@ -276,11 +331,11 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
       <div className="ade-np2-idle">
         <span className="ade-np2-cover-empty is-small"><MusicNotes size={22} /></span>
         <span className="ade-np2-title">Nothing playing</span>
-        <span className="ade-np2-sub">Play music in ADE's Music tab or any app and it shows here.</span>
-
+        <span className="ade-np2-sub">Play music in ADE's Music tab, a browser tab or any app and it shows here.</span>
       </div>
     );
   } else {
+    const tabId = session.kind === "browser" ? session.browserTabId ?? null : null;
     const model: CardModel = {
       title: session.title || "Untitled",
       subtitle: session.artist || session.app || "",
@@ -293,6 +348,9 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
       onToggle: () => send(playing ? "pause" : "play"),
       onNext: () => send("next"),
       onPrevious: () => send("previous"),
+      onOpen: tabId ? () => void showTabInBrowserTab(tabId, navigate) : undefined,
+      openLabel: tabId ? `Show ${session.app ?? "this tab"} in the browser` : undefined,
+      fallbackIcon: session.appIcon,
     };
     body = (
       <PlayerCard
@@ -312,7 +370,8 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
       data-playing={playing || undefined}
       data-still={still ? "true" : undefined}
     >
-      {artwork ? <img className="ade-np2-backdrop" src={artwork} alt="" aria-hidden /> : null}
+      {backdrop ? <img className="ade-np2-backdrop" src={backdrop} alt="" aria-hidden /> : null}
+      {window.ade?.home?.nowPlaying ? <SourceSwitcher current={own ? null : session} sessions={sessions} /> : null}
       {window.ade?.music ? (
         <button type="button" className="ade-np2-am" aria-label="Open Apple Music" title="Open Apple Music" onClick={musicActions.open}>
           <AppleMusicBadge height={24} />
