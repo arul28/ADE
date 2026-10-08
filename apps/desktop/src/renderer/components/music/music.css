@@ -865,6 +865,16 @@
 
 /* ---------- Empty, connect, gates ---------- */
 
+/* Search with nothing typed: the prompt and its ideas sit at the panel's
+   optical centre, not stuck to the top of an empty pane. */
+.ade-music-search-start {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  justify-content: center;
+  padding-bottom: 6%;
+}
+.ade-music-search-start .ade-music-empty { padding-top: 0; }
 .ade-music-empty {
   display: flex;
   flex-direction: column;

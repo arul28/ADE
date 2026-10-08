@@ -438,7 +438,7 @@ function SearchView({
         {error ? <MusicEmpty icon={<WarningCircle size={22} />} title="Search failed" hint={error} /> : null}
         {!debounced ? (
           authorized ? (
-            <>
+            <div className="ade-music-search-start">
               <MusicEmpty icon={<MagnifyingGlass size={22} />} title="Search songs, albums, playlists and artists" hint="Results play straight from Apple Music." />
               <div className="ade-music-ideas" aria-label="Search ideas">
                 {SEARCH_IDEAS.map((idea) => (
@@ -447,7 +447,7 @@ function SearchView({
                   </button>
                 ))}
               </div>
-            </>
+            </div>
           ) : (
             <MusicSignedOutHome
               renderSongs={(items) => (
