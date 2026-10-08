@@ -184,6 +184,7 @@ export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): AgentCh
       call("slashCommands", {
         ...(args.sessionId ? { sessionId: args.sessionId } : {}),
         ...(args.provider ? { provider: args.provider } : {}),
+        ...ASSISTANT_CLAIM,
       }).then((rows) => (Array.isArray(rows) ? rows : [])),
     getEventHistory: (args: unknown) => call("getEventHistory", args),
     getEventHistoryPage: (args: unknown) => call("getEventHistoryPage", args),

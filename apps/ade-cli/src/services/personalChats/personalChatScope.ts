@@ -15,6 +15,7 @@ import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import { stripHostOnlyChatMetadata } from "../../../../desktop/src/shared/chatAutoResume";
 import { stripHostAuthoredMessageProvenance } from "../../../../desktop/src/main/services/chat/spawnMissionOwnership";
+import { PERSONAL_LANE_ONLY_AGENT_SKILLS } from "../../../../desktop/src/main/services/chat/personalSession";
 import {
   personalHostPathContext,
   validatePersonalHostCwd,
@@ -176,6 +177,16 @@ async function saveFileTempAttachment(attachmentsDir: string, args: ObjectArgs):
   });
 }
 
+/** `/` entries minus the skills an assistant chat does not get (`PERSONAL_LANE_ONLY_AGENT_SKILLS`). */
+function withoutLaneOnlySkillCommands<T extends { name: string }>(commands: readonly T[]): T[] {
+  const withheld = new Set<string>(PERSONAL_LANE_ONLY_AGENT_SKILLS);
+  return commands.filter((command) => {
+    const name = command.name.replace(/^\//, "");
+    // A plugin-namespaced listing (`ade:ade-lanes-git`) names the same skill.
+    return !withheld.has(name) && !withheld.has(name.slice(name.indexOf(":") + 1));
+  });
+}
+
 /** The call's args without the ADE-surface claim, which no chat service method takes. */
 function withoutAssistantClaim(args: ObjectArgs): ObjectArgs {
   if (!("personalProfile" in args)) return args;
@@ -300,17 +311,27 @@ export class PersonalChatScope {
       }
       case "slashCommands": {
         const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
-        if (sessionId) await this.requirePersonalSession(service, sessionId);
+        const session = sessionId ? await this.requirePersonalSession(service, sessionId) : null;
         const provider = typeof args.provider === "string" && args.provider.trim()
           ? args.provider.trim() as AgentChatCreateArgs["provider"]
           : null;
         // The internal lane, never a caller's: a provider-only lookup reads the
         // personal workspace, not whatever project the caller has open.
-        result = service.getSlashCommands({
+        const commands = service.getSlashCommands({
           ...(sessionId ? { sessionId } : {}),
           ...(provider ? { provider } : {}),
           laneId: await this.getInternalLaneId(runtime),
         });
+        // An assistant chat's skill catalog withholds the lane-only skills;
+        // the `/` menu walks the unfiltered skill roots, so withhold them here
+        // too. A legacy row (no profile) counts when the caller makes the
+        // assistant claim, the same rule `claimForAssistant` persists.
+        const assistant = this.options.runtimeProfile !== "embedded"
+          && (session
+            ? session.personalProfile === "assistant"
+              || (session.personalProfile == null && args.personalProfile === "assistant")
+            : args.personalProfile === "assistant");
+        result = assistant ? withoutLaneOnlySkillCommands(commands) : commands;
         break;
       }
       case "create": {
