@@ -368,6 +368,8 @@ struct WorkCrossMachineHandoffTarget: Identifiable, Equatable {
   let runtimeMode: String
   /// The chat is mid-turn: the primary action becomes "Move when this turn ends".
   let busy: Bool
+  /// The source chat's fast mode, so the sheet starts from what the chat uses.
+  var fastMode: Bool = false
 }
 
 struct WorkCrossMachineHandoffSheet: View {
@@ -400,6 +402,7 @@ struct WorkCrossMachineHandoffSheet: View {
     _modelId = State(initialValue: target.modelId)
     _provider = State(initialValue: target.provider)
     _reasoningEffort = State(initialValue: target.reasoningEffort)
+    _fastMode = State(initialValue: target.fastMode)
     _runtimeMode = State(initialValue: target.runtimeMode.isEmpty
       ? workDefaultRuntimeMode(provider: target.provider)
       : target.runtimeMode)
@@ -894,7 +897,9 @@ struct WorkCrossMachineHandoffSheet: View {
       "targetModelId": modelId,
     ]
     if !reasoningEffort.isEmpty { args["reasoningEffort"] = reasoningEffort }
-    if fastMode { args["fastMode"] = true }
+    // Always sent: an omitted field would inherit the source chat's value
+    // and ignore a person who turned fast mode off here.
+    args["fastMode"] = fastMode
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
     if let v = wire.permissionMode { args["permissionMode"] = v }
     if let v = wire.claudePermissionMode { args["claudePermissionMode"] = v }

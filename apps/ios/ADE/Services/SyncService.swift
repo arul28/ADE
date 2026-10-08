@@ -4376,10 +4376,12 @@ final class SyncService: ObservableObject {
   /// + a real `lastActivityAt` without round-tripping for each running chat.
   private(set) var chatSummaryCache: [String: AgentChatSessionSummary] = [:]
   /// Chats whose move record the brain cleared (`crossMachineHandoffState:
-  /// null`). An absent record alone can't clear a live one, because older hosts
-  /// omit the field; this says the absence is a clear. Dropped when a record
-  /// for the chat arrives again.
-  private(set) var crossMachineHandoffClearedSessionIds: Set<String> = []
+  /// null`), keyed by session, with the cleared move's handoffId ("" when the
+  /// phone held none). An absent record alone can't clear a live one, because
+  /// older hosts omit the field; this says the absence is a clear. A summary
+  /// fetched before the clear still carries the cleared move and is stripped;
+  /// a different move ends the clear.
+  private(set) var crossMachineHandoffClears: [String: String] = [:]
   /// Host-stamped `parentIdentityKey`, kept out of the database on purpose.
   ///
   /// The field is a PROJECTION on the desktop (`chatSessionProjection` resolves
@@ -22602,7 +22604,7 @@ final class SyncService: ObservableObject {
       // session), which means a full reset must clear it explicitly — otherwise
       // another project's / a stale connection's summaries would linger.
       chatSummaryCache.removeAll()
-      crossMachineHandoffClearedSessionIds.removeAll()
+      crossMachineHandoffClears.removeAll()
       // Project-scoped for the same reason the summary cache is: a session id
       // from another project must never lend its lineage to a row here.
       sessionParentIdentityKeys.removeAll()
@@ -23174,7 +23176,7 @@ extension SyncService {
     // until they are explicitly overwritten. Project-switch / disconnect resets
     // still evict the whole cache via `resetChatEventState(clearHistory: true)`.
     for (sessionId, summary) in summaries {
-      chatSummaryCache[sessionId] = summary
+      chatSummaryCache[sessionId] = withCrossMachineHandoffClearApplied(summary)
     }
     // Chat summaries feed `lastActivityAt` / `modelId` into the LA roster, so
     // a refreshed cache must trigger a snapshot recompute. Otherwise widgets
@@ -23183,15 +23185,28 @@ extension SyncService {
     refreshActiveSessionsAndSnapshot()
   }
 
-  func markCrossMachineHandoffCleared(sessionId: String) {
-    crossMachineHandoffClearedSessionIds.insert(sessionId)
+  func markCrossMachineHandoffCleared(sessionId: String, handoffId: String?) {
+    crossMachineHandoffClears[sessionId] = handoffId ?? ""
+  }
+
+  /// The summary as the phone should keep it: a record for a move the brain
+  /// already cleared (a fetch that started before the clear) is dropped, and
+  /// a different move ends the clear.
+  func withCrossMachineHandoffClearApplied(_ summary: AgentChatSessionSummary) -> AgentChatSessionSummary {
+    guard let cleared = crossMachineHandoffClears[summary.sessionId],
+          let record = summary.crossMachineHandoff
+    else { return summary }
+    if record.handoffId == cleared {
+      var stripped = summary
+      stripped.crossMachineHandoff = nil
+      return stripped
+    }
+    crossMachineHandoffClears.removeValue(forKey: summary.sessionId)
+    return summary
   }
 
   func cacheChatSummary(_ summary: AgentChatSessionSummary) {
-    chatSummaryCache[summary.sessionId] = summary
-    if summary.crossMachineHandoff != nil {
-      crossMachineHandoffClearedSessionIds.remove(summary.sessionId)
-    }
+    chatSummaryCache[summary.sessionId] = withCrossMachineHandoffClearApplied(summary)
     refreshActiveSessionsAndSnapshot()
   }
 

@@ -976,7 +976,16 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
           includeChanges: persisted.record.includeChanges,
         });
         prepared = { capsule: fresh.capsule, capsuleFingerprint: fresh.capsuleFingerprint };
+        // Deleted while a step awaited: nothing is stored or sent for it.
+        if (!chatExists(sessionId)) {
+          forgetMove(sessionId, [persisted.record.handoffId]);
+          return;
+        }
         deps.outbox.write(persisted.record.handoffId, prepared);
+      }
+      if (!chatExists(sessionId)) {
+        forgetMove(sessionId, [persisted.record.handoffId]);
+        return;
       }
       acceptanceStarted = true;
       const response = await transport.callAction({

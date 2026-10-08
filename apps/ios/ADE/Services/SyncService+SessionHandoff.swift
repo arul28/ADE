@@ -242,7 +242,7 @@ extension SyncService {
   func clearCrossMachineHandoffRecord(sessionId: String) {
     // Marked even when the cache holds no record: the open chat's live
     // summary may still hold one.
-    markCrossMachineHandoffCleared(sessionId: sessionId)
+    markCrossMachineHandoffCleared(sessionId: sessionId, handoffId: chatSummaryCache[sessionId]?.crossMachineHandoff?.handoffId)
     guard var summary = chatSummaryCache[sessionId], summary.crossMachineHandoff != nil else { return }
     summary.crossMachineHandoff = nil
     cacheChatSummary(summary)

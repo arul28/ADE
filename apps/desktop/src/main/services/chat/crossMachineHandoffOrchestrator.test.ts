@@ -575,6 +575,18 @@ describe("cross-machine move orchestrator", () => {
     expect(h.notified).toEqual([]);
     expect(h.outcomes).toEqual([]);
 
+    // Deleted while the source check runs, and the check still passes: no
+    // capsule is stored and nothing reaches the destination.
+    const late = createHarness();
+    late.setValidate(async () => {
+      late.chat.exists = false;
+    });
+    const lateStarted = await late.start();
+    expect(await late.settled()).toBeNull();
+    expect(late.hasOutbox(lateStarted.handoffId)).toBe(false);
+    expect(late.accepted).toHaveLength(0);
+    expect(late.outcomes).toEqual([]);
+
     // A move saved for a chat that is gone by the next start is dropped, never run.
     const sweep = createHarness();
     const persisted: CrossMachineHandoffPersisted = {

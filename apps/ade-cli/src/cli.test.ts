@@ -8218,6 +8218,7 @@ describe("ADE CLI", () => {
     ["inline machine", ["--machine=Mac mini", "chat-1"]],
     // A prompt that reads like a flag is text, not --cancel.
     ["prompt that looks like a flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--cancel"]],
+    ["handoff note that looks like a flag", ["chat-1", "--machine", "Mac mini", "--handoff-note", "--cancel"]],
   ])("builds a move to another machine with the %s", (_label, head) => {
     const move = expectExecutePlan(buildCliPlan([
       "chat",

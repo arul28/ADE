@@ -1774,7 +1774,7 @@ struct WorkSessionDestinationView: View {
     // older cache entry.
     // The brain's explicit clear drops the live record too; a merely absent
     // cached record (an older host) does not.
-    if cached.crossMachineHandoff == nil, syncService.crossMachineHandoffClearedSessionIds.contains(sessionId) {
+    if cached.crossMachineHandoff == nil, syncService.crossMachineHandoffClears[sessionId] != nil {
       current.crossMachineHandoff = nil
     } else {
       current.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
@@ -1804,7 +1804,9 @@ struct WorkSessionDestinationView: View {
     guard !isCrossProject || onOtherMachine else { return }
 
     if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
-       let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+       let rawSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+      // A fetch that started before the brain cleared the move still carries it.
+      let fetchedSummary = syncService.withCrossMachineHandoffClearApplied(rawSummary)
       if chatSummary != fetchedSummary {
         chatSummary = fetchedSummary
       }
@@ -1820,8 +1822,9 @@ struct WorkSessionDestinationView: View {
           !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           syncService.supportsRemoteAction("chat.listSessions"),
           let summaries = try? await syncService.listChatSessions(laneId: laneId),
-          let fallbackSummary = summaries.first(where: { $0.sessionId == sessionId })
+          let rawFallback = summaries.first(where: { $0.sessionId == sessionId })
     else { return }
+    let fallbackSummary = syncService.withCrossMachineHandoffClearApplied(rawFallback)
 
     if chatSummary != fallbackSummary {
       chatSummary = fallbackSummary

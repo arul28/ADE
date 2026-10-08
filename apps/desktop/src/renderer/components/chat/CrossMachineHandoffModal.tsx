@@ -300,6 +300,15 @@ export function CrossMachineHandoffModal({
     void loadOptions();
   }, [loadOptions, open, sourceProviderSupportsFork]);
 
+  // "Move when this turn ends" belongs to the turn it was chosen in: once that
+  // turn ends, a later turn asks again instead of queuing silently.
+  useEffect(() => {
+    if (!turnActive) {
+      setWhenTurnEnds(false);
+      setQueuedCloneApproved(false);
+    }
+  }, [turnActive]);
+
   const backToChoose = useCallback(() => {
     setStage("choose");
     setPreview(null);

@@ -1221,7 +1221,8 @@ extension WorkRootListScreen {
         modelId: subject.modelId,
         reasoningEffort: subject.reasoningEffort,
         runtimeMode: summary.map(workInitialRuntimeMode) ?? "",
-        busy: canonical == .running || canonical == .starting
+        busy: canonical == .running || canonical == .starting,
+        fastMode: summary?.fastMode == true
       )
     case .removeAuto:
       let ids = autoHandoffRuleIdsBySession[session.id] ?? []
