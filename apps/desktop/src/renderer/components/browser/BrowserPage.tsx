@@ -4,9 +4,10 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ArrowsOutSimple, CaretDown, ChatCircleDots, Check, NotePencil, SpinnerGap, X } from "@phosphor-icons/react";
 import type { AgentChatFileRef, AgentChatSession, AgentChatSessionSummary } from "../../../shared/types";
 import type { BuiltInBrowserStatus, BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
-import { attachBrowserTabToComposer, browserTabContextItem } from "../chat/browser/attachBrowserTabToChat";
+import { formatBrowserTabMentionToken, type BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { ChatSceneBackdrop } from "../personalChats/ChatSceneBackdrop";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { Z_LAYERS } from "../ui/zLayers";
 import { AgentChatPane, type AgentChatPaneComposerHandle } from "../chat/AgentChatPane";
 import { AgentChatApiProvider } from "../chat/agentChatApi";
@@ -17,7 +18,7 @@ import {
   resolvePersonalChatsCatalogTargetKey,
   usePersonalChatPaneScope,
 } from "../personalChats/usePersonalChatPaneScope";
-import { sessionTitle } from "../personalChats/sessionHelpers";
+import { CHAT_HEADER_BUTTON, sessionTitle } from "../personalChats/sessionHelpers";
 import { SuggestionChips, type SuggestionPrompt } from "../personalChats/SuggestionChips";
 import {
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
@@ -40,25 +41,21 @@ const PAGE_SUGGESTIONS: ReadonlyArray<SuggestionPrompt> = [
 const RECENT_CHAT_LIMIT = 8;
 /** Coalesces list refreshes: a streaming turn emits many events a second. */
 const SESSIONS_REFRESH_DEBOUNCE_MS = 400;
-/** The Chats page's header buttons, so the dock reads as the same surface. */
-const DOCK_HEADER_BUTTON =
-  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-fg/[0.06] bg-fg/[0.025] text-muted-fg/45 transition-colors hover:text-fg disabled:opacity-35 disabled:hover:text-muted-fg/45";
 
 /** The tab in front, when it has a page a chat could be about. */
 function activePageTab(status: BuiltInBrowserStatus): BuiltInBrowserTab | null {
   const tab = status.tabs.find((entry) => entry.id === status.activeTabId) ?? null;
-  return tab && browserTabContextItem(tab) ? tab : null;
+  return tab && !tab.isLaunchpad && tab.url ? tab : null;
 }
 
 /**
- * Lease the tab to the chat, so the chat's `ade browser` calls drive the tab
- * the person is looking at instead of opening one of their own. Best effort:
- * the agent still claims the active tab on its first call without it.
+ * Hand the tab to the chat, as the tab menu's "Attach to chat" does: its lease
+ * moves to that chat even when another chat held it, so the agent's
+ * `ade browser claim` is not refused. It does not bring the tab to the front
+ * or ask for consent; the person already chose it.
  */
-async function leaseTabToChat(tabId: string, chatSessionId: string): Promise<void> {
-  const api = window.ade?.builtInBrowser;
-  if (!api) return;
-  await api.switchTab({ ...PERSONAL_SCOPE, tabId, chatSessionId });
+async function handTabToChat(tabId: string, chatSessionId: string): Promise<void> {
+  await window.ade?.builtInBrowser?.handTabToChat?.({ ...PERSONAL_SCOPE, tabId, chatSessionId });
 }
 
 function AskAgentButton({ active, onClick }: { active: boolean; onClick: () => void }) {
@@ -114,6 +111,8 @@ export function BrowserPage() {
   const composerRef = useRef<AgentChatPaneComposerHandle | null>(null);
   /** The tab waiting to be attached once the dock's composer has mounted. */
   const pendingTabRef = useRef<BuiltInBrowserTab | null>(null);
+  /** The last tab attached, per pane, so reopening the dock does not add it twice. */
+  const lastAttachedRef = useRef<string | null>(null);
   const [contextRequest, setContextRequest] = useState(0);
   /** The tab "Ask agent" was pressed on; a new chat leases it once it exists. */
   const askedTabIdRef = useRef<string | null>(null);
@@ -149,10 +148,10 @@ export function BrowserPage() {
 
   const reportLeaseFailure = useCallback((reason: unknown) => {
     const detail = reason instanceof Error ? reason.message : String(reason);
-    setError(`The agent could not take this tab: ${detail}`);
+    setError(`The chat could not take this tab: ${detail}`);
   }, []);
 
-  /** Stage the active tab as context for the dock's chat; lease it now when that chat exists. */
+  /** Stage the active tab in the dock's draft; hand it to that chat now when the chat exists. */
   const attachActiveTab = useCallback(async (chatSessionId: string | null) => {
     const api = window.ade?.builtInBrowser;
     if (!api) return;
@@ -162,7 +161,7 @@ export function BrowserPage() {
     if (!tab) return;
     pendingTabRef.current = tab;
     setContextRequest((value) => value + 1);
-    if (chatSessionId) await leaseTabToChat(tab.id, chatSessionId);
+    if (chatSessionId) await handTabToChat(tab.id, chatSessionId);
   }, []);
 
   const toggleDock = useCallback(() => {
@@ -186,17 +185,27 @@ export function BrowserPage() {
     // Same pane, now locked to the chat its first message created.
     setBrowserDock({ chat: { targetKey, sessionId: session.id } });
     const tabId = askedTabIdRef.current;
-    if (tabId) void leaseTabToChat(tabId, session.id).catch(reportLeaseFailure);
+    if (tabId) void handTabToChat(tabId, session.id).catch(reportLeaseFailure);
     void refreshSessions().catch(() => undefined);
   }, [refreshSessions, reportLeaseFailure, setBrowserDock, targetKey]);
 
-  /** Show another of this machine's chats in the dock, as picking it in Chats would. */
+  /**
+   * Show another of this machine's chats in the dock, as picking it in Chats
+   * would, and hand it the page in front so its agent drives that tab.
+   */
   const switchDockChat = useCallback((sessionId: string) => {
     if (sessionId === dockChatId) return;
     setError(null);
     setBrowserDock({ chat: { targetKey, sessionId } });
     setDockGeneration((value) => value + 1);
-  }, [dockChatId, setBrowserDock, targetKey]);
+    void (async () => {
+      const api = window.ade?.builtInBrowser;
+      if (!api) return;
+      const tab = activePageTab(await api.getStatus(PERSONAL_SCOPE));
+      askedTabIdRef.current = tab?.id ?? null;
+      if (tab) await handTabToChat(tab.id, sessionId);
+    })().catch(reportLeaseFailure);
+  }, [dockChatId, reportLeaseFailure, setBrowserDock, targetKey]);
 
   /** The dock's chat, full size on the Chats page: the same session, not a copy. */
   const openDockChatInChats = useCallback(() => {
@@ -218,7 +227,10 @@ export function BrowserPage() {
       if (!tab) return;
       if (handle) {
         pendingTabRef.current = null;
-        attachBrowserTabToComposer(handle, tab);
+        const attachedKey = `${dockGeneration}:${tab.id}`;
+        if (lastAttachedRef.current === attachedKey) return;
+        lastAttachedRef.current = attachedKey;
+        handle.insertDraft(formatBrowserTabMentionToken({ tabId: tab.id, title: tab.title?.trim() || null, url: tab.url }));
         return;
       }
       if (++attempts < 120) frame = window.requestAnimationFrame(flush);
@@ -255,6 +267,10 @@ export function BrowserPage() {
     (item: unknown) => composerRef.current?.addBuiltInBrowserContext(item),
     [],
   );
+  const attachTabToComposer = useCallback(
+    (tab: BrowserTabMentionTarget) => composerRef.current?.insertDraft(formatBrowserTabMentionToken(tab)),
+    [],
+  );
 
   return (
     <div className="ade-chat-scene relative flex h-full min-h-0 text-fg" data-testid="browser-page">
@@ -264,10 +280,10 @@ export function BrowserPage() {
       <AgentChatApiProvider scope={chatScope}>
         <main className="relative flex min-w-0 flex-1 flex-col gap-1.5 p-1.5">
           {error ? (
-            <div role="alert" className="flex shrink-0 items-center gap-2 rounded-md border border-rose-400/15 bg-rose-500/[0.06] px-3 py-1.5 font-sans text-[11px] text-rose-200/80">
-              <span className="min-w-0 flex-1 truncate" title={error}>{error}</span>
-              <button type="button" onClick={() => setError(null)} className="shrink-0 text-rose-200/60 hover:text-rose-100">Dismiss</button>
-            </div>
+            <Banner
+              layout="inline"
+              model={{ id: "browser-page-error", tone: "error", title: error, dismiss: { onDismiss: () => setError(null) } }}
+            />
           ) : null}
           <div className="min-h-0 flex-1">
             <ChatBuiltInBrowserPanel
@@ -278,6 +294,7 @@ export function BrowserPage() {
               onAddContext={dock.open ? addBrowserContextToComposer : undefined}
               onAddAttachment={dock.open ? attachToComposer : undefined}
               onInsertDraft={dock.open ? insertIntoComposer : undefined}
+              onAttachTab={dock.open ? attachTabToComposer : undefined}
               toolbarEnd={<AskAgentButton active={dock.open} onClick={toggleDock} />}
               toolbarEndControlCount={3}
             />
@@ -325,20 +342,26 @@ export function BrowserPage() {
                   </DropdownMenu.Content>
                 </DropdownMenu.Portal>
               </DropdownMenu.Root>
-              <button type="button" onClick={startNewDockChat} disabled={!dockChatId} className={DOCK_HEADER_BUTTON} title="New chat" aria-label="New chat">
+              <button type="button" onClick={startNewDockChat} disabled={!dockChatId} className={CHAT_HEADER_BUTTON} title="New chat" aria-label="New chat">
                 <NotePencil size={14} />
               </button>
-              <button type="button" onClick={openDockChatInChats} disabled={!dockChatId} className={DOCK_HEADER_BUTTON} title="Open in Chats" aria-label="Open in Chats">
+              <button type="button" onClick={openDockChatInChats} disabled={!dockChatId} className={CHAT_HEADER_BUTTON} title="Open in Chats" aria-label="Open in Chats">
                 <ArrowsOutSimple size={14} />
               </button>
-              <button type="button" onClick={() => setBrowserDock({ open: false })} className={DOCK_HEADER_BUTTON} title="Close the chat" aria-label="Close the chat">
+              <button type="button" onClick={() => setBrowserDock({ open: false })} className={CHAT_HEADER_BUTTON} title="Close the chat" aria-label="Close the chat">
                 <X size={14} />
               </button>
             </div>
             {providerUnavailable && !dockChatId ? (
-              <div className="shrink-0 border-b border-amber-400/15 bg-amber-500/[0.06] px-3 py-1.5 font-sans text-[11px] text-amber-200/80">
-                No connected agent is available right now. Sign in to a provider from Settings to start a chat.
-              </div>
+              <Banner
+                layout="inline"
+                model={{
+                  id: "browser-dock-no-provider",
+                  tone: "warning",
+                  title: "No connected agent is available right now",
+                  detail: "Sign in to a provider from Settings to start a chat.",
+                }}
+              />
             ) : null}
             <div className="min-h-0 flex-1">
               {dockChatId == null && catalog == null ? (

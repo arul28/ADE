@@ -318,28 +318,36 @@ strip across project opens, switches and closes, like Chats.
 - **Ask agent.** The toolbar button docks a normal project-less chat on the
   right (`AgentChatPane` with the personal scope from
   `usePersonalChatPaneScope`, shared with the Chats page). Opening the dock
-  attaches the tab in front as one badge in the composer through
-  `attachBrowserTabToComposer` (`chat/browser/attachBrowserTabToChat.ts`): the
-  badge's id is the tab's id, so attaching the same tab again replaces its
-  badge (the pane dedupes context by `originalElementId`). This is the one
-  function any "attach this tab to a chat" entry point should call. The tab is
-  leased to the chat (`ownerChatSessionId`, via a `switchTab` claim) when the
-  chat's first message creates it, or at once when the dock already has a
-  chat, so the chat's `ade browser` calls drive the tab the person is watching.
-  The dock keeps its chat (`browserDock` in the app store) until **New chat**;
-  its header switches to any recent chat, opens the chat full size in Chats
+  puts the tab in front into the composer the same way the tab menu's
+  **Attach to chat** does, everywhere: one `<ade-browser-tab …>` token from
+  `formatBrowserTabMentionToken` (`shared/browserTabMention.ts`), drawn as a
+  `browser_tab` chip. Reopening the dock on the same chat and tab does not add
+  it twice. With the dock open, the panel's own **Attach to chat** inserts into
+  the dock's composer too. The tab is handed to the chat with the renderer-only
+  `handTabToChat` (`ownerChatSessionId`, a fresh 10-minute lease) when the
+  chat's first message creates it, at once when the dock already has a chat,
+  and when the header switches to another chat. `handTabToChat` overrides
+  another chat's lease, does not bring the tab to the front and asks for no
+  consent (the person chose the tab); an agent cannot call it. The dock keeps
+  its chat (`browserDock` in the app store) until **New chat**; its header
+  switches to any recent chat, opens the chat full size in Chats
   (`/chats?chat=<id>`), or closes the dock. Its unsent draft is stored under
   its own key (`personalDraftKey`), apart from the Chats page's.
-- **The badge tells the agent it is a live tab.** A tab badge carries
-  `metadata.contextKind: "live_tab"`, and `formatBuiltInBrowserContextForPrompt`
-  (`renderer/lib/visualContextFormatting.ts`) turns it into plain guidance at
-  the head of the message rather than an element packet: this is the user's
-  live tab `<id>`, already leased to this chat; read it with
-  `ade browser observe/find --tab <id>`, act on it with `ade browser` commands
-  on that tab, and do not web-fetch the URL or open a new tab. The text rides in
-  the user message, so every provider gets the same words. A newer badge for
-  the same page replaces an older one (tab ids change after a restart, so a
-  kept draft's badge would otherwise name a tab that is gone).
+- **The token tells the agent it is a live tab.** Besides the tab id, title
+  and URL (one line, control characters stripped), the token's text is
+  `browserTabTakeoverHint`: the tab is live in front of the user; claim it
+  with `ade browser claim --tab <id>`, read and act on it in place with
+  `ade browser <command> --tab <id>`, and do not web-fetch or curl the URL or
+  open it in a new tab. Every attach path (Browser tab, Chats page, Work
+  terminals via `formatBrowserTabMentionForPrompt`) gets the same words.
+- **Sound in the background.** A tab that is not on screen is muted, except
+  one the person was listening to: media that started while the tab was on
+  screen keeps playing when they switch tabs or leave the Browser top tab, as
+  in Chrome, and so does a tab someone pressed play on from Now Playing
+  (`allowBuiltInBrowserBackgroundAudio`). Loading a new document in the tab
+  forgets it. The registry lives in `builtInBrowserMediaHooks.ts`. Closing the
+  Browser top tab only hides the views, so a tab still playing stays listed in
+  Now Playing (`home/browserMediaSessions.ts`) and can be paused from there.
 - **On the wallpaper.** With a scene picture set, the Chats page and the dock
   sit on it like the home page cards: `ChatSceneBackdrop` mounts the window's
   `SceneImageLayer`, and each pane is a `.ade-chat-scene-plane` that takes the

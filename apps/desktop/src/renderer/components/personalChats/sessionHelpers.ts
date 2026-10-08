@@ -7,6 +7,10 @@ import {
   type SessionStatusPresentation,
 } from "../../../shared/sessionStatusPresentation";
 
+/** The square icon buttons in a chat header: the Chats page's and the Browser tab's dock. */
+export const CHAT_HEADER_BUTTON =
+  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-fg/[0.06] bg-fg/[0.025] text-muted-fg/45 transition-colors hover:text-fg disabled:opacity-35 disabled:hover:text-muted-fg/45";
+
 export function sessionTitle(session: AgentChatSessionSummary): string {
   const title = session.title?.trim() || session.goal?.trim() || session.summary?.trim();
   if (title) return title;

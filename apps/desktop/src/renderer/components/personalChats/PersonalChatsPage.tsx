@@ -14,7 +14,7 @@ import { AgentChatApiProvider } from "../chat/agentChatApi";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { PersonalTerminalPanel } from "./PersonalTerminalPanel";
 import { ProjectlessSidebar } from "./ProjectlessSidebar";
-import { sessionPreview, sessionTitle } from "./sessionHelpers";
+import { CHAT_HEADER_BUTTON, sessionPreview, sessionTitle } from "./sessionHelpers";
 import { SuggestionChips } from "./SuggestionChips";
 import {
   callPersonal,
@@ -385,7 +385,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
             </span>
           ) : null}
           {showInBrowserTab && selectedId ? (
-            <button type="button" onClick={() => void openChatInBrowserTab(selectedId, targetKey, navigate).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))} className="flex h-7 w-7 items-center justify-center rounded-md border border-fg/[0.06] bg-fg/[0.025] text-muted-fg/45 transition-colors hover:text-fg" title="Show beside its page in the Browser tab" aria-label="Show in the Browser tab"><AppWindow size={14} /></button>
+            <button type="button" onClick={() => void openChatInBrowserTab(selectedId, targetKey, navigate).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))} className={CHAT_HEADER_BUTTON} title="Show beside its page in the Browser tab" aria-label="Show in the Browser tab"><AppWindow size={14} /></button>
           ) : null}
           {browserAvailable ? (
             <button type="button" onClick={() => setToolPanel((current) => current === "browser" ? null : "browser")} className={cn("flex h-7 w-7 items-center justify-center rounded-md border transition-colors", toolPanel === "browser" ? "border-sky-300/25 bg-sky-500/10 text-sky-200" : "border-fg/[0.06] bg-fg/[0.025] text-muted-fg/45 hover:text-fg")} title="Browser" aria-label="Toggle browser"><Globe size={14} /></button>
