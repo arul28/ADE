@@ -245,13 +245,13 @@ func workComputerUseLineText(_ action: WorkComputerUseAction, emphasize: Bool) -
     }
     line = Text("\(line)\(Text(place.label).foregroundColor(emphasize ? ADEColor.textPrimary : quiet))")
   }
-  if let using = parts.using {
-    let tone = using.warning ? ADEColor.warning : quiet
-    line = Text("\(line)\(Text(" \(using.preposition) ").foregroundColor(quiet))")
+  if let surface = parts.surface {
+    let tone = surface.warning ? ADEColor.warning : quiet
+    line = Text("\(line)\(Text(" \(surface.preposition) ").foregroundColor(quiet))")
     if action.surface == .appleDevice {
       line = Text("\(line)\(Text(Image(systemName: "apple.logo")).foregroundColor(tone))")
     }
-    line = Text("\(line)\(Text(Image(systemName: using.symbol)).foregroundColor(tone)) \(Text(using.label).foregroundColor(tone))")
+    line = Text("\(line)\(Text(Image(systemName: surface.symbol)).foregroundColor(tone)) \(Text(surface.label).foregroundColor(tone))")
   }
   if let suffix = parts.suffix {
     line = Text("\(line)\(Text(" \(suffix)").foregroundColor(quiet))")
@@ -394,7 +394,49 @@ struct WorkComputerUseProofThumbnails: View {
       HStack(spacing: 6) {
         ForEach(ids, id: \.self) { id in WorkProofActionThumbnail(artifactId: id) }
       }
+      .padding(.top, 2)
       .padding(.bottom, 4)
+    }
+  }
+}
+
+/// Proof in the thread is a count, not a strip of pictures: "3 proof filed ›"
+/// (desktop `ChatProofCount`). The pictures live on the rows that filed them
+/// and in the proof drawer, which this opens narrowed to the same records.
+/// `compact` drops the word for a line with little room (the turn fold); the
+/// count never truncates or wraps.
+struct WorkProofCountLink: View {
+  let count: Int
+  var compact = false
+  let onOpen: (() -> Void)?
+
+  var body: some View {
+    if count > 0 {
+      Button {
+        onOpen?()
+      } label: {
+        HStack(spacing: 3) {
+          Image(systemName: "cube")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted.opacity(0.8))
+          Text(compact ? "\(count) proof" : "\(count) proof filed")
+            .font(.caption2.monospacedDigit())
+          if onOpen != nil {
+            Image(systemName: "chevron.right")
+              .font(.system(size: 7, weight: .bold))
+          }
+        }
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .fixedSize()
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(onOpen == nil)
+      .layoutPriority(2)
+      .accessibilityLabel("\(count) proof filed")
+      .accessibilityHint("Shows this proof in the proof drawer")
     }
   }
 }

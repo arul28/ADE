@@ -35,8 +35,12 @@ struct WorkProofDrawerFocus: Equatable {
   let artifactIds: [String]
 
   /// One turn's proof, for its "N proof filed" link.
+  static func turn(ids: [String]) -> WorkProofDrawerFocus {
+    WorkProofDrawerFocus(label: "This turn", artifactIds: ids)
+  }
+
   static func turn(_ artifacts: [ComputerUseArtifactSummary]) -> WorkProofDrawerFocus {
-    WorkProofDrawerFocus(label: "This turn", artifactIds: artifacts.map(\.id))
+    .turn(ids: artifacts.map(\.id))
   }
 }
 

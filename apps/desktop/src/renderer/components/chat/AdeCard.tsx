@@ -292,23 +292,19 @@ function CiFailureCard({ card }: { card: AdeCardPayload }) {
   );
 }
 
-function behindCountMetric(card: AdeCardPayload): { value: string; label: string } | null {
-  const metric = (card.metrics ?? []).find((entry) => entry.label.endsWith("behind"));
-  const value = metric?.value?.trim();
-  if (!metric || !value) return null;
-  return { value, label: metric.label };
-}
-
 /**
  * A PR that fell behind its base or picked up conflicts. It often lands mid-turn
  * while the agent is still working, so it reads as one quiet transcript line —
  * glyph, sentence, "open ›" — not a boxed card. Only a conflict tints the glyph.
  */
 function PrConflictLine({ card }: { card: AdeCardPayload }) {
-  const conflicted = !behindCountMetric(card);
+  // `buildPrConflictCard` marks the conflict kind with this metric.
+  const conflicted = (card.metrics ?? []).some((metric) => metric.label === "merge state" && metric.value === "conflicted");
   const Glyph = conflicted ? Warning : GitBranch;
   const target = card.navTarget ?? null;
-  const text = card.title?.trim() || adeCardFallbackText(card);
+  // The fallback is the whole sentence, PR number included, on every card;
+  // older cards' titles ("Branch behind main") left the number to a subtitle.
+  const text = adeCardFallbackText(card).trim().replace(/\.$/, "") || card.title?.trim() || "";
   return (
     <button
       type="button"

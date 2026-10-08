@@ -152,7 +152,7 @@ function adeIconUrl(): string {
   return `./${path}`;
 }
 
-/** The "using" glyphs drawn as one icon; `user` and `apple` draw their own (`UsingGlyph`). */
+/** The surface glyphs drawn as one icon; `user` and `apple` draw their own (`SurfaceGlyph`). */
 const SURFACE_GLYPH: Record<Exclude<ComputerUseSurfaceGlyph, "user" | "apple">, Icon> = {
   screen: Monitor,
   app: AppWindow,
@@ -272,7 +272,7 @@ function actionGlyph(summary: ComputerUseActionSummary): Icon {
 }
 
 /** The surface's icon: the device for an Apple row, else the surface's glyph. */
-function UsingGlyph({ summary, glyph, size }: { summary: ComputerUseActionSummary; glyph: ComputerUseSurfaceGlyph; size: number }) {
+function SurfaceGlyph({ summary, glyph, size }: { summary: ComputerUseActionSummary; glyph: ComputerUseSurfaceGlyph; size: number }) {
   if (glyph === "apple") {
     return (
       <span aria-hidden className="inline-flex items-center gap-px">
@@ -290,21 +290,23 @@ function UsingGlyph({ summary, glyph, size }: { summary: ComputerUseActionSummar
 
 /**
  * The action as one line: "Clicked “Save” in [icon] TextEdit", "Pressed
- * “Escape” on [icon] Mac Desktop". A running action shimmers word by word; its
- * icons stay solid, so the sweep never hides them.
+ * “Escape” on [icon] Mac Desktop". A running action shimmers as one line: a
+ * single sweep crosses every word. Its icons get their own colour, so the
+ * text-clipped sweep never hides them.
  */
 function ActionLine({ summary, emphasize }: { summary: ComputerUseActionSummary; emphasize: boolean }) {
   const parts = computerUseActionParts(summary);
   const running = summary.outcome === "running";
   const failed = summary.outcome === "failed";
   const words = (text: string, className?: string) => (
-    <span className={cn(running ? "ade-thinking-shimmer" : className)}>{text}</span>
+    <span className={running ? undefined : className}>{text}</span>
   );
   const iconSize = emphasize ? 13 : 12;
   return (
     <span
       className={cn(
         "min-w-0 truncate",
+        running && "ade-thinking-shimmer [&_svg]:text-muted-fg",
         emphasize
           ? "text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.45] text-fg/90"
           : "text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-muted-fg",
@@ -339,18 +341,18 @@ function ActionLine({ summary, emphasize }: { summary: ComputerUseActionSummary;
           </span>
         </>
       ) : null}
-      {parts.using ? (
+      {parts.surface ? (
         <>
           {" "}
-          {words(parts.using.preposition, emphasize ? "text-muted-fg" : undefined)}{" "}
+          {words(parts.surface.preposition, emphasize ? "text-muted-fg" : undefined)}{" "}
           <span
             className={cn(
               "inline-flex items-baseline gap-1 align-baseline",
-              parts.using.warning ? "text-warning" : emphasize ? "text-muted-fg" : undefined,
+              parts.surface.warning ? "text-warning" : emphasize ? "text-muted-fg" : undefined,
             )}
           >
-            <span className="self-center"><UsingGlyph summary={summary} glyph={parts.using.glyph} size={iconSize} /></span>
-            {words(parts.using.label, parts.using.warning ? "text-warning" : undefined)}
+            <span className="self-center"><SurfaceGlyph summary={summary} glyph={parts.surface.glyph} size={iconSize} /></span>
+            {words(parts.surface.label, parts.surface.warning ? "text-warning" : undefined)}
           </span>
         </>
       ) : null}
@@ -419,7 +421,7 @@ function ProofThumbnails({ summary }: { summary: ComputerUseActionSummary }) {
   const ids = computerUseShownProofIds(summary);
   if (!ids.length) return null;
   return (
-    <span className="col-start-1 col-end-4 mb-1 mt-1 flex min-w-0 gap-1.5" data-testid="computer-use-proof-thumbnails">
+    <span className="col-start-1 col-end-4 mb-1 mt-1.5 flex min-w-0 gap-1.5" data-testid="computer-use-proof-thumbnails">
       {ids.map((id) => <ProofActionThumbnail key={id} artifactId={id} height={PROOF_THUMBNAIL_HEIGHT} />)}
     </span>
   );

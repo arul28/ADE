@@ -5130,14 +5130,17 @@ private struct WorkPrConflictLine: View {
   let deeplink: URL?
   let onOpenDeeplink: (URL) -> Void
 
-  /// The emitter ships a "… behind" count metric only for the behind kind.
+  /// `buildPrConflictCard` marks the conflict kind with this metric.
   private var conflicted: Bool {
-    !card.metrics.contains { $0.label.hasSuffix("behind") }
+    card.metrics.contains { $0.label == "merge state" && $0.value == "conflicted" }
   }
 
+  /// The fallback is the whole sentence, PR number included, on every card;
+  /// older cards' titles ("Branch behind main") left the number to a subtitle.
   private var text: String {
-    let title = card.title.trimmingCharacters(in: .whitespacesAndNewlines)
-    return title.isEmpty || title == card.variant ? card.fallbackText : title
+    let sentence = card.fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !sentence.isEmpty { return sentence.hasSuffix(".") ? String(sentence.dropLast()) : sentence }
+    return card.title.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   var body: some View {

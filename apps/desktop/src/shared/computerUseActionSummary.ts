@@ -31,6 +31,7 @@
 import {
   clip,
   parseOutput,
+  PROOF_ID,
   readAppleDevice,
   readString,
   readUserBrowser,
@@ -556,13 +557,16 @@ function collectAliasVars(source: string): Set<string> {
 /** Stdout sent to a file or `/dev/null`: `>out`, `> out`, `1>>log`, `&>/dev/null`. Not `2>&1`. */
 const STDOUT_REDIRECT = /^(?:1|&)?>>?(?!&)/;
 
+/** Line filters, POSIX and Windows (`findstr`, PowerShell's `Select-String`). */
+const TEXT_FILTERS = new Set(["grep", "egrep", "rg", "findstr", "select-string", "sls"]);
+
 /** What reached the transcript of a command's output; see `ParsedInvocation.outputFilter`. */
 function outputFilterOf(command: ShellCommand): OutputFilter {
   if (command.tokens.some((token) => STDOUT_REDIRECT.test(token))) return "other";
   const pipe = command.pipedInto;
   if (!pipe) return "none";
-  const head = basename(pipe[0] ?? "");
-  const keepsCites = (head === "grep" || head === "egrep" || head === "rg")
+  const head = basename(pipe[0] ?? "").replace(/\.exe$/, "");
+  const keepsCites = TEXT_FILTERS.has(head)
     && pipe.slice(1).some((token) => !token.startsWith("-") && /cite|ade-proof/i.test(token));
   return keepsCites ? "cite" : "other";
 }
@@ -708,9 +712,10 @@ function describeTarget(
       return shape;
     }
     case "app": {
-      // `app-control launch` takes a shell command (`npm run dev`), which is no
-      // name for the app: it reads as its label or window title, or none.
-      if (verbKey === "launch" && invocation.domain === "app-control") {
+      // `app-control launch` (alias `open`) takes a shell command (`npm run
+      // dev`), which is no name for the app: it reads as its label or window
+      // title, or none.
+      if (launchesAppControl(verbKey, invocation.domain)) {
         return { target: flagValue(invocation, "--label", "--name") ?? appName, quoted: false, direction: null, point: false };
       }
       let target: string | null = invocation.positionals[0] ?? flagValue(invocation, "--app", "--bundle-id") ?? appName;
@@ -897,20 +902,26 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
       ? {
         caption: shape.target ? clip(shape.target) : null,
         prNumber: parsed.prNumber ?? numberFlag(invocation, "--pr"),
-        // A publish names the records it posts; anything else, the one it filed.
+        // A publish: the records it reports posted, else the ids it was given.
+        // Anything else: the one it filed.
         artifactIds: verb.key === "proof publish"
-          ? [...new Set([...invocation.positionals.filter((token) => PROOF_ID.test(token)), ...parsed.proofIds])]
+          ? parsed.postedProofIds.length
+            ? parsed.postedProofIds
+            : [...new Set([...invocation.positionals.filter((token) => PROOF_ID.test(token)), ...parsed.proofIds])]
           : filesProof ? parsed.proofIds : [],
       }
       : null,
   };
 }
 
+/** `app-control launch`, or its alias `open`: both start the app from a shell command. */
+export function launchesAppControl(verb: string, domain: string): boolean {
+  return domain === "app-control" && (verb === "launch" || verb === "open");
+}
+
 /** Verbs that file one proof record and print its id. */
 const FILES_PROOF = new Set(["proof", "proof capture", "proof attach"]);
 
-/** A proof record id as `proof publish` takes it. */
-const PROOF_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function numberFlag(invocation: ParsedInvocation, name: string): number | null {
   const value = flagValue(invocation, name);

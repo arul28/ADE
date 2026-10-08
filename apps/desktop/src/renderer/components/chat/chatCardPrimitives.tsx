@@ -157,11 +157,6 @@ export function ChatCardSub({ children, className }: { children: React.ReactNode
   return <div className={cn("truncate text-fg/50", CHAT_CARD_BODY_TEXT, className)}>{children}</div>;
 }
 
-/** Secondary half of a title — "Merged #927 → main", where the tail is faint. */
-export function ChatCardFaint({ children }: { children: React.ReactNode }) {
-  return <span className="font-normal text-fg/40">{children}</span>;
-}
-
 export function ChatCardChip({
   tone = "neutral",
   title,
@@ -185,36 +180,6 @@ export function ChatCardChip({
     >
       {children}
     </span>
-  );
-}
-
-/** Text-weight affordance ("diff ›", "open all ›") that sits in a row's meta column. */
-export function ChatCardAction({
-  children,
-  onClick,
-  title,
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  title?: string;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      onClick={(clickEvent) => {
-        // Cards are often whole-card clickable; an inline action must not also navigate.
-        clickEvent.stopPropagation();
-        onClick?.();
-      }}
-      className={cn(
-        "flex items-center gap-0.5 whitespace-nowrap text-fg/45 transition-colors hover:text-fg/80",
-        CHAT_CARD_MICRO_TEXT,
-      )}
-    >
-      {children}
-      <CaretRight size={10} weight="bold" aria-hidden />
-    </button>
   );
 }
 

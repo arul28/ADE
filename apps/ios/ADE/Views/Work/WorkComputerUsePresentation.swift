@@ -13,12 +13,12 @@ struct WorkComputerUseParts: Equatable {
   let targetQuoted: Bool
   let place: WorkComputerUsePlace?
   /// The surface, only when nothing else says where: "on Mac Desktop", "using your Chrome".
-  let using: (preposition: String, label: String, symbol: String, warning: Bool)?
+  let surface: (preposition: String, label: String, symbol: String, warning: Bool)?
   let suffix: String?
 
   static func == (lhs: WorkComputerUseParts, rhs: WorkComputerUseParts) -> Bool {
     lhs.lead == rhs.lead && lhs.target == rhs.target && lhs.targetQuoted == rhs.targetQuoted
-      && lhs.place == rhs.place && lhs.using?.label == rhs.using?.label && lhs.suffix == rhs.suffix
+      && lhs.place == rhs.place && lhs.surface?.label == rhs.surface?.label && lhs.suffix == rhs.suffix
   }
 }
 
@@ -42,7 +42,7 @@ func workComputerUseParts(_ action: WorkComputerUseAction) -> WorkComputerUsePar
     lead = "\(verbPhrase) \(workComputerUseSurfaceLabel(action).label)"
   } else if lookedAt {
     lead = "\(verbPhrase) \(action.domain == "browser" ? "the page" : "the screen")"
-  } else if action.verb == "launch" {
+  } else if workComputerUseLaunchesApp(verb: action.verb, domain: action.domain) {
     // "Launched the app": App Control could not tell which.
     lead = "\(verbPhrase) the app"
   } else {
@@ -53,12 +53,12 @@ func workComputerUseParts(_ action: WorkComputerUseAction) -> WorkComputerUsePar
     return WorkComputerUseParts(
       lead: lead, target: action.target, targetQuoted: action.targetQuoted,
       place: action.hostLabel.map { WorkComputerUsePlace(preposition: "on", label: $0, kind: .other) },
-      using: nil, suffix: nil
+      surface: nil, suffix: nil
     )
   }
   return WorkComputerUseParts(
     lead: lead, target: action.target, targetQuoted: action.targetQuoted,
-    place: action.place, using: looksAtSurface ? nil : workComputerUseWhere(action),
+    place: action.place, surface: looksAtSurface ? nil : workComputerUseWhere(action),
     suffix: action.postedToPr.map { "· posted to PR #\($0)" } ?? action.prNumber.map { "· on PR #\($0)" }
   )
 }
@@ -68,8 +68,8 @@ func workComputerUseText(_ action: WorkComputerUseAction) -> String {
   let parts = workComputerUseParts(action)
   let target = parts.target.map { parts.targetQuoted ? "“\($0)”" : $0 }
   let place = parts.place.map { "\($0.preposition) \($0.label)" }
-  let using = parts.using.map { "\($0.preposition) \($0.label)" }
-  let text = [parts.lead, target, place, using, parts.suffix].compactMap { $0 }.joined(separator: " ")
+  let surface = parts.surface.map { "\($0.preposition) \($0.label)" }
+  let text = [parts.lead, target, place, surface, parts.suffix].compactMap { $0 }.joined(separator: " ")
   return action.outcome == .running ? "\(text)…" : text
 }
 
@@ -137,12 +137,20 @@ struct WorkComputerUseRunLine: Identifiable, Hashable {
   var count: Int
 }
 
+/// Desktop `runLineKey`: two actions merge into one "×N" line only with the
+/// same words, the same ending, and the same proof records.
+private func workComputerUseRunLineKey(_ action: WorkComputerUseAction) -> String {
+  ([action.outcome.rawValue, workComputerUseText(action)] + action.proofIds).joined(separator: "\u{0}")
+}
+
 /// An App Control action that named no app, told the app the run is driving.
 private func workComputerUseWithApp(_ action: WorkComputerUseAction, _ appName: String) -> WorkComputerUseAction {
   var copy = action
   copy.appName = appName
   // "Looked at ADE", "Launched ADE": the app is the object.
-  if (action.verb == "observe" || action.verb == "snapshot" || action.verb == "launch") && action.target == nil {
+  let namesApp = action.verb == "observe" || action.verb == "snapshot"
+    || workComputerUseLaunchesApp(verb: action.verb, domain: action.domain)
+  if namesApp && action.target == nil {
     copy.target = appName
     copy.targetQuoted = false
     copy.place = nil
@@ -187,12 +195,12 @@ func workComputerUseRunLayout(_ actions: [WorkComputerUseAction]) -> (earlier: [
       if filed.allSatisfy({ $0 != nil }) {
         for index in Set(filed.compactMap { $0 }) {
           lines[index].line.action.postedToPr = prNumber
-          lines[index].key = "\(lines[index].line.action.outcome)\u{0}\(workComputerUseText(lines[index].line.action))"
+          lines[index].key = workComputerUseRunLineKey(lines[index].line.action)
         }
         continue
       }
     }
-    let key = "\(action.outcome)\u{0}\(workComputerUseText(action))"
+    let key = workComputerUseRunLineKey(action)
     if let last = lines.last, last.key == key {
       lines[lines.count - 1].line.action = action
       lines[lines.count - 1].line.count += 1

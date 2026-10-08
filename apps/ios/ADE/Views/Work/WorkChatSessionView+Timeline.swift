@@ -190,7 +190,7 @@ extension WorkChatSessionView {
         work: model.isExpanded ? turnWorkDisclosure(turnKey: activityKey) : .none,
         onToggleWork: { toggleTurnWork($0, turnKey: activityKey) },
         onToggleWorkItem: { toggleTurnWorkItem($0, turnKey: activityKey) },
-        onOpenProof: { openProofDrawer(WorkProofDrawerFocus(label: "This turn", artifactIds: model.proofArtifactIds)) }
+        onOpenProof: { openProofDrawer(.turn(ids: model.proofArtifactIds)) }
       ) {
         toggleCard(model.id, entryId: entry.id)
       }

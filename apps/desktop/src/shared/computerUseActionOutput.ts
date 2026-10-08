@@ -35,8 +35,14 @@ export type ParsedOutput = {
   /** `target: …` (or JSON `userBrowserTarget`): "your Google Chrome on studio-mac". */
   userBrowserTarget: string | null;
   prNumber: number | null;
-  /** Proof ids the output named: `cite: ![…](ade-proof://<id>)`, or the JSON record. */
+  /**
+   * Proof ids the output says it filed: `cite: ![…](ade-proof://<id>)`, the
+   * JSON record, or the filed table above an `Attached N artifact(s) to …`
+   * line (a trace or a log gets no `cite:` line).
+   */
   proofIds: string[];
+  /** Ids a `proof publish` reports as posted (`  posted  <id>  …`, JSON `posted[]`). */
+  postedProofIds: string[];
 };
 
 export function readString(value: unknown): string | null {
@@ -96,6 +102,14 @@ function tryParseJson(output: string): Record<string, unknown> | null {
 const KEY_VALUE_LINE = /^([a-z][a-z0-9 ]{0,30}?)\s{2,}(\S.*)$/;
 const WINDOW_LINE = /^\s+#(\d+)\s+(.+?)(?:\s+—\s+(.*))?$/;
 
+const PROOF_ID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+/** A proof record id on its own, as `proof publish` takes it. */
+export const PROOF_ID = new RegExp(`^${PROOF_ID_PATTERN}$`, "i");
+/** A `proof publish` result row: `posted  <id>  <caption>`. */
+const POSTED_PROOF_LINE = new RegExp(`^posted\\s+(${PROOF_ID_PATTERN})\\b`, "i");
+/** A row of the filed-proof table: `<id>  <kind>  <title>  <path>`. */
+const PROOF_TABLE_ROW = new RegExp(`^(${PROOF_ID_PATTERN})\\s+\\S`, "i");
+
 export function parseOutput(output: string): ParsedOutput {
   const parsed: ParsedOutput = {
     hitName: null,
@@ -112,9 +126,12 @@ export function parseOutput(output: string): ParsedOutput {
     userBrowserTarget: null,
     prNumber: null,
     proofIds: [],
+    postedProofIds: [],
   };
   if (!output) return parsed;
   const lines = output.split(/\r?\n/);
+  const tableIds: string[] = [];
+  let filedConfirmed = false;
   for (const rawLine of lines) {
     const line = rawLine.replace(/\s+$/, "");
     const trimmed = line.trim();
@@ -159,6 +176,11 @@ export function parseOutput(output: string): ParsedOutput {
       parsed.openedUrl = opened[1]!;
       continue;
     }
+    const posted = POSTED_PROOF_LINE.exec(trimmed)?.[1];
+    if (posted && !parsed.postedProofIds.includes(posted)) parsed.postedProofIds.push(posted);
+    const tableId = PROOF_TABLE_ROW.exec(trimmed)?.[1];
+    if (tableId) tableIds.push(tableId);
+    if (/^attached \d+ artifacts? to\b/i.test(trimmed)) filedConfirmed = true;
     const pr = /\/pull\/(\d+)\b/.exec(trimmed);
     if (pr && parsed.prNumber === null && /^posted\b/i.test(trimmed)) parsed.prNumber = Number(pr[1]);
     const windowLine = WINDOW_LINE.exec(line);
@@ -172,6 +194,9 @@ export function parseOutput(output: string): ParsedOutput {
   if (parsed.values.get("ok") === "false") parsed.okFalse = true;
   for (const match of output.matchAll(/ade-proof:\/{0,2}([\w-]+)/gi)) {
     if (!parsed.proofIds.includes(match[1]!)) parsed.proofIds.push(match[1]!);
+  }
+  if (filedConfirmed) {
+    for (const id of tableIds) if (!parsed.proofIds.includes(id)) parsed.proofIds.push(id);
   }
   const json = tryParseJson(output);
   if (json) {
@@ -196,6 +221,10 @@ export function parseOutput(output: string): ParsedOutput {
       parsed.attachedLine ??= readString(readRecord(json.attached)?.label) ?? "";
     }
     parsed.userBrowserTarget ??= readString(json.userBrowserTarget);
+    for (const entry of Array.isArray(json.posted) ? json.posted : []) {
+      const id = readString(readRecord(entry)?.id);
+      if (id && !parsed.postedProofIds.includes(id)) parsed.postedProofIds.push(id);
+    }
     const records = [json, readRecord(json.artifact), ...(Array.isArray(json.artifacts) ? json.artifacts.map(readRecord) : [])];
     for (const record of records) {
       const id = readString(record?.proofArtifactId) ?? readString(record?.artifactId) ?? (record === json ? null : readString(record?.id));

@@ -166,7 +166,7 @@ export function estimateComputerUseRunHeight(entries: readonly ChatWorkLogEntry[
   const { earlier, latest } = layoutComputerUseRun(collectComputerUseActions(entries));
   if (!latest) return 0;
   const pictures = [...earlier, latest].filter((line) => computerUseShownProofIds(line.summary).length > 0).length
-    * (PROOF_THUMBNAIL_HEIGHT + 8);
+    * (PROOF_THUMBNAIL_HEIGHT + 10);
   if (compactAll) return (earlier.length + 1) * 22 + pictures;
   const note = computerUseOutcomeNote(latest.summary) ? 18 : 0;
   return earlier.length * 22 + 46 + note + pictures;
@@ -220,7 +220,7 @@ function sameEnvelope<Row extends ArrangeableRow>(
  *
  * - Computer-use groups of one turn that end up next to each other (the
  *   narration between them folded away) join one run, keyed by the first, so
- *   same-app actions fold together.
+ *   the app carries forward and repeats merge across them.
  * - Every run but the turn's last is marked `computerUseCompact`.
  *
  * Every run keeps the envelope it had last time while its timestamp, turn,

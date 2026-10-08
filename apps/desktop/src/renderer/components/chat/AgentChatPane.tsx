@@ -4984,6 +4984,9 @@ export function AgentChatPane({
     setIosSimulatorOpen(saved.iosSimulatorOpen);
     setAppControlOpen(saved.appControlOpen);
     setTerminalDrawerOpen(saved.terminalDrawerOpen);
+    // Another chat's narrowing would show this chat's drawer empty.
+    setProofFocus(null);
+    setSourcesTurnFilter(null);
   }, [companionStateKey]);
 
   useEffect(() => {

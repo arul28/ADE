@@ -7,9 +7,10 @@
  * the same action must read the same on the phone and on the desktop.
  */
 
-import type {
-  ComputerUseActionPlace,
-  ComputerUseActionSummary,
+import {
+  launchesAppControl,
+  type ComputerUseActionPlace,
+  type ComputerUseActionSummary,
 } from "./computerUseActionSummary";
 
 export type ComputerUseSurfaceGlyph = "screen" | "app" | "globe" | "user" | "apple" | "proof";
@@ -26,7 +27,7 @@ export type ComputerUseActionParts = {
   targetQuoted: boolean;
   place: ComputerUseActionPlace | null;
   /** The surface, only when nothing else says where: "on Mac Desktop", "using your Chrome". */
-  using: { preposition: "on" | "using"; label: string; glyph: ComputerUseSurfaceGlyph; warning: boolean } | null;
+  surface: { preposition: "on" | "using"; label: string; glyph: ComputerUseSurfaceGlyph; warning: boolean } | null;
   /** "· on PR #12". */
   suffix: string | null;
 };
@@ -49,7 +50,7 @@ export function computerUseActionParts(summary: ComputerUseActionSummary): Compu
       ? `${verbPhrase} ${
         looksAtSurface ? computerUseSurfaceLabel(summary).label : summary.domain === "browser" ? "the page" : "the screen"
       }`
-      : summary.verb === "launch"
+      : launchesAppControl(summary.verb, summary.domain)
         // "Launched the app": App Control could not tell which.
         ? `${verbPhrase} the app`
         : verbPhrase.replace(/\s+(?:of|at|for|to|in)$/, "");
@@ -60,7 +61,7 @@ export function computerUseActionParts(summary: ComputerUseActionSummary): Compu
       target: summary.target,
       targetQuoted: summary.targetQuoted,
       place: summary.hostLabel ? { preposition: "on", label: summary.hostLabel, kind: "other" } : null,
-      using: null,
+      surface: null,
       suffix: null,
     };
   }
@@ -69,7 +70,7 @@ export function computerUseActionParts(summary: ComputerUseActionSummary): Compu
     target: summary.target,
     targetQuoted: summary.targetQuoted,
     place: summary.place,
-    using: looksAtSurface ? null : computerUseWhere(summary),
+    surface: looksAtSurface ? null : computerUseWhere(summary),
     suffix: summary.proof?.postedToPr != null
       ? `· posted to PR #${summary.proof.postedToPr}`
       : summary.proof?.prNumber != null ? `· on PR #${summary.proof.prNumber}` : null,
@@ -81,8 +82,8 @@ export function computerUseActionText(summary: ComputerUseActionSummary): string
   const parts = computerUseActionParts(summary);
   const target = parts.target ? (parts.targetQuoted ? `“${parts.target}”` : parts.target) : null;
   const place = parts.place ? `${parts.place.preposition} ${parts.place.label}` : null;
-  const using = parts.using ? `${parts.using.preposition} ${parts.using.label}` : null;
-  const text = [parts.lead, target, place, using, parts.suffix].filter(Boolean).join(" ");
+  const surface = parts.surface ? `${parts.surface.preposition} ${parts.surface.label}` : null;
+  const text = [parts.lead, target, place, surface, parts.suffix].filter(Boolean).join(" ");
   return summary.outcome === "running" ? `${text}…` : text;
 }
 
@@ -95,7 +96,7 @@ export function computerUseActionText(summary: ComputerUseActionSummary): string
  * The user's own browser always shows, in amber, because the agent acted
  * outside its lane.
  */
-function computerUseWhere(summary: ComputerUseActionSummary): ComputerUseActionParts["using"] {
+function computerUseWhere(summary: ComputerUseActionSummary): ComputerUseActionParts["surface"] {
   const surface = computerUseSurfaceLabel(summary);
   const namesApp = Boolean(summary.appName) && (summary.place?.kind === "app" || summary.target === summary.appName);
   switch (summary.surface) {
@@ -175,11 +176,21 @@ export type ComputerUseRunLine<T> = { action: T; summary: ComputerUseActionSumma
 /** An App Control action that named no app, told the app the run is driving. */
 function withCarriedApp(summary: ComputerUseActionSummary, appName: string): ComputerUseActionSummary {
   // "Looked at ADE", "Launched ADE": the app is the object.
-  if ((summary.verb === "observe" || summary.verb === "snapshot" || summary.verb === "launch") && !summary.target) {
+  const namesApp = summary.verb === "observe" || summary.verb === "snapshot" || launchesAppControl(summary.verb, summary.domain);
+  if (namesApp && !summary.target) {
     return { ...summary, appName, target: appName, targetQuoted: false, place: null };
   }
   const place = summary.place ?? (summary.target === appName ? null : { preposition: "in", label: appName, kind: "app" as const });
   return { ...summary, appName, place };
+}
+
+/**
+ * Two actions merge into one "×N" line when this matches: the same words, the
+ * same ending, and the same proof records (two captures with one caption are
+ * two pictures, never one line).
+ */
+function runLineKey(summary: ComputerUseActionSummary): string {
+  return [summary.outcome, computerUseActionText(summary), ...(summary.proof?.artifactIds ?? [])].join("\u0000");
 }
 
 /** A `proof publish` that posted to a PR, and the records it posted. */
@@ -198,8 +209,8 @@ function publishedProof(summary: ComputerUseActionSummary): { prNumber: number; 
  * - App Control actions that named no app borrow the last app named earlier:
  *   one App Control session drives one app, but only some commands print its
  *   window title.
- * - Consecutive actions that read the same and ended the same merge into one
- *   line with a count ("Looked at ADE ×3").
+ * - Consecutive actions that read the same, ended the same and filed the same
+ *   proof merge into one line with a count ("Looked at ADE ×3").
  * - Posting proof to a PR adds to the line that filed it ("Filed proof “Login”
  *   · posted to PR #12") instead of a line of its own, when every record it
  *   posted was filed earlier in the run.
@@ -228,12 +239,12 @@ export function layoutComputerUseRun<T>(
         for (const index of new Set(filed)) {
           const line = lines[index]!;
           const posted = { ...line.summary, proof: { ...line.summary.proof!, postedToPr: published.prNumber } };
-          lines[index] = { ...line, summary: posted, key: `${posted.outcome}\u0000${computerUseActionText(posted)}` };
+          lines[index] = { ...line, summary: posted, key: runLineKey(posted) };
         }
         continue;
       }
     }
-    const key = `${summary.outcome}\u0000${computerUseActionText(summary)}`;
+    const key = runLineKey(summary);
     const last = lines[lines.length - 1];
     if (last && last.key === key) {
       // Keeps the first action, so the line's identity holds while it grows.

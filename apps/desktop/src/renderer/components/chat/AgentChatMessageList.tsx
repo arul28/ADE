@@ -291,17 +291,17 @@ import {
   thoughtDurationSeconds,
 } from "./chatThoughtRuns";
 import { ChatProofCount } from "./chatCardPrimitives";
-import type { ProofDrawerFocus } from "../../../shared/proofDrawerModel";
+import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
 import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
-const EMPTY_CITED_PROOF_IDS: ReadonlySet<string> = new Set();
+const EMPTY_PROOF_IDS: ReadonlySet<string> = new Set();
 
 /** The drawer narrowed to one turn's proof, for its "N proof filed" link. */
 function turnProofFocus(artifacts: readonly ComputerUseArtifactView[]): ProofDrawerFocus {
-  return { label: "This turn", artifactIds: artifacts.map((artifact) => artifact.id) };
+  return proofDrawerFocus("This turn", artifacts);
 }
 
 /** Cited proof ids in one turn's answer text; cheap for a turn with none. */
@@ -4450,8 +4450,6 @@ function DoneTurnDivider({
   sessionId?: string | null;
 }) {
   const [usageDetailsOpen, setUsageDetailsOpen] = useState(false);
-  // Proof captured during this turn renders inline, at the moment it happened,
-  // and starts collapsed so a long capture run never buries the reply.
   const turnProof = proofArtifacts ?? EMPTY_PROOF_ARTIFACTS;
   const completed = event.status === "completed";
   const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
@@ -6669,16 +6667,8 @@ function AgentChatMessageListMain({
   );
 
   /**
-   * Proof captured during each turn, keyed by the turn's `done` row.
-   *
-   * Proof itself renders inline where it was captured (an `ade_card` row), so
-   * this is only the turn summary's "N proof" chip — a way back to the drawer
-   * from the turn that produced the capture, not a second copy of the artifacts.
-   * Bucketing is by wall clock because artifacts carry `createdAt`, not turnId.
-   */
-  /**
-   * Proof an answer already shows inline. The turn's "N proof" chip and the
-   * inline filmstrip skip it, so a picture never shows twice in one thread.
+   * Proof an answer already shows inline. The turn's "N proof filed" links
+   * skip it, so a picture never shows twice in one thread.
    *
    * Text streams in pieces, so each turn's pieces are joined before reading
    * citations, which keeps a split citation whole. Per turn, the result is
@@ -6687,7 +6677,7 @@ function AgentChatMessageListMain({
    */
   const citedIdsByTurnRef = useRef(new Map<string, { pieces: number; chars: number; ids: string[] }>());
   const answerCitedProofIds = useMemo(() => {
-    if (!proofArtifacts.length) return EMPTY_CITED_PROOF_IDS;
+    if (!proofArtifacts.length) return EMPTY_PROOF_IDS;
     const piecesByTurn = new Map<string, string[]>();
     for (const envelope of events) {
       if (envelope.event.type !== "text") continue;
@@ -6710,11 +6700,11 @@ function AgentChatMessageListMain({
       for (const id of entry.ids) cited.add(id);
     }
     citedIdsByTurnRef.current = next;
-    return cited.size ? cited : EMPTY_CITED_PROOF_IDS;
+    return cited.size ? cited : EMPTY_PROOF_IDS;
   }, [events, proofArtifacts.length]);
 
   // Proof a "Filed proof" row already shows under its line. While the turn
-  // runs, the inline "Proof added" strip skips it; the turn-end recap keeps it.
+  // runs, the inline "N proof filed" line skips it; the turn-end count keeps it.
   const actionShownProofIds = useMemo(() => {
     let ids: Set<string> | null = null;
     for (const env of allGroupedRows) {
@@ -6723,9 +6713,16 @@ function AgentChatMessageListMain({
         for (const id of computerUseShownProofIds(summary)) (ids ??= new Set()).add(id);
       }
     }
-    return ids ?? EMPTY_CITED_PROOF_IDS;
+    return ids ?? EMPTY_PROOF_IDS;
   }, [allGroupedRows]);
 
+  /**
+   * Proof captured during each turn, keyed by the turn's `done` row, for its
+   * "N proof filed" link — a way into the drawer, not a second copy of the
+   * pictures, which show on the rows that filed them. Proof outside a finished
+   * turn anchors on the row it follows. Bucketing is by wall clock because
+   * artifacts carry `createdAt`, not turnId.
+   */
   const turnProofTimeline = useMemo(() => {
     const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
     const inlineByRowKey = new Map<string, ComputerUseArtifactView[]>();
@@ -8276,7 +8273,7 @@ function AgentChatMessageListMain({
       <ChatProofCount
         count={unanchoredProofArtifacts.length}
         onOpen={onOpenProofDrawer
-          ? () => onOpenProofDrawer({ label: "Latest proof", artifactIds: unanchoredProofArtifacts.map((artifact) => artifact.id) })
+          ? () => onOpenProofDrawer(proofDrawerFocus("Latest proof", unanchoredProofArtifacts))
           : undefined}
       />
     </div>

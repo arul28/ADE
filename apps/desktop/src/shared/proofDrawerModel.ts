@@ -48,6 +48,11 @@ export const EMPTY_PROOF_DRAWER_FILTER: ProofDrawerFilter = { query: "", media: 
  */
 export type ProofDrawerFocus = { label: string; artifactIds: readonly string[] };
 
+/** The focus a "N proof filed" link opens: these records, under this chip label. */
+export function proofDrawerFocus(label: string, artifacts: readonly { id: string }[]): ProofDrawerFocus {
+  return { label, artifactIds: artifacts.map((artifact) => artifact.id) };
+}
+
 type TurnInfo = {
   turnId: string;
   prompt: string | null;

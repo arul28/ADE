@@ -6,11 +6,8 @@ import { cn } from "../ui/cn";
  * A still of a recording's first frame with a play badge.
  *
  * The small tile never shows native controls or crops the frame: a tall
- * simulator recording and a wide Mac recording both letterbox on black. The
- * interactive form is a button (click opens the lightbox, which plays it at its
- * own size); the non-interactive form is a span for a caller that already owns
- * the click target — the transcript filmstrip wraps every tile in its own
- * button, so a nested button there would be invalid HTML.
+ * simulator recording and a wide Mac recording both letterbox on black. It is
+ * a button: a click opens the lightbox, which plays it at its own size.
  */
 export function ProofVideoPoster({
   artifact,
@@ -19,7 +16,6 @@ export function ProofVideoPoster({
   badgeSize,
   onOpen,
   onError,
-  interactive = true,
 }: {
   artifact: ComputerUseArtifactView;
   preview: string;
@@ -27,7 +23,6 @@ export function ProofVideoPoster({
   badgeSize: "sm" | "md";
   onOpen?: () => void;
   onError: () => void;
-  interactive?: boolean;
 }) {
   const body = (
     <>
@@ -54,9 +49,6 @@ export function ProofVideoPoster({
     </>
   );
 
-  if (!interactive) {
-    return <span className="relative block w-full overflow-hidden bg-black">{body}</span>;
-  }
   return (
     <button
       type="button"
