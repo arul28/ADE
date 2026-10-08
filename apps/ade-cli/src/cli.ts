@@ -20885,12 +20885,17 @@ Usage:
 
 function buildProjectsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
+  // The registry lives only in the machine brain, so these never fall back to
+  // a headless single-project runtime.
+  const base = {
+    kind: "execute" as const,
+    machineOnly: true,
+    machineAutoStart: true,
+  };
   if (sub === "list" || sub === "ls") {
     return {
-      kind: "execute",
+      ...base,
       label: "projects list",
-      machineOnly: true,
-      machineAutoStart: true,
       machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
@@ -20902,10 +20907,8 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project path",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects add",
-      machineOnly: true,
-      machineAutoStart: true,
       formatter: "projects-list",
       steps: [{
         key: "result",
@@ -20924,10 +20927,8 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project id",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects remove",
-      machineOnly: true,
-      machineAutoStart: true,
       steps: [
         { key: "result", method: "projects.remove", params: { projectId } },
       ],
@@ -20939,10 +20940,8 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project id",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects touch",
-      machineOnly: true,
-      machineAutoStart: true,
       formatter: "projects-list",
       steps: [
         { key: "result", method: "projects.touch", params: { projectId } },
@@ -20955,10 +20954,8 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "path",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects inspect",
-      machineOnly: true,
-      machineAutoStart: true,
       steps: [
         {
           key: "result",
