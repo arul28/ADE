@@ -879,10 +879,6 @@ function withRosterWait(
     ...liveItem,
     boardColumn: "waiting",
     waitingReason: reason,
-    // Time in Waiting starts when the wait did. The roster re-anchors its
-    // row when the column changes; the run's own anchor is when it started
-    // working, so "Waiting for 1h" would count the hour it worked.
-    statusSince: rosterItem.statusSince ?? liveItem.statusSince,
   });
 }
 

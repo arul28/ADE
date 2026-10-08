@@ -3268,9 +3268,9 @@ function parseCustomNotification(
  * agent, or an automation's "Send notification" step.
  *
  * It goes to every phone on the account the way an urgent Activity alert does,
- * and it respects the same switches: notifications off, quiet hours, and a
- * muted machine (when the caller names its machine). The relay adds nothing to
- * the text. At most `ACCOUNT_NOTIFY_LIMIT_PER_HOUR` are admitted per account
+ * and it respects the same switches: notifications off, quiet hours, a muted
+ * machine (when the caller names its machine), and Hide previews, which keeps
+ * only the title on the lock screen. The relay adds nothing to the text. At most `ACCOUNT_NOTIFY_LIMIT_PER_HOUR` are admitted per account
  * per hour window; past that it answers 429 with `retryAfterSeconds`.
  */
 async function handleCustomNotification(
@@ -3344,6 +3344,9 @@ async function handleCustomNotification(
       continue;
     }
     const soundsEnabled = preferenceBoolean(override, accountPreferences, "soundsEnabled", false);
+    // With Hide previews on, the lock screen shows the title only, so an agent
+    // or automation cannot put private text on a locked phone.
+    const hideDetails = preferenceBoolean(override, accountPreferences, "hideDetails", false);
     let result: ApnsSendResult;
     try {
       result = await sendPush(config, {
@@ -3358,7 +3361,7 @@ async function handleCustomNotification(
           aps: {
             alert: {
               title: parsed.title,
-              ...(parsed.body ? { body: parsed.body } : {}),
+              ...(parsed.body && !hideDetails ? { body: parsed.body } : {}),
             },
             ...(soundsEnabled ? { sound: "default" } : {}),
             "thread-id": "ade-notify",

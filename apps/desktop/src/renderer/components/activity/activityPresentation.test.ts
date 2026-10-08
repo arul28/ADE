@@ -309,5 +309,17 @@ describe("Activity columns", () => {
       occurredAt: "2026-08-01T12:30:00.000Z",
       updatedAt: "2026-08-01T12:30:00.000Z",
     } as AttentionItem, now)).toBeNull();
+
+    // A Waiting row's statusSince is when the chat entered its status, not
+    // when the wait began, so it shows no duration rather than a wrong one.
+    expect(activityStateElapsed({
+      kind: "agent",
+      phase: "running",
+      boardColumn: "waiting",
+      waitingReason: "ci",
+      statusSince: "2026-08-01T10:00:00.000Z",
+      occurredAt: "2026-08-01T10:00:00.000Z",
+      updatedAt: "2026-08-01T11:59:00.000Z",
+    } as AttentionItem, now)).toBeNull();
   });
 });

@@ -7250,6 +7250,7 @@ describe("custom notifications", () => {
       insertAttentionDevice(database, { userId, deviceId: "phone-on", apnsToken: "aa".repeat(32) });
       insertAttentionDevice(database, { userId, deviceId: "phone-off", apnsToken: "bb".repeat(32) });
       insertAttentionDevice(database, { userId, deviceId: "phone-quiet", apnsToken: "cc".repeat(32) });
+      insertAttentionDevice(database, { userId, deviceId: "phone-private", apnsToken: "ee".repeat(32) });
       insertAttentionDevice(database, { userId: "someone-else", deviceId: "phone-other", apnsToken: "dd".repeat(32) });
       database.native.prepare(`
         insert into attention_preferences(user_id, payload_json, updated_at)
@@ -7258,6 +7259,7 @@ describe("custom notifications", () => {
         devices: {
           "phone-off": { notificationsEnabled: false },
           "phone-quiet": { quietHours: { enabled: true, start: "11:00", end: "13:00", timeZone: "UTC" } },
+          "phone-private": { hideDetails: true },
         },
         machines: { "muted-mac": { notificationsEnabled: false } },
       }));
@@ -7270,21 +7272,26 @@ describe("custom notifications", () => {
         machineKey: "studio-mac",
       }, { env });
       expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({ ok: true, devices: 3, delivered: 1, skipped: 2, failed: 0 });
-      expect(sent).toHaveLength(1);
-      expect(sent[0]?.token).toBe("aa".repeat(32));
-      expect(sent[0]?.payload).toMatchObject({
+      expect(await response.json()).toMatchObject({ ok: true, devices: 4, delivered: 2, skipped: 2, failed: 0 });
+      expect(sent).toHaveLength(2);
+      const byToken = new Map(sent.map((push) => [push.token, push.payload]));
+      expect(byToken.get("aa".repeat(32))).toMatchObject({
         aps: { alert: { title: "Deploy finished", body: "ADE 1.4.2 is live · 3 checks green" } },
         deepLink: "ade://session/abc?accountMachineKey=m1",
       });
+      // Hide previews: the title still arrives, the body never reaches the
+      // lock screen, and the tap still opens the link.
+      const hidden = byToken.get("ee".repeat(32)) as { aps: { alert: Record<string, unknown> } } | undefined;
+      expect(hidden?.aps.alert).toEqual({ title: "Deploy finished" });
+      expect(hidden).toMatchObject({ deepLink: "ade://session/abc?accountMachineKey=m1" });
 
       // A muted machine silences its notifications on every phone.
       const muted = await accountRoute(database, userId, "POST", "/attention/account/notify", {
         title: "From the muted Mac",
         machineKey: "muted-mac",
       }, { env });
-      expect(await muted.json()).toMatchObject({ ok: true, delivered: 0, skipped: 3 });
-      expect(sent).toHaveLength(1);
+      expect(await muted.json()).toMatchObject({ ok: true, delivered: 0, skipped: 4 });
+      expect(sent).toHaveLength(2);
     } finally {
       database.close();
       vi.unstubAllGlobals();

@@ -220,31 +220,6 @@ describe("buildAttentionItems", () => {
    * (the roster's anchor for the waiting column), not when the run started
    * working: "Waiting for 1h" must not count the hour it worked.
    */
-  it("keeps a live run in its lane's CI wait, timed from when the wait began", async () => {
-    const waitBeganAt = Date.parse("2026-08-01T11:55:00.000Z");
-    const project = rosterProject({ status: "running" });
-    project.lanes = [{ ...project.lanes[0]!, prWaitingReason: "ci" }];
-    const items = await buildAttentionItems(context({
-      includeRoster: true,
-      machineKey: "machine-1",
-      runs: new Map([["disk-session-1", run({
-        sessionId: "disk-session-1",
-        phase: "running",
-        statusSinceAt: Date.parse("2026-08-01T10:00:00.000Z"),
-      })]]),
-      rosterPhaseAnchors: new Map([
-        ["agent:machine-1:disk-session-1", { status: "running" as const, column: "waiting:ci", statusSinceAt: waitBeganAt }],
-      ]),
-      loadRoster: async () => [project],
-    }));
-
-    expect(items).toHaveLength(1);
-    expect(items[0]?.phase).toBe("running");
-    expect(items[0]?.boardColumn).toBe("waiting");
-    expect(items[0]?.waitingReason).toBe("ci");
-    expect(items[0]?.statusSince).toBe(new Date(waitBeganAt).toISOString());
-  });
-
   it("does not let a stuck live run bury a roster failure", async () => {
     const items = await buildAttentionItems(context({
       includeRoster: true,

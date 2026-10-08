@@ -325,11 +325,17 @@ export function activityStateSentence(item: AttentionItem): string {
  * "needs you for 4m". `statusSince` is immutable for the life of a phase, so
  * this is elapsed time in the STATE rather than time since the last cosmetic
  * republish — the distinction that keeps the sheet from resetting every poll.
+ *
+ * A Waiting item gets no duration. Its `statusSince` marks when the chat
+ * entered its status, not when the wait began (moving it with the column would
+ * change the alert identity and bring back a dismissed row), so a time here
+ * would count the work before the wait.
  */
 export function activityStateElapsed(
   item: AttentionItem,
   now = Date.now(),
 ): string | null {
+  if (activityBoardColumn(item) === "waiting") return null;
   const since = item.statusSince ?? item.occurredAt;
   const sinceMs = since ? Date.parse(since) : Number.NaN;
   if (!Number.isFinite(sinceMs) || sinceMs > now) return null;

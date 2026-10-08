@@ -739,6 +739,8 @@ phone opens it on the machine that owns it rather than the one in front.
 The relay sends the text exactly as written: no agent text, no state suffix.
 Each phone gets the alert unless its notifications are off, it is in quiet
 hours, or it muted the sending machine (`machines[<key>].notificationsEnabled`).
+With Hide previews on, the phone gets the title only: the body never reaches
+the lock screen, and the tap still opens the link.
 `soundsEnabled` applies as it does to other alerts. The response counts
 `devices`, `delivered`, `skipped` and `failed`, plus `remaining` for the hour.
 
