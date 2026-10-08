@@ -20889,6 +20889,8 @@ function buildProjectsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "projects list",
+      machineOnly: true,
+      machineAutoStart: true,
       machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
@@ -20902,6 +20904,8 @@ function buildProjectsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "projects add",
+      machineOnly: true,
+      machineAutoStart: true,
       formatter: "projects-list",
       steps: [{
         key: "result",
@@ -20922,6 +20926,8 @@ function buildProjectsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "projects remove",
+      machineOnly: true,
+      machineAutoStart: true,
       steps: [
         { key: "result", method: "projects.remove", params: { projectId } },
       ],
@@ -20935,6 +20941,8 @@ function buildProjectsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "projects touch",
+      machineOnly: true,
+      machineAutoStart: true,
       formatter: "projects-list",
       steps: [
         { key: "result", method: "projects.touch", params: { projectId } },
@@ -20949,6 +20957,8 @@ function buildProjectsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "projects inspect",
+      machineOnly: true,
+      machineAutoStart: true,
       steps: [
         {
           key: "result",
@@ -31797,7 +31807,7 @@ async function executePlan(
         workspaceRoot: roots.workspaceRoot,
         socketPath,
         nextAction: plan.machineOnly
-          ? "Start the machine-owned ADE brain with `ade brain start`, then retry the personal chat command."
+          ? "Start the machine-owned ADE brain with `ade brain start`, then retry."
           : options.requireSocket
             ? "Open the ADE app for this channel, or run the `ade` on PATH in an ADE terminal or agent shell. `--socket <endpoint>` picks another brain."
           : sourceRuntimeInterop
