@@ -347,8 +347,13 @@
 
 /* Off screen, in a preview, or under reduced motion: hold still. */
 [data-still] .ade-wx * { animation-play-state: paused !important; }
-[data-theme="light"] .ade-wx .ade-wx-cloud { fill: #e6ebf2; stroke: rgb(0 0 0 / 14%); }
-[data-theme="light"] .ade-wx .ade-wx-star { fill: #8b93a7; }
+/* On a light card the night glyphs and white clouds need ink of their own. */
+[data-theme="light"] .ade-wx .ade-wx-cloud { fill: #dfe5ee; stroke: rgb(40 55 80 / 34%); stroke-width: 0.9; }
+[data-theme="light"] .ade-wx .ade-wx-cloud[data-shade="dark"] { fill: #a9b4c4; }
+[data-theme="light"] .ade-wx .ade-wx-moon-body { fill: #7c6fd6; filter: none; }
+[data-theme="light"] .ade-wx .ade-wx-star { fill: #7c6fd6; }
+[data-theme="light"] .ade-wx .ade-wx-flake { fill: #8fb5dc; }
+[data-theme="light"] .ade-wx .ade-wx-fog line { stroke: #9aa6b8; }
 @media (prefers-reduced-motion: reduce) {
   .ade-wx * { animation: none !important; }
 }

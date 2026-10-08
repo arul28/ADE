@@ -204,9 +204,9 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
   const now = useMinuteClock(visible);
   const updateSettings = useHomeLayoutStore((s) => s.updateSettings);
   const chosen = readPlace(item.settings?.place);
-  // No city chosen: the time zone's city, looked up without a prompt. A
-  // gallery preview never looks anything up.
-  const auto = useAutoPlace(!chosen && !preview && Boolean(window.ade?.home?.weather));
+  // No city chosen: the time zone's city, looked up once without a prompt
+  // (a gallery preview shows it too, so the tile is real weather).
+  const auto = useAutoPlace(!chosen && Boolean(window.ade?.home?.weather));
   const place = chosen ?? auto.place;
   const unit: "c" | "f" = item.settings?.unit === "f" || item.settings?.unit === "c" ? item.settings.unit : defaultUnit();
   const [weather, setWeather] = useState<HomeWeather | null>(null);

@@ -88,6 +88,17 @@ html[data-scene="image"] .ade-chat-scene {
   --ade-chat-scene-canvas: transparent;
   background: transparent;
 }
+/* The transcript paints its own flat canvas; on a picture the plane is the
+   canvas, or an open chat turns into a solid slab while a new one is frosted. */
+html[data-scene="image"] .ade-chat-scene .ade-chat-timeline-pane { background: transparent; }
+/* The Browser top tab: the frame and toolbar are a plane on the picture too;
+   the page itself keeps its solid surface (sites draw on it). */
+html[data-scene="image"] .ade-chat-scene [data-testid="browser-panel"] > div:first-child {
+  border-color: var(--kit-card-edge);
+  background: var(--kit-card-bg);
+  backdrop-filter: var(--kit-card-blur);
+  -webkit-backdrop-filter: var(--kit-card-blur);
+}
 html[data-scene="image"] .ade-chat-scene-plane {
   background: var(--kit-card-bg);
   backdrop-filter: var(--kit-card-blur);

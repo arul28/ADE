@@ -166,21 +166,24 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 .ade-home-hidden-note {
   position: absolute;
   right: 0;
-  /* In the page's bottom padding, under the grid's last row. */
-  bottom: -14px;
-  height: 13px;
+  /* In the page's bottom padding (the same clamp as .ade-home), under the
+     grid's last row: a small frosted pill, so it reads over any picture. */
+  --home-pad-bottom: clamp(14px, 2.6cqh, 28px);
+  bottom: calc(2px - var(--home-pad-bottom));
+  height: min(20px, calc(var(--home-pad-bottom) - 3px));
   display: inline-flex;
   align-items: center;
   gap: 5px;
   max-width: 70%;
-  padding: 0 8px;
-  line-height: 13px;
-  border: 0;
+  padding: 0 10px;
+  border: 1px solid var(--kit-card-edge);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-bg) 55%, transparent);
-  color: var(--kit-text-3);
+  background: var(--kit-card-bg);
+  backdrop-filter: var(--kit-card-blur);
+  -webkit-backdrop-filter: var(--kit-card-blur);
+  color: var(--kit-text-2);
   font: inherit;
-  font-size: 10.5px;
+  font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;

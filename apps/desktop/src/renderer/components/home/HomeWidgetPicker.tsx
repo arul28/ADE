@@ -159,13 +159,26 @@ function planAdd(cells: readonly HomeLayoutCell[], type: HomeWidgetType, cls: Ho
   return { kind: "full" };
 }
 
+/**
+ * The class a gallery tile shows: one row tall, so a tall widget (the feed)
+ * is not shrunk to an unreadable sliver in a short tile. The detail view
+ * still shows every class.
+ */
+function tileClass(type: HomeWidgetType): HomeSizeClass {
+  const meta = HOME_WIDGET_CATALOG[type];
+  const shape = widgetShape(type);
+  const oneRow = (cls: HomeSizeClass) => Boolean(shape.classes[cls]) && classSpan(shape, cls).h === 1;
+  if (oneRow(meta.defaultClass)) return meta.defaultClass;
+  return (["regular", "compact", "large"] as const).find(oneRow) ?? meta.defaultClass;
+}
+
 function PickerTile({ type, present, metrics, onOpen }: { type: HomeWidgetType; present: boolean; metrics: GridMetrics; onOpen: () => void }) {
   const meta = HOME_WIDGET_CATALOG[type];
   const Icon = meta.icon;
   const unavailable = meta.comingSoon ?? (meta.desktopOnly && !window.ade?.home ? "Needs the ADE desktop app." : null);
   return (
     <button type="button" className="ade-picker-tile" onClick={onOpen} data-present={present || undefined} data-unavailable={unavailable ? "true" : undefined}>
-      <FluidPreview type={type} cls={meta.defaultClass} metrics={metrics} stageHeight={168} />
+      <FluidPreview type={type} cls={tileClass(type)} metrics={metrics} stageHeight={176} />
       <span className="ade-picker-tile-text">
         <span className="ade-picker-tile-title">
           <Icon size={13} aria-hidden />
