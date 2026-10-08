@@ -390,18 +390,23 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
   // ── Attach / detach / status ─────────────────────────────────────────────
 
   /**
-   * One number per chat, raised by every attach and every detach. An attach
-   * waits on the user's "Allow remote debugging?" prompt; if a detach (or a
-   * newer attach) ran meanwhile, the number moved and the attach must not
-   * store its connection.
+   * The attach each chat is waiting on, if any. An attach waits on the user's
+   * "Allow remote debugging?" prompt; a detach, a newer attach or `dispose`
+   * removes or replaces its entry, which supersedes it and aborts its
+   * connect. Tokens come from one counter for the whole service, so a later
+   * attach can never reuse an old one, and an entry lives only while its
+   * attach is pending.
    */
-  const attachGenerations = new Map<string, number>();
-  const nextAttachGeneration = (chatSessionId: string): number => {
-    const next = (attachGenerations.get(chatSessionId) ?? 0) + 1;
-    attachGenerations.set(chatSessionId, next);
-    return next;
+  type PendingAttach = { token: number; abort: AbortController };
+  const pendingAttaches = new Map<string, PendingAttach>();
+  let attachTokens = 0;
+  const cancelPendingAttach = (chatSessionId: string): boolean => {
+    const pending = pendingAttaches.get(chatSessionId);
+    if (!pending) return false;
+    pendingAttaches.delete(chatSessionId);
+    pending.abort.abort();
+    return true;
   };
-  const pendingAttaches = new Set<string>();
   /** Set by `dispose`: every pending attach is superseded and no new one starts. */
   let disposed = false;
 
@@ -418,13 +423,14 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     if (disposed) {
       throw new UserBrowserAttachError("ADE's runtime is shutting down, so it cannot attach to the user's browser.");
     }
-    const generation = nextAttachGeneration(chatSessionId);
-    const superseded = (): boolean => disposed || attachGenerations.get(chatSessionId) !== generation;
-    pendingAttaches.add(chatSessionId);
+    cancelPendingAttach(chatSessionId);
+    const mine: PendingAttach = { token: ++attachTokens, abort: new AbortController() };
+    pendingAttaches.set(chatSessionId, mine);
+    const superseded = (): boolean => disposed || pendingAttaches.get(chatSessionId)?.token !== mine.token;
     try {
-      return await attachChat(chatSessionId, input, superseded);
+      return await attachChat(chatSessionId, input, superseded, mine.abort.signal);
     } finally {
-      if (!superseded()) pendingAttaches.delete(chatSessionId);
+      if (pendingAttaches.get(chatSessionId)?.token === mine.token) pendingAttaches.delete(chatSessionId);
     }
   };
 
@@ -432,6 +438,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     chatSessionId: string,
     input: UserBrowserAttachInput,
     superseded: () => boolean,
+    signal: AbortSignal,
   ): Promise<UserBrowserAttachResult> => {
     const host = await machine();
     const requestedRaw = stringOrNull(input.browser)?.toLowerCase() ?? null;
@@ -462,10 +469,15 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
       const port = candidate.debugging!;
       const wsUrl = `ws://127.0.0.1:${port.port}${port.browserPath}`;
       try {
-        client = await CdpClient.connect(wsUrl, { timeoutMs: CONNECT_TIMEOUT_MS });
+        client = await CdpClient.connect(wsUrl, { timeoutMs: CONNECT_TIMEOUT_MS, signal });
         chosen = candidate;
         break;
       } catch (error) {
+        if (superseded()) {
+          throw new UserBrowserAttachError(
+            "This attach was cancelled: the chat detached (or attached again) while it waited. This chat stays on ADE's browser.",
+          );
+        }
         const message = errorMessage(error);
         // A port file left behind by a browser that has since quit: nothing
         // listens there. Try the next browser rather than failing on a ghost.
@@ -606,8 +618,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     // Cancel an attach still waiting on the browser's prompt. A chat that
     // never attached has no generation and nothing to cancel; leave it out of
     // the map so detaching every ending chat stays free.
-    if (attachGenerations.has(chatSessionId)) nextAttachGeneration(chatSessionId);
-    const cancelledPending = pendingAttaches.delete(chatSessionId);
+    const cancelledPending = cancelPendingAttach(chatSessionId);
     const existing = await detachChat(chatSessionId);
     if (!existing) {
       if (cancelledPending) {
@@ -905,7 +916,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     // An attach still waiting on the browser's prompt sees itself superseded
     // and closes its connection instead of storing it on a disposed service.
     disposed = true;
-    pendingAttaches.clear();
+    for (const chatSessionId of [...pendingAttaches.keys()]) cancelPendingAttach(chatSessionId);
     for (const attachment of attachments.values()) void closeAttachment(attachment);
     attachments.clear();
   };
