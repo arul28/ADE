@@ -143,8 +143,10 @@ export type HomeMachineDetail = {
   cores: number[];
   /** Whole-machine CPU percent, oldest first, one per call over about the last minute. */
   cpuHistory: number[];
-  /** Bytes per second in and out, oldest first, aligned with each other. */
-  netHistory: { rx: number[]; tx: number[] } | null;
+  /** How long ago each `cpuHistory` reading was taken, in ms (the widget reads less often when ADE is in the background). */
+  cpuAgesMs: number[];
+  /** Bytes per second in and out, oldest first, aligned with each other and with `agesMs`. */
+  netHistory: { rx: number[]; tx: number[]; agesMs: number[] } | null;
   /** The latest throughput; null until two readings exist or where it cannot be read. */
   net: { rxBps: number; txBps: number } | null;
   drives: HomeMachineDrive[];

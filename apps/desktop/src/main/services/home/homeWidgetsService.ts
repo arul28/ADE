@@ -825,14 +825,17 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
     }
     if (totals) lastNet = { at, ...totals };
     // A gap (the widget was off screen) starts the minute over rather than drawing a straight line across it.
-    if (samples.length > 0 && at - samples[samples.length - 1]!.at > 12_000) samples = [];
+    if (samples.length > 0 && at - samples[samples.length - 1]!.at > 15_000) samples = [];
     if (cpuPercent != null) samples.push({ at, cpu: cpuPercent, rx, tx });
     samples = samples.filter((sample) => at - sample.at <= 62_000);
     const netSamples = samples.filter((sample) => sample.rx != null && sample.tx != null);
     const detail: HomeMachineDetail = {
       cores,
       cpuHistory: samples.map((sample) => sample.cpu),
-      netHistory: netSamples.length > 0 ? { rx: netSamples.map((sample) => sample.rx!), tx: netSamples.map((sample) => sample.tx!) } : null,
+      cpuAgesMs: samples.map((sample) => at - sample.at),
+      netHistory: netSamples.length > 0
+        ? { rx: netSamples.map((sample) => sample.rx!), tx: netSamples.map((sample) => sample.tx!), agesMs: netSamples.map((sample) => at - sample.at) }
+        : null,
       net: rx != null && tx != null ? { rxBps: rx, txBps: tx } : null,
       drives,
       processes: processCache?.groups ?? null,

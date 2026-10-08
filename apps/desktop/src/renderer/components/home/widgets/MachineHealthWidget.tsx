@@ -1,4 +1,4 @@
-import { memo, useCallback, useId, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { BatteryMedium, Cpu, Plugs, StopCircle } from "@phosphor-icons/react";
 import type { HomeListenersResult, HomeMachineDetail, HomeMachineHealth } from "../../../../shared/types/homeWidgets";
 import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
@@ -18,7 +18,7 @@ import "../homeWidgets.css";
  * - Large (two columns): the same with room: drives, memory and the lists side
  *   by side with the charts.
  *
- * Cost: one `health` call every 3 s while the card is on screen (counters,
+ * Cost: one `health` call every 3 s (6 s when ADE is not focused) while the card is on screen (counters,
  * plus in Regular and Large one `netstat -e`, with drives and the process
  * list (tasklist, ~45 ms of main CPU) re-read every 30 s; never PowerShell), and a port scan every 10 s.
  */
@@ -71,17 +71,17 @@ function driveLabel(drivePath: string): string {
   return drivePath.split("/").filter(Boolean).pop() ?? drivePath;
 }
 
-/** The fixed width of a minute of samples (3 s apart), so the line scrolls in from the right. */
-const HISTORY_SLOTS = 20;
-const SAMPLE_SECONDS = 3;
+/** The charts show the last minute, each reading placed by when it was taken. */
+const WINDOW_MS = 60_000;
 
 /**
- * A live area chart. Values sit at the right edge and the minute fills in
- * leftwards; `max` fixes the scale (CPU is 0–100) or it follows the data with
- * a floor so a quiet line stays quiet. Hovering reads a value out.
+ * A live area chart over the last minute: each reading sits at its age, the
+ * newest at the right edge. `max` fixes the scale (CPU zooms to a 25% step)
+ * and `scale` labels the top line. Hovering reads the nearest value out.
  */
 function LiveChart({
   series,
+  agesMs,
   max,
   height,
   label,
@@ -90,31 +90,42 @@ function LiveChart({
   scale,
 }: {
   series: Array<{ values: number[]; tone: "fg" | "accent" }>;
+  /** Age of each reading, aligned with every series' values. */
+  agesMs: number[];
   max: number;
   height: number;
   label: string;
   onHover?: (index: number | null) => void;
   /** Stretch to the parent's height (Large) instead of drawing `height` px tall. */
   fill?: boolean;
-  /** What the top line means ("100%", "256 KB/s"), shown at its end. */
+  /** What the top line means ("25%", "256 KB/s"), shown at its start. */
   scale?: string;
 }) {
   const id = useId().replace(/:/g, "");
   const width = 240;
-  const step = width / (HISTORY_SLOTS - 1);
+  const xOf = (age: number) => width * (1 - Math.min(WINDOW_MS, Math.max(0, age)) / WINDOW_MS);
   const paths = series.map(({ values, tone }) => {
-    const shown = values.slice(-HISTORY_SLOTS);
-    const offset = HISTORY_SLOTS - shown.length;
-    const points = shown.map((value, index) => [
-      (offset + index) * step,
+    const points = values.map((value, index) => [
+      xOf(agesMs[index] ?? 0),
       2 + (1 - Math.min(1, Math.max(0, value) / max)) * (height - 4),
     ] as const);
-    if (points.length === 0) return { tone, line: "", area: "", last: null };
+    if (points.length === 0) return { tone, line: "", area: "" };
     const line = points.map(([x, y], index) => `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
-    const area = `${line} L${width} ${height} L${points[0]![0].toFixed(1)} ${height} Z`;
-    return { tone, line, area, last: points[points.length - 1]! };
+    const area = `${line} L${points[points.length - 1]![0].toFixed(1)} ${height} L${points[0]![0].toFixed(1)} ${height} Z`;
+    return { tone, line, area };
   });
-  const longest = Math.max(0, ...series.map((entry) => Math.min(HISTORY_SLOTS, entry.values.length)));
+  const nearestTo = (x: number): number | null => {
+    let nearest: number | null = null;
+    let distance = Infinity;
+    agesMs.forEach((age, index) => {
+      const gap = Math.abs(xOf(age) - x);
+      if (gap < distance) {
+        nearest = index;
+        distance = gap;
+      }
+    });
+    return distance < 14 ? nearest : null;
+  };
   return (
     <div className="ade-mh-chart-wrap" data-fill={fill || undefined} style={fill ? undefined : { height }}>
     <svg
@@ -126,9 +137,7 @@ function LiveChart({
       aria-label={label}
       onMouseMove={onHover ? (event) => {
         const box = event.currentTarget.getBoundingClientRect();
-        const slot = Math.round(((event.clientX - box.left) / Math.max(1, box.width)) * (HISTORY_SLOTS - 1));
-        const index = slot - (HISTORY_SLOTS - longest);
-        onHover(index >= 0 && index < longest ? index : null);
+        onHover(nearestTo(((event.clientX - box.left) / Math.max(1, box.width)) * width));
       } : undefined}
       onMouseLeave={onHover ? () => onHover(null) : undefined}
     >
@@ -187,9 +196,9 @@ function Section({ title, aside, children, className }: { title: string; aside?:
 
 function CpuSection({ health, detail, chartHeight, fill = false }: { health: HomeMachineHealth; detail: HomeMachineDetail; chartHeight: number; fill?: boolean }) {
   const [hover, setHover] = useState<number | null>(null);
-  const history = detail.cpuHistory.slice(-HISTORY_SLOTS);
+  const history = detail.cpuHistory;
   const shown = hover != null ? history[hover] : health.cpuPercent;
-  const seconds = hover != null ? Math.round((history.length - 1 - hover) * SAMPLE_SECONDS) : 0;
+  const seconds = hover != null ? Math.round((detail.cpuAgesMs[hover] ?? 0) / 1_000) : 0;
   // A quiet machine still shows its shape: the top line is the next 25% step above the minute's peak.
   const top = Math.min(100, Math.max(25, Math.ceil(Math.max(0, ...history) / 25) * 25));
   return (
@@ -198,7 +207,7 @@ function CpuSection({ health, detail, chartHeight, fill = false }: { health: Hom
       className="ade-mh-cpu"
       aside={shown == null ? "—" : hover != null && seconds > 0 ? `${shown}% · ${seconds}s ago` : `${shown}%`}
     >
-      <LiveChart series={[{ values: history, tone: "fg" }]} max={top} scale={`${top}%`} height={chartHeight} fill={fill} label={`CPU over the last minute, now ${health.cpuPercent ?? 0}%`} onHover={setHover} />
+      <LiveChart series={[{ values: history, tone: "fg" }]} agesMs={detail.cpuAgesMs} max={top} scale={`${top}%`} height={chartHeight} fill={fill} label={`CPU over the last minute, now ${health.cpuPercent ?? 0}%`} onHover={setHover} />
       {detail.cores.length > 1 ? <CoreBars cores={detail.cores} /> : null}
       <div className="ade-mh-cpu-model" title={health.cpuModel ?? undefined}>
         {health.cpuModel ?? "Processor"} · {health.cpuCount} threads
@@ -209,8 +218,8 @@ function CpuSection({ health, detail, chartHeight, fill = false }: { health: Hom
 
 function NetworkSection({ detail, chartHeight, fill = false }: { detail: HomeMachineDetail; chartHeight: number; fill?: boolean }) {
   const [hover, setHover] = useState<number | null>(null);
-  const rx = detail.netHistory?.rx.slice(-HISTORY_SLOTS) ?? [];
-  const tx = detail.netHistory?.tx.slice(-HISTORY_SLOTS) ?? [];
+  const rx = detail.netHistory?.rx ?? [];
+  const tx = detail.netHistory?.tx ?? [];
   // Scale to the busiest moment, but never below 64 KB/s so background chatter stays a flat line.
   const peak = Math.max(64 * 1024, ...rx, ...tx);
   // Round the top line up to a 1-2-5 step so its label reads cleanly.
@@ -232,6 +241,7 @@ function NetworkSection({ detail, chartHeight, fill = false }: { detail: HomeMac
       {detail.netHistory ? (
         <LiveChart
           series={[{ values: rx, tone: "accent" }, { values: tx, tone: "fg" }]}
+          agesMs={detail.netHistory.agesMs}
           max={max}
           scale={formatRate(max)}
           height={chartHeight}
@@ -322,6 +332,21 @@ function DrivesSection({ detail, fallback }: { detail: HomeMachineDetail; fallba
   );
 }
 
+function useWindowFocused(): boolean {
+  const [focused, setFocused] = useState(() => document.hasFocus());
+  useEffect(() => {
+    const onFocus = () => setFocused(true);
+    const onBlur = () => setFocused(false);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+  return focused;
+}
+
 export default function MachineHealthWidget({ item }: HomeWidgetProps) {
   const visible = useWidgetVisible();
   const bridge = window.ade?.home?.machine;
@@ -336,10 +361,13 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
   const view: View = span.h >= 2 ? (span.w >= 2 ? "large" : "regular") : span.w >= 2 ? "wide" : "compact";
   const wantsDetail = view !== "compact";
 
+  // Live every 3 s while ADE is the focused app; every 6 s behind other
+  // windows, where nobody is watching the chart move.
+  const focused = useWindowFocused();
   usePolling(async () => {
     if (!bridge) return;
     setHealth(await bridge.health({ detail: wantsDetail }));
-  }, 3_000, visible && Boolean(bridge));
+  }, focused ? 3_000 : 6_000, visible && Boolean(bridge));
 
   const loadListeners = useCallback(async () => {
     if (!bridge) return;
