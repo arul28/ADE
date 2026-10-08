@@ -23387,8 +23387,16 @@ async function runServe(
     logger: headlessProjectLogger,
     capture: (input) => brainProductAnalytics.capture(input),
   });
+  const rawSocketPath =
+    readValue(args, ["--socket"]) ??
+    process.env.ADE_RPC_SOCKET_PATH?.trim() ??
+    layout.socketPath;
+  const socketPath = isAdeRuntimeNamedPipePath(rawSocketPath)
+    ? rawSocketPath
+    : path.resolve(rawSocketPath);
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
+    socketPath,
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
     info: (event, meta) => headlessProjectLogger.info(event, meta),
     onRecovered: (breadcrumb) => {
@@ -23413,13 +23421,6 @@ async function runServe(
   // `com.ade.watchdog` launch agent on macOS, the PowerShell supervisor loop on
   // Windows. It ticks even when the brain is completely idle, which is exactly
   // the state a wedge otherwise hides in.
-  const rawSocketPath =
-    readValue(args, ["--socket"]) ??
-    process.env.ADE_RPC_SOCKET_PATH?.trim() ??
-    layout.socketPath;
-  const socketPath = isAdeRuntimeNamedPipePath(rawSocketPath)
-    ? rawSocketPath
-    : path.resolve(rawSocketPath);
   // A launchd brain gets no --socket and no socket env, only ADE_HOME. Record
   // the socket it serves so the `ade` shim it hands its agents names it.
   publishServedRuntimeSocket(socketPath);

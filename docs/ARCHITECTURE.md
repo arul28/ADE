@@ -169,7 +169,10 @@ command, blocked duration, threshold, and the latest event-loop/memory/resource
 snapshot) under the runtime dir, requests a best-effort Node diagnostic report,
 then `SIGKILL`s the brain so launchd can restart it. Heartbeat delays over 2 s
 that recover before the kill threshold log `brain.event_loop_near_miss` with the
-same diagnostics. On the next boot the watchdog promotes the breadcrumb and any
+same diagnostics, unless the worker thread was late across nearly all of the delay too:
+then the whole process was suspended, and it is logged as `brain.suspend_gap`
+instead of a near-miss.
+On the next boot the watchdog promotes the breadcrumb and any
 report to `last-wedge.json` / `last-wedge-report.json`, logs
 `brain.recovered_from_wedge`, and emits a
 deduped `ade_brain_recovered` analytics event; the recovered wedge is surfaced
