@@ -1015,6 +1015,24 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cleaned, "Hello. \"Goodbye\"")
   }
 
+  func testDictationCleanupRemovesPunctuatedFillers() {
+    let glossary = VoiceGlossary(version: 1, contextualTerms: [], corrections: [], fillers: ["um", "uh"])
+    let cases: [(String, String)] = [
+      ("Um, rebase onto main.", "Rebase onto main."),
+      ("So, uh, we should ship it.", "So, we should ship it."),
+      ("Um. Ship it.", "Ship it."),
+      ("We ship it. Um, then merge.", "We ship it. Then merge."),
+      ("Um, uh, ship it.", "Ship it."),
+      ("Um. Um. Ship it.", "Ship it."),
+      ("Uh. Um. Ship it.", "Ship it."),
+      ("Um! Ship it.", "Ship it."),
+      ("... so we ship.", "... So we ship."),
+    ]
+    for (raw, expected) in cases {
+      XCTAssertEqual(DictationCleanup.clean(raw, glossary: glossary), expected, raw)
+    }
+  }
+
   func testDictationCleanupAllowsExpandedUppercaseCharacters() {
     let cleaned = DictationCleanup.clean("ßeta", glossary: .empty)
 

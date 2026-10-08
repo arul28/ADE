@@ -779,7 +779,7 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
 }
 
 // Voice-to-text transcription is a project-independent capability (it only needs
-// the bundled whisper binary + model + shared glossary), so it lives as a single
+// the bundled transcribe-cli binary + model + shared glossary), so it lives as a single
 // shared instance threaded into every project/dormant context. Constructed lazily
 // on first context build.
 let sharedTranscriptionService: ReturnType<typeof createTranscriptionService> | null = null;
@@ -789,8 +789,8 @@ function getSharedTranscriptionService(logger: Logger): ReturnType<typeof create
       logger,
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
-      // The ~141 MB model is downloaded at runtime (not bundled) into userData
-      // so it never bloats the auto-update zip. See whisperModelStore.
+      // The ~464 MB model is downloaded at runtime (not bundled) into userData
+      // so it never bloats the auto-update zip. See speechModelStore.
       modelDir: path.join(app.getPath("userData"), "whisper"),
     });
   }
