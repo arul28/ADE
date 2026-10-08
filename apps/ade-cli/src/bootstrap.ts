@@ -2005,14 +2005,17 @@ export async function createAdeRuntime(args: {
       });
     teardown.push(() => macDesktopService?.dispose());
     // A chat-only runtime has no browser surface: no forwarder, no user-browser
-    // attachments, no bridge. Everything else has all three.
+    // attachments, no bridge. Everything else has all three. That includes the
+    // machine's personal-chat runtime: nothing reaches its action registry
+    // (only `personalChats.*` does), and a personal chat's `ade browser` runs
+    // against the runtime its working directory resolves to (see
+    // `scopeBuiltInBrowserAdeActionArgs` in adeRpcServer.ts), which has the bridge.
     //
     // With no desktop attached HERE, `browser open` is still satisfiable: a
     // desktop that holds a remote pin on this machine can open the URL in its
     // own browser and reach this machine's localhost through a port-forward.
     // The user's own browser is reached from THIS process (the chat's runtime
     // host), so attaching needs no desktop and works on a remote runtime.
-    const personalChatRuntime = resolvedArgs.runtimeProfile === "chat";
     const browserSurface = chatOnlyRuntime
       ? null
       : {
@@ -2050,15 +2053,7 @@ export async function createAdeRuntime(args: {
         ),
         browserSurface.userBrowserAttachService,
       )
-      : personalChatRuntime
-        // The machine's personal-chat runtime ("chat" profile, never "embedded")
-        // drives ADE's browser on this machine too, without remote forwarding.
-        ? createBuiltInBrowserDesktopBridgeClient({
-          socketPath: builtInBrowserBridgeSocketPath,
-          projectRoot,
-          logger,
-        })
-        : null;
+      : null;
     if (appControlService) {
       const appControlRecorderBridge = createAppControlRecorderBridgeClient({
         socketPath: builtInBrowserBridgeSocketPath,

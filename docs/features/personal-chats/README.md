@@ -270,11 +270,11 @@ What `assistant` changes, provider by provider:
 | | `assistant` | `embedded` |
 |---|---|---|
 | Session profile | `workflow` (tool gate, approval and dialog cards, hooks) | `light` |
-| Prompt | the assistant prompt: shell, files wherever the user points, ADE browser, computer use, App Control, the `ade` CLI, scratch folder by default | the neutral general-assistant prompt |
+| Prompt | the assistant prompt: shell, files wherever the user points, ADE browser, computer use, App Control, the `ade` CLI, the shared personal workspace (or the host's folder) by default | the neutral general-assistant prompt |
 | ADE skills | the bundled catalog minus `ade-lanes-git` and `ade-pr-workflows`, through the same per-provider channels as Work chats (Claude plugin root and listing, Codex skill roots and slash commands, Cursor shim, Qwen, Pi, `ADE_AGENT_SKILLS_DIRS`). The withheld skills are removed by a private filtered mirror of the root (`withoutAgentSkills`), because no provider takes a per-skill deny list. | none (Pi reads the env roots, as before) |
 | Claude `settingSources` | the caller's value, else `user` (`all` when the chat runs in a folder the user named), so the user's CLAUDE.md, MCP servers and skills load | the caller's value, else `none` |
 | Pi extensions | load, like `pi` in a terminal | off |
-| ADE browser | the personal runtime gets the desktop bridge (the brain forwards the desktop's token), so chats get `ADE_BROWSER_ACTOR_TOKEN` | unchanged |
+| ADE browser | no token and no bridge on the personal runtime: a chat's `ade browser` call runs on the runtime its working directory resolves to, and its `ADE_CHAT_SCOPE=personal` claim puts its tabs in the personal tab collection (`scopeBuiltInBrowserAdeActionArgs`) | unchanged |
 
 Agent-set row reports are on for `assistant` and off for `embedded`. The
 personal runtime has no listening socket, so its chats never pin the CLI to
@@ -283,7 +283,8 @@ through the brain: `--personal` on the command, or ADE_CHAT_SCOPE=personal,
 which ADE sets in every personal chat's agent environment. The session defaults
 to the caller's ADE_CHAT_SESSION_ID. The assistant prompt tells the agent the
 commands (`buildAdeSessionActivityGuidance` with the `personal` target, which
-spells `--personal --session <id>` so OpenCode's shared server reaches it too).
+spells `--personal --session <id>` on `note`, `ask` and `activity` alike, so
+OpenCode's shared server, which carries neither variable, reaches it too).
 The Chats rail shows the report the way a Work row does: "Needs you" after
 `ade chat ask`, the reported or detected activity ("Testing") during a live
 turn, and the status note as the row's second line.
