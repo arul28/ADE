@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   resolveAdeSigningState,
   resolveMacDesktopDriverBinary,
+  resolveMusicHostExecutable,
+  resolveNowPlayingHelperBinary,
 } from "./nativeHelperPaths";
 
 /** Where the native helpers are, and nothing else. */
@@ -50,6 +52,27 @@ describe("native helper paths", () => {
     }
   });
 
+
+  it("finds the Windows music helpers only on Windows, and the Now Playing helper only when it is on disk", () => {
+    const resources = fs.mkdtempSync(path.join(os.tmpdir(), "ade-native-helpers-"));
+    try {
+      const packaged = { isPackaged: true, resourcesPath: resources, appPath: "/unused" };
+      // Not built yet: the widget says the helper is missing instead of failing to spawn.
+      expect(resolveNowPlayingHelperBinary({ ...packaged, platform: "win32" })).toBeNull();
+      fs.mkdirSync(path.join(resources, "native"));
+      fs.writeFileSync(path.join(resources, "native", "ade-now-playing.exe"), "");
+      expect(resolveNowPlayingHelperBinary({ ...packaged, platform: "win32" })).toBe(path.join(resources, "native", "ade-now-playing.exe"));
+      expect(resolveMusicHostExecutable({ ...packaged, platform: "win32", env: {} }))
+        .toBe(path.join(resources, "native", "ade-music-host", "ade-music-host.exe"));
+
+      for (const platform of ["darwin", "linux"] as const) {
+        expect(resolveNowPlayingHelperBinary({ ...packaged, platform })).toBeNull();
+        expect(resolveMusicHostExecutable({ ...packaged, platform, env: { ADE_MUSIC_HOST_PATH: path.join(resources, "native", "ade-now-playing.exe") } })).toBeNull();
+      }
+    } finally {
+      fs.rmSync(resources, { recursive: true, force: true });
+    }
+  });
 
   it("ignores a driver path override that is not an executable file", () => {
     const debug = vi.fn();
