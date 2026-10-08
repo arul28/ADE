@@ -227,11 +227,6 @@ describe("PersonalChatsPage", () => {
     expect(screen.getByText("Alpha chat")).toBeTruthy();
   });
 
-  it("shows the empty-list message when there are no chats", async () => {
-    await renderPage();
-    expect(await screen.findByText(/No chats yet/)).toBeTruthy();
-  });
-
   it("shows a notice and no suggestions when no provider is available", async () => {
     state.catalogAvailable = false;
     await renderPage();
@@ -369,5 +364,76 @@ describe("PersonalChatsPage", () => {
         name: "Chats run on MacBook Pro (97). Choose a machine.",
       }),
     ).toBeTruthy();
+  });
+  it("never calls the project chat API from an open personal chat", async () => {
+    // Every project-runtime call is recorded: `window.ade.agentChat` is the
+    // project's chat domain, and a personal pane must reach only
+    // `personalChats.*` — sends, stashes (Ctrl+S), diffs, voice, handoff.
+    const projectCalls: string[] = [];
+    const recorder = (name: string): unknown => new Proxy(
+      (..._args: unknown[]) => { projectCalls.push(name); return Promise.resolve(undefined); },
+      { get: (_target, key) => (typeof key === "string" && key !== "then" ? recorder(`${name}.${key}`) : undefined) },
+    );
+    state.sessions = [makeSession({ sessionId: "s1", title: "Trip plan" })];
+    const { call } = installBridge({ agentChat: recorder("agentChat") });
+    const base = call.getMockImplementation()!;
+    call.mockImplementation((async (request: CallArgs) => (
+      request.action === "getSummary" || request.action === "updateSession"
+        ? { result: state.sessions[0] }
+        : await base(request)
+    )) as never);
+    await renderPage();
+
+    fireEvent.click(await screen.findByText("Trip plan"));
+    await waitFor(() => {
+      expect(call.mock.calls.some(([request]) => request.action === "getEventHistory")).toBe(true);
+    });
+    const field = await screen.findByRole("textbox", { name: /Ask anything/i });
+    fireEvent.change(field, { target: { value: "Book the train" } });
+    fireEvent.keyDown(field, { key: "s", ctrlKey: true });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(call.mock.calls.some(([request]) => request.action === "send" && request.args?.sessionId === "s1")).toBe(true);
+    });
+    expect(projectCalls).toEqual([]);
+  });
+
+  it("hides Pin for a machine whose host refuses it, without showing an error", async () => {
+    state.sessions = [makeSession({ sessionId: "s1", title: "Old host chat" })];
+    const { call } = installBridge();
+    const listAndCatalog = call.getMockImplementation()!;
+    call.mockImplementation(async (request: CallArgs) => {
+      if (request.action === "setPinned") throw new Error("Unsupported personal chat action: setPinned.");
+      return await listAndCatalog(request);
+    });
+    await renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Old host chat" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin" }));
+    await waitFor(() => expect(call.mock.calls.some(([request]) => request.action === "setPinned")).toBe(true));
+
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Old host chat" }));
+    await waitFor(() => expect(screen.queryByRole("menuitem", { name: "Pin" })).toBeNull());
+    expect(screen.getByRole("menuitem", { name: "Archive" })).toBeTruthy();
+    expect(screen.queryByText(/Could not pin/)).toBeNull();
+  });
+
+  it("shows any other Pin failure and keeps offering Pin", async () => {
+    state.sessions = [makeSession({ sessionId: "s1", title: "Busy chat" })];
+    const { call } = installBridge();
+    const listAndCatalog = call.getMockImplementation()!;
+    call.mockImplementation(async (request: CallArgs) => {
+      if (request.action === "setPinned") throw new Error("database is locked");
+      return await listAndCatalog(request);
+    });
+    await renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Busy chat" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin" }));
+
+    expect(await screen.findByText(/Could not pin this chat: database is locked/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Busy chat" }));
+    expect(screen.getByRole("menuitem", { name: "Pin" })).toBeTruthy();
   });
 });

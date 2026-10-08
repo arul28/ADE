@@ -26,6 +26,7 @@ import {
   replaceDynamicOpenCodeModelDescriptors,
 } from "../../../shared/modelRegistry";
 import { useAppStore } from "../../state/appStore";
+import { AgentChatApiProvider } from "./agentChatApi";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 
 vi.mock("@tanstack/react-virtual", () => ({
@@ -1916,6 +1917,35 @@ describe("AgentChatComposer", () => {
         expect(option.textContent?.trim()).toBe(option.getAttribute("aria-label"));
         expect(option.getAttribute("title")?.length).toBeGreaterThan(0);
       }
+    },
+  );
+
+  // Droid's autonomy ladder has no planning rung to withhold.
+  it.each(CAPTION_FREE_PERMISSION_CASES.filter((testCase) => testCase.provider !== "Droid"))(
+    "offers $provider planning only in a project chat, not in a chat without a project",
+    ({ triggerName, overrides }) => {
+      const optionNames = () => {
+        fireEvent.click(screen.getByRole("button", { name: triggerName }));
+        const listbox = screen.getByRole("listbox", { name: triggerName });
+        return Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]'))
+          .map((option) => option.getAttribute("aria-label") ?? "");
+      };
+
+      renderComposer(overrides);
+      const project = optionNames();
+      expect(project.some((name) => /plan/i.test(name))).toBe(true);
+      cleanup();
+
+      const props = buildComposerProps(overrides);
+      render(
+        <AgentChatApiProvider scope={{ kind: "personal", agentChat: {} as never, modelCatalogScopeKey: "personal" }}>
+          <AgentChatComposer {...props} />
+        </AgentChatApiProvider>,
+      );
+      const personal = optionNames();
+      expect(personal.some((name) => /plan/i.test(name))).toBe(false);
+      // Only planning is withheld; every other mode stays.
+      expect(personal).toEqual(project.filter((name) => !/plan/i.test(name)));
     },
   );
 

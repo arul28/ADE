@@ -183,4 +183,24 @@ describe("ADE session activity guidance", () => {
       target: { type: "inline", runtimeSocketPath: " " },
     })).toBeNull();
   });
+
+  it("names the personal scope and session on every Chats-row command, with no runtime pin", () => {
+    // A personal runtime has no socket, and OpenCode's shared server has no
+    // ADE_CHAT_SCOPE to route by: each command must reach the row by itself.
+    const guidance = buildAdeSessionActivityGuidance({
+      sessionId: "chat-9",
+      cliPath: "/Applications/ADE.app/bin/ade",
+      shell: "posix",
+      target: { type: "personal" },
+    }) ?? "";
+    for (const command of [
+      "chat note --personal --session 'chat-9'",
+      "chat ask --personal --session 'chat-9'",
+      "chat activity debugging --personal --session 'chat-9'",
+      "chat activity clear --personal --session 'chat-9'",
+    ]) {
+      expect(guidance).toContain(`'/Applications/ADE.app/bin/ade' ${command}`);
+    }
+    expect(guidance).not.toMatch(/ADE_RPC_URL|ADE_RUNTIME_SOCKET_PATH|\$ADE_CLI_PATH/);
+  });
 });

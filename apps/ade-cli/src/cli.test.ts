@@ -7231,6 +7231,57 @@ describe("ADE CLI", () => {
       "list",
       "--personal",
     ])).rejects.toThrow(/require the machine-owned ADE brain/);
+
+    // `--arg personalProfile=embedded` asks for the SDK-host surface instead
+    // of the assistant default a chat started from ADE's own CLI gets.
+    const embedded = expectExecutePlan(buildCliPlan([
+      "chat",
+      "create",
+      "--personal",
+      "--provider",
+      "codex",
+      "--model",
+      "openai/gpt-5.5",
+      "--arg",
+      "personalProfile=embedded",
+    ]));
+    expect(embedded.steps[0]).toMatchObject({
+      method: "personalChats.call",
+      params: { action: "create", args: { personalProfile: "embedded", provider: "codex" } },
+    });
+  });
+
+  it.each([
+    [["chat", "ask", "Which", "branch?"], "requestSessionAttention", { sessionId: "personal-env", message: "Which branch?" }],
+    [["chat", "note", "--note", "Drafting the email"], "setSessionStatusNote", { sessionId: "personal-env", note: "Drafting the email" }],
+    [["chat", "activity", "testing"], "setSessionActivity", { sessionId: "personal-env", value: "testing" }],
+    [["chat", "activity", "clear", "--session", "personal-2"], "setSessionActivity", { sessionId: "personal-2", value: null }],
+  ])("routes %j from inside a personal chat to its own row", (argv, action, args) => {
+    const previousScope = process.env.ADE_CHAT_SCOPE;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      process.env.ADE_CHAT_SESSION_ID = "personal-env";
+      process.env.ADE_CHAT_SCOPE = "personal";
+      const plan = expectExecutePlan(buildCliPlan(argv));
+      expect(plan.machineOnly).toBe(true);
+      expect(plan.steps).toEqual([{
+        key: "result",
+        method: "personalChats.call",
+        params: { action, args },
+      }]);
+      // A personal chat's report must never register its scratch folder as a project.
+      expect(shouldAutoRegisterProjectForPlan(plan)).toBe(false);
+
+      // The same command from a project chat keeps reporting to the project.
+      delete process.env.ADE_CHAT_SCOPE;
+      const projectPlan = buildCliPlan(argv);
+      expect(JSON.stringify(projectPlan)).not.toContain("personalChats.call");
+    } finally {
+      if (previousScope === undefined) delete process.env.ADE_CHAT_SCOPE;
+      else process.env.ADE_CHAT_SCOPE = previousScope;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
   });
 
   posixIt("executes personal chat commands over the machine socket without project registration", async () => {
@@ -12893,6 +12944,7 @@ describe("ADE CLI", () => {
   it("tool claim commands require an explicit or ADE-provided lane", () => {
     const previousLane = process.env.ADE_LANE_ID;
     const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    const previousScope = process.env.ADE_CHAT_SCOPE;
     try {
       delete process.env.ADE_LANE_ID;
       delete process.env.ADE_CHAT_SESSION_ID;
@@ -12901,11 +12953,22 @@ describe("ADE CLI", () => {
       expect(() => buildCliPlan(["app-control", "claim"])).toThrow(/requires --lane/);
       expect(() => buildCliPlan(["browser", "claim"])).toThrow(/requires --lane/);
 
+      // A personal chat has no lane: its browser claim goes to the personal
+      // tab collection. Only the browser is personal-capable.
+      process.env.ADE_CHAT_SCOPE = "personal";
+      const personalClaim = expectExecutePlan(buildCliPlan(["browser", "claim", "--tab", "tab-7"]));
+      expect(JSON.stringify(personalClaim.steps)).toContain("\"tabId\":\"tab-7\"");
+      expect(JSON.stringify(personalClaim.steps)).not.toContain("laneId");
+      expect(() => buildCliPlan(["ios-sim", "claim"])).toThrow(/requires --lane/);
+      delete process.env.ADE_CHAT_SCOPE;
+
       process.env.ADE_LANE_ID = "lane-env-1";
       expect(buildCliPlan(["ios-sim", "claim"]).kind).toBe("execute");
       expect(buildCliPlan(["app-control", "claim"]).kind).toBe("execute");
       expect(buildCliPlan(["browser", "claim"]).kind).toBe("execute");
     } finally {
+      if (previousScope === undefined) delete process.env.ADE_CHAT_SCOPE;
+      else process.env.ADE_CHAT_SCOPE = previousScope;
       if (previousLane === undefined) delete process.env.ADE_LANE_ID;
       else process.env.ADE_LANE_ID = previousLane;
       if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
@@ -14776,6 +14839,14 @@ describe("ADE CLI", () => {
 
     expect(() => buildCliPlan(["browser", "record", "pause", "--tab", "tab-1"]))
       .toThrow(/Unknown browser record command/);
+
+    // No chat runs its own page JavaScript: every spelling an agent reaches
+    // for is a usage error that points at snapshot + actions, not an unknown
+    // runtime action.
+    for (const sub of ["eval", "evaluate", "exec", "js"]) {
+      expect(() => buildCliPlan(["browser", sub, "--tab", "tab-1", "document.title"]))
+        .toThrow(/does not run page JavaScript[\s\S]*browser snapshot/);
+    }
 
     // Dev servers are the runtime's list, answered with no desktop attached.
     // Scope is never an argument: the daemon pins an agent to its own lane,
