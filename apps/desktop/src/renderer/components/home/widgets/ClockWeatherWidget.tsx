@@ -21,7 +21,8 @@ import "../homeWidgets.css";
  * city in the system time zone's name: no location prompt, no precise
  * position, and only a city name and the place's rounded coordinates leave
  * the machine. Main caches each place for 15 minutes; this card asks every 30
- * while it is on screen. Glyphs hold still off screen.
+ * while it is on screen. Glyphs hold still off screen. A gallery preview
+ * shows a sample day and reads nothing.
  */
 
 type PlaceSetting = { name: string; detail: string | null; latitude: number; longitude: number };
@@ -105,6 +106,32 @@ function useAutoPlace(enabled: boolean): { place: PlaceSetting | null; settled: 
     };
   }, [enabled, zone, state.settled]);
   return state;
+}
+
+/**
+ * What a gallery preview shows: a made-up mild day, so the tile looks like
+ * the real card without a place lookup or a forecast read leaving the machine.
+ */
+const PREVIEW_PLACE: PlaceSetting = { name: "Your city", detail: null, latitude: 0, longitude: 0 };
+
+function previewWeather(now: Date): HomeWeather {
+  const day = (offset: number) => {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  };
+  const codes = [2, 1, 3, 61, 0, 2];
+  return {
+    temperatureC: 18,
+    apparentC: 17,
+    code: 2,
+    isDay: true,
+    windKph: 9,
+    todayMaxC: 21,
+    todayMinC: 12,
+    days: codes.map((code, index) => ({ date: day(index), code, maxC: 21 - (index % 3), minC: 12 - (index % 2) })),
+    hours: Array.from({ length: 12 }, (_, index) => ({ hour: (now.getHours() + index) % 24, code: index < 4 ? 2 : 1, tempC: 18 + Math.round(Math.sin(index / 3) * 2), isDay: true })),
+    fetchedAt: now.getTime(),
+  };
 }
 
 function defaultUnit(): "c" | "f" {
@@ -205,12 +232,12 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
   const now = useMinuteClock(visible);
   const updateSettings = useHomeLayoutStore((s) => s.updateSettings);
   const chosen = readPlace(item.settings?.place);
-  // No city chosen: the time zone's city, looked up once without a prompt
-  // (a gallery preview shows it too, so the tile is real weather).
-  const auto = useAutoPlace(!chosen && Boolean(window.ade?.home?.weather));
-  const place = chosen ?? auto.place;
+  // No city chosen: the time zone's city, looked up once without a prompt.
+  // A gallery preview reads nothing: it shows a sample day.
+  const auto = useAutoPlace(!preview && !chosen && Boolean(window.ade?.home?.weather));
+  const place = preview ? PREVIEW_PLACE : chosen ?? auto.place;
   const unit: "c" | "f" = item.settings?.unit === "f" || item.settings?.unit === "c" ? item.settings.unit : defaultUnit();
-  const [weather, setWeather] = useState<HomeWeather | null>(null);
+  const [liveWeather, setWeather] = useState<HomeWeather | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const bridge = window.ade?.home?.weather;
@@ -232,7 +259,8 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
     } else {
       setError("Weather is unavailable right now.");
     }
-  }, 30 * 60_000, visible && lat != null && lon != null && Boolean(bridge));
+  }, 30 * 60_000, !preview && visible && lat != null && lon != null && Boolean(bridge));
+  const weather = preview ? previewWeather(now) : liveWeather;
 
   const deg = (celsius: number | null | undefined) =>
     celsius == null ? "—" : `${Math.round(unit === "f" ? celsius * 9 / 5 + 32 : celsius)}°`;
@@ -246,7 +274,7 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
   const highest = Math.max(...days.map((day) => day.maxC));
   const spread = Math.max(1, highest - lowest);
   const hourLabel = (hour: number) => new Date(2000, 0, 1, hour).toLocaleTimeString(undefined, { hour: "numeric" });
-  // A gallery preview never asks for a place; it says what the card will show.
+  // A gallery preview never asks for a place.
   const showPicker = Boolean(bridge) && !preview && (picking || (!place && auto.settled));
 
   return (
@@ -288,7 +316,7 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
             }}
           />
         ) : !place ? (
-          <div className="ade-home-empty"><span>{preview ? "Pick a city and it shows the weather there." : "Finding your city…"}</span></div>
+          <div className="ade-home-empty"><span>Finding your city…</span></div>
         ) : error && !weather ? (
           <div className="ade-home-empty" role="alert"><span>{error}</span></div>
         ) : !weather || !kind ? (

@@ -12,6 +12,7 @@ import { useWidgetPreview, useWidgetSpan } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { FitList } from "../HomeFitList";
 import { drawShippedShareCard, type ShippedShareData } from "./shippedShareCard";
+import { startOfLocalWeek, useLocalDayStart } from "./widgetHooks";
 import "../homeWidgets.css";
 
 /**
@@ -22,14 +23,6 @@ import "../homeWidgets.css";
  * Share renders the same numbers to a PNG to copy or save. No reads of its own.
  */
 
-function startOfWeek(now: Date): Date {
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  // Monday-start week: Sunday counts as the end of the previous week.
-  const offset = (start.getDay() + 6) % 7;
-  start.setDate(start.getDate() - offset);
-  return start;
-}
-
 type Merge = { key: string; title: string; number: number | null; repo: string; at: number; open?: () => void };
 
 export default function ShippedWidget({ item }: HomeWidgetProps) {
@@ -38,7 +31,9 @@ export default function ShippedWidget({ item }: HomeWidgetProps) {
   const span = useWidgetSpan(item);
   const itemsById = useActivityStore((state) => state.itemsById);
   const { status } = useAccountStatus();
-  const weekStart = useMemo(() => startOfWeek(new Date()), []);
+  // Recomputed when the day turns, so a page left open over Sunday night rolls to the new week.
+  const dayStart = useLocalDayStart();
+  const weekStart = useMemo(() => startOfLocalWeek(new Date(dayStart)), [dayStart]);
   const weekKey = localDayKey(weekStart);
   const [share, setShare] = useState<{ url: string; data: ShippedShareData } | null>(null);
   const [drawing, setDrawing] = useState(false);

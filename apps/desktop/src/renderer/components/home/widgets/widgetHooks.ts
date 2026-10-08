@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Runs `task` now and then every `intervalMs`, but only while `active` (the
@@ -48,4 +48,28 @@ export function relativeTimeShort(epochMs: number, now = Date.now()): string {
   const hours = Math.round(minutes / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.round(hours / 24)}d`;
+}
+
+/** Midnight that starts this local week (Monday-start: Sunday ends the previous week). */
+export function startOfLocalWeek(now: Date = new Date()): Date {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  return start;
+}
+
+/** Midnight that starts today, updated when the day turns while mounted. */
+export function useLocalDayStart(): number {
+  const today = () => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  };
+  const [dayStart, setDayStart] = useState(today);
+  useEffect(() => {
+    const next = new Date(dayStart);
+    next.setDate(next.getDate() + 1);
+    // A second past midnight; a sleeping laptop wakes late and the timer catches up then.
+    const timer = window.setTimeout(() => setDayStart(today()), Math.max(1_000, next.getTime() - Date.now() + 1_000));
+    return () => window.clearTimeout(timer);
+  }, [dayStart]);
+  return dayStart;
 }

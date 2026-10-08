@@ -6,6 +6,8 @@ import { usageLeftLevel } from "../../usage/usageDesign";
 import { useWidgetSpan, useWidgetVisible } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { FitList } from "../HomeFitList";
+import { confirmDialog } from "../../ui/dialog";
+import { Banner } from "../../ui/notice";
 import { formatBytesShort, usePolling } from "./widgetHooks";
 import "../homeWidgets.css";
 
@@ -353,7 +355,6 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
   const [health, setHealth] = useState<HomeMachineHealth | null>(null);
   const [listeners, setListeners] = useState<HomeListenersResult | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const [confirmPid, setConfirmPid] = useState<number | null>(null);
   const [killError, setKillError] = useState<string | null>(null);
   const [stopping, setStopping] = useState<number | null>(null);
 
@@ -375,13 +376,20 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
   }, [bridge]);
   usePolling(loadListeners, 10_000, visible && Boolean(bridge));
 
-  const stop = async (pid: number) => {
+  const stop = async (entry: { pid: number; name: string | null; ports: number[] }) => {
     if (!bridge) return;
-    setStopping(pid);
+    const name = (entry.name ?? "this process").replace(/\.exe$/i, "");
+    const confirmed = await confirmDialog({
+      title: `Stop ${name}?`,
+      message: `Process ${entry.pid} is listening on ${entry.ports.map((port) => `:${port}`).join(", ")}. Stopping it ends it and its child processes; unsaved work in it is lost.`,
+      confirmLabel: "Stop",
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setStopping(entry.pid);
     setKillError(null);
-    const result = await bridge.kill(pid).catch((error: unknown) => ({ ok: false as const, error: String(error) }));
+    const result = await bridge.kill(entry.pid).catch((error: unknown) => ({ ok: false as const, error: String(error) }));
     setStopping(null);
-    setConfirmPid(null);
     if (!result.ok) setKillError(result.error);
     await loadListeners();
   };
@@ -403,20 +411,14 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
                     </span>
                     {entry.protected ? (
                       <span className="ade-mh-own" title="One of ADE's own processes">ADE</span>
-                    ) : confirmPid === entry.pid ? (
-                      <span className="ade-mh-confirm">
-                        <button type="button" className="kit-btn kit-btn-ghost" onClick={() => setConfirmPid(null)}>Keep</button>
-                        <button type="button" className="kit-btn ade-mh-stop" disabled={stopping === entry.pid} onClick={() => void stop(entry.pid)}>
-                          {stopping === entry.pid ? "Stopping…" : "Stop"}
-                        </button>
-                      </span>
                     ) : (
                       <button
                         type="button"
                         className="kit-icon-btn ade-mh-kill"
                         aria-label={`Stop ${entry.name ?? "process"} (pid ${entry.pid})`}
-                        title={`Stop pid ${entry.pid}`}
-                        onClick={() => setConfirmPid(entry.pid)}
+                        title={stopping === entry.pid ? "Stopping…" : `Stop pid ${entry.pid}`}
+                        disabled={stopping === entry.pid}
+                        onClick={() => void stop(entry)}
                       >
                         <StopCircle size={14} />
                       </button>
@@ -443,11 +445,16 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
           </button>
         ) : null}
       </div>
-      {killError ? <div className="ade-hw-note" role="alert">{killError}</div> : null}
+      {killError ? (
+        <Banner
+          layout="inline"
+          model={{ id: "home-machine-kill", tone: "error", title: "Couldn't stop it", detail: killError, dismiss: { onDismiss: () => setKillError(null) } }}
+        />
+      ) : null}
       {!listeners ? (
         <div className="ade-hw-note">Scanning ports…</div>
       ) : !listeners.ok ? (
-        <div className="ade-hw-note" role="alert">Couldn't list ports: {listeners.error}</div>
+        <Banner layout="inline" model={{ id: "home-machine-ports", tone: "warning", title: "Couldn't list ports", detail: listeners.error }} />
       ) : processes.length === 0 ? (
         <div className="ade-hw-note"><Plugs size={13} aria-hidden /> No dev servers are listening.</div>
       ) : (
@@ -459,7 +466,7 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
   ),
   // renderProcess and stop only read the state listed here.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [listeners, showAll, confirmPid, stopping, killError, hiddenCount]);
+  [listeners, showAll, stopping, killError, hiddenCount]);
 
   const summary = (
     <button type="button" className="ade-mh-summary" onClick={() => void loadListeners()} title="Dev servers holding ports">
