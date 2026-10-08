@@ -125,9 +125,8 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
    card. A layout taller than the page scrolls inside the grid, not the page.
    Cells are placed by span (see `sizeSpan`), densely, in layout order. */
 .ade-home-grid {
-  /* Up to three rows share the page; a fourth scrolls. The page's own size
-     container (100cqh) is the window's height less the hero. */
-  --home-row-min: max(180px, calc((100cqh - 200px) / 3.1));
+  /* Set by the grid from its widgets' declared minimum heights. */
+  --home-row-min: 150px;
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
@@ -155,8 +154,6 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 .ade-home-widget:not([data-stacked]) > .ade-home-widget-content { container: widget / size; }
 @container widget (max-height: 250px) {
   .ade-home-limits .ade-home-machine-list { display: none; }
-  .ade-home-activity .ade-home-facts { display: none; }
-  .ade-home-activity-side { justify-content: flex-start; }
 }
 
 /* Edit mode: tiles you can pick up. Content goes inert and dims a little;
@@ -434,7 +431,7 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 
 /* Narrow: two columns (set by the grid), a lower row floor so the default
    three rows still fit under the taller hero, and the hero stacks. */
-.ade-home[data-narrow="true"] .ade-home-grid { --home-row-min: 140px; grid-template-rows: minmax(var(--home-row-min), 1.2fr); }
+.ade-home[data-narrow="true"] .ade-home-grid { grid-template-rows: minmax(var(--home-row-min), 1.2fr); }
 .ade-home[data-narrow="true"] .ade-home-hero { flex-direction: column; align-items: flex-start; gap: 10px; }
 
 /* Short windows: drop the eyebrow and tighten. */

@@ -21,6 +21,12 @@ export type HomeWidgetMeta = {
   icon: Icon;
   sizes: readonly HomeWidgetSize[];
   defaultSize: HomeWidgetSize;
+  /**
+   * The smallest cell height, in px, at which the card shows every control
+   * without clipping, per size (the whole span, header included). The grid
+   * never shrinks a row below what its widgets declare; it scrolls instead.
+   */
+  minHeight: Record<HomeWidgetSize, number>;
   /** Not offered in the gallery yet (a slot reserved for work in progress). */
   comingSoon?: string;
   /** Needs the desktop app's main process (clipboard, ports, weather). */
@@ -34,6 +40,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: FolderSimple,
     sizes: ["s", "m", "l", "w"],
     defaultSize: "m",
+    minHeight: { s: 180, m: 240, l: 240, w: 180 },
   },
   running: {
     title: "Working now",
@@ -41,6 +48,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: Pulse,
     sizes: ["s", "m", "l", "w"],
     defaultSize: "s",
+    minHeight: { s: 150, m: 200, l: 200, w: 150 },
   },
   activity: {
     title: "Activity & usage",
@@ -48,6 +56,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: ChartBar,
     sizes: ["w", "l", "s", "m"],
     defaultSize: "w",
+    minHeight: { s: 270, m: 270, l: 270, w: 260 },
   },
   limits: {
     title: "Limits & machines",
@@ -55,6 +64,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: Gauge,
     sizes: ["s", "m", "l", "w"],
     defaultSize: "s",
+    minHeight: { s: 200, m: 250, l: 250, w: 200 },
   },
   prs: {
     title: "Pull requests",
@@ -62,6 +72,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: GitPullRequest,
     sizes: ["s", "m", "l", "w"],
     defaultSize: "s",
+    minHeight: { s: 210, m: 260, l: 260, w: 200 },
   },
   clock: {
     title: "Clock & weather",
@@ -69,6 +80,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: CloudSun,
     sizes: ["s", "w", "m", "l"],
     defaultSize: "s",
+    minHeight: { s: 200, m: 220, l: 220, w: 190 },
   },
   pomodoro: {
     title: "Focus timer",
@@ -76,6 +88,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: Timer,
     sizes: ["s", "w", "m", "l"],
     defaultSize: "s",
+    minHeight: { s: 210, m: 230, l: 230, w: 200 },
   },
   clipboard: {
     title: "Clipboard history",
@@ -83,6 +96,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: ClipboardText,
     sizes: ["s", "m", "w", "l"],
     defaultSize: "m",
+    minHeight: { s: 200, m: 240, l: 240, w: 200 },
     desktopOnly: true,
   },
   machine: {
@@ -91,6 +105,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: Cpu,
     sizes: ["s", "m", "w", "l"],
     defaultSize: "m",
+    minHeight: { s: 230, m: 330, l: 300, w: 240 },
     desktopOnly: true,
   },
   heatmap: {
@@ -99,6 +114,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: SquaresFour,
     sizes: ["w", "l", "s", "m"],
     defaultSize: "w",
+    minHeight: { s: 190, m: 220, l: 220, w: 180 },
   },
   shipped: {
     title: "Shipped this week",
@@ -106,6 +122,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: RocketLaunch,
     sizes: ["s", "m", "w", "l"],
     defaultSize: "s",
+    minHeight: { s: 180, m: 240, l: 240, w: 190 },
   },
   nowPlaying: {
     title: "Now playing",
@@ -113,6 +130,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     icon: MusicNotes,
     sizes: ["s", "w"],
     defaultSize: "w",
+    minHeight: { s: 150, m: 180, l: 180, w: 150 },
     comingSoon: "Arrives with the Music tab.",
   },
 };

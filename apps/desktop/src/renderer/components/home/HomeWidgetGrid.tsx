@@ -90,7 +90,10 @@ function WidgetFrame({
   canStack,
   renderWidget,
   dragHandleProps,
+  minHeight,
 }: {
+  /** A stack host keeps its declared minimum; the stacked card gets the rest. */
+  minHeight?: number;
   item: HomeLayoutItem;
   stacked: boolean;
   editing: boolean;
@@ -113,7 +116,7 @@ function WidgetFrame({
   const content = renderWidget({ item, stacked, editing });
   if (!editing && content == null) return null;
   return (
-    <div ref={ref} className="ade-home-widget" data-stacked={stacked || undefined} data-type={item.type}>
+    <div ref={ref} className="ade-home-widget" data-stacked={stacked || undefined} data-type={item.type} style={minHeight ? { minHeight } : undefined}>
       <div ref={contentRef} className="ade-home-widget-content">
         <WidgetVisibleContext.Provider value={visible}>
           <WidgetBoundary title={meta.title}>
@@ -203,6 +206,18 @@ export function HomeWidgetGrid({
     setDropTarget(null);
   }, []);
 
+  // The row floor: the tallest per-row share any cell needs to show its
+  // widgets (and anything stacked under them) without clipping. Rows share
+  // the page while they fit at that floor; past it the grid scrolls.
+  const gap = 12;
+  const rowFloor = cells.reduce((floor, { host, stacked }) => {
+    const span = sizeSpan(host.size, columns, narrow);
+    const effective: HomeWidgetSize = narrow && host.size === "m" ? "w" : host.size;
+    const need = HOME_WIDGET_CATALOG[host.type].minHeight[effective]
+      + stacked.reduce((sum, item) => sum + gap + Math.round(HOME_WIDGET_CATALOG[item.type].minHeight.s * 0.75), 0);
+    return Math.max(floor, Math.ceil((need - gap * (span.rows - 1)) / span.rows));
+  }, 0);
+
   const gridTemplateColumns = columns === 3
     ? "minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 0.9fr)"
     : `repeat(${columns}, minmax(0, 1fr))`;
@@ -213,7 +228,7 @@ export function HomeWidgetGrid({
       data-single={single ? "true" : undefined}
       data-editing={editing ? "true" : undefined}
       data-dragging={dragId ? "true" : undefined}
-      style={single ? style : { ...style, gridTemplateColumns }}
+      style={single ? style : { ...style, gridTemplateColumns, ["--home-row-min" as string]: `${rowFloor}px` }}
     >
       {cells.map(({ host, stacked }, index) => {
         const span = sizeSpan(host.size, columns, narrow);
@@ -263,6 +278,7 @@ export function HomeWidgetGrid({
               editing={editing}
               canStack={index > 0}
               renderWidget={renderWidget}
+              minHeight={stacked.length > 0 ? HOME_WIDGET_CATALOG[host.type].minHeight[narrow && host.size === "m" ? "w" : host.size] : undefined}
               dragHandleProps={{
                 onKeyDown: (event) => {
                   if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
