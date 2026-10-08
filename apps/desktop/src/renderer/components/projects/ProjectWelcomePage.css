@@ -81,10 +81,32 @@
 .ade-home-line[data-tone="attention"] { color: var(--color-fg); }
 .ade-home-eyebrow { color: var(--kit-text-2); }
 
-html[data-scene="image"] .ade-home-hero-text { text-shadow: 0 1px 14px rgb(0 0 0 / 45%), 0 1px 2px rgb(0 0 0 / 35%); }
-html[data-scene="image"][data-theme="light"] .ade-home-hero-text { text-shadow: 0 1px 14px rgb(255 255 255 / 55%); }
+/* Over a picture the greeting sits on a soft scrim: a feathered pool of the
+   theme's background behind the text block (static, no backdrop-filter), plus
+   a tight shadow on the glyphs. It keeps the line readable over clouds, snow
+   or blossom without drawing a box. */
+html[data-scene="image"] .ade-home-hero-text { position: relative; isolation: isolate; text-shadow: 0 1px 2px rgb(0 0 0 / 55%), 0 0 18px rgb(0 0 0 / 40%); }
+html[data-scene="image"] .ade-home-hero-text::before {
+  content: "";
+  position: absolute;
+  inset: -28px -110px -26px -64px;
+  z-index: -1;
+  background: color-mix(in srgb, var(--color-bg) 50%, transparent);
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, #000 64px, #000 calc(100% - 150px), transparent),
+    linear-gradient(to bottom, transparent, #000 28px, #000 calc(100% - 26px), transparent);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent, #000 64px, #000 calc(100% - 150px), transparent),
+    linear-gradient(to bottom, transparent, #000 28px, #000 calc(100% - 26px), transparent);
+  mask-composite: intersect;
+  pointer-events: none;
+}
+html[data-scene="image"][data-theme="light"] .ade-home-hero-text { text-shadow: 0 1px 1px rgb(255 255 255 / 70%), 0 0 16px rgb(255 255 255 / 60%); }
+html[data-scene="image"][data-theme="light"] .ade-home-hero-text::before { background: color-mix(in srgb, var(--color-bg) 66%, transparent); }
 html[data-scene="image"] .ade-home-eyebrow,
-html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-fg) 86%, transparent); }
+html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-fg) 94%, transparent); }
+html[data-scene="image"] .ade-home-line { font-weight: 500; }
 
 .ade-home-actions { display: flex; gap: 8px; flex: none; }
 .ade-home-action {

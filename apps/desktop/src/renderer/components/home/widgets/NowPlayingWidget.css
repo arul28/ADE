@@ -1,9 +1,14 @@
 /* Now Playing (home widget), after the Music player's language and the
    21st.dev audio player reference: a frosted dark card, the cover big and
-   rounded, a centred title, a thin spring scrubber with times, and a pill of
-   round ghost buttons. A size container: wide or short cards lay out sideways. */
+   rounded, the title, a thin spring scrubber with times, and a pill of round
+   ghost buttons. A size container: a wide or short card lays out sideways.
+
+   The cover keeps the art's own shape (data-art: square album art, wide video
+   thumbnails). The art is drawn whole over a blurred copy of itself, so a
+   16:9 thumbnail is never cropped into a square and the box never shows bars. */
 
 .ade-np2 {
+  --np2-ratio: 1;
   position: relative;
   overflow: hidden;
   isolation: isolate;
@@ -11,6 +16,7 @@
   padding: 12px;
   background: color-mix(in srgb, var(--color-bg) 62%, transparent);
 }
+.ade-np2[data-art="wide"] { --np2-ratio: 16 / 9; }
 [data-theme="dark"] .ade-np2,
 html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60%, transparent); }
 
@@ -23,7 +29,6 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
   object-fit: cover;
   filter: blur(42px) saturate(1.6) opacity(0.55);
   pointer-events: none;
-  will-change: transform;
 }
 .ade-np2::after {
   content: "";
@@ -34,6 +39,8 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
   pointer-events: none;
 }
 
+/* ── tall (compact) layout: top row, cover, title, scrubber, controls ── */
+
 .ade-np2-player {
   display: flex;
   height: 100%;
@@ -41,28 +48,42 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
   flex-direction: column;
   gap: 8px;
 }
+.ade-np2-meta, .ade-np2-main { display: contents; }
+.ade-np2-top { order: -1; }
+
 .ade-np2-cover {
   position: relative;
   min-height: 0;
   flex: 1 1 auto;
   overflow: hidden;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--color-fg) 12%, transparent);
-  box-shadow: 0 16px 34px -18px rgb(0 0 0 / 0.7), 0 0 0 1px color-mix(in srgb, var(--color-fg) 7%, transparent);
+  isolation: isolate;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-fg) 10%, transparent);
+  box-shadow: 0 16px 34px -18px rgb(0 0 0 / 0.7), 0 0 0 1px color-mix(in srgb, var(--color-fg) 8%, transparent);
 }
 .ade-np2-cover.is-link { cursor: pointer; }
 .ade-np2-cover.is-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.ade-np2-cover > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* The art, whole, over a blurred copy of itself that fills the box. */
+.ade-np2-cover-fill {
+  position: absolute;
+  inset: -12%;
+  z-index: -1;
+  width: 124%;
+  height: 124%;
+  object-fit: cover;
+  filter: blur(22px) saturate(1.3) brightness(0.72);
+  pointer-events: none;
+}
+.ade-np2-cover-img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .ade-np2-cover-empty {
   display: grid;
   width: 100%;
   height: 100%;
   place-items: center;
-  border-radius: 16px;
+  border-radius: inherit;
   background: linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 28%, transparent), color-mix(in srgb, var(--color-fg) 6%, transparent));
   color: var(--color-fg);
 }
-.ade-np2-cover-empty.is-small { width: 56px; height: 56px; border-radius: 14px; }
 /* No cover: the source's own icon, big, on the tinted plate. */
 .ade-np2-cover-empty.is-icon > img {
   width: min(42%, 96px);
@@ -72,7 +93,7 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
   filter: drop-shadow(0 8px 18px rgb(0 0 0 / 0.35));
 }
 
-.ade-np2-info { display: flex; min-width: 0; flex: none; flex-direction: column; align-items: center; gap: 1px; padding-top: 2px; text-align: center; }
+.ade-np2-info { display: flex; min-width: 0; flex: none; flex-direction: column; align-items: center; gap: 2px; text-align: center; }
 .ade-np2-title {
   max-width: 100%;
   margin: 0;
@@ -80,6 +101,7 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
   color: var(--color-fg);
   font-size: 15px;
   font-weight: 700;
+  line-height: 1.25;
   letter-spacing: -0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -96,7 +118,7 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
   gap: 6px;
   border-radius: 16px;
   background: color-mix(in srgb, #111 45%, transparent);
-  padding: 6px;
+  padding: 5px;
 }
 [data-theme="light"] .ade-np2-pill { background: color-mix(in srgb, var(--color-fg) 8%, transparent); }
 .ade-np2 .ade-music-ibtn { background: transparent; color: var(--color-fg); }
@@ -105,38 +127,33 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
 .ade-np2 .ade-music-ibtn.is-on { background: color-mix(in srgb, #111 55%, transparent); color: var(--color-accent); }
 [data-theme="light"] .ade-np2 .ade-music-ibtn.is-on { background: color-mix(in srgb, var(--color-accent) 14%, transparent); }
 .ade-np2 .ade-music-ibtn:disabled { opacity: 0.32; }
-.ade-np2 .ade-np2-play { background: color-mix(in srgb, var(--color-fg) 12%, transparent); }
+.ade-np2 .ade-np2-play { background: color-mix(in srgb, var(--color-fg) 14%, transparent); }
 
-.ade-np2-idle {
+/* ── the top row: source on the left, Apple Music on the right ──────── */
+
+.ade-np2-top {
   display: flex;
-  height: 100%;
-  flex-direction: column;
+  min-width: 0;
+  flex: none;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  text-align: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
 }
-.ade-np2-idle .ade-np2-sub { white-space: normal; }
 .ade-np2-am {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 2;
+  display: inline-flex;
+  flex: none;
   border-radius: 6px;
   transition: transform 140ms, opacity 140ms;
-  opacity: 0.92;
+  opacity: 0.94;
 }
+.ade-np2-top .ade-np2-am { margin-left: auto; }
 .ade-np2-am:hover { opacity: 1; transform: scale(1.04); }
 .ade-np2-am:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 
-/* The source pill (its own icon and name) and the switcher's other sources. */
 .ade-np2-sources {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 2;
   display: flex;
-  max-width: calc(100% - 150px);
+  min-width: 0;
   align-items: center;
   gap: 4px;
 }
@@ -148,16 +165,16 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
   flex: none;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 6px;
   border-radius: 999px;
-  background: color-mix(in srgb, #111 52%, transparent);
-  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, #111 40%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #fff 8%, transparent);
   color: #fff;
   font-size: 11px;
   font-weight: 600;
 }
-[data-theme="light"] .ade-np2-src { background: color-mix(in srgb, var(--color-bg) 78%, transparent); color: var(--color-fg); }
-.ade-np2-src.is-current { min-width: 0; flex: 0 1 auto; padding: 0 9px 0 5px; }
+[data-theme="light"] .ade-np2-src { background: color-mix(in srgb, var(--color-bg) 70%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 10%, transparent); color: var(--color-fg); }
+.ade-np2-src.is-current { min-width: 0; flex: 0 1 auto; padding: 0 10px 0 6px; }
 .ade-np2-src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ade-np2-src-icon { width: 14px; height: 14px; flex: none; border-radius: 3px; object-fit: contain; }
 .ade-np2-src.is-other { padding: 0; opacity: 0.78; transition: opacity 140ms, transform 140ms; }
@@ -173,33 +190,72 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
   background: var(--kit-ok, #3fb950);
   box-shadow: 0 0 0 1.5px color-mix(in srgb, #111 70%, transparent);
 }
-.ade-np2-open {
-  margin-top: 6px;
-  border: 1px solid var(--kit-card-edge);
-  border-radius: 999px;
-  padding: 5px 14px;
-  color: var(--color-fg);
-  font-size: 12px;
-  font-weight: 560;
-}
-.ade-np2-open:hover { background: var(--kit-hover); }
+.ade-np2-src-live.is-inline { position: static; flex: none; box-shadow: none; }
 
-/* Wide or short: cover on the left, everything else beside it. */
+/* ── nothing playing ─────────────────────────────────────────────────── */
+
+.ade-np2-idle {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 4px 8px;
+  text-align: center;
+}
+.ade-np2-idle-art {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  flex: none;
+  place-items: center;
+  border-radius: 16px;
+  background:
+    radial-gradient(120% 120% at 0% 0%, color-mix(in srgb, #fa2d48 55%, transparent), transparent 70%),
+    linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 40%, transparent), color-mix(in srgb, #a371f7 30%, transparent));
+  box-shadow: 0 14px 30px -16px rgb(0 0 0 / 0.7), inset 0 0 0 1px color-mix(in srgb, #fff 10%, transparent);
+  color: #fff;
+}
+.ade-np2-idle-text { display: flex; min-width: 0; flex-direction: column; align-items: center; gap: 4px; }
+.ade-np2-idle-title { color: var(--color-fg); font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.ade-np2-idle-sub { max-width: 300px; color: var(--kit-text-2); font-size: 12px; line-height: 1.45; }
+.ade-np2-idle-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.ade-np2-idle-btn { display: inline-flex; height: 28px; align-items: center; gap: 6px; }
+
+/* ── wide or short: the cover on the left at full height ────────────── */
+
 @container np2 (min-aspect-ratio: 13/10) {
   .ade-np2-player {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    grid-template-rows: 1fr auto auto auto 1fr;
-    column-gap: 16px;
-    row-gap: 8px;
+    column-gap: 18px;
   }
-  .ade-np2-cover { grid-row: 1 / -1; height: 100%; aspect-ratio: 1; flex: none; }
-  .ade-np2-info { grid-row: 2; align-items: flex-start; text-align: left; }
-  .ade-np2-seek { grid-row: 3; }
-  .ade-np2-controls { grid-row: 4; justify-content: flex-start; }
+  .ade-np2-cover { height: 100%; max-width: 54cqw; aspect-ratio: var(--np2-ratio); }
+  .ade-np2-meta { display: flex; min-width: 0; min-height: 0; flex-direction: column; gap: 10px; }
+  .ade-np2-main { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; justify-content: center; gap: 10px; }
+  .ade-np2-info { align-items: flex-start; text-align: left; gap: 4px; }
+  .ade-np2-title {
+    display: -webkit-box;
+    font-size: clamp(15px, 6.2cqh, 19px);
+    white-space: normal;
+    overflow-wrap: anywhere;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .ade-np2-sub { font-size: 12.5px; }
+  .ade-np2-controls { justify-content: flex-start; }
+
+  .ade-np2-idle { flex-direction: row; gap: 20px; text-align: left; }
+  .ade-np2-idle-art { width: 84px; height: 84px; border-radius: 20px; }
+  .ade-np2-idle-text { align-items: flex-start; }
+}
+/* A video beside its controls: give the meta column more room. */
+@container np2 (min-aspect-ratio: 13/10) and (max-width: 640px) {
+  .ade-np2[data-art="wide"] .ade-np2-cover { max-width: 48cqw; }
 }
 @container np2 (max-height: 190px) {
-  .ade-np2-info { padding-top: 0; }
   .ade-np2-title { font-size: 13.5px; }
   .ade-np2-pill { gap: 2px; padding: 3px; }
+  .ade-np2-main { gap: 6px; }
 }

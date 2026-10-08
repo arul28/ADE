@@ -286,8 +286,30 @@
 .ade-wx2-body .ade-home-empty { flex: 1 1 auto; }
 
 /* Place search: kit field and rows. Four results at most, so it never scrolls. */
-.ade-hw-place { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-.ade-hw-place-row { display: flex; align-items: center; gap: 6px; color: var(--kit-text-3); }
+.ade-hw-place {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 0;
+  width: 100%;
+  max-width: 340px;
+  margin: 0 auto;
+}
+.ade-hw-place-intro { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
+.ade-hw-place-intro .ade-wx { margin-bottom: 4px; }
+.ade-hw-place-title { font-size: 14px; font-weight: 600; color: var(--color-fg); }
+.ade-hw-place-hint { font-size: 11.5px; color: var(--kit-text-3); }
+/* With results showing, the intro steps aside so the list fits. */
+.ade-hw-place[data-results] .ade-hw-place-intro { display: none; }
+.ade-hw-place[data-results] { justify-content: flex-start; }
+@container widget (max-height: 250px) {
+  .ade-hw-place-intro .ade-wx, .ade-hw-place-hint { display: none; }
+}
+.ade-hw-place-row { display: flex; align-items: center; gap: 6px; width: 100%; color: var(--kit-text-3); }
+.ade-hw-results { width: 100%; }
 .ade-hw-place-row .ade-hw-input { flex: 1 1 auto; }
 .ade-hw-place-row .kit-btn { height: 28px; }
 .ade-hw-results { display: flex; flex-direction: column; margin: 0 -6px; }
@@ -641,80 +663,3 @@
 .ade-home-layouts-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ade-home-layouts-count { flex: none; font-size: 10.5px; color: var(--kit-text-3); }
 .ade-home-layouts .ade-home-look-foot .kit-btn { display: inline-flex; align-items: center; gap: 5px; }
-
-/* ── now playing ────────────────────────────────────────────────── */
-/* The cover, blurred and dimmed, is the card's backdrop (a static image:
-   no backdrop-filter). The equalizer steps, and only while playing and on
-   screen. */
-
-.ade-np { overflow: hidden; isolation: isolate; }
-.ade-np-backdrop {
-  position: absolute;
-  inset: -20%;
-  z-index: -1;
-  width: 140%;
-  height: 140%;
-  object-fit: cover;
-  filter: blur(34px) saturate(1.4);
-  opacity: 0.42;
-  pointer-events: none;
-}
-.ade-np::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--color-bg) 45%, transparent));
-  pointer-events: none;
-}
-.ade-np-eq { margin-left: auto; display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
-.ade-np-eq i { width: 3px; height: 100%; border-radius: 1px; background: var(--color-accent); transform-origin: bottom; animation: ade-np-eq 1.2s steps(6, end) infinite; }
-.ade-np-eq i:nth-child(2) { animation-delay: -0.4s; }
-.ade-np-eq i:nth-child(3) { animation-delay: -0.8s; }
-.ade-np-eq i:nth-child(4) { animation-delay: -0.2s; }
-@keyframes ade-np-eq { 0% { transform: scaleY(0.3); } 33% { transform: scaleY(1); } 66% { transform: scaleY(0.55); } 100% { transform: scaleY(0.3); } }
-.ade-np[data-still] .ade-np-eq i { animation-play-state: paused; }
-@media (prefers-reduced-motion: reduce) { .ade-np-eq i { animation: none; transform: scaleY(0.7); } }
-
-.ade-np-body { gap: 10px; justify-content: space-between; }
-.ade-np-main { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 0; flex: 1 1 auto; }
-.ade-np-art {
-  flex: none;
-  width: clamp(48px, 34cqh, 96px);
-  aspect-ratio: 1;
-  border-radius: 10px;
-  object-fit: cover;
-  box-shadow: 0 10px 26px -12px rgb(0 0 0 / 70%), inset 0 0 0 1px rgb(255 255 255 / 8%);
-}
-.ade-np-art-empty { display: grid; place-items: center; background: linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 30%, transparent), color-mix(in srgb, #a371f7 26%, transparent)); color: var(--color-fg); }
-.ade-np-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ade-np-title { font-size: 14px; font-weight: 600; color: var(--color-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ade-np-artist { font-size: 12px; color: var(--kit-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ade-np-album { font-size: 11px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ade-np-empty { flex: 1 1 auto; display: flex; align-items: center; gap: 12px; }
-.ade-np-empty .ade-np-artist { white-space: normal; }
-
-.ade-np-foot { flex: none; display: flex; flex-direction: column; gap: 6px; }
-.ade-np[data-wide] .ade-np-foot { flex-direction: row; align-items: center; gap: 16px; }
-.ade-np-progress { flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.ade-np-bar { height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--color-fg) 14%, transparent); overflow: hidden; }
-.ade-np-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--color-fg); transform-origin: left; }
-.ade-np-times { display: flex; justify-content: space-between; font-size: 10px; color: var(--kit-text-3); }
-.ade-np-controls { display: flex; align-items: center; justify-content: center; gap: 10px; flex: none; }
-.ade-np-btn {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border: 0;
-  border-radius: 999px;
-  background: none;
-  color: var(--color-fg);
-  cursor: pointer;
-}
-.ade-np-btn:hover:not(:disabled) { background: var(--kit-hover); }
-.ade-np-btn:disabled { opacity: 0.35; cursor: default; }
-.ade-np-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
-.ade-np-play { width: 40px; height: 40px; background: var(--color-fg); color: var(--color-bg); }
-.ade-np-play:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 86%, var(--color-accent)); }
-

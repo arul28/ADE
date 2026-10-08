@@ -392,7 +392,8 @@ export default function ContributionSkyline({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const paletteRef = useRef<HTMLSpanElement>(null);
-  const engine = useRef<{ kick: () => void; load: () => void; retheme: () => void; tipWidth: (w: number) => void } | null>(null);
+  const engine = useRef<{ kick: () => void; load: () => void; retheme: () => void; tipWidth: (w: number) => void; reserve: (px: number) => void } | null>(null);
+  const cornerRef = useRef<HTMLDivElement>(null);
 
   const plural = unitPlural ?? `${unit}s`;
   const nf = useMemo(() => new Intl.NumberFormat(locale), [locale]);
@@ -487,6 +488,8 @@ export default function ContributionSkyline({
     let pinned = -1;
     let activeIdx = -1;
     let tipW = 0;
+    // Width kept free on the left in 3D for the stats column (the chart never runs under it).
+    let reserveLeft = 0;
     let raf = 0;
     let last = 0;
 
@@ -607,7 +610,7 @@ export default function ContributionSkyline({
       const b = extent(cam, e, false);
       const labels2d = H >= 70;
       const pad = lerp(2, 12, e);
-      const left = pad + gutter * (1 - e);
+      const left = pad + gutter * (1 - e) + reserveLeft * e;
       const top = pad + (labels2d ? 16 : 0) * (1 - e);
       const aw = W - left - pad;
       const ah = H - top - pad;
@@ -1038,6 +1041,11 @@ export default function ContributionSkyline({
         tipW = w;
         draw();
       },
+      reserve: (px: number) => {
+        if (px === reserveLeft) return;
+        reserveLeft = px;
+        draw();
+      },
     };
 
     return () => {
@@ -1067,6 +1075,12 @@ export default function ContributionSkyline({
     engine.current?.load();
   }, [model, heightScale]);
 
+  // In 3D the stats stand in a column on the left; the chart keeps clear of it.
+  useLayoutEffect(() => {
+    const column = cornerRef.current;
+    engine.current?.reserve(column ? column.offsetWidth + 20 : 0);
+  });
+
   // The tooltip's width keeps it inside the box; measure it when its text changes.
   useLayoutEffect(() => {
     const tip = tipRef.current;
@@ -1088,6 +1102,8 @@ export default function ContributionSkyline({
   const showRow = statCount > 0 && !(is3d && corners);
   const footer = showLegend && box.height >= 120;
   const bigSize = Math.round(Math.max(22, Math.min(40, stageBox.width * 0.045, stageBox.height * 0.13)));
+  // The 3D column stacks three or four of them, so they share the height.
+  const sideSize = Math.round(Math.max(22, Math.min(bigSize, stageBox.height * 0.1)));
   const span = stats.first && stats.last ? Math.round((dayMs(stats.last) - dayMs(stats.first)) / DAY_MS / 7) : 0;
   const statBlocks: StatBlock[] = [
     { label: span >= 52 ? "Last year" : `Last ${span} weeks`, short: span >= 52 ? "Last year" : `${span} weeks`, value: fmt(stats.total), unit: noun(stats.total), sub: range(stats.first, stats.last, true) },
@@ -1135,13 +1151,10 @@ export default function ContributionSkyline({
         />
         {corners ? (
           <>
-            <div className="ade-skyline-corner" data-at="top" aria-hidden={!is3d} data-shown={is3d || undefined} style={{ transitionDelay: is3d ? `${Math.round(duration * 0.55)}ms` : "0ms" }}>
-              <CornerStat block={statBlocks[0]!} size={bigSize} align="end" />
-              <CornerStat block={statBlocks[2]!} size={bigSize} align="end" />
-            </div>
-            <div className="ade-skyline-corner" data-at="bottom" aria-hidden={!is3d} data-shown={is3d || undefined} style={{ transitionDelay: is3d ? `${Math.round(duration * 0.65)}ms` : "0ms" }}>
-              <CornerStat block={statBlocks[3]!} size={bigSize} align="start" />
-              <CornerStat block={statBlocks[1]!} size={bigSize} align="start" />
+            <div ref={cornerRef} className="ade-skyline-corner" data-at="side" aria-hidden={!is3d} data-shown={is3d || undefined} style={{ transitionDelay: is3d ? `${Math.round(duration * 0.55)}ms` : "0ms" }}>
+              {(stageBox.height >= 300 ? [0, 2, 3, 1] : [0, 1, 2]).map((index) => (
+                <CornerStat key={statBlocks[index]!.label} block={statBlocks[index]!} size={sideSize} align="start" />
+              ))}
             </div>
           </>
         ) : null}

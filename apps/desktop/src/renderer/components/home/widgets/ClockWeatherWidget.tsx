@@ -32,6 +32,80 @@ function readPlace(value: unknown): PlaceSetting | null {
   return { name: raw.name, detail: typeof raw.detail === "string" ? raw.detail : null, latitude: raw.latitude, longitude: raw.longitude };
 }
 
+/**
+ * A coarse place with no prompt: the city in the system time zone's name
+ * ("America/New_York" → New York), looked up once and kept per time zone.
+ * Only that city name leaves the machine, the same as a typed search. A zone
+ * with no city in it (UTC, Etc/GMT+5) gives nothing, and the card asks.
+ */
+const AUTO_PLACE_KEY = "ade.home.weather.autoPlace.v1";
+let autoPlaceRequest: { zone: string; promise: Promise<PlaceSetting | null> } | null = null;
+
+function systemTimeZone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    return null;
+  }
+}
+
+function timeZoneCity(zone: string): string | null {
+  const parts = zone.split("/");
+  if (parts.length < 2 || parts[0] === "Etc") return null;
+  const city = parts[parts.length - 1]!.replace(/_/g, " ").trim();
+  return city.length >= 2 ? city : null;
+}
+
+function readAutoPlace(zone: string): PlaceSetting | null {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(AUTO_PLACE_KEY) ?? "null") as { zone?: unknown; place?: unknown } | null;
+    return raw && raw.zone === zone ? readPlace(raw.place) : null;
+  } catch {
+    return null;
+  }
+}
+
+function lookUpAutoPlace(zone: string): Promise<PlaceSetting | null> {
+  if (autoPlaceRequest?.zone === zone) return autoPlaceRequest.promise;
+  const city = timeZoneCity(zone);
+  const bridge = window.ade?.home?.weather;
+  const promise = (async () => {
+    if (!city || !bridge) return null;
+    const result = await bridge.search(city).catch(() => null);
+    if (!result?.ok || result.places.length === 0) return null;
+    const picked = result.places.find((entry) => entry.timezone === zone) ?? result.places[0]!;
+    const place: PlaceSetting = { name: picked.name, detail: picked.detail, latitude: picked.latitude, longitude: picked.longitude };
+    try {
+      window.localStorage.setItem(AUTO_PLACE_KEY, JSON.stringify({ zone, place }));
+    } catch {
+      // Storage full or blocked: it is looked up again next launch.
+    }
+    return place;
+  })();
+  autoPlaceRequest = { zone, promise };
+  return promise;
+}
+
+/** The place from the time zone, or null while it is looked up or when there is none. */
+function useAutoPlace(enabled: boolean): { place: PlaceSetting | null; settled: boolean } {
+  const zone = systemTimeZone();
+  const [state, setState] = useState<{ place: PlaceSetting | null; settled: boolean }>(() => {
+    const cached = enabled && zone ? readAutoPlace(zone) : null;
+    return { place: cached, settled: Boolean(cached) || !enabled || !zone || !timeZoneCity(zone) };
+  });
+  useEffect(() => {
+    if (!enabled || !zone || state.settled) return undefined;
+    let cancelled = false;
+    void lookUpAutoPlace(zone).then((place) => {
+      if (!cancelled) setState({ place, settled: true });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, zone, state.settled]);
+  return state;
+}
+
 function defaultUnit(): "c" | "f" {
   const locale = typeof navigator !== "undefined" ? navigator.language : "";
   return /^en-(US|LR|MM)$/i.test(locale) || /-(US|LR|MM)$/i.test(locale) ? "f" : "c";
@@ -77,11 +151,17 @@ function PlacePicker({ onPick, onCancel }: { onPick: (place: HomeWeatherPlace) =
   return (
     <form
       className="ade-hw-place"
+      data-results={results && results.length > 0 ? "true" : undefined}
       onSubmit={(event) => {
         event.preventDefault();
         void search(query);
       }}
     >
+      <div className="ade-hw-place-intro">
+        <WeatherGlyph kind="partly" size={40} />
+        <span className="ade-hw-place-title">{onCancel ? "Change place" : "Weather where you are"}</span>
+        <span className="ade-hw-place-hint">Type a city. Only its name is looked up.</span>
+      </div>
       <div className="ade-hw-place-row">
         <MapPin size={13} aria-hidden />
         <input
@@ -100,6 +180,7 @@ function PlacePicker({ onPick, onCancel }: { onPick: (place: HomeWeatherPlace) =
           aria-label="City for weather"
         />
         <button type="submit" className="kit-btn" disabled={busy || query.trim().length < 2}>{busy ? "…" : "Find"}</button>
+        {onCancel ? <button type="button" className="kit-btn kit-btn-ghost" onClick={onCancel}>Cancel</button> : null}
       </div>
       {error ? <div className="ade-hw-note" role="alert">{error}</div> : null}
       {results && results.length === 0 ? <div className="ade-hw-note">No places match.</div> : null}
@@ -122,7 +203,11 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
   const preview = useWidgetPreview();
   const now = useMinuteClock(visible);
   const updateSettings = useHomeLayoutStore((s) => s.updateSettings);
-  const place = readPlace(item.settings?.place);
+  const chosen = readPlace(item.settings?.place);
+  // No city chosen: the time zone's city, looked up without a prompt. A
+  // gallery preview never looks anything up.
+  const auto = useAutoPlace(!chosen && !preview && Boolean(window.ade?.home?.weather));
+  const place = chosen ?? auto.place;
   const unit: "c" | "f" = item.settings?.unit === "f" || item.settings?.unit === "c" ? item.settings.unit : defaultUnit();
   const [weather, setWeather] = useState<HomeWeather | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -161,7 +246,7 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
   const spread = Math.max(1, highest - lowest);
   const hourLabel = (hour: number) => new Date(2000, 0, 1, hour).toLocaleTimeString(undefined, { hour: "numeric" });
   // A gallery preview never asks for a place; it says what the card will show.
-  const showPicker = Boolean(bridge) && !preview && (picking || !place);
+  const showPicker = Boolean(bridge) && !preview && (picking || (!place && auto.settled));
 
   return (
     <section
@@ -172,7 +257,7 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
     >
       <WelcomeCardHead icon={CloudSun} title="Weather">
         {place && !picking ? (
-          <button type="button" className="ade-wx2-place" title="Change place" onClick={() => setPicking(true)}>
+          <button type="button" className="ade-wx2-place" title={chosen ? "Change place" : "From your time zone. Change place"} onClick={() => setPicking(true)}>
             <MapPin size={11} weight="fill" aria-hidden />
             <span>{place.name}</span>
           </button>
@@ -202,7 +287,7 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
             }}
           />
         ) : !place ? (
-          <div className="ade-home-empty"><span>Pick a city and it shows the weather there.</span></div>
+          <div className="ade-home-empty"><span>{preview ? "Pick a city and it shows the weather there." : "Finding your city…"}</span></div>
         ) : error && !weather ? (
           <div className="ade-home-empty" role="alert"><span>{error}</span></div>
         ) : !weather || !kind ? (
