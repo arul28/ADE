@@ -4903,11 +4903,10 @@ final class SyncService: ObservableObject {
     if requestedWorkSessionNavigation != nil {
       requestedWorkSessionNavigation = nil
     }
-    // A sheet left up would cover the Hub and the notice under it.
+    // Only the Activity drawer closes: it holds nothing the user typed. The
+    // Linear, Cursor Cloud and GitHub Issues panes can hold a draft, and a
+    // timed-out tap must never throw that away to show a notice.
     attentionDrawerPresented = false
-    linearPanePresented = false
-    cursorCloudPanePresented = false
-    githubIssuesPanePresented = false
     showProjectHub()
     hubNotice = HubNotice(message: notice)
   }
