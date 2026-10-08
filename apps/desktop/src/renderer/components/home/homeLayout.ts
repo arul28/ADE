@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { captureHomeWidgetAdded } from "./homeAnalytics";
 
 /**
  * The home page's widget layout: which widgets, in what order, at what size,
@@ -370,6 +371,7 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
         items = [...items, added];
       }
       withItems(items);
+      captureHomeWidgetAdded(type);
       return id;
     },
     setStacked: (id, stacked) => {

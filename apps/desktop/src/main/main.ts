@@ -93,7 +93,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
-import { captureChatAccountSwitchedAnalytics, capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
+import { captureChatAccountSwitchedAnalytics, captureFeatureUsedAnalytics, capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -9178,6 +9178,13 @@ app.whenReady().then(async () => {
       secretsDir: machineAdeLayout.secretsDir,
     })),
     logger: getMachineMainLogger(),
+    onConnectOutcome: (outcome) => captureFeatureUsedAnalytics({
+      analytics: productAnalyticsService,
+      surface: "desktop",
+      feature: "home",
+      action: "music_connected",
+      outcome,
+    }),
   });
 
   ipcBridge = registerIpc({

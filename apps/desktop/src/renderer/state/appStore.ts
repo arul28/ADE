@@ -51,6 +51,7 @@ import {
   type AdeTheme,
 } from "../../shared/theme";
 import { applyAdeTheme } from "../theme/applyTheme";
+import { captureHomeTabOpened } from "../components/home/homeAnalytics";
 import { applyInterfacePreferences } from "../theme/applyInterface";
 import { DEFAULT_SCENE_PREFERENCES, normalizeScenePreferences, type ScenePreferences } from "../scene/scenePreferences";
 
@@ -2840,8 +2841,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setPersonalChatsTabOpen: (personalChatsTabOpen) =>
     set({ personalChatsTabOpen }),
   closePersonalChatsTab: () => set({ personalChatsTabOpen: false }),
-  setBrowserTabOpen: (browserTabOpen) => set({ browserTabOpen }),
-  setMusicTabOpen: (musicTabOpen) => set({ musicTabOpen }),
+  setBrowserTabOpen: (browserTabOpen) => {
+    if (browserTabOpen && !get().browserTabOpen) captureHomeTabOpened("browser");
+    set({ browserTabOpen });
+  },
+  setMusicTabOpen: (musicTabOpen) => {
+    if (musicTabOpen && !get().musicTabOpen) captureHomeTabOpened("music");
+    set({ musicTabOpen });
+  },
   setBrowserDock: (patch) => set((prev) => ({ browserDock: { ...prev.browserDock, ...patch } })),
   getWorkViewState: (projectRoot) => {
     const key = resolveProjectStateKey(get(), projectRoot);

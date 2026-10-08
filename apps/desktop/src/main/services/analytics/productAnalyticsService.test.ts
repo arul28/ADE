@@ -1973,6 +1973,32 @@ describe("product analytics producers", () => {
     })).toEqual({ feature: "issues", action: "issue_created" });
   });
 
+  it.each([
+    ["tab_opened", "tab_browser"],
+    ["tab_opened", "tab_music"],
+    ["widget_added", "widget_now_playing"],
+    ["widget_added", "widget_clipboard"],
+    ["music_connected", "completed"],
+    ["music_connected", "cancelled"],
+    ["music_connected", "failed"],
+  ])("keeps the dev home's %s %s fact and nothing about what was opened", (action, outcome) => {
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "home",
+      action,
+      outcome,
+      source: "renderer_route",
+      // None of these is on `ade_feature_used`'s key list.
+      url: "https://music.example.test/song",
+      widget_settings: "Lisbon",
+    })).toEqual({ feature: "home", action, outcome, source: "renderer_route" });
+    // A tab or widget nobody registered is dropped, not widened.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "home",
+      action,
+      outcome: `${outcome.split("_")[0]}_spreadsheet`,
+    })).toEqual({ feature: "home", action });
+  });
+
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {
     // The pane is a picker plus one active tool, so the closed id set IS the
     // dimension. `WORK_TOOL_IDS` is the source of truth; a tool added there and

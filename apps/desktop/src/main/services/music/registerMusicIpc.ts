@@ -32,6 +32,8 @@ export function registerMusicIpc(args: {
     info: (event: string, data?: Record<string, unknown>) => void;
     warn: (event: string, data?: Record<string, unknown>) => void;
   };
+  /** How a Connect ended, for product analytics (`docs/logging.md`, the dev home). */
+  onConnectOutcome?: (outcome: "completed" | "cancelled" | "failed") => void;
 }): MusicService {
   const tokens = createDeveloperTokenProvider({
     isPackaged: app.isPackaged,
@@ -77,7 +79,11 @@ export function registerMusicIpc(args: {
   const str = (value: unknown) => (typeof value === "string" ? value : String(value ?? ""));
   handle(MUSIC_IPC.getState, () => service.getState());
   handle(MUSIC_IPC.warm, () => service.warm());
-  handle(MUSIC_IPC.connect, () => service.connect());
+  handle(MUSIC_IPC.connect, async () => {
+    const result = await service.connect();
+    args.onConnectOutcome?.(result.ok ? "completed" : result.cancelled ? "cancelled" : "failed");
+    return result;
+  });
   handle(MUSIC_IPC.disconnect, () => service.disconnect());
   handle(MUSIC_IPC.command, (command: MusicCommand) => service.command(command));
   handle(MUSIC_IPC.queue, () => service.queue());

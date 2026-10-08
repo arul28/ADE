@@ -2586,3 +2586,29 @@ describe("appStore", () => {
     });
   });
 });
+
+describe("machine-level top tabs", () => {
+  it("reports a Browser or Music tab once when it joins the tab strip, not on every visit", () => {
+    const capture = vi.fn(async (_payload: any) => undefined);
+    (window as any).ade.analytics = { capture };
+    useAppStore.setState({ browserTabOpen: false, musicTabOpen: false } as any);
+
+    useAppStore.getState().setBrowserTabOpen(true);
+    useAppStore.getState().setBrowserTabOpen(true);
+    useAppStore.getState().setMusicTabOpen(true);
+    useAppStore.getState().setBrowserTabOpen(false);
+    useAppStore.getState().setBrowserTabOpen(true);
+
+    expect(capture.mock.calls.map(([payload]: any[]) => [payload.properties.outcome, payload.dedupeKey])).toEqual([
+      ["tab_browser", "home_tab_opened:tab_browser"],
+      ["tab_music", "home_tab_opened:tab_music"],
+      ["tab_browser", "home_tab_opened:tab_browser"],
+    ]);
+    expect(capture.mock.calls[0]![0]).toMatchObject({
+      event: "ade_feature_used",
+      properties: { feature: "home", action: "tab_opened", source: "renderer_route" },
+      minimumIntervalMs: 24 * 60 * 60_000,
+    });
+    delete (window as any).ade.analytics;
+  });
+});
