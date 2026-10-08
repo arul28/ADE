@@ -3,7 +3,6 @@ import type {
   AgentChatModelCatalog,
   OpenProjectBinding,
   PersonalChatAction,
-  PersonalChatCallResponse,
 } from "../../../shared/types";
 import type { ChatPaneScope } from "../chat/agentChatApi";
 import {
@@ -12,7 +11,7 @@ import {
   personalChatCatalogScopeKey,
 } from "../shared/ModelPicker/modelCatalog";
 import type { WebChatsMachinePicker } from "../../webclient/workspace/useWebChatsMachines";
-import { createPersonalAgentChatApi, type PersonalChatsBridge } from "./personalAgentChatApi";
+import { createPersonalAgentChatApi, personalCallResult, type PersonalChatsBridge } from "./personalAgentChatApi";
 
 /**
  * The machine's personal-chat bridge. Resolved per call, so a runtime without
@@ -24,16 +23,9 @@ export function personalChatsBridge(): PersonalChatsBridge {
   return candidate;
 }
 
-function resultOf<T>(response: PersonalChatCallResponse | T): T {
-  if (response && typeof response === "object" && "result" in response) {
-    return (response as PersonalChatCallResponse).result as T;
-  }
-  return response as T;
-}
-
 export async function callPersonal<T>(action: PersonalChatAction, args?: Record<string, unknown>): Promise<T> {
   const request = (args === undefined ? { action } : { action, args }) as Parameters<PersonalChatsBridge["call"]>[0];
-  return resultOf<T>(await personalChatsBridge().call(request));
+  return personalCallResult<T>(await personalChatsBridge().call(request));
 }
 
 /** Machine identity for personal Chats catalog scope and target-scoped reload effects. */

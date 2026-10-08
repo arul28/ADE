@@ -2351,7 +2351,11 @@ export function AgentChatComposer({
   agentChatApiRef.current = agentChatApi;
   // A chat with no project runs in ask mode or with full permission; planning
   // modes are a project-work affordance and are not offered there.
-  const planningAllowed = useChatPaneScope() == null;
+  const projectChatPane = useChatPaneScope() == null;
+  const planningAllowed = projectChatPane;
+  // Prompt stashes and Codex voice live in the project runtime; a scoped
+  // (personal) pane has neither, so their controls and shortcuts are hidden.
+  const promptStashAvailable = projectChatPane;
   const withoutPlanning = <T extends { icon?: string }>(options: T[]): T[] => (
     planningAllowed ? options : options.filter((option) => option.icon !== "plan")
   );
@@ -2880,6 +2884,7 @@ export function AgentChatComposer({
   const codexAuth = useProviderAuthStatus().status.openai;
   const codexVoiceOffered = Boolean(
     sessionId
+    && projectChatPane
     && !isWebClientMode()
     && codexVoicePreferences.enabled
     && codexAuth === "ok"
@@ -5260,6 +5265,7 @@ export function AgentChatComposer({
       && commandModified
       && !event.altKey
       && !event.shiftKey
+      && promptStashAvailable
     ) {
       event.preventDefault();
       promptStashRef.current?.activate();
@@ -6993,7 +6999,7 @@ export function AgentChatComposer({
             ) : null}
           </div>
 
-          <ComposerPromptStash
+          {promptStashAvailable ? <ComposerPromptStash
             ref={promptStashRef}
             draft={draft}
             attachments={attachments}
@@ -7007,7 +7013,7 @@ export function AgentChatComposer({
             onDraftChange={onDraftChange}
             onAddAttachment={onAddAttachment}
             onRemoveAttachment={handleRemoveAttachment}
-          />
+          /> : null}
 
           {!parallelChatMode && usageViewModel ? (
             <ContextUsageDial

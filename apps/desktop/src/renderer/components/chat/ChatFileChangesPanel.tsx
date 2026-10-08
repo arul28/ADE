@@ -15,6 +15,7 @@ import type {
 } from "../../../shared/types";
 import { AdeDiffViewer } from "../shared/AdeDiffViewer";
 import { cn } from "../ui/cn";
+import { useAgentChatApi } from "./agentChatApi";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
@@ -198,6 +199,11 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
   maxHeight = 400,
 }: FileChangesBrowserProps) {
   const scope = useChatRuntimeScope();
+  // The pane's chat API. A scope without turn diffs (a personal chat) lists
+  // the changed files but offers no diff.
+  const agentChatApi = useAgentChatApi();
+  const getTurnFileDiff = agentChatApi?.getTurnFileDiff;
+  const diffAvailable = typeof getTurnFileDiff === "function";
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const diffCache = useRef<Map<string, FileDiff>>(new Map());
@@ -208,6 +214,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
   const files = useMemo(() => aggregateFiles(summaries), [summaries]);
   const handleSelectFile = useCallback(
     async (filePath: string) => {
+      if (typeof getTurnFileDiff !== "function") return;
       setSelectedPath(filePath);
 
       const file = files.find((f) => f.path === filePath);
@@ -237,7 +244,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
       setActiveDiffLoadState("loading");
 
       try {
-        const diff = await window.ade.agentChat.getTurnFileDiff(args, scope.pin);
+        const diff = await getTurnFileDiff(args, scope.pin);
         if (latestDiffRequestKey.current !== cacheKey) return;
         if (!diff) {
           setActiveDiff(null);
@@ -257,7 +264,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
         }
       }
     },
-    [files, scope.pin, sessionId],
+    [files, getTurnFileDiff, scope.pin, sessionId],
   );
 
   if (!files.length) return null;
@@ -272,9 +279,10 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
             <button
               key={file.path}
               type="button"
+              disabled={!diffAvailable}
               className={cn(
                 "flex w-full items-center gap-2 px-3 py-2 text-left transition-colors",
-                isSelected ? "bg-fg/[0.05]" : "hover:bg-fg/[0.03]",
+                isSelected ? "bg-fg/[0.05]" : diffAvailable ? "hover:bg-fg/[0.03]" : "cursor-default",
               )}
               onClick={() => void handleSelectFile(file.path)}
             >
@@ -301,9 +309,11 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
       </div>
 
       {/* Diff viewer (right pane) */}
-      <div className="min-w-0 flex-1">
-        {renderDiffPane({ selectedPath, loadingPath, activeDiff, loadState: activeDiffLoadState })}
-      </div>
+      {diffAvailable ? (
+        <div className="min-w-0 flex-1">
+          {renderDiffPane({ selectedPath, loadingPath, activeDiff, loadState: activeDiffLoadState })}
+        </div>
+      ) : null}
     </div>
   );
 });

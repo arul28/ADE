@@ -34,7 +34,8 @@ const EVENT_POLL_MS = 700;
 
 const ASSISTANT_CLAIM = { personalProfile: "assistant" } as const;
 
-function resultOf<T>(response: PersonalChatCallResponse | T): T {
+/** A `personalChats.call` answer's payload, whether or not the host wrapped it in `{ result }`. */
+export function personalCallResult<T>(response: PersonalChatCallResponse | T): T {
   if (response && typeof response === "object" && "result" in response) {
     return (response as PersonalChatCallResponse).result as T;
   }
@@ -64,10 +65,20 @@ function sessionFromSummary(summary: AgentChatSessionSummary): AgentChatSession 
   return { ...summary, id: summary.sessionId } as unknown as AgentChatSession;
 }
 
+/**
+ * What the personal adapter implements: a subset of the project chat API,
+ * signature for signature (one level deep, so `codex.*` can be partial too).
+ */
+export type PersonalAgentChatApi = {
+  [K in keyof AgentChatApi]?: AgentChatApi[K] extends (...args: never[]) => unknown
+    ? AgentChatApi[K]
+    : Partial<AgentChatApi[K]>;
+};
+
 export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): AgentChatApi {
   const call = async <T>(action: PersonalChatAction, args?: unknown): Promise<T> => {
     const request = (args === undefined ? { action } : { action, args }) as PersonalChatCallArgs;
-    return resultOf<T>(await bridge.call(request));
+    return personalCallResult<T>(await bridge.call(request));
   };
 
   // One poller for every subscriber (the pane, the rail), started by the first
@@ -105,6 +116,9 @@ export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): AgentCh
     throw new Error(`${name} is not available in a chat without a project.`);
   };
 
+  // Typed against the real API: every method here must match the project
+  // API's signature, and a method absent here is absent at runtime too (the
+  // pane checks for it before offering the control that would call it).
   const api = {
     // Best-effort pre-start of a CLI-backed model; the personal runtime
     // starts the provider on the first send instead.
@@ -191,6 +205,8 @@ export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): AgentCh
         }
       };
     },
-  };
-  return api as unknown as AgentChatApi;
+  } satisfies PersonalAgentChatApi;
+  // The one widening: callers see the full project shape, and treat the
+  // methods this adapter leaves out as optional by checking for them.
+  return api as PersonalAgentChatApi as AgentChatApi;
 }

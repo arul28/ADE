@@ -4836,8 +4836,9 @@ export function AgentChatPane({
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
   // Pending thread comments for the open chat. Null while the chat has no
   // readable session (a launch still starting, a draft) or the composer and
-  // transcript disagree on which chat is open.
-  const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning ? composerSessionId : null;
+  // transcript disagree on which chat is open. Always null in a personal chat:
+  // thread comments are a project-runtime action the personal scope lacks.
+  const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning && !personalScope ? composerSessionId : null;
   const threadComments = useThreadComments(threadCommentsSessionId, chatRuntimePin);
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
@@ -16526,7 +16527,7 @@ export function AgentChatPane({
   const composerBannerStyle = layoutVariant === "grid-tile"
     ? { width: "100%", marginBottom: 6 }
     : { width: "100%", maxWidth: "var(--chat-column,52rem)", margin: "0 auto 6px" };
-  const crossMachineMoveBanner = selectedSessionId && renderedSessionId === selectedSessionId ? (
+  const crossMachineMoveBanner = selectedSessionId && renderedSessionId === selectedSessionId && !personalScope ? (
     <CrossMachineHandoffBanner
       key={`move:${selectedSessionId}`}
       sessionId={selectedSessionId}
@@ -17417,7 +17418,7 @@ export function AgentChatPane({
         localContent={canShowHandoff ? handoffLocalView : null}
         onCloseLocal={() => setLocalHandoffOpen(false)}
       />
-      {selectedSessionId && (selectedSession?.laneId ?? laneId) ? (
+      {selectedSessionId && !personalScope && (selectedSession?.laneId ?? laneId) ? (
         <CrossMachineHandoffModal
           open={crossMachineHandoffOpen}
           sourceSessionId={selectedSessionId}
