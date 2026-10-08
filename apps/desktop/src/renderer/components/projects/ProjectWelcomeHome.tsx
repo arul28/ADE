@@ -478,7 +478,12 @@ export type HomePullRequests = { open: HomePr[]; recent: HomePr[]; loaded: boole
 export function usePullRequests(projectRoot: string | null): HomePullRequests {
   const [data, setData] = useState<{ snapshot: GitHubPrSnapshot | null; tracked: PrSummary[] } | null>(null);
   const requestRef = useRef(0);
+  // What the last reload returned, as text: PR events arrive every few seconds
+  // during a sync, and a reload that changed nothing must not re-render the
+  // whole home page (every widget under it renders with it).
+  const lastSignatureRef = useRef<string | null>(null);
   useEffect(() => {
+    lastSignatureRef.current = null;
     const bridge = window.ade?.prs;
     if (!projectRoot || !bridge?.getGitHubSnapshot) {
       setData({ snapshot: null, tracked: [] });
@@ -493,7 +498,17 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
         getGitHubSnapshotCoalesced({ automaticRefresh: true, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot }).catch(() => null),
         listPrsCoalesced({ projectRoot }).catch(() => [] as PrSummary[]),
       ]);
-      if (requestRef.current === request) setData({ snapshot, tracked: tracked ?? [] });
+      if (requestRef.current !== request) return;
+      const signature = JSON.stringify([
+        snapshot?.viewerLogin ?? null,
+        snapshot?.repoPullRequests ?? null,
+        snapshot?.externalPullRequests ?? null,
+        // lastSyncedAt moves on every sync and the home page never shows it.
+        (tracked ?? []).map((pr) => ({ ...pr, lastSyncedAt: null })),
+      ]);
+      if (signature === lastSignatureRef.current) return;
+      lastSignatureRef.current = signature;
+      setData({ snapshot, tracked: tracked ?? [] });
     };
     const soon = () => {
       if (timer != null) window.clearTimeout(timer);

@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ComponentType, type LazyExoticComponent } from "react";
+import { lazy, memo, Suspense, type ComponentType, type LazyExoticComponent } from "react";
 import type { HomeLayoutItem, HomeWidgetType } from "./homeLayout";
 import { HOME_WIDGET_CATALOG } from "./homeWidgetCatalog";
 import { WelcomeCardHead } from "../projects/ProjectWelcomeSidePanels";
@@ -34,7 +34,12 @@ function WidgetShell({ type, message }: { type: HomeWidgetType; message?: string
   );
 }
 
-export function LazyHomeWidget({ item }: HomeWidgetProps) {
+/**
+ * Memoized: these widgets read only their layout item (and their own data),
+ * so a home page re-render (a PR reload, a usage tick) does not re-render
+ * them.
+ */
+export const LazyHomeWidget = memo(function LazyHomeWidget({ item }: HomeWidgetProps) {
   const Widget = LAZY_WIDGETS[item.type];
   const meta = HOME_WIDGET_CATALOG[item.type];
   if (!Widget) return <WidgetShell type={item.type} message={meta.comingSoon ?? "Not available."} />;
@@ -46,4 +51,4 @@ export function LazyHomeWidget({ item }: HomeWidgetProps) {
       <Widget item={item} />
     </Suspense>
   );
-}
+});

@@ -164,6 +164,14 @@ function WidgetFrame({
     const element = contentRef.current as (HTMLDivElement & { inert?: boolean }) | null;
     if (element) element.inert = editing;
   }, [editing]);
+  // One object per placed size, so the span context does not change (and
+  // re-render the widget) on every grid render.
+  const spanW = span?.w;
+  const spanH = span?.h;
+  const spanValue = useMemo(
+    () => (stacked || spanW == null || spanH == null ? null : { w: spanW, h: spanH }),
+    [stacked, spanW, spanH],
+  );
   const content = renderWidget({ item, stacked, editing });
   if (!editing && content == null) return null;
   const shape = widgetShape(item.type);
@@ -173,7 +181,7 @@ function WidgetFrame({
     <div ref={ref} className="ade-home-widget" data-stacked={stacked || undefined} data-type={item.type}>
       <div ref={contentRef} className="ade-home-widget-content">
         <WidgetVisibleContext.Provider value={visible}>
-          <WidgetSpanContext.Provider value={stacked ? null : span ?? null}>
+          <WidgetSpanContext.Provider value={spanValue}>
           <WidgetBoundary title={meta.title}>
             {content ?? (
               <section className="kit-card ade-home-card" aria-label={meta.title}>
