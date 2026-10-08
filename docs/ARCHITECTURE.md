@@ -1851,9 +1851,12 @@ Channels (under `ade.computerUse.*`; preload namespace `window.ade.computerUse`)
 Renderer surfaces:
 
 - `AgentChatMessageList` buckets artifacts by capture time into the completed
-  turn that produced them. The turn rule exposes a collapsed proof count and
-  expands `ChatProofFilmstrip` in chronology; proof is never a thread-tail
-  footer.
+  turn that produced them. The turn rule and the turn's fold line show a
+  "N proof filed" count that opens the drawer narrowed to those records
+  (`ProofDrawerFocus`, with a "This turn · N" chip that clears it); the
+  drawer drops the narrowing when it closes or the chat changes. The thread
+  draws pictures only under the "Filed proof" action rows, as a small
+  thumbnail that enlarges in place. Proof is never a thread-tail footer.
 - `ChatComputerUsePanel` supplies the in-app image lightbox and complete chat
   drawer, including availability states and irreversible deletion. Local media
   uses the range-capable artifact protocol; remote-runtime media uses bounded

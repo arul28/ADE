@@ -5081,7 +5081,8 @@ const EventRow = React.memo(function EventRow({
         <div className="w-full max-w-[var(--chat-content-width,52rem)]">
           <ChatProofCount
             count={inlineProof.length}
-            onOpen={onOpenProofDrawer ? () => onOpenProofDrawer(turnProofFocus(inlineProof)) : undefined}
+            // Proof between rows: mid-turn, or idle between turns, so not "This turn".
+            onOpen={onOpenProofDrawer ? () => onOpenProofDrawer(proofDrawerFocus("Filed here", inlineProof)) : undefined}
           />
         </div>
       ) : null}

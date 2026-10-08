@@ -349,7 +349,8 @@ describe("PR chat cards", () => {
     expect(buildPrConflictCard({ pr: pr({ behindBaseBy: 4 }), kind: "behind" })).toMatchObject({
       cardId: "pr-conflict:pr-7:abc123:behind",
       variant: "pr_conflict",
-      title: "Branch behind main",
+      title: "PR #7 is 4 commits behind main",
+      fallbackText: "PR #7 is 4 commits behind main.",
       metrics: [
         { label: "branch", value: "feature", tone: "neutral" },
         { label: "commits behind", value: "4", tone: "warning" },

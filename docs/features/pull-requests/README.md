@@ -2021,7 +2021,10 @@ PR state appears in two intentionally different chat surfaces:
 The polling change hook emits provider-independent, durable cards into every
 explicitly linked non-archived Work chat for the PR. Variants are `pr_ci`,
 `pr_review`, `pr_merge_ready`, `pr_merged`, and `pr_conflict` (conflicts and
-behind-base transitions). CI cards use a stable
+behind-base transitions). A `pr_conflict` card often lands mid-turn, so desktop
+and iOS draw it as one quiet line, not a boxed card: its sentence ("PR #12 is 1
+commit behind main", "PR #12 has merge conflicts with main") and "open ›", with
+only a conflict tinting the glyph. CI cards use a stable
 `prId + headSha + runAttempt` identity so all workflows in one attempt roll up
 into one episode and pending → terminal updates merge
 in place rather than append. Review cards include the latest reviewer and

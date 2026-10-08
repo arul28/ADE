@@ -150,8 +150,12 @@ function startHost(sessionRows: Map<string, any>): Harness {
     getDirtyFileTextForPath: () => undefined,
     onEvent: (event: AgentChatEventEnvelope) => events.push(event),
   } as any);
+  startedHosts.push(service);
   return { service, events };
 }
+
+/** Every host a test started, so teardown can wait for their transcript writes. */
+const startedHosts: Array<ReturnType<typeof createAgentChatService>> = [];
 
 const card = (cardId: string) => ({
   cardId,
@@ -192,12 +196,12 @@ beforeEach(() => {
   fs.mkdirSync(laneRoot(), { recursive: true });
 });
 
-afterEach(() => {
-  // `force` does not cover ENOTEMPTY: under full-suite load the host can still
-  // be finishing a write into this directory when teardown runs, and the
-  // removal then races the writer. Retrying is Node's own remedy; without it
-  // this file fails its shard and the sharded runner stops before the rest.
-  fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+afterEach(async () => {
+  // A host can still be writing a transcript into this directory when the test
+  // ends; removing it then races the writer (ENOTEMPTY under shard load).
+  // Disposing flushes every queued write first, so the removal has no writer.
+  for (const host of startedHosts.splice(0)) await host.disposeAll();
+  fs.rmSync(tmpRoot, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
 

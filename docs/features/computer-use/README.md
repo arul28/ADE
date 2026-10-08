@@ -67,7 +67,7 @@ Shared modules:
 
 - `apps/desktop/src/shared/computerUseActionSummary.ts` — reads one shell command (`ade screen …`, `ade browser …`, `ade apple …`, also through `"$ADE_CLI_PATH"`) into a summary: verb, element hit, app, surface, effect. Returns null whenever it is unsure.
 - `apps/desktop/src/shared/computerUseActionOutput.ts` — the output half: `hit:` / `effect:` lines, key-value rows, the Mac Desktop windows footer, `ade:` errors, the user's-browser lines, `--json` results.
-- `apps/desktop/src/shared/computerUseActionPresentation.ts` — a summary in words, and a run's layout (latest in full, earlier compact, same-app folds).
+- `apps/desktop/src/shared/computerUseActionPresentation.ts` — a summary in words, and a run's layout (latest in full, earlier compact, the App Control app carried forward, repeats merged as "×N", a PR post added to the line that filed the proof).
 - `apps/desktop/src/shared/readRecord.ts` — the dependency-free plain-object guard these shared modules use.
 - `apps/desktop/src/renderer/components/chat/chatComputerUseRows.ts` and `ChatComputerUseActions.tsx` — which transcript entries are actions, and the rows that draw them.
 - `apps/desktop/src/main/services/apps/appIcons.ts` — an app's icon by name for those rows (`ade.app.getAppIcon`, macOS only).
@@ -222,7 +222,10 @@ any of them later.
   type.
 - `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`,
   `chatCardPrimitives.tsx` — bucket artifacts by capture time into the completed
-  turn that produced them and render the collapsed inline filmstrip.
+  turn that produced them and draw that turn's "N proof filed" count
+  (`ChatProofCount`), which opens the proof drawer narrowed to those records.
+  The pictures themselves show under the "Filed proof" action rows
+  (`ProofActionThumbnail` in `ChatProofCitation.tsx`).
 - `apps/desktop/src/renderer/lib/computerUse.ts` — renderer helpers that call `window.ade.computerUse.*`.
 
 `ComputerUseSection.tsx` (Settings > Computer Use) was removed in this rebuild; its readiness display was folded into `IntegrationsSettingsSection`.
