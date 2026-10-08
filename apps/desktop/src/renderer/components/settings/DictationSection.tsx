@@ -76,14 +76,21 @@ export function DictationSection() {
           {voiceInputEnabled && isDownloading ? (
             <div style={detailPanelStyle}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <span className="kit-eyebrow">{isWarmingUp ? "Finishing setup" : "Downloading speech model"}</span>
+                <span className="kit-eyebrow" aria-live="polite">{isWarmingUp ? "Finishing setup" : "Downloading speech model"}</span>
                 {isWarmingUp ? null : (
                   <span className="kit-num" style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
                     {percent != null ? `${percent}%` : "Starting"}
                   </span>
                 )}
               </div>
-              <div className="kit-meter" role="progressbar" aria-label="Speech model download" aria-valuenow={percent ?? undefined} aria-valuemin={0} aria-valuemax={100}>
+              <div
+                className="kit-meter"
+                role="progressbar"
+                aria-label={isWarmingUp ? "Speech model setup" : "Speech model download"}
+                aria-valuenow={isWarmingUp ? undefined : percent ?? undefined}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
                 <span style={{ width: percent != null ? `${percent}%` : "35%" }} />
               </div>
               {isWarmingUp ? (

@@ -318,32 +318,33 @@ export function createTranscriptionService({
   };
 
   const downloadModel = (onProgress?: (p: ModelInstallProgress) => void): Promise<void> => {
+    // Join an in-flight install before checking disk: the model is on disk
+    // while warm-up still runs, and a caller must not resolve ahead of it.
+    if (modelDownloadPromise) return modelDownloadPromise;
     if (resolveModel()) return Promise.resolve();
     // Single-flight: concurrent callers (UI button + auto-trigger) share one download.
-    if (!modelDownloadPromise) {
-      const startedAt = Date.now();
-      logger.info("transcription.model_download_started", { runtimeModelDir });
-      modelDownloadPromise = downloadSpeechModel({
-        modelDir: runtimeModelDir,
-        source: modelSource,
-        onProgress,
-      })
-        .then(async () => {
-          logger.info("transcription.model_download_done", {
-            durationMs: Date.now() - startedAt,
-          });
-          await warmUp(onProgress);
-        })
-        .catch((error: unknown) => {
-          logger.warn("transcription.model_download_failed", {
-            message: error instanceof Error ? error.message : String(error),
-          });
-          throw error;
-        })
-        .finally(() => {
-          modelDownloadPromise = null;
+    const startedAt = Date.now();
+    logger.info("transcription.model_download_started", { runtimeModelDir });
+    modelDownloadPromise = downloadSpeechModel({
+      modelDir: runtimeModelDir,
+      source: modelSource,
+      onProgress,
+    })
+      .then(async () => {
+        logger.info("transcription.model_download_done", {
+          durationMs: Date.now() - startedAt,
         });
-    }
+        await warmUp(onProgress);
+      })
+      .catch((error: unknown) => {
+        logger.warn("transcription.model_download_failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      })
+      .finally(() => {
+        modelDownloadPromise = null;
+      });
     return modelDownloadPromise;
   };
 
@@ -499,7 +500,11 @@ export function createTranscriptionService({
   // true and the UI keeps showing setup until the model is warm.
   const warmUp = async (onProgress?: (p: ModelInstallProgress) => void): Promise<void> => {
     const totalBytes = modelSource?.expectedBytes ?? DEFAULT_SPEECH_MODEL_BYTES;
-    onProgress?.({ receivedBytes: totalBytes, totalBytes, stage: "warmup" });
+    try {
+      onProgress?.({ receivedBytes: totalBytes, totalBytes, stage: "warmup" });
+    } catch {
+      // A progress listener must not cost the install or the warm-up.
+    }
     const startedAt = Date.now();
     try {
       await transcribe(new Int16Array(Math.round(TARGET_SAMPLE_RATE * WARMUP_AUDIO_SECONDS)));
