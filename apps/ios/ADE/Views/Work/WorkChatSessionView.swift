@@ -416,22 +416,15 @@ func workTimelineEntryExpansionSignature(
   case .subagentStoppedGroup(let model): owned.insert(model.id)
   case .eventCard(let card): owned.insert(card.id)
   case .adeCard(let card): owned.insert(card.id)
-  case .artifact(let artifact): owned.insert(artifact.id)
   case .backgroundJobRun(let run): owned.insert(run.id)
   case .turnFold(let model):
     owned.insert(model.id)
     ownTurnWork(model.turnEndTurnId ?? model.turnId)
   case .turnEndMarker(let marker):
-    owned.insert(workTurnProofExpansionId(turnId: marker.turnId))
     ownTurnWork(marker.turnId)
   case .toolGroup(let group):
     owned.insert(group.id)
     for member in group.members { owned.insert(member.id) }
-    // Computer-use rows and their app folds open by id too.
-    for action in group.computerUseActions {
-      owned.insert(WorkComputerUseRunView.expansionId(groupId: group.id, itemId: action.id))
-      owned.insert(WorkComputerUseRunView.expansionId(groupId: group.id, itemId: "fold:\(action.id)"))
-    }
   case .changedFiles(let group):
     owned.insert(group.id)
     for file in group.files { owned.insert(file.id) }
@@ -684,6 +677,10 @@ struct WorkChatSessionView: View {
   var crossMachineHandoffActions: WorkCrossMachineHandoffActions? = nil
 
   @State private var threadCommentsSheetPresented = false
+  /// A thread link ("3 proof filed") opens the proof drawer narrowed to the
+  /// records it counted. Dismissing the drawer clears it, so every other way
+  /// in opens on everything.
+  @State var proofDrawerFocus: WorkProofDrawerFocus?
   @StateObject var handoffSendGate = WorkHandoffSendGate()
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
@@ -2230,7 +2227,7 @@ struct WorkChatSessionView: View {
         .fullScreenCover(item: $outputViewer.request) { request in
           WorkOutputViewerScreen(request: request)
         }
-        .sheet(isPresented: $artifactDrawerPresented) {
+        .sheet(isPresented: $artifactDrawerPresented, onDismiss: { proofDrawerFocus = nil }) {
           WorkProofSheet(
             artifacts: artifacts,
             transcript: transcript,
@@ -2238,7 +2235,9 @@ struct WorkChatSessionView: View {
             isRefreshing: artifactRefreshInFlight,
             refreshError: artifactRefreshError,
             onRefresh: onRefreshArtifacts,
-            onLoadArtifact: onLoadArtifact
+            onLoadArtifact: onLoadArtifact,
+            focus: proofDrawerFocus,
+            onClearFocus: { proofDrawerFocus = nil }
           )
           .presentationDetents([.medium, .large])
           .presentationDragIndicator(.visible)

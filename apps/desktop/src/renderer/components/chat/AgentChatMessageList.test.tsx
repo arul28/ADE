@@ -162,7 +162,7 @@ function renderMessageList(
     onReturnToLatest?: () => void;
     proofArtifacts?: ComputerUseArtifactView[];
     allowLocalProofArtifactProtocol?: boolean;
-    onOpenProofDrawer?: () => void;
+    onOpenProofDrawer?: (focus?: { label: string; artifactIds: readonly string[] }) => void;
     onOpenTurnSources?: (turnId: string) => void;
     usageLimitResumeActive?: boolean;
     usageLimitResumeTurnId?: string | null;
@@ -642,18 +642,25 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
-  // Proof used to be appended after every row as a permanently open thread
-  // footer. With no transcript rows it is now a compact chronological capture
-  // row that starts collapsed.
-  it("renders proof attached to an empty chat as one open capture row", () => {
-    const rendered = renderMessageList([], { proofArtifacts: [transcriptProofArtifact] });
+  // Proof in the thread is a count; its pictures live on the rows that filed
+  // them and in the drawer. Each count opens the drawer narrowed to its records.
+  const proofCounts = () => screen.queryAllByRole("button", { name: /proof filed/ });
+  const openedFocus = (onOpenProofDrawer: ReturnType<typeof vi.fn>, count: HTMLElement) => {
+    fireEvent.click(count);
+    expect(onOpenProofDrawer, "the count opens the drawer").toHaveBeenCalledTimes(1);
+    return onOpenProofDrawer.mock.calls[0]![0] as { label: string; artifactIds: string[] };
+  };
 
-    expect(screen.queryByText("Proof collected in this chat")).toBeNull();
-    expect(rendered.container.querySelector("[data-chat-proof-timeline]")).toBeNull();
-    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("true");
+  it("counts proof attached to an empty chat and opens the drawer on exactly it", () => {
+    const onOpenProofDrawer = vi.fn();
+    renderMessageList([], { proofArtifacts: [transcriptProofArtifact], onOpenProofDrawer });
+
+    expect(proofCounts()).toHaveLength(1);
+    expect(openedFocus(onOpenProofDrawer, proofCounts()[0]!).artifactIds).toEqual([transcriptProofArtifact.id]);
   });
 
-  it("chips proof onto the turn rule of the turn that captured it", () => {
+  it("counts proof on the turn that captured it and opens the drawer on that turn", () => {
+    const onOpenProofDrawer = vi.fn();
     renderMessageList(
       [
         {
@@ -667,13 +674,16 @@ describe("AgentChatMessageList transcript rendering", () => {
           event: { type: "done", turnId: "turn-1", status: "completed" },
         },
       ],
-      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:01:00.000Z" }] },
+      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:01:00.000Z" }], onOpenProofDrawer },
     );
 
-    expect(screen.getByRole("button", { name: /1 proof/ })).toBeTruthy();
+    expect(proofCounts()).toHaveLength(1);
+    expect(proofCounts()[0]!.textContent).toContain("1 proof filed");
+    expect(openedFocus(onOpenProofDrawer, proofCounts()[0]!)).toEqual({ label: "This turn", artifactIds: [transcriptProofArtifact.id] });
   });
 
   it("does not attribute proof older than the loaded transcript page to its first visible turn", () => {
+    const onOpenProofDrawer = vi.fn();
     renderMessageList(
       [
         {
@@ -689,6 +699,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       ],
       {
         hasOlderHistory: true,
+        onOpenProofDrawer,
         proofArtifacts: [
           { ...transcriptProofArtifact, id: "proof-older-page", createdAt: "2026-03-17T09:30:00.000Z" },
           { ...transcriptProofArtifact, id: "proof-visible-turn", createdAt: "2026-03-17T10:01:00.000Z" },
@@ -696,11 +707,12 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    expect(screen.getByRole("button", { name: /1 proof/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /2 proof/ })).toBeNull();
+    expect(proofCounts()).toHaveLength(1);
+    expect(openedFocus(onOpenProofDrawer, proofCounts()[0]!).artifactIds).toEqual(["proof-visible-turn"]);
   });
 
-  it("keeps proof captured after the latest done event visible at the transcript tail", () => {
+  it("keeps proof captured after the latest done event out of that turn's count", () => {
+    const onOpenProofDrawer = vi.fn();
     renderMessageList(
       [
         {
@@ -714,11 +726,11 @@ describe("AgentChatMessageList transcript rendering", () => {
           event: { type: "done", turnId: "turn-1", status: "completed" },
         },
       ],
-      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:02:00.000Z" }] },
+      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:02:00.000Z" }], onOpenProofDrawer },
     );
 
-    expect(screen.queryByRole("button", { name: /1 proof/ })).toBeNull();
-    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("true");
+    expect(proofCounts()).toHaveLength(1);
+    expect(openedFocus(onOpenProofDrawer, proofCounts()[0]!).label).not.toBe("This turn");
   });
 
   it("keeps idle proof before a later turn and never attributes it to that turn", () => {
@@ -748,10 +760,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:02:00.000Z" }] },
     );
 
-    const proof = screen.getByRole("button", { name: /Proof added/ });
+    expect(proofCounts()).toHaveLength(1);
     const laterTurn = screen.getByText("Later turn.");
-    expect(proof.compareDocumentPosition(laterTurn) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(screen.queryByRole("button", { name: /1 proof/ })).toBeNull();
+    expect(proofCounts()[0]!.compareDocumentPosition(laterTurn) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it("does not render trailing proof from outside the loaded history window", () => {
@@ -760,92 +771,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       proofArtifacts: [transcriptProofArtifact],
     });
 
-    expect(screen.queryByRole("button", { name: /Proof added/ })).toBeNull();
-  });
-
-  it("renders broken timeline proof as an amber missing state", () => {
-    renderMessageList(
-      [{
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: { type: "done", turnId: "turn-1", status: "completed" },
-      }],
-      {
-        proofArtifacts: [{
-          ...transcriptProofArtifact,
-          availability: "missing_file",
-          createdAt: "2026-03-17T10:00:00.000Z",
-        }],
-      },
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /1 proof/ }));
-    expect(screen.getByText("Missing proof")).toBeTruthy();
-    expect(document.querySelector('[data-chat-proof-broken="true"]')).toBeTruthy();
-    expect(screen.queryByRole("img")).toBeNull();
-  });
-
-  it("resolves proof thumbnails in the non-virtualized transcript path", () => {
-    renderMessageList(
-      [{
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: { type: "done", turnId: "turn-1", status: "completed" },
-      }],
-      {
-        allowLocalProofArtifactProtocol: true,
-        proofArtifacts: [{
-          ...transcriptProofArtifact,
-          kind: "screenshot",
-          mimeType: "image/png",
-          uri: ".ade/artifacts/proof.png",
-          createdAt: "2026-03-17T10:00:00.000Z",
-        }],
-      },
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /1 proof/ }));
-    expect(screen.getByRole("img", { name: transcriptProofArtifact.title }).getAttribute("src"))
-      .toBe("ade-artifact://project/.ade/artifacts/proof.png");
-  });
-
-  it("renders an uncited recording through the media server, never an img of its mp4", async () => {
-    // A recording is not an <img>: the old image src put the .mp4 in an <img>
-    // and drew a broken tile in the thread while the drawer played the same file.
-    const mediaBase = "http://127.0.0.1:43210/tok";
-    (globalThis.window.ade as unknown as { computerUse: unknown }).computerUse = {
-      mediaBaseUrl: vi.fn().mockResolvedValue(mediaBase),
-      readArtifactPreview: vi.fn().mockResolvedValue(null),
-      listArtifacts: vi.fn().mockResolvedValue([]),
-    };
-    const view = renderMessageList(
-      [{
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: { type: "done", turnId: "turn-1", status: "completed" },
-      }],
-      {
-        allowLocalProofArtifactProtocol: true,
-        proofArtifacts: [{
-          ...transcriptProofArtifact,
-          id: "proof-recording",
-          kind: "video_recording",
-          mimeType: "video/mp4",
-          uri: ".ade/artifacts/apple-recordings/lane-1/rec.mp4",
-          createdAt: "2026-03-17T10:00:00.000Z",
-        }],
-      },
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /1 proof/ }));
-    const video = await waitFor(() => {
-      const node = view.container.querySelector<HTMLVideoElement>("[data-chat-proof-video] video");
-      expect(node).toBeTruthy();
-      return node!;
-    });
-    expect(video.getAttribute("src"))
-      .toBe(`${mediaBase}/project/.ade/artifacts/apple-recordings/lane-1/rec.mp4`);
-    expect(view.container.querySelector("[data-chat-proof-filmstrip] img")).toBeNull();
+    expect(proofCounts()).toHaveLength(0);
   });
 
   it("keeps turn file-change summaries visible without a session id", () => {

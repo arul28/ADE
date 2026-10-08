@@ -227,11 +227,11 @@ struct WorkChatScrollBenchOptions {
   /// Render the composer the way the CTO session does (`compactComposer`).
   var compactComposer: Bool = false
   /// Synthetic proof: one screenshot artifact inside each of the last N
-  /// finished turns, with a generated thumbnail, so the turn-end proof chip
-  /// and its filmstrip can be seen without a brain.
+  /// finished turns, with a generated thumbnail, so the "N proof filed" links
+  /// can be seen without a brain.
   var proofTurns: Int = 0
   /// Open the last finished turn's fold and one of its disclosures
-  /// (`tools`, `files` or `proof`), as if the reader had tapped them.
+  /// (`tools` or `files`), as if the reader had tapped them.
   var openLastTurn: String?
   /// Pre-expand one transcript card by its stable id, as if the reader had
   /// tapped it. Used to screenshot a card's expanded body (e.g. the folded
@@ -498,7 +498,6 @@ struct WorkChatScrollBenchScreen: View {
       switch open {
       case "tools": ids.insert(workTurnWorkExpansionId(.tools, turnKey: turnId))
       case "files": ids.insert(workTurnWorkExpansionId(.files, turnKey: turnId))
-      case "proof": ids.insert(workTurnProofExpansionId(turnId: turnId))
       default: break
       }
       cardExpansion = WorkCardExpansionState(expandedIds: ids)

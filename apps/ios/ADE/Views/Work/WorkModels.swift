@@ -1248,7 +1248,10 @@ indirect enum WorkTimelinePayload: Equatable {
   /// Generic host/agent-emitted `ade_card`. One row per `cardId`, merged in
   /// place as the card progresses.
   case adeCard(WorkAdeCardModel)
-  case artifact(ComputerUseArtifactSummary)
+  /// Proof filed mid-turn: one quiet "N proof filed ›" line for a run of
+  /// consecutive records (desktop's inline `ChatProofCount`). Records a
+  /// "Filed proof" action row already pictures are left out.
+  case proof([ComputerUseArtifactSummary])
   /// The turn-end line after a terminal `done` event (desktop
   /// `DoneTurnDivider`): `ran 4m 30s · 2:15 AM · ↑in/↓out/~cache · tools ›
   /// files ›` on one line. The turn's usage rides on it; there is no separate
@@ -1323,7 +1326,7 @@ extension WorkTimelinePayload: Hashable {
     case .adeCard(let model):
       hasher.combine(9)
       hasher.combine(model)
-    case .artifact(let model):
+    case .proof(let model):
       hasher.combine(11)
       hasher.combine(model)
     case .turnEndMarker(let model):
@@ -1525,8 +1528,9 @@ struct WorkTurnEndMarker: Hashable {
   /// The turn's token usage from its `done`. Drawn on the turn-end line; a
   /// usage-limit turn moves it behind the footer's details toggle instead.
   var usage: WorkUsageSummary? = nil
-  /// Proof artifacts captured while the turn ran: the `N proof` chip and the
-  /// filmstrip it opens (desktop `DoneTurnDivider` + `ChatProofFilmstrip`).
+  /// Proof artifacts captured while the turn ran: its "N proof filed" link,
+  /// which opens the proof drawer narrowed to them (desktop `DoneTurnDivider`
+  /// + `ChatProofCount`).
   var proofArtifacts: [ComputerUseArtifactSummary] = []
   var proofCount: Int { proofArtifacts.count }
   /// The turn folded: its tool and file counts moved up to the fold row, so
@@ -1576,6 +1580,8 @@ struct WorkTurnFoldModel: Identifiable, Hashable {
   var jobCount: Int = 0
   var failedJobCount: Int = 0
   var sourceCount: Int = 0
+  /// The proof the turn filed (the same records its turn-end line counts).
+  var proofArtifactIds: [String] = []
 
   /// `Worked for 4m 12s`, or `Stopped after …` for an interrupted turn
   /// (desktop `formatTurnFoldHead`).

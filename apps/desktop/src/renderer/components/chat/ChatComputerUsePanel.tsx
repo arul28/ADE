@@ -3,12 +3,14 @@ import {
   ArrowSquareOut,
   Cube,
   FileText,
+  Funnel,
   ImageSquare,
   MagnifyingGlass,
   SpinnerGap,
   Trash,
   VideoCamera,
   WarningCircle,
+  X,
 } from "@phosphor-icons/react";
 import React, {
   useCallback,
@@ -35,6 +37,7 @@ import {
   EMPTY_PROOF_DRAWER_FILTER,
   proofArtifactPullRequest,
   type ProofDrawerFilter,
+  type ProofDrawerFocus,
   type ProofDrawerItem,
 } from "../../../shared/proofDrawerModel";
 import { Banner } from "../ui/notice/Banner";
@@ -569,12 +572,17 @@ export function ChatComputerUsePanel({
   events = EMPTY_EVENTS,
   onRefresh,
   allowLocalArtifactProtocol = false,
+  focus = null,
+  onClearFocus,
 }: {
   snapshot: ComputerUseOwnerSnapshot | null;
   /** The chat's transcript, which says what each turn's answer showed. */
   events?: readonly AgentChatEventEnvelope[];
   onRefresh: () => void | Promise<void>;
   allowLocalArtifactProtocol?: boolean;
+  /** Narrowed to the records a thread link counted; its chip clears it. */
+  focus?: ProofDrawerFocus | null;
+  onClearFocus?: () => void;
 }) {
   const scope = useChatRuntimeScope();
   // Stable identity: `?? []` would hand every memo below a fresh array each
@@ -586,10 +594,10 @@ export function ChatComputerUsePanel({
   const [filter, setFilter] = useState<ProofDrawerFilter>(EMPTY_PROOF_DRAWER_FILTER);
   const [collapsed, setCollapsed] = useState(false);
   const groups = useMemo(
-    () => buildProofDrawerGroups(artifacts, events, filter),
-    [artifacts, events, filter],
+    () => buildProofDrawerGroups(artifacts, events, filter, focus),
+    [artifacts, events, filter, focus],
   );
-  const filtered = filter.query.trim() !== "" || filter.media !== "all" || filter.inAnswerOnly;
+  const filtered = filter.query.trim() !== "" || filter.media !== "all" || filter.inAnswerOnly || focus !== null;
 
   const brokenCount = useMemo(
     () => artifacts.filter((artifact) => isBrokenArtifact(artifact)).length,
@@ -691,6 +699,21 @@ export function ChatComputerUsePanel({
       ) : null}
 
       <div className="flex min-w-0 flex-col gap-1.5">
+        {focus ? (
+          <div className="flex min-w-0 items-center gap-1.5" data-testid="chat-proof-focus">
+            <button
+              type="button"
+              onClick={onClearFocus}
+              aria-label={`Filtered to ${focus.label.toLowerCase()}. Show all proof`}
+              title="Show all proof"
+              className="inline-flex min-w-0 items-center gap-1 rounded-md bg-violet-400/[0.12] px-2 py-0.5 font-sans text-[10.5px] text-violet-100/85 transition-colors hover:bg-violet-400/[0.18]"
+            >
+              <Funnel size={10} weight="fill" className="shrink-0" aria-hidden />
+              <span className="truncate">{focus.label} · {focus.artifactIds.length}</span>
+              <X size={9} weight="bold" className="shrink-0 opacity-70" aria-hidden />
+            </button>
+          </div>
+        ) : null}
         <div className="relative">
           <MagnifyingGlass
             size={12}

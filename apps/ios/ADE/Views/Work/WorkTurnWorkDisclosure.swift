@@ -22,11 +22,6 @@ func workTurnWorkItemExpansionPrefix(turnKey: String) -> String {
   "turn-work:item:\(turnKey):"
 }
 
-/// Central-expansion id of a turn-end line's proof filmstrip.
-func workTurnProofExpansionId(turnId: String) -> String {
-  "turn-proof:\(turnId)"
-}
-
 /// What a turn line's work toggles show and what they reveal inline.
 struct WorkTurnWorkDisclosure {
   var activity: WorkToolGroupModel?
@@ -140,99 +135,5 @@ struct WorkTurnWorkInlineDetails: View {
     }
     .padding(.bottom, 6)
     .frame(maxWidth: .infinity, alignment: .leading)
-  }
-}
-
-// MARK: - Turn proof filmstrip
-
-/// The proof a turn captured, as a row of thumbnails under its turn-end line
-/// (desktop `ChatProofFilmstrip`, opened by the `N proof` chip). A thumbnail or
-/// "open all" opens the proof drawer.
-struct WorkTurnProofFilmstrip: View {
-  let artifacts: [ComputerUseArtifactSummary]
-  let content: [String: WorkLoadedArtifactContent]
-  let onLoad: (ComputerUseArtifactSummary) -> Void
-  let onOpen: (() -> Void)?
-
-  @State private var open = true
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 6) {
-        Button {
-          open.toggle()
-        } label: {
-          HStack(spacing: 5) {
-            Image(systemName: "cube").font(.system(size: 10, weight: .bold))
-            Text("Proof").font(.caption.weight(.semibold))
-            Text("· \(artifacts.count)").font(.caption.monospacedDigit())
-              .foregroundStyle(ADEColor.textMuted)
-          }
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(minHeight: 32)
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Proof, \(artifacts.count). \(open ? "Hide" : "Show") thumbnails.")
-        Spacer(minLength: 0)
-        if let onOpen {
-          Button("open all", action: onOpen)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(ADEColor.textMuted)
-            .frame(minHeight: 32)
-            .buttonStyle(.plain)
-        }
-      }
-      if open {
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 6) {
-            ForEach(artifacts) { artifact in
-              Button {
-                onOpen?()
-              } label: {
-                thumbnail(artifact)
-                  .frame(width: 96, height: 60)
-                  .background(Color.black.opacity(0.25))
-                  .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                  .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                      .stroke(ADEColor.glassBorder, lineWidth: 0.6)
-                  )
-              }
-              .buttonStyle(.plain)
-              .accessibilityLabel(artifact.title.isEmpty ? "Proof" : artifact.title)
-              .task { onLoad(artifact) }
-            }
-          }
-        }
-      }
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 6)
-    .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .padding(.bottom, 6)
-  }
-
-  @ViewBuilder
-  private func thumbnail(_ artifact: ComputerUseArtifactSummary) -> some View {
-    switch content[artifact.id] {
-    case .image(let image):
-      Image(uiImage: image).resizable().scaledToFill()
-    case .remoteURL(let url) where workArtifactIsImage(artifact):
-      AsyncImage(url: url) { image in
-        image.resizable().scaledToFill()
-      } placeholder: {
-        Color.clear
-      }
-    case .video, .videoOnDemand, .remoteURL:
-      Image(systemName: "play.rectangle.fill")
-        .foregroundStyle(ADEColor.accent)
-    default:
-      Text(workArtifactKindLabel(artifact.artifactKind))
-        .font(.caption2)
-        .foregroundStyle(ADEColor.textMuted)
-        .multilineTextAlignment(.center)
-        .padding(4)
-    }
   }
 }

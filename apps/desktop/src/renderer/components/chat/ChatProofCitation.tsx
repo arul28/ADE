@@ -266,3 +266,56 @@ export function ProofCompareFigure({ block }: { block: ProofCompareBlock }) {
     </div>
   );
 }
+
+/**
+ * The small picture under a "Filed proof" action row. A click opens it full
+ * size in place, as the proof drawer would, without going through the drawer.
+ * It draws nothing until the record loads, and nothing for a record that is
+ * gone or cannot show a picture: the row's words already say what was filed.
+ */
+export function ProofActionThumbnail({ artifactId, height }: { artifactId: string; height: number }) {
+  const state = useCitedProofArtifact(artifactId);
+  if (state.status !== "ready") return null;
+  return <ProofActionThumbnailMedia artifact={state.artifact} height={height} />;
+}
+
+function ProofActionThumbnailMedia({ artifact, height }: { artifact: ComputerUseArtifactView; height: number }) {
+  const { allowLocalArtifactProtocol } = useContext(ProofCitationContext);
+  const { containerRef, preview, failed, explanation, onMediaError } = useArtifactPreview<HTMLSpanElement>(
+    artifact,
+    allowLocalArtifactProtocol,
+  );
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const image = isImageArtifact(artifact);
+  const video = isVideoArtifact(artifact);
+  const text = artifact.description?.trim() || artifact.title;
+  if (!image && !video) return null;
+  return (
+    <span ref={containerRef} data-proof-action-thumbnail={artifact.id} className="block" style={{ height }}>
+      {preview && !failed ? (
+        <button
+          type="button"
+          className="block h-full overflow-hidden rounded-md border border-fg/[0.08] bg-black/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
+          aria-label={`Enlarge ${text}`}
+          onClick={() => setLightboxOpen(true)}
+        >
+          {image ? (
+            <img src={preview} alt={text} onError={onMediaError} className="m-0 block h-full w-auto object-contain" />
+          ) : (
+            <video src={preview} muted playsInline preload="metadata" onError={onMediaError} aria-label={text} className="m-0 block h-full w-auto object-contain" />
+          )}
+        </button>
+      ) : null}
+      {lightboxOpen && preview ? (
+        <ArtifactLightbox
+          artifact={artifact}
+          preview={preview}
+          failed={failed}
+          failureText={externalArtifactUrl(artifact.uri) ? "This proof lives at its source." : explanation}
+          onMediaError={onMediaError}
+          onClose={() => setLightboxOpen(false)}
+        />
+      ) : null}
+    </span>
+  );
+}

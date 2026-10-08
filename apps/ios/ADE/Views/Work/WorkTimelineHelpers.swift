@@ -1975,7 +1975,7 @@ func assembleWorkTimeline(
   })
 
   entries.append(contentsOf: artifacts.enumerated().map { index, artifact in
-    WorkTimelineEntry(id: "artifact-\(artifact.id)", timestamp: artifact.createdAt, rank: 2_000 + index, payload: .artifact(artifact))
+    WorkTimelineEntry(id: "artifact-\(artifact.id)", timestamp: artifact.createdAt, rank: 2_000 + index, payload: .proof([artifact]))
   })
 
   entries.append(contentsOf: visibleLocalEchoMessages.enumerated().map { index, echo in
@@ -2026,7 +2026,42 @@ func assembleWorkTimeline(
   folded = collapseConsecutiveWorkToolEntries(folded)
   folded = collapseConsecutiveWorkActivityEntries(folded)
   folded = collapseActivityPhaseTimelineEntries(folded)
+  if !artifacts.isEmpty { folded = workCollapsingInlineProof(folded) }
   return folded
+}
+
+/// Desktop's inline proof count: a run of consecutive proof rows becomes one
+/// "N proof filed ›" line, keeping the first row's identity so the line holds
+/// its place as it grows. Proof a "Filed proof" action row already pictures is
+/// left out; the turn-end count still includes it.
+private func workCollapsingInlineProof(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  var shownByActions = Set<String>()
+  for entry in entries {
+    guard case .toolGroup(let group) = entry.payload else { continue }
+    for action in group.computerUseActions {
+      shownByActions.formUnion(workComputerUseShownProofIds(action))
+    }
+  }
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count)
+  var runIndex: Int?
+  for entry in entries {
+    guard case .proof(let artifacts) = entry.payload else {
+      result.append(entry)
+      runIndex = nil
+      continue
+    }
+    let unshown = artifacts.filter { !shownByActions.contains($0.id) }
+    guard !unshown.isEmpty else { continue }
+    if let runIndex, case .proof(let earlier) = result[runIndex].payload {
+      let anchor = result[runIndex]
+      result[runIndex] = WorkTimelineEntry(id: anchor.id, timestamp: anchor.timestamp, rank: anchor.rank, payload: .proof(earlier + unshown), turnId: anchor.turnId)
+    } else {
+      runIndex = result.count
+      result.append(WorkTimelineEntry(id: entry.id, timestamp: entry.timestamp, rank: entry.rank, payload: .proof(unshown), turnId: entry.turnId))
+    }
+  }
+  return result
 }
 
 /// Stamp each turn-end marker with the proof captured while its turn ran
@@ -2040,8 +2075,8 @@ private func workStampTurnProofCounts(_ entries: inout [WorkTimelineEntry]) {
   for index in entries.indices {
     let entry = entries[index]
     switch entry.payload {
-    case .artifact(let artifact):
-      if turnStarted { proof.append(artifact) }
+    case .proof(let artifacts):
+      if turnStarted { proof.append(contentsOf: artifacts) }
     case .turnEndMarker(var marker):
       if !proof.isEmpty {
         marker.proofArtifacts = proof
@@ -2394,7 +2429,7 @@ private func workTurnFoldRow(for entry: WorkTimelineEntry) -> WorkTurnFoldFacts 
     // A new-lane setup record folds once setup finished; every other card stays.
     let role: WorkTurnFoldRole = card.variant == "lane_setup" ? .keepIfLive(liveKeys: [entry.id]) : .keep
     return WorkTurnFoldFacts(role: role, turnId: turnId, trivial: false)
-  case .subagent, .subagentGrid, .subagentStoppedGroup, .artifact, .turnFold,
+  case .subagent, .subagentGrid, .subagentStoppedGroup, .proof, .turnFold,
        .pendingQuestion, .pendingPermission, .pendingPlanApproval, .pendingModelSelection:
     return WorkTurnFoldFacts(role: .keep, turnId: turnId, trivial: false)
   }
@@ -2641,7 +2676,8 @@ private func workTurnFoldPlan(
       subagentCount: subagentIds.count,
       jobCount: jobCount,
       failedJobCount: failedJobCount,
-      sourceCount: marker.sourceCount
+      sourceCount: marker.sourceCount,
+      proofArtifactIds: marker.proofArtifacts.map(\.id)
     ),
     spanStart: windowStart,
     markerIndex: markerIndex,

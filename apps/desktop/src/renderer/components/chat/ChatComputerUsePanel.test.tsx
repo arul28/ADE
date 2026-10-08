@@ -448,6 +448,30 @@ describe("proof rendering", () => {
     expect(onOpenDrawer).toHaveBeenCalledTimes(1);
   });
 
+  it("narrows to the records a thread link counted, says so, and clears on its chip", async () => {
+    const onClearFocus = vi.fn();
+    const snapshot = snapshotOf([artifact(1), artifact(2), artifact(3)]);
+    const view = render(
+      <ChatComputerUsePanel
+        snapshot={snapshot}
+        onRefresh={vi.fn()}
+        focus={{ label: "This turn", artifactIds: ["artifact-2"] }}
+        onClearFocus={onClearFocus}
+      />,
+    );
+
+    expect(await screen.findByText("Proof 2")).toBeTruthy();
+    expect(screen.queryByText("Proof 1")).toBeNull();
+    expect(screen.queryByText("Proof 3")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Filtered to this turn/ }));
+    expect(onClearFocus).toHaveBeenCalledTimes(1);
+
+    view.rerender(<ChatComputerUsePanel snapshot={snapshot} onRefresh={vi.fn()} focus={null} onClearFocus={onClearFocus} />);
+    expect(await screen.findByText("Proof 1")).toBeTruthy();
+    expect(screen.getByText("Proof 3")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Filtered to/ })).toBeNull();
+  });
+
   it("deletes a drawer item and refreshes, instead of leaving the user no way to remove it", async () => {
     const onRefresh = vi.fn().mockResolvedValue(undefined);
     const deleteArtifacts = vi.fn().mockResolvedValue({ deleted: [], missing: [], failed: [], freedBytes: 0 });

@@ -148,34 +148,21 @@ private func workReadComputerUseToolInput(argsText: String?, resultText: String?
 // MARK: - View
 
 /// One run of computer-use actions in the thread (desktop
-/// `ChatComputerUseActionRun`). Expansion ids live in the session's central
-/// set so an opened row survives cell recycling.
+/// `ChatComputerUseActionRun`). No row opens: the line is all there is to say.
 struct WorkComputerUseRunView: View {
-  let groupId: String
   let actions: [WorkComputerUseAction]
   /// Not the turn's newest run: its newest action draws compact too.
   var compactAll = false
-  var expandedIds: Set<String> = []
-  var onToggle: (String) -> Void = { _ in }
-
-  static func expansionId(groupId: String, itemId: String) -> String { "\(groupId)::cu::\(itemId)" }
 
   var body: some View {
     let layout = workComputerUseRunLayout(actions)
     VStack(alignment: .leading, spacing: 0) {
-      ForEach(layout.earlier) { item in
-        switch item {
-        case .action(let action):
-          compactRow(action, expandable: true)
-        case .appFold(let appName, let members):
-          foldRow(appName: appName, members: members, id: item.id)
-        }
-      }
+      ForEach(layout.earlier) { line in compactRow(line) }
       if let latest = layout.latest {
         if compactAll {
-          compactRow(latest, expandable: true)
+          compactRow(latest)
         } else {
-          WorkComputerUseFullRow(action: latest)
+          WorkComputerUseFullRow(action: latest.action, count: latest.count)
         }
       }
     }
@@ -183,86 +170,32 @@ struct WorkComputerUseRunView: View {
     .accessibilityElement(children: .contain)
   }
 
-  @ViewBuilder
-  private func compactRow(_ action: WorkComputerUseAction, expandable: Bool) -> some View {
-    let expansion = Self.expansionId(groupId: groupId, itemId: action.id)
-    let open = expandable && expandedIds.contains(expansion)
-    let line = HStack(alignment: .center, spacing: 10) {
-      WorkComputerUseActionGlyph(action: action, emphasize: false)
+  private func compactRow(_ line: WorkComputerUseRunLine) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      compactLine(line)
+      WorkComputerUseProofThumbnails(action: line.action)
+    }
+  }
+
+  private func compactLine(_ line: WorkComputerUseRunLine) -> some View {
+    HStack(alignment: .center, spacing: 10) {
+      WorkComputerUseActionGlyph(action: line.action, emphasize: false)
       HStack(spacing: 4) {
-        workComputerUseLineText(action, emphasize: false)
+        workComputerUseLineText(line.action, emphasize: false)
           .font(.caption)
           .lineLimit(1)
           .truncationMode(.tail)
-          .workComputerUseShimmer(action.outcome == .running)
-        if expandable {
-          Image(systemName: "chevron.right")
-            .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .rotationEffect(.degrees(open ? 90 : 0))
-        }
-        ADEKitDot(tone: dotTone(action))
+          .workComputerUseShimmer(line.action.outcome == .running)
+        WorkComputerUseRepeatCount(count: line.count)
+        ADEKitDot(tone: dotTone(line.action))
           .padding(.leading, 4)
       }
       Spacer(minLength: 0)
     }
     .padding(.vertical, 3)
-    .frame(minHeight: expandable ? 30 : 22)
-    .contentShape(Rectangle())
-    if expandable {
-      Button { onToggle(expansion) } label: { line }
-        .buttonStyle(.plain)
-        .accessibilityLabel(workComputerUseText(action))
-        .accessibilityHint(open ? "Hides details" : "Shows details")
-      if open {
-        WorkComputerUseFullRow(action: action, nested: true)
-          .padding(.leading, 12)
-          .overlay(alignment: .leading) { Rectangle().fill(ADEColor.border).frame(width: 1) }
-          .padding(.leading, 28)
-          .padding(.bottom, 4)
-      }
-    } else {
-      line
-    }
-  }
-
-  @ViewBuilder
-  private func foldRow(appName: String, members: [WorkComputerUseAction], id: String) -> some View {
-    let expansion = Self.expansionId(groupId: groupId, itemId: id)
-    let open = expandedIds.contains(expansion)
-    let using = workComputerUseSurfaceLabel(members[0])
-    Button { onToggle(expansion) } label: {
-      HStack(alignment: .center, spacing: 10) {
-        WorkComputerUseIcon(action: members[0], size: 14)
-        HStack(spacing: 4) {
-          Text("\(members.count) actions in \(appName) \(Text("using").foregroundColor(ADEColor.textMuted.opacity(0.8))) \(Text(Image(systemName: using.symbol)).foregroundColor(using.warning ? ADEColor.warning : ADEColor.textMuted)) \(Text(using.label).foregroundColor(using.warning ? ADEColor.warning : ADEColor.textMuted))")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-          Image(systemName: "chevron.right")
-            .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .rotationEffect(.degrees(open ? 90 : 0))
-          ADEKitDot(tone: .neutral)
-            .padding(.leading, 4)
-        }
-        Spacer(minLength: 0)
-      }
-      .padding(.vertical, 3)
-      .frame(minHeight: 30)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("\(members.count) actions in \(appName) using \(using.label)")
-    if open {
-      VStack(alignment: .leading, spacing: 0) {
-        ForEach(members) { member in compactRow(member, expandable: false) }
-      }
-      .padding(.leading, 12)
-      .overlay(alignment: .leading) { Rectangle().fill(ADEColor.border).frame(width: 1) }
-      .padding(.leading, 28)
-      .padding(.bottom, 4)
-    }
+    .frame(minHeight: 22)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(workComputerUseAccessibilityText(line.action, count: line.count))
   }
 
   private func dotTone(_ action: WorkComputerUseAction) -> ADEKitTone {
@@ -274,7 +207,25 @@ struct WorkComputerUseRunView: View {
   }
 }
 
-/// The action as one line: "Clicked “Save” in [icon] TextEdit using [icon] Mac Desktop".
+/// "×3": how many identical actions one line stands for.
+struct WorkComputerUseRepeatCount: View {
+  let count: Int
+
+  var body: some View {
+    if count > 1 {
+      Text("×\(count)")
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(ADEColor.textMuted)
+    }
+  }
+}
+
+func workComputerUseAccessibilityText(_ action: WorkComputerUseAction, count: Int) -> String {
+  let text = workComputerUseText(action)
+  return count > 1 ? "\(text), \(count) times" : text
+}
+
+/// The action as one line: "Clicked “Save” in [icon] TextEdit", "Pressed “Escape” on [icon] Mac Desktop".
 func workComputerUseLineText(_ action: WorkComputerUseAction, emphasize: Bool) -> Text {
   let parts = workComputerUseParts(action)
   let failed = action.outcome == .failed
@@ -294,13 +245,13 @@ func workComputerUseLineText(_ action: WorkComputerUseAction, emphasize: Bool) -
     }
     line = Text("\(line)\(Text(place.label).foregroundColor(emphasize ? ADEColor.textPrimary : quiet))")
   }
-  if let using = parts.using {
-    let tone = using.warning ? ADEColor.warning : quiet
-    line = Text("\(line)\(Text(" using ").foregroundColor(quiet))")
+  if let surface = parts.surface {
+    let tone = surface.warning ? ADEColor.warning : quiet
+    line = Text("\(line)\(Text(" \(surface.preposition) ").foregroundColor(quiet))")
     if action.surface == .appleDevice {
       line = Text("\(line)\(Text(Image(systemName: "apple.logo")).foregroundColor(tone))")
     }
-    line = Text("\(line)\(Text(Image(systemName: using.symbol)).foregroundColor(tone)) \(Text(using.label).foregroundColor(tone))")
+    line = Text("\(line)\(Text(Image(systemName: surface.symbol)).foregroundColor(tone)) \(Text(surface.label).foregroundColor(tone))")
   }
   if let suffix = parts.suffix {
     line = Text("\(line)\(Text(" \(suffix)").foregroundColor(quiet))")
@@ -382,9 +333,16 @@ extension View {
 /// The newest action: the full line, its status, and what went wrong.
 struct WorkComputerUseFullRow: View {
   let action: WorkComputerUseAction
-  var nested = false
+  var count = 1
 
   var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      line
+      WorkComputerUseProofThumbnails(action: action)
+    }
+  }
+
+  private var line: some View {
     HStack(alignment: .firstTextBaseline, spacing: 10) {
       WorkComputerUseActionGlyph(action: action, emphasize: true)
       VStack(alignment: .leading, spacing: 3) {
@@ -393,6 +351,7 @@ struct WorkComputerUseFullRow: View {
             .font(.subheadline)
             .lineLimit(2)
             .workComputerUseShimmer(action.outcome == .running)
+          WorkComputerUseRepeatCount(count: count)
           statusGlyph
         }
         if let note = workComputerUseNote(action) {
@@ -404,9 +363,9 @@ struct WorkComputerUseFullRow: View {
       }
       Spacer(minLength: 0)
     }
-    .padding(.vertical, nested ? 2 : 5)
+    .padding(.vertical, 5)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel(workComputerUseText(action))
+    .accessibilityLabel(workComputerUseAccessibilityText(action, count: count))
   }
 
   @ViewBuilder
@@ -421,6 +380,155 @@ struct WorkComputerUseFullRow: View {
     default:
       Image(systemName: "checkmark.circle").font(.system(size: 13)).foregroundStyle(ADEColor.success)
     }
+  }
+}
+
+/// The pictures a filed-proof line filed, small, under the line and flush with
+/// the thread's left edge (desktop `ProofThumbnails`). Nothing for any other action.
+struct WorkComputerUseProofThumbnails: View {
+  let action: WorkComputerUseAction
+
+  var body: some View {
+    let ids = workComputerUseShownProofIds(action)
+    if !ids.isEmpty {
+      HStack(spacing: 6) {
+        ForEach(ids, id: \.self) { id in WorkProofActionThumbnail(artifactId: id) }
+      }
+      .padding(.top, 2)
+      .padding(.bottom, 4)
+    }
+  }
+}
+
+/// Proof in the thread is a count, not a strip of pictures: "3 proof filed ›"
+/// (desktop `ChatProofCount`). The pictures live on the rows that filed them
+/// and in the proof drawer, which this opens narrowed to the same records.
+/// `compact` drops the word for a line with little room (the turn fold); the
+/// count never truncates or wraps.
+struct WorkProofCountLink: View {
+  let count: Int
+  var compact = false
+  let onOpen: (() -> Void)?
+
+  var body: some View {
+    if count > 0 {
+      Button {
+        onOpen?()
+      } label: {
+        HStack(spacing: 3) {
+          Image(systemName: "cube")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted.opacity(0.8))
+          Text(compact ? "\(count) proof" : "\(count) proof filed")
+            .font(.caption2.monospacedDigit())
+          if onOpen != nil {
+            Image(systemName: "chevron.right")
+              .font(.system(size: 7, weight: .bold))
+          }
+        }
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .fixedSize()
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(onOpen == nil)
+      .layoutPriority(2)
+      .accessibilityLabel("\(count) proof filed")
+      .accessibilityHint("Shows this proof in the proof drawer")
+    }
+  }
+}
+
+/// One filed proof's picture, 64pt tall (desktop `ProofActionThumbnail`). It
+/// loads when it scrolls in; a tap opens it full screen, as an answer's
+/// citation does, without the drawer. A record the chat cannot find, or one
+/// that is not a picture or a video, draws nothing: the line already says
+/// what was filed.
+struct WorkProofActionThumbnail: View {
+  let artifactId: String
+
+  static let height: CGFloat = 64
+
+  @Environment(\.workProofCitations) private var citations
+  @State private var viewerOpen = false
+
+  var body: some View {
+    if let citations,
+       let artifact = citations.artifactsById[artifactId] ?? citations.lookup?(artifactId),
+       workArtifactIsImage(artifact) || workArtifactIsVideo(artifact) {
+      media(artifact, content: citations.content[artifactId])
+        .task(id: artifactId) {
+          if citations.content[artifactId] == nil { await citations.load(artifact, .preview) }
+        }
+        .fullScreenCover(isPresented: $viewerOpen) {
+          WorkProofViewer(
+            artifacts: [artifact],
+            artifactContent: citations.content,
+            initialArtifactId: artifact.id,
+            onLoadArtifact: citations.load
+          )
+        }
+    }
+  }
+
+  @ViewBuilder
+  private func media(_ artifact: ComputerUseArtifactSummary, content: WorkLoadedArtifactContent?) -> some View {
+    let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
+    switch content {
+    case .image(let image):
+      Button {
+        viewerOpen = true
+      } label: {
+        Image(uiImage: image)
+          .resizable()
+          .scaledToFit()
+          .frame(height: Self.height)
+          .clipShape(shape)
+          .overlay(shape.strokeBorder(ADEColor.border.opacity(0.3)))
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Enlarge \(text(artifact))")
+    case .remoteURL(let url) where workArtifactIsImage(artifact):
+      Button {
+        viewerOpen = true
+      } label: {
+        AsyncImage(url: url) { image in
+          image.resizable().scaledToFit()
+        } placeholder: {
+          Color.clear.frame(width: Self.height)
+        }
+        .frame(height: Self.height)
+        .clipShape(shape)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Enlarge \(text(artifact))")
+    case .video, .videoOnDemand, .remoteURL:
+      // The phone has no poster for a recording; a quiet play tile stands in.
+      Button {
+        viewerOpen = true
+      } label: {
+        Image(systemName: "play.fill")
+          .font(.system(size: 16, weight: .semibold))
+          .foregroundStyle(.white.opacity(0.85))
+          .frame(width: Self.height * 16 / 10, height: Self.height)
+          .background(Color.black.opacity(0.85), in: shape)
+          .overlay(shape.strokeBorder(ADEColor.border.opacity(0.3)))
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Play \(text(artifact))")
+    case .none:
+      // Room held while it loads, so the row does not jump when it lands.
+      Color.clear.frame(width: 1, height: Self.height)
+    case .text, .error:
+      EmptyView()
+    }
+  }
+
+  private func text(_ artifact: ComputerUseArtifactSummary) -> String {
+    let description = artifact.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return description.isEmpty ? artifact.title : description
   }
 }
 

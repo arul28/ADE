@@ -458,7 +458,7 @@ bounded by `boundChatSourceRefs` (http(s) only, deduped, 20 per event).
   button. A cited row carries a small `cited` mark. Opened from a turn chip it
   lists that turn's sources with `This turn · Show all`.
 - **Turn chip.** `N sources` with up to three stacked favicons sits on the
-  turn-end line (`DoneTurnDivider`, next to the proof chip) on wider screens,
+  turn-end line (`DoneTurnDivider`, next to the proof count) on wider screens,
   not in the answer's hover footer. It is hidden on mobile to keep the turn
   summary readable; the Sources section remains available in the chat Actions
   drawer. A turn's list keeps its identity while its sources are unchanged, so
@@ -885,7 +885,7 @@ implements a two-layer transform:
    `work_log_group` envelopes out of the rendered timeline entirely so grouped
    tools never occupy a second inline row. When the turn folds (step 5), the
    tool and file counts and their disclosure move to the fold row, and the done
-   divider keeps time, usage, the proof chip, and the checkpoint diff.
+   divider keeps time, usage, the proof count, and the checkpoint diff.
 
    **iOS** puts the same counts on `WorkTurnEndMarkerView` at each
    `turnEndMarker`, including turns that pause at a usage limit (the marker
@@ -909,24 +909,43 @@ implements a two-layer transform:
    commands (`ade screen|mac-desktop|desk …`, `ade app-control …`,
    `ade browser …`, `ade apple …`, `ade proof …`, also through
    `"$ADE_CLI_PATH"`, from any provider's shell tool) stays in the thread and
-   draws only those commands, as sentences: "Clicked “Checkout” on
-   localhost:5173". `shared/computerUseActionSummary.ts` reads the command,
+   draws only those commands, as sentences naming what they acted on:
+   "Clicked “Checkout” on localhost:5173", "Pressed “Escape” in ADE". `shared/computerUseActionSummary.ts` reads the command,
    and `shared/computerUseActionOutput.ts` its output (the CLI's `hit:` /
    `effect:` lines, key-value rows, the Mac Desktop windows footer, `ade:`
    errors, the `attached:` / `target:` lines from `shared/userBrowserLabels.ts`,
    `--json` results); the summary returns null
    whenever it is unsure (unknown verb, two acting commands in one call, shell
-   control flow), which keeps the plain shell row. The latest action of a run
-   draws in full (app icon, surface line — Lane screen, App Control, ADE
-   browser, Your browser in amber when the output marks it with an `attached:`
-   or `target: your … on …` line (or their `--json` fields), or the Apple
-   device — and the failure reason); earlier ones are one
-   muted line with a status dot (amber when `effect: unconfirmed`, red when it
-   failed), and consecutive confirmed actions in one app fold into
-   "Notes · 4 actions". Clicking a compact line opens its full row under a thin
-   guide line. App icons come from `app.getAppIcon` (macOS, cached per name in
-   both processes); browsers use the installed-browser icons; everything else
-   draws a glyph. In the tools list the same commands read as their sentence.
+   control flow), which keeps the plain shell row.
+
+   A row names the app it touched ("in TextEdit"). A surface names itself only
+   when no app says where: a screen or simulator for a screen-level action
+   ("Pressed “cmd+space” on Mac Desktop", "Looked at iPhone 17"), a page by its
+   site, and the user's own browser always, in amber. App Control never names
+   itself: one App Control session drives one app, so a run carries the last
+   window title forward to the steps that printed none. `app-control launch`
+   (alias `open`) reads as the app's label or title, or "the app", never the
+   shell command it ran. Consecutive actions with the same words, outcome and
+   proof records merge into one line with a count ("Looked at ADE ×3"). Rows
+   do not open.
+
+   A proof call (`proof capture` / `attach`, `app-control proof`, …) counts as
+   filed only when its output names the record: a `cite:` line, the JSON
+   record, or the filed table above `Attached N artifact(s) to …`. A call that
+   printed output without one reads "Couldn't file proof" (the exit code can
+   belong to a later command in the same call); output a pipe or redirect cut
+   off reads as unconfirmed; no output at all stays neutral. A filed proof
+   shows a small picture under its line, flush with the thread's left edge,
+   that enlarges in place. A later `proof publish` adds "· posted to PR #N" to
+   the lines whose records it reports posted, instead of a row of its own.
+
+   The latest action of a run draws in full (action icon, the line, a status
+   icon and the failure reason); earlier ones are one muted line with a status
+   dot (amber when unconfirmed, red when it failed). A running action shimmers
+   as one sweep across the line. App icons come from `app.getAppIcon` (macOS,
+   cached per name in both processes); browsers use the installed-browser
+   icons; everything else draws a glyph. In the tools list the same commands
+   read as their sentence.
    A finished turn's fold does not hide them: they are the record of what the
    agent did on a screen, so they stay in the thread on desktop and iOS.
    `shared/computerUseActionPresentation.ts` turns a summary into words, and
@@ -1454,16 +1473,14 @@ container instead (see Card layout above).
 Notable rendering rules:
 
 - Assistant messages and transcript cards share the responsive content width.
-- Completed-turn dividers show local time and measured duration. Tool activity
-  and proof each have independent collapsed controls. Chat-owned proof is
-  bucketed into turns by `artifact.createdAt`; expanding `N proof` renders the
-  horizontal `ChatProofFilmstrip` immediately below that divider. The filmstrip
-  is chronological, starts collapsed, and never moves to a pinned thread
-  footer. Local project-relative images render through the artifact protocol,
-  and a recording — local or on a paired machine — draws its first frame behind
-  a play badge through the media server (never an `<img>` of the `.mp4`); a tile
-  with no picture falls back to its kind label and opens the runtime-backed
-  drawer.
+- Completed-turn dividers show local time and measured duration. Chat-owned
+  proof is bucketed into turns by `artifact.createdAt` and shows as a
+  "N proof filed ›" count on the divider and, compact ("▣ N proof ›"), at the
+  end of the turn's fold line, where it never wraps: the fold's other counts
+  truncate first. The count opens the proof drawer narrowed to exactly those
+  records. Proof filed between rows (mid-turn, or idle between turns) is the
+  same one-line count at that point, minus any record a "Filed proof" row
+  already pictures. Proof an answer cites is left out of every count.
 - Code blocks in assistant messages render through `HighlightedCode`.
 - User messages animate in with a `motion/react` spring transition and
   render in full, however long; there is no length-based clamp.

@@ -36,7 +36,6 @@ import {
   Paperclip,
   Target,
   Clock,
-  Cube,
   Moon,
   Play,
   Microphone,
@@ -71,9 +70,8 @@ import { formatTime } from "../../lib/format";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
 import { ChipText } from "./ChipText";
 import { normalizePath } from "../../lib/pathUtils";
-import { artifactImageSrc } from "../../../shared/artifactStreamUrl";
-import { isImageArtifact } from "./useArtifactPreview";
 import { ProofCitationProvider } from "./ChatProofCitation";
+import { computerUseShownProofIds } from "../../../shared/computerUseActionPresentation";
 import { citedProofArtifactIds, PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
@@ -134,6 +132,7 @@ import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatComputerUseActionRun } from "./ChatComputerUseActions";
 import {
   arrangeComputerUseRuns,
+  collectComputerUseActions,
   computerUseSummaryForEntry,
   estimateComputerUseRunHeight,
   hasComputerUseEntries,
@@ -291,13 +290,19 @@ import {
   type TranscriptRowDrawContext,
   thoughtDurationSeconds,
 } from "./chatThoughtRuns";
-import { ChatProofFilmstrip } from "./chatCardPrimitives";
+import { ChatProofCount } from "./chatCardPrimitives";
+import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
 import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
-const EMPTY_CITED_PROOF_IDS: ReadonlySet<string> = new Set();
+const EMPTY_PROOF_IDS: ReadonlySet<string> = new Set();
+
+/** The drawer narrowed to one turn's proof, for its "N proof filed" link. */
+function turnProofFocus(artifacts: readonly ComputerUseArtifactView[]): ProofDrawerFocus {
+  return proofDrawerFocus("This turn", artifacts);
+}
 
 /** Cited proof ids in one turn's answer text; cheap for a turn with none. */
 function turnCitedProofIds(text: string): string[] {
@@ -4368,9 +4373,9 @@ export function deriveTurnEndDurations(
  * universal `done` event, so it renders identically for every runtime (Codex /
  * Claude / Cursor / Droid / OpenCode).
  *
- * When the turn captured proof, a small `N proof` chip sits on the rule and
- * opens the drawer. The artifacts themselves render inline where they were
- * captured — the chip is a way back, not a second copy.
+ * When the turn captured proof, a small "N proof filed" link sits on the rule
+ * and opens the drawer narrowed to it. The pictures show on the rows that
+ * filed them — the link is a way back, not a second copy.
  */
 function DoneTurnDivider({
   event,
@@ -4382,8 +4387,6 @@ function DoneTurnDivider({
   turnEndFold = null,
   wakeChain = null,
   onToggleFold,
-  resolveProofThumbnailSrc,
-  allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
   onNavigateSuggestion,
   onInsertDraft,
@@ -4440,18 +4443,13 @@ function DoneTurnDivider({
   /** Earlier wake checks folded right below this line: a chip that opens them. */
   wakeChain?: { chainId: string; checkCount: number; open: boolean } | null;
   onToggleFold?: (foldId: string) => void;
-  resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
-  allowLocalProofArtifactProtocol?: boolean;
-  onOpenProofDrawer?: () => void;
+  onOpenProofDrawer?: (focus?: ProofDrawerFocus) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
 }) {
   const [usageDetailsOpen, setUsageDetailsOpen] = useState(false);
-  // Proof captured during this turn renders inline, at the moment it happened,
-  // and starts collapsed so a long capture run never buries the reply.
-  const [proofOpen, setProofOpen] = useState(false);
   const turnProof = proofArtifacts ?? EMPTY_PROOF_ARTIFACTS;
   const completed = event.status === "completed";
   const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
@@ -4545,16 +4543,10 @@ function DoneTurnDivider({
     />
   ) : null;
   const proofChip = turnProof.length > 0 ? (
-    <button
-      type="button"
-      aria-expanded={proofOpen}
-      onClick={() => setProofOpen((open) => !open)}
-      title={proofOpen ? "Hide the proof captured in this turn" : "Show the proof captured in this turn"}
-      className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-fg/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors hover:border-fg/[0.16] hover:text-fg/75"
-    >
-      <Cube size={10} weight="bold" aria-hidden />
-      {turnProof.length} proof
-    </button>
+    <ChatProofCount
+      count={turnProof.length}
+      onOpen={onOpenProofDrawer ? () => onOpenProofDrawer(turnProofFocus(turnProof)) : undefined}
+    />
   ) : null;
   const turnLeading = (
     <span className="inline-flex min-w-0 items-center gap-2">
@@ -4641,17 +4633,6 @@ function DoneTurnDivider({
           </motion.div>
         ) : null}
       </AnimatePresence>
-      {turnProof.length > 0 && proofOpen ? (
-        <div className="mt-2 w-full max-w-[var(--chat-content-width,52rem)]">
-          <ChatProofFilmstrip
-            artifacts={turnProof}
-            resolveThumbnailSrc={resolveProofThumbnailSrc}
-            allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
-            onOpenAll={onOpenProofDrawer}
-            onOpenArtifact={onOpenProofDrawer}
-          />
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -4678,6 +4659,8 @@ function TurnFoldRow({
   onRevealChatTerminal,
   sessionId,
   sourceCount = 0,
+  proofArtifacts = EMPTY_PROOF_ARTIFACTS,
+  onOpenProofDrawer,
 }: {
   event: TurnFoldRenderEvent;
   open: boolean;
@@ -4694,6 +4677,9 @@ function TurnFoldRow({
   sessionId?: string | null;
   /** Sources the agent used in this turn (same count as the turn-end chip). */
   sourceCount?: number;
+  /** Proof the turn filed (same records as the turn-end link). */
+  proofArtifacts?: ComputerUseArtifactView[];
+  onOpenProofDrawer?: (focus?: ProofDrawerFocus) => void;
 }) {
   const toolCount = useMemo(() => dedupeChatToolActivityEntries(toolEntries).length, [toolEntries]);
   const checkpointSummary = hasCheckpointDiffSummary
@@ -4748,6 +4734,8 @@ function TurnFoldRow({
   const detailFileEntries = checkpointSummary ? EMPTY_WORK_LOG_ENTRIES : fileEntries;
   return (
     <div className="min-w-0" data-testid="turn-fold-row">
+      {/* One line at every width: the counts truncate, the proof link never does. */}
+      <div className="flex min-w-0 max-w-full items-center">
       <button
         type="button"
         aria-expanded={open}
@@ -4770,6 +4758,14 @@ function TurnFoldRow({
           ? <CaretDown size={9} weight="bold" className="shrink-0" aria-hidden />
           : <CaretRight size={9} weight="bold" className="shrink-0" aria-hidden />}
       </button>
+      {proofArtifacts.length > 0 ? (
+        <ChatProofCount
+          compact
+          count={proofArtifacts.length}
+          onOpen={onOpenProofDrawer ? () => onOpenProofDrawer(turnProofFocus(proofArtifacts)) : undefined}
+        />
+      ) : null}
+      </div>
       {open && (toolCount > 0 || detailFileEntries.length > 0) ? (
         <div className="min-w-0 pl-1.5">
           <ChatTurnWorkSummary
@@ -4865,9 +4861,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   turnEndWakeChain?: { chainId: string; checkCount: number; open: boolean } | null;
   /** Proof captured after this row but outside a completed turn window. */
   inlineProof?: ComputerUseArtifactView[];
-  resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
-  allowLocalProofArtifactProtocol?: boolean;
-  onOpenProofDrawer?: () => void;
+  onOpenProofDrawer?: (focus?: ProofDrawerFocus) => void;
   /** This row is the trailing streaming assistant text row (paced reveal). */
   pacedTextReveal?: boolean;
   /** This reasoning row is the live turn's newest, still-streaming row. */
@@ -4940,8 +4934,6 @@ const EventRow = React.memo(function EventRow({
   turnEndFold,
   turnEndWakeChain,
   inlineProof,
-  resolveProofThumbnailSrc,
-  allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
   pacedTextReveal,
   liveThinking = false,
@@ -4999,6 +4991,8 @@ const EventRow = React.memo(function EventRow({
           onRevealChatTerminal={onRevealChatTerminal}
           sessionId={sessionId}
           sourceCount={turnSources?.length ?? 0}
+          proofArtifacts={turnProof}
+          onOpenProofDrawer={onOpenProofDrawer}
         />
       ) : envelope.event.type === "new_since_divider" ? (
         <NewSinceDivider sinceMs={envelope.event.sinceMs} />
@@ -5064,8 +5058,6 @@ const EventRow = React.memo(function EventRow({
           turnEndFold={turnEndFold}
           wakeChain={turnEndWakeChain}
           onToggleFold={onToggleTurnFold}
-          resolveProofThumbnailSrc={resolveProofThumbnailSrc}
-          allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
           onOpenProofDrawer={onOpenProofDrawer}
           onNavigateSuggestion={onNavigateSuggestion}
           onInsertDraft={onInsertDraft}
@@ -5086,14 +5078,13 @@ const EventRow = React.memo(function EventRow({
         />
       ) : null}
       {inlineProof?.length ? (
-        <ChatProofFilmstrip
-          artifacts={inlineProof}
-          title="Proof added"
-          resolveThumbnailSrc={resolveProofThumbnailSrc}
-          allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
-          onOpenAll={onOpenProofDrawer}
-          onOpenArtifact={onOpenProofDrawer}
-        />
+        <div className="w-full max-w-[var(--chat-content-width,52rem)]">
+          <ChatProofCount
+            count={inlineProof.length}
+            // Proof between rows: mid-turn, or idle between turns, so not "This turn".
+            onOpen={onOpenProofDrawer ? () => onOpenProofDrawer(proofDrawerFocus("Filed here", inlineProof)) : undefined}
+          />
+        </div>
       ) : null}
     </div>
   );
@@ -5678,7 +5669,7 @@ function AgentChatMessageListMain({
   proofArtifacts?: ComputerUseArtifactView[];
   /** Local Electron can stream larger artifacts through its range protocol. */
   allowLocalProofArtifactProtocol?: boolean;
-  onOpenProofDrawer?: () => void;
+  onOpenProofDrawer?: (focus?: ProofDrawerFocus) => void;
   /** Opens the drawer's Sources section narrowed to one turn (the turn chip). */
   onOpenTurnSources?: (turnId: string) => void;
   /** "Fork from here" on a finished turn's end line. Absent where forking is unavailable. */
@@ -6677,34 +6668,8 @@ function AgentChatMessageListMain({
   );
 
   /**
-   * Proof captured during each turn, keyed by the turn's `done` row.
-   *
-   * Proof itself renders inline where it was captured (an `ade_card` row), so
-   * this is only the turn summary's "N proof" chip — a way back to the drawer
-   * from the turn that produced the capture, not a second copy of the artifacts.
-   * Bucketing is by wall clock because artifacts carry `createdAt`, not turnId.
-   */
-  /**
-   * Picture source for inline proof. The stored `uri` is project-relative
-   * (`.ade/artifacts/...`), and the `ade-artifact://project/` handler resolves
-   * exactly that against the chat's project root (named in the URL) — so a local project gets real
-   * previews synchronously, with no per-tile IPC. A remote project has no such
-   * handler, so this answers null and the filmstrip reads the picture over the
-   * runtime, the same way the drawer and answer citations do.
-   *
-   * Only pictures come back. A recording is not an `<img>`, so the filmstrip
-   * resolves it through the same media-server preview the drawer uses (see
-   * `ChatProofFilmstrip`); returning its raw `.mp4` uri here is what drew a
-   * broken tile in the thread while the drawer played the same recording.
-   */
-  const resolveProofThumbnailSrc = useCallback((artifact: ComputerUseArtifactView): string | null => {
-    if (!allowLocalProofArtifactProtocol || !isImageArtifact(artifact)) return null;
-    return artifactImageSrc(artifact.uri, chatScope.rootPath);
-  }, [allowLocalProofArtifactProtocol, chatScope.rootPath]);
-
-  /**
-   * Proof an answer already shows inline. The turn's "N proof" chip and the
-   * inline filmstrip skip it, so a picture never shows twice in one thread.
+   * Proof an answer already shows inline. The turn's "N proof filed" links
+   * skip it, so a picture never shows twice in one thread.
    *
    * Text streams in pieces, so each turn's pieces are joined before reading
    * citations, which keeps a split citation whole. Per turn, the result is
@@ -6713,7 +6678,7 @@ function AgentChatMessageListMain({
    */
   const citedIdsByTurnRef = useRef(new Map<string, { pieces: number; chars: number; ids: string[] }>());
   const answerCitedProofIds = useMemo(() => {
-    if (!proofArtifacts.length) return EMPTY_CITED_PROOF_IDS;
+    if (!proofArtifacts.length) return EMPTY_PROOF_IDS;
     const piecesByTurn = new Map<string, string[]>();
     for (const envelope of events) {
       if (envelope.event.type !== "text") continue;
@@ -6736,9 +6701,29 @@ function AgentChatMessageListMain({
       for (const id of entry.ids) cited.add(id);
     }
     citedIdsByTurnRef.current = next;
-    return cited.size ? cited : EMPTY_CITED_PROOF_IDS;
+    return cited.size ? cited : EMPTY_PROOF_IDS;
   }, [events, proofArtifacts.length]);
 
+  // Proof a "Filed proof" row already shows under its line. While the turn
+  // runs, the inline "N proof filed" line skips it; the turn-end count keeps it.
+  const actionShownProofIds = useMemo(() => {
+    let ids: Set<string> | null = null;
+    for (const env of allGroupedRows) {
+      if (env.event.type !== "work_log_group") continue;
+      for (const { summary } of collectComputerUseActions(env.event.entries)) {
+        for (const id of computerUseShownProofIds(summary)) (ids ??= new Set()).add(id);
+      }
+    }
+    return ids ?? EMPTY_PROOF_IDS;
+  }, [allGroupedRows]);
+
+  /**
+   * Proof captured during each turn, keyed by the turn's `done` row, for its
+   * "N proof filed" link — a way into the drawer, not a second copy of the
+   * pictures, which show on the rows that filed them. Proof outside a finished
+   * turn anchors on the row it follows. Bucketing is by wall clock because
+   * artifacts carry `createdAt`, not turnId.
+   */
   const turnProofTimeline = useMemo(() => {
     const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
     const inlineByRowKey = new Map<string, ComputerUseArtifactView[]>();
@@ -6800,7 +6785,7 @@ function AgentChatMessageListMain({
       .sort((left, right) => left.at - right.at);
     const unanchored: ComputerUseArtifactView[] = [];
     for (const entry of visibleStamped) {
-      if (assignedIds.has(entry.artifact.id)) continue;
+      if (assignedIds.has(entry.artifact.id) || actionShownProofIds.has(entry.artifact.id)) continue;
       let anchorKey: string | null = null;
       for (const row of visibleRows) {
         if (row.at > entry.at) break;
@@ -6820,7 +6805,7 @@ function AgentChatMessageListMain({
       inlineByRowKey,
       unanchored,
     };
-  }, [allGroupedRows, presentedRows, hasOlderHistory, proofArtifacts, answerCitedProofIds]);
+  }, [allGroupedRows, presentedRows, hasOlderHistory, proofArtifacts, answerCitedProofIds, actionShownProofIds]);
   const turnProofByRowKey = turnProofTimeline.byDoneRowKey;
   // Sources the agent used per turn: the turn-end chip and the fold count.
   // A turn's list keeps its identity while its sources are unchanged, so a
@@ -8061,9 +8046,8 @@ function AgentChatMessageListMain({
       ? openTurnFolds.has(foldEvent.foldId)
       : envelope.event.type === "wake_chain" ? openTurnFolds.has(envelope.event.chainId) : false;
     const turnWorkInFold = envelope.event.type === "done" && foldedTurnEndKeys.has(envelope.key);
-    const turnProof = envelope.event.type === "done"
-      ? turnProofByRowKey.get(envelope.key)
-      : undefined;
+    // A fold row counts the same proof as its turn's `done` row.
+    const turnProof = turnEndKey ? turnProofByRowKey.get(turnEndKey) : undefined;
     const turnScheduledWork = envelope.event.type === "done"
       ? scheduledWorkByTurnEndKey.get(envelope.key)
       : undefined;
@@ -8114,8 +8098,6 @@ function AgentChatMessageListMain({
           onOpenTurnSources={onOpenTurnSources}
           onForkFromTurn={onForkFromTurn}
           inlineProof={inlineProof}
-          resolveProofThumbnailSrc={resolveProofThumbnailSrc}
-          allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
           onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
           onCodexRecovery={onCodexRecovery}
@@ -8188,8 +8170,6 @@ function AgentChatMessageListMain({
         onOpenTurnSources={onOpenTurnSources}
         onForkFromTurn={onForkFromTurn}
         inlineProof={inlineProof}
-        resolveProofThumbnailSrc={resolveProofThumbnailSrc}
-        allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
         onOpenProofDrawer={onOpenProofDrawer}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
@@ -8242,7 +8222,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -8291,13 +8271,11 @@ function AgentChatMessageListMain({
   const turnDivider = null;
   const trailingProof = unanchoredProofArtifacts.length > 0 ? (
     <div className="w-full max-w-[var(--chat-content-width,52rem)]">
-      <ChatProofFilmstrip
-        artifacts={unanchoredProofArtifacts}
-        title="Proof added"
-        resolveThumbnailSrc={resolveProofThumbnailSrc}
-        allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
-        onOpenAll={onOpenProofDrawer}
-        onOpenArtifact={onOpenProofDrawer}
+      <ChatProofCount
+        count={unanchoredProofArtifacts.length}
+        onOpen={onOpenProofDrawer
+          ? () => onOpenProofDrawer(proofDrawerFocus("Latest proof", unanchoredProofArtifacts))
+          : undefined}
       />
     </div>
   ) : null;

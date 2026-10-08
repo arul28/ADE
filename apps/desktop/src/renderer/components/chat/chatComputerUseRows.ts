@@ -11,7 +11,11 @@ import {
   type ComputerUseActionSummary,
   type ComputerUseCommandInput,
 } from "../../../shared/computerUseActionSummary";
-import { computerUseOutcomeNote, layoutComputerUseRun } from "../../../shared/computerUseActionPresentation";
+import {
+  computerUseOutcomeNote,
+  computerUseShownProofIds,
+  layoutComputerUseRun,
+} from "../../../shared/computerUseActionPresentation";
 import { readRecord } from "../../../shared/readRecord";
 import { isShellToolName } from "./toolPresentation";
 import type { ChatWorkLogEntry, ChatWorkLogGroupEvent } from "./chatTranscriptRows";
@@ -151,16 +155,21 @@ export function collectComputerUseActions(
   return actions;
 }
 
+/** Height of the proof picture under a filed-proof line, in px. */
+export const PROOF_THUMBNAIL_HEIGHT = 64;
+
 /**
- * Height estimate for the virtualizer: compact lines, plus the full row with
- * its surface line.
+ * Height estimate for the virtualizer: compact lines, plus the full row, plus
+ * the proof pictures under filed-proof lines.
  */
 export function estimateComputerUseRunHeight(entries: readonly ChatWorkLogEntry[], compactAll = false): number {
   const { earlier, latest } = layoutComputerUseRun(collectComputerUseActions(entries));
   if (!latest) return 0;
-  if (compactAll) return (earlier.length + 1) * 22;
+  const pictures = [...earlier, latest].filter((line) => computerUseShownProofIds(line.summary).length > 0).length
+    * (PROOF_THUMBNAIL_HEIGHT + 10);
+  if (compactAll) return (earlier.length + 1) * 22 + pictures;
   const note = computerUseOutcomeNote(latest.summary) ? 18 : 0;
-  return earlier.length * 22 + 46 + note;
+  return earlier.length * 22 + 46 + note + pictures;
 }
 
 /* ── Runs in the drawn timeline ───────────────────────────────────────────── */
@@ -211,7 +220,7 @@ function sameEnvelope<Row extends ArrangeableRow>(
  *
  * - Computer-use groups of one turn that end up next to each other (the
  *   narration between them folded away) join one run, keyed by the first, so
- *   same-app actions fold together.
+ *   the app carries forward and repeats merge across them.
  * - Every run but the turn's last is marked `computerUseCompact`.
  *
  * Every run keeps the envelope it had last time while its timestamp, turn,

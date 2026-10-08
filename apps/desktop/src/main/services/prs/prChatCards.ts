@@ -478,13 +478,16 @@ export function buildPrConflictCard(args: {
 }): AdeCardPayload {
   const { pr, kind } = args;
   const behind = Math.max(0, pr.behindBaseBy ?? 0);
-  const title = kind === "conflict" ? "Merge conflicts appeared" : `Branch behind ${pr.baseBranch}`;
+  // The title is the whole sentence: renderers show this card as one quiet
+  // transcript line, often mid-turn, so it carries no separate subtitle.
+  const title = kind === "conflict"
+    ? `PR #${pr.githubPrNumber} has merge conflicts with ${pr.baseBranch}`
+    : `PR #${pr.githubPrNumber} is ${behind} commit${behind === 1 ? "" : "s"} behind ${pr.baseBranch}`;
   return {
     cardId: `pr-conflict:${pr.id}:${pr.headSha?.trim() || "head"}:${kind}`,
     variant: "pr_conflict",
     state: "terminal",
     title,
-    subtitle: `PR #${pr.githubPrNumber} · ${pr.baseBranch}`,
     metrics: kind === "behind"
       ? [
           { label: "branch", value: pr.headBranch, tone: "neutral" },
@@ -492,9 +495,7 @@ export function buildPrConflictCard(args: {
         ]
       : [{ label: "merge state", value: "conflicted", tone: "warning" }],
     navTarget: prNavTarget(pr, "overview"),
-    fallbackText: kind === "behind"
-      ? `PR #${pr.githubPrNumber} is ${behind} commit${behind === 1 ? "" : "s"} behind ${pr.baseBranch}.`
-      : `PR #${pr.githubPrNumber} now has merge conflicts.`,
+    fallbackText: `${title}.`,
   };
 }
 

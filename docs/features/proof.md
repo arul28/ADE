@@ -44,7 +44,7 @@ promotes any of them after the fact.
 | `apps/desktop/src/main/services/adeActions/registry.ts`, `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts` | Runtime action, IPC, and renderer bridge for the proof surface. |
 | `apps/ade-cli/src/cli.ts`, `apps/ade-cli/src/adeRpcServer.ts` | Typed `ade proof …` commands and JSON-RPC tools. |
 | `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` | Full proof drawer, artifact tiles, preview states, and delete action. |
-| `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the collapsible inline proof filmstrip. |
+| `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the "N proof filed" count (`ChatProofCount`) that opens the drawer narrowed to a turn. |
 | `apps/desktop/src/shared/demoVideo/demoContract.ts`, `demoPlanner.ts`, `demoProofText.ts` | The demo contract (track, analysis, plan, `.aderaw`, limits), the pure planner, and the proof sentences and chapters every surface shares. |
 | `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, the two engine clients, and `demoMp4Source.ts` (an H.264 MP4, such as the Windows driver's recording, read for the Chromium engine). |
 | `apps/desktop/native/ADEMedia/` | `ade-media`, the macOS demo engine. |
@@ -484,9 +484,10 @@ ADE browser-agent observations are intentionally not proof. `ade browser observe
 Proof surfaces across chat and linked workflow contexts:
 
 - **Chat transcript** — proof is bucketed by capture time into the turn that
-  produced it. The turn rule shows a compact `N proof` control; expanding it
-  reveals a horizontally scrollable filmstrip directly below that turn. It
-  starts collapsed, remains in chronology when newer messages arrive, and is
+  produced it. The turn rule and the turn's fold line show a "N proof filed"
+  count that opens the drawer narrowed to those records. The pictures show
+  under the "Filed proof" action rows that filed them: a small thumbnail
+  (`ProofActionThumbnail`) that enlarges in place, no drawer needed. Proof is
   never pinned to the thread tail.
 - **Proof drawer** — the Proof section of the chat actions drawer
   (`ChatComputerUsePanel.tsx`, grouping in `shared/proofDrawerModel.ts`).
@@ -495,8 +496,10 @@ Proof surfaces across chat and linked workflow contexts:
   order) comes before "Also filed". Two items a `proof-compare` block names
   show as one Before/After pair. A search box, a Pictures/Videos filter, an
   "In answers" filter and a PR chip (from the `github_pr` owner link) sit on
-  top. Deletion stays. A turn's "N proof" chip in the thread counts only proof
-  the answer does not already show.
+  top. Deletion stays. Opened from a thread count, the drawer shows only those
+  records under a "This turn · N ✕" chip; the chip clears it, and so does
+  closing the drawer or switching chats. A turn's count in the thread counts
+  only proof the answer does not already show.
 - **Chat actions drawer layout** — the drawer never scrolls as a whole
   (`ChatActionsDrawerPanel.tsx`). It grows with its content up to the pane's
   height; past that, each section keeps its own region and scrolls inside it.
@@ -526,12 +529,11 @@ runtime host's filesystem path. Desktop shows local images through the
 video, local or remote, plays from main's token-guarded loopback media server,
 which answers each Range read; a remote one is pulled in 2 MiB slices from that
 machine's broker. See
-[computer use › Renderer](./computer-use/README.md#renderer). The inline filmstrip resolves a local
-image synchronously and every recording through that same media-server preview —
-local or on a paired machine — so a recording shows its first frame behind a
-play badge just as the drawer does. A tile a caller cannot draw a picture for
-(a remote image, a trace, a log) falls back to its kind label and opens the
-drawer, which performs the bounded runtime read. iOS requests artifact content over its
+[computer use › Renderer](./computer-use/README.md#renderer). The thumbnail under a
+"Filed proof" row reads its picture through the same preview path as answer
+citations, local or on a paired machine; a record it cannot draw (a trace, a
+log, a missing file) draws nothing, since the row's words already say what was
+filed. iOS requests artifact content over its
 sync command surface and caches renderable images locally. When a runtime is
 unreachable or a desktop remote preview exceeds its bound, the artifact remains
 listed with an unavailable-preview state.

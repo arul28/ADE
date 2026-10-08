@@ -292,59 +292,46 @@ function CiFailureCard({ card }: { card: AdeCardPayload }) {
   );
 }
 
-function metricValue(card: AdeCardPayload, label: string): string | null {
-  const metric = (card.metrics ?? []).find((entry) => entry.label === label);
-  const value = metric?.value?.trim();
-  return value ? value : null;
-}
-
-function behindCountMetric(card: AdeCardPayload): { value: string; label: string } | null {
-  const metric = (card.metrics ?? []).find((entry) => entry.label.endsWith("behind"));
-  const value = metric?.value?.trim();
-  if (!metric || !value) return null;
-  return { value, label: metric.label };
-}
-
 /**
- * One line: the base it fell behind, the pull request, the head branch, and
- * how many commits separate them. Open stays a text arrow, same as the other
- * rails.
+ * A PR that fell behind its base or picked up conflicts. It often lands mid-turn
+ * while the agent is still working, so it reads as one quiet transcript line —
+ * glyph, sentence, "open ›" — not a boxed card. Only a conflict tints the glyph.
  */
-function BranchBehindCard({ card }: { card: AdeCardPayload }) {
-  const prNumber = prNumberOf(card);
-  const branch = metricValue(card, "branch");
-  const behind = behindCountMetric(card);
+function PrConflictLine({ card }: { card: AdeCardPayload }) {
+  // `buildPrConflictCard` marks the conflict kind with this metric.
+  const conflicted = (card.metrics ?? []).some((metric) => metric.label === "merge state" && metric.value === "conflicted");
+  const Glyph = conflicted ? Warning : GitBranch;
   const target = card.navTarget ?? null;
-  const open = () => {
-    if (target) navigateToAppTarget(target);
-  };
-
+  // The fallback is the whole sentence, PR number included, on every card;
+  // older cards' titles ("Branch behind main") left the number to a subtitle.
+  const text = adeCardFallbackText(card).trim().replace(/\.$/, "") || card.title?.trim() || "";
   return (
-    <ChatCard skin="rail" tone="warn" data-testid="branch-behind-card">
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          <ChatCardTitle className="shrink-0">{card.title}</ChatCardTitle>
-          {prNumber != null ? (
-            <CardPrLink prNumber={prNumber} target={target} onOpen={open} />
-          ) : null}
-          {branch ? (
-            <>
-              <span className="shrink-0 text-fg/30" aria-hidden>·</span>
-              <span className={cn("inline-flex min-w-0 items-center gap-1 text-fg/70", CHAT_CARD_BODY_TEXT)}>
-                <GitBranch size={12} weight="bold" aria-hidden />
-                <span className="truncate">{branch}</span>
-              </span>
-            </>
-          ) : null}
-          {behind ? (
-            <ChatCardChip tone="warn">
-              {behind.value} {behind.label}
-            </ChatCardChip>
-          ) : null}
-        </div>
-        {target ? <CardOpenArrow label="Open pull request overview" onOpen={open} /> : null}
-      </div>
-    </ChatCard>
+    <button
+      type="button"
+      data-testid="pr-conflict-line"
+      disabled={!target}
+      onClick={() => {
+        if (target) navigateToAppTarget(target);
+      }}
+      title={adeCardDeeplink(target) ?? text}
+      className={cn(
+        "group flex min-w-0 items-center gap-2.5 py-0.5 text-left font-sans text-muted-fg",
+        "text-[length:calc(var(--chat-font-size)*12/14)]",
+        CHAT_CARD_WIDTH_CLASS,
+        target ? "cursor-pointer" : "cursor-default",
+      )}
+    >
+      <span aria-hidden className="inline-flex w-[18px] shrink-0 items-center justify-center">
+        <Glyph size={13} weight="regular" className={conflicted ? "text-amber-300/85" : undefined} />
+      </span>
+      <span className="min-w-0 truncate transition-colors group-hover:text-fg/80">{text}</span>
+      {target ? (
+        <span className={cn("inline-flex shrink-0 items-center gap-0.5 text-fg/40 transition-colors group-hover:text-fg/70", CHAT_CARD_MICRO_TEXT)}>
+          open
+          <CaretRight size={10} weight="bold" aria-hidden />
+        </span>
+      ) : null}
+    </button>
   );
 }
 
@@ -468,8 +455,8 @@ export function AdeCard({
     return <CiFailureCard card={card} />;
   }
 
-  if (card.variant === "pr_conflict" && behindCountMetric(card)) {
-    return <BranchBehindCard card={card} />;
+  if (card.variant === "pr_conflict") {
+    return <PrConflictLine card={card} />;
   }
 
   const inner = (

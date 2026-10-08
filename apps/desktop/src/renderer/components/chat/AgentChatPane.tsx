@@ -6,6 +6,7 @@ import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib
 import { AnimatePresence, motion } from "motion/react";
 import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import { applySteerOrder } from "../../../shared/steerOrder";
+import type { ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
   inferAttachmentType,
@@ -4334,9 +4335,14 @@ export function AgentChatPane({
       handoffErrorClearTimerRef.current = null;
     }
   }, []);
-  const openProofDrawer = useCallback(() => {
+  // A thread link ("3 proof filed") opens the drawer narrowed to the records
+  // it counted; the drawer's filter chip clears it.
+  const [proofFocus, setProofFocus] = useState<ProofDrawerFocus | null>(null);
+  const openProofDrawer = useCallback((focus?: ProofDrawerFocus) => {
+    setProofFocus(focus ?? null);
     setChatActionsOpen(true);
   }, []);
+  const clearProofFocus = useCallback(() => setProofFocus(null), []);
   // The thread's "N sources" chip opens the drawer with Sources narrowed to
   // that turn; the section's "Show all" clears it.
   const [sourcesTurnFilter, setSourcesTurnFilter] = useState<string | null>(null);
@@ -4345,6 +4351,12 @@ export function AgentChatPane({
     setChatActionsOpen(true);
   }, []);
   const clearSourcesTurnFilter = useCallback(() => setSourcesTurnFilter(null), []);
+  // Closing the drawer drops its filters: it always opens on everything.
+  useEffect(() => {
+    if (chatActionsOpen) return;
+    setProofFocus(null);
+    setSourcesTurnFilter(null);
+  }, [chatActionsOpen]);
   const [iosSimulatorOpen, setIosSimulatorOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
   );
@@ -4972,6 +4984,9 @@ export function AgentChatPane({
     setIosSimulatorOpen(saved.iosSimulatorOpen);
     setAppControlOpen(saved.appControlOpen);
     setTerminalDrawerOpen(saved.terminalDrawerOpen);
+    // Another chat's narrowing would show this chat's drawer empty.
+    setProofFocus(null);
+    setSourcesTurnFilter(null);
   }, [companionStateKey]);
 
   useEffect(() => {
@@ -8465,6 +8480,8 @@ export function AgentChatPane({
   // that comes back after either does not reopen a proof section nobody asked for.
   const proofShowTokenRef = useRef(0);
   const openProofDrawerForShow = useCallback(() => {
+    // An agent's show names its own proof; a thread link's narrowing would hide it.
+    setProofFocus(null);
     setChatActionsOpen(true);
     const token = ++proofShowTokenRef.current;
     // A failed read keeps the proof already on screen rather than blanking it.
@@ -15006,6 +15023,8 @@ export function AgentChatPane({
         events={selectedEventsForDisplay}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
         allowLocalArtifactProtocol={!isRemoteChat}
+        focus={proofFocus}
+        onClearFocus={clearProofFocus}
       />
     </div>
   );

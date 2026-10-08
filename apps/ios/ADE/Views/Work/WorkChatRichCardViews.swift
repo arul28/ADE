@@ -40,7 +40,7 @@ struct WorkToolStatusGlyph: View {
 
 /// The one row a finished turn's intermediate work folds into (desktop
 /// `TurnFoldRow`): a plain inline caption, no box —
-/// `Worked for 4m 12s · 🔧 18 tools · ± 3 files · 🤖 2 subagents · $ 5 jobs (1 failed) · 🌐 4 sources ›`.
+/// `Worked for 4m 12s · 🔧 18 tools · ± 3 files · 🤖 2 subagents · $ 5 jobs (1 failed) · 🌐 4 sources ›  ▣ 2 proof ›`.
 /// Opening it reveals the folded rows below in their original order and a
 /// `🔧 18 tools ›  ± 3 files changed ›` line whose toggles open the turn's
 /// tools or files list inline, as on desktop.
@@ -49,6 +49,8 @@ struct WorkTurnFoldRow: View {
   var work: WorkTurnWorkDisclosure = .none
   var onToggleWork: (WorkTurnWorkSection) -> Void = { _ in }
   var onToggleWorkItem: (String) -> Void = { _ in }
+  /// Opens the proof drawer narrowed to the turn's proof.
+  var onOpenProof: (() -> Void)? = nil
   let onToggle: () -> Void
 
   private struct Count: Identifiable {
@@ -92,33 +94,43 @@ struct WorkTurnFoldRow: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Button(action: onToggle) {
-        HStack(spacing: 5) {
-          Text(model.head).layoutPriority(1)
-          ForEach(counts) { count in
-            HStack(spacing: 3) {
-              Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.5))
-              Image(systemName: count.icon)
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(count.iconTint)
-              Text(count.text)
-                .foregroundStyle(count.tone ?? ADEColor.textMuted)
+      // One line at every width: the counts truncate, the proof link never does.
+      HStack(spacing: 6) {
+        Button(action: onToggle) {
+          HStack(spacing: 5) {
+            Text(model.head).layoutPriority(1)
+            ForEach(counts) { count in
+              HStack(spacing: 3) {
+                Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.5))
+                Image(systemName: count.icon)
+                  .font(.system(size: 8, weight: .bold))
+                  .foregroundStyle(count.iconTint)
+                Text(count.text)
+                  .foregroundStyle(count.tone ?? ADEColor.textMuted)
+              }
             }
+            Image(systemName: model.isExpanded ? "chevron.down" : "chevron.right")
+              .font(.system(size: 7, weight: .bold))
           }
-          Image(systemName: model.isExpanded ? "chevron.down" : "chevron.right")
-            .font(.system(size: 7, weight: .bold))
-          Spacer(minLength: 0)
+          .font(.caption.monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .frame(minHeight: 44)
+          .contentShape(Rectangle())
         }
-        .font(.caption.monospacedDigit())
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .frame(minHeight: 44)
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.label)
+        .accessibilityHint(model.isExpanded ? "Hides the work from this turn." : "Shows the work from this turn.")
+        .layoutPriority(1)
+        WorkProofCountLink(count: model.proofArtifactIds.count, compact: true, onOpen: onOpenProof)
+        // The rest of the line still opens the fold.
+        Color.clear
+          .frame(maxWidth: .infinity, minHeight: 44)
+          .contentShape(Rectangle())
+          .onTapGesture(perform: onToggle)
+          .accessibilityHidden(true)
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel(model.label)
-      .accessibilityHint(model.isExpanded ? "Hides the work from this turn." : "Shows the work from this turn.")
       if showsWorkLine {
         WorkTurnWorkToggles(disclosure: work, onToggle: onToggleWork)
           .padding(.leading, 4)
@@ -4808,6 +4820,14 @@ struct WorkAdeCardView: View, Equatable {
   private var accentTint: Color { workAdeCardToneColor(accentTone) }
 
   var body: some View {
+    if card.variant == "pr_conflict" {
+      WorkPrConflictLine(card: card, deeplink: deeplink, onOpenDeeplink: onOpenDeeplink)
+    } else {
+      boxedCard
+    }
+  }
+
+  private var boxedCard: some View {
     VStack(alignment: .leading, spacing: 0) {
       if isExpanded {
         progressBar
@@ -5098,6 +5118,64 @@ struct WorkAdeCardView: View, Equatable {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(12)
+  }
+}
+
+/// A PR that fell behind its base or picked up conflicts. It often lands mid-turn
+/// while the agent is still working, so it is one quiet transcript line — glyph,
+/// sentence, "open ›" — with no box, no expand state, and an amber glyph only
+/// for a conflict. Mirrors desktop's `PrConflictLine`.
+private struct WorkPrConflictLine: View {
+  let card: WorkAdeCardModel
+  let deeplink: URL?
+  let onOpenDeeplink: (URL) -> Void
+
+  /// `buildPrConflictCard` marks the conflict kind with this metric.
+  private var conflicted: Bool {
+    card.metrics.contains { $0.label == "merge state" && $0.value == "conflicted" }
+  }
+
+  /// The fallback is the whole sentence, PR number included, on every card;
+  /// older cards' titles ("Branch behind main") left the number to a subtitle.
+  private var text: String {
+    let sentence = card.fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !sentence.isEmpty { return sentence.hasSuffix(".") ? String(sentence.dropLast()) : sentence }
+    return card.title.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  var body: some View {
+    Button {
+      if let deeplink { onOpenDeeplink(deeplink) }
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: conflicted ? "exclamationmark.triangle" : "arrow.triangle.branch")
+          .font(.system(size: 12, weight: .regular))
+          .foregroundStyle(conflicted ? ADEColor.warning : ADEColor.textMuted)
+          .frame(width: 18)
+        Text(text)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        if deeplink != nil {
+          HStack(spacing: 2) {
+            Text("open")
+            Image(systemName: "chevron.right")
+              .font(.system(size: 8, weight: .semibold))
+          }
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+          .layoutPriority(1)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(.vertical, 3)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(deeplink == nil)
+    .accessibilityLabel(card.fallbackText)
+    .accessibilityHint(deeplink != nil ? "Opens the pull request" : "")
   }
 }
 

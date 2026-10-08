@@ -31,6 +31,7 @@
 import {
   clip,
   parseOutput,
+  PROOF_ID,
   readAppleDevice,
   readString,
   readUserBrowser,
@@ -91,8 +92,17 @@ export type ComputerUseActionSummary = {
   outcome: ComputerUseActionOutcome;
   /** Why it failed, or why the effect is unconfirmed, as the CLI said it. */
   reason: string | null;
-  /** A filed proof record. */
-  proof: { caption: string | null; prNumber: number | null } | null;
+  /**
+   * A filed proof record: its caption, the PR it was posted to, and the proof
+   * ids the output named (the filed record, or the records a publish posted).
+   */
+  proof: {
+    caption: string | null;
+    prNumber: number | null;
+    artifactIds: string[];
+    /** Set by the run layout: a later `proof publish` posted this record to that PR. */
+    postedToPr?: number | null;
+  } | null;
 };
 
 /** Where the action happened: an app ("in TextEdit") or a site ("on localhost:5173"). */
@@ -171,12 +181,23 @@ type ParsedInvocation = {
    * command before it failed), null otherwise.
    */
   conditional: ShellConditional;
+  /**
+   * What happened to its output on the way to the transcript: `none` when it
+   * printed as is, `cite` when only its `cite:` lines were kept (`| grep
+   * cite:`), `other` when a pipe or redirect cut or hid it.
+   */
+  outputFilter: OutputFilter;
 };
+
+type OutputFilter = "none" | "cite" | "other";
 
 type ShellConditional = "or" | "and" | null;
 
-/** One simple command and the operators on either side of it. */
-type ShellCommand = { tokens: string[]; conditional: ShellConditional };
+/**
+ * One simple command, the operators on either side of it, and the command its
+ * output is piped into.
+ */
+type ShellCommand = { tokens: string[]; conditional: ShellConditional; pipedInto: string[] | null };
 
 /**
  * Split a shell command into simple commands. Quote-aware, with `&&`, `||`,
@@ -204,7 +225,9 @@ function splitShellCommands(source: string): ShellCommand[] {
       const conditional: ShellConditional = before === "||" || after === "||"
         ? "or"
         : before === "&&" ? "and" : null;
-      commands.push({ tokens, conditional });
+      commands.push({ tokens, conditional, pipedInto: null });
+      const piping = before === "|" ? commands[commands.length - 2] : undefined;
+      if (piping) piping.pipedInto = tokens;
       tokens = [];
       before = after;
     } else if (after !== "\n" || before === null) {
@@ -355,7 +378,7 @@ function parseInvocation(tokens: readonly string[], aliasVars: ReadonlySet<strin
     }
     positionals.push(token);
   }
-  return { domain, alias: domainToken!, words, positionals, flags, conditional: null };
+  return { domain, alias: domainToken!, words, positionals, flags, conditional: null, outputFilter: "none" };
 }
 
 /** The second word of a two-word verb (`record start`, `proof capture`). */
@@ -531,6 +554,23 @@ function collectAliasVars(source: string): Set<string> {
   return vars;
 }
 
+/** Stdout sent to a file or `/dev/null`: `>out`, `> out`, `1>>log`, `&>/dev/null`. Not `2>&1`. */
+const STDOUT_REDIRECT = /^(?:1|&)?>>?(?!&)/;
+
+/** Line filters, POSIX and Windows (`findstr`, PowerShell's `Select-String`). */
+const TEXT_FILTERS = new Set(["grep", "egrep", "rg", "findstr", "select-string", "sls"]);
+
+/** What reached the transcript of a command's output; see `ParsedInvocation.outputFilter`. */
+function outputFilterOf(command: ShellCommand): OutputFilter {
+  if (command.tokens.some((token) => STDOUT_REDIRECT.test(token))) return "other";
+  const pipe = command.pipedInto;
+  if (!pipe) return "none";
+  const head = basename(pipe[0] ?? "").replace(/\.exe$/, "");
+  const keepsCites = TEXT_FILTERS.has(head)
+    && pipe.slice(1).some((token) => !token.startsWith("-") && /cite|ade-proof/i.test(token));
+  return keepsCites ? "cite" : "other";
+}
+
 /** The less certain of two: `or` over `and` over unconditional. */
 function strongerConditional(left: ShellConditional, right: ShellConditional): ShellConditional {
   if (left === "or" || right === "or") return "or";
@@ -540,7 +580,8 @@ function strongerConditional(left: ShellConditional, right: ShellConditional): S
 function findInvocations(source: string, depth = 0): ParsedInvocation[] | null {
   const aliasVars = collectAliasVars(source);
   const found: ParsedInvocation[] = [];
-  for (const { tokens, conditional } of splitShellCommands(source)) {
+  for (const command of splitShellCommands(source)) {
+    const { tokens, conditional } = command;
     const head = basename(tokens[0] ?? "");
     // `bash -lc '<script>'`: read the script.
     if (SHELLS.has(head) && depth < 2) {
@@ -557,7 +598,7 @@ function findInvocations(source: string, depth = 0): ParsedInvocation[] | null {
     }
     const invocation = parseInvocation(tokens, aliasVars);
     if (invocation === "control") return null;
-    if (invocation) found.push({ ...invocation, conditional });
+    if (invocation) found.push({ ...invocation, conditional, outputFilter: outputFilterOf(command) });
   }
   return found;
 }
@@ -671,9 +712,13 @@ function describeTarget(
       return shape;
     }
     case "app": {
-      let target: string | null = verbKey === "launch" && invocation.domain === "app-control"
-        ? flagValue(invocation, "--command", "--app") ?? invocation.positionals.join(" ")
-        : invocation.positionals[0] ?? flagValue(invocation, "--app", "--bundle-id") ?? appName;
+      // `app-control launch` (alias `open`) takes a shell command (`npm run
+      // dev`), which is no name for the app: it reads as its label or window
+      // title, or none.
+      if (launchesAppControl(verbKey, invocation.domain)) {
+        return { target: flagValue(invocation, "--label", "--name") ?? appName, quoted: false, direction: null, point: false };
+      }
+      let target: string | null = invocation.positionals[0] ?? flagValue(invocation, "--app", "--bundle-id") ?? appName;
       if (invocation.domain === "apple" && target && /^[\w-]+(\.[\w-]+){2,}$/.test(target)) target = appNameFromBundleId(target);
       shape.target = target;
       return shape;
@@ -730,14 +775,30 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   else if (parsed.effect === "observed") outcome = "observed";
   else if (parsed.effect === "unconfirmed" || parsed.effect === "waiting") outcome = "unconfirmed";
   else outcome = "not_checked";
+  // A filed proof prints its id. A call that exits 0 without one did not file
+  // it: the exit code can be a later command's in the same call. No output at
+  // all says nothing either way (the transcript may not have carried it).
+  const filesProof = FILES_PROOF.has(verb.key);
+  let missingProof: string | null = null;
+  const sawOutput = output.trim() !== "" || invocation.outputFilter === "cite";
+  if (filesProof && sawOutput && outcome !== "failed" && outcome !== "running" && parsed.proofIds.length === 0) {
+    if (invocation.outputFilter === "other") {
+      outcome = "unconfirmed";
+      missingProof = "Its output was cut off, so ADE could not see the proof filed.";
+    } else {
+      outcome = "failed";
+      missingProof = "No proof was filed.";
+    }
+  }
   const failureReason = outcome === "failed"
     ? parsed.errorMessage
       ?? (parsed.okFalse ? parsed.values.get("message") ?? readString(json?.message) : null)
       ?? (input.status === "interrupted" ? "Stopped before it finished." : null)
+      ?? missingProof
     : null;
   const reason = outcome === "failed"
     ? failureReason
-    : outcome === "unconfirmed" ? parsed.effectReason : null;
+    : outcome === "unconfirmed" ? missingProof ?? parsed.effectReason : null;
 
   /* Surface and browser. */
   let surface = surfaceFor(domain);
@@ -838,10 +899,29 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
     outcome,
     reason: reason ? clip(reason, 240) : null,
     proof: verb.key.startsWith("proof")
-      ? { caption: shape.target ? clip(shape.target) : null, prNumber: parsed.prNumber ?? numberFlag(invocation, "--pr") }
+      ? {
+        caption: shape.target ? clip(shape.target) : null,
+        prNumber: parsed.prNumber ?? numberFlag(invocation, "--pr"),
+        // A publish: the records it reports posted, else the ids it was given.
+        // Anything else: the one it filed.
+        artifactIds: verb.key === "proof publish"
+          ? parsed.postedProofIds.length
+            ? parsed.postedProofIds
+            : [...new Set([...invocation.positionals.filter((token) => PROOF_ID.test(token)), ...parsed.proofIds])]
+          : filesProof ? parsed.proofIds : [],
+      }
       : null,
   };
 }
+
+/** `app-control launch`, or its alias `open`: both start the app from a shell command. */
+export function launchesAppControl(verb: string, domain: string): boolean {
+  return domain === "app-control" && (verb === "launch" || verb === "open");
+}
+
+/** Verbs that file one proof record and print its id. */
+const FILES_PROOF = new Set(["proof", "proof capture", "proof attach"]);
+
 
 function numberFlag(invocation: ParsedInvocation, name: string): number | null {
   const value = flagValue(invocation, name);

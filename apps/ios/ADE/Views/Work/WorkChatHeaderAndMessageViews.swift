@@ -1187,25 +1187,22 @@ func workDoneTurnTokenLine(_ usage: WorkUsageSummary?) -> String? {
 
 /// The turn-end line (desktop `DoneTurnDivider` + `ChatTurnWorkSummary`): one
 /// row that never wraps —
-/// `🕐 ran 4m 30s · 02:15 AM  [2 proof] [3 sources] · ↑IN 12k/↓OUT 3k/~40k   🔧 4 tools ›  ± 3 files ›`.
+/// `🕐 ran 4m 30s · 02:15 AM  2 proof filed › [3 sources] · ↑IN 12k/↓OUT 3k/~40k   🔧 4 tools ›  ± 3 files ›`.
 /// A failed or interrupted turn leads with the model and reads the status in
 /// place of the time. A turn that folded keeps only time, usage, proof and
 /// sources (its tools and files moved up to the fold row). A usage-limit turn
 /// collapses to one quiet `Paused · usage limit · 4m` line with its token
 /// usage behind a details toggle. The tools and files toggles open the turn's
-/// lists inline, and the proof chip opens the turn's filmstrip, as on desktop.
+/// lists inline, and "N proof filed ›" opens the proof drawer narrowed to the
+/// turn's proof, as on desktop.
 /// The context meter lives in the composer (desktop parity).
 struct WorkTurnEndMarkerView: View {
   let marker: WorkTurnEndMarker
   var work: WorkTurnWorkDisclosure = .none
   var onToggleWork: (WorkTurnWorkSection) -> Void = { _ in }
   var onToggleWorkItem: (String) -> Void = { _ in }
-  var proofOpen = false
-  var onToggleProof: (() -> Void)? = nil
-  /// Loaded previews by artifact id, for the filmstrip thumbnails.
-  var proofContent: [String: WorkLoadedArtifactContent] = [:]
-  var onLoadProof: (ComputerUseArtifactSummary) -> Void = { _ in }
-  var onOpenProofDrawer: (() -> Void)? = nil
+  /// Opens the proof drawer narrowed to this turn's proof.
+  var onOpenProof: (() -> Void)? = nil
 
   @State private var usageLimitDetailsExpanded = false
 
@@ -1241,7 +1238,7 @@ struct WorkTurnEndMarkerView: View {
     }
     if let ranFor { parts.append(ranFor) }
     if let tokenLine { parts.append(tokenLine) }
-    if marker.proofCount > 0 { parts.append("\(marker.proofCount) proof") }
+    if marker.proofCount > 0 { parts.append("\(marker.proofCount) proof filed") }
     if marker.sourceCount > 0 { parts.append(workPluralCount(marker.sourceCount, "source")) }
     if showsWorkToggles, let summary = workFormatTurnWorkSummaryLabel(toolCount: work.toolCount, fileCount: work.fileStat?.count ?? 0) {
       parts.append(summary)
@@ -1293,14 +1290,6 @@ struct WorkTurnEndMarkerView: View {
       }
       if showsWorkToggles, work.open != nil {
         WorkTurnWorkInlineDetails(disclosure: work, onToggleItem: onToggleWorkItem)
-      }
-      if proofOpen, !marker.proofArtifacts.isEmpty {
-        WorkTurnProofFilmstrip(
-          artifacts: marker.proofArtifacts,
-          content: proofContent,
-          onLoad: onLoadProof,
-          onOpen: onOpenProofDrawer
-        )
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1361,18 +1350,7 @@ struct WorkTurnEndMarkerView: View {
 
   @ViewBuilder
   private var chips: some View {
-    if marker.proofCount > 0 {
-      Button {
-        onToggleProof?()
-      } label: {
-        chip(icon: "cube", text: "\(marker.proofCount) proof")
-          .frame(minHeight: 44)
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .disabled(onToggleProof == nil)
-      .accessibilityLabel("\(proofOpen ? "Hide" : "Show") the proof captured in this turn")
-    }
+    WorkProofCountLink(count: marker.proofCount, onOpen: onOpenProof)
     if marker.sourceCount > 0 {
       chip(icon: "globe", text: workPluralCount(marker.sourceCount, "source"))
     }
