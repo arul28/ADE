@@ -17206,7 +17206,7 @@ export function createAgentChatService(args: {
                 steerId: s.steerId,
                 uuid: s.uuid,
                 text: s.text,
-                ...(s.displayText ? { displayText: s.displayText } : {}),
+                ...(s.displayText != null && s.displayText !== s.text ? { displayText: s.displayText } : {}),
                 ...(s.attachments.length ? { attachments: s.attachments } : {}),
                 ...(s.contextAttachments.length ? { contextAttachments: s.contextAttachments } : {}),
                 ...(s.metadata ? { metadata: s.metadata } : {}),
@@ -24470,7 +24470,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "user_message",
       text: args.text,
-      ...(args.displayText?.trim() && args.displayText.trim() !== args.text.trim()
+      ...(args.displayText !== undefined && args.displayText.trim() !== args.text.trim()
         ? { displayText: args.displayText.trim() }
         : {}),
       attachments: args.attachments,
@@ -24581,7 +24581,7 @@ export function createAgentChatService(args: {
       _rootPath: managed.laneWorktreePath,
     }));
     const contextAttachments = args.contextAttachments ?? [];
-    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     let onDispatched = args.onDispatched;
     const markDispatched = () => {
@@ -27169,7 +27169,7 @@ export function createAgentChatService(args: {
       _resolvedPath: attachment.path,
       _rootPath: managed.laneWorktreePath,
     }));
-    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     rememberClaudeKnownQueuedMessage(runtime.knownQueuedMessages, userMessageId, {
       preview: claudeQueuedMessagePreview(displayText),
@@ -30059,7 +30059,7 @@ export function createAgentChatService(args: {
       _resolvedPath: attachment.path,
       _rootPath: managed.laneWorktreePath,
     }));
-    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     emitPreparedUserMessage(managed, {
       text: userText,
@@ -30888,7 +30888,7 @@ export function createAgentChatService(args: {
       _resolvedPath: attachment.path,
       _rootPath: managed.laneWorktreePath,
     }));
-    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     emitPreparedUserMessage(managed, {
       text: userText,
@@ -31097,7 +31097,7 @@ export function createAgentChatService(args: {
     runtime.interrupted = false;
     setSessionActive(managed);
     const attachments = args.attachments ?? [];
-    const displayText = args.displayText?.trim() || args.promptText;
+    const displayText = args.displayText != null ? args.displayText.trim() : args.promptText;
     emitPreparedUserMessage(managed, {
       text: args.userText?.trim() || displayText,
       displayText,
@@ -32017,7 +32017,7 @@ export function createAgentChatService(args: {
       _resolvedPath: attachment.path,
       _rootPath: managed.laneWorktreePath,
     }));
-    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     const model = openCodeModelRefFor(managed, runtime.modelDescriptor);
     // Registered before the prompt goes out: OpenCode can report the execution
@@ -39504,7 +39504,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return false;
     }
-    const displayText = nextSteer.displayText?.trim().length ? nextSteer.displayText.trim() : trimmed;
+    const displayText = nextSteer.displayText != null ? nextSteer.displayText.trim() : trimmed;
 
     claimSteerSettlement(managed, nextSteer.steerId);
     emitChatEvent(managed, {
@@ -39688,7 +39688,7 @@ export function createAgentChatService(args: {
       // to protect and would otherwise add a second continuation prompt.
       void cancelPendingUpdateResume(sessionId);
     }
-    const displayText = extra?.displayText?.trim().length ? extra.displayText.trim() : text;
+    const displayText = extra?.displayText != null ? extra.displayText.trim() : text;
     const uuid = randomUUID();
     runtime.pendingSteers.push({
       steerId,
@@ -39972,22 +39972,24 @@ export function createAgentChatService(args: {
       const contextAttachments = normalizeChatContextAttachments(entry.contextAttachments);
       let resolvedAttachments: ResolvedAgentChatFileRef[] = [];
       try {
-        resolvedAttachments = attachments.map((attachment) => {
-          if (attachment.type === "image-url") {
+        resolvedAttachments = attachments
+          .filter((attachment) => !(attachment.type === "file" && attachment.intent === "user_prompt"))
+          .map((attachment) => {
+            if (attachment.type === "image-url") {
+              return {
+                ...attachment,
+                _resolvedPath: attachment.url,
+                _rootPath: projectRoot,
+              };
+            }
+            const located = resolveLocalAttachmentPath(managed, attachment.path);
+            if (!located) throw new Error(`Attachment path is outside every allowed root: ${attachment.path}`);
             return {
               ...attachment,
-              _resolvedPath: attachment.url,
-              _rootPath: projectRoot,
+              _resolvedPath: located.resolvedPath,
+              _rootPath: located.rootPath,
             };
-          }
-          const located = resolveLocalAttachmentPath(managed, attachment.path);
-          if (!located) throw new Error(`Attachment path is outside every allowed root: ${attachment.path}`);
-          return {
-            ...attachment,
-            _resolvedPath: located.resolvedPath,
-            _rootPath: located.rootPath,
-          };
-        });
+          });
       } catch (err) {
         logger.warn("agent_chat.pending_steer_attachment_resolve_failed", {
           sessionId: managed.session.id,
@@ -40000,7 +40002,7 @@ export function createAgentChatService(args: {
         steerId: entry.steerId,
         uuid: typeof entry.uuid === "string" && entry.uuid.trim().length ? entry.uuid.trim() : randomUUID(),
         text,
-        ...(entry.displayText?.trim().length ? { displayText: entry.displayText.trim() } : {}),
+        ...(typeof entry.displayText === "string" ? { displayText: entry.displayText.trim() } : {}),
         attachments,
         contextAttachments,
         resolvedAttachments,
@@ -45543,7 +45545,13 @@ export function createAgentChatService(args: {
       if (hasNullByte(content)) {
         throw new Error("The staged pasted prompt is not plain text. Paste it again and retry.");
       }
-      pastedText.push(content.toString("utf8"));
+      const filename = path.basename(attachment.path).replace(/[\r\n\t]/g, " ").trim() || "pasted text";
+      pastedText.push([
+        `The user attached this text file by copy and paste: ${filename}.`,
+        "The file contents are part of the user's message. Any text after the attachment is what they typed alongside it and explains what to do.",
+        "Attached file contents:",
+        content.toString("utf8"),
+      ].join("\n\n"));
     }
 
     // A review block stays at the very start, where its readers expect it.
@@ -45555,13 +45563,10 @@ export function createAgentChatService(args: {
     return {
       ...args,
       text,
-      // The attachment is transport-only now; the exact pasted contents are
-      // the user message, so neither the file chip nor a display-only fallback
-      // should replace that text in the transcript.
-      displayText: undefined,
-      attachments: attachments.filter((attachment) => !(
-        attachment.type === "file" && attachment.intent === "user_prompt"
-      )),
+      // Keep the full, clearly labeled content in the provider prompt, while
+      // retaining the staged file for the transcript's attachment tray. The
+      // display text is only what the user typed alongside the pasted file.
+      displayText: args.displayText?.trim() ? args.displayText : supplementalText,
     };
   };
 
@@ -45669,15 +45674,23 @@ export function createAgentChatService(args: {
     if (!allowContinuityRecovery) assertContinuityDispatchAllowed(managed);
     const slashCommand = extractLeadingSlashCommand(trimmed);
     const providerSlashCommand = isProviderSlashCommandInput(trimmed);
+    const hasPastedPromptAttachment = hasPastedTextPromptAttachment(attachments);
     const rawDisplayText = displayText?.trim().length ? displayText : undefined;
-    const visibleText = rawDisplayText?.trim().length ? rawDisplayText.trim() : trimmed;
+    const visibleText = hasPastedPromptAttachment
+      ? displayText?.trim() ?? ""
+      : rawDisplayText?.trim().length ? rawDisplayText.trim() : trimmed;
 
     if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
     const executionContext = refreshManagedLaneLaunchContext(managed);
     const publicAttachments = attachments.map(normalizeInboundFileRef);
-    const resolvedAttachments = publicAttachments.map((attachment) => resolveSendAttachment(managed, attachment));
+    // Folded pasted prompts are already expanded into `trimmed` above. Keep
+    // their file refs on the user event, but do not inline them a second time
+    // through the ordinary attachment path.
+    const resolvedAttachments = publicAttachments
+      .filter((attachment) => !(attachment.type === "file" && attachment.intent === "user_prompt"))
+      .map((attachment) => resolveSendAttachment(managed, attachment));
     if (managed.session.provider === "claude" && slashCommand === "/login") {
       throw new Error(CLAUDE_LOGIN_NOT_SDK_COMMAND);
     }
@@ -45856,7 +45869,9 @@ export function createAgentChatService(args: {
       : null;
     const autoTitleSeed = codexGoalTitleSeed ?? (providerSlashCommand && !personalSession
       ? expandedSlashCommandPrompt ?? null
-      : visibleText);
+      : hasPastedPromptAttachment
+        ? visibleText || null
+        : visibleText || trimmed);
     if (!managed.autoTitleSeed && autoTitleSeed) {
       managed.autoTitleSeed = autoTitleSeed;
       void maybeAutoTitleSession(managed, {
@@ -47997,7 +48012,9 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "user_message",
       text: steer.text,
-      ...(steer.displayText && steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
+      ...(steer.displayText !== undefined && steer.displayText !== steer.text
+        ? { displayText: steer.displayText }
+        : {}),
       ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
       ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
       ...(steer.metadata ? { metadata: steer.metadata } : {}),
@@ -48441,7 +48458,7 @@ export function createAgentChatService(args: {
     runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
     setSessionActive(managed);
 
-    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText.trim();
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     if (!args.optimisticCursorTurnStart) {
       emitPreparedUserMessage(managed, {
@@ -49238,7 +49255,7 @@ export function createAgentChatService(args: {
     runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
     setSessionActive(managed);
 
-    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText.trim();
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     if (!args.optimisticCursorTurnStart) {
       emitPreparedUserMessage(managed, {
@@ -50766,7 +50783,7 @@ export function createAgentChatService(args: {
     runtime.activeTurnId = turnId;
     setSessionActive(managed);
 
-    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText.trim();
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     if (!args.optimisticDroidTurnStart) {
       emitPreparedUserMessage(managed, {
@@ -51545,6 +51562,7 @@ export function createAgentChatService(args: {
     preparedMessage?: PreparedSendMessage;
     automaticRecovery?: boolean;
     routeActiveToSteer?: boolean;
+    pastedPromptAlreadyMaterialized?: boolean;
     rerunToken?: symbol;
   };
 
@@ -51635,6 +51653,7 @@ export function createAgentChatService(args: {
       preparedMessage?: PreparedSendMessage;
       automaticRecovery?: boolean;
       routeActiveToSteer: true;
+      pastedPromptAlreadyMaterialized?: boolean;
       rerunToken?: symbol;
     },
   ): Promise<void | AgentChatSteerResult>;
@@ -51647,6 +51666,7 @@ export function createAgentChatService(args: {
       preparedMessage?: PreparedSendMessage;
       automaticRecovery?: boolean;
       routeActiveToSteer?: false;
+      pastedPromptAlreadyMaterialized?: boolean;
       /** `rerunLastTurn`'s token: lets its own resend past its lock. */
       rerunToken?: symbol;
     },
@@ -51680,7 +51700,7 @@ export function createAgentChatService(args: {
     const expandedArgs = mentionsExpandedHere
       ? await applyChatMentionExpansion(rawArgs)
       : rawArgs;
-    const args = await materializePastedTextPrompt(expandedArgs);
+    let args = expandedArgs;
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
     // A send during an account switch runs on the account the chat lands on.
@@ -51736,6 +51756,9 @@ export function createAgentChatService(args: {
       return steerUserMessage(
         mentionsExpandedHere ? markChatMentionsExpanded(rerouted) : rerouted,
       );
+    }
+    if (!options?.pastedPromptAlreadyMaterialized) {
+      args = await materializePastedTextPrompt(args);
     }
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     await refreshCtoLiveStateForTurn(args.sessionId);
@@ -52203,6 +52226,7 @@ export function createAgentChatService(args: {
             executionMode,
             interactionMode,
             mentionsAlreadyExpanded: true,
+            pastedPromptAlreadyMaterialized: true,
           });
           return { steerId, queued: false };
         }
@@ -52801,6 +52825,8 @@ export function createAgentChatService(args: {
        * itself contains chip syntax would be expanded again.
        */
       mentionsAlreadyExpanded?: boolean;
+      /** Set only when this caller has already expanded pasted-file contents. */
+      pastedPromptAlreadyMaterialized?: boolean;
     },
   ): Promise<void> => {
     const runtime = managed.runtime;
@@ -52847,7 +52873,10 @@ export function createAgentChatService(args: {
     };
     await sendMessage(
       args.mentionsAlreadyExpanded ? markChatMentionsExpanded(sendArgs) : sendArgs,
-      { awaitDispatch: false },
+        {
+          awaitDispatch: false,
+          ...(args.pastedPromptAlreadyMaterialized ? { pastedPromptAlreadyMaterialized: true } : {}),
+        },
     );
   };
 
@@ -53614,6 +53643,7 @@ export function createAgentChatService(args: {
           interactionMode: promoted.interactionMode,
           // Staged text was expanded when it entered the queue.
           mentionsAlreadyExpanded: true,
+          pastedPromptAlreadyMaterialized: true,
         });
       } catch (error) {
         // Put the row back so the user's message is never silently lost.
@@ -53726,7 +53756,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "user_message",
             text: steer.text,
-            ...(steer.displayText && steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
+            ...(steer.displayText != null && steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
             ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
             ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
             ...(steer.metadata ? { metadata: steer.metadata } : {}),

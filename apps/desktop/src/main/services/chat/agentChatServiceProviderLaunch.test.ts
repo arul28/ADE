@@ -20,6 +20,7 @@ import {
   respondWithSession,
   spawn,
   startup,
+  tmpRoot,
   waitFor,
   waitForEvent,
 } from "./agentChatService.testHarness";
@@ -514,6 +515,34 @@ describe("Pi follows the chat's effort and names another provider's route", () =
     // Before, a cleared effort mapped to no level and nothing was sent, so the
     // live session kept thinking at `high`.
     expect(pooled.setThinking).toHaveBeenCalledWith(null);
+    service.forceDisposeAll();
+  });
+
+  it("keeps pasted-file contents out of the Pi transcript while sending them to the worker", async () => {
+    const pooled = installFakePiWorker();
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await createPiSession(service);
+    const pastedPath = path.join(tmpRoot, "pasted-for-pi.txt");
+    const pastedBody = "Pi should receive this pasted file once.";
+    fs.writeFileSync(pastedPath, pastedBody);
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "",
+      displayText: "",
+      attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
+    }, { awaitDispatch: true });
+    await vi.waitFor(() => expect(pooled.sendPrompt).toHaveBeenCalled());
+
+    const userMessage = events.find((event) => event.sessionId === session.id && event.event.type === "user_message");
+    expect(userMessage?.event).toMatchObject({
+      displayText: "",
+      attachments: [expect.objectContaining({ path: pastedPath, intent: "user_prompt" })],
+    });
+    const providerPayload = JSON.stringify(pooled.sendPrompt.mock.calls[0]?.[0]);
+    expect(providerPayload.split(pastedBody)).toHaveLength(2);
+    expect(providerPayload).toContain("pasted-for-pi.txt");
     service.forceDisposeAll();
   });
 

@@ -1108,7 +1108,8 @@ function buildDraftChatMessageArgs(
 ): Omit<AgentChatSendArgs, "sessionId"> {
   return {
     text: prepared.finalText,
-    displayText: prepared.finalDisplayText || "Selected visual app context",
+    displayText: prepared.finalDisplayText
+      || (hasPastedTextPromptAttachment(prepared.selectedAttachments) ? "" : "Selected visual app context"),
     attachments: prepared.selectedAttachments,
     contextAttachments: prepared.selectedContextAttachments,
     reasoningEffort: prepared.reasoningEffort,
@@ -10636,19 +10637,14 @@ export function AgentChatPane({
       // plus where the composer and text sat so both can animate into place.
       const prepared = launch.firstMessage;
       const isPastedTextPrompt = hasPastedTextPromptAttachment(prepared.selectedAttachments);
-      const visibleAttachments = isPastedTextPrompt
-        ? prepared.selectedAttachments.filter((attachment) => !(
-          attachment.type === "file" && attachment.intent === "user_prompt"
-        ))
-        : prepared.selectedAttachments;
       const firstMessage: AgentChatEventEnvelope = {
         sessionId: launch.sessionId,
         timestamp: new Date().toISOString(),
         event: {
           type: "user_message",
           text: prepared.finalText,
-          displayText: prepared.finalDisplayText || (isPastedTextPrompt ? "Pasted text prompt" : "Selected visual app context"),
-          ...(visibleAttachments.length ? { attachments: visibleAttachments } : {}),
+          displayText: prepared.finalDisplayText || (isPastedTextPrompt ? "" : "Selected visual app context"),
+          ...(prepared.selectedAttachments.length ? { attachments: prepared.selectedAttachments } : {}),
           ...(prepared.selectedContextAttachments.length ? { contextAttachments: prepared.selectedContextAttachments } : {}),
         },
       };
@@ -13309,16 +13305,12 @@ export function AgentChatPane({
     // Show the optimistic bubble immediately when we already have a session.
     // Awaiting session-create roundtrips before this setter delays the bubble
     // by hundreds of ms on a typical send.
-    const selectedAttachmentsForOptimistic = isLiteralSlashCommand
-      ? []
-      : attachmentsSnapshot.filter((attachment) => !(
-        attachment.type === "file" && attachment.intent === "user_prompt"
-      ));
+    const selectedAttachmentsForOptimistic = isLiteralSlashCommand ? [] : attachmentsSnapshot;
     const selectedContextAttachmentsForOptimistic = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
     let optimisticDisplayText = composedWithVisualContext.displayText;
     if (optimisticDisplayText == null) {
       if (attachmentsSnapshot.length) {
-        optimisticDisplayText = hasPastedPrompt ? "Pasted text prompt" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
+        optimisticDisplayText = hasPastedPrompt ? text : DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
       } else if (contextAttachmentsSnapshot.length) {
         optimisticDisplayText = "Attached issue context";
       } else if (!text.length && includeThreadComments) {
@@ -13354,7 +13346,7 @@ export function AgentChatPane({
       }
       const finalDisplayText = composedWithVisualContext.displayText
         ?? (attachmentsSnapshot.length
-          ? (hasPastedPrompt ? "" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST)
+          ? (hasPastedPrompt ? text : DEFAULT_PARALLEL_ATTACHMENT_REQUEST)
           : contextAttachmentsSnapshot.length || !includeThreadComments
             ? "Attached issue context"
             : "");
@@ -13476,7 +13468,9 @@ export function AgentChatPane({
           await window.ade.agentChat.send({
             sessionId,
             text: finalText,
-            displayText: finalDisplayText || (includeThreadComments ? "" : "Selected visual app context"),
+            displayText: hasPastedPrompt
+              ? finalDisplayText
+              : finalDisplayText || (includeThreadComments ? "" : "Selected visual app context"),
             ...threadCommentSendFields,
             attachments: selectedAttachments,
             contextAttachments: selectedContextAttachments,
