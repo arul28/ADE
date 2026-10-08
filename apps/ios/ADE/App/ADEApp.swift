@@ -179,8 +179,8 @@ struct ADEApp: App {
 private final class ADESyncIntentBridge: ADEIntentCommandBridge {
   /// A notification action can launch the app in the background before the
   /// account has started. Restore the account and its machine list first, so
-  /// the push's machine can be found. When the account cannot load, the action
-  /// falls back to the reconnect logic below instead of being dropped.
+  /// the push's machine can be found. When they cannot load, the push's machine
+  /// cannot be verified, and the action sends nothing (see `dispatch`).
   @MainActor
   private static func accountMachinesReady() async -> Bool {
     let account = AccountService.shared
@@ -208,13 +208,17 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
     // it first, and send nothing if it cannot be reached.
     if let machineKey = (payload["accountMachineKey"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines),
-      !machineKey.isEmpty,
-      await Self.accountMachinesReady(),
-      !sync.accountMachineIsCurrent(machineKey) {
-      guard await sync.ensureAccountMachineForNavigation(machineKey) else {
+      !machineKey.isEmpty {
+      // A machine that cannot be verified is never assumed to be the focused
+      // one: sending there could approve another machine's request.
+      var reached = await Self.accountMachinesReady()
+      if reached, !sync.accountMachineIsCurrent(machineKey) {
+        reached = await sync.ensureAccountMachineForNavigation(machineKey)
+      }
+      guard reached else {
         let name = AccountService.shared.machines
-          .first { $0.machineKey == machineKey }?.displayName ?? "That computer"
-        sync.landOnHub(notice: "\(name) is not reachable. Nothing was sent.")
+          .first { $0.machineKey == machineKey }?.displayName ?? "that computer"
+        sync.landOnHub(notice: "Could not reach \(name). Nothing was sent.")
         return
       }
     }
