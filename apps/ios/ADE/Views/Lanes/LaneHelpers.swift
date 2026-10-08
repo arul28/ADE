@@ -601,7 +601,8 @@ func selectChatPrs(
 /// all is legacy data and may use the lane fallback; that fallback is decided
 /// PER PR, so one linked row does not hide every older row in the same lane.
 /// Unlike the desktop `selectPrsForChat` (edges-first), iOS scopes the lane list
-/// first via `selectChatPrs`, then drops rows another chat claimed or this chat
+/// first via `selectChatPrs`, then drops rows another chat on the PR's lane
+/// claimed (a cross-lane link is not a claim) or this chat
 /// unlinked. Named for its real semantics so it is not mistaken for the shared
 /// desktop function.
 func scopeLaneChatPrsByLinks(
@@ -613,7 +614,11 @@ func scopeLaneChatPrsByLinks(
   return pullRequests.filter { pr in
     if lanePrDismissedChatSessionIds(pr).contains(trimmed) { return false }
     let linked = lanePrChatSessionIds(pr)
-    return linked.isEmpty || linked.contains(trimmed)
+    if linked.contains(trimmed) { return true }
+    // A link from a chat on another lane (a stack coordinator) is a reference,
+    // not a claim, so the chats on the PR's own lane keep it.
+    let crossLane = Set(pr.crossLaneChatSessionIds ?? [])
+    return linked.allSatisfy { crossLane.contains($0) }
   }
 }
 

@@ -8,6 +8,22 @@ function linkedSessionIds(pr: PrSummary): string[] {
   return (pr.chatSessionIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
 }
 
+/**
+ * Chats that claim a PR away from the other chats on its lane: every linked
+ * chat except one on another lane. A stack coordinator links every layer from
+ * its own lane; that is a reference, and the layer's own chats keep the PR.
+ */
+function claimingSessionIds(pr: PrSummary): string[] {
+  const crossLane = new Set((pr.crossLaneChatSessionIds ?? []).map((id) => String(id ?? "").trim()));
+  return linkedSessionIds(pr).filter((id) => !crossLane.has(id));
+}
+
+/** True when a chat on this PR's lane other than `sessionId` claimed it. */
+export function prClaimedByOtherChat(pr: PrSummary, sessionId: string): boolean {
+  if (linkedSessionIds(pr).includes(sessionId)) return false;
+  return claimingSessionIds(pr).length > 0;
+}
+
 function dismissedSessionIds(pr: PrSummary): string[] {
   return (pr.dismissedChatSessionIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
 }
@@ -17,7 +33,8 @@ function dismissedSessionIds(pr: PrSummary): string[] {
  *
  * Edges win: if this chat linked any PRs, show only those — including
  * cross-lane GitHub stack members. A zero-edge chat may display unedged
- * current-branch PRs (no silent write). Never show a PR another chat claimed.
+ * current-branch PRs (no silent write). Never show a PR another chat on its
+ * lane claimed; a link from a chat on another lane is not a claim.
  * An unlinked (dismissed) PR does not revive as fallback.
  */
 export function selectPrsForChat(
@@ -34,8 +51,7 @@ export function selectPrsForChat(
   const branch = normalizeBranch(options?.currentBranch);
   return prs.filter((pr) => {
     if (dismissedSessionIds(pr).includes(sessionId)) return false;
-    const linked = linkedSessionIds(pr);
-    if (linked.length > 0) return false;
+    if (claimingSessionIds(pr).length > 0) return false;
     if (!branch) return true;
     const head = normalizeBranch(pr.headBranch);
     return !head || head === branch;
@@ -46,7 +62,8 @@ export function selectPrsForChat(
  * Scope PRs to one chat, lane-first.
  *
  * Every PR this lane owns (or this chat explicitly linked) is the candidate
- * set; then a row whose link belongs to another chat is dropped, and a row this
+ * set; then a row claimed by another chat on its lane is dropped (a link from
+ * a chat on another lane, such as a stack coordinator, is not a claim), and a row this
  * chat explicitly unlinked (a tombstone) stays gone even though the lane still
  * owns it. Kept lane-first rather than edges-first so the desktop toolbar/pane
  * do not hide a lane's legacy unedged rows when a sibling row gains an edge.
@@ -64,8 +81,7 @@ export function selectPrsForChatInLane(
   if (!sessionId) return owned;
   return owned.filter((pr) => {
     if (dismissedSessionIds(pr).includes(sessionId)) return false;
-    const linked = linkedSessionIds(pr);
-    return linked.length === 0 || linked.includes(sessionId);
+    return !prClaimedByOtherChat(pr, sessionId);
   });
 }
 

@@ -77,16 +77,62 @@ export function createPrChatLinkStore(args: {
   const dismissedChatSessionIdsByPrId = (prIds: string[]): Map<string, string[]> =>
     sessionIdsForTable("pull_request_chat_session_dismissals", prIds, "prs.chat_session_dismissals_read_failed");
 
+  /**
+   * Linked chats that live on a lane other than the PR's own. The edge's
+   * `lane_id` is the PR's lane, so the chat's lane comes from its session row.
+   * A chat whose lane is unknown is not listed: it keeps counting as a claim.
+   */
+  const crossLaneChatSessionIdsByPrId = (prIds: string[]): Map<string, string[]> => {
+    const ids = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+    const result = new Map<string, string[]>();
+    if (ids.length === 0) return result;
+    try {
+      for (let offset = 0; offset < ids.length; offset += EDGE_ID_CHUNK_SIZE) {
+        const chunk = ids.slice(offset, offset + EDGE_ID_CHUNK_SIZE);
+        const placeholders = chunk.map(() => "?").join(", ");
+        const rows = db.all<EdgeRow>(
+          `
+            select pcs.pr_id, pcs.session_id
+              from pull_request_chat_sessions pcs
+              join pull_requests pr
+                on pr.id = pcs.pr_id and pr.project_id = pcs.project_id
+              join terminal_sessions ts
+                on ts.id = pcs.session_id
+             where pcs.project_id = ?
+               and pcs.pr_id in (${placeholders})
+               and ts.lane_id is not null
+               and ts.lane_id <> pr.lane_id
+             order by pcs.created_at asc, pcs.id asc
+          `,
+          [projectId, ...chunk],
+        );
+        for (const row of rows) {
+          const sessionId = String(row.session_id ?? "").trim();
+          if (!sessionId) continue;
+          const current = result.get(row.pr_id) ?? [];
+          if (!current.includes(sessionId)) current.push(sessionId);
+          result.set(row.pr_id, current);
+        }
+      }
+    } catch (error) {
+      logger.warn("prs.chat_session_cross_lane_read_failed", { error: getErrorMessage(error) });
+    }
+    return result;
+  };
+
   const withChatSessionLinks = (summaries: PrSummary[]): PrSummary[] => {
     const prIds = summaries.map((summary) => summary.id);
     const links = chatSessionIdsByPrId(prIds);
+    const crossLane = crossLaneChatSessionIdsByPrId(prIds);
     const dismissals = dismissedChatSessionIdsByPrId(prIds);
     return summaries.map((summary) => {
       const sessionIds = links.get(summary.id);
+      const crossLaneIds = crossLane.get(summary.id);
       const dismissed = dismissals.get(summary.id);
       return {
         ...summary,
         ...(sessionIds?.length ? { chatSessionIds: sessionIds } : {}),
+        ...(crossLaneIds?.length ? { crossLaneChatSessionIds: crossLaneIds } : {}),
         ...(dismissed?.length ? { dismissedChatSessionIds: dismissed } : {}),
       };
     });

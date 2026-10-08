@@ -18,7 +18,7 @@ import {
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import type { OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary, StackLinkOffer } from "../../../shared/types";
-import { PrDetailPane } from "../prs/detail/PrDetailPane";
+import { PrDetailPane, type PrDetailRuntime } from "../prs/detail/PrDetailPane";
 import { PrsProvider } from "../prs/state/PrsContext";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
@@ -35,6 +35,7 @@ import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 import { Banner } from "../ui/notice";
+import { openLaneOnMachinePath } from "../../lib/laneNavigation";
 
 /**
  * "Link a PR by number or URL" — the manual route into the many-to-many model.
@@ -457,7 +458,9 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
   runtimePinRef.current = runtimePin;
   const runtimePinKey = runtimePin?.key ?? null;
-  const pinMachineName = useMachineEntryForBinding(runtimePin)?.machineName ?? null;
+  const pinMachine = useMachineEntryForBinding(runtimePin);
+  const pinMachineName = pinMachine?.machineName ?? null;
+  const pinMachineId = pinMachine?.machineId ?? null;
   const [pr, setPr] = useState<PrSummary | null>(null);
   // Every PR linked to this chat. The pane used to keep only the primary, so a
   // second PR had nowhere to appear even once the data layer allowed one.
@@ -827,6 +830,22 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     [linkedPrs, pr, selectLinkedPr],
   );
 
+  // The embedded detail view reads description, timeline, files, commits and
+  // activity itself. Without the pin those reads went to this window's machine,
+  // which has no row for another machine's PR, so the body stayed empty.
+  const detailRuntime = useMemo<PrDetailRuntime | null>(() => {
+    if (!runtimePin) return null;
+    return {
+      pin: runtimePin,
+      machineName: pinMachineName ?? "this lane's machine",
+      onOpenLane: () => {
+        if (pinMachineId) navigate(openLaneOnMachinePath(laneId, pinMachineId));
+      },
+    };
+    // Keyed on the stable pin key; see `runtimePinRef`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, navigate, pinMachineId, pinMachineName, runtimePinKey]);
+
   if (variant === "tools") {
     if (loading) {
       return <p className="px-3 py-6 text-center text-[12px] text-fg/40">Loading…</p>;
@@ -845,6 +864,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
                 detailBusy={false}
                 lanes={scope.lane ? [scope.lane] : []}
                 mergeMethod="squash"
+                runtime={detailRuntime}
                 prSwitcher={prSwitcher}
                 onRefresh={async () => { await refresh({ live: true }); }}
                 onNavigate={(path) => navigate(path)}

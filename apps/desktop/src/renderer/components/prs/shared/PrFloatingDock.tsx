@@ -440,10 +440,18 @@ function stackCardText(pr: PrWithConflicts, stackNumber: number, count: number):
 
 function stackMergeButtonLabel(args: { armed: boolean; count: number; prNumber: number; bypassing: boolean }): string {
   if (args.armed) {
-    return args.count > 1 ? `Confirm: merge the ${args.count} open PRs up to #${args.prNumber}` : "Confirm: merge this PR";
+    const verb = args.bypassing ? "bypass and merge" : "merge";
+    return args.count > 1 ? `Confirm: ${verb} the ${args.count} open PRs up to #${args.prNumber}` : `Confirm: ${verb} this PR`;
   }
-  if (args.count > 1) return `Merge ${args.count} PRs`;
+  if (args.count > 1) return args.bypassing ? `Bypass & merge ${args.count} PRs` : `Merge ${args.count} PRs`;
   return args.bypassing ? "Bypass & merge" : "Merge";
+}
+
+/** What the bypass box does. Above the bottom, GitHub only bypasses one layer at a time. */
+function stackBypassHint(count: number): string {
+  return count > 1
+    ? `GitHub bypasses rules only for the bottom PR, so ADE merges the ${count} PRs one at a time from the bottom.`
+    : "Merges without the reviews and checks the branch rules require.";
 }
 
 /**
@@ -491,9 +499,9 @@ function PrStackMergeCard({
   const canMerge = pr.state === "open";
   // Older hosts do not send `openThroughHere`; the position is the upper bound.
   const count = stack.openThroughHere || stack.position;
-  // GitHub bypasses rules only for a merge of the bottom open PR.
-  const canBypass = count === 1;
-  const bypassing = canBypass && bypass;
+  // GitHub bypasses rules only for a merge of the bottom open PR; above it the
+  // host merges the covered PRs one layer at a time, each with the bypass.
+  const bypassing = bypass;
 
   const merge = () => {
     if (!armed) {
@@ -549,17 +557,21 @@ function PrStackMergeCard({
               </button>
             ))}
           </div>
-          {canBypass ? (
-            <label className="mb-2 flex items-center gap-2 text-[11.5px]" style={{ color: bypass ? COLORS.danger : COLORS.textMuted, fontFamily: SANS_FONT, cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={bypass}
-                onChange={(event) => { setBypass(event.target.checked); setArmed(false); }}
-                data-testid="pr-stack-merge-bypass"
-              />
-              Bypass branch rules (needs bypass permission)
-            </label>
-          ) : null}
+          <label className="mb-2 flex items-start gap-2 text-[11.5px]" style={{ color: bypass ? COLORS.danger : COLORS.textMuted, fontFamily: SANS_FONT, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={bypass}
+              onChange={(event) => { setBypass(event.target.checked); setArmed(false); }}
+              data-testid="pr-stack-merge-bypass"
+            />
+            <span className="min-w-0">
+              <span className="block">Bypass branch rules (needs bypass permission)</span>
+              {bypass ? (
+                <span className="block leading-snug" style={{ color: COLORS.textMuted }}>{stackBypassHint(count)}</span>
+              ) : null}
+            </span>
+          </label>
           {/* Pinned to the card's bottom edge, so a short pane that scrolls
               the card still shows the merge button. */}
           <div className="ade-pr-dock-card-actions">
