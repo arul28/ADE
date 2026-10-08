@@ -2372,13 +2372,17 @@ account-signed-in but not directly paired to a machine. Rows can be dismissed
 with a swipe; account fallback and offline states remain explicit.
 
 **Every tap lands somewhere visible.** Approve and Deny on a push connect to the
-machine the payload's `accountMachineKey` names before they send, and send
-nothing when it cannot be reached. An ADE link that reaches no route in
+machine the payload's `accountMachineKey` names before they send. When that
+machine cannot be verified (the account's machine list does not load) or
+reached, they send nothing and the Hub says "Could not reach <machine>.
+Nothing was sent." They never fall back to the focused machine. An ADE link that reaches no route in
 `DeepLinkRouter`, or a push with no usable target, calls
 `SyncService.landOnHub(notice:)`: the Hub opens and shows one line. An outside
 session link that has not opened after `workSessionNavigationTimeout` (10 s)
 lands there too, with a notice that names the machine ("Arul's Mac Studio is
-offline."); the timer waits while the Wake & open prompt is up. A chat that is
+offline."); the timer waits while the Wake & open prompt is up. The Work tab
+clears the request as soon as the chat opens, before it acknowledges the
+Activity item, so the timer cannot close a chat that opened. A chat that is
 still loading shows its real frame — header with title and machine, a centred
 "Connecting to <machine>…" line, a disabled composer — and goes to the Hub with
 a notice after the same 10 s.
