@@ -9,7 +9,7 @@ import { isWorkBoardColumn, WORK_BOARD_COLUMN_LABEL, type WorkBoardColumn } from
  * Every ADE place a link can name is here. The phone opens a chat, a pull
  * request, Activity or a Linear issue itself; a lane, file, commit, branch or
  * proof link shows the phone's "Send to your computer" card. Field values may
- * be `{{trigger.*}}` variables, which stay raw in the link and are filled in
+ * be `{{trigger.*}}` or `{{run.*}}` variables, which stay raw in the link and are filled in
  * when the automation runs.
  */
 export type NotifyLinkKind =

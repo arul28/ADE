@@ -324,6 +324,12 @@ export type TriggerContext = {
   /** Structured chat-session payload for `session.*` triggers. */
   session?: TriggerSessionContext;
   /**
+   * What this run has made so far, for `{{run.*}}` in later steps: a
+   * notification can open the chat or lane the run created, which did not
+   * exist when the rule was written. Filled in as the run goes.
+   */
+  run?: AutomationRunTemplateContext;
+  /**
    * Custom webhook request. Its fields read at the top of the placeholder
    * namespace: `{{trigger.body.*}}`, `{{trigger.headers.*}}`,
    * `{{trigger.query.*}}`, `{{trigger.method}}`.
@@ -709,8 +715,41 @@ export function isWebhookTrigger(trigger: TriggerContext): boolean {
   return trigger.triggerType === "webhook" && Boolean(trigger.webhook);
 }
 
+/** `{{run.*}}` values. `laneId` falls back to the trigger's lane, which every lane mode writes. */
+export type AutomationRunTemplateContext = {
+  id: string;
+  laneId?: string;
+  laneName?: string;
+  chatSessionId?: string;
+};
+
+const PLACEHOLDER_PATH = String.raw`(?:trigger|run)\.[^}\s]+`;
+const WHOLE_PLACEHOLDER = new RegExp(String.raw`^\{\{\s*(${PLACEHOLDER_PATH})\s*\}\}$`);
+const ANY_PLACEHOLDER = new RegExp(String.raw`\{\{\s*(${PLACEHOLDER_PATH})\s*\}\}`, "g");
+
+/** One `trigger.*` or `run.*` value; `run.laneId` / `run.laneName` fall back to the trigger's lane. */
+function readTemplateValue(trigger: TriggerContext, expr: string): unknown {
+  if (expr.startsWith("run.")) {
+    const key = expr.slice("run.".length);
+    const run = trigger.run;
+    if (key === "laneId") return run?.laneId ?? trigger.laneId;
+    if (key === "laneName") return run?.laneName ?? trigger.laneName;
+    return run ? (run as Record<string, unknown>)[key] : undefined;
+  }
+  return readTriggerPath(trigger, expr);
+}
+
+/** True when every `{{trigger.*}}` / `{{run.*}}` in `template` has a non-empty value now. */
+export function placeholdersAllResolve(template: string, trigger: TriggerContext): boolean {
+  for (const match of template.matchAll(ANY_PLACEHOLDER)) {
+    const value = readTemplateValue(trigger, match[1]!);
+    if (value == null || (typeof value === "string" && !value.trim())) return false;
+  }
+  return true;
+}
+
 /**
- * Recursively substitute `{{trigger.*}}` placeholders inside a JSON-ish args
+ * Recursively substitute `{{trigger.*}}` and `{{run.*}}` placeholders inside a JSON-ish args
  * tree with values read from the trigger context. Strings that are wholly a
  * single placeholder (`"{{trigger.issue.number}}"`) are replaced with the raw
  * value (preserves number/boolean types); strings with embedded placeholders
@@ -741,13 +780,13 @@ export function resolvePlaceholders(node: unknown, trigger: TriggerContext): unk
     );
   }
   if (typeof node === "string") {
-    const wholeMatch = /^\{\{\s*(trigger\.[^}\s]+)\s*\}\}$/.exec(node);
+    const wholeMatch = WHOLE_PLACEHOLDER.exec(node);
     if (wholeMatch) {
-      const value = readTriggerPath(trigger, wholeMatch[1]!);
+      const value = readTemplateValue(trigger, wholeMatch[1]!);
       return value === undefined ? node : value;
     }
-    return node.replace(/\{\{\s*(trigger\.[^}\s]+)\s*\}\}/g, (_, expr) => {
-      const value = readTriggerPath(trigger, String(expr));
+    return node.replace(ANY_PLACEHOLDER, (_, expr) => {
+      const value = readTemplateValue(trigger, String(expr));
       if (value == null) return "";
       if (typeof value === "string") return value;
       try { return JSON.stringify(value); } catch { return String(value); }
@@ -3208,8 +3247,22 @@ export function createAutomationService({
       return { status: "failed", output: `Action '${domain}.${actionName}' is not callable on the resolved service.` };
     }
 
+    // A notification whose link names something this run did not make (the
+    // agent step failed before its chat existed) goes without the link rather
+    // than failing: the person still hears about the run.
+    let argsToResolve = config.args ?? {};
+    if (
+      domain === "attention" && actionName === "sendNotification"
+      && argsToResolve && !Array.isArray(argsToResolve)
+      && typeof (argsToResolve as Record<string, unknown>).open === "string"
+      && !placeholdersAllResolve((argsToResolve as Record<string, unknown>).open as string, trigger)
+    ) {
+      const { open: _unresolvedLink, ...rest } = argsToResolve as Record<string, unknown>;
+      argsToResolve = rest;
+    }
+
     // Resolve placeholders in args + any explicit `resolvers` map.
-    const resolvedArgs = resolvePlaceholders(config.args ?? {}, trigger);
+    const resolvedArgs = resolvePlaceholders(argsToResolve, trigger);
     if (config.resolvers && typeof resolvedArgs === "object" && resolvedArgs !== null && !Array.isArray(resolvedArgs)) {
       for (const [key, pathExpr] of Object.entries(config.resolvers)) {
         const value = readTriggerPath(trigger, pathExpr);
@@ -3537,6 +3590,8 @@ export function createAutomationService({
           automationRunId: runId,
         });
         updateRun(runId, { chat_session_id: session.id });
+        // Later steps can open this chat (`{{run.chatSessionId}}`).
+        trigger.run = { ...trigger.run, id: trigger.run?.id ?? runId ?? "", chatSessionId: session.id, laneId };
         const result = await agentChatServiceRef.runSessionTurn({
           sessionId: session.id,
           text: promptText,
@@ -3615,6 +3670,7 @@ export function createAutomationService({
       confidence,
       summary: summarizeLegacyActions(actions),
     });
+    trigger.run = { ...trigger.run, id: run.id };
     let completed = 0;
     let runStatus: AutomationRunStatus = "succeeded";
     let runError: string | null = null;
