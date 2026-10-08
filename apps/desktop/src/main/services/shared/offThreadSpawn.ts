@@ -159,17 +159,43 @@ const WORKER_SOURCE = String.raw`
       post({ type: "spawned", id: message.id, pid: typeof child.pid === "number" ? child.pid : null });
       child.stdin.on("error", () => {});
       if (message.stdin !== null) child.stdin.end(message.stdin);
-      child.stdout.on("data", (data) => post({ type: "stdout", id: message.id, chunk: new Uint8Array(toBytes(data)) }));
-      child.stderr.on("data", (data) => post({ type: "stderr", id: message.id, chunk: new Uint8Array(toBytes(data)) }));
+      // Output is sent in batches, a few ms apart (or every 64 KB): Windows
+      // console tools write in tiny pieces (tasklist: ~7,000 writes for
+      // 18 KB), and one message per piece cost the caller's loop ~55 ms a run.
+      const pending = { stdout: [], stderr: [] };
+      let pendingBytes = 0;
+      let flushTimer = null;
+      const flush = () => {
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = null;
+        pendingBytes = 0;
+        for (const stream of ["stdout", "stderr"]) {
+          const chunks = pending[stream];
+          if (chunks.length === 0) continue;
+          pending[stream] = [];
+          post({ type: stream, id: message.id, chunk: new Uint8Array(chunks.length === 1 ? chunks[0] : Buffer.concat(chunks)) });
+        }
+      };
+      const queue = (stream) => (data) => {
+        const bytes = toBytes(data);
+        pending[stream].push(bytes);
+        pendingBytes += bytes.length;
+        if (pendingBytes >= 65536) flush();
+        else if (!flushTimer) flushTimer = setTimeout(flush, 8);
+      };
+      child.stdout.on("data", queue("stdout"));
+      child.stderr.on("data", queue("stderr"));
       let failed = false;
       child.on("error", (error) => {
         failed = true;
         children.delete(message.id);
+        flush();
         post({ type: "error", id: message.id, code: error && error.code ? String(error.code) : null, message: String(error && error.message || error) });
       });
       child.on("close", (code, signal) => {
         children.delete(message.id);
         if (failed) return;
+        flush();
         post({ type: "close", id: message.id, code, signal });
       });
       return;
