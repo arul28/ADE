@@ -3,9 +3,10 @@
 // A hidden WebView2 window that runs MusicKit JS v3 on a tiny local page and is
 // driven by ADE's main process over stdio:
 //   stdin  = one JSON command per line. Forwarded to the page verbatim, except
-//            the host's own commands: {"cmd":"quit"}, {"cmd":"show"}, {"cmd":"hide"},
+//            the host's own commands: {"cmd":"quit"},
 //            {"cmd":"showAuth"} (bring the sign-in window to the front) and
 //            {"cmd":"closeAuth"} (close it, which cancels the sign-in).
+//   Both pipes are UTF-8 (no BOM), whatever the machine's ANSI code page is.
 //   stdout = one JSON object per line: page events and command replies, plus the
 //            host's own {"event":"hostReady"|"hostClosing"|"hostError"|"authWindow"}.
 //   stderr = a human log. It never contains tokens: command lines are not logged,
@@ -24,6 +25,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -98,13 +100,60 @@ static class Program {
     }
   }
 
+  // A JSON string literal: quotes, backslashes and every control character escaped.
   static string Quote(string s) {
     if (s == null) return "null";
-    return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "") + "\"";
+    var b = new StringBuilder(s.Length + 2);
+    b.Append('"');
+    foreach (char c in s) {
+      switch (c) {
+        case '"': b.Append("\\\""); break;
+        case '\\': b.Append("\\\\"); break;
+        case '\n': b.Append("\\n"); break;
+        case '\r': b.Append("\\r"); break;
+        case '\t': b.Append("\\t"); break;
+        default:
+          if (c < ' ' || c == (char)0x2028 || c == (char)0x2029) b.Append("\\u").Append(((int)c).ToString("x4"));
+          else b.Append(c);
+          break;
+      }
+    }
+    b.Append('"');
+    return b.ToString();
+  }
+
+  // Only ADE's player page may talk to ADE, and the player's webviews only go
+  // where MusicKit and Apple's sign-in need to: the page itself and Apple.
+  // Only top-level navigations are checked: Apple's sign-in may frame others.
+  static bool IsPlayerPage(string uri) {
+    return uri != null && uri.StartsWith("https://" + virtualHost + "/", StringComparison.OrdinalIgnoreCase);
+  }
+
+  static bool IsAllowedNavigation(string uri) {
+    if (uri == null) return false;
+    if (uri == "about:blank" || IsPlayerPage(uri)) return true;
+    Uri parsed;
+    if (!Uri.TryCreate(uri, UriKind.Absolute, out parsed) || parsed.Scheme != Uri.UriSchemeHttps) return false;
+    string host = parsed.Host.ToLowerInvariant();
+    return host == "apple.com" || host.EndsWith(".apple.com") || host == "icloud.com" || host.EndsWith(".icloud.com");
+  }
+
+  static void GuardNavigation(CoreWebView2 core, string name) {
+    core.NavigationStarting += (o, ev) => {
+      if (IsAllowedNavigation(ev.Uri)) return;
+      ev.Cancel = true;
+      Log(name + " navigation blocked");
+    };
   }
 
   [STAThread]
   static int Main(string[] argv) {
+    // A winexe's console streams use the ANSI code page (Windows-1252 here),
+    // which garbles every accented or CJK title on the way to ADE.
+    var utf8 = new UTF8Encoding(false);
+    Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), utf8) { AutoFlush = true });
+    Console.SetError(new StreamWriter(Console.OpenStandardError(), utf8) { AutoFlush = true });
+    Console.SetIn(new StreamReader(Console.OpenStandardInput(), utf8));
     string baseDir = AppDomain.CurrentDomain.BaseDirectory;
     string udf = null;
     string page = Path.Combine(baseDir, "page");
@@ -180,7 +229,9 @@ static class Program {
         core.Settings.AreDevToolsEnabled = show;
         core.Settings.AreDefaultContextMenusEnabled = show;
         core.Settings.IsStatusBarEnabled = false;
+        GuardNavigation(core, "player");
         core.WebMessageReceived += (o, ev) => {
+          if (!IsPlayerPage(ev.Source)) return;
           string message;
           try { message = ev.TryGetWebMessageAsString(); } catch (Exception) { return; }
           if (message != null && message.StartsWith("{")) Emit(message);
@@ -243,6 +294,7 @@ static class Program {
       Present(form);
       await popup.EnsureCoreWebView2Async(environment);
       popup.CoreWebView2.Settings.AreDevToolsEnabled = false;
+      GuardNavigation(popup.CoreWebView2, "popup");
       // Apple's consent page loads ADE's icon from the player page's origin.
       try { popup.CoreWebView2.SetVirtualHostNameToFolderMapping(virtualHost, pageDir, CoreWebView2HostResourceAccessKind.Allow); } catch (Exception) { }
       popup.CoreWebView2.WindowCloseRequested += (a, b) => form.Close();
@@ -272,15 +324,6 @@ static class Program {
               if (f.IsDisposed) continue;
               if (close) f.Close(); else Present(f);
             }
-          }));
-          continue;
-        }
-        if (line == "{\"cmd\":\"show\"}" || line == "{\"cmd\":\"hide\"}") {
-          bool visible = line.Contains("show");
-          mainForm.BeginInvoke((Action)(() => {
-            mainForm.Opacity = visible ? 1 : 0;
-            mainForm.ShowInTaskbar = visible;
-            mainForm.Location = visible ? new System.Drawing.Point(80, 80) : new System.Drawing.Point(-32000, -32000);
           }));
           continue;
         }

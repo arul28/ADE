@@ -7,7 +7,9 @@
 //   event:   {"event":"<name>", ...}
 //
 // Tokens arrive in `configure` and leave in `authorize`'s reply only. Nothing
-// here logs them, and nothing writes them anywhere but MusicKit itself.
+// here logs them. MusicKit saves the Music-User-Token in this profile's
+// localStorage; ADE keeps it in its own encrypted store and passes it in on
+// every start, so the page deletes MusicKit's copy whenever MusicKit writes it.
 (function () {
   "use strict";
   var post = function (o) {
@@ -20,6 +22,18 @@
   var loaded = false;
   var mk = null;
   var lastTimeEmit = 0;
+
+  // MusicKit's key is "<prefix>.<team id>.media-user-token".
+  var forgetSavedUserToken = function () {
+    try {
+      for (var i = localStorage.length - 1; i >= 0; i--) {
+        var key = localStorage.key(i);
+        if (key && /\.media-user-token$/.test(key)) localStorage.removeItem(key);
+      }
+    } catch (e) { /* storage unavailable: nothing saved */ }
+  };
+  // Before MusicKit loads: a token saved by an older build must not sign it in.
+  forgetSavedUserToken();
 
   var stateNames = {};
   var playbackStateName = function (n) {
@@ -141,19 +155,28 @@
         wire();
       }
       if (c.userToken) mk.musicUserToken = c.userToken;
+      forgetSavedUserToken();
       if (typeof c.volume === "number") mk.volume = c.volume;
       statusEl("MusicKit " + MusicKit.version + " ready");
       return snapshot();
     },
     authorize: async function () {
-      var token = await needMk().authorize();
+      var token;
+      try {
+        token = await needMk().authorize();
+      } finally {
+        forgetSavedUserToken();
+      }
       return { userToken: token || mk.musicUserToken || null, authorized: mk.isAuthorized };
     },
     unauthorize: async function () {
-      await needMk().unauthorize();
+      try {
+        await needMk().unauthorize();
+      } finally {
+        forgetSavedUserToken();
+      }
       return snapshot();
     },
-    state: async function () { return snapshot(); },
     queue: async function () { return queueItems(); },
     playItems: async function (c) {
       needMk();
@@ -177,7 +200,6 @@
       if (m.isPlaying) m.pause(); else await m.play();
       return snapshot();
     },
-    stop: async function () { await needMk().stop(); return snapshot(); },
     next: async function () { await needMk().skipToNextItem(); return snapshot(); },
     prev: async function () {
       var m = needMk();

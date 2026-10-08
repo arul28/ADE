@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Scripts only from this page and Apple (MusicKit loads its HLS player and
+     helpers from Apple's CDN at runtime, and hls.js runs workers from blob:). -->
+<meta http-equiv="Content-Security-Policy" content="script-src 'self' https://*.apple.com blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>ADE Music</title>
 <meta name="color-scheme" content="light">
 <!-- What Apple's "Allow access" screen shows for this app. -->

@@ -311,54 +311,7 @@ export function stripDataUrlPrefix(dataUrl: string): string {
   return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
 }
 
-/** `metadata.contextKind` of a badge that stands for a whole live tab, not one element. */
-export const BROWSER_LIVE_TAB_CONTEXT_KIND = "live_tab";
-
-function liveBrowserTabId(item: BuiltInBrowserContextItem): string | null {
-  const metadata = item.metadata ?? {};
-  if (metadata.contextKind !== BROWSER_LIVE_TAB_CONTEXT_KIND) return null;
-  return stringOrNull(metadata.tabId);
-}
-
-/** Whether the badge stands for a whole live tab (see `attachBrowserTabToComposer`). */
-export function isLiveBrowserTabContext(item: BuiltInBrowserContextItem): boolean {
-  return liveBrowserTabId(item) !== null;
-}
-
-/**
- * A whole tab the user attached ("Ask agent", "Attach to chat"). The page is
- * live in front of them and leased to this chat, so the agent must read and
- * drive that tab, not fetch a copy of the URL: a fetch misses the scroll
- * position, the sign-in, and anything the page changed since it loaded.
- */
-function formatLiveBrowserTabForPrompt(item: BuiltInBrowserContextItem, tabId: string): string {
-  const title = item.title ?? stringOrNull(item.metadata?.title);
-  const url = item.url ?? stringOrNull(item.metadata?.url) ?? "unknown URL";
-  return [
-    `The user attached their live ADE browser tab ${tabId}: ${title ? `"${title}" ` : ""}${url}`,
-    "It is open in front of them, already leased to this chat, and shows exactly what they see, scrolled to where they are.",
-    `- Read it from the tab itself: \`ade --socket browser observe --tab ${tabId} --text\` (screenshot and DOM of what is on screen) and \`ade --socket browser find --tab ${tabId} "<text>" --text\`.`,
-    `- Act on it in place with \`ade --socket browser <command> --tab ${tabId}\` (click, scroll, fill, key, back, \`open <url>\`), so they watch it happen in that tab.`,
-    "- Do not web-fetch or curl this URL, and do not open a new tab for it: a fetched copy is not what the user is looking at.",
-  ].join("\n");
-}
-
 export function formatBuiltInBrowserContextForPrompt(items: BuiltInBrowserContextItem[]): string {
-  if (!items.length) return "";
-  const liveTabs: string[] = [];
-  const elements: BuiltInBrowserContextItem[] = [];
-  for (const item of items) {
-    const tabId = liveBrowserTabId(item);
-    if (tabId) liveTabs.push(formatLiveBrowserTabForPrompt(item, tabId));
-    else elements.push(item);
-  }
-  // Like the element block, the result ends in a newline so the user's text
-  // starts on its own line.
-  const liveTabBlock = liveTabs.length ? `${liveTabs.join("\n\n")}\n\n` : "";
-  return liveTabBlock + formatBuiltInBrowserElementsForPrompt(elements);
-}
-
-function formatBuiltInBrowserElementsForPrompt(items: BuiltInBrowserContextItem[]): string {
   if (!items.length) return "";
   const rows = items.map((item, index) => {
     const metadata = item.metadata ?? {};
