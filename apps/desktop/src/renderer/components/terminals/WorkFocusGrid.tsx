@@ -13,8 +13,10 @@ import React, { useEffect, useRef } from "react";
 import { CaretLeft, CaretRight, SquaresFour, Target } from "@phosphor-icons/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { primarySessionLabel } from "../../lib/sessions";
+import { useAppStore } from "../../state/appStore";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ToolLogo } from "./ToolLogos";
+import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 
 /**
  * Keep the previous order for ids that stay, drop the ones that left, and add
@@ -29,30 +31,41 @@ export function stableFocusOrder(previous: readonly string[], next: readonly str
 
 export function WorkFocusGridEmpty({
   workingCount,
-  onLeaveGrid,
+  playing = true,
 }: {
   workingCount: number;
-  onLeaveGrid: () => void;
+  /** False pauses the backdrop when this page is not on screen. */
+  playing?: boolean;
 }) {
+  // The same window-sized picture the new chat page and the top bar paint, so
+  // the empty grid reads as part of the window instead of a blank panel. The
+  // copy sits on a theme glass card so it stays readable over any picture.
+  const theme = useAppStore((s) => s.theme);
   return (
-    <div className="flex h-full min-h-0 w-full items-center justify-center p-6" data-empty="true">
-      <div className="flex max-w-[340px] flex-col items-center gap-3 text-center">
-        <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-accent)]">
-          <Target size={20} weight="bold" aria-hidden />
+    <div className="relative flex h-full min-h-0 w-full items-center justify-center p-6" data-empty="true">
+      <WorkToolPickerBackdrop theme={theme} playing={playing} field="window" />
+      <div className="ade-liquid-glass relative z-10 flex max-w-[360px] flex-col items-center gap-3 rounded-xl px-6 py-5 text-center">
+        <span className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--color-accent)] text-[var(--color-accent-fg)]">
+          <Target size={22} weight="bold" aria-hidden />
         </span>
-        <div className="text-[13px] font-medium text-fg">Nothing waits for you</div>
-        <div className="text-[11.5px] leading-relaxed text-muted-fg">
-          {workingCount > 0
-            ? `${workingCount} chat${workingCount === 1 ? " is" : "s are"} working. ${workingCount === 1 ? "It shows" : "They show"} here when ${workingCount === 1 ? "it finishes" : "they finish"} or ${workingCount === 1 ? "asks" : "ask"} you something.`
-            : "When an agent finishes a turn or asks you something, its chat shows here."}
-        </div>
-        <button
-          type="button"
-          onClick={onLeaveGrid}
-          className="mt-1 inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--work-pane-border)] px-2.5 text-[11px] text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-        >
-          Show one chat instead
-        </button>
+        {workingCount > 0 ? (
+          <>
+            <div className="text-[15px] font-medium text-fg">Nothing needs your attention right now</div>
+            <div className="text-[12px] leading-relaxed text-fg/80">
+              <span className="font-semibold tabular-nums text-fg">
+                {workingCount} {workingCount === 1 ? "session is" : "sessions are"} working.
+              </span>{" "}
+              {workingCount === 1 ? "It shows" : "They show"} up here when {workingCount === 1 ? "it finishes" : "they finish"} or {workingCount === 1 ? "needs" : "need"} you.
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="text-[15px] font-medium text-fg">All quiet for now</div>
+            <div className="text-[12px] leading-relaxed text-fg/80">
+              No sessions are working. A chat shows up here when an agent finishes a turn or asks you something.
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
