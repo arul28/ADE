@@ -4903,7 +4903,11 @@ final class SyncService: ObservableObject {
     if requestedWorkSessionNavigation != nil {
       requestedWorkSessionNavigation = nil
     }
+    // A sheet left up would cover the Hub and the notice under it.
     attentionDrawerPresented = false
+    linearPanePresented = false
+    cursorCloudPanePresented = false
+    githubIssuesPanePresented = false
     showProjectHub()
     hubNotice = HubNotice(message: notice)
   }
