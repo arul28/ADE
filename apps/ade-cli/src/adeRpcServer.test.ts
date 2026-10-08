@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { QUESTION_DECLINED_MODEL_MESSAGE } from "../../desktop/src/shared/pendingInputAnswers";
 import {
   createAdeRpcRequestHandler,
   _resetGlobalAskUserRateLimit,
@@ -3892,12 +3893,18 @@ describe("adeRpcServer", () => {
   });
 
 
-  it("returns explicit declined semantics for standalone ask_user with structured questions", async () => {
+  // Escape (cancel) and the decline button (decline) both tell the model to
+  // stop and ask, and a typed reply in place of a pick reaches it marked.
+  it.each([
+    { name: "a decline", result: { decision: "decline", answers: {} }, outcome: "declined", sentFlow: null, marked: false },
+    { name: "a cancel", result: { decision: "cancel", answers: {} }, outcome: "cancelled", sentFlow: null, marked: false },
+    { name: "a pick", result: { decision: "accept", answers: { flow: ["plan_updates"] } }, outcome: "answered", sentFlow: ["plan_updates"], marked: false },
+    { name: "a typed reply", result: { decision: "accept", answers: { flow: ["eli5 please"] } }, outcome: "answered", sentFlow: ["eli5 please"], marked: true },
+  ])("returns explicit ask_user semantics for $name on structured questions", async ({ result, outcome, sentFlow, marked }) => {
     await withEnv({ ADE_CHAT_SESSION_ID: "chat-session-env" }, async () => {
       const fixture = createRuntime();
       fixture.runtime.agentChatService.requestChatInput = vi.fn(async () => ({
-        decision: "decline",
-        answers: {},
+        ...result,
         responseText: null,
       }));
       const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -3937,14 +3944,21 @@ describe("adeRpcServer", () => {
           }),
         ],
       }));
-      expect(response.structuredContent.outcome).toBe("declined");
-      expect(response.structuredContent.answered).toBe(false);
-      expect(response.structuredContent.declined).toBe(true);
-      expect(response.structuredContent.cancelled).toBe(false);
+      expect(response.structuredContent.outcome).toBe(outcome);
+      expect(response.structuredContent.answered).toBe(outcome === "answered");
+      expect(response.structuredContent.declined).toBe(outcome === "declined");
+      expect(response.structuredContent.cancelled).toBe(outcome === "cancelled");
       expect(response.structuredContent.timedOut).toBe(false);
       expect(response.structuredContent.awaitingUserResponse).toBe(false);
       expect(response.structuredContent.blocking).toBe(false);
-      expect(response.structuredContent.responseText).toContain("declined");
+      if (sentFlow === null) {
+        expect(response.structuredContent.responseText).toBe(QUESTION_DECLINED_MODEL_MESSAGE);
+        return;
+      }
+      expect(response.structuredContent.responseText).toBeNull();
+      const flow = response.structuredContent.answers.flow as string[];
+      expect(flow.slice(0, sentFlow.length)).toEqual(sentFlow);
+      expect(flow.length > sentFlow.length).toBe(marked);
     });
   });
 

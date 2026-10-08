@@ -4,6 +4,7 @@ import {
   RESOLVED_ANSWERS_MAX_BYTES,
   TRUNCATED_ANSWER_MARKER,
   answerState,
+  answersForModel,
   answeredQuestionCount,
   buildAnswers,
   flattenAnswerForSingleStringProvider,
@@ -141,6 +142,44 @@ describe("answeredQuestionCount", () => {
   it("counts a pick or a note as answered", () => {
     expect(answeredQuestionCount(questions, { a: ["x"] }, { b: "typed" })).toBe(2);
     expect(answeredQuestionCount(questions, {}, { c: "  " })).toBe(0);
+  });
+});
+
+describe("answersForModel", () => {
+  const options = [
+    { label: "Keep both, improve summary", value: "Keep both, improve summary" },
+    { label: "Skip", value: "skip" },
+    { label: "Later", value: "later" },
+  ];
+  const request = {
+    options,
+    questions: [
+      question({ id: "pick", options }),
+      question({ id: "legacy" }),
+      question({ id: "free" }),
+      question({ id: "secret", options, isSecret: true }),
+    ],
+  };
+
+  // `marked` means the model is told the user typed instead of choosing: the
+  // values it receives are the user's own plus something more.
+  it.each([
+    { name: "a typed reply with no pick", id: "pick", values: ["eli5 please"], marked: true },
+    { name: "a pick", id: "pick", values: ["skip"], marked: false },
+    { name: "a pick with a note", id: "pick", values: ["skip", "but file a ticket"], marked: false },
+    { name: "a label that contains a comma", id: "pick", values: ["Keep both, improve summary"], marked: false },
+    { name: "typed text naming only offered options", id: "pick", values: ["Skip, later"], marked: false },
+    { name: "a question with no options", id: "free", values: ["Bob"], marked: false },
+    { name: "a secret", id: "secret", values: ["sk-live"], marked: false },
+    { name: "an id that matches no question", id: "ghost", values: ["eli5"], marked: false },
+    // Only question 0 inherits request-level options; a later question without
+    // its own is free text.
+    { name: "a later question without its own options", id: "legacy", values: ["eli5"], marked: false },
+  ])("$name → marked: $marked", ({ id, values, marked }) => {
+    const sent = answersForModel(request, { [id]: values })[id] ?? [];
+    expect(sent.slice(0, values.length)).toEqual(values);
+    expect(sent.length > values.length).toBe(marked);
+    expect(sent.length).toBeLessThanOrEqual(values.length + 1);
   });
 });
 

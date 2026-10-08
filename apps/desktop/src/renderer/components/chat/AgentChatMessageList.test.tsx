@@ -5518,8 +5518,8 @@ describe("AgentChatMessageList question receipts", () => {
     ]);
 
     const receipt = screen.getByTestId("answered-question-receipt");
-    expect(receipt.textContent ?? "").toContain("you declined");
-    expect(receipt.textContent ?? "").toContain("proceeded on its own assumption");
+    expect(receipt.textContent ?? "").toContain("declined");
+    expect(receipt.textContent ?? "").not.toContain("answered");
   });
 
   // The answer to an isSecret question never reaches the (durable, synced)
