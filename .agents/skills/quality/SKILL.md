@@ -309,9 +309,10 @@ Cite the doc section in the finding.
      `qualityReviewedSha` (step 10) to the commit before them, so the next
      delta review at push time covers them.
    - **Leftovers** is only for a Low you could not fix in this run, with the
-     reason (for example, the fix needs a product decision). A small, clear
-     fix is never a leftover. Leftovers are not gate rows and do not block
-     `/ship`.
+     reason (for example, the code it needs to change is owned by another
+     lane). A small, clear fix is never a leftover. A finding that matches one
+     of step 8's three gate reasons goes to the gate, not to Leftovers.
+     Leftovers are not gate rows and do not block `/ship`.
 
    A long chain of re-reviews usually chases fix-induced regressions, not real
    progress. The cap never moves a finding to the gate; only step 8's three
