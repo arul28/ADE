@@ -3,7 +3,8 @@
  * and weather. The renderer cannot read the clipboard in the background, list
  * other processes' ports or fetch from the internet (its CSP has no https
  * connect-src), so the desktop main process answers these. Each call is async
- * and cheap; see `main/services/home/homeWidgetsService.ts` for the costs.
+ * and cheap; see `main/services/home/` (`homeClipboardHistory.ts`,
+ * `homeMachine.ts`, `homeWeather.ts`) for the costs.
  */
 
 export const HOME_WIDGETS_IPC = {
@@ -108,7 +109,7 @@ export type HomeClipboardEntry = {
 };
 
 export type HomeClipboardState = {
-  /** Watching the clipboard (the widget is on someone's home page). */
+  /** Watching the clipboard (a Clipboard widget is in the active home layout and not paused). */
   enabled: boolean;
   /** History survives a restart (written to this computer's ADE user data). */
   persist: boolean;

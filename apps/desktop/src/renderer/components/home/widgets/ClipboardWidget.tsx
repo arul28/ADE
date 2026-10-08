@@ -12,7 +12,8 @@ import "../homeWidgets.css";
 
 /**
  * Clipboard history. The desktop main process watches the clipboard while
- * this widget is on the home page (one cheap read a second) and keeps the
+ * this widget is in the active home layout and has room to show (one cheap
+ * read a second), whether or not the home page is open, and keeps the
  * last 50 copies in memory; "Keep after restart" also writes them to this
  * computer's ADE user data. A copied picture shows as a thumbnail and copies
  * back whole (ADE keeps up to 50 MB of pictures; the oldest go first). Copies that look like secrets (tokens, private
