@@ -94,9 +94,13 @@ const CLIPBOARD_SLOW_READ_MS = 8;
 const CLIPBOARD_IMAGE_BYTES_CAP = 50 * 1024 * 1024;
 const CLIPBOARD_MAX_IMAGES = 30;
 const CLIPBOARD_THUMB_PX = 320;
-/** An image with no PNG copy beside it is re-read at most this often to notice a new one. */
+/**
+ * An image with no PNG copy beside it (Print Screen) can only be compared by
+ * reading it (~7 ms for 1440p): re-read 3 s after a change, backing off to
+ * every 12 s while it stays the same.
+ */
 const CLIPBOARD_IMAGE_REREAD_MS = 3_000;
-const CLIPBOARD_IMAGE_SLOW_REREAD_MS = 10_000;
+const CLIPBOARD_IMAGE_REREAD_MAX_MS = 12_000;
 /** The PNG format apps put beside a bitmap: Windows' registered "PNG", macOS' UTI. */
 const PNG_CLIPBOARD_FORMAT: Partial<Record<NodeJS.Platform, string>> = { win32: "PNG", darwin: "public.png" };
 const LISTENERS_TTL_MS = 5_000;
@@ -427,9 +431,9 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
   /** What the last poll saw: "t:<text>", "i:<image key>" or "" for nothing. Null before the first poll. */
   let lastSeen: string | null = null;
   let lastFormats = "";
-  /** When an image with no PNG copy was last read, and how long that read took. */
+  /** When an image with no PNG copy was last read, and how long until the next look. */
   let lastImageReadAt = 0;
-  let lastImageReadMs = 0;
+  let imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
   /** Full PNGs of image entries, by hash. A kept history reads the rest from disk on copy. */
   const fullImages = new Map<string, Buffer>();
   let pollTimer: NodeJS.Timeout | null = null;
@@ -539,6 +543,14 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
     return { key: `png:${png.length}:${hash.digest("hex")}`, png };
   };
 
+  /** A cheap identity for pixels: their size and 512 samples spread over the bitmap. */
+  const pixelSample = (bitmap: Buffer, width: number, height: number) => {
+    const hash = createHash("sha1").update(`${width}x${height}:`);
+    const step = Math.max(64, Math.floor(bitmap.length / 512));
+    for (let offset = 0; offset < bitmap.length; offset += step) hash.update(bitmap.subarray(offset, offset + 64));
+    return hash.digest("hex");
+  };
+
   const pixelHash = (read: HomeClipboardImageRead) =>
     createHash("sha1").update(`${read.width}x${read.height}:`).update(read.bitmap()).digest("hex");
 
@@ -617,10 +629,8 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
       if (skipFirst) return;
     } else {
       // No PNG copy (Print Screen, Paint): re-read the picture now and then, at once when the formats changed.
-      const wait = lastImageReadMs > 20 ? CLIPBOARD_IMAGE_SLOW_REREAD_MS : CLIPBOARD_IMAGE_REREAD_MS;
-      if (!first && !formatsChanged && lastSeen?.startsWith("i:") && Date.now() - lastImageReadAt < wait) return;
+      if (!first && !formatsChanged && lastSeen?.startsWith("i:") && Date.now() - lastImageReadAt < imageRereadWait) return;
     }
-    const readStarted = performance.now();
     let read: HomeClipboardImageRead | null = null;
     try {
       read = deps.clipboard.readImage?.() ?? null;
@@ -632,14 +642,17 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
       if (!probe) lastSeen = "";
       return;
     }
-    const hash = pixelHash(read);
-    lastImageReadMs = performance.now() - readStarted;
     if (!probe) {
-      const seen = `i:bmp:${hash}`;
-      if (seen === lastSeen) return;
+      const seen = `i:bmp:${pixelSample(read.bitmap(), read.width, read.height)}`;
+      if (seen === lastSeen) {
+        imageRereadWait = Math.min(CLIPBOARD_IMAGE_REREAD_MAX_MS, imageRereadWait * 2);
+        return;
+      }
+      imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
       lastSeen = seen;
       if (skipFirst) return;
     }
+    const hash = pixelHash(read);
     if (isConcealed()) {
       skippedSecrets += 1;
       announce();
@@ -787,7 +800,7 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
         const groups = platform === "win32"
           ? parseTasklistMemory(await runText(windowsSystemTool("tasklist.exe"), ["/FO", "CSV", "/NH"]))
           : parsePsList(await runText("ps", ["-Ao", "rss=,pcpu=,comm="]), os.cpus().length);
-        processCache = { at: Date.now(), groups: groups.slice(0, 12) };
+        processCache = { at: Date.now(), groups: groups.slice(0, 30) };
       } catch (error) {
         deps.logger?.warn("home.machine.processes_failed", { error: String(error) });
         processCache = { at: Date.now(), groups: processCache?.groups ?? [] };
