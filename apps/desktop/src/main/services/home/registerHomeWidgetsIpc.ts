@@ -103,6 +103,7 @@ export function registerHomeWidgetsIpc(args: {
     // Electron's fetch follows the system proxy; Node's does not.
     fetch: (url, init) => net.fetch(url, init),
     onBatteryPower: () => powerMonitor.isOnBatteryPower(),
+    isPackaged: app.isPackaged,
     broadcast: (channel, payload) => {
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send(channel, payload);

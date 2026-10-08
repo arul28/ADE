@@ -26,6 +26,8 @@ export type HomeWidgetsServiceDeps = {
   broadcast: (channel: string, payload: unknown) => void;
   /** Electron's `powerMonitor.isOnBatteryPower()`: one cheap OS call, no polling service. */
   onBatteryPower?: () => boolean;
+  /** Electron's `app.isPackaged` (an unpackaged build protects the dev renderer's server from the kill action). */
+  isPackaged?: boolean;
   /** The fetch for weather; Electron's `net.fetch` in the app (it follows the system proxy). */
   fetch?: HomeWeatherFetch;
   logger?: { warn: (event: string, data?: Record<string, unknown>) => void };
@@ -46,6 +48,7 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
     ownPids: deps.ownPids,
     runtimePids: deps.runtimePids,
     onBatteryPower: deps.onBatteryPower,
+    isPackaged: deps.isPackaged,
     logger: deps.logger,
   });
   const weather = createWeatherService({ fetch: deps.fetch ?? ((url, init) => fetch(url, init)) });

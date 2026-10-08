@@ -252,10 +252,14 @@ export function parsePsList(text: string, cpuCount: number): HomeMachineProcessG
   return groupProcesses(rows);
 }
 
-/** The port the dev renderer's Vite server listens on, when ADE runs from source. */
-function devServerPort(): number | null {
+/**
+ * The port the dev renderer's Vite server listens on, when ADE runs from
+ * source: `VITE_DEV_SERVER_URL`, else Vite's 5173 for an unpackaged build
+ * (the same rule as `trustedRendererSender`).
+ */
+function devServerPort(isPackaged: boolean): number | null {
   const raw = process.env.VITE_DEV_SERVER_URL;
-  if (!raw) return null;
+  if (!raw) return isPackaged ? null : 5173;
   try {
     const url = new URL(raw);
     const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
@@ -272,6 +276,8 @@ export function createMachineMonitor(deps: {
   /** Pids of ADE's background runtime (the brain), when known. Also refused. */
   runtimePids?: () => Array<number | null | undefined>;
   onBatteryPower?: () => boolean;
+  /** Electron's `app.isPackaged`; an unpackaged build also protects the dev renderer's server. Defaults to true. */
+  isPackaged?: boolean;
   logger?: Logger;
 }) {
   const { platform } = deps;
@@ -443,7 +449,7 @@ export function createMachineMonitor(deps: {
   const protectedPids = (byPid: Map<number, Set<number>>): Set<number> => {
     const own = new Set<number>([process.pid, process.ppid, ...deps.ownPids()]);
     for (const pid of deps.runtimePids?.() ?? []) if (typeof pid === "number" && pid > 0) own.add(pid);
-    const vitePort = devServerPort();
+    const vitePort = devServerPort(deps.isPackaged ?? true);
     if (vitePort != null) {
       for (const [pid, ports] of byPid) if (ports.has(vitePort)) own.add(pid);
     }
