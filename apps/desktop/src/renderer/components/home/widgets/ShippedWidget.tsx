@@ -10,6 +10,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { useHomeData } from "../homeData";
 import { useWidgetPreview, useWidgetSpan } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
+import { FitList } from "../HomeFitList";
 import { drawShippedShareCard, type ShippedShareData } from "./shippedShareCard";
 import "../homeWidgets.css";
 
@@ -112,6 +113,13 @@ export default function ShippedWidget({ item }: HomeWidgetProps) {
       setDrawing(false);
     }
   };
+  const renderMerge = (merge: Merge) => (
+    <button key={merge.key} type="button" role="listitem" className="kit-row ade-shipped-row" onClick={merge.open ?? openPrs} title={merge.title}>
+      <GitMerge size={13} weight="bold" className="ade-shipped-icon" aria-hidden />
+      <span className="ade-shipped-title">{merge.title}</span>
+      <span className="kit-num ade-shipped-num">{merge.repo}{merge.number != null ? ` #${merge.number}` : ""}</span>
+    </button>
+  );
   const shareBridge = window.ade?.home?.share;
   const fileName = `ade-shipped-${localDayKey(weekStart)}.png`;
 
@@ -163,15 +171,12 @@ export default function ShippedWidget({ item }: HomeWidgetProps) {
           <div className="ade-shipped-none">{prs.loaded ? "No merges yet this week." : "Reading pull requests…"}</div>
         )}
         {roomy && span.h >= 2 && merges.length > 0 ? (
-          <div className="ade-home-scroll ade-shipped-list" role="list">
-            {merges.map((merge) => (
-              <button key={merge.key} type="button" role="listitem" className="kit-row ade-shipped-row" onClick={merge.open ?? openPrs} title={merge.title}>
-                <GitMerge size={13} weight="bold" className="ade-shipped-icon" aria-hidden />
-                <span className="ade-shipped-title">{merge.title}</span>
-                <span className="kit-num ade-shipped-num">{merge.repo}{merge.number != null ? ` #${merge.number}` : ""}</span>
-              </button>
-            ))}
-          </div>
+          <FitList
+            className="ade-shipped-list"
+            more={openPrs ? { onMore: openPrs } : { dialog: { title: "Merged this week", render: () => merges.map(renderMerge) } }}
+          >
+            {merges.map(renderMerge)}
+          </FitList>
         ) : null}
       </div>
       {share ? (

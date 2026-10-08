@@ -5,6 +5,7 @@ import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { useWidgetSpan, useWidgetVisible } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
+import { FitList } from "../HomeFitList";
 import { formatBytesShort, usePolling } from "./widgetHooks";
 import "../homeWidgets.css";
 
@@ -91,6 +92,36 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
   const compact = span.w === 1 && span.h === 1;
   const devServers = listeners?.ok ? listeners.processes.filter((entry) => entry.dev) : [];
 
+  const renderProcess = (entry: (typeof processes)[number]) => (
+                  <div key={entry.pid} role="listitem" className="ade-mh-row" data-dev={entry.dev || undefined}>
+                    <span className="ade-mh-name" title={`${entry.name ?? "Unknown"} · pid ${entry.pid}`}>{(entry.name ?? "unknown").replace(/\.exe$/i, "")}</span>
+                    <span className="ade-mh-port-list kit-num">
+                      {entry.ports.slice(0, 4).map((port) => <i key={port}>:{port}</i>)}
+                      {entry.ports.length > 4 ? <i>+{entry.ports.length - 4}</i> : null}
+                    </span>
+                    {entry.protected ? (
+                      <span className="ade-mh-own" title="One of ADE's own processes">ADE</span>
+                    ) : confirmPid === entry.pid ? (
+                      <span className="ade-mh-confirm">
+                        <button type="button" className="kit-btn kit-btn-ghost" onClick={() => setConfirmPid(null)}>Keep</button>
+                        <button type="button" className="kit-btn ade-mh-stop" disabled={stopping === entry.pid} onClick={() => void stop(entry.pid)}>
+                          {stopping === entry.pid ? "Stopping…" : "Stop"}
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="kit-icon-btn ade-mh-kill"
+                        aria-label={`Stop ${entry.name ?? "process"} (pid ${entry.pid})`}
+                        title={`Stop pid ${entry.pid}`}
+                        onClick={() => setConfirmPid(entry.pid)}
+                      >
+                        <StopCircle size={14} />
+                      </button>
+                    )}
+                  </div>
+  );
+
   return (
     <section className="kit-card ade-home-card ade-mh" aria-label="Machine health" data-size={item.size}>
       <WelcomeCardHead icon={Cpu} title="Machine health">
@@ -136,37 +167,9 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
             ) : processes.length === 0 ? (
               <div className="ade-hw-note"><Plugs size={13} aria-hidden /> No dev servers are listening.</div>
             ) : (
-              <div className="ade-home-scroll ade-mh-list" role="list">
-                {processes.map((entry) => (
-                  <div key={entry.pid} role="listitem" className="ade-mh-row" data-dev={entry.dev || undefined}>
-                    <span className="ade-mh-name" title={`${entry.name ?? "Unknown"} · pid ${entry.pid}`}>{(entry.name ?? "unknown").replace(/\.exe$/i, "")}</span>
-                    <span className="ade-mh-port-list kit-num">
-                      {entry.ports.slice(0, 4).map((port) => <i key={port}>:{port}</i>)}
-                      {entry.ports.length > 4 ? <i>+{entry.ports.length - 4}</i> : null}
-                    </span>
-                    {entry.protected ? (
-                      <span className="ade-mh-own" title="One of ADE's own processes">ADE</span>
-                    ) : confirmPid === entry.pid ? (
-                      <span className="ade-mh-confirm">
-                        <button type="button" className="kit-btn kit-btn-ghost" onClick={() => setConfirmPid(null)}>Keep</button>
-                        <button type="button" className="kit-btn ade-mh-stop" disabled={stopping === entry.pid} onClick={() => void stop(entry.pid)}>
-                          {stopping === entry.pid ? "Stopping…" : "Stop"}
-                        </button>
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        className="kit-icon-btn ade-mh-kill"
-                        aria-label={`Stop ${entry.name ?? "process"} (pid ${entry.pid})`}
-                        title={`Stop pid ${entry.pid}`}
-                        onClick={() => setConfirmPid(entry.pid)}
-                      >
-                        <StopCircle size={14} />
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
+              <FitList listClassName="ade-mh-list" more={{ dialog: { title: "Listening ports", render: () => processes.map(renderProcess) } }}>
+                {processes.map(renderProcess)}
+              </FitList>
             )}
           </div>
         )}

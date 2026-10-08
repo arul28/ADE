@@ -12,29 +12,40 @@ import {
   type ReactNode,
 } from "react";
 import { create } from "zustand";
-import { ArrowsInLineVertical, DotsSixVertical, EyeSlash, Plus, Stack, X } from "@phosphor-icons/react";
+import { MotionConfig, motion } from "motion/react";
+import { ArrowsInLineVertical, DotsSixVertical, EyeSlash, Stack, X } from "@phosphor-icons/react";
 import {
   layoutCells,
   useHomeLayoutStore,
   type HomeLayoutCell,
   type HomeLayoutItem,
-  type HomeWidgetSize,
 } from "./homeLayout";
-import { HOME_SIZE_LABEL, HOME_WIDGET_CATALOG, widgetLimits } from "./homeWidgetCatalog";
-import { GRID_GAP, clampSpan, gridMetrics, itemSpan, packLayout, sizeClass, spanFromSize, type GridMetrics, type PackResult } from "./homeGridPack";
+import { HOME_CLASS_LABEL, HOME_WIDGET_CATALOG, widgetShape } from "./homeWidgetCatalog";
+import {
+  classSpan,
+  gridMetrics,
+  itemSizeClass,
+  packLayout,
+  shapeClasses,
+  storedSizeFor,
+  type GridMetrics,
+  type HomeSizeClass,
+  type PackResult,
+} from "./homeGridPack";
 import { WelcomeCardHead } from "../projects/ProjectWelcomeSidePanels";
 
 /**
- * The home page's grid. It never scrolls: its size comes from the window
- * (more columns on a wider window, as many rows as fit), widgets are packed
- * into it in layout order (`homeGridPack.ts`), and what has no room is hidden
- * behind a quiet "N hidden" note instead of overflowing.
+ * The home page's grid. It never scrolls and never leaves a gap: its size
+ * comes from the window (more columns on a wider window, as many rows as
+ * fit), the layout engine (`homeGridPack.ts`) packs the widgets in order at
+ * their size class and hands leftover cells to the widgets that use room
+ * well, and what has no room is hidden behind a quiet "N hidden" note.
+ * Cells glide to their new places when the layout reflows.
  *
  * Edit mode turns every cell into a tile with its own controls: a handle
- * (drag, or arrow keys), the size presets the widget allows, stack or
- * unstack, remove, and a corner to drag-resize in whole cells within the
- * widget's limits. Widget content goes inert while editing so a drag never
- * opens a project by accident.
+ * (drag, or arrow keys) to reorder, the size classes the widget offers,
+ * stack or unstack, and remove. Widget content goes inert while editing so a
+ * drag never opens a project by accident.
  */
 
 const WIDGET_DRAG_TYPE = "application/x-ade-home-widget";
@@ -59,7 +70,10 @@ export function useWidgetPreview(): boolean {
 /** The span the grid placed a widget at (it can grow taller than asked to fit its content). */
 const WidgetSpanContext = createContext<{ w: number; h: number } | null>(null);
 export function useWidgetSpan(item: HomeLayoutItem): { w: number; h: number } {
-  return useContext(WidgetSpanContext) ?? itemSpan(item);
+  const placed = useContext(WidgetSpanContext);
+  if (placed) return placed;
+  const shape = widgetShape(item.type);
+  return classSpan(shape, itemSizeClass(item, shape));
 }
 
 /** The live grid's size, for the gallery's "is there room?" check. */
@@ -125,6 +139,7 @@ function WidgetFrame({
   renderWidget,
   dragHandleProps,
   span,
+  shownClass,
 }: {
   item: HomeLayoutItem;
   stacked: boolean;
@@ -134,6 +149,8 @@ function WidgetFrame({
   dragHandleProps?: React.ButtonHTMLAttributes<HTMLButtonElement>;
   /** The span the grid placed this widget at (a host only). */
   span?: { w: number; h: number };
+  /** The class it is shown at, when the layout had to show a smaller one. */
+  shownClass?: HomeSizeClass;
 }) {
   const meta = HOME_WIDGET_CATALOG[item.type];
   const ref = useRef<HTMLDivElement | null>(null);
@@ -149,16 +166,9 @@ function WidgetFrame({
   }, [editing]);
   const content = renderWidget({ item, stacked, editing });
   if (!editing && content == null) return null;
-  const limits = meta.limits;
-  const presets = (["s", "m", "w", "l"] as HomeWidgetSize[]).filter((size) => {
-    const preset = spanFromSize(size);
-    return preset.w >= limits.minW && preset.w <= limits.maxW && preset.h >= limits.minH && preset.h <= limits.maxH;
-  });
-  const current = span ? sizeClass(span.w, span.h) : item.size;
-  const exactPreset = span ? presets.find((size) => {
-    const preset = spanFromSize(size);
-    return preset.w === span.w && preset.h === span.h;
-  }) : item.size;
+  const shape = widgetShape(item.type);
+  const classes = shapeClasses(shape);
+  const asked = itemSizeClass(item, shape);
   return (
     <div ref={ref} className="ade-home-widget" data-stacked={stacked || undefined} data-type={item.type}>
       <div ref={contentRef} className="ade-home-widget-content">
@@ -189,21 +199,29 @@ function WidgetFrame({
             </button>
           ) : null}
           <span className="ade-home-edit-name">{meta.title}</span>
-          {!stacked && presets.length > 1 ? (
+          {!stacked && classes.length > 1 ? (
             <div className="ade-home-edit-sizes" role="radiogroup" aria-label={`${meta.title} size`}>
-              {presets.map((size) => (
-                <button
-                  key={size}
-                  type="button"
-                  role="radio"
-                  aria-checked={exactPreset === size}
-                  data-near={!exactPreset && current === size ? "true" : undefined}
-                  title={HOME_SIZE_LABEL[size].long}
-                  onClick={() => resize(item.id, size)}
-                >
-                  {HOME_SIZE_LABEL[size].short}
-                </button>
-              ))}
+              {classes.map((cls) => {
+                const preset = shape.classes[cls]!;
+                const squeezed = shownClass != null && shownClass !== asked && cls === asked;
+                return (
+                  <button
+                    key={cls}
+                    type="button"
+                    role="radio"
+                    aria-checked={asked === cls}
+                    aria-label={HOME_CLASS_LABEL[cls].long}
+                    data-squeezed={squeezed || undefined}
+                    title={squeezed
+                      ? `${HOME_CLASS_LABEL[cls].long} · no room for it now, shown ${HOME_CLASS_LABEL[shownClass].long.toLowerCase()}`
+                      : `${HOME_CLASS_LABEL[cls].long} · ${preset.w} × ${preset.h}`}
+                    onClick={() => resize(item.id, storedSizeFor(cls, shape))}
+                  >
+                    <span className="ade-home-edit-size-long">{HOME_CLASS_LABEL[cls].long}</span>
+                    <span className="ade-home-edit-size-short" aria-hidden>{HOME_CLASS_LABEL[cls].short}</span>
+                  </button>
+                );
+              })}
             </div>
           ) : null}
           {stacked ? (
@@ -224,7 +242,8 @@ function WidgetFrame({
   );
 }
 
-type ResizeDrag = { id: string; startX: number; startY: number; startW: number; startH: number; w: number; h: number };
+/** Cells glide to their new places on a reflow; sizes snap (scaling text mid-flight reads badly). */
+const REFLOW = { type: "spring", stiffness: 520, damping: 42, mass: 0.9 } as const;
 
 export function HomeWidgetGrid({
   single,
@@ -242,11 +261,9 @@ export function HomeWidgetGrid({
   const setEditing = useHomeLayoutStore((s) => s.setEditing);
   const moveCell = useHomeLayoutStore((s) => s.moveCell);
   const nudgeCell = useHomeLayoutStore((s) => s.nudgeCell);
-  const resizeTo = useHomeLayoutStore((s) => s.resizeTo);
   const setMetrics = useHomeGridMetrics((s) => s.set);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; side: "before" | "after" } | null>(null);
-  const [resizeDrag, setResizeDrag] = useState<ResizeDrag | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [box, setBox] = useState<{ width: number; height: number } | null>(null);
 
@@ -275,199 +292,134 @@ export function HomeWidgetGrid({
   }, [metrics, setMetrics]);
 
   const allCells = useMemo(() => layoutCells(layout.items), [layout.items]);
-  const cells = single ? allCells.filter((cell) => cell.host.type === "projects").slice(0, 1) : allCells;
-
-  // A resize in progress packs with the dragged span so neighbours reflow live.
-  const packedCells = useMemo((): HomeLayoutCell[] => {
-    if (!resizeDrag) return cells;
-    return cells.map((cell) => (cell.host.id === resizeDrag.id ? { ...cell, host: { ...cell.host, w: resizeDrag.w, h: resizeDrag.h } } : cell));
-  }, [cells, resizeDrag]);
-  const packed: PackResult | null = useMemo(
-    () => (metrics && !single ? packLayout(packedCells, metrics, widgetLimits) : null),
-    [metrics, packedCells, single],
+  const cells = useMemo(
+    () => (single ? allCells.filter((cell) => cell.host.type === "projects").slice(0, 1) : allCells),
+    [allCells, single],
   );
-  const resizeBlocked = Boolean(resizeDrag && packed?.hidden.some((cell) => cell.host.id === resizeDrag.id));
+  const packed: PackResult | null = useMemo(
+    () => (metrics && !single ? packLayout(cells, metrics, widgetShape) : null),
+    [cells, metrics, single],
+  );
 
   const endDrag = useCallback(() => {
     setDragId(null);
     setDropTarget(null);
   }, []);
 
-  const startResize = (event: React.PointerEvent, cell: HomeLayoutCell, span: { w: number; h: number }) => {
-    if (!metrics) return;
-    event.preventDefault();
-    event.stopPropagation();
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    setResizeDrag({ id: cell.host.id, startX: event.clientX, startY: event.clientY, startW: span.w, startH: span.h, w: span.w, h: span.h });
-  };
-  const moveResize = (event: React.PointerEvent) => {
-    if (!resizeDrag || !metrics || !packed) return;
-    const colW = (metrics.width - (metrics.columns - 1) * GRID_GAP) / metrics.columns;
-    const rowH = (metrics.height - (packed.rows - 1) * GRID_GAP) / packed.rows;
-    const host = cells.find((cell) => cell.host.id === resizeDrag.id)?.host;
-    if (!host) return;
-    const next = clampSpan(
-      host.type,
-      resizeDrag.startW + (event.clientX - resizeDrag.startX) / (colW + GRID_GAP),
-      resizeDrag.startH + (event.clientY - resizeDrag.startY) / (rowH + GRID_GAP),
-      metrics,
-      widgetLimits,
-    );
-    if (next.w !== resizeDrag.w || next.h !== resizeDrag.h) setResizeDrag({ ...resizeDrag, ...next });
-  };
-  const endResize = () => {
-    if (!resizeDrag) return;
-    if (!resizeBlocked && (resizeDrag.w !== resizeDrag.startW || resizeDrag.h !== resizeDrag.startH)) {
-      resizeTo(resizeDrag.id, resizeDrag.w, resizeDrag.h);
-    }
-    setResizeDrag(null);
-  };
-
   const columns = metrics?.columns ?? 3;
   const rows = packed?.rows ?? 2;
   const gridTemplateColumns = columns === 3
     ? "minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 0.9fr)"
     : `repeat(${columns}, minmax(0, 1fr))`;
-  const placements = packed?.placed ?? [];
   const hidden = packed?.hidden ?? [];
+  const shown: Array<{ cell: HomeLayoutCell; x: number; y: number; w: number; h: number; cls?: HomeSizeClass }> = single
+    ? cells.map((cell) => ({ cell, x: 0, y: 0, w: 1, h: 1 }))
+    : packed?.placed ?? [];
 
   return (
-    <div ref={hostRef} className="ade-home-grid-host">
-      <div
-        className="ade-home-grid"
-        data-single={single ? "true" : undefined}
-        data-editing={editing ? "true" : undefined}
-        data-dragging={dragId ? "true" : undefined}
-        data-resizing={resizeDrag ? "true" : undefined}
-        style={single ? style : {
-          ...style,
-          width: metrics ? `${metrics.width}px` : undefined,
-          gridTemplateColumns,
-          gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-          visibility: metrics ? undefined : "hidden",
-        }}
-      >
-        {(single ? cells.map((cell) => ({ cell, x: 0, y: 0, ...itemSpan(cell.host) })) : placements).map(({ cell, x, y, w, h }, index) => {
-          const { host, stacked } = cell;
-          const marker = dropTarget?.id === host.id && dragId !== host.id ? dropTarget.side : undefined;
-          const resizing = resizeDrag?.id === host.id;
-          return (
-            <div
-              key={host.id}
-              className="ade-home-cell"
-              data-size={sizeClass(w, h)}
-              data-drop={marker}
-              data-dragged={dragId === host.id || undefined}
-              data-resizing={resizing || undefined}
-              data-blocked={resizing && resizeBlocked ? "true" : undefined}
-              style={single ? undefined : { gridColumn: `${x + 1} / span ${w}`, gridRow: `${y + 1} / span ${h}` }}
-              draggable={editing && !resizeDrag}
-              onDragStart={(event) => {
-                if (!editing || resizeDrag) return;
-                event.dataTransfer.setData(WIDGET_DRAG_TYPE, host.id);
-                event.dataTransfer.effectAllowed = "move";
-                setDragId(host.id);
-              }}
-              onDragOver={(event) => {
-                if (!dragId || !event.dataTransfer.types.includes(WIDGET_DRAG_TYPE)) return;
-                event.preventDefault();
-                event.stopPropagation();
-                event.dataTransfer.dropEffect = "move";
-                const rect = event.currentTarget.getBoundingClientRect();
-                const side = event.clientX < rect.left + rect.width / 2 ? "before" : "after";
-                if (dropTarget?.id !== host.id || dropTarget.side !== side) setDropTarget({ id: host.id, side });
-              }}
-              onDragEnter={(event) => {
-                if (dragId) event.stopPropagation();
-              }}
-              onDragLeave={(event) => {
-                if (dragId) event.stopPropagation();
-              }}
-              onDrop={(event) => {
-                if (!dragId) return;
-                event.preventDefault();
-                event.stopPropagation();
-                if (dropTarget && dropTarget.id !== dragId) moveCell(dragId, dropTarget.id, dropTarget.side);
-                endDrag();
-              }}
-              onDragEnd={endDrag}
-            >
-              <WidgetFrame
-                item={host}
-                stacked={false}
-                editing={editing}
-                canStack={index > 0}
-                renderWidget={renderWidget}
-                span={{ w, h }}
-                dragHandleProps={{
-                  onKeyDown: (event) => {
-                    if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-                      event.preventDefault();
-                      nudgeCell(host.id, -1);
-                    } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-                      event.preventDefault();
-                      nudgeCell(host.id, 1);
-                    }
-                  },
+    <MotionConfig reducedMotion="user">
+      <div ref={hostRef} className="ade-home-grid-host">
+        <div
+          className="ade-home-grid"
+          data-single={single ? "true" : undefined}
+          data-editing={editing ? "true" : undefined}
+          data-dragging={dragId ? "true" : undefined}
+          style={single ? style : {
+            ...style,
+            width: metrics ? `${metrics.width}px` : undefined,
+            gridTemplateColumns,
+            gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+            visibility: metrics ? undefined : "hidden",
+          }}
+        >
+          {shown.map(({ cell, x, y, w, h, cls }, index) => {
+            const { host, stacked } = cell;
+            const marker = dropTarget?.id === host.id && dragId !== host.id ? dropTarget.side : undefined;
+            return (
+              <motion.div
+                key={host.id}
+                layout={single ? false : "position"}
+                transition={REFLOW}
+                className="ade-home-cell"
+                data-class={cls}
+                data-drop={marker}
+                data-dragged={dragId === host.id || undefined}
+                style={single ? undefined : { gridColumn: `${x + 1} / span ${w}`, gridRow: `${y + 1} / span ${h}` }}
+                draggable={editing}
+                onDragStartCapture={(event: React.DragEvent<HTMLDivElement>) => {
+                  if (!editing) return;
+                  event.dataTransfer.setData(WIDGET_DRAG_TYPE, host.id);
+                  event.dataTransfer.effectAllowed = "move";
+                  setDragId(host.id);
                 }}
-              />
-              {stacked.map((item) => (
-                <WidgetFrame key={item.id} item={item} stacked editing={editing} canStack={false} renderWidget={renderWidget} />
-              ))}
-              {editing && !single ? (
-                <>
-                  {resizing ? <div className="ade-home-resize-badge kit-num">{resizeBlocked ? "No room" : `${w} × ${h}`}</div> : null}
-                  <div
-                    className="ade-home-resize-handle"
-                    role="slider"
-                    tabIndex={-1}
-                    aria-label={`Resize ${HOME_WIDGET_CATALOG[host.type].title}`}
-                    aria-valuetext={`${w} by ${h} cells`}
-                    title="Drag to resize"
-                    onPointerDown={(event) => startResize(event, cell, { w, h })}
-                    onPointerMove={moveResize}
-                    onPointerUp={endResize}
-                    onPointerCancel={() => setResizeDrag(null)}
-                  />
-                </>
-              ) : null}
-            </div>
-          );
-        })}
-        {!single && packed ? packed.free.filter((run) => run.y < packed.rows).map((run, index) => (
+                onDragOver={(event) => {
+                  if (!dragId || !event.dataTransfer.types.includes(WIDGET_DRAG_TYPE)) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.dataTransfer.dropEffect = "move";
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  const side = event.clientX < rect.left + rect.width / 2 ? "before" : "after";
+                  if (dropTarget?.id !== host.id || dropTarget.side !== side) setDropTarget({ id: host.id, side });
+                }}
+                onDragEnter={(event) => {
+                  if (dragId) event.stopPropagation();
+                }}
+                onDragLeave={(event) => {
+                  if (dragId) event.stopPropagation();
+                }}
+                onDrop={(event) => {
+                  if (!dragId) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (dropTarget && dropTarget.id !== dragId) moveCell(dragId, dropTarget.id, dropTarget.side);
+                  endDrag();
+                }}
+                onDragEndCapture={endDrag}
+              >
+                <WidgetFrame
+                  item={host}
+                  stacked={false}
+                  editing={editing}
+                  canStack={index > 0}
+                  renderWidget={renderWidget}
+                  span={single ? undefined : { w, h }}
+                  shownClass={cls}
+                  dragHandleProps={{
+                    onKeyDown: (event) => {
+                      if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+                        event.preventDefault();
+                        nudgeCell(host.id, -1);
+                      } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+                        event.preventDefault();
+                        nudgeCell(host.id, 1);
+                      }
+                    },
+                  }}
+                />
+                {stacked.map((item) => (
+                  <WidgetFrame key={item.id} item={item} stacked editing={editing} canStack={false} renderWidget={renderWidget} />
+                ))}
+              </motion.div>
+            );
+          })}
+          {editing && cells.length === 0 ? (
+            <div className="ade-home-grid-empty">Your home page is empty. Add a widget to start.</div>
+          ) : null}
+        </div>
+        {hidden.length > 0 ? (
           <button
-            key={`free-${run.x}-${run.y}`}
             type="button"
-            className="ade-home-free"
-            data-first={index === 0 || undefined}
-            data-editing={editing || undefined}
-            style={{ gridColumn: `${run.x + 1} / span ${run.w}`, gridRow: `${run.y + 1} / span 1` }}
-            onClick={() => {
-              setEditing(true);
-              useHomeGridMetrics.getState().requestPicker();
-            }}
-            aria-label="Add a widget here"
+            className="ade-home-hidden-note"
+            title={hidden.map((cell) => HOME_WIDGET_CATALOG[cell.host.type].title).join(", ")}
+            onClick={() => setEditing(true)}
           >
-            <span><Plus size={13} weight="bold" aria-hidden /> Add a widget</span>
+            <EyeSlash size={12} aria-hidden />
+            <span>
+              {hidden.length} hidden — {editing ? hidden.map((cell) => HOME_WIDGET_CATALOG[cell.host.type].title).join(", ") : "enlarge the window or edit"}
+            </span>
           </button>
-        )) : null}
-        {editing && cells.length === 0 ? (
-          <div className="ade-home-grid-empty">Your home page is empty. Add a widget to start.</div>
         ) : null}
       </div>
-      {hidden.length > 0 ? (
-        <button
-          type="button"
-          className="ade-home-hidden-note"
-          title={hidden.map((cell) => HOME_WIDGET_CATALOG[cell.host.type].title).join(", ")}
-          onClick={() => setEditing(true)}
-        >
-          <EyeSlash size={12} aria-hidden />
-          <span>
-            {hidden.length} hidden — {editing ? hidden.map((cell) => HOME_WIDGET_CATALOG[cell.host.type].title).join(", ") : "enlarge the window or edit"}
-          </span>
-        </button>
-      ) : null}
-    </div>
+    </MotionConfig>
   );
 }

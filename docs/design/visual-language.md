@@ -140,10 +140,11 @@ is not honoured everywhere).
 - **Home grid.** A hero line, a row of actions, then a grid of widgets
   (`components/home/`). The default preset is the shipped page: projects with
   what is working now, activity and usage, limits and machines, pull requests.
-  Users reorder, resize (S, M, L, Wide), add and remove widgets in edit mode.
-  Up to three rows share the page; more rows scroll inside the grid, never
-  the page. Each widget is a size container, so a card hides its least
-  important part when a layout makes it short.
+  Users pick widgets, a size class (Compact, Regular, Large) and an order;
+  the layout engine fills the page with even rows and no gaps, and hides what
+  does not fit behind "N hidden". Nothing scrolls: lists show the rows that
+  fit and a "N more" line. Each widget is a size container, so a card hides
+  its least important part when a layout makes it short.
 - **Settings.** `ModernPage` spaces sections 44px apart. `ModernSection` is a
   title, a one-line hint and optional actions. `ModernRows` groups
   `ModernRow`s in one panel with hairline dividers. Choice cards (theme mode,

@@ -34,6 +34,7 @@ import {
   type MachinePresenceEntry,
 } from "../homeFeed";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
+import { FitList } from "../HomeFitList";
 import { relativeTimeShort } from "./widgetHooks";
 import "../homeWidgets.css";
 
@@ -247,6 +248,16 @@ function FeedRow({ event, groupId, now, onOpen }: { event: HomeFeedEvent; groupI
   );
 }
 
+/** Day headings and rows as one flat list, so the list can show exactly what fits. */
+function feedRows(groups: ReturnType<typeof groupFeed>, now: number, onOpen: (event: HomeFeedEvent) => void) {
+  return groups.flatMap((group, index) => [
+    <div key={`head-${group.id}`} className="kit-eyebrow ade-feed-group-label" data-first={index === 0 || undefined} data-fit-head>
+      {group.label}
+    </div>,
+    ...group.events.map((event) => <FeedRow key={event.id} event={event} groupId={group.id} now={now} onOpen={onOpen} />),
+  ]);
+}
+
 export default function FeedWidget({ item }: HomeWidgetProps) {
   const { prs, projectName, projectRoot, openPrs, pinnedProjects, machineRows, machineOnlineSince, webMode } = useHomeData();
   const visible = useWidgetVisible();
@@ -344,16 +355,12 @@ export default function FeedWidget({ item }: HomeWidgetProps) {
             <span>{noPinned ? "Pin a project in Projects to follow it here." : "Nothing happened this week yet."}</span>
           </div>
         ) : (
-          <div className="ade-home-scroll" role="list" aria-label="Recent events">
-            {groups.map((group) => (
-              <div key={group.id} className="ade-feed-group" role="presentation">
-                <div className="kit-eyebrow ade-feed-group-label">{group.label}</div>
-                {group.events.map((event) => (
-                  <FeedRow key={event.id} event={event} groupId={group.id} now={now} onOpen={open} />
-                ))}
-              </div>
-            ))}
-          </div>
+          <FitList
+            ariaLabel="Recent events"
+            more={{ dialog: { title: "Feed", render: () => feedRows(groups, now, open) } }}
+          >
+            {feedRows(groups, now, open)}
+          </FitList>
         )}
         {error ? <div className="ade-feed-error" role="alert">{error}</div> : null}
       </div>

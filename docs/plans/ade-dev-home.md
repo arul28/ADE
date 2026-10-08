@@ -338,12 +338,26 @@ want it).**
   live in `ade.home.layouts.v2`; a v1 layout (`ade.home.layout.v1`) loads as
   "Default", and the active preset is still mirrored there for older builds.
   `home.layout.next` (Mod+Shift+L, rebindable) cycles presets.
-- **No scrolling:** the grid takes columns from the page width and rows from
-  its height (`homeGridPack.ts`), packs widgets in order, grows a span that
-  would clip, and hides what does not fit behind an "N hidden" note. Widgets
-  declare a resize range in cells; edit mode resizes by dragging a corner.
+- **Auto-layout, no scrolling, no gaps:** the user picks widgets, a size class
+  for each (Compact, Regular, Large; each widget declares the shape of each
+  class it offers, its content's minimum height, and whether it uses extra
+  room well) and an order (drag or arrow keys; order is priority). The grid
+  takes columns from the page width (3 keep the shipped width; 4+ stretch to
+  fill a wide window) and rows from its height. `homeGridPack.ts` packs in
+  order, tries a widget's smaller classes before hiding it ("N hidden"), then
+  hands every empty cell to a neighbour (widgets that grow well first), and
+  keeps the row count with the fewest hidden, shrunk, gaps, then rows. Every
+  row shares one height; cells glide to new places (motion layout, off under
+  reduced motion). No corner resize.
+- **Lists never scroll:** `HomeFitList.tsx` shows the rows that fit and a
+  "N more" line that opens the full view (PRs tab, Activity, machines) or the
+  whole list in a dialog (projects, feed, clipboard, ports).
+- **Contributions:** the shared `ui/ContributionSkyline.tsx` (ported from the
+  user's 21st.dev pick): heat map ⇄ 3D skyline on a canvas that draws only
+  while something moves and stops off screen. Day = chats + commits + PRs.
 - **Picker:** categories, search, live previews (the real widget, inert),
-  sizes, and a fit check that offers to make room or replace.
+  size classes, and a fit check (the same engine) that offers to make room
+  (others to Compact) or replace.
 - **Feed:** Activity stream + the open project's PRs + ADE releases + Linear
   assigned issues (when connected) + machine transitions, Today / Yesterday
   / This week, "While you were away" after four hours, all or pinned

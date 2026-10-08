@@ -6,6 +6,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { useHomeLayoutStore } from "../homeLayout";
 import { useWidgetPreview } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
+import { FitList } from "../HomeFitList";
 import { relativeTimeShort } from "./widgetHooks";
 import "../homeWidgets.css";
 
@@ -94,6 +95,40 @@ export default function ClipboardWidget({ item }: HomeWidgetProps) {
   }, [filter, state?.entries]);
   const roomy = item.size !== "s";
 
+  const renderEntry = (entry: (typeof entries)[number]) => {
+                  const kind = clipKind(entry.text);
+                  return (
+                  <div key={entry.id} role="listitem" className="ade-clip-row" data-kind={kind.kind}>
+                    <ClipGlyph kind={kind} />
+                    <button
+                      type="button"
+                      className="ade-clip-main"
+                      title="Copy again"
+                      onClick={() => {
+                        void bridge?.copy(entry.id).then((ok) => {
+                          if (ok) showToast({ id: "home-clipboard-copied", tone: "success", title: "Copied", durationMs: 1_800 });
+                        });
+                      }}
+                    >
+                      <span className="ade-clip-text">{entry.text.length > 400 ? `${entry.text.slice(0, 400)}…` : entry.text}</span>
+                      <span className="ade-clip-meta kit-num">
+                        {kind.label ? `${kind.label} · ` : ""}
+                        {relativeTimeShort(entry.copiedAt)}
+                        {entry.length > 120 ? ` · ${entry.length.toLocaleString()} chars` : ""}
+                      </span>
+                    </button>
+                    <div className="ade-clip-actions">
+                      <button type="button" className="kit-icon-btn" aria-label="Copy again" onClick={() => void bridge?.copy(entry.id)}>
+                        <Copy size={12} />
+                      </button>
+                      <button type="button" className="kit-icon-btn" aria-label="Remove from history" onClick={() => void bridge?.remove(entry.id)}>
+                        <X size={12} />
+                      </button>
+                    </div>
+                  </div>
+    );
+  };
+
   return (
     <section className="kit-card ade-home-card ade-clip" aria-label="Clipboard history" data-size={item.size}>
       <WelcomeCardHead icon={ClipboardText} title="Clipboard" count={state && state.entries.length > 0 ? state.entries.length : null}>
@@ -142,41 +177,9 @@ export default function ClipboardWidget({ item }: HomeWidgetProps) {
                 </span>
               </div>
             ) : (
-              <div className="ade-home-scroll" role="list">
-                {entries.map((entry) => {
-                  const kind = clipKind(entry.text);
-                  return (
-                  <div key={entry.id} role="listitem" className="ade-clip-row" data-kind={kind.kind}>
-                    <ClipGlyph kind={kind} />
-                    <button
-                      type="button"
-                      className="ade-clip-main"
-                      title="Copy again"
-                      onClick={() => {
-                        void bridge?.copy(entry.id).then((ok) => {
-                          if (ok) showToast({ id: "home-clipboard-copied", tone: "success", title: "Copied", durationMs: 1_800 });
-                        });
-                      }}
-                    >
-                      <span className="ade-clip-text">{entry.text.length > 400 ? `${entry.text.slice(0, 400)}…` : entry.text}</span>
-                      <span className="ade-clip-meta kit-num">
-                        {kind.label ? `${kind.label} · ` : ""}
-                        {relativeTimeShort(entry.copiedAt)}
-                        {entry.length > 120 ? ` · ${entry.length.toLocaleString()} chars` : ""}
-                      </span>
-                    </button>
-                    <div className="ade-clip-actions">
-                      <button type="button" className="kit-icon-btn" aria-label="Copy again" onClick={() => void bridge?.copy(entry.id)}>
-                        <Copy size={12} />
-                      </button>
-                      <button type="button" className="kit-icon-btn" aria-label="Remove from history" onClick={() => void bridge?.remove(entry.id)}>
-                        <X size={12} />
-                      </button>
-                    </div>
-                  </div>
-                  );
-                })}
-              </div>
+              <FitList more={{ dialog: { title: "Clipboard history", render: () => entries.map(renderEntry) } }}>
+                {entries.map(renderEntry)}
+              </FitList>
             )}
             <div className="ade-clip-foot">
               <label className="ade-clip-keep">

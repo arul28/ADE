@@ -11,6 +11,7 @@ import {
 } from "../../../shared/types";
 import { formatBytes } from "../../lib/format";
 import { navigateToAppTarget, openAdeDeeplink } from "../../lib/openExternal";
+import { FitList } from "../home/HomeFitList";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { requestUsagePopover } from "../../lib/usagePopover";
 import {
@@ -107,7 +108,8 @@ export async function openAttentionItem(item: AttentionItem): Promise<string | n
   return null;
 }
 
-export function RunningList({ items }: { items: AttentionItem[] }) {
+/** Running chats; rows that do not fit the card hide behind "N more", which opens Activity. */
+export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?: () => void }) {
   const availability = useActivityStore((state) => state.availability);
   const [error, setError] = useState<string | null>(null);
 
@@ -127,7 +129,8 @@ export function RunningList({ items }: { items: AttentionItem[] }) {
   }
 
   return (
-    <div role="list">
+    <>
+    <FitList more={onMore ? { onMore } : null}>
       {items.map((item) => {
         const group = activityStateGroup(item);
         const glyph = ACTIVITY_STATE_GLYPHS[group];
@@ -156,12 +159,13 @@ export function RunningList({ items }: { items: AttentionItem[] }) {
           </button>
         );
       })}
+    </FitList>
       {error ? (
         <div className="ade-welcome-empty" role="alert" style={{ color: "var(--color-error)" }}>
           {error}
         </div>
       ) : null}
-    </div>
+    </>
   );
 }
 

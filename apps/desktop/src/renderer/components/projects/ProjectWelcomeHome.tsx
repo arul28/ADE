@@ -20,6 +20,7 @@ import { formatCountdownShort } from "../usage/usageWindowFormat";
 import { formatCompact } from "../../lib/format";
 import type { WebMachineEntry } from "../../webclient/workspace/webWorkspaceModel";
 import { welcomeRelativeTime } from "./ProjectWelcomeWebRows";
+import { FitList } from "../home/HomeFitList";
 import type { HomeHeadline } from "../home/homeHeadline";
 import {
   RunningList,
@@ -141,8 +142,8 @@ export function RunningCard({ onOpenActivity, stacked = true }: { onOpenActivity
   return (
     <section className="kit-card ade-home-card ade-home-running" aria-label="Working now">
       <WelcomeCardHead icon={Pulse} title="Working now" count={running.length > 0 ? running.length : null} action={{ label: "Activity", onClick: onOpenActivity }} />
-      <div className="kit-card-body ade-home-scroll" data-flush="true">
-        <RunningList items={running} />
+      <div className="kit-card-body" data-flush="true">
+        <RunningList items={running} onMore={onOpenActivity} />
       </div>
     </section>
   );
@@ -395,7 +396,7 @@ export function LimitsMachinesCard({ machineRows, webMode, usage }: { machineRow
             )}
           </div>
         )}
-        <div className="ade-home-machine-list" role="list" aria-label="Machines">
+        <FitList className="ade-home-machine-fit" listClassName="ade-home-machine-list" ariaLabel="Machines" more={{ onMore: () => openMachines(webMode) }}>
           {machines.map((row) => (
             <button
               key={row.key}
@@ -411,7 +412,7 @@ export function LimitsMachinesCard({ machineRows, webMode, usage }: { machineRow
               <span className="ade-home-machine-state" data-state={row.dot}>{MACHINE_STATE_LABEL[row.dot]}</span>
             </button>
           ))}
-        </div>
+        </FitList>
       </div>
     </section>
   );
@@ -658,11 +659,24 @@ export function PullRequestsCard({
                 <span>{loaded ? "No pull requests this week." : "Reading pull requests…"}</span>
               </div>
             ) : (
-              <div className="ade-home-scroll" role="list">
+              <FitList
+                more={onOpenPrs ? { onMore: onOpenPrs } : {
+                  dialog: {
+                    title: "Pull requests",
+                    render: () => (
+                      <>
+                        {open.map((pr) => <PullRequestRow key={pr.id} pr={pr} />)}
+                        {recent.length > 0 ? <div className="kit-eyebrow ade-home-pr-divider">Merged this week</div> : null}
+                        {recent.map((pr) => <PullRequestRow key={pr.id} pr={pr} />)}
+                      </>
+                    ),
+                  },
+                }}
+              >
                 {open.map((pr) => <PullRequestRow key={pr.id} pr={pr} onOpen={onOpenPrs} />)}
-                {recent.length > 0 ? <div className="kit-eyebrow ade-home-pr-divider">Merged this week</div> : null}
+                {recent.length > 0 ? <div className="kit-eyebrow ade-home-pr-divider" data-fit-head>Merged this week</div> : null}
                 {recent.map((pr) => <PullRequestRow key={pr.id} pr={pr} onOpen={onOpenPrs} />)}
-              </div>
+              </FitList>
             )}
           </>
         )}

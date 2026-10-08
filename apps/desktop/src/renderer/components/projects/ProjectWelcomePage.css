@@ -161,46 +161,8 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 .ade-home-hidden-note:hover { color: var(--color-fg); }
 .ade-home-hidden-note > span { overflow: hidden; text-overflow: ellipsis; }
 
-/* Drag-resize: a corner grip on each tile in edit mode, snapping to cells. */
-.ade-home-resize-handle {
-  position: absolute;
-  right: 2px;
-  bottom: 2px;
-  z-index: 4;
-  width: 18px;
-  height: 18px;
-  border-radius: 0 0 var(--radius-lg) 0;
-  cursor: nwse-resize;
-  touch-action: none;
-  background:
-    linear-gradient(135deg, transparent 52%, color-mix(in srgb, var(--color-accent) 85%, transparent) 52%, color-mix(in srgb, var(--color-accent) 85%, transparent) 60%, transparent 60%),
-    linear-gradient(135deg, transparent 70%, color-mix(in srgb, var(--color-accent) 85%, transparent) 70%, color-mix(in srgb, var(--color-accent) 85%, transparent) 78%, transparent 78%);
-  opacity: 0.75;
-}
-.ade-home-resize-handle:hover, .ade-home-cell[data-resizing] .ade-home-resize-handle { opacity: 1; }
-.ade-home-cell[data-resizing] { z-index: 3; }
-.ade-home-cell[data-resizing] .ade-home-widget-content > .kit-card {
-  outline: 2px solid var(--color-accent);
-  outline-offset: -2px;
-}
-.ade-home-cell[data-blocked] .ade-home-widget-content > .kit-card { outline-color: var(--kit-crit); }
-.ade-home-resize-badge {
-  position: absolute;
-  right: 26px;
-  bottom: 8px;
-  z-index: 4;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--color-accent);
-  color: var(--color-bg);
-  font-size: 11px;
-  font-weight: 600;
-  pointer-events: none;
-}
-.ade-home-cell[data-blocked] .ade-home-resize-badge { background: var(--kit-crit); }
-.ade-home-grid[data-resizing="true"] .ade-home-cell { transition: none; }
 @media (prefers-reduced-motion: no-preference) {
-  .ade-home-grid[data-editing="true"] .ade-home-cell:not([data-resizing]) { transition: opacity 0.15s ease; }
+  .ade-home-grid[data-editing="true"] .ade-home-cell { transition: opacity 0.15s ease; }
 }
 
 /* A cell is one widget plus whatever is stacked under it: the host takes
@@ -216,7 +178,20 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
    those size to their content.) */
 .ade-home-widget:not([data-stacked]) > .ade-home-widget-content { container: widget / size; }
 @container widget (max-height: 250px) {
-  .ade-home-limits .ade-home-machine-list { display: none; }
+  .ade-home-limits .ade-home-machine-fit { display: none; }
+}
+/* Activity & usage: a short card drops the second row of facts; a narrow one
+   (Compact) puts the figure over the bars and keeps one fact. */
+@container widget (max-height: 236px) {
+  .ade-home-activity .ade-home-facts > div:nth-child(n+3) { display: none; }
+}
+@container widget (max-width: 560px) {
+  .ade-home-activity-body { flex-direction: column !important; gap: 10px; }
+  .ade-home-activity-side { width: auto; flex-direction: row; align-items: flex-end; justify-content: space-between; gap: 16px; }
+  .ade-home-activity-figure { margin-top: 2px; }
+  .ade-home-facts { grid-template-columns: auto; text-align: right; }
+  .ade-home-facts > div:nth-child(n+2) { display: none; }
+  .ade-home-activity .ade-home-card-scope { display: none; }
 }
 
 /* Edit mode: tiles you can pick up. Content goes inert and dims a little;
@@ -312,6 +287,14 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 }
 .ade-home-edit-sizes > button:hover { color: var(--color-fg); background: var(--kit-hover); }
 .ade-home-edit-sizes > button[aria-checked="true"] { color: var(--color-accent-fg); background: var(--color-accent); }
+.ade-home-edit-sizes > button[data-squeezed] { box-shadow: inset 0 0 0 1px var(--kit-warn); }
+/* Size class names in full on a wide tile, S / M / L on a narrow one. */
+.ade-home-widget:not([data-stacked]) { container: tile / inline-size; }
+.ade-home-edit-size-short { display: none; }
+@container tile (max-width: 520px) {
+  .ade-home-edit-size-long { display: none; }
+  .ade-home-edit-size-short { display: inline; }
+}
 .ade-home-grid-empty {
   grid-column: 1 / -1;
   display: grid;
@@ -338,7 +321,30 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 
 .ade-home-card { min-height: 0; }
 .ade-home-card > .kit-card-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-.ade-home-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+/* A list shows the rows that fit and a "N more" line (HomeFitList.tsx); it never scrolls. */
+.ade-fit { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.ade-fit-more {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 0 14px;
+  border: 0;
+  border-top: 1px solid var(--kit-rule);
+  background: transparent;
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ade-fit-more:hover { color: var(--color-fg); }
+.ade-fit-more:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; border-radius: 6px; }
+.ade-fit-dialog { display: flex; flex-direction: column; margin: 0 -8px; }
 .ade-home-muted { color: var(--kit-text-3); font-size: 12px; }
 .ade-home-empty {
   flex: 1 1 auto;
@@ -433,6 +439,7 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 .ade-home-ring-name { max-width: 100%; font-size: 11px; color: var(--kit-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ade-home-ring-reset { font-size: 9.5px; color: var(--kit-text-3); white-space: nowrap; }
 
+.ade-home-machine-fit { flex: 0 1 auto; }
 .ade-home-machine-list {
   flex: none;
   display: flex;

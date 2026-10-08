@@ -4,23 +4,34 @@ import { Dialog } from "../ui/dialog";
 import { HomeRenderWidgetContext } from "./homeData";
 import { layoutCells, useHomeLayoutStore, type HomeLayoutCell, type HomeWidgetSize, type HomeWidgetType } from "./homeLayout";
 import {
+  HOME_CLASS_LABEL,
   HOME_GALLERY_ORDER,
-  HOME_SIZE_LABEL,
   HOME_WIDGET_CATALOG,
   HOME_WIDGET_CATEGORIES,
-  widgetLimits,
+  widgetShape,
   type HomeWidgetCategory,
 } from "./homeWidgetCatalog";
-import { GRID_GAP, itemSpan, packLayout, spanFromSize, type GridMetrics } from "./homeGridPack";
+import {
+  GRID_GAP,
+  classSpan,
+  itemSizeClass,
+  packLayout,
+  shapeClasses,
+  storedSizeFor,
+  type GridMetrics,
+  type HomeSizeClass,
+  type Span,
+} from "./homeGridPack";
 import { WidgetPreviewContext, useHomeGridMetrics } from "./HomeWidgetGrid";
 import "./homeWidgets.css";
 
 /**
  * The Add widget gallery. Every widget is shown live (the real component,
  * scaled down, inert, with nothing switched on), grouped by category and
- * searchable. Picking one opens it at each size it allows, says whether it
- * fits on the page as it is, and when it does not, offers to make room by
- * shrinking other widgets or to replace one.
+ * searchable. Picking one opens it at each size class it offers, says
+ * whether it fits on the page as it is (the same layout engine the page
+ * uses), and when it does not, offers to make room by setting other widgets
+ * to Compact, or to replace one.
  */
 
 const FALLBACK_METRICS: GridMetrics = { columns: 3, maxRows: 3, width: 1120, height: 640 };
@@ -32,17 +43,13 @@ function cellPx(metrics: GridMetrics) {
   return { colW, rowH };
 }
 
-function spanPx(span: { w: number; h: number }, metrics: GridMetrics) {
+function spanPx(span: Span, metrics: GridMetrics) {
   const { colW, rowH } = cellPx(metrics);
   return { width: span.w * colW + (span.w - 1) * GRID_GAP, height: span.h * rowH + (span.h - 1) * GRID_GAP };
 }
 
-function allowedSizes(type: HomeWidgetType): HomeWidgetSize[] {
-  const limits = HOME_WIDGET_CATALOG[type].limits;
-  return (["s", "m", "w", "l"] as HomeWidgetSize[]).filter((size) => {
-    const span = spanFromSize(size);
-    return span.w >= limits.minW && span.w <= limits.maxW && span.h >= limits.minH && span.h <= limits.maxH;
-  });
+function storedSize(type: HomeWidgetType, cls: HomeSizeClass): HomeWidgetSize {
+  return storedSizeFor(cls, widgetShape(type));
 }
 
 /** The width an element gets from its layout. */
@@ -59,16 +66,17 @@ function useWidth(ref: React.RefObject<HTMLElement | null>, fallback: number): n
 }
 
 /** A stage as wide as its slot. */
-function FluidPreview(props: { type: HomeWidgetType; size: HomeWidgetSize; metrics: GridMetrics; stageHeight: number }) {
+function FluidPreview(props: { type: HomeWidgetType; cls: HomeSizeClass; metrics: GridMetrics; stageHeight: number }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const width = useWidth(ref, 260);
   return <div ref={ref} className="ade-picker-fluid">{width > 0 ? <LivePreview {...props} stageWidth={width} /> : null}</div>;
 }
 
 /** The real widget at a span, scaled into a stage. */
-function LivePreview({ type, size, metrics, stageWidth, stageHeight }: { type: HomeWidgetType; size: HomeWidgetSize; metrics: GridMetrics; stageWidth: number; stageHeight: number }) {
+function LivePreview({ type, cls, metrics, stageWidth, stageHeight }: { type: HomeWidgetType; cls: HomeSizeClass; metrics: GridMetrics; stageWidth: number; stageHeight: number }) {
   const renderWidget = useContext(HomeRenderWidgetContext);
-  const span = spanFromSize(size);
+  const span = classSpan(widgetShape(type), cls, metrics.columns);
+  const size = storedSize(type, cls);
   const px = spanPx(span, metrics);
   // Leave a margin so the card floats on its stage, as on the page.
   const scale = Math.min(1, (stageWidth - 24) / px.width, (stageHeight - 20) / px.height);
@@ -96,9 +104,8 @@ function LivePreview({ type, size, metrics, stageWidth, stageHeight }: { type: H
   );
 }
 
-/** Size as a tiny cell diagram, the way a widget gallery shows it. */
-function SizeGlyph({ size }: { size: HomeWidgetSize }) {
-  const span = spanFromSize(size);
+/** A class's shape as a tiny cell diagram, the way a widget gallery shows it. */
+function SizeGlyph({ span }: { span: Span }) {
   return (
     <svg viewBox="0 0 22 22" width="22" height="22" aria-hidden className="ade-picker-size-glyph">
       {[0, 1].map((row) => [0, 1].map((col) => (
@@ -118,33 +125,35 @@ function SizeGlyph({ size }: { size: HomeWidgetSize }) {
 
 type AddPlan =
   | { kind: "fits" }
-  | { kind: "shrink"; shrink: Array<{ id: string; w: number; h: number; title: string }> }
+  | { kind: "shrink"; shrink: Array<{ id: string; size: HomeWidgetSize; title: string }> }
   | { kind: "full" };
 
-/** Whether a widget fits as the page is, or after shrinking others to their smallest. */
-function planAdd(cells: readonly HomeLayoutCell[], type: HomeWidgetType, size: HomeWidgetSize, metrics: GridMetrics): AddPlan {
-  const span = spanFromSize(size);
-  const probe: HomeLayoutCell = { host: { id: "__new", type, size, w: span.w, h: span.h }, stacked: [] };
-  const hiddenBefore = packLayout(cells, metrics, widgetLimits).hidden.length;
+/**
+ * Whether a widget fits at a class as the page is (nothing else hidden or
+ * squeezed), or after setting others to Compact, largest first.
+ */
+function planAdd(cells: readonly HomeLayoutCell[], type: HomeWidgetType, cls: HomeSizeClass, metrics: GridMetrics): AddPlan {
+  const probe: HomeLayoutCell = { host: { id: "__new", type, size: storedSize(type, cls) }, stacked: [] };
+  const before = packLayout(cells, metrics, widgetShape);
   const fits = (list: readonly HomeLayoutCell[]) => {
-    const result = packLayout([...list, probe], metrics, widgetLimits);
-    return !result.hidden.some((cell) => cell.host.id === "__new") && result.hidden.length <= hiddenBefore;
+    const result = packLayout([...list, probe], metrics, widgetShape);
+    const placed = result.placed.find((entry) => entry.cell.host.id === "__new");
+    return placed != null && placed.cls === cls && result.hidden.length <= before.hidden.length && result.shrunk <= before.shrunk;
   };
   if (fits(cells)) return { kind: "fits" };
-  const order = [...cells].sort((a, b) => {
-    const sa = itemSpan(a.host);
-    const sb = itemSpan(b.host);
-    return sb.w * sb.h - sa.w * sa.h;
-  });
+  const area = (cell: HomeLayoutCell) => {
+    const shape = widgetShape(cell.host.type);
+    const span = classSpan(shape, itemSizeClass(cell.host, shape));
+    return span.w * span.h;
+  };
   let working = [...cells];
-  const shrink: Array<{ id: string; w: number; h: number; title: string }> = [];
-  for (const cell of order) {
-    const limits = HOME_WIDGET_CATALOG[cell.host.type].limits;
-    const current = itemSpan(cell.host);
-    const next = { w: limits.minW, h: limits.minH };
-    if (next.w >= current.w && next.h >= current.h) continue;
-    working = working.map((entry) => (entry.host.id === cell.host.id ? { ...entry, host: { ...entry.host, ...next } } : entry));
-    shrink.push({ id: cell.host.id, ...next, title: HOME_WIDGET_CATALOG[cell.host.type].title });
+  const shrink: Array<{ id: string; size: HomeWidgetSize; title: string }> = [];
+  for (const cell of [...cells].sort((a, b) => area(b) - area(a))) {
+    const shape = widgetShape(cell.host.type);
+    if (!shape.classes.compact || itemSizeClass(cell.host, shape) === "compact") continue;
+    const size = storedSizeFor("compact", shape);
+    working = working.map((entry) => (entry.host.id === cell.host.id ? { ...entry, host: { ...entry.host, size } } : entry));
+    shrink.push({ id: cell.host.id, size, title: HOME_WIDGET_CATALOG[cell.host.type].title });
     if (fits(working)) return { kind: "shrink", shrink };
   }
   return { kind: "full" };
@@ -156,7 +165,7 @@ function PickerTile({ type, present, metrics, onOpen }: { type: HomeWidgetType; 
   const unavailable = meta.comingSoon ?? (meta.desktopOnly && !window.ade?.home ? "Needs the ADE desktop app." : null);
   return (
     <button type="button" className="ade-picker-tile" onClick={onOpen} data-present={present || undefined} data-unavailable={unavailable ? "true" : undefined}>
-      <FluidPreview type={type} size={meta.defaultSize} metrics={metrics} stageHeight={168} />
+      <FluidPreview type={type} cls={meta.defaultClass} metrics={metrics} stageHeight={168} />
       <span className="ade-picker-tile-text">
         <span className="ade-picker-tile-title">
           <Icon size={13} aria-hidden />
@@ -173,14 +182,16 @@ function PickerDetail({ type, metrics, onBack, onAdded }: { type: HomeWidgetType
   const meta = HOME_WIDGET_CATALOG[type];
   const items = useHomeLayoutStore((s) => s.layout.items);
   const add = useHomeLayoutStore((s) => s.add);
-  const sizes = allowedSizes(type);
-  const [size, setSize] = useState<HomeWidgetSize>(sizes.includes(meta.defaultSize) ? meta.defaultSize : sizes[0] ?? "s");
+  const shape = widgetShape(type);
+  const classes = shapeClasses(shape);
+  const [cls, setCls] = useState<HomeSizeClass>(classes.includes(meta.defaultClass) ? meta.defaultClass : classes[0] ?? "compact");
   const [replaceId, setReplaceId] = useState<string>("");
   const cells = useMemo(() => layoutCells(items), [items]);
-  const plan = useMemo(() => planAdd(cells, type, size, metrics), [cells, metrics, size, type]);
+  const plan = useMemo(() => planAdd(cells, type, cls, metrics), [cells, cls, metrics, type]);
+  const size = storedSize(type, cls);
   const present = items.some((item) => item.type === type);
   const unavailable = meta.comingSoon ?? (meta.desktopOnly && !window.ade?.home ? "Needs the ADE desktop app." : null);
-  const span = spanFromSize(size);
+  const span = classSpan(shape, cls, metrics.columns);
   const Icon = meta.icon;
 
   let status: ReactNode;
@@ -194,18 +205,18 @@ function PickerDetail({ type, metrics, onBack, onAdded }: { type: HomeWidgetType
   } else if (plan.kind === "fits") {
     status = <span className="ade-picker-fit" data-tone="ok"><CheckCircle size={13} weight="fill" /> Fits on your page</span>;
     action = (
-      <button type="button" className="kit-btn kit-btn-primary" onClick={() => { add(type, size, { span }); onAdded(); }}>
+      <button type="button" className="kit-btn kit-btn-primary" onClick={() => { add(type, size); onAdded(); }}>
         <Plus size={12} weight="bold" aria-hidden /> Add widget
       </button>
     );
   } else if (plan.kind === "shrink") {
     status = (
       <span className="ade-picker-fit" data-tone="warn">
-        <Warning size={13} weight="fill" /> No room yet. Make room by shrinking {plan.shrink.map((entry) => entry.title).join(", ")}.
+        <Warning size={13} weight="fill" /> No room yet. Make room by setting {plan.shrink.map((entry) => entry.title).join(", ")} to Compact.
       </span>
     );
     action = (
-      <button type="button" className="kit-btn kit-btn-primary" onClick={() => { add(type, size, { span, shrink: plan.shrink }); onAdded(); }}>
+      <button type="button" className="kit-btn kit-btn-primary" onClick={() => { add(type, size, { shrink: plan.shrink }); onAdded(); }}>
         Make room and add
       </button>
     );
@@ -219,7 +230,7 @@ function PickerDetail({ type, metrics, onBack, onAdded }: { type: HomeWidgetType
             <option key={cell.host.id} value={cell.host.id}>{HOME_WIDGET_CATALOG[cell.host.type].title}</option>
           ))}
         </select>
-        <button type="button" className="kit-btn kit-btn-primary" disabled={!replaceId} onClick={() => { add(type, size, { span, replaceId }); onAdded(); }}>
+        <button type="button" className="kit-btn kit-btn-primary" disabled={!replaceId} onClick={() => { add(type, size, { replaceId }); onAdded(); }}>
           Replace
         </button>
       </span>
@@ -242,17 +253,21 @@ function PickerDetail({ type, metrics, onBack, onAdded }: { type: HomeWidgetType
         </div>
       </div>
       <div className="ade-picker-detail-stage">
-        <LivePreview key={size} type={type} size={size} metrics={metrics} stageWidth={stage.width} stageHeight={stage.height} />
+        <LivePreview key={cls} type={type} cls={cls} metrics={metrics} stageWidth={stage.width} stageHeight={stage.height} />
       </div>
       <div className="ade-picker-sizes" role="radiogroup" aria-label="Size">
-        {sizes.map((option) => (
-          <button key={option} type="button" role="radio" aria-checked={size === option} onClick={() => setSize(option)} className="ade-picker-size">
-            <SizeGlyph size={option} />
-            <span>{HOME_SIZE_LABEL[option].long.split(" · ")[0]}</span>
-            <span className="kit-num">{spanFromSize(option).w} × {spanFromSize(option).h}</span>
-          </button>
-        ))}
+        {classes.map((option) => {
+          const optionSpan = classSpan(shape, option, metrics.columns);
+          return (
+            <button key={option} type="button" role="radio" aria-checked={cls === option} onClick={() => setCls(option)} className="ade-picker-size">
+              <SizeGlyph span={optionSpan} />
+              <span>{HOME_CLASS_LABEL[option].long}</span>
+              <span className="kit-num">{optionSpan.w} × {optionSpan.h}</span>
+            </button>
+          );
+        })}
       </div>
+      <p className="ade-picker-size-note">The page gives it more room when there is some to spare.</p>
       <div className="ade-picker-detail-foot">
         {status}
         {action}
@@ -326,7 +341,7 @@ export default function HomeWidgetPicker({ open, onOpenChange }: { open: boolean
           </nav>
           <div className="ade-picker-rail-foot">
             <span className="kit-eyebrow">Your page</span>
-            <span>{metrics.columns} columns · up to {metrics.maxRows} rows</span>
+            <span>{metrics.columns} columns · up to {metrics.maxRows} rows · fills itself</span>
             <span>{items.length} widget{items.length === 1 ? "" : "s"}</span>
           </div>
         </aside>

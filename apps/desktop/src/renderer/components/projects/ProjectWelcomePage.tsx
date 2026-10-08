@@ -56,6 +56,7 @@ import {
   useRecentStats,
 } from "./ProjectWelcomeHome";
 import { HomeWidgetGrid, type WidgetRenderContext } from "../home/HomeWidgetGrid";
+import { FitList } from "../home/HomeFitList";
 import { gridMetrics } from "../home/homeGridPack";
 import { LazyHomeWidget } from "../home/homeWidgetRegistry";
 import { HomeDataContext, HomeRenderWidgetContext, type HomeData } from "../home/homeData";
@@ -755,22 +756,7 @@ export function ProjectWelcomePage() {
     }
     return Object.keys(style).length > 0 ? (style as CSSProperties) : undefined;
   }, [homeAppearance.cardBlur, homeAppearance.cardOpacity]);
-  const projectsCard = (preview = false) => (
-    <section className="kit-card ade-home-card ade-home-projects" aria-label="Recent projects">
-      <WelcomeCardHead
-        icon={FolderSimple}
-        title="Projects"
-        count={hasProjects ? visibleProjectGroups.length : null}
-      />
-      {hasProjects ? (
-        <div
-          id="ade-welcome-project-list"
-          ref={preview ? undefined : listRef}
-          className="kit-card-body ade-welcome-list ade-home-scroll"
-          data-flush="true"
-          onKeyDown={handleListKeyDown}
-        >
-        {rows.map(({ group, rp, key }) => {
+  const projectRow = ({ group, rp, key }: (typeof rows)[number]) => {
           const primary = group.primary;
           const isRemote = rp.kind === "remote" && Boolean(rp.remote);
           const targetId = rp.remote?.targetId;
@@ -829,7 +815,25 @@ export function ProjectWelcomePage() {
               web={web}
             />
           );
-        })}
+  };
+  const projectsCard = (preview = false) => (
+    <section className="kit-card ade-home-card ade-home-projects" aria-label="Recent projects">
+      <WelcomeCardHead
+        icon={FolderSimple}
+        title="Projects"
+        count={hasProjects ? visibleProjectGroups.length : null}
+      />
+      {hasProjects ? (
+        <div
+          id="ade-welcome-project-list"
+          ref={preview ? undefined : listRef}
+          className="kit-card-body ade-welcome-list"
+          data-flush="true"
+          onKeyDown={handleListKeyDown}
+        >
+        <FitList more={preview ? null : { dialog: { title: "Projects", render: () => rows.map(projectRow) } }}>
+          {rows.map(projectRow)}
+        </FitList>
         </div>
       ) : (
         <div className="ade-welcome-empty">

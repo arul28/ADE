@@ -224,148 +224,76 @@
 .ade-hw-note { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--kit-text-3); }
 
 /* ── clock & weather ────────────────────────────────────────────── */
-/* A sky, not a box: the card takes the weather's colour and the time of
-   day, glass panels hold the readings. Panels are flat translucent fills
-   (no backdrop-filter), and the drifting light is two transform-animated
-   blobs that stop when the card is off screen. */
+/* The same quiet card as Projects or Pull requests: kit surfaces and text,
+   colour only in the condition glyphs. Sized to its content: now, a strip
+   of hours, then as many days as the card has room for. */
 
-.ade-hw {
-  --hw-ink: #fff;
-  --hw-ink-2: rgb(255 255 255 / 78%);
-  --hw-ink-3: rgb(255 255 255 / 58%);
-  --hw-glass: rgb(255 255 255 / 13%);
-  --hw-glass-edge: rgb(255 255 255 / 22%);
-  overflow: hidden;
-  isolation: isolate;
-  color: var(--hw-ink);
-  border-color: rgb(255 255 255 / 14%);
-}
-.ade-hw[data-sky="day"] { background: linear-gradient(165deg, #3d8fe0 0%, #5aa8ee 45%, #9fcdf3 100%); }
-.ade-hw[data-sky="dusk"] { background: linear-gradient(170deg, #4b5cbf 0%, #c06c92 55%, #f0a86b 100%); }
-.ade-hw[data-sky="night"] { background: linear-gradient(170deg, #0d1530 0%, #1b2756 55%, #34407a 100%); }
-.ade-hw[data-sky="grey"] { background: linear-gradient(170deg, #4f5d70 0%, #6f7f93 55%, #95a3b3 100%); }
-.ade-hw[data-sky="storm"] { background: linear-gradient(170deg, #20243a 0%, #3c4160 60%, #5d5f7c 100%); }
-.ade-hw[data-sky="snow"] { background: linear-gradient(170deg, #7d93b4 0%, #a9bbd3 55%, #dde6f1 100%); }
-.ade-hw-sky { position: absolute; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
-.ade-hw-blob {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(18px);
-  opacity: 0.55;
-  will-change: transform;
-}
-.ade-hw-blob-a { width: 70%; height: 55%; left: -12%; top: -14%; background: radial-gradient(closest-side, rgb(255 255 255 / 55%), transparent); animation: ade-hw-drift-a 26s ease-in-out infinite alternate; }
-.ade-hw-blob-b { width: 60%; height: 50%; right: -16%; bottom: -10%; background: radial-gradient(closest-side, rgb(255 236 210 / 45%), transparent); animation: ade-hw-drift-b 34s ease-in-out infinite alternate; }
-.ade-hw[data-sky="night"] .ade-hw-blob-a, .ade-hw[data-sky="storm"] .ade-hw-blob-a { background: radial-gradient(closest-side, rgb(150 170 255 / 30%), transparent); }
-.ade-hw[data-sky="night"] .ade-hw-blob-b, .ade-hw[data-sky="storm"] .ade-hw-blob-b { background: radial-gradient(closest-side, rgb(120 90 200 / 30%), transparent); }
-@keyframes ade-hw-drift-a { to { transform: translate(18%, 12%) scale(1.08); } }
-@keyframes ade-hw-drift-b { to { transform: translate(-16%, -10%) scale(1.12); } }
-
-.ade-hw-body {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-}
-.ade-hw-glass {
-  border-radius: 14px;
-  background: var(--hw-glass);
-  border: 1px solid var(--hw-glass-edge);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 18%), 0 8px 24px -16px rgb(0 0 0 / 45%);
-}
-.ade-hw-pair { display: flex; gap: 10px; min-height: 0; flex: 1 1 auto; }
-.ade-hw-pair > * { flex: 1 1 0; min-width: 0; }
-.ade-hw:not([data-wide]):not([data-tall]) .ade-hw-pair { flex: 0 0 auto; }
-.ade-hw[data-wide][data-tall] .ade-hw-pair { flex: 0 0 auto; min-height: 132px; }
-.ade-hw[data-wide][data-tall] .ade-hw-now { justify-content: flex-start; gap: 10px; }
-
-.ade-hw-now { display: flex; flex-direction: column; justify-content: space-between; gap: 6px; padding: 12px 14px; }
-.ade-hw:not([data-wide]) .ade-hw-now { background: none; border: 0; box-shadow: none; padding: 0; }
-.ade-hw-now-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.ade-hw-temp { font-size: clamp(34px, 15cqh, 52px); font-weight: 300; letter-spacing: -0.04em; line-height: 0.95; color: var(--hw-ink); }
-.ade-hw-cond { display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; color: var(--hw-ink-2); }
-.ade-hw-hilo { font-size: 11px; color: var(--hw-ink-3); }
-
-.ade-hw-clock { display: flex; flex-direction: column; justify-content: flex-end; gap: 3px; min-width: 0; }
-.ade-hw-clock.ade-hw-glass { justify-content: space-between; padding: 12px 14px; }
-.ade-hw-time { font-size: clamp(30px, 14cqh, 50px); font-weight: 500; letter-spacing: -0.04em; line-height: 0.95; color: var(--hw-ink); font-family: var(--font-sans); }
-.ade-hw:not([data-wide]):not([data-tall]) .ade-hw-time { font-size: clamp(26px, 13cqw, 40px); }
-.ade-hw-meridiem { margin-left: 4px; font-size: 0.36em; font-weight: 600; letter-spacing: 0.04em; color: var(--hw-ink-2); }
-.ade-hw-date { font-size: 12px; color: var(--hw-ink-2); }
-.ade-hw-place-pill {
-  align-self: flex-start;
+.ade-wx2-place {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-top: 6px;
-  padding: 3px 9px 3px 7px;
+  min-width: 0;
+  height: 22px;
+  padding: 0 8px 0 6px;
   border: 0;
   border-radius: 999px;
-  background: rgb(255 255 255 / 18%);
-  color: var(--hw-ink);
+  background: transparent;
+  color: var(--kit-text-3);
   font: inherit;
   font-size: 11px;
-  font-weight: 600;
   cursor: pointer;
 }
-.ade-hw-place-pill:hover { background: rgb(255 255 255 / 28%); }
+.ade-wx2-place > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-wx2-place:hover { background: var(--kit-hover); color: var(--color-fg); }
+.ade-wx2-clock { margin-left: auto; font-size: 12px; color: var(--kit-text-2); white-space: nowrap; }
+.ade-wx2-unit { margin-left: 8px; }
+.ade-wx2-unit > button { min-width: 26px; padding: 0 5px; }
+.ade-wx2-body { gap: 12px; padding-top: 4px; }
 
-.ade-hw-hours { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); padding: 9px 6px; flex: none; }
-.ade-hw-hour { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
-.ade-hw-hour-label { font-size: 10.5px; color: var(--hw-ink-2); white-space: nowrap; }
-.ade-hw-hour-temp { font-size: 12px; font-weight: 600; color: var(--hw-ink); }
+.ade-wx2-now { flex: none; display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ade-wx2-temp { font-size: 34px; font-weight: 300; letter-spacing: -0.04em; line-height: 1; color: var(--color-fg); }
+.ade-wx2-cond { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ade-wx2-label { font-size: 13px; font-weight: 500; color: var(--color-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-wx2-sub { font-size: 11px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.ade-hw-days { display: flex; flex-direction: column; padding: 6px 12px; flex: 1 1 auto; min-height: 0; justify-content: space-around; }
-.ade-hw-day { display: flex; align-items: center; gap: 9px; min-height: 24px; font-size: 12.5px; color: var(--hw-ink); }
-.ade-hw-day-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ade-hw-day-name { flex: 0 1 46%; }
-.ade-hw-day-min { width: 34px; text-align: right; font-size: 12px; color: var(--hw-ink-3); }
-.ade-hw-day-max { width: 34px; font-size: 12px; color: var(--hw-ink); }
-.ade-hw-day-bar { position: relative; flex: 1 1 auto; height: 5px; border-radius: 999px; background: rgb(0 0 0 / 16%); }
-.ade-hw-day-bar i { position: absolute; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, #8fd3ff, #ffd36b 60%, #ff9f5a); }
-
-.ade-hw-unit {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  display: inline-flex;
-  padding: 2px;
-  gap: 1px;
-  border-radius: 999px;
-  background: rgb(0 0 0 / 14%);
-  opacity: 0;
-  transition: opacity 0.15s ease;
+.ade-wx2-hours {
+  flex: none;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  padding: 8px 0 2px;
+  border-top: 1px solid var(--kit-rule);
 }
-.ade-hw:hover .ade-hw-unit, .ade-hw-unit:focus-within { opacity: 1; }
-.ade-hw-unit > button { height: 18px; min-width: 26px; padding: 0 6px; border: 0; border-radius: 999px; background: none; color: var(--hw-ink-2); font: inherit; font-size: 10.5px; font-weight: 600; cursor: pointer; }
-.ade-hw-unit > button[aria-checked="true"] { background: rgb(255 255 255 / 85%); color: #1b2a44; }
+.ade-wx2-hour { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
+.ade-wx2-hour-label { font-size: 10px; color: var(--kit-text-3); white-space: nowrap; }
+.ade-wx2-hour:first-child .ade-wx2-hour-label { color: var(--color-fg); }
+.ade-wx2-hour-temp { font-size: 11.5px; color: var(--color-fg); }
 
-.ade-hw-note { margin-top: auto; font-size: 12px; color: var(--hw-ink-2); }
-.ade-hw-picker { margin-top: auto; padding: 10px; }
+.ade-wx2-days-fit { border-top: 1px solid var(--kit-rule); padding-top: 4px; }
+.ade-wx2-day { display: flex; align-items: center; gap: 10px; height: 26px; font-size: 12px; color: var(--color-fg); }
+.ade-wx2-day-name { width: 38px; flex: none; color: var(--kit-text-2); }
+.ade-wx2-day-min { width: 30px; flex: none; text-align: right; font-size: 11.5px; color: var(--kit-text-3); }
+.ade-wx2-day-max { width: 30px; flex: none; font-size: 11.5px; }
+.ade-wx2-day-bar { position: relative; flex: 1 1 auto; height: 4px; border-radius: 999px; background: var(--kit-track); }
+.ade-wx2-day-bar i { position: absolute; top: 0; bottom: 0; border-radius: 999px; background: color-mix(in srgb, var(--color-fg) 55%, transparent); }
+
+/* Wide: now on the left, hours and days side by side on the right. */
+.ade-wx2[data-wide] .ade-wx2-body { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); grid-template-rows: auto minmax(0, 1fr); column-gap: 20px; }
+.ade-wx2[data-wide] .ade-wx2-now { grid-column: 1; grid-row: 1; }
+.ade-wx2[data-wide] .ade-wx2-hours { grid-column: 1; grid-row: 2; align-self: start; }
+.ade-wx2[data-wide] .ade-wx2-days-fit { grid-column: 2; grid-row: 1 / span 2; border-top: 0; border-left: 1px solid var(--kit-rule); padding: 0 0 0 16px; }
+
+.ade-wx2-body .ade-home-empty { flex: 1 1 auto; }
+
+/* Place search: kit field and rows. Four results at most, so it never scrolls. */
 .ade-hw-place { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-.ade-hw-place-row { display: flex; align-items: center; gap: 6px; color: var(--hw-ink-2); }
-.ade-hw-place-row .ade-hw-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 28px;
-  padding: 0 9px;
-  border: 1px solid rgb(255 255 255 / 25%);
-  border-radius: 8px;
-  background: rgb(0 0 0 / 14%);
-  color: var(--hw-ink);
-  font: inherit;
-  font-size: 12px;
-  outline: none;
-}
-.ade-hw-place-row .ade-hw-input::placeholder { color: var(--hw-ink-3); }
-.ade-hw-place-row .kit-btn { height: 28px; background: rgb(255 255 255 / 85%); color: #1b2a44; border: 0; }
-.ade-hw-results { display: flex; flex-direction: column; max-height: 120px; overflow-y: auto; margin: 0 -4px; }
-.ade-hw-results .kit-row { min-height: 28px; gap: 6px; color: var(--hw-ink); }
-.ade-hw-result-name { font-size: 12px; }
-.ade-hw-result-detail { font-size: 11px; color: var(--hw-ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-hw-place-row { display: flex; align-items: center; gap: 6px; color: var(--kit-text-3); }
+.ade-hw-place-row .ade-hw-input { flex: 1 1 auto; }
+.ade-hw-place-row .kit-btn { height: 28px; }
+.ade-hw-results { display: flex; flex-direction: column; margin: 0 -6px; }
+.ade-hw-results .kit-row { min-height: 28px; gap: 6px; }
+.ade-hw-result-name { font-size: 12px; color: var(--color-fg); }
+.ade-hw-result-detail { font-size: 11px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── animated weather glyphs ────────────────────────────────────── */
 
@@ -396,9 +324,11 @@
 @keyframes ade-wx-breathe { from { transform: translateX(-1.5px); opacity: 0.55; } to { transform: translateX(1.5px); opacity: 0.95; } }
 
 /* Off screen, in a preview, or under reduced motion: hold still. */
-.ade-hw[data-still] *, [data-still] .ade-wx * { animation-play-state: paused !important; }
+[data-still] .ade-wx * { animation-play-state: paused !important; }
+[data-theme="light"] .ade-wx .ade-wx-cloud { fill: #e6ebf2; stroke: rgb(0 0 0 / 14%); }
+[data-theme="light"] .ade-wx .ade-wx-star { fill: #8b93a7; }
 @media (prefers-reduced-motion: reduce) {
-  .ade-wx *, .ade-hw-blob { animation: none !important; }
+  .ade-wx * { animation: none !important; }
 }
 
 /* ── focus timer ────────────────────────────────────────────────── */
@@ -561,62 +491,12 @@
 .ade-mh-stop { color: var(--kit-crit); border-color: color-mix(in srgb, var(--kit-crit) 40%, transparent); }
 
 /* ── contributions ──────────────────────────────────────────────── */
-/* One hue (the usage heatmap's orange), stepped; tower sides are the same
-   step darkened so the skyline reads as solid blocks under one light. */
+/* The chart is the shared ContributionSkyline (ui/contributionSkyline.css);
+   the card only places it. */
 
-.ade-contrib {
-  --sky-hue: #fb923c;
-  --sky-l0: color-mix(in srgb, var(--color-fg) 9%, var(--color-bg));
-  --sky-l1: color-mix(in srgb, var(--sky-hue) 30%, var(--color-bg));
-  --sky-l2: color-mix(in srgb, var(--sky-hue) 52%, var(--color-bg));
-  --sky-l3: color-mix(in srgb, var(--sky-hue) 76%, var(--color-bg));
-  --sky-l4: var(--sky-hue);
-}
-[data-theme="light"] .ade-contrib { --sky-hue: #c2410c; --sky-l0: color-mix(in srgb, var(--color-fg) 8%, var(--color-bg)); }
 .ade-contrib-view { margin-left: auto; }
-.ade-contrib-view > button { display: grid; place-items: center; width: 24px; padding: 0; }
 .ade-contrib .kit-card-head-action { margin-left: 8px; }
-.ade-contrib-body { flex-direction: column !important; gap: 10px; }
-.ade-contrib-body[data-side] { flex-direction: row !important; gap: 18px; }
-
-.ade-contrib-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 14px; margin: 0; flex: none; }
-.ade-contrib-body[data-side] .ade-contrib-stats { grid-template-columns: 1fr; align-content: space-between; width: clamp(128px, 24%, 168px); }
-.ade-contrib-stat { min-width: 0; }
-.ade-contrib-stat dt { margin-bottom: 3px; font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ade-contrib-stat dd { margin: 0; display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.ade-contrib-figure { font-size: 17px; font-weight: 600; color: var(--color-fg); letter-spacing: -0.02em; }
-.ade-contrib-stat-lead .ade-contrib-figure { color: var(--sky-hue); }
-.ade-contrib-body[data-side] .ade-contrib-stat-lead .ade-contrib-figure { font-size: clamp(24px, 6cqh, 30px); }
-.ade-contrib-figure[data-live] { color: var(--sky-hue); }
-.ade-contrib-unit { font-size: 11px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ade-contrib-body:not([data-side]) .ade-contrib-stat:not(.ade-contrib-stat-lead) .ade-contrib-unit { display: none; }
-
-.ade-contrib-stage { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
-.ade-contrib-map { flex: 1 1 auto; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; }
-.ade-contrib-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: none; }
-.ade-contrib-readout { font-size: 10.5px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.ade-contrib-key { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; color: var(--kit-text-3); flex: none; }
-.ade-contrib-key i { width: 9px; height: 9px; border-radius: 2px; background: var(--sky-l0); }
-.ade-contrib-key i[data-l="1"] { background: var(--sky-l1); }
-.ade-contrib-key i[data-l="2"] { background: var(--sky-l2); }
-.ade-contrib-key i[data-l="3"] { background: var(--sky-l3); }
-.ade-contrib-key i[data-l="4"] { background: var(--sky-l4); }
-
-.ade-skyline { display: block; overflow: visible; }
-.ade-skyline-tower { --top: var(--sky-l0); cursor: default; }
-.ade-skyline-tower[data-l="1"] { --top: var(--sky-l1); }
-.ade-skyline-tower[data-l="2"] { --top: var(--sky-l2); }
-.ade-skyline-tower[data-l="3"] { --top: var(--sky-l3); }
-.ade-skyline-tower[data-l="4"] { --top: var(--sky-l4); }
-.ade-skyline-top { fill: var(--top); }
-.ade-skyline-left { fill: color-mix(in srgb, var(--top) 78%, #000); }
-.ade-skyline-right { fill: color-mix(in srgb, var(--top) 60%, #000); }
-.ade-skyline-tower:hover .ade-skyline-top { fill: color-mix(in srgb, var(--top) 70%, #fff); }
-.ade-skyline-tower[data-today] .ade-skyline-top { stroke: var(--color-fg); stroke-width: 1; }
-@media (prefers-reduced-motion: no-preference) {
-  .ade-skyline-tower { animation: ade-skyline-rise 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-}
-@keyframes ade-skyline-rise { from { opacity: 0; transform: translateY(6px); } }
+.ade-contrib-body { padding-top: 4px; }
 
 /* ── shipped ────────────────────────────────────────────────────── */
 
@@ -668,7 +548,7 @@
 .ade-shipped-repo b { min-width: 18px; padding: 1px 5px; border-radius: 999px; background: color-mix(in srgb, #a371f7 22%, transparent); color: #d2b8ff; font-size: 10px; font-weight: 600; text-align: center; }
 [data-theme="light"] .ade-shipped-repo b { color: #6e40c9; }
 .ade-shipped-none { flex: none; font-size: 11.5px; color: var(--kit-text-3); }
-.ade-shipped-list { margin: 0 -8px; max-height: 40%; }
+.ade-shipped-list { margin: 0 -8px; }
 .ade-shipped-row { gap: 8px; min-height: 30px; }
 .ade-shipped-icon { flex: none; color: #a371f7; }
 [data-theme="light"] .ade-shipped-icon { color: #8250df; }
@@ -709,7 +589,7 @@
 .ade-feed-away-parts { display: flex; flex-wrap: wrap; gap: 5px; }
 .ade-feed-away-part { padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--color-bg) 45%, transparent); font-size: 11.5px; white-space: nowrap; }
 .ade-feed-group-label { padding: 10px 8px 3px; font-size: 9.5px; }
-.ade-feed-group:first-child .ade-feed-group-label { padding-top: 4px; }
+.ade-feed-group-label[data-first] { padding-top: 4px; }
 .ade-feed-row { min-height: 40px; }
 .ade-feed-row:disabled { cursor: default; opacity: 1; }
 .ade-feed-icon {
@@ -838,6 +718,3 @@
 .ade-np-play { width: 40px; height: 40px; background: var(--color-fg); color: var(--color-bg); }
 .ade-np-play:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 86%, var(--color-accent)); }
 
-/* The clock card has no head; in edit mode the tile's controls sit where a
-   head would be, so its content moves below them. */
-.ade-home-grid[data-editing="true"] .ade-hw-body { padding-top: 48px; }
