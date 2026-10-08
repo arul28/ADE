@@ -33,20 +33,22 @@ type AsyncMergeRequest = {
 /**
  * True when a 409's running merge is not this request: an option GitHub
  * reports for it differs from what this request sent. Only non-empty reported
- * values count, and the requested head is read from `head_sha` alone, since
- * `details.sha` is the merge's resulting commit, not its head.
+ * values count, and the requested head is read from `expected_head_sha` (or
+ * `head_sha`), never `details.sha`, which is the merge's resulting commit.
  */
 function runningMergeDiffers(sent: AsyncMergeRequest, responseBody: unknown): boolean {
   if (!isRecord(responseBody)) return false;
   const details = isRecord(responseBody.details) ? responseBody.details : {};
-  const reported = (name: string): unknown => {
+  const reported = (...names: string[]): unknown => {
     for (const record of [details, responseBody]) {
-      const value = Object.hasOwn(record, name) ? record[name] : undefined;
-      if (value !== undefined && value !== null && value !== "") return value;
+      for (const name of names) {
+        const value = Object.hasOwn(record, name) ? record[name] : undefined;
+        if (value !== undefined && value !== null && value !== "") return value;
+      }
     }
     return undefined;
   };
-  const headSha = reported("head_sha");
+  const headSha = reported("expected_head_sha", "head_sha");
   const method = reported("merge_method");
   const bypass = reported("bypass_rules");
   return (sent.sha !== undefined && headSha !== undefined && headSha !== sent.sha)

@@ -6399,7 +6399,7 @@ describe("prService.land", () => {
       name: "already running (409) with matching options follows it",
       replies: [{
         status: 409,
-        body: { status: "pending", details: { message: "A merge request already exists for this pull request.", uuid: "u-running", sha: null, merge_method: "rebase", head_sha: "s2" } },
+        body: { status: "pending", details: { message: "A merge request already exists for this pull request.", uuid: "u-running", sha: null, merge_method: "rebase", expected_head_sha: "s2" } },
       }, { body: merged }],
       expected: { success: true, mergeStatus: "merged", mergeCommitSha: "merge-sha", error: null },
       puts: 1,
@@ -6483,12 +6483,15 @@ describe("prService.land", () => {
     if (!success) expect(result.error).toMatch(/#90 has commits that #91/);
   });
 
-  it("does not adopt a running merge when GitHub reports different options", async () => {
+  it.each([
+    { name: "another merge method", options: { merge_method: "squash", expected_head_sha: "s2" } },
+    { name: "another head", options: { merge_method: "rebase", expected_head_sha: "other-head" } },
+  ])("does not adopt a running merge of $name", async ({ options }) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const { service, asyncCalls } = buildStackLand([
       {
         status: 409,
-        body: { status: "pending", details: { message: "A merge request already exists.", uuid: "u-different", merge_method: "squash", head_sha: "other-head" } },
+        body: { status: "pending", details: { message: "A merge request already exists.", uuid: "u-different", ...options } },
       },
     ]);
 
