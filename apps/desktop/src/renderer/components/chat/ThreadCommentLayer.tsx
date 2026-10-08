@@ -147,6 +147,9 @@ export function ThreadCommentLayer({
 }) {
   const actions = useThreadCommentActions(sessionId, pin);
   const [draft, setDraft] = useState<Draft | null>(null);
+  // Read after an await, so a failed save can tell whether a newer box is open.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const [draftError, setDraftError] = useState<string | null>(null);
   const [openCommentId, setOpenCommentId] = useState<string | null>(null);
   const { editingId, stopEditing } = actions;
@@ -406,8 +409,10 @@ export function ThreadCommentLayer({
       settle(await api.create({ sessionId, ...fields }, pin ?? null));
     } catch (error) {
       settle(null);
-      // Reopen the box with the text, unless another comment was started since.
-      setDraft((current) => current ?? { ...saving, body });
+      // Reopen the box with the text and the reason, unless another comment
+      // was started since; that box is the user's now.
+      if (draftRef.current) return;
+      setDraft({ ...saving, body });
       setDraftError(threadCommentErrorText(error));
     }
   };
