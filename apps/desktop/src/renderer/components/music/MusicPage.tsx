@@ -45,6 +45,10 @@ type View =
 const LIBRARY_LABELS: Record<MusicLibraryKind, string> = { playlists: "Playlists", albums: "Albums", songs: "Songs" };
 
 /** Quick searches for the empty search page: a tap fills the field. */
+/** Songs handed to MusicKit at once: hours of music, still quick to load. */
+const QUEUE_WINDOW = 300;
+/** Songs kept before the chosen one, so previous works. */
+const QUEUE_BACK = 50;
 const SEARCH_IDEAS = ["Deep focus", "Lo-fi beats", "Synthwave", "Jazz for work", "Film scores", "Ambient", "Classical piano", "Coding mix"];
 
 /** Whether the Now Playing card is shown (on wide windows) or folded into the bar. */
@@ -826,7 +830,28 @@ function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps & { item
     overscan: 12,
     scrollMargin: listTop,
   });
-  const play = (index: number, shuffle?: boolean) => void musicActions.playCollection(kind, item.id, index, shuffle);
+  const play = (index: number, shuffle?: boolean) => {
+    // Handing MusicKit the playlist id loads only its first page of songs, so a
+    // click further down (or shuffle) never reaches the rest. Queue from the
+    // full list this page already read instead.
+    if (!tracks.length) {
+      void musicActions.playCollection(kind, item.id, index, shuffle);
+      return;
+    }
+    const ids = tracks.map((t) => t.id);
+    if (shuffle) {
+      for (let i = ids.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [ids[i], ids[j]] = [ids[j], ids[i]];
+      }
+      void musicActions.playItems(ids.slice(0, QUEUE_WINDOW), 0, true);
+      return;
+    }
+    // A window around the chosen song keeps the queue quick to load while
+    // previous still has songs to go back to.
+    const start = Math.max(0, Math.min(index - QUEUE_BACK, ids.length - QUEUE_WINDOW));
+    void musicActions.playItems(ids.slice(start, start + QUEUE_WINDOW), index - start);
+  };
 
   return (
     <div className="ade-music-view" data-testid="music-detail">
