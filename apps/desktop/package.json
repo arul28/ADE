@@ -25,6 +25,7 @@
     "test:desktop-driver": "swift test --package-path ./native/ADEDesktopDriver",
     "build:capture-helper": "node ./scripts/build-capture-helper.mjs",
     "build:capture-helper:win": "node ./scripts/build-capture-helper-win.mjs",
+    "build:music-host:win": "node ./scripts/build-music-host-win.mjs",
     "test:capture-helper": "swift test --package-path ./native/ADECaptureHelper",
     "build:sim-helper": "node ./scripts/build-sim-helper.mjs",
     "test:sim-helper": "swift test --package-path ./native/ADESimHelper",
@@ -32,8 +33,8 @@
     "test:ade-media": "swift test --package-path ./native/ADEMedia",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
     "dist:win:test": "node ./scripts/run-windows-test-build.mjs",
-    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build:desktop-driver:win && npm run build:now-playing:win && npm run build && npm run package:win && npm run validate:win:release",
-    "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build:desktop-driver:win && npm run build:now-playing:win && npm run build && npm run package:win:signed && npm run validate:win:release:signed",
+    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build:desktop-driver:win && npm run build:music-host:win && npm run build:now-playing:win && npm run build && npm run package:win && npm run validate:win:release",
+    "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build:desktop-driver:win && npm run build:music-host:win && npm run build:now-playing:win && npm run build && npm run package:win:signed && npm run validate:win:release:signed",
     "package:win": "node ./scripts/run-electron-builder.mjs --win --x64 --publish never",
     "package:win:signed": "node ./scripts/run-electron-builder.mjs --require-signing --win --x64 --publish never",
     "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:mac-native && npm run build && electron-builder --mac --publish never",
@@ -335,6 +336,13 @@
           "ade-media",
           "ade-desktop-driver.exe",
           "ade-now-playing.exe"
+        ]
+      },
+      {
+        "from": "resources/native/ade-music-host",
+        "to": "native/ade-music-host",
+        "filter": [
+          "**/*"
         ]
       },
       {

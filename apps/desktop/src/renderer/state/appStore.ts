@@ -1497,6 +1497,8 @@ export type AppState = {
   personalChatsTabOpen: boolean;
   /** The machine-level Browser top tab is in the tab strip. Survives project transitions, like Chats. */
   browserTabOpen: boolean;
+  /** The machine-level Music top tab is in the tab strip. Survives project transitions, like Browser. */
+  musicTabOpen: boolean;
   /**
    * The Browser tab's docked chat. `chat` is the personal chat the dock shows,
    * kept until the user starts a new one; `targetKey` is the machine it lives
@@ -1765,6 +1767,7 @@ export type AppState = {
   setPersonalChatsTabOpen: (open: boolean) => void;
   closePersonalChatsTab: () => void;
   setBrowserTabOpen: (open: boolean) => void;
+  setMusicTabOpen: (open: boolean) => void;
   setBrowserDock: (patch: Partial<BrowserDockState>) => void;
   refreshProject: () => Promise<void>;
   refreshLanes: (options?: {
@@ -2147,6 +2150,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   standaloneSettingsOpen: false,
   personalChatsTabOpen: false,
   browserTabOpen: false,
+  musicTabOpen: false,
   browserDock: { open: false, chat: null },
   laneSnapshots: [],
   lanes: [],
@@ -2830,6 +2834,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set({ personalChatsTabOpen }),
   closePersonalChatsTab: () => set({ personalChatsTabOpen: false }),
   setBrowserTabOpen: (browserTabOpen) => set({ browserTabOpen }),
+  setMusicTabOpen: (musicTabOpen) => set({ musicTabOpen }),
   setBrowserDock: (patch) => set((prev) => ({ browserDock: { ...prev.browserDock, ...patch } })),
   getWorkViewState: (projectRoot) => {
     const key = resolveProjectStateKey(get(), projectRoot);
@@ -3655,6 +3660,7 @@ export function createProjectAppStore(
     standaloneSettingsOpen: false,
     personalChatsTabOpen: false,
     browserTabOpen: false,
+    musicTabOpen: false,
     theme: rootState.theme,
     themeId: rootState.themeId,
     customThemes: rootState.customThemes,

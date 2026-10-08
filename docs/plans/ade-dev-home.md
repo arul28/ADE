@@ -303,6 +303,28 @@ Next spike: the Windows host loads a blank secure-origin page with only MusicKit
 JS. It authorizes and plays a library track while driven from a test
 controller. Measure memory against the 150 MB target.
 
+### Status (2026-10-08): Music tab built on Windows
+
+See [docs/features/music/README.md](../features/music/README.md).
+
+- **Built:** the WebView2 player host (`ade-music-host.exe`, built by
+  `build:music-host:win` with the in-box csc and a hash-pinned WebView2 NuGet
+  package, shipped through `extraResources`); the main-process music service
+  (on-demand start, 5-minute idle unload, resume at the same song and second);
+  the `/music` top tab, the top-bar mini player, `Mod+Shift+M`; the Worker route
+  `GET /music/developer-token`; the renderer store the Now Playing widget reads.
+- **Verified:** catalog search, artwork and album pages with a locally minted
+  developer token; Connect opens Apple's sign-in popup, light and legible;
+  closing it cancels cleanly; the idle unload ends the whole host tree. The
+  Worker's token signing was checked against Apple (HTTP 200).
+- **Not yet verified (needs a signed-in person):** playback, library, queue,
+  unload/resume of a playing queue, likes.
+- **Memory:** the host tree idles at about 370 MB working set (190 MB private)
+  with MusicKit loaded, against the 150 MB target; Apple's sign-in popup adds
+  about 180 MB while open. The tree is gone 5 minutes after playback stops.
+- **macOS:** not started; the tab says Music on Mac is coming.
+- **Not deployed:** the Worker route needs `MUSICKIT_PRIVATE_KEY` set and a deploy.
+
 ---
 
 ## 4. Widget home page

@@ -102,6 +102,7 @@ apps/desktop/resources/native/ade-sim-helper
 apps/desktop/native/ADESimHelper/.build/
 apps/desktop/native/ADESimHelper/.build-*/
 apps/desktop/resources/native/ade-media
+apps/desktop/resources/native/ade-music-host/
 apps/desktop/native/ADEMedia/.build/
 apps/desktop/native/ADEMedia/.build-*/
 # Large whisper.cpp binary + ~140 MB ggml model are materialized at build time,

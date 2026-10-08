@@ -1,0 +1,107 @@
+import path from "node:path";
+
+import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
+
+import { parseTrustedAccountDirectoryBaseUrl } from "../../../shared/accountDirectory";
+import { MUSIC_IPC, type MusicCommand, type MusicLibraryKind, type MusicSearchScope } from "../../../shared/types/music";
+import { createDeveloperTokenProvider } from "./musicDeveloperToken";
+import { resolveMusicHostExecutable } from "./musicHostProcess";
+import { createMusicService, type MusicService } from "./musicService";
+
+/**
+ * Wires the Music service to IPC (`window.ade.music`).
+ *
+ * Only ADE's own renderer may call it: a page in the built-in browser or an
+ * agent-authored scene frame must not drive the user's Apple Music account.
+ */
+
+function isAdeRenderer(event: IpcMainInvokeEvent): boolean {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return false;
+  const raw = event.senderFrame?.url || event.sender.getURL();
+  try {
+    const url = new URL(raw);
+    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+    if (devServerUrl) return url.origin === new URL(devServerUrl).origin;
+    if (!app.isPackaged && url.origin === "http://localhost:5173") return true;
+    return url.protocol === "file:" && /\/renderer\/index\.html$/.test(decodeURIComponent(url.pathname));
+  } catch {
+    return false;
+  }
+}
+
+const KINDS = new Set<MusicLibraryKind>(["playlists", "albums", "songs"]);
+
+export function registerMusicIpc(args: {
+  credentials: {
+    get: (key: string) => Promise<string | null>;
+    set: (key: string, value: string) => Promise<void>;
+    delete: (key: string) => Promise<void>;
+  };
+  directoryBaseUrl: () => string | null;
+  getAccountToken: () => Promise<string | null>;
+  logger?: {
+    info: (event: string, data?: Record<string, unknown>) => void;
+    warn: (event: string, data?: Record<string, unknown>) => void;
+  };
+}): MusicService {
+  const tokens = createDeveloperTokenProvider({
+    isPackaged: app.isPackaged,
+    directoryBaseUrl: () => {
+      const raw = args.directoryBaseUrl();
+      return raw ? parseTrustedAccountDirectoryBaseUrl(raw) : null;
+    },
+    getAccountToken: args.getAccountToken,
+    logger: args.logger,
+  });
+  const service = createMusicService({
+    hostExecutable: resolveMusicHostExecutable({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    }),
+    isPackaged: app.isPackaged,
+    userDataDir: path.join(app.getPath("userData"), "music-player"),
+    appVersion: app.getVersion(),
+    tokens,
+    credentials: args.credentials,
+    broadcast: (state) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(MUSIC_IPC.stateEvent, state);
+      }
+    },
+    logger: args.logger,
+  });
+
+  const handle = <A extends unknown[], R>(channel: string, fn: (...a: A) => Promise<R>) => {
+    ipcMain.handle(channel, async (event, ...rest) => {
+      if (!isAdeRenderer(event)) throw new Error("Music is only available to the ADE window.");
+      return fn(...(rest as A));
+    });
+  };
+
+  const str = (value: unknown) => (typeof value === "string" ? value : String(value ?? ""));
+  handle(MUSIC_IPC.getState, () => service.getState());
+  handle(MUSIC_IPC.warm, () => service.warm());
+  handle(MUSIC_IPC.connect, () => service.connect());
+  handle(MUSIC_IPC.disconnect, () => service.disconnect());
+  handle(MUSIC_IPC.command, (command: MusicCommand) => service.command(command));
+  handle(MUSIC_IPC.queue, () => service.queue());
+  handle(MUSIC_IPC.search, (input: { term: string; scope: MusicSearchScope; limit?: number }) =>
+    service.search({ term: str(input?.term), scope: input?.scope === "library" ? "library" : "catalog", limit: input?.limit }));
+  handle(MUSIC_IPC.library, (input: { kind: MusicLibraryKind; offset?: number; limit?: number }) =>
+    service.library({ kind: KINDS.has(input?.kind) ? input.kind : "playlists", offset: input?.offset, limit: input?.limit }));
+  handle(MUSIC_IPC.recent, () => service.recent());
+  handle(MUSIC_IPC.tracks, (input: { kind: "album" | "playlist"; id: string; library: boolean }) =>
+    service.tracks({ kind: input?.kind === "album" ? "album" : "playlist", id: str(input?.id), library: Boolean(input?.library) }));
+  handle(MUSIC_IPC.rating, (input: { id: string; library: boolean }) =>
+    service.rating({ id: str(input?.id), library: Boolean(input?.library) }));
+  handle(MUSIC_IPC.setRating, (input: { id: string; library: boolean; liked: boolean | null }) =>
+    service.setRating({ id: str(input?.id), library: Boolean(input?.library), liked: input?.liked === null ? null : Boolean(input?.liked) }));
+
+  // The player host must never outlive ADE.
+  app.once("will-quit", () => {
+    void service.dispose();
+  });
+  return service;
+}

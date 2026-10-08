@@ -108,6 +108,9 @@ const PersonalChatsPage = React.lazy(() =>
 const BrowserPage = React.lazy(() =>
   import("../browser/BrowserPage").then((m) => ({ default: m.BrowserPage }))
 );
+const MusicPage = React.lazy(() =>
+  import("../music/MusicPage").then((m) => ({ default: m.MusicPage }))
+);
 const AccountPage = React.lazy(() =>
   import("../account/AccountPage").then((m) => ({ default: m.AccountPage }))
 );
@@ -142,6 +145,7 @@ import {
   type OpenDeeplinkDetail,
 } from "../../lib/openExternal";
 import { isBrowserTabRoute } from "../browser/browserTab";
+import { isMusicTabRoute } from "../music/musicTab";
 import {
   githubRepoSlugsEqual,
   parseGithubRemoteUrl,
@@ -687,7 +691,9 @@ function ProjectTabHost() {
   const isPersonalChatsRoute = location.pathname === "/chats" || location.pathname.startsWith("/chats/");
   // The Browser top tab is machine-level like Chats: no project surface under it.
   const isBrowserRoute = !webMode && isBrowserTabRoute(location.pathname);
-  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute;
+  // Music is machine-level too: Apple Music has nothing to do with a project.
+  const isMusicRoute = !webMode && isMusicTabRoute(location.pathname);
+  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute;
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
   // Settings with no project open: the welcome screen's own Settings entry
   // sends you here, and the machine-scoped sections of the page are the only
@@ -1008,6 +1014,13 @@ function ProjectTabHost() {
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
             <BrowserPage />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
+      {isMusicRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <MusicPage />
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}

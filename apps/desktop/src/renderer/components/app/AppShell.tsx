@@ -71,6 +71,13 @@ import {
   browserTabAvailable,
   isBrowserTabRoute,
 } from "../browser/browserTab";
+import {
+  MUSIC_TAB_KEYBINDING,
+  MUSIC_TAB_ROUTE,
+  isMusicTabRoute,
+  musicTabAvailable,
+} from "../music/musicTab";
+import { setMusicTabOpener } from "../music/musicStore";
 
 function primaryTabPath(pathname: string): string {
   const roots = ["/hub", "/activity", "/attention", "/lanes", "/files", "/work", "/prs", "/history", "/automations", "/cto", "/settings"];
@@ -91,6 +98,7 @@ const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
   "/settings",
   "/chats",
   "/browser",
+  "/music",
 ] as const;
 
 /**
@@ -256,6 +264,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     location.pathname === "/chats" || location.pathname.startsWith("/chats/");
   // Machine-level like Chats. Desktop only: the hosted client has no browser view.
   const isBrowserRoute = isBrowserTabRoute(location.pathname) && browserTabAvailable();
+  // Music is machine-level too, and desktop only (the player is a local process).
+  const isMusicRoute = isMusicTabRoute(location.pathname) && musicTabAvailable();
   const activityDeepLink = isActivityRoute(location.pathname);
   const isAccountRoute =
     location.pathname === "/account" || location.pathname.startsWith("/account/");
@@ -319,6 +329,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // Same rule as Chats: being on /browser is what puts the Browser tab in the strip.
     if (isBrowserRoute) setBrowserTabOpen(true);
   }, [isBrowserRoute, setBrowserTabOpen]);
+
+  const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
+  useEffect(() => {
+    if (isMusicRoute) setMusicTabOpen(true);
+  }, [isMusicRoute, setMusicTabOpen]);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.route_change", {
@@ -929,7 +944,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Mod+1..5 and Mod+B act on the project surface, so they are off while the
   // welcome page, Chats, Browser, or the account page is in front.
   useProjectSidebarShortcuts({
-    enabled: Boolean(project?.rootPath) && !showWelcome && !isPersonalChatsRoute && !isBrowserRoute && !isAccountRoute,
+    enabled: Boolean(project?.rootPath) && !showWelcome && !isPersonalChatsRoute && !isBrowserRoute && !isMusicRoute && !isAccountRoute,
     projectRoot: currentProjectRoot,
     keybindings,
     navigate,
@@ -968,6 +983,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [browserTabBinding, navigate, setBrowserTabOpen]);
 
+  // Mod+Shift+M opens the Music tab from anywhere, the same way. The top-bar
+  // mini player and the home page's Now Playing widget open it through
+  // `musicActions.open()`, which lands here.
+  const isMusicRouteRef = useRef(isMusicRoute);
+  isMusicRouteRef.current = isMusicRoute;
+  const openMusicTab = useCallback(() => {
+    setMusicTabOpen(true);
+    if (!isMusicRouteRef.current) navigate(MUSIC_TAB_ROUTE);
+  }, [navigate, setMusicTabOpen]);
+  useEffect(() => {
+    setMusicTabOpener(openMusicTab);
+    return () => setMusicTabOpener(null);
+  }, [openMusicTab]);
+  const musicTabBinding = useMemo(
+    () => getEffectiveBinding(keybindings, MUSIC_TAB_KEYBINDING.id, MUSIC_TAB_KEYBINDING.fallback),
+    [keybindings],
+  );
+  useEffect(() => {
+    if (!musicTabAvailable()) return undefined;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
+      if (!eventMatchesBinding(e, musicTabBinding)) return;
+      e.preventDefault();
+      if (e.repeat) return;
+      openMusicTab();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [musicTabBinding, openMusicTab]);
+
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
       "/activity": "tab-tint-work",
@@ -982,6 +1027,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/settings": "tab-tint-settings",
       "/chats": "tab-tint-work",
       "/browser": "tab-tint-work",
+      "/music": "tab-tint-work",
     };
     return tintMap[primaryTabPath(location.pathname)] ?? "";
   }, [location.pathname]);
@@ -1001,6 +1047,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <TopBar
           personalChatsRouteActive={isPersonalChatsRoute}
           browserRouteActive={isBrowserRoute}
+          musicRouteActive={isMusicRoute}
           accountRouteActive={isAccountRoute}
           settingsRouteActive={location.pathname === "/settings"}
           onNavigate={(path, opts) => navigate(path, opts)}

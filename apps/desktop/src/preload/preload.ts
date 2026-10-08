@@ -1119,6 +1119,7 @@ import type {
   SearchRebuildResult,
 } from "../shared/types";
 import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
+import { MUSIC_IPC, type MusicBridge, type MusicState } from "../shared/types/music";
 import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState } from "../shared/types/homeWidgets";
 
 type ShortIpcCache<T> = {
@@ -13402,6 +13403,25 @@ const adeBridge = {
       saveImage: (args: { pngDataUrl: string; fileName: string }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.shareSaveImage, args),
     },
   },
+  music: {
+    getState: () => ipcRenderer.invoke(MUSIC_IPC.getState),
+    warm: () => ipcRenderer.invoke(MUSIC_IPC.warm),
+    connect: () => ipcRenderer.invoke(MUSIC_IPC.connect),
+    disconnect: () => ipcRenderer.invoke(MUSIC_IPC.disconnect),
+    command: (command) => ipcRenderer.invoke(MUSIC_IPC.command, command),
+    queue: () => ipcRenderer.invoke(MUSIC_IPC.queue),
+    search: (args) => ipcRenderer.invoke(MUSIC_IPC.search, args),
+    library: (args) => ipcRenderer.invoke(MUSIC_IPC.library, args),
+    recent: () => ipcRenderer.invoke(MUSIC_IPC.recent),
+    tracks: (args) => ipcRenderer.invoke(MUSIC_IPC.tracks, args),
+    rating: (args) => ipcRenderer.invoke(MUSIC_IPC.rating, args),
+    setRating: (args) => ipcRenderer.invoke(MUSIC_IPC.setRating, args),
+    onState: (cb: (state: MusicState) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: MusicState) => cb(state);
+      ipcRenderer.on(MUSIC_IPC.stateEvent, listener);
+      return () => ipcRenderer.removeListener(MUSIC_IPC.stateEvent, listener);
+    },
+  } satisfies MusicBridge,
   perf: {
     getConfig: () => ipcRenderer.invoke(IPC.perfGetConfig),
     recordEvent: (event: { kind: string; ts?: number; [k: string]: unknown }) =>

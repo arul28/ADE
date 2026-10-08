@@ -66,6 +66,7 @@ import {
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
+import { registerMusicIpc } from "./services/music/registerMusicIpc";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
 import {
@@ -308,6 +309,7 @@ import { createPushRegistrationStore } from "../../../ade-cli/src/services/push/
 import { resolvePushRelayStateFile } from "../../../ade-cli/src/services/push/pushPublisherService";
 import {
   getSharedAccountAuthService,
+  getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
@@ -9286,6 +9288,17 @@ app.whenReady().then(async () => {
 
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({ logger: getMachineMainLogger() });
+
+  // The Music tab: Apple Music through an on-demand player host. The user's
+  // Music-User-Token goes in the same machine credential store as API keys.
+  registerMusicIpc({
+    credentials: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+    directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }),
+    getAccountToken: () => getSignedInAccountAccessToken(getSharedAccountAuthService({
+      secretsDir: machineAdeLayout.secretsDir,
+    })),
+    logger: getMachineMainLogger(),
+  });
 
   ipcBridge = registerIpc({
     getCtx: () => {

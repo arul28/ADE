@@ -20,6 +20,12 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
     scope: "global"
   },
   {
+    id: "shell.music.open",
+    description: "Open the Music tab",
+    defaultBinding: "Mod+Shift+M",
+    scope: "global"
+  },
+  {
     id: "shell.tab.work",
     description: "Open Work",
     defaultBinding: "Mod+1",
