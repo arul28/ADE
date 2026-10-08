@@ -119,6 +119,9 @@ describe("deriveWorkBoardColumn", () => {
     expect(deriveWorkBoardColumn(row({ attentionRequestedAt: "2026-09-11T10:00:00.000Z" })))
       .toBe("needs_you");
     expect(deriveWorkBoardColumn(row({ settledAt: "2026-09-11T10:00:00.000Z" }))).toBe("done");
+    // A failed turn is the user's move, so it files with the raised hands.
+    expect(deriveWorkBoardColumn(row({ lastTurnFailedAt: "2026-09-11T10:00:00.000Z" })))
+      .toBe("needs_you");
   });
 
   it("files a chat that is merely resting under Done, never under Needs you", () => {

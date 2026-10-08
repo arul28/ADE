@@ -4078,18 +4078,21 @@ describe("buildWorkBoardModel", () => {
     const ended = makeSession("s-ended", "lane-b", { status: "completed", runtimeState: "exited" });
     const settled = makeSession("s-settled", "lane-b", { settledAt: "2026-04-01T13:00:00.000Z" });
     const snoozed = makeSession("s-snoozed", "lane-c", { snoozedUntil: "2099-01-01T00:00:00.000Z" });
+    // The list files a failed turn with the ended rows; the board files it
+    // under Needs you, because it is the user's move.
+    const failed = makeSession("s-failed", "lane-b", { status: "failed", runtimeState: "exited", exitCode: 1 });
 
     const { buckets } = buildWorkBoardModel({
       runningFiltered: [running],
       needsYouFiltered: [needsYou],
       restingFiltered: [],
-      endedFiltered: [ended],
+      endedFiltered: [ended, failed],
       settledFiltered: [settled],
       snoozedFiltered: [snoozed],
       laneWaitingReason: noPrWait,
     });
 
-    expect(buckets["needs_you"].map((s) => s.id)).toEqual(["s-needs"]);
+    expect(buckets["needs_you"].map((s) => s.id)).toEqual(["s-needs", "s-failed"]);
     expect(buckets.working.map((s) => s.id)).toEqual(["s-running"]);
     expect(buckets.waiting.map((s) => s.id)).toEqual(["s-snoozed"]);
     // Ended above settled: settled is the quieter tier and sinks, exactly as
@@ -4101,7 +4104,7 @@ describe("buildWorkBoardModel", () => {
     const placed = WORK_BOARD_COLUMNS.flatMap((column) => buckets[column.key].map((s) => s.id));
     expect(placed).toHaveLength(new Set(placed).size);
     expect(new Set(placed)).toEqual(
-      new Set(["s-needs", "s-running", "s-ended", "s-settled", "s-snoozed"]),
+      new Set(["s-needs", "s-running", "s-ended", "s-settled", "s-snoozed", "s-failed"]),
     );
   });
 

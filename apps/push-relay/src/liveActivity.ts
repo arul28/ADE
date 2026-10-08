@@ -890,6 +890,7 @@ export async function deliverAccountLiveActivity(
 export const liveActivityTestInternals = Object.freeze({
   accountActivityContentState,
   activityPullRequest,
+  activityBoardColumn,
   activityRun,
   activityStateGroup,
   privacyPreservingActivityContentState,

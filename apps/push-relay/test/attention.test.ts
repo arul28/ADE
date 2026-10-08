@@ -4212,10 +4212,14 @@ describe("account Attention contract", () => {
       expect(liveActivityPushes[0]).toMatchObject({
         aps: {
           event: "start",
+          // The start alert is only the counts: never agent text, even before
+          // hide-details redacts the rows.
           alert: {
-            title: "ADE activity started",
+            title: "ADE",
+            body: "1 needs you",
           },
           "content-state": {
+            columns: { needsYou: 1, working: 0, waiting: 0, done: 0 },
             runs: [{
               title: "Agent activity",
               model: null,
@@ -4362,14 +4366,110 @@ describe("account Attention contract", () => {
     });
   });
 
+  it.each([
+    { name: "a question notifies by default", eventKind: "agent_needs_you", saved: null, version: null, notifies: true },
+    { name: "red CI notifies by default", eventKind: "pr_checks_failing", saved: null, version: null, notifies: true },
+    { name: "a review request stays quiet by default", eventKind: "pr_review_requested", saved: null, version: null, notifies: false },
+    { name: "an old-default notify for merge-ready reads as the new default", eventKind: "pr_merge_ready", saved: "notify", version: null, notifies: false },
+    { name: "a notify chosen on the new defaults is kept", eventKind: "pr_merge_ready", saved: "notify", version: 2, notifies: true },
+    { name: "a question the user silenced stays silent", eventKind: "agent_needs_you", saved: "ambient", version: null, notifies: false },
+  ] as const)("$name", async ({ eventKind, saved, version, notifies }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const isPullRequest = eventKind.startsWith("pr_");
+    const raw = {
+      ...validAgentItem(),
+      eventKind,
+      ...(isPullRequest
+        ? {
+            id: `pull-request:${MACHINE_KEY}:owner:repo:7`,
+            kind: "pull_request",
+            phase: eventKind.replace(/^pr_/, ""),
+            destination: { kind: "pull_request", repoOwner: "owner", repoName: "repo", number: 7, tab: "overview" },
+            actions: [],
+          }
+        : {}),
+    };
+    const parsed = attentionTestInternals.parseAttentionItem(raw, MACHINE_KEY);
+    expect(parsed, "setup precondition: the item must parse").not.toBeNull();
+    const sendNotification = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      apnsId: "policy",
+      reason: null,
+      tokenInvalid: false,
+    }));
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        apnsToken: "ab".repeat(32),
+        preferences: { enabled: true },
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values ('account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?)
+      `).run(
+        parsed!.id,
+        MACHINE_KEY,
+        parsed!.revision,
+        parsed!.fingerprint,
+        parsed!.eventKind,
+        parsed!.phase,
+        JSON.stringify(parsed),
+        parsed!.expiresAt,
+        parsed!.updatedAt,
+      );
+      database.native.prepare(`
+        insert into attention_preferences(user_id, payload_json, updated_at)
+        values ('account-a', ?, '2026-07-28T08:00:00.000Z')
+      `).run(JSON.stringify({
+        account: {
+          ...(saved ? { eventPolicies: { [eventKind]: saved } } : {}),
+          ...(version ? { eventPolicyDefaultsVersion: version } : {}),
+        },
+        devices: {},
+      }));
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: await generateTestP8(),
+        APNS_KEY_ID: "POLICYKEY1",
+        APNS_TEAM_ID: "POLICYTEAM",
+      });
+
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed!],
+        sendNotification,
+      );
+      expect(sendNotification).toHaveBeenCalledTimes(notifies ? 1 : 0);
+    } finally {
+      database.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("redacts notification titles as well as bodies when previews are hidden", () => {
     const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
     expect(parsed).not.toBeNull();
     if (!parsed) throw new Error("setup precondition: agent Attention item must parse");
 
-    expect(attentionTestInternals.attentionAlertCopy(parsed, false).title).toBe(
-      "Approve the migration",
-    );
+    expect(attentionTestInternals.attentionAlertCopy(parsed, false)).toEqual({
+      title: "Approve the migration",
+      body: "Needs you · ADE · Studio",
+    });
+    // One short line each: long names are cut, never wrapped into a paragraph.
+    const longNames = attentionTestInternals.parseAttentionItem({
+      ...validAgentItem(),
+      machine: { ...(validAgentItem().machine as Record<string, unknown>), name: "M".repeat(80) },
+    }, MACHINE_KEY);
+    const longBody = attentionTestInternals.attentionAlertCopy(longNames!, false).body ?? "";
+    expect(longBody.length).toBeLessThanOrEqual(64);
+    expect(longBody.endsWith("…")).toBe(true);
     expect(attentionTestInternals.attentionAlertCopy(parsed, true)).toEqual({
       title: "Agent: Needs you",
       body: null,
@@ -6432,9 +6532,13 @@ describe("Live Activity island tallies", () => {
     chatActivityMode?: unknown;
     alertFingerprint?: string;
     contentFingerprint?: string;
+    boardColumn?: string;
+    waitingReason?: string;
   }): Record<string, unknown> {
     return {
       ...validAgentItem(),
+      ...(args.boardColumn ? { boardColumn: args.boardColumn } : {}),
+      ...(args.waitingReason ? { waitingReason: args.waitingReason } : {}),
       id: `agent:${MACHINE_KEY}:${args.sessionId}`,
       fingerprint: args.contentFingerprint ?? `content-${args.sessionId}`,
       contentFingerprint: args.contentFingerprint ?? `content-${args.sessionId}`,
@@ -6686,6 +6790,8 @@ describe("Live Activity island tallies", () => {
   });
 
   it("spends an APNs push on a needs-you transition but not on per-turn churn", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
     const database = new SqliteD1Database();
     const apnsBodies: Array<Record<string, unknown>> = [];
     vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -6760,6 +6866,7 @@ describe("Live Activity island tallies", () => {
         aps: {
           event: "update",
           "content-state": {
+            columns: { needsYou: 1, working: 1, waiting: 0, done: 0 },
             groups: [
               { group: "needs_you", count: 1 },
               { group: "working", count: 1 },
@@ -6767,8 +6874,31 @@ describe("Live Activity island tallies", () => {
           },
         },
       });
+
+      // A run that starts waiting on CI changes only the quiet counts, so it
+      // waits for the 5-minute window instead of spending a push now...
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "turn-2",
+        phase: "running",
+        activityTier: "signal",
+        boardColumn: "waiting",
+        waitingReason: "ci",
+        contentFingerprint: "content-turn-2-waiting",
+      }));
+      vi.setSystemTime(new Date("2026-07-28T08:03:00.000Z"));
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies).toHaveLength(2);
+
+      // ...and goes out once the window has passed, so every count settles.
+      vi.setSystemTime(new Date("2026-07-28T08:07:00.000Z"));
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies).toHaveLength(3);
+      expect(apnsBodies[2]).toMatchObject({
+        aps: { "content-state": { columns: { needsYou: 1, working: 0, waiting: 1, done: 0 } } },
+      });
     } finally {
       database.close();
+      vi.useRealTimers();
     }
   });
 });
@@ -6824,6 +6954,39 @@ describe("Activity state-group conformance", () => {
       } as never)).toBe(relayGroup(testCase.expected));
     });
   }
+});
+
+/**
+ * The relay's copy of the four-state rule every Activity surface counts by,
+ * pinned to the same fixture as the TypeScript and Swift copies. Canonical
+ * source: `activityBoardColumn` in
+ * apps/desktop/src/shared/attention/activityBoardColumn.ts.
+ */
+describe("Activity board-column conformance", () => {
+  type BoardColumnCase = {
+    name: string;
+    kind: "agent" | "pull_request";
+    phase: string;
+    tier: "signal" | "ambient" | "idle" | null;
+    boardColumn: string | null;
+    expected: string | null;
+  };
+  const fixture = JSON.parse(readFileSync(
+    new URL(
+      "../../desktop/src/shared/attention/activityBoardColumn.cases.json",
+      import.meta.url,
+    ),
+    "utf8",
+  )) as { cases: BoardColumnCase[] };
+
+  it.each(fixture.cases)("matches the canonical table: $name", (testCase) => {
+    expect(liveActivityTestInternals.activityBoardColumn({
+      kind: testCase.kind,
+      phase: testCase.phase,
+      ...(testCase.tier ? { activityTier: testCase.tier } : {}),
+      ...(testCase.boardColumn ? { boardColumn: testCase.boardColumn } : {}),
+    } as never)).toBe(testCase.expected);
+  });
 });
 
 describe("cross-machine project identity", () => {

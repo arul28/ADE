@@ -510,14 +510,12 @@ export function attentionMachineRef(args: {
 
 /** Everything `buildAttentionItems` reads, stated explicitly. */
 /**
- * When a roster row entered its current state. `column` is the board column
- * plus its wait reason, so a running chat that starts waiting on CI gets a new
- * "since" even though its roster status did not change: a wait is timed from
- * when it began, not from when the chat started working.
+ * When a roster row entered its current status. It moves only with the status,
+ * never with the Activity column: `statusSince` is part of the alert identity,
+ * and a dismissed row must stay dismissed when its lane merely starts CI.
  */
 export type RosterPhaseAnchor = {
   status: SyncRosterChatStatus;
-  column: string;
   statusSinceAt: number;
 };
 
@@ -535,8 +533,7 @@ export type AttentionItemBuildContext = {
   /**
    * Phase-entry anchors for roster rows, mutated in place: a roster snapshot
    * carries no "since" of its own, so the publisher remembers when each row
-   * last changed status or Activity column. Rows absent from this build are
-   * pruned.
+   * last changed status. Rows absent from this build are pruned.
    */
   rosterPhaseAnchors: Map<string, RosterPhaseAnchor>;
   loadRoster: () => Promise<ActivityRosterProject[]>;
@@ -699,12 +696,11 @@ async function buildRosterItems(
         waitingReason = "snoozed";
         snoozedItemIds.add(id);
       }
-      const column = `${boardColumn}:${waitingReason ?? ""}`;
       const existingAnchor = context.rosterPhaseAnchors.get(id);
-      const statusSinceAt = existingAnchor?.status === chat.status && existingAnchor.column === column
+      const statusSinceAt = existingAnchor?.status === chat.status
         ? existingAnchor.statusSinceAt
         : Math.max(revision, (existingAnchor?.statusSinceAt ?? -1) + 1);
-      context.rosterPhaseAnchors.set(id, { status: chat.status, column, statusSinceAt });
+      context.rosterPhaseAnchors.set(id, { status: chat.status, statusSinceAt });
       const provider = providerDisplayName(chat.provider ?? chat.toolType);
       const preview = sanitizeAttentionPreview(
         chat.attentionMessage?.trim()

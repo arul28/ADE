@@ -891,7 +891,7 @@ describe("push relay", () => {
     expect(sends).toBe(1);
   });
 
-  it("routes live activity start to push-to-start and update to activity tokens", async () => {
+  it("lets an older brain end its Live Activity but never start or update one", async () => {
     const env = makeEnv(db, apnsKey);
     await claimMachine(db, env);
     await handleRequest(
@@ -935,14 +935,16 @@ describe("push relay", () => {
       env,
     );
     expect(start.status).toBe(200);
-    expect(apnsCalls).toHaveLength(1);
-    expect(apnsCalls[0]?.headers["apns-topic"]).toBe("com.ade.ios.push-type.liveactivity");
-    expect(apnsCalls[0]?.headers["apns-push-type"]).toBe("liveactivity");
-    const startBody = JSON.parse(apnsCalls[0]?.body ?? "{}") as { aps: Record<string, unknown> };
-    expect(startBody.aps.event).toBe("start");
-    expect(startBody.aps["attributes-type"]).toBe("ADEAgentRunsAttributes");
+    // The account route owns the only Live Activity: a per-machine start is
+    // reported as suppressed (so the brain stops retrying) and never sent.
+    expect(apnsCalls).toHaveLength(0);
+    expect(await start.json()).toMatchObject({
+      delivered: 0,
+      suppressed: 1,
+      outcomes: [{ deviceId: "phone-1", kind: "liveactivity", suppressed: true }],
+    });
 
-    // Phone reports the per-activity token; update targets it.
+    // The phone still holds an activity an older build started.
     const tokenUpsert = await handleRequest(
       await signedRequest({
         method: "POST",
@@ -969,10 +971,10 @@ describe("push relay", () => {
       env,
     );
     expect(update.status).toBe(200);
-    expect(apnsCalls).toHaveLength(2);
-    expect(apnsCalls[1]?.url).toContain(`/3/device/${"ef".repeat(32)}`);
+    expect(apnsCalls).toHaveLength(0);
 
-    // End removes the stored activity token.
+    // End still reaches that activity's token, so the duplicate goes away,
+    // and the delivered end removes the stored token.
     const end = await handleRequest(
       await signedRequest({
         method: "POST",
@@ -990,117 +992,11 @@ describe("push relay", () => {
       env,
     );
     expect(end.status).toBe(200);
+    expect(apnsCalls).toHaveLength(1);
+    expect(apnsCalls[0]?.url).toContain(`/3/device/${"ef".repeat(32)}`);
+    expect(apnsCalls[0]?.headers["apns-push-type"]).toBe("liveactivity");
+    expect(JSON.parse(apnsCalls[0]?.body ?? "{}").aps.event).toBe("end");
     expect(db.activityTokens).toHaveLength(0);
-  });
-
-  it("suppresses Live Activity content per device so a failed phone can retry", async () => {
-    const env = makeEnv(db, apnsKey);
-    await claimMachine(db, env);
-    for (const [deviceId, token] of [
-      ["phone-1", "ab".repeat(32)],
-      ["phone-2", "cd".repeat(32)],
-    ]) {
-      const registration = await handleRequest(
-        await signedRequest({
-          method: "PUT",
-          path: `/machines/${MACHINE_KEY}/devices/${deviceId}`,
-          body: {
-            pushToStartToken: token,
-            bundleId: "com.ade.ios",
-            apsEnvironment: "sandbox",
-          },
-        }),
-        env,
-      );
-      expect(registration.status).toBe(200);
-    }
-
-    let phone2Attempts = 0;
-    const apnsCalls: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      apnsCalls.push(url);
-      if (url.endsWith("cd".repeat(32))) {
-        phone2Attempts += 1;
-        if (phone2Attempts === 1) {
-          return Response.json({ reason: "InternalServerError" }, { status: 500 });
-        }
-      }
-      return new Response(null, { status: 200 });
-    }));
-
-    const publish = async (deviceIds: string[]) => handleRequest(
-      await signedRequest({
-        method: "POST",
-        path: `/machines/${MACHINE_KEY}/publish`,
-        body: {
-          liveActivity: [{
-            deviceIds,
-            event: "start",
-            activityId: "agent-runs",
-            attributesType: "ADEAgentRunsAttributes",
-            attributes: { machineName: "Studio" },
-            contentState: { runs: [{ title: "fix-login", phase: "running" }] },
-            dedupeKey: "agent-runs",
-            phase: "running",
-          }],
-        },
-      }),
-      env,
-    );
-
-    const first = await publish(["phone-1", "phone-2"]);
-    expect(first.status).toBe(200);
-    expect(await first.json()).toMatchObject({ delivered: 1, failed: 1 });
-
-    const retry = await publish(["phone-2"]);
-    expect(retry.status).toBe(200);
-    expect(await retry.json()).toMatchObject({
-      delivered: 1,
-      failed: 0,
-      suppressed: 0,
-    });
-
-    const alreadyDelivered = await publish(["phone-1"]);
-    expect(alreadyDelivered.status).toBe(200);
-    expect(await alreadyDelivered.json()).toMatchObject({
-      delivered: 0,
-      suppressed: 1,
-    });
-
-    const phone1Path = `/machines/${MACHINE_KEY}/devices/phone-1`;
-    expect((await handleRequest(
-      await signedRequest({
-        method: "PUT",
-        path: phone1Path,
-        body: {
-          clearPushToStartToken: true,
-          bundleId: "com.ade.ios",
-          apsEnvironment: "sandbox",
-        },
-      }),
-      env,
-    )).status).toBe(200);
-    expect((await handleRequest(
-      await signedRequest({
-        method: "PUT",
-        path: phone1Path,
-        body: {
-          pushToStartToken: "ab".repeat(32),
-          bundleId: "com.ade.ios",
-          apsEnvironment: "sandbox",
-        },
-      }),
-      env,
-    )).status).toBe(200);
-
-    const replacementStart = await publish(["phone-1"]);
-    expect(replacementStart.status).toBe(200);
-    expect(await replacementStart.json()).toMatchObject({
-      delivered: 1,
-      suppressed: 0,
-    });
-    expect(apnsCalls).toHaveLength(4);
   });
 
   it("retains a Live Activity token until a transient end retry succeeds", async () => {
@@ -1165,77 +1061,6 @@ describe("push relay", () => {
     expect(retry.status).toBe(200);
     expect(await retry.json()).toMatchObject({ delivered: 1, failed: 0 });
     expect(db.activityTokens).toHaveLength(0);
-  });
-
-  it("does not recreate cleared suppression from an in-flight APNs response", async () => {
-    const env = makeEnv(db, apnsKey);
-    await claimMachine(db, env);
-    const path = `/machines/${MACHINE_KEY}/devices/phone-1`;
-    const register = async (body: Record<string, unknown>) => handleRequest(
-      await signedRequest({
-        method: "PUT",
-        path,
-        body: {
-          bundleId: "com.ade.ios",
-          apsEnvironment: "sandbox",
-          ...body,
-        },
-      }),
-      env,
-    );
-    expect((await register({ pushToStartToken: "ab".repeat(32) })).status).toBe(200);
-
-    let markSendStarted!: () => void;
-    const sendStarted = new Promise<void>((resolve) => {
-      markSendStarted = resolve;
-    });
-    let completeOldSend!: () => void;
-    const oldSendCompletion = new Promise<void>((resolve) => {
-      completeOldSend = resolve;
-    });
-    let sends = 0;
-    vi.stubGlobal("fetch", vi.fn(async () => {
-      sends += 1;
-      if (sends === 1) {
-        markSendStarted();
-        await oldSendCompletion;
-      }
-      return new Response(null, { status: 200 });
-    }));
-    const publish = async () => handleRequest(
-      await signedRequest({
-        method: "POST",
-        path: `/machines/${MACHINE_KEY}/publish`,
-        body: {
-          liveActivity: [{
-            deviceIds: ["phone-1"],
-            event: "start",
-            activityId: "agent-runs",
-            attributesType: "ADEAgentRunsAttributes",
-            attributes: { machineName: "Studio" },
-            contentState: { runs: [{ title: "fix-login", phase: "running" }] },
-            dedupeKey: "agent-runs",
-            phase: "running",
-          }],
-        },
-      }),
-      env,
-    );
-
-    const oldPublish = publish();
-    await sendStarted;
-    expect((await register({ clearPushToStartToken: true })).status).toBe(200);
-    expect((await register({ pushToStartToken: "ab".repeat(32) })).status).toBe(200);
-    completeOldSend();
-    expect((await oldPublish).status).toBe(200);
-
-    const replacement = await publish();
-    expect(replacement.status).toBe(200);
-    expect(await replacement.json()).toMatchObject({
-      delivered: 1,
-      suppressed: 0,
-    });
-    expect(sends).toBe(2);
   });
 
   it("returns 503 from publish when the APNs key is not configured", async () => {

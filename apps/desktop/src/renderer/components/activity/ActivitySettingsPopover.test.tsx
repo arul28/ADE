@@ -20,7 +20,7 @@ const signedInAccount = {
   imageUrl: null,
 };
 
-function installAde() {
+function installAde(saved: unknown = DEFAULT_ATTENTION_PREFERENCES) {
   const putPreferences = vi.fn(async () => undefined);
   Object.defineProperty(window, "ade", {
     configurable: true,
@@ -32,7 +32,7 @@ function installAde() {
         getSnapshot: vi.fn(),
         acknowledge: vi.fn(),
         reportPresence: vi.fn(),
-        getPreferences: vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES),
+        getPreferences: vi.fn(async () => saved),
         putPreferences,
       },
     },
@@ -77,6 +77,44 @@ describe("ActivitySettingsPopover", () => {
         }),
       );
     });
+  });
+
+  it("saves preferences from an older build onto the current defaults", async () => {
+    // Every save writes the whole policy map, so "notify" for merge-ready, saved
+    // when that was the default, is the old default and not a choice. The
+    // removed notch's synced fields stop travelling too.
+    const { eventPolicyDefaultsVersion: _version, ...olderAccount } = DEFAULT_ATTENTION_PREFERENCES.account;
+    const { putPreferences } = installAde({
+      ...DEFAULT_ATTENTION_PREFERENCES,
+      account: {
+        ...olderAccount,
+        eventPolicies: {
+          ...DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies,
+          pr_merge_ready: "notify",
+          pr_review_requested: "notify",
+          agent_completed: "notify",
+        },
+        notchRevealMode: "always",
+        notchExpandedPanel: true,
+      },
+    });
+    render(<ActivitySettingsPopover />);
+    fireEvent.click(screen.getByRole("button", { name: "Activity settings" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Activity sounds" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("switch", { name: "Activity sounds" }));
+
+    await waitFor(() => expect(putPreferences).toHaveBeenCalled());
+    const [, savedPreferences] = putPreferences.mock.calls.at(-1) as unknown as [
+      string,
+      { account: Record<string, unknown> & { eventPolicies: Record<string, string> } },
+    ];
+    expect(savedPreferences.account.eventPolicyDefaultsVersion).toBe(2);
+    expect(savedPreferences.account.eventPolicies.pr_merge_ready).toBe("ambient");
+    expect(savedPreferences.account.eventPolicies.pr_review_requested).toBe("ambient");
+    // A notify that was never a default is the user's own choice and stays.
+    expect(savedPreferences.account.eventPolicies.agent_completed).toBe("notify");
+    expect(savedPreferences.account).not.toHaveProperty("notchRevealMode");
+    expect(savedPreferences.account).not.toHaveProperty("notchExpandedPanel");
   });
 
   it("returns focus to the trigger when Escape dismisses it", async () => {
