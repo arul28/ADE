@@ -90,12 +90,15 @@ apps/desktop/native/ADEDesktopDriver/.build/
 apps/desktop/native/ADEDesktopDriver/.build-*/
 apps/desktop/resources/native/ade-capture-helper
 apps/desktop/resources/native/ade-capture-helper.exe
+apps/desktop/resources/native/ade-now-playing.exe
+apps/desktop/.ade-native-build/
 apps/desktop/native/ADECaptureHelper/.build/
 apps/desktop/native/ADECaptureHelper/.build-*/
 apps/desktop/resources/native/ade-sim-helper
 apps/desktop/native/ADESimHelper/.build/
 apps/desktop/native/ADESimHelper/.build-*/
 apps/desktop/resources/native/ade-media
+apps/desktop/resources/native/ade-music-host/
 apps/desktop/native/ADEMedia/.build/
 apps/desktop/native/ADEMedia/.build-*/
 # Large whisper.cpp binary + ~140 MB ggml model are materialized at build time,
@@ -122,3 +125,7 @@ apps/web/public/images/updatedImages/
 # `git add -A` would otherwise sweep them into a PR (AGENTS.md work-artifacts
 # rule). Anything worth keeping goes under docs/.
 T3CODE_RESEARCH_*.md
+
+# MusicKit / App Store Connect private keys. Never in the repo.
+*.p8
+AuthKey_*.p8

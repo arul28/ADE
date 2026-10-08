@@ -14,6 +14,7 @@ import type { UsageSnapshot } from "../../../shared/types/usage";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "../ui/paneMenuTokens";
+import { useAgentChatApi } from "./agentChatApi";
 
 /**
  * Which login, key or endpoint a chat runs on, as one quiet row pinned to the
@@ -248,6 +249,7 @@ export function ChatAccountNote({
   busy?: boolean;
   onSwitched?: () => void;
 }) {
+  const agentChatApi = useAgentChatApi();
   const turnAccount = useMemo(() => latestTurnAccount(events), [events]);
   const multi = isProviderInstanceProvider(provider) ? provider : null;
   const boundInstanceId = multi ? (clean(instanceId) ?? multi) : null;
@@ -300,7 +302,7 @@ export function ChatAccountNote({
   const rowClass = "flex h-[30px] w-full min-w-0 items-center gap-2 px-4 font-sans text-[11px] leading-4";
   // A saved key or custom provider pays for the turns, so there is no account to switch.
   const keyed = Boolean(preset) || Boolean(clean(credentialId));
-  if (keyed || !current || targets.length === 0 || typeof window.ade?.agentChat?.switchAccount !== "function") {
+  if (keyed || !current || targets.length === 0 || typeof agentChatApi?.switchAccount !== "function") {
     return (
       <div data-testid="chat-account-note" className={rowClass} title={model.detail}>
         {row}
@@ -322,7 +324,7 @@ export function ChatAccountNote({
     if (busy || pendingId) return;
     setPendingId(target.id);
     setError(null);
-    window.ade.agentChat.switchAccount({ sessionId, instanceId: target.id }, runtimePin)
+    agentChatApi.switchAccount({ sessionId, instanceId: target.id }, runtimePin)
       .then((result) => {
         if (!result.ok) {
           setError(result.message);

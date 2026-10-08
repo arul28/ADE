@@ -282,6 +282,9 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `automations` | `safe_test_started`, `live_test_started` | `completed`, `failed` | omitted; never the rule, its steps, the event, or the lanes it made |
 | `updates` | `provider_cli_updated` | `completed`, `failed` | coarse provider family (the ACP CLIs report `other`); never the version, install path, or output |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
+| `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
+| `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
+| `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -657,6 +660,32 @@ picker deliberately emits nothing: a null tool is not a tool, and counting it
 would double every open/close pair and report closing as engagement. A seventh
 tool id is dropped rather than widening the allowlist, so a new tool has to be
 registered in the policy deliberately.
+
+The dev home's adoption is three coarse facts on the same `ade_feature_used`
+event with `feature: "home"`. Which machine-level top tab an installation opens
+records `tab_opened` with `tab_browser` or `tab_music`, from the renderer's one
+writer of the tab strip (`setBrowserTabOpen` / `setMusicTabOpen` in
+`appStore.ts`) and only when a tab joins the strip, not on every visit. Which
+widget a person adds to the home page records `widget_added` with a prefixed,
+closed `widget_<type>` outcome, from the layout store's `add`. Both are emitted
+from the renderer (`renderer/components/home/homeAnalytics.ts`) for the same
+reason `tool_opened` is: neither choice has a durable backend mutation. How
+connecting Apple Music ended records `music_connected` (`completed`,
+`cancelled`, `failed`) at the main-process owner, the Music IPC `connect`
+handler (`registerMusicIpc.ts`), through `captureFeatureUsedAnalytics`. The
+product question is only whether the dev home is used and which of it, so
+nothing finer crosses: no URL, tab, song, layout, preset name, widget setting,
+Apple account, storefront, or token. A new widget type has to be added to the
+outcome allowlist deliberately; a test adds every catalog widget and runs its
+payload through the sanitizer. Per-value 24-hour deduplication keys
+(`home_tab_opened:<tab>`, `home_widget_added:<widget>`) bound the renderer facts
+to at most 15 accepted events per installation per UTC day, and the one-hour
+per-outcome key on `music_connected` bounds a retry loop to 24 per outcome — all
+inside the existing `ade_feature_used` 140-per-day / 30-per-minute limits and
+the shared 200-event ceiling. No ceiling was raised, and the dashboard spec is
+deliberately untouched: no card asks this yet. Widget use after it is added
+(renders, polling, clipboard reads, weather and machine reads, playback
+commands) stays untracked by the high-frequency rule.
 
 Which live view an installation watches an iOS simulator through records the
 same `ade_feature_used` event from the drawer's single start path, with

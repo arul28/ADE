@@ -1141,6 +1141,8 @@ import type {
   SearchRebuildResult,
 } from "../shared/types";
 import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "../shared/laneGitHubIssue";
+import { MUSIC_IPC, type MusicBridge, type MusicState } from "../shared/types/music";
+import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState, type HomeWidgetsBridge } from "../shared/types/homeWidgets";
 
 type ShortIpcCache<T> = {
   clear: () => void;
@@ -13471,6 +13473,72 @@ const adeBridge = {
     ipcRenderer.on(IPC.updateEvent, listener);
     return () => ipcRenderer.removeListener(IPC.updateEvent, listener);
   },
+  home: {
+    clipboard: {
+      getState: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardGetState),
+      configure: (args: { enabled?: boolean; persist?: boolean }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardConfigure, args),
+      clear: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardClear),
+      remove: (id: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardRemove, id),
+      copy: (id: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardCopy, id),
+      setPresence: (view: "shown" | "hidden" | null) => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardPresence, view),
+      onChanged: (cb: (state: HomeClipboardState) => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, state: HomeClipboardState) => cb(state);
+        ipcRenderer.on(HOME_WIDGETS_IPC.clipboardChanged, listener);
+        return () => ipcRenderer.removeListener(HOME_WIDGETS_IPC.clipboardChanged, listener);
+      },
+    },
+    machine: {
+      health: (args?: { detail?: boolean }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.machineHealth, args ?? {}),
+      listeners: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.machineListeners),
+      kill: (pid: number) => ipcRenderer.invoke(HOME_WIDGETS_IPC.machineKill, pid),
+    },
+    weather: {
+      search: (query: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherSearch, query),
+      get: (args: { latitude: number; longitude: number }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherGet, args),
+    },
+    nowPlaying: {
+      subscribe: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingSubscribe),
+      unsubscribe: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingUnsubscribe),
+      command: (command: HomeNowPlayingCommand, sessionId?: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingCommand, command, sessionId),
+      select: (sessionId: string | null) => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingSelect, sessionId),
+      onChanged: (cb: (state: HomeNowPlayingState) => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, state: HomeNowPlayingState) => cb(state);
+        ipcRenderer.on(HOME_WIDGETS_IPC.nowPlayingChanged, listener);
+        return () => ipcRenderer.removeListener(HOME_WIDGETS_IPC.nowPlayingChanged, listener);
+      },
+    },
+    focus: {
+      claimCompletion: (endsAt: number) => ipcRenderer.invoke(HOME_WIDGETS_IPC.focusClaimCompletion, endsAt),
+    },
+    share: {
+      copyImage: (pngDataUrl: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.shareCopyImage, pngDataUrl),
+      saveImage: (args: { pngDataUrl: string; fileName: string }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.shareSaveImage, args),
+    },
+  } satisfies HomeWidgetsBridge,
+  music: {
+    getState: () => ipcRenderer.invoke(MUSIC_IPC.getState),
+    warm: () => ipcRenderer.invoke(MUSIC_IPC.warm),
+    connect: () => ipcRenderer.invoke(MUSIC_IPC.connect),
+    disconnect: () => ipcRenderer.invoke(MUSIC_IPC.disconnect),
+    command: (command) => ipcRenderer.invoke(MUSIC_IPC.command, command),
+    queue: () => ipcRenderer.invoke(MUSIC_IPC.queue),
+    search: (args) => ipcRenderer.invoke(MUSIC_IPC.search, args),
+    library: (args) => ipcRenderer.invoke(MUSIC_IPC.library, args),
+    recent: () => ipcRenderer.invoke(MUSIC_IPC.recent),
+    tracks: (args) => ipcRenderer.invoke(MUSIC_IPC.tracks, args),
+    rating: (args) => ipcRenderer.invoke(MUSIC_IPC.rating, args),
+    setRating: (args) => ipcRenderer.invoke(MUSIC_IPC.setRating, args),
+    charts: () => ipcRenderer.invoke(MUSIC_IPC.charts),
+    account: () => ipcRenderer.invoke(MUSIC_IPC.account),
+    unload: () => ipcRenderer.invoke(MUSIC_IPC.unload),
+    showSignIn: () => ipcRenderer.invoke(MUSIC_IPC.showSignIn),
+    cancelSignIn: () => ipcRenderer.invoke(MUSIC_IPC.cancelSignIn),
+    onState: (cb: (state: MusicState) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: MusicState) => cb(state);
+      ipcRenderer.on(MUSIC_IPC.stateEvent, listener);
+      return () => ipcRenderer.removeListener(MUSIC_IPC.stateEvent, listener);
+    },
+  } satisfies MusicBridge,
   perf: {
     getConfig: () => ipcRenderer.invoke(IPC.perfGetConfig),
     recordEvent: (event: { kind: string; ts?: number; [k: string]: unknown }) =>

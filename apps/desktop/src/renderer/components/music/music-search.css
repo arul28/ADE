@@ -1,0 +1,193 @@
+/* The Search view: the field, the empty page with its ideas, and the results. Imported by music.css, in order. */
+
+/* ---------- Search ---------- */
+
+.ade-music-search {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 24px 6px;
+}
+.ade-music-search-field {
+  display: flex;
+  height: 42px;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 14px;
+  background: var(--music-soft);
+  padding: 0 8px 0 15px;
+  color: var(--kit-text-3);
+  transition: border-color 140ms, box-shadow 140ms, background-color 140ms;
+}
+.ade-music-search-field:hover { background: color-mix(in srgb, var(--color-fg) 8%, transparent); }
+.ade-music-search-field:focus-within {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-fg);
+}
+.ade-music-search-field input {
+  height: 100%;
+  min-width: 0;
+  flex: 1;
+  appearance: none;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0;
+  color: var(--color-fg);
+  font-size: 14px;
+  outline: none !important;
+}
+.ade-music-search-field input::placeholder { color: var(--kit-text-3); }
+
+.ade-music-ideas-label {
+  margin: 18px 0 8px;
+  color: var(--kit-text-3);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+/* Equal tiles in even rows: a balanced 4 x 2 block, 2 columns when narrow. */
+.ade-music-ideas {
+  display: grid;
+  width: min(100%, 560px);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 auto;
+}
+@container (max-width: 520px) {
+  .ade-music-ideas { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.ade-music-idea {
+  height: 34px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 10px;
+  background: var(--music-soft);
+  padding: 0 12px;
+  color: var(--kit-text-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 120ms, color 120ms, border-color 120ms, transform 120ms;
+}
+.ade-music-idea:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-fg);
+}
+.ade-music-idea:active { transform: scale(0.97); }
+
+/* Search with nothing typed: the prompt and its ideas sit at the panel's
+   optical centre, not stuck to the top of an empty pane. */
+.ade-music-search-start {
+  container-type: inline-size;
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  justify-content: center;
+  padding-bottom: 6%;
+}
+.ade-music-search-start .ade-music-empty { padding-top: 0; }
+
+/* ---------- Search results ---------- */
+
+.ade-music-results-top {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.4fr);
+  gap: 24px;
+  align-items: start;
+}
+.ade-music-results-top > .ade-music-section { min-width: 0; }
+.ade-music-results-songs .ade-music-song { height: 50px; }
+
+.ade-music-top-result {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 16px;
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--music-tint, var(--color-accent)) 30%, transparent), transparent 70%),
+    color-mix(in srgb, var(--color-fg) 4%, transparent);
+  transition: background-color 140ms, border-color 140ms;
+}
+.ade-music-top-result:hover { border-color: color-mix(in srgb, var(--color-fg) 14%, transparent); }
+.ade-music-top-open {
+  display: flex;
+  width: 100%;
+  min-height: 250px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 20px;
+  text-align: left;
+}
+.ade-music-top-art { margin-bottom: 14px; border-radius: 12px; box-shadow: 0 16px 32px -16px rgb(0 0 0 / 0.7); }
+.ade-music-top-result.is-artist .ade-music-top-art { border-radius: 999px; }
+.ade-music-top-title {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--color-fg);
+  font-size: 26px;
+  font-weight: 760;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ade-music-top-sub { display: flex; max-width: 100%; min-width: 0; align-items: center; gap: 8px; color: var(--kit-text-2); font-size: 12.5px; }
+.ade-music-top-play {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  width: 46px;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--color-fg);
+  color: var(--color-bg);
+  box-shadow: 0 10px 22px -8px rgb(0 0 0 / 0.65);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 160ms, transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ade-music-top-result:hover .ade-music-top-play,
+.ade-music-top-play:focus-visible { opacity: 1; transform: none; }
+.ade-music-top-play:hover { transform: scale(1.06) !important; }
+
+.ade-music-tiles.is-shelf {
+  grid-auto-columns: minmax(150px, 168px);
+  margin: 0 -24px;
+  padding: 2px 24px 8px;
+  scroll-padding-inline: 24px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+.ade-music-tiles.is-shelf > * { scroll-snap-align: start; }
+
+.ade-music-skeleton i {
+  display: block;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  animation: ade-music-skeleton 1.2s steps(3, end) infinite alternate;
+}
+.ade-music-skeleton i.is-heading { width: 120px; height: 16px; margin: 0 0 14px; border-radius: 6px; }
+.ade-music-skeleton i.is-top { height: 250px; border-radius: 16px; }
+.ade-music-skeleton i.is-row { height: 40px; margin-bottom: 10px; }
+.ade-music-skeleton-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 20px; }
+.ade-music-skeleton i.is-tile { aspect-ratio: 1; border-radius: 12px; }
+@keyframes ade-music-skeleton { from { opacity: 0.55; } to { opacity: 1; } }
+html[data-motion="reduced"] .ade-music-skeleton i { animation: none; }
+@media (prefers-reduced-motion: reduce) { .ade-music-skeleton i { animation: none; } }

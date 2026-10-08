@@ -10,6 +10,7 @@ import {
   ArrowLineRight,
   ArrowSquareOut,
   ChatCircleDots,
+  Globe,
   CircleNotch,
   DownloadSimple,
   Folder,
@@ -58,6 +59,7 @@ import {
   PROJECT_SIDEBAR_TOGGLE_KEYBINDING,
   projectSidebarShortcutLabel,
 } from "./projectSidebar/projectSidebarTabs";
+import { closeMusicTab, MusicTabContent } from "../music/MusicTabContent";
 import {
   activeMachineForGroup,
   groupProjectTabs,
@@ -676,6 +678,8 @@ function ProjectTabIcon({
 
 export function TopBar({
   personalChatsRouteActive = false,
+  browserRouteActive = false,
+  musicRouteActive = false,
   accountRouteActive = false,
   hubRouteActive = false,
   settingsRouteActive = false,
@@ -683,6 +687,10 @@ export function TopBar({
   onNavigate,
 }: {
   personalChatsRouteActive?: boolean;
+  /** The machine-level Browser tab (`/browser`) is in front. */
+  browserRouteActive?: boolean;
+  /** The machine-level Music tab (`/music`) is in front. */
+  musicRouteActive?: boolean;
   accountRouteActive?: boolean;
   hubRouteActive?: boolean;
   /** The `#/settings` route is in front. Drives the standalone Settings tab. */
@@ -692,6 +700,8 @@ export function TopBar({
   onOpenActivityPane?: () => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
+  // A machine-level tab (Chats, Browser) is in front, not a project surface.
+  const machineRouteActive = personalChatsRouteActive || browserRouteActive || musicRouteActive;
   const theme = useAppStore((s) => s.theme);
   const usageHeaderPreferences = useUsageHeaderPreferences();
   const hasProject = Boolean(project?.rootPath);
@@ -711,6 +721,10 @@ export function TopBar({
   const isSettingsTabOpen = settingsRouteActive && !hasProject && standaloneSettingsOpen;
   const personalChatsTabOpen = useAppStore((s) => s.personalChatsTabOpen);
   const closePersonalChatsTab = useAppStore((s) => s.closePersonalChatsTab);
+  const browserTabOpen = useAppStore((s) => s.browserTabOpen);
+  const setBrowserTabOpen = useAppStore((s) => s.setBrowserTabOpen);
+  const musicTabOpen = useAppStore((s) => s.musicTabOpen);
+  const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
@@ -802,7 +816,7 @@ export function TopBar({
     showWelcome !== true &&
     isNewTabOpen !== true &&
     Boolean(project?.rootPath) &&
-    !personalChatsRouteActive &&
+    !machineRouteActive &&
     !accountRouteActive &&
     !hubRouteActive;
   const keybindings = useAppStore((s) => s.keybindings);
@@ -1110,7 +1124,7 @@ export function TopBar({
   usePreferLocalCheckout({
     enabled: !webMode
       && windowSessionRestored
-      && !personalChatsRouteActive
+      && !machineRouteActive
       && !isProjectBusy
       && !isNewTabOpen,
     remoteBinding,
@@ -1350,8 +1364,8 @@ export function TopBar({
   const handleOpenNew = useCallback(() => {
     if (isProjectBusy) return;
     openNewTab();
-    if (personalChatsRouteActive || accountRouteActive || hubRouteActive) onNavigate?.("/work");
-  }, [accountRouteActive, hubRouteActive, isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
+    if (machineRouteActive || accountRouteActive || hubRouteActive) onNavigate?.("/work");
+  }, [accountRouteActive, hubRouteActive, isProjectBusy, onNavigate, openNewTab, machineRouteActive]);
   // The batch launcher's model picker needs a way out of its empty Harnesses
   // tab. It routes through the same `onNavigate` the shell supplies, so a top
   // bar rendered without a router (tests) simply has no CTA.
@@ -1380,7 +1394,7 @@ export function TopBar({
   // route-cache effect writes that same value back instead of stamping /work
   // over the project's remembered position.
   const leaveMachineRoute = useCallback(() => {
-    if (!personalChatsRouteActive && !accountRouteActive && !hubRouteActive) return;
+    if (!machineRouteActive && !accountRouteActive && !hubRouteActive) return;
     const currentBindingKey = remoteBinding
       ? remoteBinding.key
       : project?.rootPath
@@ -1388,7 +1402,7 @@ export function TopBar({
         : null;
     const route = (currentBindingKey ? readStoredProjectRoute(currentBindingKey) : null) ?? "/work";
     onNavigate?.(route, { replace: true });
-  }, [accountRouteActive, hubRouteActive, onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
+  }, [accountRouteActive, hubRouteActive, onNavigate, machineRouteActive, project?.rootPath, remoteBinding]);
 
   // Resolves when the switch has settled, so a caller that has to reconcile tab
   // state afterwards runs against the new binding rather than racing the
@@ -2011,7 +2025,9 @@ export function TopBar({
         {tabGroups.length > 0 ||
         isNewTabOpen ||
         isSettingsTabOpen ||
-        personalChatsTabOpen ? (
+        personalChatsTabOpen ||
+        browserTabOpen ||
+        musicTabOpen ? (
           <>
             {tabGroups.map((group) => {
               const machine = activeMachineForGroup(group);
@@ -2040,7 +2056,7 @@ export function TopBar({
                       if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
                     }}
                     onContextMenu={(event) => openTabMenu(event, group.id)}
-                    data-state={isCurrentRemote && !personalChatsRouteActive && !hubRouteActive ? "active" : undefined}
+                    data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
                     data-remote-state={remoteTabState}
                     aria-current={isCurrentRemote ? "true" : undefined}
                     // A project tab looks the same wherever its checkout
@@ -2146,7 +2162,7 @@ export function TopBar({
               else if (isMissing) projectTabState = "missing";
               // While the Chats machine tab is the foreground surface, the
               // bound project tab stays rendered but must not also read active.
-              else if (isCurrent && !personalChatsRouteActive && !hubRouteActive) projectTabState = "active";
+              else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
               const indicator = terminalAttention?.indicator;
               return (
                 <div
@@ -2305,6 +2321,46 @@ export function TopBar({
                 <span className="min-w-0 flex-1 truncate text-center text-[12px]">Chats</span>
               </ShellNavTab>
             ) : null}
+            {browserTabOpen ? (
+              <ShellNavTab
+                active={browserRouteActive}
+                label="Browser"
+                onActivate={() => {
+                  if (!browserRouteActive) onNavigate?.("/browser");
+                }}
+                onClose={() => {
+                  setBrowserTabOpen(false);
+                  if (browserRouteActive) {
+                    onNavigate?.("/work", { replace: true });
+                  }
+                }}
+                closeTitle="Close browser"
+              >
+                <Globe size={15} weight="duotone" className="shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate text-center text-[12px]">Browser</span>
+              </ShellNavTab>
+            ) : null}
+            {musicTabOpen ? (
+              <ShellNavTab
+                active={musicRouteActive}
+                label="Apple Music"
+                className="relative max-w-[220px]"
+                onActivate={() => {
+                  if (!musicRouteActive) onNavigate?.("/music");
+                }}
+                onClose={() => {
+                  // The tab is the player: closing it turns the music off.
+                  closeMusicTab();
+                  setMusicTabOpen(false);
+                  if (musicRouteActive) {
+                    onNavigate?.("/work", { replace: true });
+                  }
+                }}
+                closeTitle="Close Apple Music (stops playback)"
+              >
+                <MusicTabContent active={musicRouteActive} />
+              </ShellNavTab>
+            ) : null}
             {isSettingsTabOpen && (
               <ShellNavTab
                 active
@@ -2323,17 +2379,23 @@ export function TopBar({
             )}
             {isNewTabOpen && (
               <ShellNavTab
-                active={!personalChatsRouteActive && !isSettingsTabOpen}
+                active={!machineRouteActive && !isSettingsTabOpen}
                 label="New Tab"
                 onActivate={() => {
-                  if (personalChatsRouteActive) onNavigate?.("/work");
+                  if (machineRouteActive) onNavigate?.("/work");
                 }}
                 onClose={() => {
                   if (isProjectBusy) return;
                   cancelNewTab();
-                  if (!hasProject && personalChatsTabOpen) {
-                    onNavigate?.("/chats");
-                  }
+                  // With no project, fall back to the first machine tab still open.
+                  const machineTabRoute = hasProject
+                    ? null
+                    : ([
+                      [personalChatsTabOpen, "/chats"],
+                      [browserTabOpen, "/browser"],
+                      [musicTabOpen, "/music"],
+                    ] as const).find(([open]) => open)?.[1];
+                  if (machineTabRoute) onNavigate?.(machineTabRoute);
                 }}
                 closeTitle="Close new tab"
                 closeDisabled={isProjectBusy}
@@ -2472,6 +2534,7 @@ export function TopBar({
 
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />
+
 
         <div className="hidden md:flex items-center gap-1.5">
           {renderDesktopIntegrationControls()}

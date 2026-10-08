@@ -24,8 +24,19 @@ export async function readAttachmentImageDataUrl(
      * name, so they cache.
      */
     cache?: boolean;
+    /**
+     * The chat's own image reader, for a chat that does not live in a project
+     * runtime (a personal chat's attachment store is not under any project).
+     * Used in place of the runtime and local readers; `pin` is then ignored.
+     */
+    reader?: ((path: string) => Promise<{ dataUrl: string }>) | null;
   },
 ): Promise<{ dataUrl: string }> {
+  const reader = options?.reader;
+  if (reader) {
+    if (options?.cache === false) return reader(path);
+    return cachedRead(`chat-reader\u0000${path}`, () => reader(path));
+  }
   const owner = effectiveRuntimeBinding(pin, useAppStore.getState().projectBinding);
   if (options?.cache === false) return readUncached(path, pin, owner?.kind !== "remote");
   // One read per owner and path serves every chip that shows the attachment.
@@ -33,13 +44,17 @@ export async function readAttachmentImageDataUrl(
   // back into view, and each uncached read is a multi-megabyte base64 reply on
   // the runtime socket that holds up the transcript pages queued behind it.
   const key = `${owner?.key ?? "this-computer"}\u0000${path}`;
+  return cachedRead(key, () => readUncached(path, pin, owner?.kind !== "remote"));
+}
+
+function cachedRead(key: string, read: () => Promise<{ dataUrl: string }>): Promise<{ dataUrl: string }> {
   const cached = imageDataUrlCache.get(key);
   if (cached) {
     imageDataUrlCache.delete(key);
     imageDataUrlCache.set(key, cached);
     return cached.read;
   }
-  const entry: ImageDataUrlCacheEntry = { read: readUncached(path, pin, owner?.kind !== "remote"), chars: null };
+  const entry: ImageDataUrlCacheEntry = { read: read(), chars: null };
   imageDataUrlCache.set(key, entry);
   entry.read.then(
     (result) => {

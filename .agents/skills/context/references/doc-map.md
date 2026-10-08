@@ -22,6 +22,9 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | `apps/desktop/src/main/services/cto/` | `docs/features/cto/` + `linear-integration/` | — |
 | `apps/desktop/src/main/services/ai/` | `docs/features/chat/` + `features/agents/` | `ade-perf-work` |
 | `apps/desktop/src/main/services/chat/` | `docs/features/chat/` | `ade-perf-work` |
+| `apps/ade-cli/src/services/personalChats/`, `services/chat/personalSession.ts` (keywords: personal chat, project-less chat, Chats page, assistant/embedded profile) | `docs/features/personal-chats/README.md` + `docs/features/chat/` | `ade-perf-work` |
+| `apps/desktop/src/main/services/home/` (keywords: home page, widgets, Now Playing, weather, clipboard history) | `docs/plans/ade-dev-home.md` (§4 Widget home page) + `docs/features/music/` for Now Playing | — |
+| `apps/desktop/src/main/services/music/` (keywords: Apple Music, MusicKit, developer token, music host) | `docs/features/music/README.md` + `docs/plans/ade-dev-home.md` (§3) | — |
 | `apps/desktop/src/main/services/automations/` | `docs/features/automations/` | — |
 | `apps/desktop/src/main/services/computerUse/` | `docs/features/computer-use/` | — |
 | `apps/desktop/src/main/services/macDesktop/`, `apps/desktop/native/ADEDesktopDriver/` (keywords: mac desktop, virtual display, desktop seat, `ade mac-desktop`, accessibility driver, window parking, input lease; agent skill `ade-computer-use`) | `docs/features/mac-desktop/README.md` + `docs/features/computer-use/` | — |
@@ -44,6 +47,10 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | `apps/desktop/src/renderer/components/prs/**` | `docs/features/pull-requests/` | `ade-perf-prs` |
 | `apps/desktop/src/renderer/components/chat/**`, Work tab panes (Tools, Git, Files, iOS, App Control, Browser) | `docs/features/chat/` + relevant feature | `ade-perf-work` |
 | `apps/desktop/src/renderer/components/issues/**`, `renderer/lib/issueNavigation.ts`, `shared/issueRefs.ts` (keywords: issue viewer, Issues tool, issue sheet, Linear link, GitHub issue) | `docs/features/issues/` + `linear-integration/` | `ade-perf-work` |
+| `apps/desktop/src/renderer/components/personalChats/**` | `docs/features/personal-chats/README.md` + `docs/features/chat/` | `ade-perf-work` |
+| `apps/desktop/src/renderer/components/home/**` | `docs/plans/ade-dev-home.md` (§4 Widget home page) + `docs/features/music/` for the Now Playing widget | — |
+| `apps/desktop/src/renderer/components/music/**` | `docs/features/music/README.md` | — |
+| `apps/desktop/src/renderer/components/browser/**` (the Browser top tab) | `docs/features/chat/README.md` ("The Browser top tab") + `docs/plans/ade-dev-home.md` (§2) | `ade-perf-work` |
 | `apps/desktop/src/renderer/components/app/**` (App shell) | `docs/ARCHITECTURE.md` (UI framework) | `ade-perf-boot` |
 | `apps/desktop/src/renderer/components/<area>/**` | `docs/features/<same-area>/` | match by area above |
 | `apps/desktop/src/renderer/state/` (incl. `appStore.ts`) | `docs/ARCHITECTURE.md` (UI framework) | `ade-perf-lanes` |

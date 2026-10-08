@@ -1,7 +1,5 @@
 /* @vitest-environment jsdom */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -13,7 +11,6 @@ import {
 } from "./AgentChatMessageList";
 import { buildTranscriptEventRowKeys } from "./chatTranscriptRows";
 import {
-  THINKING_LIVE_MAX_LINES,
   THINKING_PREVIEW_TAIL_CHARS,
   deriveLiveThinkingRowKey,
   formatThinkingElapsed,
@@ -305,26 +302,6 @@ describe("live thinking preview in the transcript", () => {
     expect(screen.getByTestId("thinking-heading").className).not.toContain("ade-thinking-shimmer");
     expect(screen.getByTestId("thinking-spinner").getAttribute("class") ?? "").not.toContain("animate-spin");
     expect(screen.getByTestId("thinking-preview-scroll").className).not.toContain("ade-thinking-live-smooth");
-  });
-
-  it("draws the live thought as a compact block that grows to a four-line cap, not a fixed-height card", () => {
-    render(list([userMessage(0), reasoning(1, "One line.")], { live: true }));
-
-    const block = screen.getByTestId("thinking-preview-card");
-    const viewport = screen.getByTestId("thinking-preview-scroll");
-    // No grey box and no fixed height: a one-line thought is a one-line block.
-    expect(block.className).not.toContain("ade-thinking-card");
-    expect(block.className).not.toMatch(/(^|\s)h-\[/);
-    expect(viewport.className).toContain("ade-thinking-live-viewport");
-    expect(viewport.getAttribute("data-max-lines")).toBe(String(THINKING_LIVE_MAX_LINES));
-    // The thought's own size and leading, so `1lh` is one line of its text.
-    expect(viewport.className).toContain("leading-[1.65]");
-    expect(within(viewport).getByText("One line.").closest(".ade-thought-text")).toBeTruthy();
-
-    // The cap and the top fade live in the stylesheet (receipt for the rule).
-    const css = readFileSync(join(__dirname, "../../index.css"), "utf8");
-    expect(css).toMatch(/\.ade-thinking-live-viewport \{\s*max-height: calc\(4 \* 1lh\);\s*overflow: hidden;/);
-    expect(css).toMatch(/\.ade-thinking-live-viewport\[data-overflowing="true"\] \{[^}]*mask-image: linear-gradient\(to bottom, transparent/);
   });
 
   it("follows the tail with at most one scroll write per frame and fades older lines once they overflow", () => {

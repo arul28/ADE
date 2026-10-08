@@ -20,7 +20,8 @@ export type FeatureAnalyticsName =
   | "work"
   | "automations"
   | "updates"
-  | "attention";
+  | "attention"
+  | "home";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -51,7 +52,8 @@ export type FeatureAnalyticsAction =
   | "live_test_started"
   | "secret_requested"
   | "provider_cli_updated"
-  | "notification_sent";
+  | "notification_sent"
+  | "music_connected";
 
 export type FeatureAnalyticsOutcome =
   | "completed"

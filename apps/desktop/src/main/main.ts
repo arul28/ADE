@@ -66,6 +66,9 @@ import {
   selectWindowForProjectNavigation,
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
+import { connectBrowserToNowPlaying, registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
+import { registerMusicIpc } from "./services/music/registerMusicIpc";
+import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
 import {
@@ -90,7 +93,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
-import { captureChatAccountSwitchedAnalytics, capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
+import { captureChatAccountSwitchedAnalytics, captureFeatureUsedAnalytics, capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -296,6 +299,7 @@ import { createPushRegistrationStore } from "../../../ade-cli/src/services/push/
 import { resolvePushRelayStateFile } from "../../../ade-cli/src/services/push/pushPublisherService";
 import {
   getSharedAccountAuthService,
+  getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
@@ -9149,6 +9153,38 @@ app.whenReady().then(async () => {
       secretsDir: machineAdeLayout.secretsDir,
     }).getStatus().userId,
     analytics: productAnalyticsService,
+  });
+
+  // The home page's clipboard, machine-health and weather widgets.
+  registerHomeWidgetsIpc({
+    logger: getMachineMainLogger(),
+    // The brain: the ports widget never offers to stop it.
+    runtimePids: () => [localRuntimePool.getStatus().pid],
+  });
+  // Now Playing also hears the built-in browser's tabs.
+  connectBrowserToNowPlaying({
+    browserTabIdFor: (wc) => {
+      const found = builtInBrowserService.locateWebContents(wc);
+      return found?.collection === "personal" ? found.tabId : null;
+    },
+  });
+
+  // The Music tab: Apple Music through an on-demand player host. The user's
+  // Music-User-Token stays in this app's own user data (see musicTokenStore).
+  registerMusicIpc({
+    credentials: createMusicTokenStore({ dir: path.join(app.getPath("userData"), "music-player"), logger: getMachineMainLogger() }),
+    directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }),
+    getAccountToken: () => getSignedInAccountAccessToken(getSharedAccountAuthService({
+      secretsDir: machineAdeLayout.secretsDir,
+    })),
+    logger: getMachineMainLogger(),
+    onConnectOutcome: (outcome) => captureFeatureUsedAnalytics({
+      analytics: productAnalyticsService,
+      surface: "desktop",
+      feature: "home",
+      action: "music_connected",
+      outcome,
+    }),
   });
 
   ipcBridge = registerIpc({

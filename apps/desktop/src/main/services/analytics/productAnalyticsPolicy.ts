@@ -246,6 +246,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // notification to mobile app" step): sent, refused by the hourly cap, or
   // failed. Never the title, the body, the link, or which phones got it.
   "notification_sent",
+  // The dev home. Which machine-level top tab was opened, which widget was
+  // added to the home page, and how connecting Apple Music ended. Never a URL,
+  // a tab, a song, a layout, an account, or a widget's settings.
+  "tab_opened",
+  "widget_added",
+  "music_connected",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -353,6 +359,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "provider_accounts", "api_credentials", "presets", "proxy",
     // Linear and GitHub issues opened, edited and created in ADE.
     "issues",
+    // The dev home: which machine-level tabs (Browser, Music) and home widgets
+    // an installation uses, and whether Apple Music gets connected.
+    "home",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -432,6 +441,14 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `disabled` are the two boolean setting outcomes; the other mutations use
     // the existing completed/success buckets.
     "enabled", "disabled", "nothing_to_reset", "no_credit", "already_redeemed",
+    // Which machine-level top tab was opened, prefixed like the Work tool ids.
+    "tab_browser", "tab_music",
+    // Which home widget was added, prefixed for the same reason. Closed to the
+    // widget types in `renderer/components/home/homeLayout.ts`: a new widget
+    // has to be added here deliberately rather than arriving as free text.
+    "widget_projects", "widget_running", "widget_activity", "widget_limits", "widget_prs", "widget_clock",
+    "widget_pomodoro", "widget_clipboard", "widget_machine", "widget_heatmap", "widget_shipped", "widget_feed",
+    "widget_now_playing",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([

@@ -38,9 +38,13 @@ function unescapeAttribute(value: string): string {
   return value.replace(/&quot;/g, "\"").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 }
 
-/** The one sentence that tells an agent how to drive the tab it was handed. */
+/**
+ * What tells an agent how to use the tab it was handed. The tab is live in
+ * front of the user, so a fetched copy of its URL misses the sign-in, the
+ * scroll position and anything the page changed since it loaded.
+ */
 export function browserTabTakeoverHint(tabId: string): string {
-  return `Take it over with \`ade browser claim --tab ${tabId} --text\`, then drive it with \`ade browser <command> --tab ${tabId}\` (or a browser session on that tab).`;
+  return `It is live in front of the user: take it over with \`ade browser claim --tab ${tabId} --text\`, then read and act on it in place with \`ade browser <command> --tab ${tabId}\` (or a browser session on that tab). Do not web-fetch or curl its URL or open it in a new tab: a copy is not what the user sees.`;
 }
 
 /** The serialized block a chat message carries for one attached tab. */

@@ -14713,6 +14713,12 @@ final class SyncService: ObservableObject {
     // composer creating into a chosen project).
     let scope = chatCommandScope(for: sessionId)
     var args: [String: Any] = ["sessionId": sessionId, "text": text]
+    // The Chats page is one of ADE's own surfaces: a personal chat written
+    // before profiles existed becomes an assistant chat when used from here
+    // (`PersonalChatAssistantClaim` on the host). Project chats never carry it.
+    if isPersonalChatScope(sessionId: sessionId) {
+      args["personalProfile"] = "assistant"
+    }
     if let attachments, !attachments.isEmpty {
       args["attachments"] = chatAttachmentArgs(attachments)
     }
@@ -24946,6 +24952,11 @@ extension SyncService {
       "model": model,
       "modelId": model,
       "kickoffText": kickoffText,
+      // A chat started from the app's Chats page is the user's assistant, like
+      // one started from the desktop: ADE skills, the user's settings, the ADE
+      // browser. SDK hosts omit this and keep the `embedded` profile. A brain
+      // that predates profiles ignores the field.
+      "personalProfile": "assistant",
     ]
     if let reasoningEffort, !reasoningEffort.isEmpty { args["reasoningEffort"] = reasoningEffort }
     if let codexFastMode { args["codexFastMode"] = codexFastMode }

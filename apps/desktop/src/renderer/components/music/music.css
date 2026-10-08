@@ -1,0 +1,108 @@
+/* The Music tab (components/music). Built on the surface kit's variables:
+   frosted planes over the scene picture, neutral surfaces, the accent only on
+   what is selected or on. The song's own artwork tints the player; Apple
+   Music's pink appears only in its attribution and on Love.
+
+   One file per part, imported in this order (later files may refine earlier
+   ones). The narrow-window and reduced-motion rules stay below the imports so
+   they override every part. */
+
+@import "./music-shell.css";
+@import "./music-search.css";
+@import "./music-lists.css";
+@import "./music-detail.css";
+@import "./music-player.css";
+@import "./music-controls.css";
+@import "./music-welcome.css";
+
+/* ---------- Narrow windows ---------- */
+
+@container music (max-width: 900px) {
+  .ade-music-rail { width: 56px; padding: 10px 6px; }
+  .ade-music-nav-item { justify-content: center; padding: 0; }
+  .ade-music-nav-item[data-active="true"]::before { display: none; }
+  .ade-music-nav-item > span,
+  .ade-music-nav-label,
+  .ade-music-mark-label,
+  .ade-music-account-text,
+  .ade-music-account-caret { display: none; }
+  .ade-music-account { justify-content: center; padding: 6px 0; }
+  .ade-music-rail-head { justify-content: center; padding: 0 0 6px; }
+  .ade-music-song-album { display: none; }
+  .ade-music-song { grid-template-columns: 34px auto minmax(0, 1fr) auto 46px; }
+  .ade-music-bar-volume { width: 88px; }
+  .ade-music-connect.is-compact { padding: 0; font-size: 0; gap: 0; }
+  .ade-music-hero-art { width: 150px !important; height: 150px !important; }
+  .ade-music-hero-text h1 { font-size: 26px; }
+  .ade-music-welcome-points { grid-template-columns: 1fr; }
+  .ade-music-results-top { grid-template-columns: 1fr; }
+  .ade-music-mosaic-grid { grid-template-columns: repeat(6, 1fr); }
+}
+@container music (max-width: 720px) {
+  .ade-music-bar { grid-template-columns: minmax(0, 1fr) auto; }
+  .ade-music-bar-side { display: none; }
+  .ade-music-bar-seek { display: none; }
+}
+
+/* ---------- The Music top tab (the mini player) ---------- */
+
+.ade-music-tab-art {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--kit-track, color-mix(in srgb, var(--color-fg) 9%, transparent));
+  color: var(--color-fg);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-fg) 10%, transparent);
+}
+.ade-music-tab-art > img { width: 100%; height: 100%; object-fit: contain; }
+.ade-music-tab-text { min-width: 0; flex: 1; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.ade-music-tab-toggle {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 10%, transparent);
+  color: var(--color-fg);
+  transition: background-color 120ms, transform 120ms;
+}
+.ade-music-tab-toggle:hover { background: color-mix(in srgb, var(--color-fg) 18%, transparent); transform: scale(1.08); }
+.ade-music-tab-toggle:active { transform: scale(0.92); }
+.ade-music-tab-progress {
+  position: absolute;
+  right: 8px;
+  bottom: 1px;
+  left: 8px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+  pointer-events: none;
+}
+.ade-music-tab-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+  transform-origin: 0 50%;
+  transition: transform 1s linear;
+}
+
+/* ---------- Reduce motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-music *,
+  .ade-music-tab-progress > span { transition-duration: 0s !important; }
+  .ade-music-bars.is-playing > i { animation: none; }
+  .ade-music-tile-art:hover { transform: none; }
+}
+html[data-motion="reduced"] .ade-music *,
+html[data-motion="reduced"] .ade-music-tab-progress > span { transition-duration: 0s !important; }
+html[data-motion="reduced"] .ade-music-bars.is-playing > i { animation: none; }
+html[data-motion="reduced"] .ade-music-tile-art:hover { transform: none; }

@@ -364,30 +364,40 @@ Renderer — onboarding:
 
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx`
   — projectless home and project-picker surface. The page is a fixed dashboard
-  over the window backdrop (see `ProjectWelcomeHome.tsx` below): a hero line with
-  a greeting, the date, machines online, and running / needs-you counts, over a
-  row of actions (**Add project**, **Chat without a project**, and the recents
-  side panel). Recents list recent local and remote projects, open or forget
-  entries, and launch project creation, clone, or folder selection before a
-  project-bound route is available. Each row carries the same right-click
-  project menu as a project tab — change icon, clone to this machine, pin or
-  unpin, and copy path — and a project with no checkout on this machine offers
-  **Clone locally**. `projectMenuEntries.ts` holds the rows both surfaces share.
-  A **Settings** button sets the app-store flag `standaloneSettingsOpen` and
-  navigates to `/settings`, so a person with no project can still reach the
-  settings that need none (see "Settings with no project" below).
+  over the window backdrop: a hero line (`ProjectWelcomeHome.tsx`) with a
+  greeting, the date, a one-line headline (`home/homeHeadline.ts`) and running /
+  needs-you counts, over a row of actions (**Add project**, **Chat without a
+  project**, **Browser**, and the recents side panel), above the widget grid.
+  Recents list recent local and remote projects, open or forget entries, and
+  launch project creation, clone, or folder selection before a project-bound
+  route is available. Each row carries the same right-click project menu as a
+  project tab — change icon, clone to this machine, pin or unpin, and copy path
+  — and a project with no checkout on this machine offers **Clone locally**.
+  `projectMenuEntries.ts` holds the rows both surfaces share. A **Settings**
+  button sets the app-store flag `standaloneSettingsOpen` and navigates to
+  `/settings`, so a person with no project can still reach the settings that
+  need none (see "Settings with no project" below).
+- `apps/desktop/src/renderer/components/home/` — the widget home. The user
+  picks widgets (Projects, Working now, Activity, Limits, PRs, Clock & weather,
+  Focus timer, Clipboard, Machine, Contributions, Shipped, Feed, Now Playing),
+  a size class for each and an order; `homeGridPack.ts` fits them to the window
+  with no scrolling and no gaps (smaller classes before hiding), and
+  `homeLayout.ts` keeps named layouts per computer in localStorage (a second
+  window follows the first's saves). `HomeWidgetPicker.tsx` is the Add widget
+  gallery (live, inert previews that read nothing), `HomeEditTools.tsx` the
+  edit chrome, `homeFeed.ts` the feed and "while you were away", and
+  `widgets/` one file per widget. The main-process half is
+  `apps/desktop/src/main/services/home/` (clipboard history, machine health and
+  ports, weather, Now Playing, share images) behind `ade.home.*`. Design and
+  rules: `docs/plans/ade-dev-home.md` section 4.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomeHome.tsx` —
-  the home dashboard's hero and cards. `WelcomeHero`, `RunningCard`,
-  `ActivityUsageCard`, `LimitsMachinesCard`, and `PullRequestsCard` each answer
-  one question at a glance — what is running, how much have I done, where is my
-  headroom, and which pull requests need me — and link to the full surface
-  instead of listing everything. The page fits the window rather than scrolling:
-  each card's body flexes and clips, and the budget is one all-time stats read
-  for this machine (the same read the new-chat Activity card makes) on mount and
-  on usage updates. The PR card reads the same GitHub snapshot the PRs
-  tab reads (through `prReadCache`) and joins it to ADE's tracked PRs for checks
-  and review state, reloading on PR events and window focus, never on a timer of
-  its own.
+  the home dashboard's hero, and the card bodies the default widgets render
+  (`RunningCard`, `ActivityUsageCard`, `LimitsMachinesCard`,
+  `PullRequestsCard`). Each answers one question at a glance and links to the
+  full surface instead of listing everything. The PR card reads the same GitHub
+  snapshot the PRs tab reads (through `prReadCache`) and joins it to ADE's
+  tracked PRs for checks and review state, reloading on PR events and window
+  focus, never on a timer of its own.
 - `apps/desktop/src/renderer/components/projects/CreateProjectForm.tsx`
   — name plus a first-class location row (default parent, Change folder,
   editable path). Create opens Work; it does not show a success interstitial

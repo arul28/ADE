@@ -1,0 +1,224 @@
+/* The Music page frame: variables, planes, the rail and the main pane. Imported by music.css, in order. */
+
+.ade-music {
+  --music-gap: 8px;
+  --music-radius: var(--radius-lg, 14px);
+  --music-pink: #fa2d48;
+  --music-soft: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  container: music / inline-size;
+}
+
+.ade-music-frame {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--music-gap);
+  padding: var(--music-gap);
+}
+
+.ade-music-layout {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  gap: var(--music-gap);
+}
+
+/* Planes: every pane is a kit-card plane, frosted over a picture by scene.css. */
+.ade-music .ade-chat-scene-plane {
+  border: 1px solid var(--kit-card-edge);
+  border-radius: var(--music-radius);
+  background: var(--kit-card-bg);
+}
+
+.ade-music-center {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- Rail ---------- */
+
+.ade-music-rail {
+  display: flex;
+  width: 216px;
+  flex: none;
+  flex-direction: column;
+  padding: 12px 8px 8px;
+}
+
+.ade-music-rail-head {
+  display: flex;
+  height: 36px;
+  align-items: center;
+  padding: 0 8px 10px;
+}
+
+.ade-music-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ade-music-nav-label {
+  padding: 18px 10px 6px;
+}
+
+.ade-music-nav-item {
+  position: relative;
+  display: flex;
+  height: 34px;
+  align-items: center;
+  gap: 10px;
+  border-radius: 10px;
+  padding: 0 10px;
+  color: var(--kit-text-2);
+  font-size: 12.5px;
+  text-align: left;
+  transition: background-color 120ms, color 120ms;
+}
+.ade-music-nav-item > svg { flex: none; color: var(--kit-text-3); transition: color 120ms; }
+.ade-music-nav-item:hover { background: var(--kit-hover); color: var(--color-fg); }
+.ade-music-nav-item:hover > svg { color: var(--color-fg); }
+.ade-music-nav-item[data-active="true"] {
+  background: var(--kit-active);
+  color: var(--color-fg);
+  font-weight: 600;
+}
+.ade-music-nav-item[data-active="true"] > svg { color: var(--color-accent); }
+.ade-music-nav-item[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--color-accent);
+}
+
+.ade-music-rail-foot {
+  margin-top: auto;
+  padding: 8px 0 0;
+}
+
+.ade-music-account {
+  display: flex;
+  width: 100%;
+  min-height: 46px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  padding: 7px 10px 7px 8px;
+  color: var(--color-fg);
+  text-align: left;
+  transition: background-color 120ms, border-color 120ms;
+}
+.ade-music-account:hover,
+.ade-music-account[aria-expanded="true"] { background: var(--kit-hover); border-color: color-mix(in srgb, var(--color-fg) 14%, transparent); }
+.ade-music-account-avatar {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--kit-ok) 14%, transparent);
+  color: var(--kit-ok);
+}
+.ade-music-account-text { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; }
+.ade-music-account-title { overflow: hidden; font-size: 12px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.ade-music-account-sub { overflow: hidden; color: var(--kit-text-3); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.ade-music-account-caret { flex: none; color: var(--kit-text-3); }
+
+/* Apple Music attribution lockup. */
+.ade-music-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-fg);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.ade-music-mark-glyph {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 7px;
+  background: var(--kit-active);
+  color: var(--color-fg);
+}
+.ade-music-mark.is-compact { gap: 6px; color: var(--kit-text-3); font-size: 10.5px; font-weight: 560; }
+.ade-music-mark.is-compact .ade-music-mark-glyph { width: 15px; height: 15px; border-radius: 4px; }
+.ade-music-badge { display: block; flex: none; user-select: none; }
+
+/* ---------- Main pane ---------- */
+
+.ade-music-main {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ade-music-view {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.ade-music-scroll {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 24px 32px;
+  scrollbar-gutter: stable;
+}
+
+.ade-music-view-head {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 24px 24px 12px;
+}
+.ade-music-view-head h2 {
+  margin: 4px 0 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+.ade-music-view-head > :first-child { flex: 1; }
+.ade-music-count { color: var(--kit-text-3); font-size: 11px; padding-bottom: 7px; }
+
+
+.ade-music-section { margin-top: 26px; }
+.ade-music-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  color: var(--color-fg);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.ade-music-section > h3.kit-eyebrow { margin: 0 0 10px; display: flex; gap: 6px; align-items: center; }

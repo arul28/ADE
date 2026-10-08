@@ -13,6 +13,7 @@ import type {
   AgentChatRecoverContinuityArgs,
   AgentChatResumeFailureKind,
 } from "../../../shared/types";
+import { useAgentChatApi } from "./agentChatApi";
 
 /**
  * Window event the Work surface already listens for to switch the active chat
@@ -182,6 +183,9 @@ export function ChatContinuityRecoveryCard({
   const [failure, setFailure] = useState<string | null>(null);
   // Populated once an action in *this* card succeeds; drives the resolved view.
   const [result, setResult] = useState<AgentChatContinuityRecoveryResult | null>(null);
+  // Without a host callback, the pane's own chat API (never the project one
+  // for a personal chat; its adapter refuses recovery with a clear error).
+  const agentChatApi = useAgentChatApi();
 
   const runRecovery = useCallback(
     async (mode: RecoverMode) => {
@@ -189,7 +193,7 @@ export function ChatContinuityRecoveryCard({
       setPendingMode(mode);
       setFailure(null);
       try {
-        const res = await (onRecoverContinuity ?? window.ade.agentChat.recoverContinuity)({
+        const res = await (onRecoverContinuity ?? agentChatApi.recoverContinuity)({
           sessionId,
           mode,
         });
@@ -208,7 +212,7 @@ export function ChatContinuityRecoveryCard({
         setPendingMode(null);
       }
     },
-    [sessionId, pendingMode, detail.spawnedSession?.laneId, onRecoverContinuity],
+    [sessionId, pendingMode, detail.spawnedSession?.laneId, onRecoverContinuity, agentChatApi],
   );
 
   // ── Resolved states after an action taken in this card ───────────────────

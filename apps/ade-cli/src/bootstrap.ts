@@ -2005,7 +2005,11 @@ export async function createAdeRuntime(args: {
       });
     teardown.push(() => macDesktopService?.dispose());
     // A chat-only runtime has no browser surface: no forwarder, no user-browser
-    // attachments, no bridge. Everything else has all three.
+    // attachments, no bridge. Everything else has all three. That includes the
+    // machine's personal-chat runtime: nothing reaches its action registry
+    // (only `personalChats.*` does), and a personal chat's `ade browser` runs
+    // against the runtime its working directory resolves to (see
+    // `scopeBuiltInBrowserAdeActionArgs` in adeRpcServer.ts), which has the bridge.
     //
     // With no desktop attached HERE, `browser open` is still satisfiable: a
     // desktop that holds a remote pin on this machine can open the URL in its

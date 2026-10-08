@@ -2956,7 +2956,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   tab creation, explicit claims, sessions, and page actions read
   ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls. Panel reveal and plain
   tab switching are passive view operations; use
-  "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab.
+  "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab
+  (a personal chat needs no lane: "browser claim --tab <tab-id>").
   ADE-launched agents should list tabs first and use only a tab/session owned
   by their current chat. Plain "browser open <url>" navigates that chat's tab
   (the one it used last) and creates one only when none exists, without
@@ -9220,6 +9221,13 @@ export function formatChatLaunches(value: unknown): string {
 }
 
 /**
+ * The row reports an agent makes about its own chat. From inside a personal
+ * (project-less) chat they belong to the personal scope, not to whatever
+ * project the CLI would otherwise resolve from the cwd.
+ */
+const CHAT_SELF_REPORT_SUBCOMMANDS = new Set(["ask", "note", "activity"]);
+
+/**
  * The target both handoff forms read the same way: the mode, the model (also
  * `--target` or a bare positional) and its settings. `sub` "fork" implies
  * fork mode.
@@ -9274,6 +9282,13 @@ function readHandoffTarget(args: string[], sub: string): {
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
+    return buildPersonalChatPlan(sub, args);
+  }
+  // ADE sets ADE_CHAT_SCOPE=personal in a personal chat's agent environment.
+  // Its own `ade chat note|ask|activity` then reaches its row through the
+  // brain; without this they would register the scratch folder as a project
+  // and report to a chat that does not exist there.
+  if (CHAT_SELF_REPORT_SUBCOMMANDS.has(sub) && process.env.ADE_CHAT_SCOPE?.trim() === "personal") {
     return buildPersonalChatPlan(sub, args);
   }
   if (sub === "settle" || sub === "unsettle") {
@@ -10609,6 +10624,61 @@ function personalChatStep(action: string, args: JsonObject = {}): InvocationStep
   };
 }
 
+/**
+ * `ade chat ask|note|activity` for a personal chat: `--personal`, or run from
+ * inside one (ADE_CHAT_SCOPE=personal). The session defaults to the caller's
+ * own chat, ADE_CHAT_SESSION_ID, like the project commands.
+ */
+function buildPersonalSelfReportPlan(
+  sub: string,
+  args: string[],
+  base: { kind: "execute"; machineOnly: boolean },
+): CliPlan {
+  const sessionId = requireValue(
+    readValue(args, ["--session", "--session-id"]) ?? (process.env.ADE_CHAT_SESSION_ID?.trim() || null),
+    "sessionId",
+  );
+  if (sub === "ask") {
+    const message = requireValue(
+      readValue(args, ["--question", "--message", "--text"]) ?? args.join(" "),
+      "question",
+    );
+    return {
+      ...base,
+      label: "personal chat ask",
+      steps: [personalChatStep("requestSessionAttention", { sessionId, message })],
+    };
+  }
+  if (sub === "note") {
+    const note = readValue(args, ["--note", "--text"]) ?? args.join(" ");
+    return {
+      ...base,
+      label: "personal chat note",
+      steps: [personalChatStep("setSessionStatusNote", { sessionId, note })],
+    };
+  }
+  const rawValue = firstStandalonePositional(args);
+  const normalizedValue = rawValue?.trim().toLowerCase();
+  if (!normalizedValue) {
+    throw new CliUsageError(
+      `chat activity requires one value: ${[...SESSION_ACTIVITY_VALUES, "clear"].join(" | ")}.`,
+    );
+  }
+  if (normalizedValue !== "clear" && !isSessionActivityValue(normalizedValue)) {
+    throw new CliUsageError(
+      `Unsupported chat activity '${rawValue}'. Use: ${[...SESSION_ACTIVITY_VALUES, "clear"].join(" | ")}.`,
+    );
+  }
+  return {
+    ...base,
+    label: "personal chat activity",
+    steps: [personalChatStep("setSessionActivity", {
+      sessionId,
+      value: normalizedValue === "clear" ? null : normalizedValue,
+    })],
+  };
+}
+
 function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
   const laneId = readLaneId(args);
   if (laneId) {
@@ -10682,6 +10752,10 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     const droidPermissionMode = readDroidPermissionMode(args);
     const fastMode = readFastModeFlag(args);
     const createArgs = collectGenericObjectArgs(args, {
+      // A chat started from ADE's own CLI is the user's assistant, like one
+      // started from the Chats page. `--arg personalProfile=embedded` asks for
+      // the SDK-host surface instead.
+      personalProfile: "assistant",
       provider,
       model,
       modelId: model,
@@ -10722,6 +10796,10 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
 
+  if (CHAT_SELF_REPORT_SUBCOMMANDS.has(sub)) {
+    return buildPersonalSelfReportPlan(sub, args, base);
+  }
+
   const sessionSubcommands = new Set([
     "read",
     "messages",
@@ -10749,7 +10827,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "status",
   ]);
   if (!sessionSubcommands.has(sub)) {
-    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, stop-task, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
+    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, ask, note, activity, update, models, model-catalog, interrupt, stop-task, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
   }
 
   const sessionId = requireValue(
@@ -10777,6 +10855,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...base,
       label: "personal chat send",
       steps: [personalChatStep("send", collectGenericObjectArgs(args, {
+        // ADE's own CLI is one of the user's Chats surfaces: a chat written
+        // before profiles existed becomes an assistant chat when used here.
+        personalProfile: "assistant",
         sessionId,
         text,
         ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
@@ -10793,6 +10874,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...base,
       label: "personal chat steer",
       steps: [personalChatStep("steer", collectGenericObjectArgs(args, {
+        personalProfile: "assistant",
         sessionId,
         text,
         ...(dispatchMode ? { dispatchMode } : {}),
@@ -14463,7 +14545,12 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     return buildBrowserHandoffPlan(args, tail);
   }
   if (sub === "claim") {
-    const claimArgs: JsonObject = readRequiredToolClaimArgs(args, "browser");
+    // A personal (project-less) chat has no lane: the runtime puts its claim
+    // in the personal tab collection, owned by its chat id.
+    // The runtime decides personal scope from ADE_CHAT_SCOPE alone, so a flag
+    // here would only skip the lane check without changing where the claim goes.
+    const personal = process.env.ADE_CHAT_SCOPE?.trim() === "personal";
+    const claimArgs: JsonObject = personal ? { ...readToolClaimArgs(args) } : readRequiredToolClaimArgs(args, "browser");
     Object.assign(claimArgs, readBrowserTabTargetArgs(args));
     Object.assign(claimArgs, readBrowserLeaseArgs(args));
     return {
@@ -15548,6 +15635,13 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
         ),
       ],
     };
+  // No chat, project or personal, runs its own JavaScript in a page; say so
+  // instead of sending an action name the runtime does not have.
+  if (sub === "eval" || sub === "evaluate" || sub === "exec" || sub === "js") {
+    throw new CliUsageError(
+      "ADE's browser does not run page JavaScript for agents. Read the page with `ade browser snapshot --tab <tab-id> --text`, then act with click, fill, type, select-option, scroll, key or wait.",
+    );
+  }
   return {
     kind: "execute",
     label: `browser ${sub}`,

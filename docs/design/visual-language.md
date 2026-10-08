@@ -106,7 +106,9 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
   JPEG and stored in IndexedDB (`userScenes.ts`), never on disk or in sync.
 - **One picture, many surfaces.** `SceneImageLayer` draws a window-aligned
   slice of the same picture behind each surface, so the top bar, the home page
-  and the new chat page read as one continuous image.
+  and the new chat page read as one continuous image. The Chats page and the
+  Browser tab's chat dock sit on it too (`ChatSceneBackdrop`), each pane a
+  frosted `.ade-chat-scene-plane` with the kit card's tint; Work chats do not.
 - **The picture sets the colours.** `scenePalette.ts` extracts a palette from
   the picture (k-means, then a 5-stop ramp, cached in localStorage). The mesh
   gradient uses it. With **App colours: From picture** (`matchTheme`), the
@@ -135,9 +137,15 @@ is not honoured everywhere).
   `container: welcome` and hides lower-priority rows under
   `@container welcome (max-height: 640px)`; `settingsModern.css` declares
   `modernpage` and stacks rows under 520px.
-- **Home grid.** A hero line, a row of actions, then a fixed grid of cards:
+- **Home grid.** A hero line, a row of actions, then a grid of widgets
+  (`components/home/`). The default preset is the shipped page: projects with
   what is working now, activity and usage, limits and machines, pull requests.
-  Each card's body flexes and clips; nothing scrolls.
+  Users pick widgets, a size class (Compact, Regular, Large) and an order;
+  the layout engine fills the page with even rows and no gaps, and hides what
+  does not fit behind "N hidden" (in edit mode that note names each hidden
+  widget with its own remove). Nothing scrolls: lists show the rows that
+  fit and a "N more" line. Each widget is a size container, so a card hides
+  its least important part when a layout makes it short.
 - **Settings.** `ModernPage` spaces sections 44px apart. `ModernSection` is a
   title, a one-line hint and optional actions. `ModernRows` groups
   `ModernRow`s in one panel with hairline dividers. Choice cards (theme mode,
@@ -269,7 +277,7 @@ The usage headroom rule is `ADEUsagePressure` in `ADEUsageDesign.swift`
 |---|---|
 | Kit | `renderer/styles/surfaceKit.css` |
 | Scenes | `renderer/scene/*`, `renderer/styles/scene.css`, `public/scenes/` |
-| Home | `components/projects/ProjectWelcomePage.tsx`, `ProjectWelcomeHome.tsx`, `ProjectWelcomeSidePanels.tsx`, `ProjectWelcomePage.css` |
+| Home | `components/projects/ProjectWelcomePage.tsx`, `ProjectWelcomeHome.tsx`, `ProjectWelcomeSidePanels.tsx`, `ProjectWelcomePage.css`, `components/home/*` |
 | Settings | `components/settings/primitives/SettingsModern.tsx`, `settingsModern.css`, `AppearanceSection.tsx`, `ThemeGallery.tsx` |
 | Usage | `components/usage/usageDesign.ts`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `UsageWeekCompare.tsx`, `usageProviderNames.ts`, `usageSurfaces.css` |
 | Sign-in | `components/onboarding/GlassSignInCard.tsx`, `launchGateGlass.css` |

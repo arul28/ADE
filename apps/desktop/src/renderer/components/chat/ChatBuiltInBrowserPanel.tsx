@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import {
   Check,
   WarningCircle,
@@ -145,6 +145,7 @@ import {
   pointerToCapturePoint,
 } from "./browser/browserCapture";
 import { isInParkedSurface } from "../../lib/parkedSurface";
+import { useAgentChatApi } from "./agentChatApi";
 
 /**
  * The preload's declared browser namespace, with presence relaxed.
@@ -213,6 +214,15 @@ type ChatBuiltInBrowserPanelProps = {
    * prop: the pane is not inside the chat's runtime scope.
    */
   groupLaneId?: string | null;
+  /**
+   * The host's own controls at the toolbar's far right, in place of the Work
+   * pane's preview toggle and maximize. Those two only mean something inside
+   * the Work tools pane; a host that is a page of its own (the Browser tab)
+   * draws what it needs here instead.
+   */
+  toolbarEnd?: ReactNode;
+  /** How many toolbar controls `toolbarEnd` is as wide as, so the omnibox is priced around it. */
+  toolbarEndControlCount?: number;
 };
 
 type MessageTone = "info" | "error";
@@ -314,7 +324,12 @@ export function ChatBuiltInBrowserPanel({
   onAttachTab,
   runtimePin = null,
   groupLaneId = null,
+  toolbarEnd,
+  toolbarEndControlCount = 1,
 }: ChatBuiltInBrowserPanelProps) {
+  // Screenshots go to the surrounding chat's attachment store: a personal
+  // chat's own, not the active project's.
+  const agentChatApi = useAgentChatApi();
   // Also rendered from the Work sidebar and the personal-chats page, so the
   // scope is derived from the pin this panel is handed.
   const chatScope = useChatRuntimeScopeForPin(runtimePin, null);
@@ -760,7 +775,7 @@ export function ChatBuiltInBrowserPanel({
     const screenshotDataUrl = item.screenshotDataUrl ?? null;
     if (screenshotDataUrl && !attachmentPath && onAddAttachment) {
       try {
-        const saved = await window.ade.agentChat.saveTempAttachment({
+        const saved = await agentChatApi.saveTempAttachment({
           data: stripDataUrlPrefix(screenshotDataUrl),
           filename: item.kind === "built_in_browser_capture" ? "built-in-browser-capture.png" : "built-in-browser-selection.png",
         }, ...(runtimePin ? [runtimePin] as const : []));
@@ -799,7 +814,7 @@ export function ChatBuiltInBrowserPanel({
     }
     setMessage({ tone: "info", text: messageText });
     return contextItem;
-  }, [onAddAttachment, onAddContext, runtimePin, sessionId]);
+  }, [agentChatApi, onAddAttachment, onAddContext, runtimePin, sessionId]);
 
   /**
    * Capture the frame the underlay paints, without touching the UI.
@@ -1461,7 +1476,7 @@ export function ChatBuiltInBrowserPanel({
 
     let attachmentPath: string | null = null;
     if (onAddAttachment) {
-      const saved = await window.ade.agentChat.saveTempAttachment({
+      const saved = await agentChatApi.saveTempAttachment({
         data: stripDataUrlPrefix(crop.dataUrl),
         filename: "built-in-browser-capture.png",
       }, ...(runtimePin ? [runtimePin] as const : []));
@@ -1552,7 +1567,7 @@ export function ChatBuiltInBrowserPanel({
       label: domItem ? "Browser capture + DOM attached." : "Browser capture attached.",
     });
     restoreLiveBrowserView();
-  }, [attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, runtimePin, sessionId, withBrowserScope]);
+  }, [agentChatApi, attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, runtimePin, sessionId, withBrowserScope]);
 
   const handleBrowserCapturePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (!captureImageDataUrl || !captureBase?.width || !captureBase.height) return;
@@ -2508,14 +2523,15 @@ export function ChatBuiltInBrowserPanel({
   // so Inspect, Attach and "screenshot to chat" are not shown here rather than
   // shown broken.
   const canAttachContext = Boolean(onAddContext);
+  const hostToolbarEnd = toolbarEnd !== undefined;
   const toolbar = useMemo(() => browserToolbarLayout(paneWidth, {
     hasSelection,
     canAttachContext,
     recording: isRecording,
-    // The pane always draws two fixed controls at the far right (preview
-    // toggle + maximize); price them so the omnibox is not clipped by them.
-    extraRightControlCount: 2,
-  }), [canAttachContext, hasSelection, isRecording, paneWidth]);
+    // The pane draws two fixed controls at the far right (preview toggle +
+    // maximize), or the host's own; price them so the omnibox is not clipped.
+    extraRightControlCount: hostToolbarEnd ? toolbarEndControlCount : 2,
+  }), [canAttachContext, hasSelection, hostToolbarEnd, isRecording, paneWidth, toolbarEndControlCount]);
   /**
    * `status != null` matters: before the first status lands the panel knows
    * nothing, and flashing the launchpad there would both blink the surface and
@@ -2811,7 +2827,7 @@ export function ChatBuiltInBrowserPanel({
       onKeyDownCapture={handlePanelKeyDown}
       className="flex h-full min-h-0 min-w-0 flex-col font-sans text-[12px] text-fg/75"
     >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-fg/[0.08] bg-[var(--color-bg)]">
+      <div className="ade-browser-frame flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-fg/[0.08] bg-[var(--color-bg)]">
         <BrowserTabStrip
           stripRef={tabStripRef}
           tabs={orderedBrowserTabs}
@@ -2901,7 +2917,9 @@ export function ChatBuiltInBrowserPanel({
               selectionFrame={selectionFrame}
             />
           )}
-          previewControls={<WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
+          previewControls={hostToolbarEnd
+            ? toolbarEnd
+            : <WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
         />
 
         <BrowserFindBar

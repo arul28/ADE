@@ -4484,6 +4484,51 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   const browserMockPromptStashes: PromptStashEntry[] = [];
   const browserMockPersonalChatEvents = new Map<string, any[]>();
   let browserMockPersonalChatSequence = 0;
+  /** Every personal event in order, so `streamEvents` can replay them like the runtime buffer. */
+  const browserMockPersonalChatStream: Array<{ id: number; payload: Record<string, unknown> }> = [];
+  /** One connected model, so the personal composer can create and send in the preview. */
+  const browserMockPersonalChatModelCatalog = {
+    fetchedAt: new Date(0).toISOString(),
+    groups: [{
+      key: "claude",
+      displayName: "Claude",
+      providers: [{
+        key: "anthropic",
+        displayName: "Anthropic",
+        badgeColor: "#D97706",
+        modelCount: 1,
+        subsections: [{
+          key: "__default__",
+          label: "",
+          models: [{
+            id: "anthropic/claude-sonnet-5-5",
+            runtimeModelId: "claude-sonnet-5-5",
+            modelId: "anthropic/claude-sonnet-5-5",
+            provider: "claude",
+            providerKey: "anthropic",
+            providerId: "anthropic",
+            providerName: "Anthropic",
+            groupKey: "claude",
+            displayName: "Claude Sonnet 5.5",
+            description: null,
+            isDefault: true,
+            aliases: [],
+            reasoningEfforts: [],
+            defaultReasoningEffort: null,
+            maxThinkingTokens: null,
+            family: "anthropic",
+            supportsReasoning: false,
+            supportsTools: true,
+            color: "#D97706",
+            isAvailable: true,
+            connected: true,
+            requiresConfiguration: false,
+            sourceRuntime: "claude",
+          }],
+        }],
+      }],
+    }],
+  };
 
   const appendBrowserMockPersonalChatEvent = (
     sessionId: string,
@@ -4497,6 +4542,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     const events = browserMockPersonalChatEvents.get(sessionId) ?? [];
     events.push(envelope);
     browserMockPersonalChatEvents.set(sessionId, events);
+    browserMockPersonalChatStream.push({ id: browserMockPersonalChatStream.length + 1, payload: envelope });
     return envelope;
   };
 
@@ -6200,7 +6246,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             (chat) => args.includeArchived === true || !chat.archivedAt,
           );
         }
-        if (action === "modelCatalog") result = { groups: [], fetchedAt: new Date().toISOString() };
+        if (action === "modelCatalog") result = browserMockPersonalChatModelCatalog;
+        if (action === "slashCommands") result = [];
+        if (action === "setPinned") {
+          const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
+          if (chat) chat.pinned = args.pinned === true;
+          result = chat ?? null;
+        }
         if (action === "models") result = [];
         if (action === "create") {
           const now = new Date().toISOString();
@@ -6393,7 +6445,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         }
         return { action, result };
       },
-      streamEvents: async ({ cursor = 0 }: any = {}) => ({ events: [], nextCursor: cursor, hasMore: false }),
+      streamEvents: async ({ cursor = 0, limit = 200 }: any = {}) => {
+        const events = browserMockPersonalChatStream.filter((entry) => entry.id > cursor).slice(0, limit);
+        return { events, nextCursor: events.at(-1)?.id ?? cursor, hasMore: false };
+      },
     },
     chatLaunch: {
       start: async (args: any = {}) => startBrowserMockChatLaunch(args),

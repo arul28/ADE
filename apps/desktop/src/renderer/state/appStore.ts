@@ -51,6 +51,7 @@ import {
   type AdeTheme,
 } from "../../shared/theme";
 import { applyAdeTheme } from "../theme/applyTheme";
+import { captureHomeTabOpened } from "../components/home/homeAnalytics";
 import { applyInterfacePreferences } from "../theme/applyInterface";
 import { DEFAULT_SCENE_PREFERENCES, normalizeScenePreferences, type ScenePreferences } from "../scene/scenePreferences";
 
@@ -1455,6 +1456,11 @@ export type CrossMachineMachineLanes = {
   error: string | null;
 };
 
+export type BrowserDockState = {
+  open: boolean;
+  chat: { targetKey: string; sessionId: string } | null;
+};
+
 export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
@@ -1492,6 +1498,16 @@ export type AppState = {
    */
   standaloneSettingsOpen: boolean;
   personalChatsTabOpen: boolean;
+  /** The machine-level Browser top tab is in the tab strip. Survives project transitions, like Chats. */
+  browserTabOpen: boolean;
+  /** The machine-level Music top tab is in the tab strip. Survives project transitions, like Browser. */
+  musicTabOpen: boolean;
+  /**
+   * The Browser tab's docked chat. `chat` is the personal chat the dock shows,
+   * kept until the user starts a new one; `targetKey` is the machine it lives
+   * on, so a window that moves to another machine does not show a stale id.
+   */
+  browserDock: BrowserDockState;
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   lanesLoading: boolean;
@@ -1753,6 +1769,9 @@ export type AppState = {
   setStandaloneSettingsOpen: (open: boolean) => void;
   setPersonalChatsTabOpen: (open: boolean) => void;
   closePersonalChatsTab: () => void;
+  setBrowserTabOpen: (open: boolean) => void;
+  setMusicTabOpen: (open: boolean) => void;
+  setBrowserDock: (patch: Partial<BrowserDockState>) => void;
   refreshProject: () => Promise<void>;
   refreshLanes: (options?: {
     includeStatus?: boolean;
@@ -2069,7 +2088,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const restoredSelection =
         prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
       const cachedLanes = prev.laneCacheByProject[project.rootPath];
-      // personalChatsTabOpen is deliberately omitted so the machine-level Chats tab survives project transitions.
+      // personalChatsTabOpen and browserTabOpen are deliberately omitted so the machine-level Chats and Browser tabs survive project transitions.
       return {
         projectHydrated: true,
         showWelcome: false,
@@ -2138,6 +2157,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   isNewTabOpen: false,
   standaloneSettingsOpen: false,
   personalChatsTabOpen: false,
+  browserTabOpen: false,
+  musicTabOpen: false,
+  browserDock: { open: false, chat: null },
   laneSnapshots: [],
   lanes: [],
   lanesLoading: false,
@@ -2819,6 +2841,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setPersonalChatsTabOpen: (personalChatsTabOpen) =>
     set({ personalChatsTabOpen }),
   closePersonalChatsTab: () => set({ personalChatsTabOpen: false }),
+  setBrowserTabOpen: (browserTabOpen) => {
+    if (browserTabOpen && !get().browserTabOpen) captureHomeTabOpened("browser");
+    set({ browserTabOpen });
+  },
+  setMusicTabOpen: (musicTabOpen) => {
+    if (musicTabOpen && !get().musicTabOpen) captureHomeTabOpened("music");
+    set({ musicTabOpen });
+  },
+  setBrowserDock: (patch) => set((prev) => ({ browserDock: { ...prev.browserDock, ...patch } })),
   getWorkViewState: (projectRoot) => {
     const key = resolveProjectStateKey(get(), projectRoot);
     if (!key) return createDefaultWorkProjectViewState();
@@ -3642,6 +3673,8 @@ export function createProjectAppStore(
     isNewTabOpen: false,
     standaloneSettingsOpen: false,
     personalChatsTabOpen: false,
+    browserTabOpen: false,
+    musicTabOpen: false,
     theme: rootState.theme,
     themeId: rootState.themeId,
     customThemes: rootState.customThemes,

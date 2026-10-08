@@ -1,10 +1,21 @@
 import { useEffect, useState } from "react";
-import { Archive, CaretUpDown, Check, Desktop, DotsThree, House, MagnifyingGlass, Plus, SpinnerGap, Trash } from "@phosphor-icons/react";
+import { Archive, CaretUpDown, Check, Desktop, DotsThree, House, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, SpinnerGap, Trash } from "@phosphor-icons/react";
 import type { AgentChatSessionSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { providerChatAccent } from "../chat/chatSurfaceTheme";
-import { providerToolType, relativeTime, sessionPreview, sessionTitle } from "./sessionHelpers";
+import { providerToolType, relativeTime, sessionRowDetail, sessionRowStatus, sessionTitle } from "./sessionHelpers";
+import type { SessionStatusTone } from "../../../shared/sessionStatusPresentation";
+
+/** Status word colours: blue is work, amber is your move, red is broken. */
+const STATUS_TONE_CLASS: Record<SessionStatusTone, string> = {
+  blue: "text-sky-300/80",
+  violet: "text-violet-300/80",
+  amber: "text-amber-300/90",
+  emerald: "text-emerald-300/80",
+  red: "text-rose-300/85",
+  neutral: "text-muted-fg/55",
+};
 
 export function ProjectlessSidebar({
   standalone,
@@ -24,6 +35,8 @@ export function ProjectlessSidebar({
   menuId,
   onToggleMenu,
   onRemove,
+  onRename,
+  onTogglePin,
 }: {
   standalone: boolean;
   machineLabel: string;
@@ -42,8 +55,19 @@ export function ProjectlessSidebar({
   menuId: string | null;
   onToggleMenu: (id: string | null) => void;
   onRemove: (id: string, action: "archive" | "delete") => void;
+  /** Save a new title; an empty one is ignored. */
+  onRename?: (id: string, title: string) => void;
+  onTogglePin?: (id: string, pinned: boolean) => void;
 }) {
   const [machineMenuOpen, setMachineMenuOpen] = useState(false);
+  // One row is renamed in place at a time; Enter or blur saves, Escape cancels.
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+  const commitRename = () => {
+    if (!renaming) return;
+    const value = renaming.value.trim();
+    setRenaming(null);
+    if (value) onRename?.(renaming.id, value);
+  };
 
   useEffect(() => {
     if (!machineMenuOpen) return;
@@ -75,7 +99,7 @@ export function ProjectlessSidebar({
 
   return (
     <aside className={cn(
-      "relative w-[286px] shrink-0 border-r border-fg/[0.06] bg-black/[0.12]",
+      "ade-chat-scene-plane relative w-[286px] shrink-0 border-r border-fg/[0.06] bg-black/[0.12]",
       "max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[min(88vw,320px)] max-md:shadow-2xl",
       !mobileListOpen && "max-md:hidden",
     )}>
@@ -113,6 +137,26 @@ export function ProjectlessSidebar({
                   const active = session.sessionId === selectedId;
                   const streaming = session.status === "active";
                   const dotColor = providerChatAccent(session.provider) ?? "var(--color-accent)";
+                  const status = sessionRowStatus(session);
+                  if (renaming?.id === session.sessionId) {
+                    return (
+                      <div key={session.sessionId} className="px-1 py-1">
+                        <input
+                          autoFocus
+                          value={renaming.value}
+                          onChange={(event) => setRenaming({ id: session.sessionId, value: event.target.value })}
+                          onFocus={(event) => event.currentTarget.select()}
+                          onBlur={commitRename}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") commitRename();
+                            if (event.key === "Escape") setRenaming(null);
+                          }}
+                          aria-label="Chat name"
+                          className="h-9 w-full rounded-lg border border-accent/30 bg-fg/[0.04] px-2.5 font-sans text-[12px] text-fg outline-none"
+                        />
+                      </div>
+                    );
+                  }
                   return (
                     <div key={session.sessionId} className="group relative">
                       {active ? <span aria-hidden className="absolute inset-y-1.5 left-0 w-[3px] rounded-full bg-accent" /> : null}
@@ -124,14 +168,24 @@ export function ProjectlessSidebar({
                           ) : null}
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate font-sans text-[12px] font-medium text-fg/82">{sessionTitle(session)}</span>
-                          <span className="mt-0.5 block truncate font-sans text-[10px] text-muted-fg/42">{sessionPreview(session)}</span>
+                          <span className="flex items-center gap-1">
+                            {session.pinned ? <PushPin size={10} weight="fill" aria-label="Pinned" className="shrink-0 text-muted-fg/50" /> : null}
+                            <span className="block truncate font-sans text-[12px] font-medium text-fg/82">{sessionTitle(session)}</span>
+                          </span>
+                          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 font-sans text-[10px] text-muted-fg/42">
+                            {status ? (
+                              <span className={cn("shrink-0 font-medium", STATUS_TONE_CLASS[status.tone])}>{status.label}</span>
+                            ) : null}
+                            <span className="min-w-0 truncate">{sessionRowDetail(session)}</span>
+                          </span>
                         </span>
                         <span className="mt-0.5 shrink-0 font-sans text-[9px] tabular-nums text-muted-fg/35 group-hover:hidden">{relativeTime(session.lastActivityAt)}</span>
                       </button>
                       <button type="button" onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onToggleMenu(menuId === session.sessionId ? null : session.sessionId); }} className="absolute right-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md text-muted-fg/45 hover:bg-fg/[0.08] hover:text-fg group-hover:flex" aria-label={`More actions for ${sessionTitle(session)}`} aria-haspopup="menu" aria-expanded={menuId === session.sessionId}><DotsThree size={15} weight="bold" /></button>
                       {menuId === session.sessionId ? (
                         <div role="menu" onMouseDown={(event) => event.stopPropagation()} className="absolute right-2 top-9 z-30 w-32 rounded-lg border border-fg/[0.08] bg-[var(--color-popup-bg)] p-1 shadow-2xl">
+                          {onRename ? <button type="button" role="menuitem" onClick={() => { onToggleMenu(null); setRenaming({ id: session.sessionId, value: sessionTitle(session) }); }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-fg/65 hover:bg-fg/[0.06]"><PencilSimple size={12} />Rename</button> : null}
+                          {onTogglePin ? <button type="button" role="menuitem" onClick={() => { onToggleMenu(null); onTogglePin(session.sessionId, !session.pinned); }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-fg/65 hover:bg-fg/[0.06]">{session.pinned ? <><PushPinSlash size={12} />Unpin</> : <><PushPin size={12} />Pin</>}</button> : null}
                           <button type="button" role="menuitem" onClick={() => onRemove(session.sessionId, "archive")} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-fg/65 hover:bg-fg/[0.06]"><Archive size={12} />Archive</button>
                           <button type="button" role="menuitem" onClick={() => onRemove(session.sessionId, "delete")} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-rose-300/75 hover:bg-rose-500/10"><Trash size={12} />Delete</button>
                         </div>

@@ -1,3 +1,5 @@
+import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
+import type { MusicBridge } from "../shared/types/music";
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
@@ -4557,6 +4559,10 @@ declare global {
       /** Quits and reopens ADE after the usual quit warnings. False when unavailable. */
       updateRelaunchApp: () => Promise<boolean>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
+      /** Home page widgets backed by the desktop main process. Absent on the web client. */
+      home?: HomeWidgetsBridge;
+      /** Apple Music: playback through the on-demand player host, browsing through the Apple Music API. */
+      music?: MusicBridge;
       perf: {
         getConfig: () => Promise<{
           active: boolean;

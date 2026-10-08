@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type {
   AgentChatCreateArgs,
+  AgentChatPersonalProfile,
   AgentChatSessionSummary,
   PersonalChatAction,
   PersonalChatCallResponse,
@@ -14,6 +15,7 @@ import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import { stripHostOnlyChatMetadata } from "../../../../desktop/src/shared/chatAutoResume";
 import { stripHostAuthoredMessageProvenance } from "../../../../desktop/src/main/services/chat/spawnMissionOwnership";
+import { isPersonalLaneOnlySkillCommand } from "../../../../desktop/src/main/services/chat/personalSession";
 import {
   personalHostPathContext,
   validatePersonalHostCwd,
@@ -21,8 +23,16 @@ import {
 import type { AdeRuntime } from "../../bootstrap";
 import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
-import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
-import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
+import { IMAGE_MIME_BY_EXTENSION, readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
+import {
+  projectAttachmentsDir,
+  stageAttachmentBytes,
+} from "../../../../desktop/src/shared/chatAttachmentStagingFs";
+import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  legacyAttachmentCapMessage,
+  maxBase64EncodedLength,
+} from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { historyPageBeforeSequence } from "../sync/syncRemoteCommandService";
 
 /**
@@ -104,6 +114,79 @@ function refuseUserOnlyConsentCard(
   if (itemId && service.isUserOnlyPendingInput?.({ sessionId: readSessionId(args), itemId })) {
     throw new Error(USER_ONLY_CONSENT_CARD_REFUSAL);
   }
+}
+
+/**
+ * A chat row with what the rail reads off its session row: the synced `pinned`
+ * column, and the agent's own reports (`ade chat activity|note|ask`).
+ */
+function withRowMeta<T extends AgentChatSessionSummary>(runtime: AdeRuntime, summary: T): T {
+  const row = runtime.sessionService.get(summary.sessionId);
+  if (!row) return summary;
+  return {
+    ...summary,
+    ...(row.pinned === true ? { pinned: true } : {}),
+    ...(row.activityStatus ? { activityStatus: row.activityStatus } : {}),
+    ...(row.statusNote ? { statusNote: row.statusNote } : {}),
+    ...(row.attentionRequestedAt
+      ? { attentionRequestedAt: row.attentionRequestedAt, attentionMessage: row.attentionMessage ?? null }
+      : {}),
+    ...(!summary.currentTurnStartedAt && row.currentTurnStartedAt
+      ? { currentTurnStartedAt: row.currentTurnStartedAt }
+      : {}),
+  };
+}
+
+/** Is this payload an image by its declared MIME type or its file name? */
+function declaresImage(args: ObjectArgs): boolean {
+  const mime = typeof args.mimeType === "string" ? args.mimeType : typeof args.mime === "string" ? args.mime : "";
+  if (mime.trim().toLowerCase().startsWith("image/")) return true;
+  const dataUrl = typeof args.dataUrl === "string" ? args.dataUrl.trim() : "";
+  if (dataUrl.toLowerCase().startsWith("data:image/")) return true;
+  const filename = typeof args.filename === "string" ? args.filename : "";
+  return Boolean(IMAGE_MIME_BY_EXTENSION[path.extname(filename).toLowerCase()]);
+}
+
+/**
+ * Stage a non-image file a personal chat attaches (a PDF, a CSV, source).
+ *
+ * The same contract as a project's `chat.saveTempAttachment`: base64 bytes up
+ * to the legacy cap, written under a fresh UUID name in this runtime's own
+ * attachment store with only a validated extension kept from the caller's
+ * name. The caller never picks the path, so it can only add a file there, never
+ * read or overwrite one; the agent receives that path like any attachment.
+ */
+async function saveFileTempAttachment(attachmentsDir: string, args: ObjectArgs): Promise<{ path: string }> {
+  const base64 = typeof args.base64 === "string" ? args.base64 : typeof args.data === "string" ? args.data : "";
+  const compact = base64.replace(/\s+/g, "");
+  if (!compact || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact) || compact.length % 4 === 1) {
+    throw new Error("Temporary attachment base64 is invalid.");
+  }
+  if (compact.length > maxBase64EncodedLength(LEGACY_MAX_CHAT_ATTACHMENT_BYTES)) {
+    throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
+  }
+  const content = Buffer.from(compact, "base64");
+  if (content.byteLength > LEGACY_MAX_CHAT_ATTACHMENT_BYTES) {
+    throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
+  }
+  if (content.byteLength === 0) throw new Error("This attachment was empty.");
+  return await stageAttachmentBytes({
+    content,
+    filename: typeof args.filename === "string" ? args.filename : null,
+    attachmentsDir,
+  });
+}
+
+/** `/` entries minus the skills an assistant chat does not get (`PERSONAL_LANE_ONLY_AGENT_SKILLS`). */
+function withoutLaneOnlySkillCommands<T extends { name: string }>(commands: readonly T[]): T[] {
+  return commands.filter((command) => !isPersonalLaneOnlySkillCommand(command.name));
+}
+
+/** The call's args without the ADE-surface claim, which no chat service method takes. */
+function withoutAssistantClaim(args: ObjectArgs): ObjectArgs {
+  if (!("personalProfile" in args)) return args;
+  const { personalProfile: _claim, ...rest } = args;
+  return rest;
 }
 
 function readSessionId(args: ObjectArgs): string {
@@ -204,10 +287,46 @@ export class PersonalChatScope {
             if (session.surface !== "personal") {
               service.ensureSessionSurface(session.sessionId, "personal");
             }
-            return session.surface === "personal"
+            const row = session.surface === "personal"
               ? session
               : { ...session, surface: "personal" as const };
+            return withRowMeta(runtime, row);
           });
+        break;
+      }
+      case "setPinned": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        // The same synced column a Work chat's pin lives in, so a pin made on
+        // one client shows on every client of this machine.
+        runtime.sessionService.updateMeta({ sessionId, pinned: requiredBoolean(args.pinned, "pinned") });
+        const summary = await service.getSessionSummary(sessionId);
+        result = summary ? withRowMeta(runtime, summary) : null;
+        break;
+      }
+      case "slashCommands": {
+        const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+        const session = sessionId ? await this.requirePersonalSession(service, sessionId) : null;
+        const provider = typeof args.provider === "string" && args.provider.trim()
+          ? args.provider.trim() as AgentChatCreateArgs["provider"]
+          : null;
+        // The internal lane, never a caller's: a provider-only lookup reads the
+        // personal workspace, not whatever project the caller has open.
+        const commands = service.getSlashCommands({
+          ...(sessionId ? { sessionId } : {}),
+          ...(provider ? { provider } : {}),
+          laneId: await this.getInternalLaneId(runtime),
+        });
+        // An assistant chat's skill catalog withholds the lane-only skills;
+        // the `/` menu walks the unfiltered skill roots, so withhold them here
+        // too. A legacy row (no profile) counts when the caller makes the
+        // assistant claim, the same rule `claimForAssistant` persists.
+        const assistant = this.options.runtimeProfile !== "embedded"
+          && (session
+            ? session.personalProfile === "assistant"
+              || (session.personalProfile == null && args.personalProfile === "assistant")
+            : args.personalProfile === "assistant");
+        result = assistant ? withoutLaneOnlySkillCommands(commands) : commands;
         break;
       }
       case "create": {
@@ -238,8 +357,18 @@ export class PersonalChatScope {
           orchestrationParentSessionId: _orchestrationParentSessionId,
           kickoffText: _kickoffText,
           attachmentRoots: _attachmentRoots,
+          personalProfile: _personalProfile,
           ...forwarded
         } = args;
+        // What this chat is for. An embedded runtime (an SDK host) is always
+        // `embedded`, whatever the caller sent. Elsewhere only an explicit
+        // `assistant` — what ADE's own UI and `ade chat create --personal`
+        // send — gets the assistant surface; an absent value stays `embedded`,
+        // so an SDK client attached to this runtime keeps today's behavior.
+        const personalProfile: AgentChatPersonalProfile = this.options.runtimeProfile !== "embedded"
+          && args.personalProfile === "assistant"
+          ? "assistant"
+          : "embedded";
         const created = await service.createSession({
           ...forwarded,
           // Named explicitly rather than left to `...forwarded`: these are the
@@ -273,7 +402,10 @@ export class PersonalChatScope {
           provider,
           model,
           surface: "personal",
-          sessionProfile: "light",
+          personalProfile,
+          // The assistant runs as a full chat (tool gate, approval cards, the
+          // user's MCP servers); the SDK surface keeps the lean profile.
+          sessionProfile: personalProfile === "assistant" ? "workflow" : "light",
           permissionMode: typeof args.permissionMode === "string"
             ? args.permissionMode as AgentChatCreateArgs["permissionMode"]
             : "default",
@@ -284,9 +416,13 @@ export class PersonalChatScope {
         result = await service.getSessionSummary(created.id);
         break;
       }
-      case "getSummary":
-        result = await this.requirePersonalSession(service, readSessionId(args));
+      case "getSummary": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        this.claimForAssistant(service, sessionId, args);
+        result = await this.requirePersonalSession(service, sessionId);
         break;
+      }
       case "read": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
@@ -300,11 +436,13 @@ export class PersonalChatScope {
       }
       case "send":
         await this.requirePersonalSession(service, readSessionId(args));
-        result = await service.sendMessage(withUntrustedChatMetadata(args) as never);
+        this.claimForAssistant(service, readSessionId(args), args);
+        result = await service.sendMessage(withUntrustedChatMetadata(withoutAssistantClaim(args)) as never);
         break;
       case "steer":
         await this.requirePersonalSession(service, readSessionId(args));
-        result = await service.steer(withUntrustedChatMetadata(args) as never);
+        this.claimForAssistant(service, readSessionId(args), args);
+        result = await service.steer(withUntrustedChatMetadata(withoutAssistantClaim(args)) as never);
         break;
       case "cancelSteer":
         await this.requirePersonalSession(service, readSessionId(args));
@@ -535,10 +673,11 @@ export class PersonalChatScope {
         break;
       }
       case "saveTempAttachment":
-        result = await saveImageTempAttachment(
-          projectAttachmentsDir(runtime.projectRoot),
-          args,
-        );
+        // An image keeps the strict route (bytes sniffed against the declared
+        // type). Any other file is staged as bytes, like a project chat's.
+        result = declaresImage(args)
+          ? await saveImageTempAttachment(projectAttachmentsDir(runtime.projectRoot), args)
+          : await saveFileTempAttachment(projectAttachmentsDir(runtime.projectRoot), args);
         break;
       case "getImageDataUrl": {
         const attachmentsRoot = await fs.promises.realpath(
@@ -553,6 +692,42 @@ export class PersonalChatScope {
           dataUrl: `data:${image.mimeType};base64,${image.data.toString("base64")}`,
           mimeType: image.mimeType,
         };
+        break;
+      }
+      // The agent's own row reports. A personal chat's `ade chat activity`
+      // lands here (the CLI routes it by `--personal` / `ADE_CHAT_SCOPE`); the
+      // session service validates the value exactly as a project's does.
+      case "setSessionActivity": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        const value = args.value ?? null;
+        if (value !== null && typeof value !== "string") {
+          throw new Error("setSessionActivity requires a supported string `value` or null.");
+        }
+        if (!runtime.sessionService.setSessionActivity(sessionId, value)) {
+          throw new Error(`Personal chat session '${sessionId}' was not found.`);
+        }
+        result = { ok: true, sessionId, value };
+        break;
+      }
+      case "setSessionStatusNote": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        if (typeof args.note !== "string") throw new Error("setSessionStatusNote requires a string `note` field.");
+        if (!runtime.sessionService.setStatusNote(sessionId, args.note || null)) {
+          throw new Error(`Personal chat session '${sessionId}' was not found.`);
+        }
+        result = { ok: true, sessionId };
+        break;
+      }
+      case "requestSessionAttention": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        const message = requiredString(args.message, "message");
+        if (!runtime.sessionService.requestAttention(sessionId, message)) {
+          throw new Error(`Personal chat session '${sessionId}' was not found.`);
+        }
+        result = { ok: true, sessionId };
         break;
       }
     }
@@ -746,6 +921,23 @@ export class PersonalChatScope {
       return { ...summary, surface: "personal" };
     }
     return summary;
+  }
+
+  /**
+   * The legacy-row upgrade rule. ADE's own Chats surfaces (desktop, web, iOS,
+   * `ade chat --personal`) send `personalProfile: "assistant"` on the calls that
+   * use a chat; a row written before profiles existed (no profile at all) then
+   * becomes an `assistant` chat, persisted. Never on an embedded-profile runtime
+   * (an SDK host's), never for a row with an explicit profile, and never by
+   * omission: an SDK client attached to this runtime does not send the claim.
+   */
+  private claimForAssistant(
+    service: NonNullable<AdeRuntime["agentChatService"]>,
+    sessionId: string,
+    args: ObjectArgs,
+  ): void {
+    if (this.options.runtimeProfile === "embedded" || args.personalProfile !== "assistant") return;
+    service.adoptLegacyPersonalSessionAsAssistant?.(sessionId);
   }
 
   private requirePersonalTerminal(ptyId: string, sessionId?: string): string {

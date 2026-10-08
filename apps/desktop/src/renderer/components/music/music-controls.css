@@ -1,0 +1,140 @@
+/* Buttons, empty states, Connect and the availability gates. Imported by music.css, in order. */
+
+/* ---------- Buttons ---------- */
+
+.ade-music-connect {
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  padding: 0 20px;
+  color: var(--color-accent-fg, #fff);
+  font-size: 12.5px;
+  font-weight: 650;
+  box-shadow: 0 8px 22px -10px color-mix(in srgb, var(--color-accent) 85%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.18);
+  transition: filter 120ms, transform 120ms;
+}
+.ade-music-connect:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+.ade-music-connect:active:not(:disabled) { transform: scale(0.97); }
+.ade-music-connect:disabled { opacity: 0.6; }
+.ade-music-connect.is-compact { width: 100%; height: 34px; padding: 0 12px; font-size: 12px; }
+
+.ade-music-pill {
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 999px;
+  background: var(--music-soft);
+  padding: 0 18px;
+  color: var(--color-fg);
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: background-color 120ms, transform 120ms;
+}
+.ade-music-pill:hover { background: var(--kit-active); }
+.ade-music-pill:active { transform: scale(0.97); }
+.ade-music-view-head .ade-music-pill { height: 30px; padding: 0 13px; font-size: 12px; }
+
+.ade-music .kit-icon-btn { background: transparent; }
+.ade-music .kit-icon-btn:hover:not(:disabled) { background: var(--kit-hover); }
+.ade-music .kit-icon-btn[data-on="true"] { color: var(--color-accent); }
+.ade-music .kit-icon-btn:disabled { opacity: 0.35; }
+
+/* ---------- Empty, connect, gates ---------- */
+
+.ade-music-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 56px 24px 22px;
+  text-align: center;
+}
+.ade-music-empty-icon {
+  display: inline-flex;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 6px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 16px;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--color-fg) 9%, transparent), color-mix(in srgb, var(--color-fg) 3%, transparent));
+  color: var(--kit-text-2);
+}
+.ade-music-empty-title { color: var(--color-fg); font-size: 14px; font-weight: 620; }
+.ade-music-empty-hint { max-width: 420px; color: var(--kit-text-3); font-size: 12px; }
+
+.ade-music-connect-hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin: 0 auto;
+  max-width: 460px;
+  padding: 56px 24px 24px;
+  text-align: center;
+}
+.ade-music-connect-hero > :not(.ade-music-connect-glow) { position: relative; }
+.ade-music-connect-glow {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  width: 360px;
+  height: 220px;
+  margin-left: -180px;
+  border-radius: 999px;
+  background: radial-gradient(closest-side, rgb(250 45 72 / 0.32), rgb(250 45 72 / 0) 100%);
+  filter: blur(18px);
+  pointer-events: none;
+}
+[data-theme="light"] .ade-music-connect-glow { background: radial-gradient(closest-side, rgb(250 45 72 / 0.18), rgb(250 45 72 / 0) 100%); }
+.ade-music-connect-hero h1 { margin: 10px 0 0; font-size: 26px; font-weight: 750; letter-spacing: -0.03em; }
+.ade-music-connect-hero p { margin: 0 0 10px; color: var(--kit-text-2); font-size: 13px; line-height: 1.55; }
+.ade-music-connect-hero .ade-music-connect-note { margin-top: 6px; color: var(--kit-text-3); font-size: 11.5px; }
+.ade-music-connect-points {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 16px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--kit-text-3);
+  font-size: 11.5px;
+}
+.ade-music-connect-points > li { display: inline-flex; align-items: center; gap: 6px; }
+.ade-music-connect-glyph,
+.ade-music-gate-glyph {
+  display: inline-flex;
+  width: 76px;
+  height: 76px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  border-radius: 22px;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--color-accent) 70%, var(--color-bg)) 0%, color-mix(in srgb, var(--color-accent) 38%, var(--color-bg)) 100%);
+  color: var(--color-accent-fg, #fff);
+  box-shadow: 0 22px 40px -18px color-mix(in srgb, var(--color-accent) 70%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.22);
+}
+.ade-music-gate-glyph.is-muted { background: var(--kit-track); color: var(--kit-text-3); box-shadow: none; }
+
+.ade-music-gate {
+  display: flex;
+  max-width: 420px;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 36px 40px;
+  text-align: center;
+}
+.ade-music-gate h1 { margin: 6px 0 0; font-size: 19px; font-weight: 680; }
+.ade-music-gate p { margin: 0 0 6px; color: var(--kit-text-2); font-size: 12.5px; line-height: 1.5; }
+
+.ade-music-more { display: flex; justify-content: center; gap: 4px; padding: 14px; color: var(--kit-text-3); font-size: 11.5px; }

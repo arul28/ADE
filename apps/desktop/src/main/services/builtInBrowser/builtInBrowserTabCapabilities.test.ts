@@ -363,6 +363,47 @@ describe("built-in browser emulation", () => {
     expect(service.getStatus().tabs[0]?.emulation).toMatchObject({ presetId: "iphone-17" });
   });
 
+  it("maps agent mouse input onto the page at the scale the preset is drawn at", async () => {
+    const { service, tabId } = await serviceWithTab();
+    const pane = { x: 0, y: 0, width: 400, height: 800, visible: true };
+    await service.setBounds({ ...pane, scale: 0.5 });
+    await service.setEmulation({ tabId, preset: "iphone-17-pro" });
+    const mouse = () => fakes.sentCommands
+      .filter((call) => call.method === "Input.dispatchMouseEvent")
+      .map((call) => ({ type: call.params?.type, x: call.params?.x, y: call.params?.y }));
+
+    fakes.sentCommands.length = 0;
+    await service.hover({ tabId, x: 100, y: 200 });
+    await service.drag({ tabId, x: 100, y: 200, toX: 120, toY: 220, steps: 1 });
+    // Pane coordinates scaled once onto the half-size page; never twice.
+    expect(mouse()).toEqual([
+      { type: "mouseMoved", x: 50, y: 100 },
+      { type: "mouseMoved", x: 50, y: 100 },
+      { type: "mousePressed", x: 50, y: 100 },
+      { type: "mouseMoved", x: 60, y: 110 },
+      { type: "mouseReleased", x: 60, y: 110 },
+    ]);
+
+    // The pane resizes, but Chromium has not redrawn at the new scale yet:
+    // input still lands where the page is actually drawn.
+    const held: Array<() => void> = [];
+    fakes.setSendCommand(async (method, params) => {
+      fakes.sentCommands.push({ method, params });
+      if (method === "Emulation.setDeviceMetricsOverride") await new Promise<void>((resolve) => held.push(resolve));
+      return {};
+    });
+    await service.setBounds({ ...pane, scale: 0.8 });
+    fakes.sentCommands.length = 0;
+    await service.hover({ tabId, x: 100, y: 200 });
+    expect(mouse()).toEqual([{ type: "mouseMoved", x: 50, y: 100 }]);
+
+    held.forEach((release) => release());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fakes.sentCommands.length = 0;
+    await service.hover({ tabId, x: 100, y: 200 });
+    expect(mouse()).toEqual([{ type: "mouseMoved", x: 80, y: 160 }]);
+  });
+
   it("refuses DevTools while a device preset owns the debugger", async () => {
     const { service, tabId } = await serviceWithTab();
     await service.setEmulation({ tabId, preset: "ipad" });

@@ -3,13 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { sniffFaviconMime } from "../shared/imageMime";
 import {
   createSourceFaviconService,
   extractFaviconCandidates,
   isInertSvg,
   normalizeFaviconHost,
   pickIcoEntry,
-  sniffFaviconMime,
   SOURCE_FAVICON_LIMITS,
   type SourceFaviconFetch,
   type SourceFaviconFetchRequest,

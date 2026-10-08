@@ -56,7 +56,16 @@
     // once a day. Artificial Analysis terms restrict automated collection; the
     // owner accepted that risk for the router. `0` stops every fetch at once,
     // and the stored snapshots keep serving. Unset means on.
-    "MODEL_REGISTRY_REFRESH": "1"
+    "MODEL_REGISTRY_REFRESH": "1",
+    // Apple Music developer tokens (`GET /music/developer-token`, README,
+    // "Apple Music developer tokens"). The key itself is the secret
+    // MUSICKIT_PRIVATE_KEY (the .p8 file's PEM text), set out of band:
+    //   wrangler secret put MUSICKIT_PRIVATE_KEY < AuthKey_3NNQ5Y43RA.p8
+    // Without it the route answers 503 and the Music tab says it is unavailable;
+    // nothing else on this Worker depends on it.
+    "MUSICKIT_KEY_ID": "3NNQ5Y43RA",
+    "MUSICKIT_TEAM_ID": "VQ372F39G6",
+    "MUSICKIT_TOKEN_TTL_SECONDS": "2592000"
   },
   // REQUIRED, not optional. Cloudflare refuses a Worker's fetch to another
   // Worker of the same account through its workers.dev URL (error 1042): the
@@ -100,7 +109,12 @@
         "USAGE_RESEARCH_RETENTION_DAYS": "180",
         "USAGE_RESEARCH_STORAGE_CEILING_MB": "4096",
         // Model registry refresh switch, restated for the same reason.
-        "MODEL_REGISTRY_REFRESH": "1"
+        "MODEL_REGISTRY_REFRESH": "1",
+        // Apple Music token ids, restated for the same reason. The key is a
+        // secret here too: wrangler secret put MUSICKIT_PRIVATE_KEY --env production
+        "MUSICKIT_KEY_ID": "3NNQ5Y43RA",
+        "MUSICKIT_TEAM_ID": "VQ372F39G6",
+        "MUSICKIT_TOKEN_TTL_SECONDS": "2592000"
       },
       "services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }],
       "d1_databases": [

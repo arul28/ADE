@@ -20,6 +20,8 @@ import { formatCountdownShort } from "../usage/usageWindowFormat";
 import { formatCompact } from "../../lib/format";
 import type { WebMachineEntry } from "../../webclient/workspace/webWorkspaceModel";
 import { welcomeRelativeTime } from "./ProjectWelcomeWebRows";
+import { FitList } from "../home/HomeFitList";
+import type { HomeHeadline } from "../home/homeHeadline";
 import {
   RunningList,
   WelcomeCardHead,
@@ -27,9 +29,9 @@ import {
   openMachines,
   openUsageDetails,
   useRunningChats,
-  useUsageGroups,
   webMachineRows,
   type MachineRow,
+  type UsageGroup,
 } from "./ProjectWelcomeSidePanels";
 
 // ---------------------------------------------------------------------------
@@ -56,14 +58,15 @@ function greetingFor(hour: number): string {
 
 export function WelcomeHero({
   actions,
-  runningCount,
-  needsYouCount,
+  headline,
+  onHeadline,
   machinesOnline,
   machinesTotal,
 }: {
   actions: ReactNode;
-  runningCount: number;
-  needsYouCount: number;
+  /** The data-built line under the greeting; null while its sources load. */
+  headline: HomeHeadline | null;
+  onHeadline?: (target: NonNullable<HomeHeadline["target"]>) => void;
   machinesOnline: number;
   machinesTotal: number;
 }) {
@@ -71,13 +74,7 @@ export function WelcomeHero({
   const firstName = status.signedIn ? status.name?.trim().split(/\s+/)[0] || null : null;
   const now = new Date();
   const date = now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
-  const working = runningCount - needsYouCount;
-  const line =
-    needsYouCount > 0
-      ? `${needsYouCount} chat${needsYouCount === 1 ? " needs" : "s need"} you${working > 0 ? `, ${working} ${working === 1 ? "is" : "are"} working` : ""}.`
-      : working > 0
-        ? `${working} chat${working === 1 ? " is" : "s are"} working right now.`
-        : "Nothing running. Pick up where you left off.";
+  const target = headline?.target;
   return (
     <header className="ade-home-hero">
       <div className="ade-home-hero-text">
@@ -89,7 +86,13 @@ export function WelcomeHero({
           {greetingFor(now.getHours())}
           {firstName ? `, ${firstName}` : ""}.
         </h1>
-        <p className="ade-home-line" data-tone={needsYouCount > 0 ? "attention" : undefined}>{line}</p>
+        <p className="ade-home-line" data-tone={headline?.kind === "blocked" ? "attention" : undefined} data-kind={headline?.kind}>
+          {headline == null ? " " : target && onHeadline ? (
+            <button type="button" className="ade-home-line-link" onClick={() => onHeadline(target)}>
+              {headline.text}
+            </button>
+          ) : headline.text}
+        </p>
       </div>
       <div className="ade-home-actions">{actions}</div>
     </header>
@@ -131,14 +134,16 @@ export function HomeAction({
 
 // ── working now ────────────────────────────────────────────────────
 
-export function RunningCard({ onOpenActivity }: { onOpenActivity: () => void }) {
+export function RunningCard({ onOpenActivity, stacked = true }: { onOpenActivity: () => void; stacked?: boolean }) {
   const running = useRunningChats();
-  if (running.length === 0) return null;
+  // Stacked under Projects it takes no room while nothing runs; on its own it
+  // says so instead of leaving a hole in the grid.
+  if (running.length === 0 && stacked) return null;
   return (
     <section className="kit-card ade-home-card ade-home-running" aria-label="Working now">
-      <WelcomeCardHead icon={Pulse} title="Working now" count={running.length} action={{ label: "Activity", onClick: onOpenActivity }} />
-      <div className="kit-card-body ade-home-scroll" data-flush="true">
-        <RunningList items={running} />
+      <WelcomeCardHead icon={Pulse} title="Working now" count={running.length > 0 ? running.length : null} action={{ label: "Activity", onClick: onOpenActivity }} />
+      <div className="kit-card-body" data-flush="true">
+        <RunningList items={running} onMore={onOpenActivity} />
       </div>
     </section>
   );
@@ -348,8 +353,9 @@ const MACHINE_STATE_LABEL: Record<MachineRow["dot"], string> = {
   offline: "Offline",
 };
 
-export function LimitsMachinesCard({ machineRows, webMode }: { machineRows: MachineRow[]; webMode: boolean }) {
-  const usage = useUsageGroups();
+export type HomeUsageGroups = { groups: UsageGroup[]; bridgeMissing: boolean; loaded: boolean };
+
+export function LimitsMachinesCard({ machineRows, webMode, usage }: { machineRows: MachineRow[]; webMode: boolean; usage: HomeUsageGroups }) {
   const theme = useAppStore((s) => s.theme);
   const machines = machineRows.length > 0
     ? machineRows
@@ -390,7 +396,7 @@ export function LimitsMachinesCard({ machineRows, webMode }: { machineRows: Mach
             )}
           </div>
         )}
-        <div className="ade-home-machine-list" role="list" aria-label="Machines">
+        <FitList className="ade-home-machine-fit" listClassName="ade-home-machine-list" ariaLabel="Machines" more={{ onMore: () => openMachines(webMode) }}>
           {machines.map((row) => (
             <button
               key={row.key}
@@ -406,7 +412,7 @@ export function LimitsMachinesCard({ machineRows, webMode }: { machineRows: Mach
               <span className="ade-home-machine-state" data-state={row.dot}>{MACHINE_STATE_LABEL[row.dot]}</span>
             </button>
           ))}
-        </div>
+        </FitList>
       </div>
     </section>
   );
@@ -414,7 +420,7 @@ export function LimitsMachinesCard({ machineRows, webMode }: { machineRows: Mach
 
 // ── pull requests ──────────────────────────────────────────────────
 
-type PrBucket = "failing" | "changes" | "review" | "pending" | "ready" | "draft" | "open" | "merged" | "closed";
+export type PrBucket = "failing" | "changes" | "review" | "pending" | "ready" | "draft" | "open" | "merged" | "closed";
 
 const PR_BUCKET: Record<PrBucket, { order: number; label: string; tone?: "ok" | "warn" | "crit" }> = {
   failing: { order: 0, label: "Checks failing", tone: "crit" },
@@ -429,7 +435,7 @@ const PR_BUCKET: Record<PrBucket, { order: number; label: string; tone?: "ok" | 
 };
 
 /** One row: a GitHub PR, with ADE's check/review rollup when a lane tracks it. */
-type HomePr = {
+export type HomePr = {
   id: string;
   number: number;
   title: string;
@@ -445,7 +451,7 @@ type HomePr = {
   tracked: PrSummary | null;
 };
 
-function prBucket(pr: HomePr): PrBucket {
+export function prBucket(pr: HomePr): PrBucket {
   if (pr.state === "merged") return "merged";
   if (pr.state === "closed") return "closed";
   const tracked = pr.tracked;
@@ -467,10 +473,17 @@ const RECENT_PR_WINDOW_MS = 7 * 86_400_000;
  * state. Reloads on PR
  * events and when the window regains focus — never on a timer of its own.
  */
-function usePullRequests(projectRoot: string | null): { open: HomePr[]; recent: HomePr[]; loaded: boolean; viewer: string | null } {
+export type HomePullRequests = { open: HomePr[]; recent: HomePr[]; loaded: boolean; viewer: string | null };
+
+export function usePullRequests(projectRoot: string | null): HomePullRequests {
   const [data, setData] = useState<{ snapshot: GitHubPrSnapshot | null; tracked: PrSummary[] } | null>(null);
   const requestRef = useRef(0);
+  // What the last reload returned, as text: PR events arrive every few seconds
+  // during a sync, and a reload that changed nothing must not re-render the
+  // whole home page (every widget under it renders with it).
+  const lastSignatureRef = useRef<string | null>(null);
   useEffect(() => {
+    lastSignatureRef.current = null;
     const bridge = window.ade?.prs;
     if (!projectRoot || !bridge?.getGitHubSnapshot) {
       setData({ snapshot: null, tracked: [] });
@@ -485,7 +498,17 @@ function usePullRequests(projectRoot: string | null): { open: HomePr[]; recent: 
         getGitHubSnapshotCoalesced({ automaticRefresh: true, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot }).catch(() => null),
         listPrsCoalesced({ projectRoot }).catch(() => [] as PrSummary[]),
       ]);
-      if (requestRef.current === request) setData({ snapshot, tracked: tracked ?? [] });
+      if (requestRef.current !== request) return;
+      const signature = JSON.stringify([
+        snapshot?.viewerLogin ?? null,
+        snapshot?.repoPullRequests ?? null,
+        snapshot?.externalPullRequests ?? null,
+        // lastSyncedAt moves on every sync and the home page never shows it.
+        (tracked ?? []).map((pr) => ({ ...pr, lastSyncedAt: null })),
+      ]);
+      if (signature === lastSignatureRef.current) return;
+      lastSignatureRef.current = signature;
+      setData({ snapshot, tracked: tracked ?? [] });
     };
     const soon = () => {
       if (timer != null) window.clearTimeout(timer);
@@ -607,13 +630,15 @@ function PullRequestRow({ pr, onOpen }: { pr: HomePr; onOpen?: () => void }) {
 export function PullRequestsCard({
   projectName,
   projectRoot,
+  prs,
   onOpenPrs,
 }: {
   projectName: string | null;
   projectRoot: string | null;
+  prs: HomePullRequests;
   onOpenPrs?: () => void;
 }) {
-  const { open, recent, loaded } = usePullRequests(projectRoot);
+  const { open, recent, loaded } = prs;
   const counts = useMemo(() => {
     const result = { failing: 0, review: 0, ready: 0 };
     for (const pr of open) {
@@ -649,11 +674,24 @@ export function PullRequestsCard({
                 <span>{loaded ? "No pull requests this week." : "Reading pull requests…"}</span>
               </div>
             ) : (
-              <div className="ade-home-scroll" role="list">
+              <FitList
+                more={onOpenPrs ? { onMore: onOpenPrs } : {
+                  dialog: {
+                    title: "Pull requests",
+                    render: () => (
+                      <>
+                        {open.map((pr) => <PullRequestRow key={pr.id} pr={pr} />)}
+                        {recent.length > 0 ? <div className="kit-eyebrow ade-home-pr-divider">Merged this week</div> : null}
+                        {recent.map((pr) => <PullRequestRow key={pr.id} pr={pr} />)}
+                      </>
+                    ),
+                  },
+                }}
+              >
                 {open.map((pr) => <PullRequestRow key={pr.id} pr={pr} onOpen={onOpenPrs} />)}
-                {recent.length > 0 ? <div className="kit-eyebrow ade-home-pr-divider">Merged this week</div> : null}
+                {recent.length > 0 ? <div className="kit-eyebrow ade-home-pr-divider" data-fit-head>Merged this week</div> : null}
                 {recent.map((pr) => <PullRequestRow key={pr.id} pr={pr} onOpen={onOpenPrs} />)}
-              </div>
+              </FitList>
             )}
           </>
         )}

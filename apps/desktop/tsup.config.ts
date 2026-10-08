@@ -18,7 +18,8 @@ export default defineConfig({
     "main/loginImportReadWorker":
       "src/main/services/builtInBrowser/loginImport/loginImportReadWorkerEntry.ts",
     "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
-    "preload/preload": "src/preload/preload.ts"
+    "preload/preload": "src/preload/preload.ts",
+    "preload/browserMedia": "src/preload/browserMedia.ts"
   },
   format: ["cjs"],
   platform: "node",

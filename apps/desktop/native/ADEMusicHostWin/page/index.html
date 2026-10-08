@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Scripts only from this page and Apple (MusicKit loads its HLS player and
+     helpers from Apple's CDN at runtime, and hls.js runs workers from blob:). -->
+<meta http-equiv="Content-Security-Policy" content="script-src 'self' https://*.apple.com blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>ADE Music</title>
+<meta name="color-scheme" content="light">
+<!-- What Apple's "Allow access" screen shows for this app. -->
+<meta name="apple-music-app-name" content="ADE">
+<link rel="apple-music-app-icon" sizes="120x120" href="https://music.ade.local/ade-icon.png">
+<style>
+  html, body { margin: 0; background: #fff; color: #222; font: 13px system-ui, sans-serif; }
+  #status { padding: 12px; color: #666; }
+</style>
+</head>
+<body>
+  <!-- ADE's player page. It has no UI of its own: ADE's React UI drives it over
+       the host's stdio channel. The status line only shows when the window is
+       made visible for debugging. -->
+  <div id="status">Loading MusicKit</div>
+  <script src="player.js"></script>
+  <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" async></script>
+</body>
+</html>

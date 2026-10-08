@@ -60,6 +60,7 @@ docs/
     ├── issues/                            # open an issue where you are: Issues tool tab, issue sheet
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
     ├── mac-desktop/                       # per-lane macOS virtual display driven by `ade screen` / `ade mac-desktop`
+    ├── music/                             # Apple Music tab, player, MusicKit host, Now Playing source
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── personal-chats/                    # machine-owned projectless AI conversations
     ├── sdk/                               # embeddable @ade-dev/sdk + @ade-dev/chat-ui sidecar

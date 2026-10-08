@@ -120,6 +120,12 @@ import {
   isLoopbackHostname,
 } from "../../../shared/remoteLoopbackUrl";
 import type { Logger } from "../logging/logger";
+import {
+  BACKGROUND_AUDIO_WEB_CONTENTS,
+  MANAGED_BROWSER_WEB_CONTENTS,
+  announceBuiltInBrowserWebContents,
+  registerBrowserMediaPreload,
+} from "./builtInBrowserMediaHooks";
 import { isRecord } from "../shared/utils";
 import { pathKey } from "../shared/pathCompare";
 import {
@@ -249,7 +255,7 @@ const OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations")
 const INSPECT_BINDING_NAME = "__adeBuiltInBrowserInspectSelect";
 const DOWNLOAD_FILENAME_UNSAFE_RE = /[<>:"/\\|?*\x00-\x1F]/g;
 const RESERVED_BROWSER_DOWNLOAD_PATH_KEYS = new Set<string>();
-const MANAGED_BROWSER_WEB_CONTENTS = new WeakSet<WebContents>();
+
 type BrowserCollection = {
   key: string;
   projectRoot: string | null;
@@ -1415,6 +1421,24 @@ export function createBuiltInBrowserService(args: {
 
   return {
     flushStorage,
+    /**
+     * Which tab a `WebContents` is, and whose: `personal` is the Browser top
+     * tab's collection. Null for anything that is not a live browser tab.
+     */
+    locateWebContents(wc: WebContents): { tabId: string; collection: "personal" | "window" | "project"; projectRoot: string | null } | null {
+      if (!MANAGED_BROWSER_WEB_CONTENTS.has(wc)) return null;
+      const candidates: Array<{ service: WindowBrowserService; collection: BrowserCollection }> = [
+        ...windowServices.values(),
+        ...Array.from(fallbackServices, ([kind, service]) => ({ service, collection: collectionForProjectRoot(null, kind) })),
+      ];
+      for (const { service, collection } of candidates) {
+        const tabId = service.tabIdForWebContents(wc);
+        if (!tabId) continue;
+        const kind = collection.key === "personal" ? "personal" : collection.projectRoot ? "project" : "window";
+        return { tabId, collection: kind, projectRoot: collection.projectRoot };
+      }
+      return null;
+    },
     /** Stops the dev-server subscription; used when a test disposes a service. */
     stopDevServerWatch(): void {
       unsubscribeDevServers();
@@ -2870,7 +2894,11 @@ function createBuiltInBrowserWindowService(args: {
     actionEffectTrackers.set(tab, effectEntry);
     try {
       await prepareAgentActionTab(tab, input);
-      const result = await fn();
+      // A tab nobody is looking at has no compositor surface, and Chromium
+      // drops synthesized input to it: a click found its element, was sent,
+      // and nothing happened. Hold the tab parked (attached, off screen) for
+      // the whole action, as observe already does for its screenshot.
+      const result = await withCaptureSurface(tab, fn);
       const trace = finishActionTrace(tab, traceDraft, "ok", {
         sessionId: sessionEntry?.id ?? null,
         observationId: result.observation?.id ?? null,
@@ -3054,6 +3082,17 @@ function createBuiltInBrowserWindowService(args: {
     wc.once("destroyed", () => {
       MANAGED_BROWSER_WEB_CONTENTS.delete(wc);
     });
+    // Media that starts while the tab is heard (on screen, so unmuted) keeps
+    // playing when the person leaves the tab; a new document starts over.
+    wc.on("media-started-playing", () => {
+      if (!wc.isDestroyed() && !wc.isAudioMuted()) BACKGROUND_AUDIO_WEB_CONTENTS.add(wc);
+    });
+    wc.on("did-navigate", () => {
+      if (!BACKGROUND_AUDIO_WEB_CONTENTS.delete(wc)) return;
+      const tab = tabForWebContents(wc);
+      if (tab && !(visible && tab.id === activeTabId)) applyTabLifecycle(tab, false);
+    });
+    announceBuiltInBrowserWebContents(wc);
     configureBuiltInBrowserAuthentication({
       webContents: wc,
       resolveParentWindow: () => (win && !win.isDestroyed() ? win : null),
@@ -3825,7 +3864,7 @@ function createBuiltInBrowserWindowService(args: {
     const wc = tab.webContents;
     if (wc.isDestroyed()) return;
     try {
-      wc.setAudioMuted(!active);
+      wc.setAudioMuted(!active && !BACKGROUND_AUDIO_WEB_CONTENTS.has(wc));
     } catch {
       // ignore optional platform support differences
     }
@@ -3854,6 +3893,7 @@ function createBuiltInBrowserWindowService(args: {
   /** Session setup every tab's profile gets, shared or isolated. */
   const configureTabSession = (browserSession: Electron.Session): void => {
     configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
+    registerBrowserMediaPreload(browserSession, logger);
     args.permissionController.configureSession(browserSession);
     args.networkRouter.configureSession(browserSession);
   };
@@ -5171,14 +5211,14 @@ function createBuiltInBrowserWindowService(args: {
       const button = normalizeMouseButton(input.button);
       const clickCount = normalizeClickCount(input.clickCount);
       await withTemporaryDebugger(wc, async () => {
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mousePressed",
           x,
           y,
           button,
           clickCount,
         });
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseReleased",
           x,
           y,
@@ -5243,7 +5283,7 @@ function createBuiltInBrowserWindowService(args: {
         point: scrollX != null && scrollY != null ? { x: normalizeDimension(scrollX), y: normalizeDimension(scrollY) } : null,
       });
       await withTemporaryDebugger(tab.webContents, async () => {
-        await sendDebuggerCommand(tab.webContents, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseWheel",
           x: normalizeDimension(finiteNumber(input.x)),
           y: normalizeDimension(finiteNumber(input.y)),
@@ -5855,6 +5895,32 @@ function createBuiltInBrowserWindowService(args: {
     return normalizeDomSnapshot(isRecord(result) ? result.snapshot : null);
   };
 
+  /**
+   * Send a synthesized mouse event at a point in CSS viewport pixels.
+   *
+   * Chromium reads `Input.dispatchMouseEvent` coordinates in the space it
+   * draws the page in, and an emulation override with `scale` draws CSS pixels
+   * smaller: the agent viewport (1280×800) fitted into a narrower pane, or a
+   * device preset letterboxed into it. Element rects, handles and `--x/--y`
+   * are CSS pixels, so without this a click aimed at an element's centre
+   * landed at centre ÷ scale, on some other element or off the page, and was
+   * "delivered" without doing anything. Every synthesized mouse event goes
+   * through here.
+   */
+  const dispatchPageMouseEvent = async (
+    tab: BrowserTabState,
+    params: { type: string; x: number; y: number } & Record<string, unknown>,
+  ): Promise<void> => {
+    const scale = tab.emulation
+      ? tabCapabilities.emulationInputScale(tab)
+      : agentViewport.inputScale(tab);
+    await sendDebuggerCommand(
+      tab.webContents,
+      "Input.dispatchMouseEvent",
+      scale === 1 ? params : { ...params, x: params.x * scale, y: params.y * scale },
+    );
+  };
+
   const resolveClickTarget = async (
     tab: BrowserTabState,
     input: BuiltInBrowserClickArgs,
@@ -6202,6 +6268,7 @@ function createBuiltInBrowserWindowService(args: {
     releaseDebuggerHold,
     sendDebuggerCommand,
     withTemporaryDebugger,
+    dispatchPageMouseEvent,
     resolveClickTarget,
     focusElementTarget,
     observationDirectory,
@@ -6261,6 +6328,8 @@ function createBuiltInBrowserWindowService(args: {
      * destroyed and the last moment their ids are knowable.
      */
     listTabIds: (): string[] => tabs.map((tab) => tab.id),
+    /** This collection's tab id for a `WebContents`, or null. */
+    tabIdForWebContents: (wc: WebContents): string | null => tabForWebContents(wc)?.id ?? null,
     requestOriginAccess,
     claim,
     startHandoff,

@@ -967,8 +967,7 @@ chat pane mount, which happens either way.
   alias. Parallel mode passes the per-slot setter through the slot's own
   picker (`onParallelSlotCodexFastModeChange`).
 
-  Surfaces not yet migrated (`ModelSelector`, `CtoSettingsPage`,
-  `ProjectlessComposer`)
+  Surfaces not yet migrated (`ModelSelector`, `CtoSettingsPage`)
   still pass the deprecated `fastModeActive` / `onFastModeToggle` pair,
   which keeps rendering the old sibling chip. Migrating them is a prop
   rename with nothing else to unwind.

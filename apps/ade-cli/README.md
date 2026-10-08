@@ -565,6 +565,8 @@ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --a
 ade chat steer personal-session-id --personal --text "focus on the tradeoffs"   # add --dispatch inline|interrupt for atomic active-turn delivery
 ade chat interrupt personal-session-id --personal --keep-queue
 ade chat restore-queue personal-session-id recovery-id --personal
+ade chat note --personal --session personal-session-id "Drafting the email"   # also ask / activity <value|clear>; from inside a personal chat (ADE_CHAT_SCOPE=personal) the flags are implied
+ade chat create --personal --provider codex --model openai/gpt-5.5 --arg personalProfile=embedded   # SDK-host surface instead of the assistant default
 ade chat interrupt <session> --stop-children                 # also stop the chats it spawned
 ade chat restart <session> [--stop]                          # fresh provider process, conversation kept
 ade chat wait <a> <b> --async [--any]                        # durable: wake me when all (or any) are idle

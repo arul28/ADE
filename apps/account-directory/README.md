@@ -611,6 +611,33 @@ npx wrangler d1 execute DB --remote --env production --command \
   "SELECT id, generated_at, bytes, etag FROM model_registry_snapshots ORDER BY id DESC"
 ```
 
+## Apple Music developer tokens
+
+`GET /music/developer-token` returns `{ token, expiresAt }` (ms) to a signed-in
+ADE caller: the same Clerk bearer check as `GET /router/registry`, GET only, no
+CORS, `cache-control: no-store`. The token is an ES256 JWT with header
+`{ alg: "ES256", kid: MUSICKIT_KEY_ID }` and claims
+`{ iss: MUSICKIT_TEAM_ID, iat, exp }`, lifetime `MUSICKIT_TOKEN_TTL_SECONDS`
+(default 30 days, capped at Apple's six months). One token per isolate is
+reused until it has under seven days left (half its lifetime when that is
+shorter), because a desktop player keeps the token it started with; it is
+public by design (MusicKit JS sends it from the page), the key is not.
+
+The key is the secret `MUSICKIT_PRIVATE_KEY`, the `.p8` file's PEM text. Without
+it (or with a malformed one) the route answers 503 `music_unavailable` and the
+desktop Music tab says it is unavailable; nothing else depends on it, so the
+deploy preflight does not require it.
+
+```bash
+cd apps/account-directory
+wrangler secret put MUSICKIT_PRIVATE_KEY < "$USERPROFILE/.ade/secrets/musickit/AuthKey_3NNQ5Y43RA.p8"
+wrangler secret put MUSICKIT_PRIVATE_KEY --env production < "$USERPROFILE/.ade/secrets/musickit/AuthKey_3NNQ5Y43RA.p8"
+npm run deploy && npm run deploy:production
+```
+
+Logs: one `music_developer_token_request` line per call with status, reason and
+duration, never the token.
+
 ## Local checks
 
 ```sh
