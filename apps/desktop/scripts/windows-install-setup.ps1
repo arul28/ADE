@@ -265,7 +265,11 @@ try {
     # ran; it removes the request once the rewrite succeeds.
     if ($rollbackErrors.Count -gt 0) {
       try {
-        $repairDir = Join-Path $env:ADE_HOME "runtime"
+        # The relaunched app inherits the updater's environment, so it looks
+        # under a custom ADE_HOME when one was set; this script replaced that
+        # value with the channel default above.
+        $repairHome = if (-not [string]::IsNullOrWhiteSpace($saved.ADE_HOME.Value)) { $saved.ADE_HOME.Value } else { $env:ADE_HOME }
+        $repairDir = Join-Path $repairHome "runtime"
         New-Item -ItemType Directory -Path $repairDir -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $repairDir "cli-shim-repair-request") -Value $failureMessage -Encoding UTF8
       } catch {
