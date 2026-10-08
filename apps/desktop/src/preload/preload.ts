@@ -1119,6 +1119,7 @@ import type {
   SearchRebuildResult,
 } from "../shared/types";
 import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
+import { HOME_WIDGETS_IPC, type HomeClipboardState } from "../shared/types/homeWidgets";
 
 type ShortIpcCache<T> = {
   clear: () => void;
@@ -13363,6 +13364,29 @@ const adeBridge = {
     ) => cb(payload);
     ipcRenderer.on(IPC.updateEvent, listener);
     return () => ipcRenderer.removeListener(IPC.updateEvent, listener);
+  },
+  home: {
+    clipboard: {
+      getState: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardGetState),
+      configure: (args: { enabled?: boolean; persist?: boolean }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardConfigure, args),
+      clear: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardClear),
+      remove: (id: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardRemove, id),
+      copy: (id: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardCopy, id),
+      onChanged: (cb: (state: HomeClipboardState) => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, state: HomeClipboardState) => cb(state);
+        ipcRenderer.on(HOME_WIDGETS_IPC.clipboardChanged, listener);
+        return () => ipcRenderer.removeListener(HOME_WIDGETS_IPC.clipboardChanged, listener);
+      },
+    },
+    machine: {
+      health: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.machineHealth),
+      listeners: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.machineListeners),
+      kill: (pid: number) => ipcRenderer.invoke(HOME_WIDGETS_IPC.machineKill, pid),
+    },
+    weather: {
+      search: (query: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherSearch, query),
+      get: (args: { latitude: number; longitude: number }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherGet, args),
+    },
   },
   perf: {
     getConfig: () => ipcRenderer.invoke(IPC.perfGetConfig),

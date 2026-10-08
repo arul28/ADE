@@ -300,6 +300,16 @@ controller. Measure memory against the 150 MB target.
 
 ## 4. Widget home page
 
+**Status: built (2026-10-07), except saved layouts with a hotkey, the feed
+widget, Now Playing (a reserved slot) and Lock in mode.**
+- **Code:** `renderer/components/home/` (layout store, grid, gallery, card look,
+  headline, widgets) and `main/services/home/` (clipboard, machine health,
+  weather).
+- **Layout:** per computer, in localStorage under `ade.home.layout.v1`, like
+  Appearance. The default preset is the shipped page.
+- **Clipboard:** main watches the clipboard only while the widget is on the
+  page. Optional history file: `<userData>/home-widgets/`.
+
 - **Grid:** the current cards (Projects, Activity & usage, Limits & machines,
   Pull requests, Working now) become widgets in a grid. The current layout is
   the default preset, so nothing the user likes moves unless they move it.

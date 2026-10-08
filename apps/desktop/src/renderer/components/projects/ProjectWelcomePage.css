@@ -35,7 +35,17 @@
  * While chats run, "Working now" takes the bottom of the projects column.
  */
 
+/* 1% of the page's width, resolved once on the page. Each widget is a size
+   container of its own, which would otherwise turn a card's `cqw` into a
+   share of the widget; the cards were sized against the page. */
+@property --home-cqw {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 12px;
+}
+
 .ade-home {
+  --home-cqw: 1cqw;
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
@@ -110,27 +120,161 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 .ade-home-action[data-primary] > svg { color: inherit; }
 .ade-home-action[data-primary]:not(:disabled):hover { background: color-mix(in srgb, var(--color-accent) 88%, var(--color-fg) 12%); }
 
-/* Grid */
+/* Grid of widgets. Columns default to the shipped proportions (projects a
+   touch wider); rows split the page height and never drop below a usable
+   card. A layout taller than the page scrolls inside the grid, not the page.
+   Cells are placed by span (see `sizeSpan`), densely, in layout order. */
 .ade-home-grid {
+  /* Up to three rows share the page; a fourth scrolls. The page's own size
+     container (100cqh) is the window's height less the hero. */
+  --home-row-min: max(180px, calc((100cqh - 200px) / 3.1));
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 0.9fr);
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-areas:
-    "projects activity activity"
-    "projects limits prs";
+  grid-auto-rows: minmax(var(--home-row-min), 1fr);
+  grid-auto-flow: row dense;
   gap: var(--welcome-gap);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
-.ade-home-grid[data-single="true"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); grid-template-areas: "projects"; max-width: 680px; }
-/* Projects with "Working now" under it: the projects list takes what the
-   running chats leave, and running never grows past its rows. */
-.ade-home-col { grid-area: projects; display: flex; flex-direction: column; gap: var(--welcome-gap); min-height: 0; }
-.ade-home-projects { flex: 1 1 auto; }
-.ade-home-running { flex: 0 1 auto; max-height: 46%; }
-.ade-home-activity { grid-area: activity; }
-.ade-home-limits { grid-area: limits; }
-.ade-home-prs { grid-area: prs; }
+.ade-home-grid[data-single="true"] { grid-template-columns: minmax(0, 1fr); grid-auto-rows: minmax(0, 1fr); max-width: 680px; }
+
+/* A cell is one widget plus whatever is stacked under it: the host takes
+   what the stack leaves, and a stacked card never grows past its rows. */
+.ade-home-cell { position: relative; display: flex; flex-direction: column; gap: var(--welcome-gap); min-height: 0; min-width: 0; }
+.ade-home-widget { position: relative; flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.ade-home-widget[data-stacked] { flex: 0 1 auto; max-height: 46%; }
+.ade-home-widget:has(> .ade-home-widget-content:empty) { display: none; }
+.ade-home-widget-content { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.ade-home-widget-content > .kit-card { flex: 1 1 auto; }
+/* A widget with its own cell is a size container, so a card can drop its
+   least important part when a layout makes it short. (Not stacked ones:
+   those size to their content.) */
+.ade-home-widget:not([data-stacked]) > .ade-home-widget-content { container: widget / size; }
+@container widget (max-height: 250px) {
+  .ade-home-limits .ade-home-machine-list { display: none; }
+  .ade-home-activity .ade-home-facts { display: none; }
+  .ade-home-activity-side { justify-content: flex-start; }
+}
+
+/* Edit mode: tiles you can pick up. Content goes inert and dims a little;
+   each tile wears its controls in a frosted pill. */
+.ade-home-grid[data-editing="true"] .ade-home-cell { cursor: grab; }
+.ade-home-grid[data-editing="true"] .ade-home-widget-content > .kit-card > :not(.kit-card-head) { opacity: 0.55; }
+.ade-home-grid[data-editing="true"] .ade-home-widget-content > .kit-card {
+  outline: 1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline-offset: -1px;
+}
+.ade-home-cell[data-dragged] { opacity: 0.4; }
+.ade-home-cell[data-drop]::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--color-accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-accent) 60%, transparent);
+  z-index: 2;
+}
+.ade-home-cell[data-drop="before"]::before { left: calc(var(--welcome-gap) / -2 - 1.5px); }
+.ade-home-cell[data-drop="after"]::before { right: calc(var(--welcome-gap) / -2 - 1.5px); }
+
+.ade-home-edit-chrome {
+  /* Sits over the card's 40px head and replaces it while editing. */
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  left: 1px;
+  height: 39px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 0 7px 0 8px;
+  border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 90%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.ade-home-edit-chrome > * { pointer-events: auto; }
+.ade-home-edit-name {
+  margin-right: auto;
+  padding: 0 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.ade-home-edit-btn,
+.ade-home-edit-sizes {
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+}
+.ade-home-edit-btn {
+  flex: none;
+  width: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--kit-text-2);
+  cursor: pointer;
+}
+.ade-home-edit-btn:hover { color: var(--color-fg); border-color: color-mix(in srgb, var(--color-fg) 26%, transparent); }
+.ade-home-edit-btn[data-danger="true"]:hover { color: var(--color-error); border-color: color-mix(in srgb, var(--color-error) 45%, transparent); }
+.ade-home-edit-btn:focus-visible,
+.ade-home-edit-sizes > button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.ade-home-edit-handle { cursor: grab; }
+.ade-home-edit-handle { order: -2; }
+.ade-home-edit-name { order: -1; }
+.ade-home-edit-sizes { display: inline-flex; align-items: center; padding: 2px; gap: 1px; }
+.ade-home-edit-sizes > button {
+  height: 20px;
+  min-width: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.ade-home-edit-sizes > button:hover { color: var(--color-fg); background: var(--kit-hover); }
+.ade-home-edit-sizes > button[aria-checked="true"] { color: var(--color-accent-fg); background: var(--color-accent); }
+.ade-home-grid-empty {
+  grid-column: 1 / -1;
+  display: grid;
+  place-items: center;
+  border: 1px dashed color-mix(in srgb, var(--color-fg) 22%, transparent);
+  border-radius: var(--radius-lg);
+  color: var(--kit-text-2);
+  font-size: 13px;
+}
+
+/* The customize button: an icon-only action beside the others. */
+.ade-home-customize { width: 34px; padding: 0; justify-content: center; }
+.ade-home-line-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-home-line-link:hover { color: var(--color-fg); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+.ade-home-line-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 3px; }
 
 .ade-home-card { min-height: 0; }
 .ade-home-card > .kit-card-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
@@ -163,7 +307,7 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
   min-height: 0;
 }
 .ade-home-activity-figure { margin-top: 6px; }
-.ade-home-activity-figure .kit-stat { font-size: clamp(24px, 2.4cqw, 32px); }
+.ade-home-activity-figure .kit-stat { font-size: clamp(24px, calc(2.4 * var(--home-cqw)), 32px); }
 .ade-home-activity-unit { display: flex; align-items: center; gap: 8px; margin-top: 2px; font-size: 12px; color: var(--kit-text-3); }
 .ade-home-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; margin: 0; }
 .ade-home-facts > div { min-width: 0; }
@@ -175,7 +319,7 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
   min-width: 0;
   display: grid;
   grid-template-columns: repeat(14, minmax(0, 1fr));
-  gap: clamp(3px, 0.5cqw, 7px);
+  gap: clamp(3px, calc(0.5 * var(--home-cqw)), 7px);
 }
 .ade-home-bar-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
 .ade-home-bar-track { flex: 1 1 auto; min-height: 0; display: flex; align-items: flex-end; }
@@ -218,7 +362,7 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 }
 .ade-home-ring-item:hover { background: var(--kit-hover); }
 .ade-home-ring-item:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
-.ade-home-ring-wrap { position: relative; width: clamp(34px, 3.4cqw, 46px); aspect-ratio: 1; margin-bottom: 3px; }
+.ade-home-ring-wrap { position: relative; width: clamp(34px, calc(3.4 * var(--home-cqw)), 46px); aspect-ratio: 1; margin-bottom: 3px; }
 .ade-home-ring { width: 100%; height: 100%; display: block; }
 .ade-home-ring-track { fill: none; stroke: var(--kit-track); stroke-width: 4; stroke-linecap: round; }
 .ade-home-ring-fill { fill: none; stroke-width: 4; stroke-linecap: round; transition: stroke-dasharray 300ms ease; }
@@ -288,15 +432,9 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 
 .ade-home-pr-summary { flex-wrap: wrap; }
 
-/* Narrow: two columns, projects over the rest. */
-.ade-home[data-narrow="true"] .ade-home-grid {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-areas:
-    "projects projects"
-    "activity activity"
-    "limits prs";
-}
+/* Narrow: two columns (set by the grid), a lower row floor so the default
+   three rows still fit under the taller hero, and the hero stacks. */
+.ade-home[data-narrow="true"] .ade-home-grid { --home-row-min: 140px; grid-template-rows: minmax(var(--home-row-min), 1.2fr); }
 .ade-home[data-narrow="true"] .ade-home-hero { flex-direction: column; align-items: flex-start; gap: 10px; }
 
 /* Short windows: drop the eyebrow and tighten. */

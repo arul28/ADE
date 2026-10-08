@@ -65,6 +65,7 @@ import {
   selectWindowForProjectNavigation,
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
+import { registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
 import {
@@ -9282,6 +9283,9 @@ app.whenReady().then(async () => {
     }).getStatus().userId,
     analytics: productAnalyticsService,
   });
+
+  // The home page's clipboard, machine-health and weather widgets.
+  registerHomeWidgetsIpc({ logger: getMachineMainLogger() });
 
   ipcBridge = registerIpc({
     getCtx: () => {

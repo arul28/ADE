@@ -135,9 +135,13 @@ is not honoured everywhere).
   `container: welcome` and hides lower-priority rows under
   `@container welcome (max-height: 640px)`; `settingsModern.css` declares
   `modernpage` and stacks rows under 520px.
-- **Home grid.** A hero line, a row of actions, then a fixed grid of cards:
+- **Home grid.** A hero line, a row of actions, then a grid of widgets
+  (`components/home/`). The default preset is the shipped page: projects with
   what is working now, activity and usage, limits and machines, pull requests.
-  Each card's body flexes and clips; nothing scrolls.
+  Users reorder, resize (S, M, L, Wide), add and remove widgets in edit mode.
+  Up to three rows share the page; more rows scroll inside the grid, never
+  the page. Each widget is a size container, so a card hides its least
+  important part when a layout makes it short.
 - **Settings.** `ModernPage` spaces sections 44px apart. `ModernSection` is a
   title, a one-line hint and optional actions. `ModernRows` groups
   `ModernRow`s in one panel with hairline dividers. Choice cards (theme mode,
@@ -269,7 +273,7 @@ The usage headroom rule is `ADEUsagePressure` in `ADEUsageDesign.swift`
 |---|---|
 | Kit | `renderer/styles/surfaceKit.css` |
 | Scenes | `renderer/scene/*`, `renderer/styles/scene.css`, `public/scenes/` |
-| Home | `components/projects/ProjectWelcomePage.tsx`, `ProjectWelcomeHome.tsx`, `ProjectWelcomeSidePanels.tsx`, `ProjectWelcomePage.css` |
+| Home | `components/projects/ProjectWelcomePage.tsx`, `ProjectWelcomeHome.tsx`, `ProjectWelcomeSidePanels.tsx`, `ProjectWelcomePage.css`, `components/home/*` |
 | Settings | `components/settings/primitives/SettingsModern.tsx`, `settingsModern.css`, `AppearanceSection.tsx`, `ThemeGallery.tsx` |
 | Usage | `components/usage/usageDesign.ts`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `UsageWeekCompare.tsx`, `usageProviderNames.ts`, `usageSurfaces.css` |
 | Sign-in | `components/onboarding/GlassSignInCard.tsx`, `launchGateGlass.css` |

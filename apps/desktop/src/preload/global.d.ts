@@ -1,3 +1,4 @@
+import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
@@ -4491,6 +4492,8 @@ declare global {
       /** Quits and reopens ADE after the usual quit warnings. False when unavailable. */
       updateRelaunchApp: () => Promise<boolean>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
+      /** Home page widgets backed by the desktop main process. Absent on the web client. */
+      home?: HomeWidgetsBridge;
       perf: {
         getConfig: () => Promise<{
           active: boolean;
