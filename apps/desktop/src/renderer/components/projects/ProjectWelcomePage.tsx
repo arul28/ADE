@@ -1,6 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { BROWSER_TAB_ROUTE, browserTabAvailable } from "../browser/browserTab";
+import { AppleMusicBadge } from "../music/musicParts";
+import { musicActions } from "../music/musicStore";
+import { musicTabAvailable } from "../music/musicTab";
 import {
   AppWindow,
   ArrowCounterClockwise,
@@ -9,6 +12,7 @@ import {
   FolderSimple,
   GitMerge,
   Globe,
+  MusicNotes,
   Plus,
   SlidersHorizontal,
   SquaresFour,
@@ -664,6 +668,7 @@ export function ProjectWelcomePage() {
 
   const hasProjects = visibleProjectGroups.length > 0;
   const browserAvailable = !webMode && browserTabAvailable();
+  const musicAvailable = !webMode && musicTabAvailable();
   const showSide = !webMode || webMachines.length > 0;
 
   // The line under the greeting, from what this page already loaded. It waits
@@ -896,6 +901,15 @@ export function ProjectWelcomePage() {
       icon: SlidersHorizontal,
       onSelect: () => setEditingHome(true),
     });
+    if (musicAvailable) {
+      entries.push({
+        kind: "item",
+        key: "music",
+        label: "Open Apple Music",
+        icon: MusicNotes,
+        onSelect: musicActions.open,
+      });
+    }
     if (browserAvailable) {
       entries.push({
         kind: "item",
@@ -906,7 +920,7 @@ export function ProjectWelcomePage() {
       });
     }
     return entries;
-  }, [activeWebMachine, browserAvailable, navigate, openWebChats, setEditingHome, webMode]);
+  }, [activeWebMachine, browserAvailable, musicAvailable, navigate, openWebChats, setEditingHome, webMode]);
   const backgroundMenu = useBackgroundContextMenu(backgroundPageEntries);
 
   return (
@@ -1033,6 +1047,18 @@ export function ProjectWelcomePage() {
                   label="Browser"
                   onClick={() => navigate(BROWSER_TAB_ROUTE)}
                 />
+              ) : null}
+              {/* Apple Music, as a tab of its own; the tab is the player while it is open. */}
+              {musicAvailable ? (
+                <button
+                  type="button"
+                  className="ade-home-apple-music"
+                  aria-label="Open Apple Music"
+                  title="Open Apple Music"
+                  onClick={musicActions.open}
+                >
+                  <AppleMusicBadge height={30} />
+                </button>
               ) : null}
               {showSide ? (
                 <button

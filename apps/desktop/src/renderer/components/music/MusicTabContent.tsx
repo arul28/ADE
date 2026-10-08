@@ -21,7 +21,7 @@ export function MusicTabContent({ active }: { active: boolean }) {
     return (
       <>
         <MusicNotes size={15} weight="duotone" className="shrink-0 text-accent" />
-        <span className="min-w-0 flex-1 truncate text-center text-[12px]">Music</span>
+        <span className="min-w-0 flex-1 truncate text-center text-[12px]">Apple Music</span>
       </>
     );
   }

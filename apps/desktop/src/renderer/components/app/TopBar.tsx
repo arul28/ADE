@@ -59,9 +59,7 @@ import {
   PROJECT_SIDEBAR_TOGGLE_KEYBINDING,
   projectSidebarShortcutLabel,
 } from "./projectSidebar/projectSidebarTabs";
-import { MusicTopBarControl } from "../music/MusicTopBarControl";
 import { closeMusicTab, MusicTabContent } from "../music/MusicTabContent";
-import { MUSIC_TAB_KEYBINDING } from "../music/musicTab";
 import {
   activeMachineForGroup,
   groupProjectTabs,
@@ -822,7 +820,6 @@ export function TopBar({
     !hubRouteActive;
   const keybindings = useAppStore((s) => s.keybindings);
   const sidebarToggleShortcut = projectSidebarShortcutLabel(keybindings, PROJECT_SIDEBAR_TOGGLE_KEYBINDING);
-  const musicShortcut = projectSidebarShortcutLabel(keybindings, MUSIC_TAB_KEYBINDING);
 
   const projectRootForRemote = workspaceProjectOpen
     ? (project?.rootPath ?? null)
@@ -2343,7 +2340,7 @@ export function TopBar({
             {musicTabOpen ? (
               <ShellNavTab
                 active={musicRouteActive}
-                label="Music"
+                label="Apple Music"
                 className="relative max-w-[220px]"
                 onActivate={() => {
                   if (!musicRouteActive) onNavigate?.("/music");
@@ -2356,7 +2353,7 @@ export function TopBar({
                     onNavigate?.("/work", { replace: true });
                   }
                 }}
-                closeTitle="Close music (stops playback)"
+                closeTitle="Close Apple Music (stops playback)"
               >
                 <MusicTabContent active={musicRouteActive} />
               </ShellNavTab>
@@ -2533,8 +2530,6 @@ export function TopBar({
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />
 
-        {/* Music: the Music tab is the player; while it is closed, one button opens it. */}
-        {!webMode && !musicTabOpen ? <MusicTopBarControl shortcutLabel={musicShortcut ?? undefined} active={musicRouteActive} /> : null}
 
         <div className="hidden md:flex items-center gap-1.5">
           {renderDesktopIntegrationControls()}

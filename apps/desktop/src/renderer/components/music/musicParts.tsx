@@ -68,7 +68,7 @@ export function AppleMusicMark({ compact = false }: { compact?: boolean }) {
       <span className="ade-music-mark-glyph" aria-hidden>
         <MusicNotesSimple size={compact ? 10 : 13} weight="bold" />
       </span>
-      <span className="ade-music-mark-label">Music</span>
+      <span className="ade-music-mark-label">Apple Music</span>
     </span>
   );
 }

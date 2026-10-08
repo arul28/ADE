@@ -4,6 +4,7 @@ import { MusicNotes, Pause, Play, Repeat, RepeatOnce, Shuffle, SkipBack, SkipFor
 import type { HomeNowPlayingCommand, HomeNowPlayingState } from "../../../../shared/types/homeWidgets";
 import type { MusicRepeatMode } from "../../../../shared/types/music";
 import { MusicSlider, PlayerIconButton, useMusicReducedMotion } from "../../music/MusicPlayer";
+import { AppleMusicBadge } from "../../music/musicParts";
 import { formatMusicTime, musicActions, useMusicNowPlaying, useMusicPosition, useMusicState } from "../../music/musicStore";
 import { useWidgetPreview, useWidgetSpan, useWidgetVisible } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
@@ -63,6 +64,8 @@ type CardModel = {
   onToggle: () => void;
   onNext: () => void;
   onPrevious: () => void;
+  /** Open where the music lives (ADE's Music tab), when it is ADE's own player. */
+  onOpen?: () => void;
 };
 
 /** The scrubber and times for ADE's own player (real seeking). */
@@ -161,7 +164,19 @@ function PlayerCard({ model, seek, still }: { model: CardModel; seek: React.Reac
       animate={{ opacity: 1, filter: "blur(0px)" }}
       transition={{ duration: 0.3, ease: "easeInOut", delay: 0.1 }}
     >
-      <div className="ade-np2-cover">
+      <div
+        className={model.onOpen ? "ade-np2-cover is-link" : "ade-np2-cover"}
+        role={model.onOpen ? "button" : undefined}
+        tabIndex={model.onOpen ? 0 : undefined}
+        title={model.onOpen ? "Open Music" : undefined}
+        onClick={model.onOpen}
+        onKeyDown={(event) => {
+          if (model.onOpen && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            model.onOpen();
+          }
+        }}
+      >
         {model.artwork ? (
           <motion.img
             key={model.artwork}
@@ -225,6 +240,7 @@ function OwnPlayer({ still }: { still: boolean }) {
     onToggle: () => void musicActions.toggle(),
     onNext: () => void musicActions.next(),
     onPrevious: () => void musicActions.previous(),
+    onOpen: musicActions.open,
   };
   return <PlayerCard model={model} seek={<OwnSeek />} still={still} />;
 }
@@ -261,9 +277,7 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
         <span className="ade-np2-cover-empty is-small"><MusicNotes size={22} /></span>
         <span className="ade-np2-title">Nothing playing</span>
         <span className="ade-np2-sub">Play music in ADE's Music tab or any app and it shows here.</span>
-        {window.ade?.music ? (
-          <button type="button" className="ade-np2-open" onClick={musicActions.open}>Open Music</button>
-        ) : null}
+
       </div>
     );
   } else {
@@ -299,6 +313,11 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
       data-still={still ? "true" : undefined}
     >
       {artwork ? <img className="ade-np2-backdrop" src={artwork} alt="" aria-hidden /> : null}
+      {window.ade?.music ? (
+        <button type="button" className="ade-np2-am" aria-label="Open Apple Music" title="Open Apple Music" onClick={musicActions.open}>
+          <AppleMusicBadge height={24} />
+        </button>
+      ) : null}
       {body}
     </section>
   );
