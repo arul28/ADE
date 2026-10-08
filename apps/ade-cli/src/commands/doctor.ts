@@ -42,7 +42,7 @@ import {
 import type {
   SyncListenerPortDiagnosis,
 } from "../services/sync/sharedSyncListener";
-import { resolveRuntimeServiceName } from "../serviceManager/common";
+import { powerShellSingleQuotedLiteral, resolveRuntimeServiceName } from "../serviceManager/common";
 import { windowsPowerShellCommand } from "../serviceManager/windowsSupervisor";
 import {
   resolveWindowsServiceLauncherPath,
@@ -565,11 +565,6 @@ export type WindowsDesktopDoctorProbe = {
 
 /** `WTSGetActiveConsoleSessionId` reports this when no session is attached. */
 const WINDOWS_CONSOLE_SESSION_UNKNOWN = 0xffffffff;
-
-function powerShellSingleQuotedLiteral(value: string): string {
-  if (value.includes("\0")) throw new Error("PowerShell values cannot contain NUL bytes.");
-  return `'${value.replace(/'/g, "''")}'`;
-}
 
 /**
  * The doctor's Windows Desktop probes in ONE PowerShell invocation. A row per

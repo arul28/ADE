@@ -894,6 +894,12 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+/** A PowerShell single-quoted literal: a `'` doubles, nothing else is special. */
+export function powerShellSingleQuotedLiteral(value: string): string {
+  if (value.includes("\0")) throw new Error("PowerShell values cannot contain NUL bytes.");
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 export function cmdQuote(value: string): string {
   let quoted = "\"";
   let backslashes = 0;
