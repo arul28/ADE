@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { LaneListSnapshot, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   ADE_ACTION_ALLOWLIST,
+  buildSendNotificationAction,
   createAutomationAdeActionLookup,
   getAdeActionInputContract,
   getAdeActionDomainServices,
@@ -3219,5 +3220,30 @@ describe("getTurnFileDiffFromGit", () => {
     });
 
     expect(diff.modified.exists).toBe(false);
+  });
+});
+
+describe("attention.sendNotification links", () => {
+  // An automation's `{{run.chatSessionId}}` / `{{run.laneId}}` resolves to an
+  // empty id when the run never made that chat or lane. The phone still hears
+  // about the run; the link is left off and the reason is named.
+  it.each([
+    ["an unfilled run chat", "ade://session/", null, true],
+    ["an unfilled run lane", "ade://lane/", null, true],
+    ["a filled run chat", "ade://session/chat-1", "ade://session/chat-1", false],
+  ])("%s", async (_label, open, expectedLink, skipped) => {
+    const sent: Array<{ title: string; deepLink: string | null }> = [];
+    const notify = buildSendNotificationAction(
+      { accountAuthService: null, projectRoot: null, productAnalyticsService: null } as never,
+      (async (notification: { title: string; deepLink: string | null }) => {
+        sent.push(notification);
+        return { delivered: 1, devices: 1, failed: 0 };
+      }) as never,
+    );
+    const result = await notify({ title: "Run finished", open });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ title: "Run finished", deepLink: expectedLink });
+    expect(result).toMatchObject({ sent: true });
+    expect(Boolean((result as { linkSkipped?: string }).linkSkipped)).toBe(skipped);
   });
 });

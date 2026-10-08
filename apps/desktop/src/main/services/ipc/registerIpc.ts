@@ -903,7 +903,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { captureAutomationTestAnalytics, capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -6558,7 +6558,15 @@ export function registerIpc({
 
   ipcMain.handle(IPC.automationsRunTest, async (_event, arg: AutomationTestRequest): Promise<AutomationRun> => {
     const ctx = ensureAutomationContext();
-    return await ctx.automationService.runTest(arg);
+    const mode = arg?.mode === "live" ? "live" : "safe";
+    try {
+      const run = await ctx.automationService.runTest(arg);
+      captureAutomationTestAnalytics({ analytics: productAnalyticsService, surface: "desktop", mode, outcome: "completed" });
+      return run;
+    } catch (error) {
+      captureAutomationTestAnalytics({ analytics: productAnalyticsService, surface: "desktop", mode, outcome: "failed" });
+      throw error;
+    }
   });
 
   ipcMain.handle(IPC.automationsCleanUpTestRun, async (_event, arg: { runId: string }): Promise<AutomationTestCleanupResult> => {

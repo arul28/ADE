@@ -223,6 +223,7 @@ import {
   captureNotificationSentAnalytics,
   captureProviderCliUpdateAnalytics,
   captureWebhookUrlCreatedAnalytics,
+  captureAutomationTestAnalytics,
   providerAccountAnalyticsCapture,
 } from "../analytics/featureProductAnalytics";
 
@@ -379,7 +380,17 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
     toggleRule: ({ id, enabled }) => automationService.toggle({ id, enabled }),
     triggerManually: (args) => automationService.triggerManually(args),
     planTest: (args) => automationService.planTest(args),
-    runTest: (args) => automationService.runTest(args),
+    runTest: async (args) => {
+      const mode = args?.mode === "live" ? "live" : "safe";
+      try {
+        const run = await automationService.runTest(args);
+        captureAutomationTestAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", mode, outcome: "completed" });
+        return run;
+      } catch (error) {
+        captureAutomationTestAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", mode, outcome: "failed" });
+        throw error;
+      }
+    },
     cleanUpTestRun: (args) => automationService.cleanUpTestRun(args),
     getHistory: (args) => automationService.getHistory(args),
     listRuns: (args = {}) => automationService.listRuns(args),

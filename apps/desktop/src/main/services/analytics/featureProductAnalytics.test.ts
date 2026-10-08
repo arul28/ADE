@@ -8,6 +8,7 @@ import {
   captureSecretRequestedAnalytics,
   captureSessionImportAnalytics,
   captureWebhookUrlCreatedAnalytics,
+  captureAutomationTestAnalytics,
   providerAccountAnalyticsCapture,
   coarseProviderFamily,
   type FeatureAnalytics,
@@ -161,6 +162,8 @@ describe("captureSessionImportAnalytics", () => {
 describe("webhook, secret-card, provider CLI update, and custom notification analytics", () => {
   it.each([
     ["webhook URL", (analytics: FeatureAnalytics) => captureWebhookUrlCreatedAnalytics({ analytics, surface: "desktop" }), "automations", "webhook_url_created", "completed"],
+    ["safe automation test", (analytics: FeatureAnalytics) => captureAutomationTestAnalytics({ analytics, surface: "desktop", mode: "safe", outcome: "completed" }), "automations", "safe_test_started", "completed"],
+    ["live automation test failed to start", (analytics: FeatureAnalytics) => captureAutomationTestAnalytics({ analytics, surface: "api", mode: "live", outcome: "failed" }), "automations", "live_test_started", "failed"],
     ["secret saved", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "completed" }), "chat", "secret_requested", "completed"],
     ["secret kept", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "kept" }), "chat", "secret_requested", "kept"],
     ["secret declined", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "cancelled" }), "chat", "secret_requested", "cancelled"],
