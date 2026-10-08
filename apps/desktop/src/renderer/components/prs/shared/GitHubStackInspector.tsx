@@ -134,7 +134,14 @@ function stackSummary(
     return state === "open" || state === "draft";
   });
   const merged = entries.filter((entry) => layerState(entry) === "merged").length;
+  const closedWithoutMerging = entries.filter((entry) => layerState(entry) === "closed").length;
   if (open.length === 0) {
+    if (closedWithoutMerging > 0) {
+      const text = merged > 0
+        ? `${merged} merged, ${closedWithoutMerging} closed without merging.`
+        : `${closedWithoutMerging} closed without merging.`;
+      return { text, tone: null };
+    }
     return merged > 0
       ? { text: `All ${merged} merged.`, tone: "ok" }
       : { text: "No open pull requests left in this stack.", tone: null };
@@ -146,8 +153,14 @@ function stackSummary(
       return { text: `Blocked at #${entry.githubPrNumber}: ${blocker.reason}.${mergedNote}`, tone: blocker.tone };
     }
   }
-  const unknown = open.some((entry) => !prFor(entry));
-  if (unknown) return { text: `${open.length} open.${mergedNote}`, tone: null };
+  const ready = open.every((entry) => {
+    const pr = prFor(entry);
+    return pr?.checksStatus === "passing" && pr.mergeConflicts === false;
+  });
+  if (!ready) {
+    const count = `${open.length} open PR${open.length === 1 ? "" : "s"}`;
+    return { text: `No known blockers on the ${count}.${mergedNote}`, tone: null };
+  }
   return {
     text: open.length > 1 ? `All ${open.length} open PRs are ready to merge.${mergedNote}` : `Ready to merge.${mergedNote}`,
     tone: "ok",
@@ -373,6 +386,7 @@ export function GitHubStackInspector({
           model={{
             id: `github-stack-stale:${stack.number}`,
             tone: "warning",
+            icon: <GithubLogo size={13} />,
             title: "Showing the last saved stack.",
             detail: stack.lastError,
           }}
@@ -437,6 +451,7 @@ export function GitHubStackInspector({
               }}
               placeholder="PR numbers, e.g. 971, 972"
               aria-label="Pull request numbers to add"
+              disabled={busyAction != null}
             />
             <button
               type="button"
@@ -464,7 +479,7 @@ export function GitHubStackInspector({
       {error ? (
         <Banner
           layout="inline"
-          model={{ id: `github-stack-action:${stack.number}`, tone: "error", title: error, dismiss: { onDismiss: () => setError(null) } }}
+          model={{ id: `github-stack-action:${stack.number}`, tone: "error", icon: <GithubLogo size={13} />, title: error, dismiss: { onDismiss: () => setError(null) } }}
         />
       ) : null}
       </div>

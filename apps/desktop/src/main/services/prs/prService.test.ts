@@ -6269,6 +6269,7 @@ describe("prService.land", () => {
       layered?: boolean;
       restackedContentChanged?: boolean;
       mergedOnRefusal?: boolean;
+      lowerLayerMoved?: boolean;
       refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
     } = {},
   ) => {
@@ -6340,7 +6341,7 @@ describe("prService.land", () => {
         }
         if (args.method === "GET" && args.path.includes("/compare/")) {
           if (opts.layered && args.path.endsWith("/compare/s1...s2")) {
-            return { data: { total_commits: 1, commits: [{ commit: { message: "second layer" } }], files: [{ filename: "second.ts", status: "modified", sha: "content-a" }] } };
+            return { data: { status: opts.lowerLayerMoved ? "diverged" : "ahead", total_commits: 1, commits: [{ commit: { message: "second layer" } }], files: [{ filename: "second.ts", status: "modified", sha: "content-a" }] } };
           }
           if (opts.layered && args.path.endsWith("/compare/main...restacked-s2")) {
             return { data: { total_commits: 1, commits: [{ commit: { message: "second layer" } }], files: [{ filename: "second.ts", status: "modified", sha: opts.restackedContentChanged ? "content-b" : "content-a" }] } };
@@ -6448,6 +6449,25 @@ describe("prService.land", () => {
         body: expect.objectContaining({ merge_method: "squash", merge_action: "default", bypass_rules: true, sha: "restacked-s2" }),
       }),
     ]);
+  });
+
+  it.each([
+    { name: "a lower layer inside the confirmed head merges", lowerLayerMoved: false, puts: 2, success: true },
+    { name: "a lower layer pushed to after the confirm stops the run", lowerLayerMoved: true, puts: 0, success: false },
+  ])("binds a layered bypass to the confirmed top head: $name", async ({ lowerLayerMoved, puts, success }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([{ body: merged }, { body: merged }], { layered: true, lowerLayerMoved, headSha: "s2" });
+
+    const result = await landWithTimers(() => service.land({
+      prId: "pr-stacked",
+      method: "squash",
+      bypassRules: true,
+      expectedHeadSha: "s2",
+    }));
+
+    expect(result.success).toBe(success);
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(puts);
+    if (!success) expect(result.error).toMatch(/#90 has commits that #91/);
   });
 
   it("stops before the higher layer when its restacked changes differ", async () => {

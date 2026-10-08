@@ -134,8 +134,10 @@ in a result banner. The first click arms the button because one merge covers mor
 than this PR. **Bypass branch rules** is offered on every layer. GitHub honors a
 bypass only for the bottom open PR, so from higher up ADE merges the covered PRs
 one at a time from the bottom, each with the bypass, and waits for GitHub to
-restack the next one first. The stale-head guard still holds: the bottom layer
-merges against the head you confirmed, and each higher layer, whose SHA GitHub
+restack the next one first. The stale-head guard still holds: every lower
+layer's head must be inside the top head you confirmed (a stacked branch carries
+the layers below it), the bottom layer merges against that head, and each higher
+layer, whose SHA GitHub
 rewrites when it restacks, must still carry the same commits and leave the same
 files as when you confirmed, or the run stops. If a layer fails, the layers below
 it stay merged and the result names them. iOS offers the same override from its Merge anyway menu above the bottom PR only when the host advertises `prsStackLayeredBypass` in `hello_ok.features`; an older host keeps it on the bottom PR, where GitHub honors it. `GitHub` still opens the review and merge surface in the built-in

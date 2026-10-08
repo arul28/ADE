@@ -310,6 +310,19 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     }
   };
 
+  /** GitHub's comparison of `base...head`; null when GitHub cannot say. */
+  const compareRefs = async (repo: GitHubRepoRef, base: string, head: string): Promise<Record<string, unknown> | null> => {
+    try {
+      const { data } = await githubService.apiRequest<unknown>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/compare/${encodeRefPath(base)}...${encodeRefPath(head)}`,
+      });
+      return isRecord(data) ? data : null;
+    } catch {
+      return null;
+    }
+  };
+
   /**
    * A fingerprint of a layer's own changes: the commits in `head` that `base`
    * lacks, and the files they leave behind (name and content). `tooLarge` when
@@ -321,34 +334,57 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     base: string,
     head: string,
   ): Promise<string | "tooLarge" | null> => {
-    try {
-      const { data } = await githubService.apiRequest<unknown>({
-        method: "GET",
-        path: `/repos/${repo.owner}/${repo.name}/compare/${encodeRefPath(base)}...${encodeRefPath(head)}`,
-      });
-      if (!isRecord(data) || !Array.isArray(data.commits) || !Array.isArray(data.files)) return null;
-      const totalCommits = Number(data.total_commits);
-      if (Number.isFinite(totalCommits) && totalCommits > data.commits.length) return "tooLarge";
-      if (data.files.length >= COMPARE_FILE_CAP) return "tooLarge";
-      return JSON.stringify({
-        messages: data.commits.map((commit) => asString(isRecord(commit) && isRecord(commit.commit) ? commit.commit.message : "").trim()),
-        files: data.files
-          .map((file) => (isRecord(file) ? `${asString(file.filename)}:${asString(file.status)}:${asString(file.sha)}` : ""))
-          .sort(),
-      });
-    } catch {
-      return null;
-    }
+    const data = await compareRefs(repo, base, head);
+    if (!data || !Array.isArray(data.commits) || !Array.isArray(data.files)) return null;
+    const totalCommits = Number(data.total_commits);
+    if (Number.isFinite(totalCommits) && totalCommits > data.commits.length) return "tooLarge";
+    if (data.files.length >= COMPARE_FILE_CAP) return "tooLarge";
+    return JSON.stringify({
+      messages: data.commits.map((commit) => asString(isRecord(commit) && isRecord(commit.commit) ? commit.commit.message : "").trim()),
+      files: data.files
+        .map((file) => (isRecord(file) ? `${asString(file.filename)}:${asString(file.status)}:${asString(file.sha)}` : ""))
+        .sort(),
+    });
   };
 
+  /** True when `ancestor` is reachable from `head`; null when GitHub cannot say. */
+  const isAncestorOf = async (repo: GitHubRepoRef, ancestor: string, head: string): Promise<boolean | null> => {
+    const data = await compareRefs(repo, ancestor, head);
+    if (!data) return null;
+    const status = asString(data.status);
+    return status === "ahead" || status === "identical";
+  };
+
+  /**
+   * The guards for a layered run, bound to what the user confirmed. The user
+   * confirmed the top PR's head, and a stacked branch carries every layer
+   * below it, so each lower layer's current head must be inside that confirmed
+   * head: a commit pushed to a lower layer since would otherwise merge with
+   * the bypass. Without a confirmed head (an unguarded caller) the current
+   * heads are used, as a single merge without `expectedHeadSha` does.
+   */
   const snapshotLayerGuards = async (
     repo: GitHubRepoRef,
     entries: GitHubPrStackEntry[],
+    confirmedTopHead: string | null,
   ): Promise<LayerGuard[] | { stop: string }> => {
+    const top = entries.at(-1);
+    if (confirmedTopHead && top && top.headSha !== confirmedTopHead) {
+      return { stop: `#${top.githubPrNumber} changed after you confirmed the merge. Review it and merge again.` };
+    }
     const guards: LayerGuard[] = [];
     let previousHeadSha: string | null = null;
     for (const entry of entries) {
       if (!entry.headSha) return { stop: `ADE could not read #${entry.githubPrNumber}'s head from GitHub.` };
+      if (confirmedTopHead && entry !== top) {
+        const contained = await isAncestorOf(repo, entry.headSha, confirmedTopHead);
+        if (contained === null) return { stop: `ADE could not compare #${entry.githubPrNumber} with the head you confirmed.` };
+        if (!contained) {
+          return {
+            stop: `#${entry.githubPrNumber} has commits that #${top?.githubPrNumber}, the PR you confirmed, does not include. Restack the stack or review #${entry.githubPrNumber}, then merge again.`,
+          };
+        }
+      }
       let content: string | null = null;
       if (previousHeadSha) {
         const read = await layerContentBetween(repo, previousHeadSha, entry.headSha);
@@ -453,7 +489,7 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     const list = (numbers: number[]) => numbers.map((number) => `#${number}`).join(", ");
 
     const sequence = async (): Promise<LandResult> => {
-      const guards = await snapshotLayerGuards(repo, coveredEntries);
+      const guards = await snapshotLayerGuards(repo, coveredEntries, args.expectedHeadSha?.trim() || null);
       if (!Array.isArray(guards)) {
         finishOperation("failed", { ...meta, error: guards.stop });
         return { ...base, error: guards.stop, stackPrNumbers };

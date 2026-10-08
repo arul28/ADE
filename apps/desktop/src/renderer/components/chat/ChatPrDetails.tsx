@@ -193,7 +193,7 @@ export function PrDetails({
             <span className="font-mono text-[10px] text-fg/35">base {pr.stack.baseBranch}</span>
           </div>
           <p className="mt-1.5 text-[11px] leading-relaxed text-fg/50">
-            This pull request belongs to GitHub Stack #{pr.stack.number}. Review rebases and merge the stack on GitHub.
+            This pull request belongs to GitHub Stack #{pr.stack.number}. Use the Merge card in the PRs tab to merge it and every open PR below it.
           </p>
         </div>
       ) : mergeReady ? (
