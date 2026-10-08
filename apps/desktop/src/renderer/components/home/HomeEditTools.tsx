@@ -5,6 +5,7 @@ import { Z_LAYERS } from "../ui/zLayers";
 import { useAppStore } from "../../state/appStore";
 import { projectSidebarShortcutLabel } from "../app/projectSidebar/projectSidebarTabs";
 import { HOME_LAYOUT_KEYBINDING, useHomeLayoutStore } from "./homeLayout";
+import { useHomeGridMetrics } from "./HomeWidgetGrid";
 import "./homeWidgets.css";
 
 const HomeWidgetPicker = lazy(() => import("./HomeWidgetPicker"));
@@ -203,6 +204,16 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [lookOpen, setLookOpen] = useState(false);
   const [layoutsOpen, setLayoutsOpen] = useState(false);
+  // An empty cell on the page opens the gallery straight away, including the
+  // click that turned edit mode on (the request is made before this mounts).
+  const pickerRequest = useHomeGridMetrics((s) => s.pickerRequest);
+  const seenRequest = useRef(0);
+  useEffect(() => {
+    if (pickerRequest > seenRequest.current) {
+      seenRequest.current = pickerRequest;
+      setGalleryOpen(true);
+    }
+  }, [pickerRequest]);
   return (
     <div className="ade-home-edit-bar">
       <div className="ade-home-look-anchor">

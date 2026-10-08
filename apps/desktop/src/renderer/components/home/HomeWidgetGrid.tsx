@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { create } from "zustand";
-import { ArrowsInLineVertical, DotsSixVertical, EyeSlash, Stack, X } from "@phosphor-icons/react";
+import { ArrowsInLineVertical, DotsSixVertical, EyeSlash, Plus, Stack, X } from "@phosphor-icons/react";
 import {
   layoutCells,
   useHomeLayoutStore,
@@ -63,9 +63,17 @@ export function useWidgetSpan(item: HomeLayoutItem): { w: number; h: number } {
 }
 
 /** The live grid's size, for the gallery's "is there room?" check. */
-export const useHomeGridMetrics = create<{ metrics: GridMetrics | null; set: (metrics: GridMetrics) => void }>((set) => ({
+export const useHomeGridMetrics = create<{
+  metrics: GridMetrics | null;
+  set: (metrics: GridMetrics) => void;
+  /** Bumped when an empty cell asks for the gallery; edit mode's toolbar opens it (also on mount). */
+  pickerRequest: number;
+  requestPicker: () => void;
+}>((set) => ({
   metrics: null,
   set: (metrics) => set({ metrics }),
+  pickerRequest: 0,
+  requestPicker: () => set((state) => ({ pickerRequest: state.pickerRequest + 1 })),
 }));
 
 function useVisibility(ref: React.RefObject<HTMLElement | null>): boolean {
@@ -256,7 +264,12 @@ export function HomeWidgetGrid({
     return () => observer.disconnect();
   }, []);
 
-  const metrics = useMemo(() => (box ? gridMetrics(box.width, box.height) : null), [box]);
+  // A box with no size has not been laid out (a hidden pane, or no layout
+  // engine at all): pack for the shipped page's size until it has one.
+  const metrics = useMemo(() => {
+    if (!box) return null;
+    return box.width < 1 || box.height < 1 ? gridMetrics(1120, 640) : gridMetrics(box.width, box.height);
+  }, [box]);
   useEffect(() => {
     if (metrics) setMetrics(metrics);
   }, [metrics, setMetrics]);
@@ -421,6 +434,23 @@ export function HomeWidgetGrid({
             </div>
           );
         })}
+        {!single && packed ? packed.free.filter((run) => run.y < packed.rows).map((run, index) => (
+          <button
+            key={`free-${run.x}-${run.y}`}
+            type="button"
+            className="ade-home-free"
+            data-first={index === 0 || undefined}
+            data-editing={editing || undefined}
+            style={{ gridColumn: `${run.x + 1} / span ${run.w}`, gridRow: `${run.y + 1} / span 1` }}
+            onClick={() => {
+              setEditing(true);
+              useHomeGridMetrics.getState().requestPicker();
+            }}
+            aria-label="Add a widget here"
+          >
+            <span><Plus size={13} weight="bold" aria-hidden /> Add a widget</span>
+          </button>
+        )) : null}
         {editing && cells.length === 0 ? (
           <div className="ade-home-grid-empty">Your home page is empty. Add a widget to start.</div>
         ) : null}

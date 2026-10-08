@@ -138,18 +138,21 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 .ade-home-hidden-note {
   position: absolute;
   right: 0;
-  bottom: -22px;
+  /* In the page's bottom padding, under the grid's last row. */
+  bottom: -14px;
+  height: 13px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   max-width: 70%;
-  padding: 2px 8px;
+  padding: 0 8px;
+  line-height: 13px;
   border: 0;
   border-radius: 999px;
   background: color-mix(in srgb, var(--color-bg) 55%, transparent);
   color: var(--kit-text-3);
   font: inherit;
-  font-size: 11px;
+  font-size: 10.5px;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -914,3 +917,28 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 .ade-home-pr-row[data-settled] .ade-home-pr-title { color: var(--color-fg); }
 /* The stat strip: merged in GitHub purple. */
 .ade-home-pr-stats > div:last-child dd { color: var(--pr-merged); }
+
+/* Empty grid cells: quiet in use (only the first says "Add a widget" on
+   hover), plain dashed slots in edit mode. */
+.ade-home-free {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  border: 1px dashed transparent;
+  border-radius: var(--radius-lg);
+  background: none;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+.ade-home-free > span { display: inline-flex; align-items: center; gap: 6px; opacity: 0; transition: opacity 0.15s ease; }
+.ade-home-free:hover, .ade-home-free:focus-visible, .ade-home-free[data-editing] {
+  border-color: color-mix(in srgb, var(--color-fg) 22%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 22%, transparent);
+  color: var(--kit-text-2);
+}
+.ade-home-free:hover > span, .ade-home-free:focus-visible > span, .ade-home-free[data-editing] > span { opacity: 1; }
+.ade-home-free:not([data-editing]):not([data-first]) { pointer-events: none; }

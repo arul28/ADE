@@ -79,6 +79,8 @@ export type Placement = {
 export type PackResult = {
   placed: Placement[];
   hidden: HomeLayoutCell[];
+  /** Runs of empty cells, row by row (where a new widget would go). */
+  free: Array<{ x: number; y: number; w: number }>;
   /** Rows the grid shows (the fewest that hold what fits). */
   rows: number;
 };
@@ -127,7 +129,19 @@ function packInto(cells: readonly HomeLayoutCell[], columns: number, rows: numbe
     placed.push({ cell, x: spot.x, y: spot.y, w, h });
   }
   const used = placed.reduce((max, p) => Math.max(max, p.y + p.h), 0);
-  return { placed, hidden, rows: Math.max(1, used) };
+  const free: Array<{ x: number; y: number; w: number }> = [];
+  for (let y = 0; y < rows; y += 1) {
+    let start = -1;
+    for (let x = 0; x <= columns; x += 1) {
+      const open = x < columns && !taken[y]![x];
+      if (open && start < 0) start = x;
+      if (!open && start >= 0) {
+        free.push({ x: start, y, w: x - start });
+        start = -1;
+      }
+    }
+  }
+  return { placed, hidden, free, rows: Math.max(1, used) };
 }
 
 /**
@@ -143,7 +157,7 @@ export function packLayout(cells: readonly HomeLayoutCell[], metrics: Pick<GridM
     if (result.hidden.length === 0) return { ...result, rows };
     best = { ...result, rows };
   }
-  return best ?? { placed: [], hidden: [...cells], rows: 1 };
+  return best ?? { placed: [], hidden: [...cells], free: [], rows: 1 };
 }
 
 /** Clamps a span to a widget's limits and the grid. */

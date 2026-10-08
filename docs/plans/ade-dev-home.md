@@ -329,13 +329,31 @@ See [docs/features/music/README.md](../features/music/README.md).
 
 ## 4. Widget home page
 
-**Status: built (2026-10-07), except saved layouts with a hotkey, the feed
-widget, Now Playing (a reserved slot) and Lock in mode.**
-- **Code:** `renderer/components/home/` (layout store, grid, gallery, card look,
-  headline, widgets) and `main/services/home/` (clipboard, machine health,
-  weather).
-- **Layout:** per computer, in localStorage under `ade.home.layout.v1`, like
-  Appearance. The default preset is the shipped page.
+**Status: built (2026-10-08). Lock in mode is dropped (the user does not
+want it).**
+- **Code:** `renderer/components/home/` (layout store, packer, grid, picker,
+  card look, headline, widgets) and `main/services/home/` (clipboard, machine
+  health, weather, Now Playing, share images).
+- **Layout:** per computer, in localStorage, like Appearance. Named presets
+  live in `ade.home.layouts.v2`; a v1 layout (`ade.home.layout.v1`) loads as
+  "Default", and the active preset is still mirrored there for older builds.
+  `home.layout.next` (Mod+Shift+L, rebindable) cycles presets.
+- **No scrolling:** the grid takes columns from the page width and rows from
+  its height (`homeGridPack.ts`), packs widgets in order, grows a span that
+  would clip, and hides what does not fit behind an "N hidden" note. Widgets
+  declare a resize range in cells; edit mode resizes by dragging a corner.
+- **Picker:** categories, search, live previews (the real widget, inert),
+  sizes, and a fit check that offers to make room or replace.
+- **Feed:** Activity stream + the open project's PRs + ADE releases + Linear
+  assigned issues (when connected) + machine transitions, Today / Yesterday
+  / This week, "While you were away" after four hours, all or pinned
+  projects (the recents pin).
+- **Now Playing:** OS media session. Windows: `ade-now-playing.exe`
+  (`native/ADENowPlayingWin`, C++/WinRT, built by `build:now-playing:win`).
+  macOS: mediaremote-adapter via /usr/bin/perl when bundled, else Music.app
+  over AppleScript (not yet run on a Mac). Runs only while the widget is on
+  screen. The Music tab can take over with `getNowPlayingService().setOverride`.
+- **Shipped share:** a canvas-drawn PNG, copied or saved by main; no upload.
 - **Clipboard:** main watches the clipboard only while the widget is on the
   page. Optional history file: `<userData>/home-widgets/`.
 
@@ -360,5 +378,4 @@ widget, Now Playing (a reserved slot) and Lock in mode.**
   - Contribution heatmap and streak
   - Weekly "Shipped" card
   - A feed of merged PRs, finished chats, releases and Linear issues
-- **"Lock in" mode:** full-screen, mute non-urgent toasts, start music and
-  switch to the Locked in layout, all with one control.
+- ~~"Lock in" mode~~: dropped.
