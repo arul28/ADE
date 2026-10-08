@@ -38,7 +38,7 @@ import type {
   RunAdeActionConfig,
 } from "../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../shared/types";
-import { resolvePrBranchLane, type AutomationPrLaneService } from "./automationPrBranchLane";
+import { advanceLaneToPrHead, resolvePrBranchLane, type AutomationPrLaneService } from "./automationPrBranchLane";
 import { AUTOMATION_CHAT_SESSION_PREFIX } from "../../../shared/types/macDesktop";
 import { stripHostAuthoredMessageProvenance } from "../chat/spawnMissionOwnership";
 import type { Logger } from "../logging/logger";
@@ -3755,6 +3755,7 @@ export function createAutomationService({
       laneName: rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered.trim() : "",
       prService: prServiceRef,
       listActiveLanes: () => laneService.list({ includeArchived: false }),
+      advanceLaneToPrHead: (lane, prNumber) => advanceLaneToPrHead(laneService.getLaneWorktreePath(lane.id), lane.name, prNumber),
     });
     trigger.laneId = lane.id;
     trigger.laneName = lane.name;

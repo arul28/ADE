@@ -176,7 +176,9 @@ export function readAcpProviderLaunchStanding(args: {
   const cached = launchStandingCache.get(key);
   if (cached && Date.now() - cached.readAt < LAUNCH_STANDING_TTL_MS) return cached.pending;
   const run = args.run ?? spawnAsync;
-  const pending = run(executable.path, ["--version"], { timeout: VERSION_TIMEOUT_MS, cwd: args.cwd })
+  // The chat's environment: the brain adds the user's shell PATH there, and an
+  // npm CLI may need the Node it finds on it.
+  const pending = run(executable.path, ["--version"], { timeout: VERSION_TIMEOUT_MS, cwd: args.cwd, env })
     .then((version) => {
       const versionLine = version.status === 0 ? firstVersionLine(version.stdout, version.stderr) : null;
       if (!versionLine) return null;

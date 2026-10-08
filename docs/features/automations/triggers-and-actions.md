@@ -36,7 +36,7 @@ Canonical trigger names are `github.*`. The older `git.pr_*` names still work (s
 
 - `github.pr_opened` / `github.pr_updated` / `github.pr_closed` / `github.pr_merged` — PR lifecycle. Filters: `branch`, `targetBranch`, `draftState: "draft" | "ready" | "any"`, `labels`, `authors`, `repo`, `titleRegex`, `bodyRegex`, `keywords`. `authors` compares logins case-insensitively and ignores a leading `@` and a `[bot]` suffix, so `dependabot` matches the `dependabot[bot]` account. The builder offers Dependabot and Renovate as one-click authors, and the **Dependabot PR → its branch + agent** template pairs that filter with `laneMode: "pr-branch"`.
 - `github.pr_commented` — a comment was added to a PR. Filters: `authors`, `keywords`, `titleRegex`/`bodyRegex`, `repo`. `bodyRegex` reads the new comment's text, not the PR description, on every ingress path (poller, local webhook, relay). A comment webhook names no branch: the relay fills `branch`/`targetBranch` from the PR row ADE tracks, and a comment on an untracked PR stays branchless, so a branch-filtered comment rule skips it.
-- `github.pr_review_submitted` — a review was submitted on a PR.
+- `github.pr_review_submitted` — a review was submitted on a PR. `bodyRegex` reads the review's text, not the PR description.
 - `github.issue_opened` / `github.issue_edited` / `github.issue_closed` — issue lifecycle. Filters: `labels`, `authors`, `titleRegex`, `bodyRegex`, `keywords`, `repo`.
 - `github.issue_labeled` — label added to an issue. Filters: `labels` (the label(s) that must have been added), `repo`.
 - `github.issue_commented` — comment on an issue.

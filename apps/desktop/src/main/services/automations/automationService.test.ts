@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import initSqlJs from "sql.js";
 import type { Database, SqlJsStatic } from "sql.js";
 import {
@@ -14,7 +15,7 @@ import {
   triggerMatches,
 } from "./automationService";
 import { openKvDb } from "../state/kvDb";
-import { resolvePrBranchLane } from "./automationPrBranchLane";
+import { advanceLaneToPrHead, resolvePrBranchLane } from "./automationPrBranchLane";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
 import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
@@ -190,6 +191,61 @@ describe("triggerMatches", () => {
   });
 });
 
+describe("advanceLaneToPrHead", () => {
+  const git = (cwd: string, ...args: string[]) => {
+    return execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
+  };
+  /** An origin with PR #7's head at `refs/pull/7/head`, and a lane cloned at its first commit. */
+  const setup = () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pr-advance-"));
+    const origin = path.join(root, "origin.git");
+    const seed = path.join(root, "seed");
+    const lane = path.join(root, "lane");
+    git(root, "init", "-q", "--bare", origin);
+    git(root, "init", "-q", seed);
+    fs.writeFileSync(path.join(seed, "a.txt"), "one\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-q", "-m", "one");
+    git(seed, "push", "-q", origin, "HEAD:refs/heads/bump", "HEAD:refs/pull/7/head");
+    git(root, "clone", "-q", "--branch", "bump", origin, lane);
+    // The bot pushes again.
+    fs.writeFileSync(path.join(seed, "a.txt"), "two\n");
+    git(seed, "commit", "-q", "-am", "two");
+    git(seed, "push", "-q", origin, "HEAD:refs/heads/bump", "+HEAD:refs/pull/7/head");
+    return { root, seed, lane, prHead: git(seed, "rev-parse", "HEAD") };
+  };
+
+  it("moves a clean lane to the PR's latest commit", async () => {
+    const { root, lane, prHead } = setup();
+    try {
+      await advanceLaneToPrHead(lane, "Bump", 7);
+      expect(git(lane, "rev-parse", "HEAD")).toBe(prHead);
+      expect(fs.readFileSync(path.join(lane, "a.txt"), "utf8")).toBe("two\n");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["has uncommitted changes", (lane: string) => fs.writeFileSync(path.join(lane, "a.txt"), "local edit\n"), /uncommitted changes/],
+    ["has diverged from the PR", (lane: string) => {
+      fs.writeFileSync(path.join(lane, "b.txt"), "lane-only\n");
+      git(lane, "add", ".");
+      git(lane, "commit", "-q", "-m", "lane only");
+    }, /diverged from PR #7/],
+  ] as const)("leaves a lane that %s where it is and fails the run", async (_label, prepare, message) => {
+    const { root, lane } = setup();
+    try {
+      prepare(lane);
+      const before = git(lane, "rev-parse", "HEAD");
+      await expect(advanceLaneToPrHead(lane, "Bump", 7)).rejects.toThrow(message);
+      expect(git(lane, "rev-parse", "HEAD")).toBe(before);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("resolvePrBranchLane", () => {
   const pr = { number: 7, title: "Bump", repo: "acme/ade", url: "https://github.com/acme/ade/pull/7" };
   const lane = { id: "lane-7", name: "Bump", branchRef: "dependabot/npm/codex" };
@@ -201,6 +257,7 @@ describe("resolvePrBranchLane", () => {
 
   it("reuses the lane already linked to the PR, so a second event runs where the first did", async () => {
     const createLaneFromPrBranch = vi.fn();
+    const advanceLaneToPrHead = vi.fn(async () => {});
     const result = await resolvePrBranchLane({
       pr,
       triggerLane: null,
@@ -210,9 +267,12 @@ describe("resolvePrBranchLane", () => {
         createLaneFromPrBranch,
       } as never,
       listActiveLanes: async () => [lane],
+      advanceLaneToPrHead,
     });
     expect(result).toEqual(lane);
     expect(createLaneFromPrBranch).not.toHaveBeenCalled();
+    // A bot may have pushed since: the reused lane moves to the PR's head first.
+    expect(advanceLaneToPrHead).toHaveBeenCalledWith(lane, 7);
   });
 
   it("imports the PR's branch by its URL with the rule's lane name when no lane is linked", async () => {
@@ -223,6 +283,7 @@ describe("resolvePrBranchLane", () => {
       laneName: "Dependabot: Bump",
       prService: { preflightCreateLaneFromPrBranch: vi.fn(async () => preflight(null)), createLaneFromPrBranch } as never,
       listActiveLanes: async () => [],
+      advanceLaneToPrHead: async () => {},
     });
     expect(result).toEqual(lane);
     expect(createLaneFromPrBranch).toHaveBeenCalledWith({ prUrlOrNumber: pr.url, laneName: "Dependabot: Bump" });
@@ -241,6 +302,7 @@ describe("resolvePrBranchLane", () => {
         createLaneFromPrBranch: vi.fn(async () => { throw new Error("worktree already exists"); }),
       } as never,
       listActiveLanes: async () => [lane],
+      advanceLaneToPrHead: async () => {},
     });
     expect(result).toEqual(lane);
     expect(preflightCreateLaneFromPrBranch).toHaveBeenCalledTimes(2);
@@ -259,6 +321,7 @@ describe("resolvePrBranchLane", () => {
       laneName: "",
       prService: { preflightCreateLaneFromPrBranch: vi.fn(async () => preflight(block, false)), createLaneFromPrBranch } as never,
       listActiveLanes: async () => [lane, { id: "lane-main", name: "Primary", branchRef: "refs/heads/main" }],
+      advanceLaneToPrHead: async () => {},
     })).rejects.toThrow(message);
     expect(createLaneFromPrBranch).not.toHaveBeenCalled();
   });

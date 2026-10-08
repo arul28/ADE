@@ -443,8 +443,11 @@ function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, 
 
   if (githubEvent === "pull_request_review") {
     if (action && action !== "submitted") return null;
-    const pr = buildPrContext(readNested(payload, "pull_request"), repo);
-    if (!pr) return null;
+    const opened = buildPrContext(readNested(payload, "pull_request"), repo);
+    if (!opened) return null;
+    // `bodyRegex` reads the submitted review, not the PR description, the same
+    // as the GitHub poller's review events.
+    const pr = { ...opened, body: readString(readNested(payload, "review"), "body") ?? undefined };
     return {
       triggerType: "github.pr_review_submitted",
       summary: `GitHub PR #${pr.number} review submitted: ${pr.title}`,

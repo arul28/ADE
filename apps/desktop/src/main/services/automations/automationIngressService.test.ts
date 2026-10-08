@@ -238,6 +238,27 @@ describe("automationIngressService", () => {
             comment: { body: "@dependabot rebase", user: { login: "dependabot[bot]" } },
           },
         },
+        {
+          cursor: "seq:2",
+          eventId: "delivery-2r",
+          githubEvent: "pull_request_review",
+          summary: "GitHub pull_request_review · submitted · arul28/ADE · #42",
+          createdAt: receivedAt,
+          payload: {
+            action: "submitted",
+            repository: { full_name: "arul28/ADE" },
+            sender: { login: "octocat" },
+            review: { body: "Looks good, ship it", user: { login: "octocat" } },
+            pull_request: {
+              number: 42,
+              title: "Wire webhook relay",
+              body: "The PR description",
+              html_url: "https://github.com/arul28/ADE/pull/42",
+              head: { ref: "feature/webhooks" },
+              base: { ref: "main" },
+            },
+          },
+        },
       ],
       nextCursor: "seq:2",
     }), { headers: { "content-type": "application/json" } }));
@@ -277,7 +298,11 @@ describe("automationIngressService", () => {
     // also does would start one rule twice for one PR.
     const typedCalls = dispatchIngressTrigger.mock.calls.filter(([args]) => args.triggerType !== "github-webhook");
     if (typed) {
-      expect(typedCalls).toHaveLength(2);
+      expect(typedCalls).toHaveLength(3);
+      // A review rule's bodyRegex reads the review, not the PR description.
+      expect(typedCalls.find(([args]) => args.triggerType === "github.pr_review_submitted")?.[0]).toMatchObject({
+        pr: expect.objectContaining({ number: 42, body: "Looks good, ship it" }),
+      });
       // A comment rule's bodyRegex reads the new comment, not the PR description.
       expect(typedCalls.find(([args]) => args.triggerType === "github.pr_commented")?.[0]).toMatchObject({
         author: "dependabot[bot]",

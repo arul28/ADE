@@ -9,6 +9,7 @@
  * blocked import is an error the run reports.
  */
 
+import { runGit } from "../git/git";
 import type {
   AutomationTriggerPrContext,
   CreateLaneFromPrBranchArgs,
@@ -36,6 +37,11 @@ export async function resolvePrBranchLane(args: {
   laneName: string;
   prService: AutomationPrLaneService | null;
   listActiveLanes: () => Promise<PrBranchLane[]>;
+  /**
+   * Bring a reused lane up to the PR's current head (a bot may have pushed or
+   * rebased since the lane was opened). Throws when it cannot do so safely.
+   */
+  advanceLaneToPrHead: (lane: PrBranchLane, prNumber: number) => Promise<void>;
 }): Promise<PrBranchLane> {
   const { pr, prService } = args;
   if (!pr?.number) {
@@ -70,13 +76,38 @@ export async function resolvePrBranchLane(args: {
   };
 
   const linked = await findLinkedLane();
-  if (linked) return linked;
+  if (linked) {
+    await args.advanceLaneToPrHead(linked, pr.number);
+    return linked;
+  }
   try {
+    // A freshly imported lane is already at the PR's head.
     return (await prService.createLaneFromPrBranch(request)).lane;
   } catch (error) {
     // Another event for the same PR may have imported it a moment ago.
     const raced = await findLinkedLane().catch(() => null);
     if (raced) return raced;
     throw error;
+  }
+}
+
+/**
+ * Fast-forward a lane's worktree to the PR's current head. `pull/<n>/head`
+ * names the PR's head on GitHub for a same-repo or a fork PR alike. Never
+ * discards work: uncommitted changes or a lane that has diverged from the PR
+ * fail the run with a reason instead.
+ */
+export async function advanceLaneToPrHead(worktreePath: string, laneName: string, prNumber: number): Promise<void> {
+  const fetch = await runGit(["fetch", "--no-tags", "origin", `pull/${prNumber}/head`], { cwd: worktreePath, timeoutMs: 60_000 });
+  if (fetch.exitCode !== 0) {
+    throw new Error(`Could not fetch PR #${prNumber} into lane '${laneName}': ${fetch.stderr.trim() || "git fetch failed"}.`);
+  }
+  const status = await runGit(["status", "--porcelain"], { cwd: worktreePath, timeoutMs: 15_000 });
+  if (status.exitCode !== 0 || status.stdout.trim()) {
+    throw new Error(`Lane '${laneName}' has uncommitted changes, so ADE will not move it to PR #${prNumber}'s latest commit.`);
+  }
+  const merge = await runGit(["merge", "--ff-only", "FETCH_HEAD"], { cwd: worktreePath, timeoutMs: 30_000 });
+  if (merge.exitCode !== 0) {
+    throw new Error(`Lane '${laneName}' has diverged from PR #${prNumber}'s branch, so ADE will not run in it.`);
   }
 }

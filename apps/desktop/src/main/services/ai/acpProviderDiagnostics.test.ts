@@ -189,6 +189,8 @@ describe("acpProviderDiagnostics", () => {
 
     expect(second).toBe(first);
     expect(below).toHaveBeenCalledTimes(1);
+    // The check runs with the chat's environment (its PATH finds the CLI's Node).
+    expect(below).toHaveBeenCalledWith("/opt/launch-test/qwen", ["--version"], expect.objectContaining({ env: launchEnv }));
     const notice = acpProviderOutdatedNotice("qwen", first);
     expect(notice).toMatchObject({ type: "system_notice", status: "acp_provider_outdated", severity: "warning" });
     expect(notice && notice.type === "system_notice" && typeof notice.detail === "object" ? notice.detail.providerUpdate : null)
