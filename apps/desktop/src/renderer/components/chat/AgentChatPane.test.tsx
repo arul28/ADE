@@ -12217,6 +12217,18 @@ describe("resolveMergedSnapshotHistoryCursor", () => {
     })).toBe(0);
   });
 
+  it("keeps a partly paged-back position when a refresh overlaps the resident transcript", () => {
+    const existing = [event(1, "oldest"), event(2, "middle"), event(3, "latest")];
+    expect(resolveMergedSnapshotHistoryCursor({
+      snapshotCursor: 8_192,
+      currentCursor: 4_096,
+      snapshotEvents: existing.slice(1),
+      existingEvents: existing,
+      mergedEvents: existing,
+      detached: false,
+    })).toBe(4_096);
+  });
+
   it("re-arms paging for a detached or replaced transcript", () => {
     const existing = [event(1, "oldest"), event(2, "latest")];
     const replacement = [event(9, "replacement")];

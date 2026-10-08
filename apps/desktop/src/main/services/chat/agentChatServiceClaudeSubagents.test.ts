@@ -2645,6 +2645,179 @@ describe("createAgentChatService", () => {
       expect(close).toHaveBeenCalled();
     });
 
+    it("keeps a background agent started with is_backgrounded through the turn end", async () => {
+      // The SDK reports a background agent with is_backgrounded and no level
+      // signal yet. Its turn ending is not its end: turn-end cleanup drops
+      // finished foreground work, and this agent is still running.
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      let endQuery: (() => void) | null = null;
+      const queryEndPromise = new Promise<void>((resolve) => { endQuery = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-agent-turn", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-bg-agent",
+          subagent_type: "Explore",
+          task_type: "local_agent",
+          description: "Review the diff",
+          is_backgrounded: true,
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        await queryEndPromise;
+        throw new Error("idle query transport closed");
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-bg-agent-turn", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "review" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_started"
+        && (e.event as any).taskId === "task-bg-agent");
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.event.type === "done" && (e.event as any).status === "completed")).toBe(true);
+      }, { timeout: 3_000 });
+
+      expect(events.some((e) =>
+        e.event.type === "subagent_result" && (e.event as any).taskId === "task-bg-agent")).toBe(false);
+      expect(service.hasActiveWorkloads()).toBe(true);
+
+      endQuery!();
+      await vi.waitFor(() => expect(service.hasActiveWorkloads()).toBe(false));
+    });
+
+    it("a late SubagentStop for a subagent that already finished does not hold the runtime busy", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-late-stop", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "agent-finished",
+          subagent_type: "reviewer",
+          task_type: "local_agent",
+          description: "Check the change",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "agent-finished",
+          status: "completed",
+          summary: "No issues",
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-late-stop", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const start = opts?.hooks?.SubagentStart?.[0]?.hooks[0];
+      const stop = opts?.hooks?.SubagentStop?.[0]?.hooks[0];
+      expect(start).toBeDefined();
+      expect(stop).toBeDefined();
+      const signal = { signal: new AbortController().signal } as any;
+
+      await start!({ hook_event_name: "SubagentStart", agent_id: "agent-finished", agent_type: "reviewer" } as any, undefined as any, signal);
+      await service.sendMessage({ sessionId: session.id, text: "check" });
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.event.type === "done" && (e.event as any).status === "completed")).toBe(true);
+      }, { timeout: 3_000 });
+      expect(service.hasActiveWorkloads()).toBe(false);
+
+      // The side query's stop hook arrives after the subagent finished. It
+      // annotates what exists; it must not revive the finished subagent.
+      await stop!({ hook_event_name: "SubagentStop", agent_id: "agent-finished", agent_type: "reviewer", last_assistant_message: "late" } as any, undefined as any, signal);
+      expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("interrupt stops a background agent whose start hook arrived before its task frame", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-hook-bg", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // The SDK's background level names the agent before its task_started.
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{ task_id: "agent-bg-hook", task_type: "local_agent", description: "Explore the repo" }],
+        };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-hook-bg", setPermissionMode, stopTask,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const start = opts?.hooks?.SubagentStart?.[0]?.hooks[0];
+      expect(start).toBeDefined();
+      await start!(
+        { hook_event_name: "SubagentStart", agent_id: "agent-bg-hook", agent_type: "Explore" } as any,
+        undefined as any,
+        { signal: new AbortController().signal } as any,
+      );
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "explore" });
+      await vi.waitFor(() => { expect(service.hasActiveWorkloads()).toBe(true); });
+
+      await service.interrupt({ sessionId: session.id, mode: "stop_and_clear_and_background" });
+      expect(stopTask).toHaveBeenCalledWith("agent-bg-hook");
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
     it("preserves lifecycle markers on scheduled wakes and clears them on user sends", async () => {
       // Regression for the settle lifecycle: a scheduled wake is not user
       // activity (a declared settle must survive it and re-settle at rest),

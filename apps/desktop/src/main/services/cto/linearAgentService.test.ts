@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createLinearAgentService, type LinearAgentServiceDeps } from "./linearAgentService";
+import { createLinearAgentService, describeToolCall, type LinearAgentServiceDeps } from "./linearAgentService";
 
 function serviceHarness(sessions: Record<string, unknown>[] = []) {
   let hooks: Parameters<LinearAgentServiceDeps["automation"]["setLinearAgentHooks"]>[0] = null;
@@ -186,6 +186,66 @@ describe("Linear agent service", () => {
 
     harness.service.onChatEvent({ sessionId: "chat-1", event: { type: "done", status: "completed" } } as never);
     expect(harness.relay.postActivity).toHaveBeenLastCalledWith("agent-session-1", { type: "response", body: "Done." }, undefined);
+    harness.service.dispose();
+  });
+});
+
+describe("Linear agent step lines", () => {
+  const chatSession = [{
+    agentSessionId: "agent-session-1",
+    chatSessionId: "chat-1",
+    laneId: "lane-1",
+    runId: "run-1",
+    issueId: "issue-1",
+    issueIdentifier: "ADE-123",
+    creatorId: "creator-1",
+    startedAt: "2026-09-30T11:00:00.000Z",
+    pendingInput: null,
+  }];
+  const postedSteps = (harness: ReturnType<typeof serviceHarness>): unknown[] =>
+    (harness.relay.postActivity.mock.calls as unknown[][])
+      .map((call) => call[1])
+      .filter((body) => (body as { type?: string }).type === "action");
+
+  it.each([
+    ["a bare command after a cd into the lane", "cd /Users/admin/Projects/ADE/.ade/worktrees/lane-1 && npm test", "npm test"],
+    ["a Codex bash -lc wrapper", "/bin/zsh -lc 'cd /Users/admin/Projects/ADE/.ade/worktrees/lane-1 && git status'", "git status"],
+    ["a PowerShell -Command wrapper", "powershell.exe -NoProfile -Command \"cd 'C:\\Users\\me\\.ade\\worktrees\\lane-1'; npm test\"", "npm test"],
+    ["a cmd /c wrapper", "cmd /c \"cd C:\\Users\\me\\.ade\\worktrees\\lane-1 && npm test\"", "npm test"],
+  ])("shows the command itself for %s", (_label, command, parameter) => {
+    expect(describeToolCall("Bash", { command })).toEqual({ action: "Ran", parameter });
+  });
+
+  it("names a bare cd by the tool's own description, and an edit by its path inside the lane", () => {
+    expect(describeToolCall("Bash", { command: "cd /Users/admin/.ade/worktrees/lane-1", description: "Enter the lane" }))
+      .toEqual({ action: "Ran", parameter: "Enter the lane" });
+    expect(describeToolCall("Edit", { file_path: "C:\\Users\\me\\.ade\\worktrees\\lane-1\\src\\main.ts" }))
+      .toEqual({ action: "Edited", parameter: "src\\main.ts" });
+  });
+
+  it("posts each command the agent ran, and skips the user's own ! shell runs", () => {
+    const harness = serviceHarness(chatSession);
+    harness.service.onChatEvent({ sessionId: "chat-1", event: {
+      type: "command", command: "npm test", cwd: "/lane", output: "", itemId: "cmd-1", status: "running",
+    } } as never);
+    harness.service.onChatEvent({ sessionId: "chat-1", event: {
+      type: "command", command: "ls ~", cwd: "/lane", output: "", itemId: "cmd-2", status: "completed", source: "userShell",
+    } } as never);
+    expect(postedSteps(harness)).toEqual([{ type: "action", action: "Ran", parameter: "npm test" }]);
+    harness.service.dispose();
+  });
+
+  it("keeps every file of one Codex file-change item", () => {
+    const harness = serviceHarness(chatSession);
+    for (const path of ["/Users/admin/.ade/worktrees/lane-1/src/a.ts", "/Users/admin/.ade/worktrees/lane-1/src/b.ts"]) {
+      harness.service.onChatEvent({ sessionId: "chat-1", event: {
+        type: "file_change", path, diff: "", kind: "modify", itemId: "patch-1", status: "completed",
+      } } as never);
+    }
+    expect(postedSteps(harness)).toEqual([
+      { type: "action", action: "Edited", parameter: "src/a.ts" },
+      { type: "action", action: "Edited", parameter: "src/b.ts" },
+    ]);
     harness.service.dispose();
   });
 });

@@ -60,6 +60,14 @@ function machineRuntimeSocketPath(adeHome: string): string {
  */
 const RUNTIME_SOCKET_READY_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 10_000;
 
+/**
+ * A stdio RPC child is a cold start too (spawn + tsx transform + SQLite init),
+ * and its first `ade/initialize` answer waits on that same work. It takes the
+ * same platform ceiling as the socket readiness wait, so a loaded Windows runner
+ * is not a false failure; macOS and Linux keep 15s.
+ */
+const STDIO_RPC_RESPONSE_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 15_000;
+
 async function getFreeTcpPort(): Promise<number> {
   const server = net.createServer();
   await new Promise<void>((resolve, reject) => {
@@ -198,7 +206,7 @@ class StdioRpcProcess {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Timed out waiting for ${method}. stderr=${this.stderr.trim()}`));
-      }, 15_000);
+      }, STDIO_RPC_RESPONSE_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timer });
       this.child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
         if (!error) return;
