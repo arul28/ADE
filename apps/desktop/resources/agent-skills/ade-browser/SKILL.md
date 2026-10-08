@@ -36,7 +36,8 @@ drive a specific one, and `--active-tab` when same-tab navigation is
 intentional. `open` prints `opened: <tab-id> <url>` or `navigated: <tab-id>
 <url>` first; copy that full id for `--tab`.
 Claim an unowned tab with its id and lane. `--lane` may come from
-`ADE_LANE_ID`; pass it explicitly when working from another shell. Keep one
+`ADE_LANE_ID`; pass it explicitly when working from another shell. A personal
+(project-less) chat has no lane and claims with the tab id alone. Keep one
 tab per task and do not claim a tab another chat owns.
 
 ```bash

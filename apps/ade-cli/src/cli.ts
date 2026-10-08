@@ -2956,7 +2956,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   tab creation, explicit claims, sessions, and page actions read
   ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls. Panel reveal and plain
   tab switching are passive view operations; use
-  "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab.
+  "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab
+  (a personal chat needs no lane: "browser claim --tab <tab-id>").
   ADE-launched agents should list tabs first and use only a tab/session owned
   by their current chat. Plain "browser open <url>" navigates that chat's tab
   (the one it used last) and creates one only when none exists, without
@@ -14536,7 +14537,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     return buildBrowserHandoffPlan(args, tail);
   }
   if (sub === "claim") {
-    const claimArgs: JsonObject = readRequiredToolClaimArgs(args, "browser");
+    // A personal (project-less) chat has no lane: the runtime puts its claim
+    // in the personal tab collection, owned by its chat id.
+    const personal = readFlag(args, ["--personal"]) || process.env.ADE_CHAT_SCOPE?.trim() === "personal";
+    const claimArgs: JsonObject = personal ? { ...readToolClaimArgs(args) } : readRequiredToolClaimArgs(args, "browser");
     Object.assign(claimArgs, readBrowserTabTargetArgs(args));
     Object.assign(claimArgs, readBrowserLeaseArgs(args));
     return {
@@ -15621,6 +15625,13 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
         ),
       ],
     };
+  // No chat, project or personal, runs its own JavaScript in a page; say so
+  // instead of sending an action name the runtime does not have.
+  if (sub === "eval" || sub === "evaluate" || sub === "exec" || sub === "js") {
+    throw new CliUsageError(
+      "ADE's browser does not run page JavaScript for agents. Read the page with `ade browser snapshot --tab <tab-id> --text`, then act with click, fill, type, select-option, scroll, key or wait.",
+    );
+  }
   return {
     kind: "execute",
     label: `browser ${sub}`,
