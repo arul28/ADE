@@ -4500,7 +4500,10 @@ describe("adeRpcServer", () => {
     await initialize(agentHandler, { callerId: "agent-1", role: "agent" });
     const hidden = await callTool(agentHandler, "list_ade_actions", { domain: "attention" });
     expect(hidden?.isError).toBeUndefined();
-    expect(hidden.structuredContent).toMatchObject({ count: 0, actions: [] });
+    // An agent may send a push it wrote (`ade notify`); the account-wide
+    // stream, acknowledgements and preferences stay CTO-only.
+    expect(hidden.structuredContent.actions.map((entry: { name: string }) => entry.name))
+      .toEqual(["attention.sendNotification"]);
 
     const ctoHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(ctoHandler, { callerId: "cto-1", role: "cto" });
