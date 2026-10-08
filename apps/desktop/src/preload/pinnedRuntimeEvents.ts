@@ -127,6 +127,13 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
   // state. Each explicit binding therefore owns one lazy, shared PTY pump.
   const pinnedPtyEventStates = new Map<string, PinnedPtyEventState>();
 
+  // Main pushes every event of a binding a pump subscribed to as it happens;
+  // polling alone would leave an idle pinned view up to 5s behind.
+  const pinnedPumpPushHandlers = new Map<
+    string,
+    Set<(eventEpoch: unknown, event: RemoteRuntimeBufferedEvent) => void>
+  >();
+
   // Main keys one subscription per (sender, binding, category), so several pumps
   // on the same binding and category share one. Release it only when the last of
   // them goes away, otherwise one teardown would silence its siblings.
@@ -215,13 +222,49 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
   }: PinnedRuntimeEventPumpOptions): (() => void) => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let inFlight = false;
+    let repollWhenDone = false;
     let cursor = 0;
     let eventEpoch: string | null = null;
     let replaySuppressed = suppressReplay;
     let consecutiveFailures = 0;
+    // An event can arrive twice: pushed, then again in the next poll's batch.
+    const seenEventIds = new Set<number>();
     retainRuntimeEventSubscription(pin);
 
+    const deliver = (event: RemoteRuntimeBufferedEvent): void => {
+      if (!rememberPinnedRuntimeEventId(seenEventIds, event.id)) return;
+      dispatch(event);
+    };
+
+    const pollNow = (): void => {
+      if (cancelled) return;
+      if (inFlight) {
+        repollWhenDone = true;
+        return;
+      }
+      if (timer) clearTimeout(timer);
+      timer = null;
+      void poll();
+    };
+
+    // A push from a restarted runtime (new epoch) is not dispatched: the poll
+    // re-anchors the cursor first, exactly as it does for a polled epoch change.
+    const onPush = (pushEpoch: unknown, event: RemoteRuntimeBufferedEvent): void => {
+      if (cancelled) return;
+      const epoch = normalizePinnedRuntimeEventEpoch(pushEpoch);
+      if (epoch && eventEpoch && epoch !== eventEpoch) {
+        pollNow();
+        return;
+      }
+      deliver(event);
+    };
+    const pushHandlers = pinnedPumpPushHandlers.get(pin.key) ?? new Set();
+    pushHandlers.add(onPush);
+    pinnedPumpPushHandlers.set(pin.key, pushHandlers);
+
     const poll = async (): Promise<void> => {
+      inFlight = true;
       let delay = REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
       try {
         const request = {
@@ -249,13 +292,14 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
           // without replaying the pre-restart transcript.
           cursor = 0;
           replaySuppressed = suppressReplay;
+          seenEventIds.clear();
           delay = 0;
         } else {
           cursor = Number.isFinite(batch.nextCursor)
             ? Math.max(0, Math.floor(batch.nextCursor))
             : cursor;
           if (request.replay === false) replaySuppressed = false;
-          for (const event of batch.events ?? []) dispatch(event);
+          for (const event of batch.events ?? []) deliver(event);
           delay = pinnedRuntimeBatchDelayMs(batch);
         }
         if (epochChanged || batch.gap === true || recoveredFromFailure) onResync?.();
@@ -266,6 +310,11 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
         consecutiveFailures = Math.min(consecutiveFailures + 1, 5);
         delay = pinnedRuntimeFailureDelayMs(consecutiveFailures);
       }
+      inFlight = false;
+      if (repollWhenDone) {
+        repollWhenDone = false;
+        delay = 0;
+      }
       if (!cancelled) timer = setTimeout(() => void poll(), delay);
     };
 
@@ -275,6 +324,10 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
       cancelled = true;
       if (timer) clearTimeout(timer);
       timer = null;
+      pushHandlers.delete(onPush);
+      if (pushHandlers.size === 0 && pinnedPumpPushHandlers.get(pin.key) === pushHandlers) {
+        pinnedPumpPushHandlers.delete(pin.key);
+      }
       // This uncategorized release can also tear down the active pump's shared
       // main-side subscription after a tab switch. Its next poll re-subscribes
       // from the active cursor, so only push latency (750ms–5s) is lost; buffered
@@ -574,8 +627,26 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     dispatchPinnedPtyRuntimeEvent(state, event);
   };
 
+  /** Push delivery for every per-listener pinned pump on the binding. */
+  const handlePinnedRuntimeEventNotification = (
+    bindingKey: string,
+    eventEpoch: unknown,
+    event: RemoteRuntimeBufferedEvent,
+  ): void => {
+    const handlers = pinnedPumpPushHandlers.get(bindingKey);
+    if (!handlers?.size) return;
+    for (const handler of [...handlers]) {
+      try {
+        handler(eventEpoch, event);
+      } catch (error) {
+        console.error("preload pinned runtime event listener failed", error);
+      }
+    }
+  };
+
   return {
     startPinnedRuntimeEventPump,
+    handlePinnedRuntimeEventNotification,
     collectPinnedPtyDataSubscriptionIds,
     setPinnedPtyDataSubscriptions,
     subscribePinnedPtyDataEvents,

@@ -113,8 +113,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   shared PTY pump per pinned binding (polling plus `ade.runtime.event` push
   delivery, with its own cursor, epoch generation, dedupe ring, in-flight
   epoch-rewind guard, and failure backoff), the per-listener generic pump used by
-  pinned chat/project subscriptions, and the helpers the active pump in
-  `preload.ts` shares. Main-side subscriptions are reference-counted per
+  pinned chat/project subscriptions (also fed by polling plus push: a pushed
+  event is delivered at once, a repeat by id is dropped, and a push carrying a
+  new epoch triggers an immediate re-poll instead of a dispatch), and the
+  helpers the active pump in `preload.ts` shares. Main-side subscriptions are reference-counted per
   `(binding, category)` so sibling pumps share one and only the last teardown
   releases it; the active pump never retains a reference and therefore never
   releases a subscription a pinned pump is still reading.
