@@ -117,6 +117,37 @@ function commandScript(command: "play" | "pause" | "next" | "previous"): string 
 })()`;
 }
 
+const text = (value: unknown, max = 1024): string => (typeof value === "string" ? value.slice(0, max) : "");
+const finite = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+const list = (value: unknown, max: number): unknown[] => (Array.isArray(value) ? value.slice(0, max) : []);
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+
+/**
+ * The read script runs in the page's own world, so a hostile page can replace
+ * anything it touches (`String`, `Array.from`, the media session) and hand
+ * back any shape. Nothing from it is used before it is rebuilt here from
+ * plain strings, finite numbers and booleans.
+ */
+function coercePageRead(value: unknown): PageRead | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const media = raw.media && typeof raw.media === "object" ? record(raw.media) : null;
+  return {
+    title: text(raw.title),
+    artist: text(raw.artist),
+    album: text(raw.album),
+    artwork: list(raw.artwork, 12).map((item) => ({ src: text(record(item).src, 4096), sizes: text(record(item).sizes, 256) })),
+    playbackState: text(raw.playbackState, 32),
+    actions: list(raw.actions, 32).filter((action): action is string => typeof action === "string").map((action) => action.slice(0, 64)),
+    icons: list(raw.icons, 16).map((item) => ({ href: text(record(item).href, 4096), sizes: text(record(item).sizes, 256), apple: record(item).apple === true })),
+    docTitle: text(raw.docTitle),
+    media: media
+      ? { paused: media.paused !== false, muted: media.muted === true, currentTime: Math.max(0, finite(media.currentTime)), duration: finite(media.duration) }
+      : null,
+  };
+}
+
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 5_000;
 const POLL_MS = 1_000;
@@ -256,7 +287,7 @@ export function createBrowserMediaSessions(args: {
 
   const readFrame = async (frame: WebFrameMain): Promise<PageRead | null> => {
     try {
-      return ((await frame.executeJavaScript(READ_SCRIPT, false)) as PageRead | null) ?? null;
+      return coercePageRead(await frame.executeJavaScript(READ_SCRIPT, false));
     } catch {
       // A frame that navigated or crashed mid-read.
       return null;

@@ -1,9 +1,8 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
 
 import type { HomeNowPlayingCommand, HomeNowPlayingSession, HomeNowPlayingState } from "../../../shared/types/homeWidgets";
 import type { BrowserMediaSessions } from "./browserMediaSessions";
+import { resolveNowPlayingHelperBinary } from "../native/nativeHelperPaths";
 import { appSourceName } from "./nowPlayingSources";
 
 /**
@@ -17,10 +16,10 @@ import { appSourceName } from "./nowPlayingSources";
  *      helper that streams every Global System Media Transport Controls
  *      session as NDJSON (with each app's icon) and takes commands on stdin.
  *      Spawned async; nothing here ever blocks the main thread.
- *    - macOS (unverified on this build machine): `mediaremote-adapter`
- *      (github.com/ungive/mediaremote-adapter) through /usr/bin/perl when its
- *      script and framework are bundled in resources/native/mediaremote-adapter;
- *      otherwise Music.app over AppleScript, polled every 2 s.
+ *    - macOS (unverified): Music.app over AppleScript, polled every 2 s. The
+ *      script asks Music anything only while Music is already running
+ *      (`application "Music" is running` sends no Apple Event), so a closed
+ *      Music never launches and never raises the Automation prompt.
  *    ADE's own sessions are skipped there: its browser tabs and its Apple
  *    Music player already come from 1 and 2.
  *
@@ -40,19 +39,12 @@ export type NowPlayingOverride = {
 
 type Logger = { warn: (event: string, data?: Record<string, unknown>) => void };
 
-type OsSourceKind = "windows-smtc" | "macos-mediaremote" | "macos-music";
+type OsSourceKind = "windows-smtc" | "macos-music";
 
 /** What the OS source reports: every session it can see. */
 type OsSnapshot = { available: boolean; error?: string; sessions: HomeNowPlayingSession[] };
 
 type OsSource = { stop: () => void; command: (command: HomeNowPlayingCommand, rawId: string | null) => void };
-
-function resolveHelper(input: { isPackaged: boolean; resourcesPath: string; appPath: string }, name: string): string | null {
-  const candidates = input.isPackaged
-    ? [path.join(input.resourcesPath, "native", name)]
-    : [path.join(input.appPath, "resources", "native", name), path.join(input.appPath, "apps", "desktop", "resources", "native", name)];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
-}
 
 type RawSession = {
   id?: string;
@@ -117,17 +109,34 @@ function onLines(stream: NodeJS.ReadableStream, handle: (line: string) => void) 
   });
 }
 
-function startWindows(helper: string, isOwn: (appId: string) => boolean, emit: (snapshot: OsSnapshot) => void, logger?: Logger): OsSource {
+/**
+ * `onGone` runs once when the helper dies on its own (not after `stop`): its
+ * sessions are cleared and the caller drops this source so the next subscribe
+ * starts a fresh helper.
+ */
+function startWindows(
+  helper: string,
+  isOwn: (appId: string) => boolean,
+  emit: (snapshot: OsSnapshot) => void,
+  onGone: () => void,
+  logger?: Logger,
+): OsSource {
   // The helper sends artwork, icon and name only when they change; keep the last ones per session.
   const kept = new Map<string, { artwork: string | null; icon: string | null; name: string | null }>();
   let child: ChildProcessWithoutNullStreams | null = spawn(helper, [], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  const gone = (error: string) => {
+    if (!child) return;
+    child = null;
+    emit({ available: false, sessions: [], error });
+    onGone();
+  };
   child.on("error", (error) => {
     logger?.warn("home.now_playing.helper_error", { error: error.message });
-    emit({ available: false, sessions: [], error: "The Now Playing helper could not start." });
+    gone("The Now Playing helper could not start.");
   });
   child.on("exit", (code) => {
     if (child) logger?.warn("home.now_playing.helper_exit", { code });
-    child = null;
+    gone("The Now Playing helper stopped.");
   });
   const remember = (rawId: string, raw: RawSession) => {
     const previous = kept.get(rawId) ?? { artwork: null, icon: null, name: null };
@@ -141,7 +150,7 @@ function startWindows(helper: string, isOwn: (appId: string) => boolean, emit: (
   };
   onLines(child.stdout, (line) => {
     try {
-      const message = JSON.parse(line) as { type?: string; sessions?: RawSession[]; session?: RawSession | null; current?: string | null; message?: string };
+      const message = JSON.parse(line) as { type?: string; sessions?: RawSession[]; current?: string | null; message?: string };
       if (message.type === "sessions" && Array.isArray(message.sessions)) {
         const seen = new Set<string>();
         const sessions: HomeNowPlayingSession[] = [];
@@ -159,12 +168,6 @@ function startWindows(helper: string, isOwn: (appId: string) => boolean, emit: (
         const current = message.current ? `app:${message.current}` : null;
         sessions.sort((a, b) => Number(b.id === current) - Number(a.id === current));
         emit({ available: true, sessions });
-      } else if (message.type === "state") {
-        // An older helper: just the current session.
-        const raw = message.session ?? null;
-        const full = raw ? remember("current", raw) : null;
-        const session = full && !isOwn(String(full.app ?? "")) ? toSession(full, "current") : null;
-        emit({ available: true, sessions: session ? [session] : [] });
       } else if (message.type === "error") {
         logger?.warn("home.now_playing.helper_message", { message: message.message });
       }
@@ -190,95 +193,10 @@ function startWindows(helper: string, isOwn: (appId: string) => boolean, emit: (
     },
     command: (command, rawId) => {
       try {
-        child?.stdin.write(rawId && rawId !== "current" ? `${command} ${rawId}\n` : `${command}\n`);
+        child?.stdin.write(rawId ? `${command} ${rawId}\n` : `${command}\n`);
       } catch {
         // The helper exited; the next subscribe restarts it.
       }
-    },
-  };
-}
-
-const MAC_SEND_IDS: Record<HomeNowPlayingCommand, number> = { play: 0, pause: 1, toggle: 2, next: 4, previous: 5 };
-
-/** The app's icon on macOS (unverified): its bundle found by Spotlight, drawn by Electron. */
-function macAppIcon(bundleId: string, getAppIcon: ((appPath: string) => Promise<string | null>) | undefined): Promise<string | null> {
-  if (!getAppIcon || !/^[A-Za-z0-9.-]+$/.test(bundleId)) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    execFile("/usr/bin/mdfind", [`kMDItemCFBundleIdentifier == '${bundleId}'`], { timeout: 4000 }, (error, stdout) => {
-      const appPath = error ? null : String(stdout).split("\n").find((line) => line.endsWith(".app")) ?? null;
-      if (!appPath) {
-        resolve(null);
-        return;
-      }
-      getAppIcon(appPath).then(resolve, () => resolve(null));
-    });
-  });
-}
-
-function startMacAdapter(
-  dir: string,
-  isOwn: (appId: string) => boolean,
-  emit: (snapshot: OsSnapshot) => void,
-  getAppIcon: ((appPath: string) => Promise<string | null>) | undefined,
-  logger?: Logger,
-): OsSource {
-  const script = path.join(dir, "mediaremote-adapter.pl");
-  const framework = path.join(dir, "MediaRemoteAdapter.framework");
-  const icons = new Map<string, string | null>();
-  let latest: RawSession | null = null;
-  const publish = () => {
-    const session = latest && !isOwn(String(latest.app ?? "")) ? toSession({ ...latest, icon: icons.get(String(latest.app)) ?? null }, String(latest.app ?? "current")) : null;
-    emit({ available: true, sessions: session ? [session] : [] });
-  };
-  let child: ChildProcessWithoutNullStreams | null = spawn("/usr/bin/perl", [script, framework, "stream", "--no-diff", "--debounce=150"], { stdio: ["pipe", "pipe", "pipe"] });
-  child.on("error", (error) => logger?.warn("home.now_playing.adapter_error", { error: error.message }));
-  child.on("exit", () => {
-    child = null;
-  });
-  onLines(child.stdout, (line) => {
-    try {
-      const message = JSON.parse(line) as { type?: string; payload?: Record<string, unknown> };
-      if (message.type !== "data") return;
-      const payload = message.payload ?? {};
-      if (!payload.title && !payload.artist) {
-        latest = null;
-        publish();
-        return;
-      }
-      const mime = typeof payload.artworkMimeType === "string" ? payload.artworkMimeType : "image/jpeg";
-      const bundleId = typeof payload.bundleIdentifier === "string" ? payload.bundleIdentifier : undefined;
-      latest = {
-        app: bundleId,
-        title: String(payload.title ?? ""),
-        artist: String(payload.artist ?? ""),
-        album: String(payload.album ?? ""),
-        status: payload.playing ? "playing" : "paused",
-        // Seconds in the adapter's default output.
-        positionMs: Math.round(Number(payload.elapsedTime ?? 0) * 1000),
-        durationMs: Math.round(Number(payload.duration ?? 0) * 1000),
-        updatedAtMs: typeof payload.timestamp === "string" ? Date.parse(payload.timestamp) : Date.now(),
-        artwork: typeof payload.artworkData === "string" ? `data:${mime};base64,${payload.artworkData}` : null,
-      };
-      if (bundleId && !icons.has(bundleId)) {
-        icons.set(bundleId, null);
-        void macAppIcon(bundleId, getAppIcon).then((icon) => {
-          icons.set(bundleId, icon);
-          if (icon && latest?.app === bundleId) publish();
-        });
-      }
-      publish();
-    } catch {
-      // Skip a malformed line.
-    }
-  });
-  child.stderr.resume();
-  return {
-    stop: () => {
-      child?.kill("SIGTERM");
-      child = null;
-    },
-    command: (command) => {
-      execFile("/usr/bin/perl", [script, framework, "send", String(MAC_SEND_IDS[command])], { timeout: 5000 }, () => {});
     },
   };
 }
@@ -294,9 +212,15 @@ else
   return "closed"
 end if`;
 
-function startMacMusicApp(emit: (snapshot: OsSnapshot) => void): OsSource {
+const MUSIC_APP_PATH = "/System/Applications/Music.app";
+
+function startMacMusicApp(emit: (snapshot: OsSnapshot) => void, getAppIcon: ((appPath: string) => Promise<string | null>) | undefined): OsSource {
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
+  let icon: string | null = null;
+  void getAppIcon?.(MUSIC_APP_PATH).then((value) => {
+    icon = value;
+  }, () => {});
   const poll = () => {
     execFile("/usr/bin/osascript", ["-e", MUSIC_SCRIPT], { timeout: 4000 }, (error, stdout) => {
       if (stopped) return;
@@ -305,6 +229,7 @@ function startMacMusicApp(emit: (snapshot: OsSnapshot) => void): OsSource {
         const session = state === "playing" || state === "paused"
           ? toSession({
             app: "com.apple.Music",
+            icon,
             title,
             artist,
             album,
@@ -353,7 +278,7 @@ export function createNowPlayingService(args: {
    * the Music tab's player host): skipped, since ADE reports those directly.
    */
   isOwnApp?: (appId: string) => boolean;
-  /** macOS: an app bundle's icon as a data URL (Electron's `app.getFileIcon`). */
+  /** macOS: an app bundle's icon as a data URL (Electron's `app.getFileIcon`), for Music.app. */
   getAppIcon?: (appPath: string) => Promise<string | null>;
   /** Sends a state to every subscribed renderer. */
   broadcast: (state: HomeNowPlayingState) => void;
@@ -461,21 +386,18 @@ export function createNowPlayingService(args: {
     if (osSource) return;
     if (platform === "win32") {
       osKind = "windows-smtc";
-      const helper = resolveHelper(args, "ade-now-playing.exe");
+      const helper = resolveNowPlayingHelperBinary({ ...args, platform });
       if (!helper) {
         publishOs({ available: false, sessions: [], error: "The Now Playing helper is missing from this build." });
         return;
       }
-      osSource = startWindows(helper, isOwn, publishOs, args.logger);
+      const source: OsSource = startWindows(helper, isOwn, publishOs, () => {
+        if (osSource === source) osSource = null;
+      }, args.logger);
+      osSource = source;
     } else if (platform === "darwin") {
-      const adapterDir = path.join(args.isPackaged ? path.join(args.resourcesPath, "native") : path.join(args.appPath, "resources", "native"), "mediaremote-adapter");
-      if (fs.existsSync(path.join(adapterDir, "mediaremote-adapter.pl"))) {
-        osKind = "macos-mediaremote";
-        osSource = startMacAdapter(adapterDir, isOwn, publishOs, args.getAppIcon, args.logger);
-      } else {
-        osKind = "macos-music";
-        osSource = startMacMusicApp(publishOs);
-      }
+      osKind = "macos-music";
+      osSource = startMacMusicApp(publishOs, args.getAppIcon);
     } else {
       publishOs({ available: false, sessions: [], error: "Now Playing is not available on this system yet." });
     }
