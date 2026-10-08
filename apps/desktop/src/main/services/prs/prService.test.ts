@@ -8481,9 +8481,21 @@ describe("prService auto-map by branch", () => {
     };
   }
 
-  it("links on an exact single same-repo branch match and emits an auto-link event", async () => {
+  it("links on an exact single same-repo branch match, edges the lane's chat, and emits an auto-link event", async () => {
     const db = makeMockDb();
     installPullRequestRowStore(db, []);
+    // A PR an agent opened with `gh pr create` from its chat names no chat. The
+    // edge to the chat open in the lane is what lets the merge settle it.
+    const pullRequestAll = db.all.getMockImplementation();
+    db.all.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from terminal_sessions")) return [{ id: "chat-lane" }];
+      return pullRequestAll?.(sql, params) ?? [];
+    });
+    const pullRequestGet = db.get.getMockImplementation();
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from terminal_sessions")) return { id: params[0] };
+      return pullRequestGet?.(sql, params) ?? null;
+    });
     const githubService = makeAutoMapGithub([makeAutoMapPull()]);
     const laneService = makeLaneService([makeFakeLane()]);
     const { service } = buildService({ db, githubService, laneService });
@@ -8496,6 +8508,10 @@ describe("prService auto-map by branch", () => {
       expect.stringContaining("insert into pull_requests("),
       expect.arrayContaining([LANE_ID, REPO.owner, REPO.name, 777]),
     );
+    const chatEdge = db.run.mock.calls.find(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_request_chat_sessions"));
+    expect(chatEdge?.[1]?.[3]).toBe(LANE_ID);
+    expect(chatEdge?.[1]?.[4]).toBe("chat-lane");
     expect(events).toEqual([
       expect.objectContaining({
         type: "pr-auto-linked",

@@ -3216,11 +3216,13 @@ export function createPrService({
   };
 
   /**
-   * Link a PR's row to the chats that were open in the lane when it was
-   * created. A history PR does not match the lane's recorded branch, so lane
-   * surfaces show it only through this edge. Plain shells (`shell`, `other`)
-   * are not agents, and a session that ended before the PR existed did not
-   * open it.
+   * Link an auto-mapped PR's row to the chats that were open in the lane when
+   * it was created. A PR opened outside ADE (`gh pr create` from a chat's
+   * terminal, the GitHub site) carries no chat of its own, and chats settle on
+   * merge only through this edge, so without it the chat that did the work
+   * stayed open after its PR merged. A history PR also needs it to show on lane
+   * surfaces at all. Plain shells (`shell`, `other`) are not agents, and a
+   * session that ended before the PR existed did not open it.
    */
   const attributeLanePrToChats = (args: { prId: string; laneId: string; createdAt: string | null }): void => {
     const createdMs = args.createdAt ? Date.parse(args.createdAt) : Number.NaN;
@@ -3379,6 +3381,7 @@ export function createPrService({
     // unmap — re-querying the row could race and yield an empty prId, leaving
     // the Undo action a silent no-op.
     const linked = await linkToLane({ laneId: lane.id, prUrlOrNumber: String(candidate.prNumber) });
+    attributeLanePrToChats({ prId: linked.id, laneId: lane.id, createdAt: linked.createdAt || candidate.createdAt });
 
     try {
       emitPrEvent?.({
