@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { ElementType, ReactNode } from "react";
 import {
-  CheckCircle,
   FloppyDisk,
-  Flask,
   GitBranch,
   ListChecks,
   Play,
@@ -32,6 +30,7 @@ import { TriggerCard } from "./TriggerCard";
 import { LaneTargeting } from "./LaneTargeting";
 import { ChatTargetField } from "./ChatTargetField";
 import { StepStack } from "./StepStack";
+import { TestRunButton, type TestKind } from "./TestRunControls";
 import { applyStepsToDraft, draftToSteps, laneComesFromEvent, readLaneMode, type WorkflowStep } from "./draftBridge";
 
 function Section({
@@ -122,12 +121,11 @@ export function RuleBuilder({
   suites,
   ingressStatus,
   issues,
-  simulationNotes,
   requiredConfirmations,
   acceptedConfirmations,
   onToggleConfirmation,
   onSave,
-  onSimulate,
+  onTest,
   onRunNow,
   onIngressChanged,
   cursorCloudConnected = false,
@@ -135,7 +133,7 @@ export function RuleBuilder({
   machineField = null,
   saveBlockedReason = null,
   saving,
-  simulating = false,
+  testBlockedReason = null,
   running = false,
   dirty = false,
 }: {
@@ -145,12 +143,12 @@ export function RuleBuilder({
   suites: TestSuiteDefinition[];
   ingressStatus: AutomationIngressStatus | null;
   issues: AutomationDraftIssue[];
-  simulationNotes?: string[];
   requiredConfirmations: AutomationDraftConfirmationRequirement[];
   acceptedConfirmations: Set<string>;
   onToggleConfirmation: (key: string, checked: boolean) => void;
   onSave: () => void;
-  onSimulate?: () => void;
+  /** Opens the Test dialog in the picked kind. */
+  onTest?: (kind: TestKind) => void;
   onRunNow?: () => void;
   onIngressChanged?: () => void;
   /** The machine the rule runs on; null = the tab's machine. */
@@ -161,7 +159,8 @@ export function RuleBuilder({
   saveBlockedReason?: string | null;
   cursorCloudConnected?: boolean;
   saving: boolean;
-  simulating?: boolean;
+  /** Why Test is unavailable now (a new automation that is not saved yet). */
+  testBlockedReason?: string | null;
   running?: boolean;
   dirty?: boolean;
 }) {
@@ -233,7 +232,6 @@ export function RuleBuilder({
 
   const errors = issues.filter((i) => i.level === "error");
   const warnings = issues.filter((i) => i.level === "warning");
-  const notes = simulationNotes ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -260,11 +258,12 @@ export function RuleBuilder({
                 Run now
               </Button>
             ) : null}
-            {onSimulate ? (
-              <Button size="sm" variant="outline" disabled={simulating || saving} onClick={onSimulate}>
-                <Flask size={12} weight="regular" className={cn(simulating && "animate-spin")} />
-                Dry run
-              </Button>
+            {onTest ? (
+              <TestRunButton
+                disabled={saving || Boolean(testBlockedReason)}
+                title={testBlockedReason ?? undefined}
+                onOpen={onTest}
+              />
             ) : null}
             <Button
               size="sm"
@@ -285,19 +284,6 @@ export function RuleBuilder({
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3.5 px-5 py-5">
           {errors.length ? <IssueList title="Errors" issues={errors} tone="error" /> : null}
           {warnings.length ? <IssueList title="Notes" issues={warnings} tone="warning" /> : null}
-          {notes.length ? (
-            <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-100">
-              <div className="flex items-center gap-1.5 font-semibold">
-                <CheckCircle size={13} weight="fill" />
-                Dry run ready
-              </div>
-              <ul className="mt-1 space-y-0.5">
-                {notes.map((note, i) => (
-                  <li key={`${note}-${i}`}>{note}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
           <ConfirmationsChecklist required={requiredConfirmations} accepted={acceptedConfirmations} onToggle={onToggleConfirmation} />
 
           <Section icon={Sliders} title="Details" hint="Name and describe this automation">

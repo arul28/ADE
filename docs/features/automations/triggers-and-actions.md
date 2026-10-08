@@ -234,7 +234,11 @@ computer through its "Send to your computer" card (a lane, a file, a commit, a
 branch, proof), plus **Paste a link** for any ADE link, `https://ade-app.dev/open`
 forms included. Each choice has a **Choose** list of this project's chats,
 pull requests, lanes or branches and one-click **From the trigger** values
-(the PR, chat, lane or branch that started the run). `notifyLink.ts` builds the
+(the PR, chat, lane or branch that started the run). Two more one-click values
+point at what the run itself makes, which does not exist when the rule is
+written: **The chat this run started** (`{{run.chatSessionId}}`, set when an
+`agent-session` step creates its chat) and **The lane this run used**
+(`{{run.laneId}}`, which falls back to the run's trigger lane). `notifyLink.ts` builds the
 link from those fields, reads a saved link back into them, and checks it with
 the trigger values swapped for samples. A preview shows the banner and what a
 tap does, and **Send a test to my phone** sends it now: trigger values show as
@@ -249,7 +253,9 @@ quiet hours, or muting this machine; an account may send 60 an hour, and past
 that the step fails with the time to wait. A link that resolves to something
 ADE cannot open (a trigger value that was empty makes `ade://pr/`) is left off
 and named in the step's `linkSkipped` output, so the notification still
-arrives. An `agent-session` step can do the same from its shell with
+arrives. A link with a `{{run.*}}` value the run never filled (the agent step
+failed before its chat existed) is dropped before it is resolved, for the
+same reason. An `agent-session` step can do the same from its shell with
 `ade notify`. See
 [Custom notifications](../sync-and-multi-device/push-notifications.md#custom-notifications).
 
@@ -294,7 +300,7 @@ Deletion runs after the run finishes and its `runs-updated` event is emitted. It
 - `parseNaturalLanguage({ text, projectContext })` — runs a planner subprocess (Claude CLI or Codex CLI; resolved via `resolveClaudeCodeExecutable` / `resolveCodexExecutable`). Returns `AutomationParseNaturalLanguageResult` with a candidate `AutomationRuleDraft`, `ambiguities`, and `confirmationRequirements`.
 - `validateDraft({ draft })` — static validation: `AutomationValidateDraftResult` with `issues[]`.
 - `saveDraft({ draft, resolution })` — saves after resolution of ambiguities. Returns `AutomationSaveDraftResult`.
-- `simulate({ rule, trigger })` — dry-run a rule against a synthetic trigger. `AutomationSimulateResult` lists the actions that would fire.
+- `simulate({ rule, trigger })` — lint a draft against a synthetic trigger. `AutomationSimulateResult` lists the actions that would fire. The builder no longer calls it; it uses test runs instead (see the README's Test runs).
 
 The planner output JSON is extracted with `extractFirstJsonObject` — it handles fenced code blocks, bare objects, and best-effort span extraction. Planner output is always validated before persistence.
 
@@ -311,6 +317,7 @@ The planner output JSON is extracted with `extractFirstJsonObject` — it handle
 - **Built-in shell actions validate cwd.** Don't pass absolute paths that escape the allowed roots — `validateAutomationCwd` rejects them.
 - **ADE actions are allowlisted at compile time.** A `(domain, action)` pair must appear in `ADE_ACTION_ALLOWLIST`. Adding an internal service method doesn't expose it to automations until the allowlist is updated; this is intentional — the allowlist is the audit surface.
 - **`{{trigger.*}}` placeholders only interpolate from the current trigger context.** There is no cross-run state. A string that is one whole placeholder keeps the raw value (a number stays a number) and stays as written when the value is missing; a placeholder inside longer text becomes an empty string when missing. `{{trigger.lane.id}}` and `{{trigger.lane.name}}` read the run's lane (the context keeps it as `laneId` / `laneName`), and `{{date}}` / `{{time}}` resolve in step arguments and prompts as they do in lane names. Prefer explicit `resolvers` when a placeholder is load-bearing.
+- **`{{run.*}}` values fill in as the run goes.** `run.id` exists from the first step, `run.laneId` / `run.laneName` read the run's lane, and `run.chatSessionId` exists only after an `agent-session` step made its chat. Use them in steps after the step that makes the thing.
 - **Planner JSON extraction is lossy on malformed output.** Budget extra validation on fields the planner set; rely on `validateDraft` rather than trusting raw output.
 
 ## Cross-links

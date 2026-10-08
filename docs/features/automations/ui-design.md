@@ -39,7 +39,9 @@ list/
   AutomationsEmptyState.tsx    first-visit: 3 flagship template cards; also
                                AutomationsFilterEmptyState for a filter that matches nothing
 builder/
-  RuleBuilder.tsx              header (Run now / Dry run / Save + status) + vertical step stack
+  RuleBuilder.tsx              header (Run now / Test ▾ / Save + status) + vertical step stack
+  TestRunControls.tsx          Test split button (Preview / Safe test / Live test) + Test dialog:
+                               event picker, plan, start
   TriggerCard.tsx              pinned card: source picker → event → filter rows
   ScheduleEditor.tsx           cron field + live gloss + presets
   triggerFilters/*             GitHub/Linear/Git/File/Lane/Webhook filter panels (logic reused, reskinned)
@@ -119,7 +121,7 @@ Rule row (left rail):
 
 Builder:
 ```
-[Triage new issues]              ● enabled  ▷ Run now  ⚗ Dry run  ⌘S Save
+[Triage new issues]              ● enabled  ▷ Run now  ⚗ Test ▾  ⌘S Save
 ────────────────────────────────────────────────────────────────────
 ┌ Trigger ─────────────────────────────────┐   pinned card
 │ Source: [GitHub ▾]  Event: [Issue opened ▾]│
@@ -141,7 +143,9 @@ Builder:
 
 - Left header: title `Automations`; buttons `New`, `Templates`; search placeholder `Search automations`.
 - Empty state: `No automations yet` / `Start from a flagship, or build your own.`
-- Builder header: `Run now`, `Dry run`, `Save`; unsaved dot tooltip `Unsaved changes`.
+- Builder header: `Run now`, `Test`, `Save`; unsaved dot tooltip `Unsaved changes`.
+- Test menu: `Preview` / `Safe test` / `Live test`, each with its one-line hint; dialog actions `Run safe test`, `Run live test`, `Close`.
+- History: badge `Safe test` / `Live test`; notice `This was a safe test.`; action `Clean up the lane` / `Clean up N lanes`.
 - Trigger: `Trigger`, `Source`, `Event`, `Filters`. Manual hint `Runs only when you press Run now.`
 - Schedule gloss prefix: none — show gloss verbatim, e.g. `Runs every weekday at 9:00am`.
 - Lane targeting: `Run in`, options `New lane each run` / `An existing lane` / `No lane`.
@@ -183,8 +187,18 @@ degrades if a method is missing at runtime:
   (`laneDeleteOptions?`, `afterMinutes?`), per-action `alwaysRun?`. Builder reads/writes them
   through helpers so a later type landing is a one-line switch.
 
-Dry run = `simulate({ draft })`. Run now = `triggerManually({ id })` (lane picker only when
-lane mode requires one, existing behavior preserved).
+Test = `planTest` / `runTest` / `cleanUpTestRun` (see README, Test runs). Run now =
+`triggerManually({ id })` (lane picker only when lane mode requires one, existing behavior
+preserved).
+
+The unsaved draft is kept in local storage per project (`automationDraftStore.ts`), so leaving
+the tab, switching project, or restarting ADE keeps it; a banner says it was restored and offers
+Discard. Save and Discard clear it.
+
+When the rule's machine runs an older ADE than a step or lane mode needs
+(`shared/automationFeatureVersions.ts`), the builder shows a warning banner that names the
+machine, its version, and the release each feature needs. An `action_not_callable` error from
+such a machine is shown in the same plain words.
 
 ## Preserved logic
 

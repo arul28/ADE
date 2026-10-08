@@ -47,6 +47,9 @@ import {
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type {
   AutomationManualTriggerRequest,
+  AutomationTestCleanupResult,
+  AutomationTestPlan,
+  AutomationTestRequest,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   AutomationRun,
@@ -321,6 +324,9 @@ type AutomationsDomainService = {
   deleteRule(args: { id: string }): AutomationRuleSummary[];
   toggleRule(args: { id: string; enabled: boolean }): AutomationRuleSummary[];
   triggerManually(args: AutomationManualTriggerRequest): Promise<AutomationRun>;
+  planTest(args: AutomationTestRequest): Promise<AutomationTestPlan>;
+  runTest(args: AutomationTestRequest): Promise<AutomationRun>;
+  cleanUpTestRun(args: { runId: string }): Promise<AutomationTestCleanupResult>;
   getHistory(args: { id: string; limit?: number }): AutomationRun[];
   listRuns(args?: AutomationRunListArgs): AutomationRun[];
   getRunDetail(args: { runId: string }): Promise<AutomationRunDetail | null>;
@@ -372,6 +378,9 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
     deleteRule: ({ id }) => automationService.deleteRule({ id }),
     toggleRule: ({ id, enabled }) => automationService.toggle({ id, enabled }),
     triggerManually: (args) => automationService.triggerManually(args),
+    planTest: (args) => automationService.planTest(args),
+    runTest: (args) => automationService.runTest(args),
+    cleanUpTestRun: (args) => automationService.cleanUpTestRun(args),
     getHistory: (args) => automationService.getHistory(args),
     listRuns: (args = {}) => automationService.listRuns(args),
     getRunDetail: ({ runId }) => automationService.getRunDetail({ runId }),

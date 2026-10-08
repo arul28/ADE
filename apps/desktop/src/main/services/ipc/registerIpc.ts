@@ -205,6 +205,9 @@ import type {
   AutomationWebhookTestRequest,
   AutomationWebhookTriggerConfig,
   AutomationManualTriggerRequest,
+  AutomationTestCleanupResult,
+  AutomationTestPlan,
+  AutomationTestRequest,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
@@ -6546,6 +6549,21 @@ export function registerIpc({
       verboseTrace: Boolean(arg?.verboseTrace),
       dryRun: Boolean(arg?.dryRun),
     });
+  });
+
+  ipcMain.handle(IPC.automationsPlanTest, async (_event, arg: AutomationTestRequest): Promise<AutomationTestPlan> => {
+    const ctx = ensureAutomationContext();
+    return await ctx.automationService.planTest(arg);
+  });
+
+  ipcMain.handle(IPC.automationsRunTest, async (_event, arg: AutomationTestRequest): Promise<AutomationRun> => {
+    const ctx = ensureAutomationContext();
+    return await ctx.automationService.runTest(arg);
+  });
+
+  ipcMain.handle(IPC.automationsCleanUpTestRun, async (_event, arg: { runId: string }): Promise<AutomationTestCleanupResult> => {
+    const ctx = ensureAutomationContext();
+    return await ctx.automationService.cleanUpTestRun({ runId: arg?.runId ?? "" });
   });
 
   ipcMain.handle(IPC.automationsGetHistory, async (_event, arg: { id: string; limit?: number }): Promise<AutomationRun[]> => {

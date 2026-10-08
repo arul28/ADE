@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { ArrowSquareOut, GitBranch } from "@phosphor-icons/react";
-import type { AutomationRunDetail } from "../../../../shared/types";
+import type { AutomationRunDetail, OpenProjectBinding } from "../../../../shared/types";
+import { Banner } from "../../ui/notice/Banner";
 import { AgentChatPane } from "../../chat/AgentChatPane";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
@@ -7,6 +9,7 @@ import { cn } from "../../ui/cn";
 import { statusToneAutomation as statusTone } from "../../../lib/format";
 import { cardCls, labelCls, recessedCls } from "../designTokens";
 import { eventLabel } from "../triggerCatalog";
+import { readTestRunInfo, summarizeTestRun, testRunLabel } from "./testRunInfo";
 
 function MetaCard({ label, value }: { label: string; value: string }) {
   return (
@@ -25,7 +28,75 @@ function openExternal(url: string) {
   void (window as unknown as { ade?: { app?: { openExternal?: (u: string) => Promise<void> } } }).ade?.app?.openExternal?.(url);
 }
 
-export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | null; loading: boolean }) {
+/** What a test run did, with Clean up for the lanes it made. */
+function TestRunNotice({
+  detail,
+  pin,
+  onChanged,
+}: {
+  detail: AutomationRunDetail;
+  pin: OpenProjectBinding | null;
+  onChanged: () => void;
+}) {
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanupError, setCleanupError] = useState<string | null>(null);
+  const test = readTestRunInfo(detail.run);
+  if (!test) return null;
+  const canClean = test.lanes.length > 0 && !test.cleanedUpAt && Boolean(detail.run.endedAt);
+  const cleanUp = async () => {
+    setCleaning(true);
+    setCleanupError(null);
+    try {
+      const result = await window.ade.automations.cleanUpTestRun({ runId: detail.run.id }, pin);
+      if (result.failed.length) {
+        setCleanupError(result.failed.map((lane) => `${lane.name}: ${lane.error}`).join(" "));
+      }
+      onChanged();
+    } catch (err) {
+      setCleanupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCleaning(false);
+    }
+  };
+  return (
+    <Banner
+      layout="inline"
+      testId="automation-run-test"
+      model={{
+        id: `automation-run-test-${detail.run.id}`,
+        tone: "info",
+        title: `This was a ${testRunLabel(test).toLowerCase()}.`,
+        detail: [
+          summarizeTestRun(test, detail.actions),
+          !detail.run.endedAt && test.lanes.length ? "Clean up is available when it finishes." : null,
+          cleanupError ? `Clean up did not finish: ${cleanupError}` : null,
+        ].filter(Boolean).join(" "),
+        busy: cleaning,
+        actions: canClean
+          ? [{
+            label: test.lanes.length === 1 ? "Clean up the lane" : `Clean up ${test.lanes.length} lanes`,
+            onClick: () => void cleanUp(),
+            busy: cleaning,
+          }]
+          : undefined,
+      }}
+    />
+  );
+}
+
+export function RunDetail({
+  detail,
+  loading,
+  pin = null,
+  onChanged,
+}: {
+  detail: AutomationRunDetail | null;
+  loading: boolean;
+  /** The machine the run is on. */
+  pin?: OpenProjectBinding | null;
+  /** Called after Clean up, so the history reloads. */
+  onChanged?: () => void;
+}) {
   if (loading) return <div className="p-5 text-sm text-muted-fg/60">Loading run detail…</div>;
   if (!detail) return <div className="p-5 text-sm text-muted-fg/60">Select a run to inspect what ADE did.</div>;
 
@@ -41,6 +112,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
   return (
     <div className="h-full overflow-y-auto px-5 py-5">
       <div className="mx-auto flex max-w-4xl flex-col gap-4">
+        <TestRunNotice detail={detail} pin={pin} onChanged={() => onChanged?.()} />
         <section className={cardCls}>
           <div className="flex flex-wrap items-center gap-2">
             <Chip className={cn("text-[9px]", statusTone(detail.run.status))}>{detail.run.status}</Chip>
