@@ -1221,6 +1221,10 @@ ade automations create --from-file rule.json \
 # Reuse an existing lane instead.
 ade automations create --from-file rule.json --lane-mode reuse --lane lane-42
 
+# Run in the trigger PR's own branch (PR triggers only), so the agent can push to the PR.
+# The run reuses the lane already linked to the PR, or opens the branch as a new lane.
+ade automations create --from-file dependabot-rule.json --lane-mode pr-branch
+
 # Custom template (only valid with --lane-name-preset custom).
 ade automations create --from-file rule.json \
   --lane-mode create --lane-name-preset custom \

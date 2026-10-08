@@ -9,6 +9,7 @@ import {
   CURSOR_LOGIN_IPC_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS,
   USAGE_REFRESH_HISTORY_TIMEOUT_MS,
+  ACP_PROVIDER_UPDATE_TIMEOUT_MS,
   IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
   IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
   IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS,
@@ -46,6 +47,9 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   ai: {
     piLoginStart: IPC.aiPiLoginStart,
     cursorAuthLogin: IPC.aiCursorAuthLogin,
+    // A provider CLI update on a paired machine runs the same install as a
+    // local one; see ACP_PROVIDER_UPDATE_TIMEOUT_MS.
+    acpProviderUpdate: IPC.aiAcpProviderUpdate,
   },
   lane: {
     create: IPC.lanesCreate,
@@ -207,6 +211,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // the page — while the daemon kept scanning for another nine minutes.
     case IPC.usageRefreshHistory:
       return USAGE_REFRESH_HISTORY_TIMEOUT_MS;
+    // An unpinned provider CLI update runs on this machine's main process; see
+    // ACP_PROVIDER_UPDATE_TIMEOUT_MS.
+    case IPC.aiAcpProviderUpdate:
+      return ACP_PROVIDER_UPDATE_TIMEOUT_MS;
     // A cold iOS launch is a full xcodebuild plus boot, install and launch. The
     // service's own inner budgets sum to roughly 930s in the worst case, so the
     // IPC timer has to sit above that or the renderer reports a failure for a

@@ -4,6 +4,7 @@ import {
   captureChatAccountSwitchedAnalytics,
   captureFeatureUsedAnalytics,
   captureNewLaneLaunchAnalytics,
+  captureProviderCliUpdateAnalytics,
   captureSecretRequestedAnalytics,
   captureSessionImportAnalytics,
   captureWebhookUrlCreatedAnalytics,
@@ -156,18 +157,20 @@ describe("captureSessionImportAnalytics", () => {
   });
 });
 
-describe("webhook and secret-card analytics", () => {
+describe("webhook, secret-card, and provider CLI update analytics", () => {
   it.each([
     ["webhook URL", (analytics: FeatureAnalytics) => captureWebhookUrlCreatedAnalytics({ analytics, surface: "desktop" }), "automations", "webhook_url_created", "completed"],
     ["secret saved", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "completed" }), "chat", "secret_requested", "completed"],
     ["secret kept", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "kept" }), "chat", "secret_requested", "kept"],
     ["secret declined", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "cancelled" }), "chat", "secret_requested", "cancelled"],
-  ] as const)("%s survives the allowlist with only closed values", (_label, capture, feature, action, outcome) => {
+    ["provider CLI updated", (analytics: FeatureAnalytics) => captureProviderCliUpdateAnalytics({ analytics, surface: "desktop", provider: "grok", outcome: "completed" }), "updates", "provider_cli_updated", "completed", "other"],
+    ["provider CLI update failed", (analytics: FeatureAnalytics) => captureProviderCliUpdateAnalytics({ analytics, surface: "api", provider: "qwen", outcome: "failed" }), "updates", "provider_cli_updated", "failed", "other"],
+  ] as const)("%s survives the allowlist with only closed values", (_label, capture, feature, action, outcome, provider?: string) => {
     const { analytics, captured } = recorder();
     capture(analytics);
     expect(captured).toHaveLength(1);
     const properties = (captured[0] as { properties: Record<string, unknown> }).properties;
-    expect(properties).toEqual({ feature, action, outcome });
+    expect(properties).toEqual({ feature, action, outcome, ...(provider ? { provider } : {}) });
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", properties as never)).toEqual(properties);
   });
 });

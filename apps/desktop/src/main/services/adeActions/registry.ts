@@ -207,6 +207,7 @@ import { createAccountActionDomainService } from "../../../../../ade-cli/src/ser
 import { createProxyActionDomainService } from "../../../../../ade-cli/src/services/proxy/proxyService";
 import {
   captureSecretRequestedAnalytics,
+  captureProviderCliUpdateAnalytics,
   captureWebhookUrlCreatedAnalytics,
   providerAccountAnalyticsCapture,
 } from "../analytics/featureProductAnalytics";
@@ -2196,7 +2197,15 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     acpProviderUpdate: (args?: { provider?: string }) => {
       const provider = args?.provider;
       if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, copilot, devin.");
-      return runAcpProviderUpdate({ provider, cwd: runtime.projectRoot });
+      return runAcpProviderUpdate({ provider, cwd: runtime.projectRoot }).then((result) => {
+        captureProviderCliUpdateAnalytics({
+          analytics: runtime.productAnalyticsService,
+          surface: "api",
+          provider,
+          outcome: result.ok ? "completed" : "failed",
+        });
+        return result;
+      });
     },
     piLoginProviders: () => listPiLoginProviders(),
     piLoginStart: async (args?: { providerId?: string; method?: "oauth" | "api_key" }) => {

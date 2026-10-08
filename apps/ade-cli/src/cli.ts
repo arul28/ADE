@@ -3486,7 +3486,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations example                       Print an example rule (stdout)
 
   Lane mode flags (apply to create/update on top of --from-file/--stdin/--text):
-    --lane-mode <create|reuse|require-on-trigger>   Create, reuse, or require lane at trigger time
+    --lane-mode <create|reuse|require-on-trigger|pr-branch>
+                                                    Create, reuse, or require lane at trigger time;
+                                                    pr-branch runs in the trigger PR's own branch
     --lane <id>                                     Target lane (only with --lane-mode reuse)
     --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
     --lane-name-template <string>                   Template (only with preset custom)
@@ -16380,6 +16382,7 @@ const AUTOMATION_LANE_MODES = [
   "create",
   "reuse",
   "require-on-trigger",
+  "pr-branch",
 ] as const;
 const AUTOMATION_LANE_NAME_PRESETS = [
   "issue-title",
@@ -16452,9 +16455,10 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   ) {
     throw new CliUsageError("--lane is only valid with --lane-mode reuse.");
   }
-  if (preset != null && effectiveLaneMode !== "create") {
+  const namesLane = effectiveLaneMode === "create" || effectiveLaneMode === "pr-branch";
+  if (preset != null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-preset is only valid with --lane-mode create.",
+      "--lane-name-preset is only valid with --lane-mode create or pr-branch.",
     );
   }
   if (template != null && preset != null && preset !== "custom") {
@@ -16462,14 +16466,17 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
       "--lane-name-template is only valid with --lane-name-preset custom.",
     );
   }
-  if (template != null && preset == null && effectiveLaneMode !== "create") {
+  if (template != null && preset == null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-template requires --lane-mode create (with --lane-name-preset custom).",
+      "--lane-name-template requires --lane-mode create or pr-branch (with --lane-name-preset custom).",
     );
   }
 
   const execution: JsonObject = { ...existingExecution };
   if (laneMode != null) execution.laneMode = laneMode;
+  // Only "reuse" names a fixed lane. Switching a saved rule to another mode
+  // drops the old target, which validation rejects next to that mode.
+  if (laneMode != null && laneMode !== "reuse") delete execution.targetLaneId;
   if (laneId != null) execution.targetLaneId = laneId;
   if (preset != null) execution.laneNamePreset = preset;
   if (template != null) execution.laneNameTemplate = template;

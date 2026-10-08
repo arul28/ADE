@@ -32,6 +32,7 @@ import {
   IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS,
   USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS,
+  ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS,
   WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS,
   WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
@@ -165,6 +166,8 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   // worker a local one does, so the transport must outlive the worker's own
   // ceiling — and stay under the renderer's IPC budget for this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // A provider CLI update on the paired machine; see ACP_PROVIDER_UPDATE_TIMEOUT_MS.
+  ["ai.acpProviderUpdate", ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS],
   // A remote Mac runtime builds with the same xcodebuild a local one does, so
   // the transport has to outlive a cold build. Without these the launch and
   // the three compiling Preview Lab actions fell back to RuntimeRpcClient's

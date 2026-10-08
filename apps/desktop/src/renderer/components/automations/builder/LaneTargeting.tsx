@@ -4,6 +4,7 @@ import type {
   AutomationLaneNamePreset,
   AutomationTrigger,
 } from "../../../../shared/types";
+import { isPullRequestTriggerType } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { labelCls, recessedCls, selectCls } from "../designTokens";
 import { VariableInput } from "./VariableMenu";
@@ -74,6 +75,7 @@ const RUN_IN_OPTIONS = [
   { value: "create", label: "A new lane each run" },
   { value: "reuse", label: "An existing lane" },
   { value: "require-on-trigger", label: "The lane that triggered it" },
+  { value: "pr-branch", label: "The PR's branch" },
 ];
 
 export function LaneTargeting({
@@ -89,8 +91,8 @@ export function LaneTargeting({
 }) {
   const sortedLanes = useMemo(() => [...lanes].sort((a, b) => a.name.localeCompare(b.name)), [lanes]);
   const mode =
-    value.laneMode === "create"
-      ? "create"
+    value.laneMode === "create" || value.laneMode === "pr-branch"
+      ? value.laneMode
       : value.laneMode === "require-on-trigger" || value.laneMode === "provided" || value.laneMode === "prompt-at-run"
         ? "require-on-trigger"
         : "reuse";
@@ -98,6 +100,9 @@ export function LaneTargeting({
   // "The triggering lane" only makes sense for event triggers, not schedule/manual.
   const triggerType = trigger.type as string;
   const supportsTriggerLane = !(triggerType === "schedule" || triggerType === "manual");
+  // Only a pull request trigger has a branch to open. A saved rule keeps its
+  // option visible so the select never shows a value it cannot render.
+  const supportsPrBranch = isPullRequestTriggerType(triggerType) || mode === "pr-branch";
 
   const { kind: triggerKind } = sampleContext(trigger);
   const template = presetTemplate(value.laneNamePreset, value.laneNameTemplate);
@@ -123,6 +128,7 @@ export function LaneTargeting({
             const v = e.target.value;
             if (v === "create") return onChange({ laneMode: "create", targetLaneId: null });
             if (v === "require-on-trigger") return onChange({ laneMode: "require-on-trigger", targetLaneId: null });
+            if (v === "pr-branch") return onChange({ laneMode: "pr-branch", targetLaneId: null });
             if (v === "reuse:") return onChange({ laneMode: "reuse", targetLaneId: null });
             if (v.startsWith("reuse:")) return onChange({ laneMode: "reuse", targetLaneId: v.slice(6) });
           }}
@@ -130,6 +136,9 @@ export function LaneTargeting({
           <option value="create">{RUN_IN_OPTIONS[0]!.label}</option>
           {supportsTriggerLane ? (
             <option value="require-on-trigger">{RUN_IN_OPTIONS[2]!.label}</option>
+          ) : null}
+          {supportsPrBranch ? (
+            <option value="pr-branch">{RUN_IN_OPTIONS[3]!.label}</option>
           ) : null}
           <option value="reuse:">The primary lane</option>
           {sortedLanes.map((lane) => (
@@ -140,12 +149,22 @@ export function LaneTargeting({
         </select>
       </div>
 
-      {mode === "create" ? (
+      {mode === "create" || mode === "pr-branch" ? (
         <div className={cn(recessedCls, "space-y-3 p-3")}>
-          <div className="flex items-center gap-2 text-[11px] text-accent">
-            <Sparkle size={12} weight="fill" />
-            <span className="font-medium">A fresh lane is created for every run.</span>
-          </div>
+          {mode === "pr-branch" ? (
+            <div className="flex items-start gap-2 text-[11px] text-muted-fg">
+              <GitBranch size={12} weight="regular" className="mt-0.5 shrink-0 text-accent" />
+              <span>
+                Runs on the PR's own branch, so the agent can push to the PR. If the PR already has a lane, the run
+                uses it. Otherwise ADE opens the branch as a new lane with this name.
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-[11px] text-accent">
+              <Sparkle size={12} weight="fill" />
+              <span className="font-medium">A fresh lane is created for every run.</span>
+            </div>
+          )}
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="block space-y-1.5">
               <div className={labelCls}>Name</div>

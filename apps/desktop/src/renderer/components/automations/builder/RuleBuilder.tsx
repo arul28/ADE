@@ -19,6 +19,7 @@ import type {
   AutomationTrigger,
   TestSuiteDefinition,
 } from "../../../../shared/types";
+import { isPullRequestTriggerType } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
@@ -31,7 +32,7 @@ import { TriggerCard } from "./TriggerCard";
 import { LaneTargeting } from "./LaneTargeting";
 import { ChatTargetField } from "./ChatTargetField";
 import { StepStack } from "./StepStack";
-import { applyStepsToDraft, draftToSteps, isRequireLaneMode, readLaneMode, type WorkflowStep } from "./draftBridge";
+import { applyStepsToDraft, draftToSteps, laneComesFromEvent, readLaneMode, type WorkflowStep } from "./draftBridge";
 
 function Section({
   icon: Icon,
@@ -194,9 +195,8 @@ export function RuleBuilder({
       else next.targetLaneId = patch.targetLaneId;
     }
     let nextDraft: AutomationRuleDraft = { ...draft, execution: next };
-    if (isRequireLaneMode((next as { laneMode?: string }).laneMode)) {
-      // Require-on-trigger resolves the lane from the event; per-step lane
-      // overrides would conflict, so strip them.
+    if (laneComesFromEvent((next as { laneMode?: string }).laneMode)) {
+      // The lane comes from the event; strip per-step lane overrides.
       nextDraft = applyStepsToDraft(nextDraft, draftToSteps(nextDraft));
     }
     setDraft(nextDraft);
@@ -208,12 +208,23 @@ export function RuleBuilder({
   useEffect(() => {
     if (lastTriggerType.current === primaryTrigger.type) return;
     lastTriggerType.current = primaryTrigger.type;
+    // "The PR's branch" needs a PR trigger, and config validation rejects it
+    // on any other. Drop it whatever else is set: a rule kept in one chat
+    // hides the lane picker, so the user could not undo it there.
+    if (laneMode === "pr-branch" && !isPullRequestTriggerType(primaryTrigger.type)) {
+      patchExecution({ laneMode: "reuse" });
+      return;
+    }
     if (laneDirtyRef.current) return;
+    // A rule kept in one chat runs in that chat's lane; a lane default would
+    // read as if it applied when it does not.
+    if (draft.execution?.session?.chatSessionId) return;
     const t = primaryTrigger.type as string;
     if (t === "github.issue_opened" || t === "linear.issue_created") {
       patchExecution({ laneMode: "create", laneNamePreset: "issue-title" });
     } else if (t === "github.pr_opened") {
-      patchExecution({ laneMode: "create", laneNamePreset: "pr-title-author" });
+      // An agent answering a PR works on that PR, so it runs on the PR's branch.
+      patchExecution({ laneMode: "pr-branch", laneNamePreset: "pr-title-author" });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primaryTrigger.type]);

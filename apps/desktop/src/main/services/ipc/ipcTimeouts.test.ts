@@ -20,20 +20,24 @@ import {
   IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
+import { ACP_PROVIDER_UPDATE_RUN_BUDGET_MS } from "../ai/acpProviderUpdate";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 describe("ipcInvokeTimeoutMs", () => {
-  it("gives a Pi sign-in longer than the flow it waits on, on every transport", () => {
+  it.each([
     // The flow blocks on a human finishing OAuth in a browser. At the 30s
     // default the renderer reported failure while the daemon was still signing
     // in, so in-app sign-in could never complete.
-    const flowBudgetMs = 10 * 60 * 1000;
-
-    expect(ipcInvokeTimeoutMs(IPC.aiPiLoginStart)).toBeGreaterThan(flowBudgetMs);
-    expect(longRunningLocalRuntimeActionTimeoutMs("ai.piLoginStart")).toBeGreaterThan(flowBudgetMs);
+    ["a Pi sign-in", IPC.aiPiLoginStart, "piLoginStart", 10 * 60 * 1000],
+    // An npm or vendor install plus the version re-read. At the 30s default the
+    // renderer reported a failure (and offered "Try again") mid-install.
+    ["a provider CLI update", IPC.aiAcpProviderUpdate, "acpProviderUpdate", ACP_PROVIDER_UPDATE_RUN_BUDGET_MS],
+  ] as const)("gives %s longer than the work it waits on, on every transport", (_label, channel, action, flowBudgetMs) => {
+    expect(ipcInvokeTimeoutMs(channel)).toBeGreaterThan(flowBudgetMs);
+    expect(longRunningLocalRuntimeActionTimeoutMs(`ai.${action}`)).toBeGreaterThan(flowBudgetMs);
     // The runtime-action route the preload actually prefers, local and remote.
-    const routed = [IPC.localRuntimeCallAction, IPC.remoteRuntimeCallAction].map((channel) =>
-      ipcInvokeTimeoutMs(channel, [{ request: { domain: "ai", action: "piLoginStart", args: { providerId: "anthropic" } } }]));
+    const routed = [IPC.localRuntimeCallAction, IPC.remoteRuntimeCallAction].map((routeChannel) =>
+      ipcInvokeTimeoutMs(routeChannel, [{ request: { domain: "ai", action, args: {} } }]));
     for (const timeoutMs of routed) expect(timeoutMs).toBeGreaterThan(flowBudgetMs);
   });
 

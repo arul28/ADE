@@ -18,7 +18,8 @@ export type FeatureAnalyticsName =
   | "usage"
   | "chat"
   | "work"
-  | "automations";
+  | "automations"
+  | "updates";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -45,7 +46,8 @@ export type FeatureAnalyticsAction =
   | "session_continue_cli"
   | "session_copy_cli"
   | "webhook_url_created"
-  | "secret_requested";
+  | "secret_requested"
+  | "provider_cli_updated";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -236,6 +238,20 @@ export function capturePendingInputDismissedAnalytics(args: {
     action: "pending_input_dismissed",
     outcome: "completed",
   });
+}
+
+/**
+ * The user ran ADE's one-click update of a user-installed provider CLI (Grok,
+ * Copilot, Qwen...), from Settings or a chat warning. Never the version, the
+ * install path, or the command's output.
+ */
+export function captureProviderCliUpdateAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  provider: unknown;
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "failed">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "updates", action: "provider_cli_updated" });
 }
 
 /** A private webhook URL was made (with or without its automation). */
