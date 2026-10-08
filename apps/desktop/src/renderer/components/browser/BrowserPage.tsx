@@ -5,6 +5,7 @@ import { ArrowsOutSimple, CaretDown, ChatCircleDots, Check, NotePencil, SpinnerG
 import type { AgentChatFileRef, AgentChatSession, AgentChatSessionSummary } from "../../../shared/types";
 import type { BuiltInBrowserStatus, BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
 import { attachBrowserTabToComposer, browserTabContextItem } from "../chat/browser/attachBrowserTabToChat";
+import { ChatSceneBackdrop } from "../personalChats/ChatSceneBackdrop";
 import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
 import { AgentChatPane, type AgentChatPaneComposerHandle } from "../chat/AgentChatPane";
@@ -256,11 +257,12 @@ export function BrowserPage() {
   );
 
   return (
-    <div className="flex h-full min-h-0 bg-bg text-fg" data-testid="browser-page">
+    <div className="ade-chat-scene relative flex h-full min-h-0 text-fg" data-testid="browser-page">
+      <ChatSceneBackdrop />
       {/* The panels share the dock chat's API scope: a screenshot or element
           sent from the browser lands in that chat's attachment store. */}
       <AgentChatApiProvider scope={chatScope}>
-        <main className="flex min-w-0 flex-1 flex-col gap-1.5 p-1.5">
+        <main className="relative flex min-w-0 flex-1 flex-col gap-1.5 p-1.5">
           {error ? (
             <div role="alert" className="flex shrink-0 items-center gap-2 rounded-md border border-rose-400/15 bg-rose-500/[0.06] px-3 py-1.5 font-sans text-[11px] text-rose-200/80">
               <span className="min-w-0 flex-1 truncate" title={error}>{error}</span>
@@ -283,7 +285,7 @@ export function BrowserPage() {
         </main>
         {dock.open ? (
           <aside
-            className="flex w-[min(40%,480px)] min-w-[340px] shrink-0 flex-col border-l border-fg/[0.07] bg-bg"
+            className="ade-chat-scene-plane relative flex w-[min(40%,480px)] min-w-[340px] shrink-0 flex-col border-l border-fg/[0.07] bg-bg"
             aria-label="Chat about this page"
             data-testid="browser-dock"
           >
@@ -354,6 +356,7 @@ export function BrowserPage() {
                   composerHandleRef={composerRef}
                   personalDraftKey="personal:browser-dock-draft"
                   emptyStateAccessory={providerUnavailable ? null : <SuggestionChips prompts={PAGE_SUGGESTIONS} onSelect={setComposerDraft} />}
+                  canvasFill="var(--ade-chat-scene-canvas)"
                   hideSessionTabs
                   hideWorkspaceChrome
                   hideSurfaceHeader

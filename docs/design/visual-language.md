@@ -106,7 +106,9 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
   JPEG and stored in IndexedDB (`userScenes.ts`), never on disk or in sync.
 - **One picture, many surfaces.** `SceneImageLayer` draws a window-aligned
   slice of the same picture behind each surface, so the top bar, the home page
-  and the new chat page read as one continuous image.
+  and the new chat page read as one continuous image. The Chats page and the
+  Browser tab's chat dock sit on it too (`ChatSceneBackdrop`), each pane a
+  frosted `.ade-chat-scene-plane` with the kit card's tint; Work chats do not.
 - **The picture sets the colours.** `scenePalette.ts` extracts a palette from
   the picture (k-means, then a 5-stop ramp, cached in localStorage). The mesh
   gradient uses it. With **App colours: From picture** (`matchTheme`), the

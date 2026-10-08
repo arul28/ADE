@@ -99,7 +99,7 @@ export function ProjectlessSidebar({
 
   return (
     <aside className={cn(
-      "relative w-[286px] shrink-0 border-r border-fg/[0.06] bg-black/[0.12]",
+      "ade-chat-scene-plane relative w-[286px] shrink-0 border-r border-fg/[0.06] bg-black/[0.12]",
       "max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[min(88vw,320px)] max-md:shadow-2xl",
       !mobileListOpen && "max-md:hidden",
     )}>

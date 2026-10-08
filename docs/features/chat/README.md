@@ -326,6 +326,23 @@ strip across project opens, switches and closes, like Chats.
   its header switches to any recent chat, opens the chat full size in Chats
   (`/chats?chat=<id>`), or closes the dock. Its unsent draft is stored under
   its own key (`personalDraftKey`), apart from the Chats page's.
+- **The badge tells the agent it is a live tab.** A tab badge carries
+  `metadata.contextKind: "live_tab"`, and `formatBuiltInBrowserContextForPrompt`
+  (`renderer/lib/visualContextFormatting.ts`) turns it into plain guidance at
+  the head of the message rather than an element packet: this is the user's
+  live tab `<id>`, already leased to this chat; read it with
+  `ade browser observe/find --tab <id>`, act on it with `ade browser` commands
+  on that tab, and do not web-fetch the URL or open a new tab. The text rides in
+  the user message, so every provider gets the same words. A newer badge for
+  the same page replaces an older one (tab ids change after a restart, so a
+  kept draft's badge would otherwise name a tab that is gone).
+- **On the wallpaper.** With a scene picture set, the Chats page and the dock
+  sit on it like the home page cards: `ChatSceneBackdrop` mounts the window's
+  `SceneImageLayer`, and each pane is a `.ade-chat-scene-plane` that takes the
+  kit card's tint and frost (`--kit-card-bg`, `--kit-card-blur`) under
+  `html[data-scene="image"]` (`styles/scene.css`). The pane's own canvas steps
+  aside through `canvasFill="var(--ade-chat-scene-canvas)"`. The gradient scene
+  keeps the plain page background. Work chats are unchanged.
 - **From Chats back to the page.** A Chats page chat that is browsing (agent
   presence) or is the dock's chat shows a **Show in the Browser tab** button:
   it opens the Browser tab with that chat docked and brings forward the tab

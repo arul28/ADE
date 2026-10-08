@@ -3662,6 +3662,7 @@ export function AgentChatPane({
   shouldAutofocusComposer = false,
   draftContextTargetId = null,
   personalDraftKey = PERSONAL_DRAFT_COMPANION_STATE_KEY,
+  canvasFill,
   initialLinearIssueContext = null,
   initialLinearIssueContextSource = "lane_link",
   initialModelId = null,
@@ -3745,6 +3746,12 @@ export function AgentChatPane({
    * so one's draft and attached context never appear in the other.
    */
   personalDraftKey?: string;
+  /**
+   * What the transcript and composer sit on, in place of the chat canvas
+   * colour. A host that paints its own surface behind the pane (the Chats
+   * page over the scene picture) passes a value that can be transparent.
+   */
+  canvasFill?: string;
   initialLinearIssueContext?: LaneLinearIssue | null;
   initialLinearIssueContextSource?: "manual" | "lane_link";
   initialModelId?: string | null;
@@ -16517,7 +16524,7 @@ export function AgentChatPane({
         chromeTint={chatChromeTint}
         shellGeometry={chatShellGeometry}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
-        canvasFill={embedDraft ? "transparent" : undefined}
+        canvasFill={embedDraft ? "transparent" : canvasFill}
         header={compactShell || hideSurfaceHeader ? undefined : shellHeader}
         footer={isEmptyState || appPanelOpen
           ? undefined

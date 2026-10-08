@@ -74,3 +74,22 @@ html[data-scene="image"][data-theme-backdrop]::after {
 /* The new-chat wordmark is the column's flexible row; cap it so freed space
    goes to breathing room, not a giant logo above the composer. */
 .ade-draft-wordmark { max-height: 132px; }
+
+/* Chats and the Browser tab's dock sit on the same picture as the home page
+   (`ChatSceneBackdrop`). Without one they keep the plain page background; with
+   one, each pane is a kit-card plane: the card's tint and frost, so text keeps
+   the contrast the home page cards give it. */
+.ade-chat-scene {
+  --ade-chat-scene-canvas: var(--chat-canvas-bg);
+  background: var(--color-bg);
+}
+html[data-scene="image"] .ade-chat-scene {
+  /* The chat pane's own canvas (`canvasFill`) steps aside for the plane. */
+  --ade-chat-scene-canvas: transparent;
+  background: transparent;
+}
+html[data-scene="image"] .ade-chat-scene-plane {
+  background: var(--kit-card-bg);
+  backdrop-filter: var(--kit-card-blur);
+  -webkit-backdrop-filter: var(--kit-card-blur);
+}

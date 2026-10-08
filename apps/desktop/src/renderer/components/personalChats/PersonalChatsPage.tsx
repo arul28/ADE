@@ -31,6 +31,7 @@ import {
 import { useAppStore } from "../../state/appStore";
 import { openChatInBrowserTab, openUrlInBrowserTab } from "../browser/browserTab";
 import { useAgentBrowserPresenceSince } from "../terminals/agentBrowserPresence";
+import { ChatSceneBackdrop } from "./ChatSceneBackdrop";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { rememberExplicitRemotePick } from "../app/usePreferLocalCheckout";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
@@ -349,7 +350,8 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const title = selectedSession ? sessionTitle(selectedSession) : "New chat";
 
   return (
-    <div className="flex h-full min-h-0 bg-bg text-fg" data-testid="personal-chats-page" data-target={targetKey}>
+    <div className="ade-chat-scene relative flex h-full min-h-0 text-fg" data-testid="personal-chats-page" data-target={targetKey}>
+      <ChatSceneBackdrop />
       <ProjectlessSidebar
         standalone={standalone}
         machineLabel={machineLabel}
@@ -372,7 +374,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         onTogglePin={togglePin}
       />
 
-      <main className="relative flex min-w-0 flex-1 flex-col">
+      <main className="ade-chat-scene-plane relative flex min-w-0 flex-1 flex-col">
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-fg/[0.055] px-3">
           <button type="button" className="hidden h-7 w-7 items-center justify-center rounded-md text-muted-fg/55 hover:bg-fg/[0.06] max-md:flex" onClick={() => setMobileListOpen(true)} aria-label="Show chats"><ArrowLeft size={15} /></button>
           <div className="min-w-0 flex-1 truncate font-sans text-[12px] font-medium text-fg/75">{title}</div>
@@ -416,6 +418,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                 onSessionCreated={handleSessionCreated}
                 composerHandleRef={composerRef}
                 emptyStateAccessory={providerUnavailable ? null : <SuggestionChips prompts={CHAT_SUGGESTIONS} onSelect={setComposerDraft} />}
+                canvasFill="var(--ade-chat-scene-canvas)"
                 hideSessionTabs
                 hideWorkspaceChrome
                 hideSurfaceHeader
