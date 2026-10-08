@@ -142,11 +142,11 @@ describe("HeaderActivityControl", () => {
     renderControl();
 
     const trigger = screen.getByTestId("header-activity-trigger");
-    // A raised hand is the only thing the badge counts. A failed run is loud in
-    // its own section, and a pull request is not a session at all.
-    expect(trigger.textContent).toContain("1");
+    // The badge is the Needs you column: a raised hand and a failure (the
+    // user's move too). A pull request is not a session at all.
+    expect(trigger.textContent).toContain("2");
     expect(trigger.getAttribute("aria-label"))
-      .toBe("Activity · 1 needs you · 1 failed · 1 working");
+      .toBe("Activity · 2 need you · 1 working");
     expect(trigger.getAttribute("data-state")).toBe("waiting");
 
     fireEvent.click(trigger);
@@ -177,79 +177,88 @@ describe("HeaderActivityControl", () => {
   });
 
   /**
-   * Done is the most final and the most common state there is. Letting it into
-   * the dropdown turns a glance into a scroll past yesterday's finished runs,
-   * so it lives in the full list — with a count here that says where it went.
+   * Done is the most common state and the least urgent, so it folds into one
+   * "N done" line. The line opens it in place and its heading folds it back.
    */
-  it("shows only live sections and hands the done band to the full list", () => {
+  it("groups rows by column and folds Done until it is opened", () => {
     seedItems([
       item("done", "completed"),
       item("live", "running"),
       item("asks", "needs_you"),
       item("broke", "failed"),
     ]);
-    const onOpenPane = renderControl();
+    renderControl();
     const dialog = openPanel();
 
     expect(activityStore.getState().headerSurfaceVisible).toBe(true);
-    const sections = Array.from(
-      dialog.querySelectorAll<HTMLElement>("[data-activity-section]"),
-    ).map((section) => section.getAttribute("data-activity-section"));
-    expect(sections).toEqual(["needs-you", "failed", "working"]);
-    expect(
-      Array.from(dialog.querySelectorAll("[data-activity-row]")).map((row) =>
-        row.getAttribute("data-activity-row"),
-      ),
-    ).toEqual(["asks", "broke", "live"]);
+    const columns = () => Array.from(
+      dialog.querySelectorAll<HTMLElement>("[data-activity-column]"),
+    ).map((section) => section.getAttribute("data-activity-column"));
+    const rows = () => Array.from(dialog.querySelectorAll("[data-activity-row]"))
+      .map((row) => row.getAttribute("data-activity-row"));
+    expect(columns()).toEqual(["needs_you", "working"]);
+    expect(rows()).not.toContain("done");
 
-    const handoff = screen.getByRole("button", { name: /1 done in the full list/ });
-    fireEvent.click(handoff);
-    expect(onOpenPane).toHaveBeenCalledTimes(1);
-  });
+    const fold = () => dialog.querySelector<HTMLButtonElement>("[data-activity-done-fold]");
+    expect(fold()?.textContent).toContain("1 done");
+    fireEvent.click(fold()!);
+    expect(columns()).toEqual(["needs_you", "working", "done"]);
+    expect(rows()).toContain("done");
 
-  it("collapses a section, persists it, and keeps the count visible", () => {
-    seedItems([item("asks", "needs_you"), item("live", "running")]);
-    renderControl();
-    openPanel();
-
-    const toggle = () => document.body.querySelector<HTMLButtonElement>(
-      '[data-activity-section-toggle="needs-you"]',
-    )!;
-    expect(toggle().getAttribute("aria-expanded")).toBe("true");
-
-    fireEvent.click(toggle());
-    expect(toggle().getAttribute("aria-expanded")).toBe("false");
-    expect(document.getElementById(toggle().getAttribute("aria-controls")!)?.hidden).toBe(true);
-    // The heading still reports what it is hiding.
-    expect(toggle().textContent).toContain("1");
-
-    // Reopening the popover keeps the shape the user chose.
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Activity" }), { key: "Escape" });
-    openPanel();
-    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(dialog.querySelector<HTMLButtonElement>('[data-activity-section-toggle="done"]')!);
+    expect(rows()).not.toContain("done");
+    expect(fold()).toBeTruthy();
   });
 
   /**
-   * Per-surface memory: the dropdown is a glance and the pane is a work
-   * session, so folding Done away in one must not fold it away in the other.
+   * The chips are the summary and the filter at once: picking one lists only
+   * that column, and every chip keeps its count so the way back stays visible.
    */
-  it("keeps its collapsed sections separate from the pane's", () => {
-    seedItems([item("asks", "needs_you")]);
+  it("narrows to one column from the chips and keeps every chip's count", () => {
+    seedItems([
+      item("asks", "needs_you"),
+      item("live", "running"),
+      item("ci", "running", { boardColumn: "waiting", waitingReason: "ci" }),
+    ]);
+    renderControl();
+    const dialog = openPanel();
+    const chips = within(screen.getByTestId("activity-column-chips"));
+    const rows = () => Array.from(dialog.querySelectorAll("[data-activity-row]"))
+      .map((row) => row.getAttribute("data-activity-row"));
+
+    fireEvent.click(chips.getByRole("radio", { name: /Waiting/ }));
+    expect(rows()).toEqual(["ci"]);
+    expect(within(dialog).getByText("CI running")).toBeTruthy();
+    expect(chips.getByRole("radio", { name: /Needs you/ }).textContent).toContain("1");
+    expect(chips.getByRole("radio", { name: /Working/ }).textContent).toContain("1");
+
+    fireEvent.click(chips.getByRole("radio", { name: /All/ }));
+    expect(rows()).toEqual(expect.arrayContaining(["asks", "live", "ci"]));
+  });
+
+  /**
+   * Per-surface memory for the Inbox's project groups: the dropdown is a
+   * glance and the pane is a work session, so folding a group in one must not
+   * fold it in the other.
+   */
+  it("remembers a folded Inbox group for the popover only", () => {
+    seedItems([
+      item("pr", "checks_failing", { kind: "pull_request", eventKind: "pr_checks_failing" }),
+    ]);
     renderControl();
     openPanel();
 
+    fireEvent.click(screen.getByRole("tab", { name: /Inbox/ }));
     fireEvent.click(document.body.querySelector<HTMLButtonElement>(
-      '[data-activity-section-toggle="needs-you"]',
+      '[data-activity-section-toggle="notifications:ADE"]',
     )!);
 
     expect(window.localStorage.getItem("ade:activity:collapsed-sections-popover"))
-      .toBe(JSON.stringify(["needs-you"]));
+      .toBe(JSON.stringify(["notifications:ADE"]));
     expect(window.localStorage.getItem("ade:activity:collapsed-sections-pane")).toBeNull();
   });
 
   it("gives every row a way out, and clears it with one call", async () => {
-    // A live phase on purpose: the popover only lists the non-resting bands,
-    // so a `stale` row is filed under `idle` and never rendered here.
     seedItems([item("live", "running")]);
     renderControl();
     openPanel();
@@ -267,7 +276,8 @@ describe("HeaderActivityControl", () => {
     renderControl();
     const dialog = openPanel();
 
-    expect(dialog.querySelectorAll("[data-activity-section]").length).toBe(1);
+    expect(Array.from(dialog.querySelectorAll("[data-activity-column]"))
+      .map((section) => section.getAttribute("data-activity-column"))).toEqual(["working"]);
     expect(screen.queryByRole("heading", { name: /Needs you/ })).toBeNull();
   });
 
@@ -290,11 +300,9 @@ describe("HeaderActivityControl", () => {
     renderControl();
     const dialog = openPanel();
 
-    expect(screen.getByText("All agents idle")).toBeTruthy();
-    expect(screen.getByText("Nothing needs you.")).toBeTruthy();
-    expect(dialog.querySelector(".activity-hdr-calm-dot")).toBeTruthy();
+    expect(within(dialog).getByText("Nothing running")).toBeTruthy();
     expect(screen.getByTestId("header-activity-trigger").getAttribute("aria-label"))
-      .toBe("Activity · all agents idle");
+      .toBe("Activity · nothing running");
   });
 
   it("never restates its own name in a filler caption", () => {
@@ -442,7 +450,11 @@ describe("HeaderActivityControl", () => {
   });
 
   it("supports keyboard open, roving row navigation, and Escape returning focus", () => {
-    seedItems([item("a", "needs_you"), item("b", "needs_you")]);
+    seedItems([
+      item("a", "needs_you"),
+      item("b", "needs_you"),
+      item("pr", "checks_failing", { kind: "pull_request", eventKind: "pr_checks_failing" }),
+    ]);
     renderControl();
 
     const trigger = screen.getByTestId("header-activity-trigger");
@@ -460,6 +472,11 @@ describe("HeaderActivityControl", () => {
     expect(document.activeElement?.getAttribute("data-activity-row")).toBe("b");
     fireEvent.keyDown(dialog, { key: "Home" });
     expect(document.activeElement?.getAttribute("data-activity-row")).toBe("a");
+
+    // The Inbox moves the same way.
+    fireEvent.click(within(dialog).getByRole("tab", { name: /Inbox/ }));
+    fireEvent.keyDown(dialog, { key: "ArrowDown" });
+    expect(document.activeElement?.getAttribute("data-activity-row")).toBe("pr");
 
     fireEvent.keyDown(dialog, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();

@@ -707,10 +707,15 @@ be told ("tell me when the deploy is done"), and automations use it through the
 **Send notification to mobile app** step (an ADE-action step for
 `attention.sendNotification`).
 
-The path is CLI or automation → `attention.sendNotification` on the brain → the
-account relay client → `POST /attention/account/notify` with the account's
-Clerk bearer token, like every other account route. The brain sends its own
-relay machine key, so a phone that muted this machine stays quiet.
+The path is CLI or automation → the brain → the account relay client →
+`POST /attention/account/notify` with the account's Clerk bearer token, like
+every other account route. The brain sends its own relay machine key, so a
+phone that muted this machine stays quiet. An automation calls
+`attention.sendNotification` in its project. The CLI calls the machine-wide
+`notify.send` RPC (agent role or higher), so it works from any folder and with
+sync off, and it never registers the folder it runs in as a project. A chat or
+pull request link is stamped with the caller's project only when that folder is
+a registered ADE project.
 
 | Field | Limit |
 | --- | --- |

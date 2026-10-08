@@ -217,6 +217,7 @@ import { createAccountActionDomainService } from "../../../../../ade-cli/src/ser
 import { createProxyActionDomainService } from "../../../../../ade-cli/src/services/proxy/proxyService";
 import {
   captureSecretRequestedAnalytics,
+  captureNotificationSentAnalytics,
   captureProviderCliUpdateAnalytics,
   captureWebhookUrlCreatedAnalytics,
   providerAccountAnalyticsCapture,
@@ -1360,7 +1361,7 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
  * project.
  */
 export function buildSendNotificationAction(
-  runtime: Pick<AdeRuntime, "accountAuthService" | "projectRoot">,
+  runtime: Pick<AdeRuntime, "accountAuthService" | "projectRoot" | "productAnalyticsService">,
   send: NonNullable<AdeRuntime["sendCustomNotification"]>,
   options: { projectRoot?: string | null } = {},
 ) {
@@ -1393,12 +1394,22 @@ export function buildSendNotificationAction(
         // is this one, by the id every machine derives the same way.
         projectId: projectRoot ? deriveProjectId(projectRoot) : null,
       });
+      captureNotificationSentAnalytics({
+        analytics: runtime.productAnalyticsService,
+        surface: "api",
+        outcome: result.devices > 0 && result.failed === 0 ? "completed" : "failed",
+      });
       return {
         sent: result.delivered > 0,
         ...result,
         ...(link && !link.ok ? { linkSkipped: link.problem } : {}),
       };
     } catch (error) {
+      captureNotificationSentAnalytics({
+        analytics: runtime.productAnalyticsService,
+        surface: "api",
+        outcome: error instanceof PushRelayNotifyRateLimitedError ? "skipped_budget" : "failed",
+      });
       if (error instanceof PushRelayNotifyRateLimitedError) {
         const minutes = error.retryAfterSeconds ? Math.max(1, Math.ceil(error.retryAfterSeconds / 60)) : null;
         throw new Error(

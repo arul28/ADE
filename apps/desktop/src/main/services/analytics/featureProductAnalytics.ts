@@ -19,7 +19,8 @@ export type FeatureAnalyticsName =
   | "chat"
   | "work"
   | "automations"
-  | "updates";
+  | "updates"
+  | "attention";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -47,7 +48,8 @@ export type FeatureAnalyticsAction =
   | "session_copy_cli"
   | "webhook_url_created"
   | "secret_requested"
-  | "provider_cli_updated";
+  | "provider_cli_updated"
+  | "notification_sent";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -59,7 +61,8 @@ export type FeatureAnalyticsOutcome =
   | "already_redeemed"
   | "cancelled"
   | "failed"
-  | "kept";
+  | "kept"
+  | "skipped_budget";
 
 /**
  * Convert provider-shaped input to the existing closed provider-family set.
@@ -329,4 +332,19 @@ export function captureSessionImportAnalytics(args: {
     outcome: args.outcome,
     provider: args.provider,
   });
+}
+
+/**
+ * What became of one custom notification: `completed` when the relay took it
+ * for at least one phone and no delivery failed (a phone that stayed quiet by
+ * its own settings is not a failure), `skipped_budget` when the account's
+ * hourly cap refused it, `failed` otherwise, including an account with no
+ * phone. Never the title, body, link, or phones.
+ */
+export function captureNotificationSentAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "skipped_budget" | "failed">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "attention", action: "notification_sent" });
 }

@@ -11,6 +11,7 @@ import {
   providerAccountAnalyticsCapture,
   coarseProviderFamily,
   type FeatureAnalytics,
+  captureNotificationSentAnalytics,
 } from "./featureProductAnalytics";
 
 function recorder(): { analytics: FeatureAnalytics; captured: Array<Record<string, unknown>> } {
@@ -157,7 +158,7 @@ describe("captureSessionImportAnalytics", () => {
   });
 });
 
-describe("webhook, secret-card, and provider CLI update analytics", () => {
+describe("webhook, secret-card, provider CLI update, and custom notification analytics", () => {
   it.each([
     ["webhook URL", (analytics: FeatureAnalytics) => captureWebhookUrlCreatedAnalytics({ analytics, surface: "desktop" }), "automations", "webhook_url_created", "completed"],
     ["secret saved", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "completed" }), "chat", "secret_requested", "completed"],
@@ -165,6 +166,9 @@ describe("webhook, secret-card, and provider CLI update analytics", () => {
     ["secret declined", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "cancelled" }), "chat", "secret_requested", "cancelled"],
     ["provider CLI updated", (analytics: FeatureAnalytics) => captureProviderCliUpdateAnalytics({ analytics, surface: "desktop", provider: "grok", outcome: "completed" }), "updates", "provider_cli_updated", "completed", "other"],
     ["provider CLI update failed", (analytics: FeatureAnalytics) => captureProviderCliUpdateAnalytics({ analytics, surface: "api", provider: "qwen", outcome: "failed" }), "updates", "provider_cli_updated", "failed", "other"],
+    ["custom notification sent", (analytics: FeatureAnalytics) => captureNotificationSentAnalytics({ analytics, surface: "api", outcome: "completed" }), "attention", "notification_sent", "completed"],
+    ["custom notification over the hourly cap", (analytics: FeatureAnalytics) => captureNotificationSentAnalytics({ analytics, surface: "api", outcome: "skipped_budget" }), "attention", "notification_sent", "skipped_budget"],
+    ["custom notification failed", (analytics: FeatureAnalytics) => captureNotificationSentAnalytics({ analytics, surface: "api", outcome: "failed" }), "attention", "notification_sent", "failed"],
   ] as const)("%s survives the allowlist with only closed values", (_label, capture, feature, action, outcome, provider?: string) => {
     const { analytics, captured } = recorder();
     capture(analytics);

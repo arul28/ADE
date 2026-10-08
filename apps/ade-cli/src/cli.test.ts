@@ -381,6 +381,20 @@ describe("ADE CLI", () => {
     });
     expect(shouldAutoRegisterProjectForPlan(logoutPlan)).toBe(false);
 
+    // `ade notify` is machine-wide: it never registers the current folder as a
+    // project (the home folder cannot be one), and it refuses what it cannot
+    // send before connecting at all.
+    const notifyPlan = expectExecutePlan(buildCliPlan([
+      "notify", "--title", "Deploy finished", "--open", "https://ade-app.dev/open?type=pr&number=12&repo=arul28/ADE",
+    ]));
+    expect(notifyPlan.steps[0]).toMatchObject({
+      method: "notify.send",
+      params: { args: { title: "Deploy finished", open: "https://ade-app.dev/open?type=pr&number=12&repo=arul28/ADE" } },
+    });
+    expect(shouldAutoRegisterProjectForPlan(notifyPlan)).toBe(false);
+    expect(() => buildCliPlan(["notify", "--body", "no title"])).toThrow(/needs a title/);
+    expect(() => buildCliPlan(["notify", "--title", "x", "--open", "ade://pr/"])).toThrow(/can't open/);
+
     expect(buildCliPlan(["login", "--max-wait", "42"])).toEqual({
       kind: "account-login",
       maxWaitSec: 42,

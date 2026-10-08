@@ -471,7 +471,7 @@ export function HeaderActivityControl({
             items={items}
             now={now}
             hideDetails={hideDetails}
-            loading={items.length === 0 && syncStatus !== "ready" && syncStatus !== "error"}
+            loading={items.length === 0 && !generatedAt && syncStatus !== "error"}
             onOpenItem={(item) => void openItem(item)}
             onDismissItem={dismissItem}
             onClearInbox={clearInbox}

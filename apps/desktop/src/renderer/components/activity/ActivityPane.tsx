@@ -489,7 +489,7 @@ export function ActivityPane({
             items={visibleItems}
             now={now}
             hideDetails={hideDetails}
-            loading={allItems.length === 0 && syncStatus !== "ready" && syncStatus !== "error"}
+            loading={allItems.length === 0 && !generatedAt && syncStatus !== "error"}
             filtered={filtered}
             selectedItemId={selectedItemId}
             checkedIds={checkedIds}
