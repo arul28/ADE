@@ -155,6 +155,46 @@ export function resolveAdeMediaBinary(input: {
 }
 
 /**
+ * The Windows Apple Music player host (`native/ADEMusicHostWin`), which ships
+ * as a directory: the exe, its WebView2 DLLs and the player page. `null` off
+ * win32, where Music has no host yet. `ADE_MUSIC_HOST_PATH` is the developer
+ * override, honored only when it names a real file.
+ */
+export function resolveMusicHostExecutable(input: {
+  platform?: NodeJS.Platform;
+  isPackaged: boolean;
+  resourcesPath: string;
+  appPath: string;
+  env?: NodeJS.ProcessEnv;
+}): string | null {
+  if ((input.platform ?? process.platform) !== "win32") return null;
+  const override = (input.env ?? process.env).ADE_MUSIC_HOST_PATH?.trim();
+  if (override && fs.existsSync(override)) return override;
+  return input.isPackaged
+    ? path.join(input.resourcesPath, "native", "ade-music-host", "ade-music-host.exe")
+    : path.join(input.appPath, "resources", "native", "ade-music-host", "ade-music-host.exe");
+}
+
+/**
+ * The Windows Now Playing helper (`native/ADENowPlayingWin`), or `null` when
+ * this is not Windows or the helper is not on disk (an unbuilt dev tree), so
+ * the widget can say it is missing instead of failing to spawn.
+ */
+export function resolveNowPlayingHelperBinary(input: {
+  platform?: NodeJS.Platform;
+  isPackaged: boolean;
+  resourcesPath: string;
+  appPath: string;
+}): string | null {
+  if ((input.platform ?? process.platform) !== "win32") return null;
+  const name = "ade-now-playing.exe";
+  const candidates = input.isPackaged
+    ? [path.join(input.resourcesPath, "native", name)]
+    : [path.join(input.appPath, "resources", "native", name), path.join(input.appPath, "apps", "desktop", "resources", "native", name)];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+/**
  * Where a native helper sits when there is no Electron `app` to ask (the
  * runtime daemon) or when Electron main runs it: the process's resources
  * directory, then every `resources/native` walking up from this module.

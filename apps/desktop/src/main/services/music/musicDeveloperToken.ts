@@ -23,9 +23,13 @@ import path from "node:path";
 export const MUSICKIT_TEAM_ID = "VQ372F39G6";
 export const MUSICKIT_KEY_ID = "3NNQ5Y43RA";
 /** Same lifetime the Worker issues. Apple allows up to six months. */
-export const DEVELOPER_TOKEN_TTL_SECONDS = 24 * 60 * 60;
-/** Refresh this long before expiry, so a host started now outlives a long session. */
-const REFRESH_MARGIN_MS = 2 * 60 * 60_000;
+export const DEVELOPER_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+/**
+ * Refresh this long before expiry: a player host keeps the token it started
+ * with for its whole run. Half the token's remaining life when it arrived, if
+ * that is shorter, so a short-lived token is not fetched again on every call.
+ */
+const REFRESH_MARGIN_MS = 24 * 60 * 60_000;
 
 export type DeveloperToken = { token: string; expiresAt: number; source: "local" | "worker" };
 
@@ -86,8 +90,6 @@ export function resolveLocalMusicKitKey(args: {
 
 export type DeveloperTokenProvider = {
   get: (options?: { forceRefresh?: boolean }) => Promise<DeveloperToken>;
-  /** Where tokens come from, for the doc and the logs. */
-  source: () => "local" | "worker";
 };
 
 export function createDeveloperTokenProvider(args: {
@@ -102,6 +104,7 @@ export function createDeveloperTokenProvider(args: {
 }): DeveloperTokenProvider {
   const env = args.env ?? process.env;
   let cached: DeveloperToken | null = null;
+  let refreshMarginMs = REFRESH_MARGIN_MS;
   let inflight: Promise<DeveloperToken> | null = null;
   const local = () => resolveLocalMusicKitKey({ isPackaged: args.isPackaged, env });
 
@@ -137,15 +140,16 @@ export function createDeveloperTokenProvider(args: {
   };
 
   return {
-    source: () => (local() ? "local" : "worker"),
     get: async (options) => {
-      if (!options?.forceRefresh && cached && cached.expiresAt - Date.now() > REFRESH_MARGIN_MS) return cached;
+      if (!options?.forceRefresh && cached && cached.expiresAt - Date.now() > refreshMarginMs) return cached;
       if (inflight) return inflight;
       inflight = (async () => {
         try {
           const key = local();
-          cached = key ? await mintLocal(key) : await fetchWorker();
-          return cached;
+          const next = key ? await mintLocal(key) : await fetchWorker();
+          refreshMarginMs = Math.min(REFRESH_MARGIN_MS, Math.max(0, (next.expiresAt - Date.now()) / 2));
+          cached = next;
+          return next;
         } finally {
           inflight = null;
         }

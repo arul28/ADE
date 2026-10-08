@@ -28,9 +28,10 @@ import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } f
  *   command arrives) and is unloaded after `IDLE_UNLOAD_MS` without playback.
  *   Unloading keeps a snapshot (queue ids, index, second); the next play
  *   relaunches the host and continues the same song at the same second.
- * - The Music-User-Token lives in ADE's desktop credential store (the same
- *   machine store the API keys use). It is read once, kept in memory, and never
- *   logged.
+ * - The Music-User-Token lives in `musicTokenStore`: one file in this app's
+ *   user data, encrypted with safeStorage. It is read once, kept in memory,
+ *   passed to the player on every start, and never logged. The player page
+ *   deletes MusicKit's own saved copy, so nothing else keeps it.
  *
  * Nothing here blocks the main thread: the host is a child process on async
  * pipes, Apple calls are `fetch`, and the credential store is used through its
@@ -145,6 +146,8 @@ export function createMusicService(args: {
   let userTokenLoaded: Promise<void> | null = null;
   let host: MusicHost | null = null;
   let hostStarting: Promise<MusicHost> | null = null;
+  /** A host on its way out. A new one must not open the same profile until it is gone. */
+  let hostStopping: Promise<void> | null = null;
   let snapshot: HostSnapshot | null = null;
   let unloadTimer: NodeJS.Timeout | null = null;
   let busy = 0;
@@ -365,6 +368,7 @@ export function createMusicService(args: {
     if (hostStarting) return hostStarting;
     if (!args.hostExecutable) throw new Error(state.message ?? "Music isn't available on this computer.");
     hostStarting = (async () => {
+      if (hostStopping) await hostStopping;
       await loadUserToken();
       await checkAvailability();
       if (state.availability !== "ready") throw new Error(state.message ?? "Music isn't available.");
@@ -408,7 +412,7 @@ export function createMusicService(args: {
         applyHostState(configured);
         return h;
       } catch (error) {
-        await h.stop(1_000).catch(() => {});
+        await stopHost(h, 1_000).catch(() => {});
         state.host = { status: snapshot ? "suspended" : "failed", pid: null, unloadAt: null };
         state.message = errorMessage(error);
         emit();
@@ -422,25 +426,39 @@ export function createMusicService(args: {
     }
   };
 
-  /** Snapshot the queue and stop the host. `idle`: the 5-minute unload. */
-  const unload = async (reason: "idle" | "quit" | "disconnect") => {
+  const stopHost = (h: MusicHost, graceMs?: number): Promise<void> => {
+    const stopping = h.stop(graceMs).finally(() => {
+      if (hostStopping === stopping) hostStopping = null;
+    });
+    hostStopping = stopping;
+    return stopping;
+  };
+
+  /** Snapshot the queue (not on disconnect) and stop the host. `idle`: the 5-minute unload. */
+  const unload = async (reason: "idle" | "disconnect") => {
     const h = host;
     if (!h) return;
     if (reason === "idle" && (state.playback.isPlaying || busy > 0 || state.connecting)) {
       scheduleIdleUnload();
       return;
     }
-    try {
-      const s = await h.request<HostSnapshot>("snapshot", {}, 5_000);
-      snapshot = s && s.ids.length > 0 && s.index >= 0 ? s : null;
-    } catch {
-      // A player that won't answer has nothing worth keeping.
+    if (reason === "disconnect") {
+      snapshot = null;
+    } else {
+      try {
+        const s = await h.request<HostSnapshot>("snapshot", {}, 5_000);
+        snapshot = s && s.ids.length > 0 && s.index >= 0 ? s : null;
+      } catch {
+        // A player that won't answer has nothing worth keeping.
+      }
     }
+    // Another unload got here first while this one waited for the snapshot.
+    if (host !== h) return;
     host = null;
     if (unloadTimer) clearTimeout(unloadTimer);
     unloadTimer = null;
     const t0 = Date.now();
-    await h.stop();
+    await stopHost(h);
     args.logger?.info("music.host_unloaded", { reason, ms: Date.now() - t0, kept: Boolean(snapshot) });
     state.playback.isPlaying = false;
     if (state.playback.state === "playing") state.playback.state = "paused";
@@ -610,8 +628,8 @@ export function createMusicService(args: {
         // The stored token goes regardless.
       }
     }
-    snapshot = null;
     await unload("disconnect");
+    snapshot = null;
     await dropUserToken();
     state.playback = { ...state.playback, nowPlaying: null, isPlaying: false, state: "none", position: 0, duration: 0, queueLength: 0, queuePosition: -1 };
     state.host = { status: "stopped", pid: null, unloadAt: null };
@@ -689,16 +707,13 @@ export function createMusicService(args: {
       if (state.connecting) host?.send({ cmd: "closeAuth" });
     },
     setRating: (input: { id: string; library: boolean; liked: boolean | null }) => browse(() => api.setRating(input)),
-    /** For diagnostics and measurement: the host's pids. */
-    hostPid: () => host?.pid ?? null,
-    unloadNow: () => unload("idle"),
     dispose: async () => {
       disposed = true;
       if (broadcastTimer) clearTimeout(broadcastTimer);
       if (unloadTimer) clearTimeout(unloadTimer);
       const h = host;
       host = null;
-      if (h) await h.stop(2_000);
+      if (h) await stopHost(h, 2_000);
     },
   };
 }

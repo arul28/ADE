@@ -5,7 +5,7 @@ import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { parseTrustedAccountDirectoryBaseUrl } from "../../../shared/accountDirectory";
 import { MUSIC_IPC, type MusicCommand, type MusicLibraryKind, type MusicSearchScope } from "../../../shared/types/music";
 import { createDeveloperTokenProvider } from "./musicDeveloperToken";
-import { resolveMusicHostExecutable } from "./musicHostProcess";
+import { resolveMusicHostExecutable } from "../native/nativeHelperPaths";
 import { getNowPlayingService } from "../home/registerHomeWidgetsIpc";
 import { createMusicService, type MusicService } from "./musicService";
 import { createMusicNowPlayingBridge } from "./musicNowPlayingBridge";

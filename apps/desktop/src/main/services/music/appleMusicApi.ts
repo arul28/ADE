@@ -196,7 +196,6 @@ export function createAppleMusicApi(args: {
   };
 
   return {
-    storefrontId,
     clearCache: () => {
       cache.clear();
       storefront = null;

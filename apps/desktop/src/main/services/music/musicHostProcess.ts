@@ -1,7 +1,9 @@
-import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
+
+import { killWindowsProcessTreeAsync, terminateProcessTree } from "../shared/processExecution";
 
 /**
  * The player host: a separate process that runs MusicKit JS in the OS web
@@ -9,7 +11,7 @@ import { createInterface } from "node:readline";
  *
  * Every platform implements the same `MusicHost`. Windows runs
  * `ade-music-host.exe` (WebView2, `native/ADEMusicHostWin`). macOS has no host
- * yet: `resolveMusicHostExecutable` returns null there and the Music tab says
+ * yet: `resolveMusicHostExecutable` (`native/nativeHelperPaths.ts`) returns null there and the Music tab says
  * Music on Mac is coming. A WKWebView helper only has to speak this protocol.
  *
  * Protocol (see `native/ADEMusicHostWin/page/player.js`):
@@ -26,7 +28,7 @@ export type MusicHost = {
   /** Resolves on `hostReady`; rejects on `hostError` or an early exit. */
   ready: Promise<{ browserPid: number | null; origin: string | null }>;
   request: <T = unknown>(cmd: string, args?: Record<string, unknown>, timeoutMs?: number) => Promise<T>;
-  /** Write a host-level line (`show`/`hide`) without waiting for a reply. */
+  /** Write a host-level line (`showAuth`/`closeAuth`) without waiting for a reply. */
   send: (line: Record<string, unknown>) => void;
   onEvent: (cb: (event: MusicHostEvent) => void) => () => void;
   onExit: (cb: (info: { code: number | null; signal: string | null }) => void) => () => void;
@@ -41,37 +43,6 @@ export class MusicHostError extends Error {
     this.name = "MusicHostError";
     this.code = code;
   }
-}
-
-export function resolveMusicHostExecutable(input: {
-  platform?: NodeJS.Platform;
-  isPackaged: boolean;
-  resourcesPath: string;
-  appPath: string;
-  env?: NodeJS.ProcessEnv;
-}): string | null {
-  if ((input.platform ?? process.platform) !== "win32") return null;
-  const override = (input.env ?? process.env).ADE_MUSIC_HOST_PATH?.trim();
-  if (override && fs.existsSync(override)) return override;
-  return input.isPackaged
-    ? path.join(input.resourcesPath, "native", "ade-music-host", "ade-music-host.exe")
-    : path.join(input.appPath, "resources", "native", "ade-music-host", "ade-music-host.exe");
-}
-
-/** Kill a process and everything under it. Windows only needs taskkill /T. */
-function killTree(pid: number): Promise<void> {
-  return new Promise((resolve) => {
-    if (process.platform === "win32") {
-      execFile("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }, () => resolve());
-    } else {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // already gone
-      }
-      resolve();
-    }
-  });
 }
 
 export function startMusicHost(args: {
@@ -220,9 +191,23 @@ export function startMusicHost(args: {
         exitPromise.then(() => false),
         new Promise<boolean>((resolve) => setTimeout(() => resolve(true), graceMs)),
       ]);
-      if (timedOut && child.pid) {
-        args.logger?.warn("music.host_kill_tree", { pid: child.pid });
-        await killTree(child.pid);
+      if (timedOut && !exited) {
+        args.logger?.warn("music.host_kill_tree", { pid: child.pid ?? null });
+        // WebView2's browser and renderer processes are the host's children, so
+        // kill the tree. On Windows this is terminateProcessTree's taskkill /T /F
+        // plus child.kill(), with the taskkill made async so main stays
+        // responsive; the exit checks are the PID-reuse guard.
+        if (process.platform === "win32") {
+          if (child.pid && child.exitCode === null && child.signalCode === null) await killWindowsProcessTreeAsync(child.pid);
+          try {
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+          } catch {
+            // Already gone.
+          }
+        } else {
+          terminateProcessTree(child, "SIGKILL");
+        }
+        await Promise.race([exitPromise, new Promise((resolve) => setTimeout(resolve, 2_000))]);
       }
     },
   };
