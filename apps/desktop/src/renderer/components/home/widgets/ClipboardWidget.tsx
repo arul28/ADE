@@ -7,14 +7,15 @@ import { useHomeLayoutStore } from "../homeLayout";
 import { useWidgetPreview } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { FitList } from "../HomeFitList";
-import { relativeTimeShort } from "./widgetHooks";
+import { formatBytesShort, relativeTimeShort } from "./widgetHooks";
 import "../homeWidgets.css";
 
 /**
  * Clipboard history. The desktop main process watches the clipboard while
  * this widget is on the home page (one cheap read a second) and keeps the
  * last 50 copies in memory; "Keep after restart" also writes them to this
- * computer's ADE user data. Copies that look like secrets (tokens, private
+ * computer's ADE user data. A copied picture shows as a thumbnail and copies
+ * back whole (ADE keeps up to 50 MB of pictures; the oldest go first). Copies that look like secrets (tokens, private
  * keys, generated passwords) or that a password manager marks as concealed
  * are never kept. Removing the widget stops the watch.
  */
@@ -91,41 +92,65 @@ export default function ClipboardWidget({ item }: HomeWidgetProps) {
   const entries = useMemo(() => {
     const all = state?.entries ?? [];
     const query = filter.trim().toLowerCase();
-    return query ? all.filter((entry) => entry.text.toLowerCase().includes(query)) : all;
+    if (!query) return all;
+    return all.filter((entry) => (entry.image
+      ? "image picture screenshot".includes(query) || `${entry.image.width}x${entry.image.height}`.includes(query)
+      : entry.text.toLowerCase().includes(query)));
   }, [filter, state?.entries]);
   const roomy = item.size !== "s";
 
+  const copyEntry = (id: string, what: string) => {
+    void bridge?.copy(id).then((ok) => {
+      showToast(ok
+        ? { id: "home-clipboard-copied", tone: "success", title: `${what} copied`, durationMs: 1_800 }
+        : { id: "home-clipboard-copied", tone: "error", title: `Couldn't copy the ${what.toLowerCase()}`, durationMs: 3_000 });
+    });
+  };
+
   const renderEntry = (entry: (typeof entries)[number]) => {
-                  const kind = clipKind(entry.text);
-                  return (
-                  <div key={entry.id} role="listitem" className="ade-clip-row" data-kind={kind.kind}>
-                    <ClipGlyph kind={kind} />
-                    <button
-                      type="button"
-                      className="ade-clip-main"
-                      title="Copy again"
-                      onClick={() => {
-                        void bridge?.copy(entry.id).then((ok) => {
-                          if (ok) showToast({ id: "home-clipboard-copied", tone: "success", title: "Copied", durationMs: 1_800 });
-                        });
-                      }}
-                    >
-                      <span className="ade-clip-text">{entry.text.length > 400 ? `${entry.text.slice(0, 400)}…` : entry.text}</span>
-                      <span className="ade-clip-meta kit-num">
-                        {kind.label ? `${kind.label} · ` : ""}
-                        {relativeTimeShort(entry.copiedAt)}
-                        {entry.length > 120 ? ` · ${entry.length.toLocaleString()} chars` : ""}
-                      </span>
-                    </button>
-                    <div className="ade-clip-actions">
-                      <button type="button" className="kit-icon-btn" aria-label="Copy again" onClick={() => void bridge?.copy(entry.id)}>
-                        <Copy size={12} />
-                      </button>
-                      <button type="button" className="kit-icon-btn" aria-label="Remove from history" onClick={() => void bridge?.remove(entry.id)}>
-                        <X size={12} />
-                      </button>
-                    </div>
-                  </div>
+    const actions = (label: string) => (
+      <div className="ade-clip-actions">
+        <button type="button" className="kit-icon-btn" aria-label={`Copy ${label} again`} onClick={() => copyEntry(entry.id, entry.image ? "Image" : "Text")}>
+          <Copy size={12} />
+        </button>
+        <button type="button" className="kit-icon-btn" aria-label="Remove from history" onClick={() => void bridge?.remove(entry.id)}>
+          <X size={12} />
+        </button>
+      </div>
+    );
+    if (entry.image) {
+      const image = entry.image;
+      return (
+        <div key={entry.id} role="listitem" className="ade-clip-row" data-kind="image">
+          <button type="button" className="ade-clip-main ade-clip-image-main" title="Copy this image again" onClick={() => copyEntry(entry.id, "Image")}>
+            <span className="ade-clip-thumb" style={{ aspectRatio: `${Math.max(0.6, Math.min(2.4, image.width / Math.max(1, image.height)))}` }}>
+              <img src={image.thumb} alt="" draggable={false} decoding="async" />
+            </span>
+            <span className="ade-clip-image-text">
+              <span className="ade-clip-text">Image</span>
+              <span className="ade-clip-meta kit-num">
+                {image.width} × {image.height} · {formatBytesShort(image.bytes)} · {relativeTimeShort(entry.copiedAt)}
+              </span>
+            </span>
+          </button>
+          {actions("image")}
+        </div>
+      );
+    }
+    const kind = clipKind(entry.text);
+    return (
+      <div key={entry.id} role="listitem" className="ade-clip-row" data-kind={kind.kind}>
+        <ClipGlyph kind={kind} />
+        <button type="button" className="ade-clip-main" title="Copy again" onClick={() => copyEntry(entry.id, "Text")}>
+          <span className="ade-clip-text">{entry.text.length > 400 ? `${entry.text.slice(0, 400)}…` : entry.text}</span>
+          <span className="ade-clip-meta kit-num">
+            {kind.label ? `${kind.label} · ` : ""}
+            {relativeTimeShort(entry.copiedAt)}
+            {entry.length > 120 ? ` · ${entry.length.toLocaleString()} chars` : ""}
+          </span>
+        </button>
+        {actions("text")}
+      </div>
     );
   };
 

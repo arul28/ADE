@@ -132,11 +132,28 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 .ade-home-action:not(:disabled):hover { border-color: color-mix(in srgb, var(--color-fg) 24%, transparent); }
 .ade-home-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .ade-home-action:disabled { opacity: 0.5; cursor: default; }
-/* Apple's official "Listen on Apple Music" badge as the Apple Music button,
-   unmodified (Apple's identity guidelines), sized to the action row. */
-.ade-home-apple-music { display: inline-flex; flex: none; align-items: center; height: 34px; border-radius: 7px; cursor: pointer; transition: transform 120ms, filter 120ms; }
-.ade-home-apple-music:hover { filter: brightness(1.12); }
-.ade-home-apple-music:active { transform: scale(0.97); }
+/* Browser and Apple Music: square, logo-only, the same height as the text
+   actions. Apple Music is its app icon (its own rounded square), so the
+   button is the icon with no frame of its own. */
+.ade-home-icon-action { width: 34px; padding: 0; justify-content: center; }
+.ade-home-icon-action > svg { color: var(--color-fg); }
+.ade-home-apple-music {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+  box-shadow: 0 6px 16px -8px rgb(250 35 59 / 55%);
+  transition: transform 120ms, filter 120ms;
+}
+.ade-home-apple-music > svg { display: block; border-radius: 8px; }
+.ade-home-apple-music:hover { filter: brightness(1.08); }
+.ade-home-apple-music:active { transform: scale(0.95); }
 .ade-home-apple-music:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .ade-home-action[data-primary] {
   background: var(--color-accent);

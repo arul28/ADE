@@ -81,6 +81,34 @@ export function registerHomeWidgetsIpc(args: {
       readText: () => clipboard.readText(),
       writeText: (text) => clipboard.writeText(text),
       readBuffer: (format) => clipboard.readBuffer(format),
+      availableFormats: () => clipboard.availableFormats(),
+      readImage: () => {
+        const image = clipboard.readImage();
+        if (image.isEmpty()) return null;
+        const { width, height } = image.getSize();
+        if (width <= 0 || height <= 0) return null;
+        return {
+          width,
+          height,
+          bitmap: () => image.toBitmap(),
+          png: () => image.toPNG(),
+          thumbnail: (maxPx) => {
+            const scale = Math.min(1, maxPx / Math.max(width, height));
+            const small = scale < 1
+              ? image.resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)), quality: "good" })
+              : image;
+            // PNG keeps screenshots crisp; a photo-like thumbnail that comes out heavy goes to JPEG.
+            const png = small.toPNG();
+            return png.length <= 96 * 1024 ? { mime: "image/png", data: png } : { mime: "image/jpeg", data: small.toJPEG(82) };
+          },
+        };
+      },
+      writeImage: (png) => {
+        const image = nativeImage.createFromBuffer(png);
+        if (image.isEmpty()) return false;
+        clipboard.writeImage(image);
+        return true;
+      },
     },
     ownPids: () => app.getAppMetrics().map((metric) => metric.pid),
     broadcast: (channel, payload) => {
@@ -103,7 +131,7 @@ export function registerHomeWidgetsIpc(args: {
   handle(HOME_WIDGETS_IPC.clipboardClear, () => service.clipboard.clear());
   handle(HOME_WIDGETS_IPC.clipboardRemove, (id: string) => service.clipboard.remove(String(id)));
   handle(HOME_WIDGETS_IPC.clipboardCopy, (id: string) => service.clipboard.copy(String(id)));
-  handle(HOME_WIDGETS_IPC.machineHealth, () => service.machine.health());
+  handle(HOME_WIDGETS_IPC.machineHealth, (input?: { detail?: boolean }) => service.machine.health({ detail: input?.detail === true }));
   handle(HOME_WIDGETS_IPC.machineListeners, () => service.machine.listeners());
   handle(HOME_WIDGETS_IPC.machineKill, (pid: number) => service.machine.kill(Number(pid)));
   handle(HOME_WIDGETS_IPC.weatherSearch, (query: string) => service.weather.search(String(query ?? "")));

@@ -83,9 +83,24 @@ export type HomeNowPlayingState = {
 /** A PNG the renderer drew (a data URL), to copy or save. Nothing is uploaded. */
 export type HomeShareResult = { ok: true; path?: string } | { ok: false; canceled?: boolean; error?: string };
 
+/** A copied image: a small thumbnail to show, and enough to copy the whole image back. */
+export type HomeClipboardImage = {
+  /** A PNG or JPEG data URL, at most 320 px on its long side. */
+  thumb: string;
+  width: number;
+  height: number;
+  /** Size of the full image ADE keeps (PNG bytes). */
+  bytes: number;
+  /** SHA-1 of the pixels: the same picture copied twice is one entry. */
+  hash: string;
+};
+
 export type HomeClipboardEntry = {
   id: string;
+  /** The copied text; empty for an image. */
   text: string;
+  /** Set for a copied image (`text` is then empty). */
+  image?: HomeClipboardImage;
   /** Epoch ms of the copy ADE noticed. */
   copiedAt: number;
   /** Characters in the original copy; `text` is cut at the history's size cap. */
@@ -102,6 +117,43 @@ export type HomeClipboardState = {
   skippedSecrets: number;
 };
 
+export type HomeMachineDrive = {
+  /** "C:\\" on Windows, a mount point elsewhere. */
+  path: string;
+  totalBytes: number;
+  freeBytes: number;
+};
+
+/** Processes that share a name, added up ("chrome" × 31). */
+export type HomeMachineProcessGroup = {
+  name: string;
+  count: number;
+  memBytes: number;
+  /** Share of all cores, 0–100; null where the platform's list has no CPU column (Windows). */
+  cpuPercent: number | null;
+};
+
+/**
+ * The extra readings the Regular and Large views show. Every sample comes
+ * from a call the widget makes while it is on screen; nothing samples in the
+ * background.
+ */
+export type HomeMachineDetail = {
+  /** Busy percent per logical core since the previous call. */
+  cores: number[];
+  /** Whole-machine CPU percent, oldest first, one per call over about the last minute. */
+  cpuHistory: number[];
+  /** Bytes per second in and out, oldest first, aligned with each other. */
+  netHistory: { rx: number[]; tx: number[] } | null;
+  /** The latest throughput; null until two readings exist or where it cannot be read. */
+  net: { rxBps: number; txBps: number } | null;
+  drives: HomeMachineDrive[];
+  /** Biggest memory users first; refreshed every ~10 s. Null while the first list is read. */
+  processes: HomeMachineProcessGroup[] | null;
+  /** Memory the OS can hand out now (free + reclaimable cache on Windows). */
+  memAvailableBytes: number;
+};
+
 export type HomeMachineHealth = {
   /** 0–100 across all cores since the previous call; null on the first call. */
   cpuPercent: number | null;
@@ -113,6 +165,8 @@ export type HomeMachineHealth = {
   uptimeSec: number;
   hostname: string;
   platform: NodeJS.Platform;
+  /** Present when the widget asked for detail (Regular and Large). */
+  detail?: HomeMachineDetail;
 };
 
 export type HomeListeningProcess = {
@@ -172,7 +226,7 @@ export type HomeWidgetsBridge = {
     onChanged: (cb: (state: HomeClipboardState) => void) => () => void;
   };
   machine: {
-    health: () => Promise<HomeMachineHealth>;
+    health: (args?: { detail?: boolean }) => Promise<HomeMachineHealth>;
     listeners: () => Promise<HomeListenersResult>;
     kill: (pid: number) => Promise<HomeKillResult>;
   };

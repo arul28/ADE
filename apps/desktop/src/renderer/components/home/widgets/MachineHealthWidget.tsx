@@ -1,6 +1,6 @@
-import { useCallback, useState } from "react";
-import { Cpu, Plugs, StopCircle } from "@phosphor-icons/react";
-import type { HomeListenersResult, HomeMachineHealth } from "../../../../shared/types/homeWidgets";
+import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
+import { BatteryFull, BatteryHigh, BatteryLow, BatteryMedium, BatteryCharging, Cpu, Plugs, StopCircle } from "@phosphor-icons/react";
+import type { HomeListenersResult, HomeMachineDetail, HomeMachineHealth } from "../../../../shared/types/homeWidgets";
 import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { useWidgetSpan, useWidgetVisible } from "../HomeWidgetGrid";
@@ -10,20 +10,29 @@ import { formatBytesShort, usePolling } from "./widgetHooks";
 import "../homeWidgets.css";
 
 /**
- * Machine health for the computer this window runs on: CPU, memory and the
- * system disk, plus the dev servers holding ports, with a stop button.
+ * Machine health for the computer this window runs on.
  *
- * Cost: counters every 3 s and a port scan every 10 s, both only while the
- * card is on screen. The scan is async native tools in main (netstat and
- * tasklist on Windows, lsof elsewhere), cached 5 s, never PowerShell.
+ * - Compact: CPU, memory and system-disk rings, and a one-line dev-server summary.
+ * - Regular (one column): the rings, a minute of CPU with a bar per core,
+ *   network in and out, the biggest memory users, and the listening ports.
+ * - Large (two columns): the same with room: drives, memory and the lists side
+ *   by side with the charts.
+ *
+ * Cost: one `health` call every 2.5 s while the card is on screen (counters,
+ * plus in Regular and Large one `netstat -e` and a cached drive and process
+ * list in main, never PowerShell), and a port scan every 10 s.
  */
+
+type View = "compact" | "wide" | "regular" | "large";
+
+const PERCENT_LEVEL = (percent: number | null) => (percent == null ? undefined : usageLeftLevel(100 - percent));
 
 /**
  * A gauge in the Limits & machines ring style: the same 270° arc, neutral
  * with room and amber or red by the kit's one rule (20% / 5% left).
  */
 function Gauge({ label, percent, detail }: { label: string; percent: number | null; detail: string }) {
-  const level = percent == null ? undefined : usageLeftLevel(100 - percent);
+  const level = PERCENT_LEVEL(percent);
   const radius = 17;
   const circumference = 2 * Math.PI * radius;
   const arc = circumference * 0.75;
@@ -51,6 +60,276 @@ function formatUptime(seconds: number): string {
   return `${hours}h ${minutes}m`;
 }
 
+function formatRate(bytesPerSecond: number): string {
+  return `${formatBytesShort(bytesPerSecond)}/s`;
+}
+
+/** A drive's name as the OS shows it: "C:" on Windows, the volume name elsewhere. */
+function driveLabel(drivePath: string): string {
+  if (/^[A-Z]:\\$/i.test(drivePath)) return drivePath.slice(0, 2).toUpperCase();
+  if (drivePath === "/") return "System";
+  return drivePath.split("/").filter(Boolean).pop() ?? drivePath;
+}
+
+/** The fixed width of a minute of samples (2.5 s apart), so the line scrolls in from the right. */
+const HISTORY_SLOTS = 24;
+
+/**
+ * A live area chart. Values sit at the right edge and the minute fills in
+ * leftwards; `max` fixes the scale (CPU is 0–100) or it follows the data with
+ * a floor so a quiet line stays quiet. Hovering reads a value out.
+ */
+function LiveChart({
+  series,
+  max,
+  height,
+  label,
+  onHover,
+}: {
+  series: Array<{ values: number[]; tone: "fg" | "accent" }>;
+  max: number;
+  height: number;
+  label: string;
+  onHover?: (index: number | null) => void;
+}) {
+  const id = useId().replace(/:/g, "");
+  const width = 240;
+  const step = width / (HISTORY_SLOTS - 1);
+  const paths = series.map(({ values, tone }) => {
+    const shown = values.slice(-HISTORY_SLOTS);
+    const offset = HISTORY_SLOTS - shown.length;
+    const points = shown.map((value, index) => [
+      (offset + index) * step,
+      2 + (1 - Math.min(1, Math.max(0, value) / max)) * (height - 4),
+    ] as const);
+    if (points.length === 0) return { tone, line: "", area: "", last: null };
+    const line = points.map(([x, y], index) => `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+    const area = `${line} L${width} ${height} L${points[0]![0].toFixed(1)} ${height} Z`;
+    return { tone, line, area, last: points[points.length - 1]! };
+  });
+  const longest = Math.max(0, ...series.map((entry) => Math.min(HISTORY_SLOTS, entry.values.length)));
+  return (
+    <svg
+      className="ade-mh-chart"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      style={{ height }}
+      role="img"
+      aria-label={label}
+      onMouseMove={onHover ? (event) => {
+        const box = event.currentTarget.getBoundingClientRect();
+        const slot = Math.round(((event.clientX - box.left) / Math.max(1, box.width)) * (HISTORY_SLOTS - 1));
+        const index = slot - (HISTORY_SLOTS - longest);
+        onHover(index >= 0 && index < longest ? index : null);
+      } : undefined}
+      onMouseLeave={onHover ? () => onHover(null) : undefined}
+    >
+      <defs>
+        {paths.map((path, index) => (
+          <linearGradient key={index} id={`${id}-${index}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" className="ade-mh-chart-stop" data-tone={path.tone} stopOpacity={0.26} />
+            <stop offset="100%" className="ade-mh-chart-stop" data-tone={path.tone} stopOpacity={0} />
+          </linearGradient>
+        ))}
+      </defs>
+      {[0.5].map((fraction) => (
+        <line key={fraction} x1="0" x2={width} y1={height * fraction} y2={height * fraction} className="ade-mh-chart-grid" vectorEffect="non-scaling-stroke" />
+      ))}
+      {paths.map((path, index) => (path.line ? (
+        <g key={index}>
+          <path d={path.area} fill={`url(#${id}-${index})`} />
+          <path d={path.line} className="ade-mh-chart-line" data-tone={path.tone} vectorEffect="non-scaling-stroke" />
+        </g>
+      ) : null))}
+    </svg>
+  );
+}
+
+/** One thin bar per logical core, busy percent tall. */
+function CoreBars({ cores }: { cores: number[] }) {
+  return (
+    <div className="ade-mh-cores" role="img" aria-label={`${cores.length} cores, busiest ${Math.max(0, ...cores)}%`}>
+      {cores.map((value, index) => (
+        <i key={index} title={`Core ${index + 1} · ${value}%`} data-level={PERCENT_LEVEL(value)}>
+          <b style={{ height: `${Math.max(4, value)}%` }} />
+        </i>
+      ))}
+    </div>
+  );
+}
+
+function Section({ title, aside, children, className }: { title: string; aside?: ReactNode; children: ReactNode; className?: string }) {
+  return (
+    <div className={`ade-mh-section${className ? ` ${className}` : ""}`}>
+      <div className="ade-mh-section-head">
+        <span className="kit-eyebrow">{title}</span>
+        {aside != null ? <span className="ade-mh-section-aside kit-num">{aside}</span> : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function CpuSection({ health, detail, chartHeight }: { health: HomeMachineHealth; detail: HomeMachineDetail; chartHeight: number }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const history = detail.cpuHistory.slice(-HISTORY_SLOTS);
+  const shown = hover != null ? history[hover] : health.cpuPercent;
+  const seconds = hover != null ? Math.round((history.length - 1 - hover) * 2.5) : 0;
+  return (
+    <Section
+      title="CPU"
+      className="ade-mh-cpu"
+      aside={shown == null ? "—" : hover != null && seconds > 0 ? `${shown}% · ${seconds}s ago` : `${shown}%`}
+    >
+      <LiveChart series={[{ values: history, tone: "fg" }]} max={100} height={chartHeight} label={`CPU over the last minute, now ${health.cpuPercent ?? 0}%`} onHover={setHover} />
+      {detail.cores.length > 1 ? <CoreBars cores={detail.cores} /> : null}
+      <div className="ade-mh-cpu-model" title={health.cpuModel ?? undefined}>
+        {health.cpuModel ?? "Processor"} · {health.cpuCount} threads
+      </div>
+    </Section>
+  );
+}
+
+function NetworkSection({ detail, chartHeight }: { detail: HomeMachineDetail; chartHeight: number }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const rx = detail.netHistory?.rx.slice(-HISTORY_SLOTS) ?? [];
+  const tx = detail.netHistory?.tx.slice(-HISTORY_SLOTS) ?? [];
+  // Scale to the busiest moment, but never below 64 KB/s so background chatter stays a flat line.
+  const max = Math.max(64 * 1024, ...rx, ...tx) * 1.1;
+  const down = hover != null ? rx[hover] : detail.net?.rxBps;
+  const up = hover != null ? tx[hover] : detail.net?.txBps;
+  return (
+    <Section
+      title="Network"
+      className="ade-mh-net"
+      aside={(
+        <span className="ade-mh-net-legend">
+          <span className="kit-legend"><i data-tone="accent" />In <b>{down == null ? "—" : formatRate(down)}</b></span>
+          <span className="kit-legend"><i data-tone="fg" />Out <b>{up == null ? "—" : formatRate(up)}</b></span>
+        </span>
+      )}
+    >
+      {detail.netHistory ? (
+        <LiveChart
+          series={[{ values: rx, tone: "accent" }, { values: tx, tone: "fg" }]}
+          max={max}
+          height={chartHeight}
+          label={`Network: ${formatRate(detail.net?.rxBps ?? 0)} in, ${formatRate(detail.net?.txBps ?? 0)} out`}
+          onHover={setHover}
+        />
+      ) : (
+        <div className="ade-mh-chart-empty" style={{ height: chartHeight }}>Measuring…</div>
+      )}
+    </Section>
+  );
+}
+
+function MemorySection({ health, detail, rows }: { health: HomeMachineHealth; detail: HomeMachineDetail; rows: "fit" | number }) {
+  const total = Math.max(1, health.memTotalBytes);
+  const usedPercent = Math.round((health.memUsedBytes / total) * 100);
+  const groups = detail.processes ?? [];
+  // Bars are relative to the biggest user, so the list reads as a ranking.
+  const biggest = Math.max(1, groups[0]?.memBytes ?? 1);
+  const renderGroup = (group: (typeof groups)[number]) => (
+    <div key={group.name} role="listitem" className="ade-mh-proc" title={`${group.name}${group.count > 1 ? ` · ${group.count} processes` : ""} · ${formatBytesShort(group.memBytes)} (${Math.round((group.memBytes / total) * 100)}% of memory)`}>
+      <span className="ade-mh-proc-name">
+        {group.name}
+        {group.count > 1 ? <i className="kit-num">×{group.count}</i> : null}
+      </span>
+      <span className="kit-meter ade-mh-proc-meter"><span style={{ width: `${Math.max(2, (group.memBytes / biggest) * 100)}%` }} /></span>
+      {group.cpuPercent != null ? <span className="ade-mh-proc-cpu kit-num">{group.cpuPercent.toFixed(group.cpuPercent < 10 ? 1 : 0)}%</span> : null}
+      <span className="ade-mh-proc-value kit-num">{formatBytesShort(group.memBytes)}</span>
+    </div>
+  );
+  return (
+    <Section
+      title="Memory"
+      className="ade-mh-mem"
+      aside={`${formatBytesShort(detail.memAvailableBytes)} available`}
+    >
+      <div className="ade-mh-mem-bar" title={`${formatBytesShort(health.memUsedBytes)} used of ${formatBytesShort(health.memTotalBytes)}`}>
+        <span className="kit-meter" data-level={PERCENT_LEVEL(usedPercent)}><span style={{ width: `${usedPercent}%` }} /></span>
+        <span className="kit-num">{formatBytesShort(health.memUsedBytes)} of {formatBytesShort(health.memTotalBytes)}</span>
+      </div>
+      {detail.processes == null ? (
+        <div className="ade-hw-note">Reading processes…</div>
+      ) : rows === "fit" ? (
+        <FitList className="ade-mh-proc-fit" listClassName="ade-mh-proc-list" ariaLabel="Biggest memory users" more={{ dialog: { title: "Memory by app", render: () => groups.map(renderGroup) } }}>
+          {groups.map(renderGroup)}
+        </FitList>
+      ) : (
+        <div className="ade-mh-proc-list" role="list" aria-label="Biggest memory users">{groups.slice(0, rows).map(renderGroup)}</div>
+      )}
+    </Section>
+  );
+}
+
+function DrivesSection({ detail, fallback }: { detail: HomeMachineDetail; fallback: HomeMachineHealth["disk"] }) {
+  const drives = detail.drives.length > 0 ? detail.drives : fallback ? [fallback] : [];
+  if (drives.length === 0) return null;
+  return (
+    <Section title={drives.length === 1 ? "Disk" : "Drives"} className="ade-mh-drives">
+      <div className="ade-mh-drive-list" role="list">
+        {drives.map((drive) => {
+          const used = Math.round(((drive.totalBytes - drive.freeBytes) / Math.max(1, drive.totalBytes)) * 100);
+          return (
+            <div key={drive.path} role="listitem" className="ade-mh-drive" title={`${drive.path} · ${used}% used`}>
+              <span className="ade-mh-drive-name">{driveLabel(drive.path)}</span>
+              <span className="kit-meter" data-level={PERCENT_LEVEL(used)}><span style={{ width: `${used}%` }} /></span>
+              <span className="ade-mh-drive-value kit-num">{formatBytesShort(drive.freeBytes)} free of {formatBytesShort(drive.totalBytes)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
+type BatteryReading = { level: number; charging: boolean };
+
+/**
+ * The battery, from Chromium's Battery Status API (event-driven, no polling).
+ * A desktop reports a full battery that is charging with no time left; that
+ * is "no battery", so nothing shows.
+ */
+function useBattery(): BatteryReading | null {
+  const [reading, setReading] = useState<BatteryReading | null>(null);
+  useEffect(() => {
+    const nav = navigator as Navigator & { getBattery?: () => Promise<EventTarget & { level: number; charging: boolean; chargingTime: number; dischargingTime: number }> };
+    if (!nav.getBattery) return undefined;
+    let cancelled = false;
+    let detach: (() => void) | null = null;
+    void nav.getBattery().then((battery) => {
+      if (cancelled) return;
+      const read = () => {
+        const desktop = battery.level >= 1 && battery.charging && battery.chargingTime === 0 && !Number.isFinite(battery.dischargingTime);
+        setReading(desktop ? null : { level: Math.round(battery.level * 100), charging: battery.charging });
+      };
+      read();
+      for (const name of ["levelchange", "chargingchange"]) battery.addEventListener(name, read);
+      detach = () => {
+        for (const name of ["levelchange", "chargingchange"]) battery.removeEventListener(name, read);
+      };
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+      detach?.();
+    };
+  }, []);
+  return reading;
+}
+
+function BatteryChip({ battery }: { battery: BatteryReading }) {
+  const Glyph = battery.charging ? BatteryCharging : battery.level > 80 ? BatteryFull : battery.level > 45 ? BatteryHigh : battery.level > 20 ? BatteryMedium : BatteryLow;
+  const level = usageLeftLevel(battery.level);
+  return (
+    <span className="ade-mh-battery kit-num" data-level={battery.charging ? undefined : level} title={battery.charging ? "Charging" : "On battery"}>
+      <Glyph size={13} aria-hidden />
+      {battery.level}%
+    </span>
+  );
+}
+
 export default function MachineHealthWidget({ item }: HomeWidgetProps) {
   const visible = useWidgetVisible();
   const bridge = window.ade?.home?.machine;
@@ -60,11 +339,16 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
   const [confirmPid, setConfirmPid] = useState<number | null>(null);
   const [killError, setKillError] = useState<string | null>(null);
   const [stopping, setStopping] = useState<number | null>(null);
+  const battery = useBattery();
+
+  const span = useWidgetSpan(item);
+  const view: View = span.h >= 2 ? (span.w >= 2 ? "large" : "regular") : span.w >= 2 ? "wide" : "compact";
+  const wantsDetail = view !== "compact";
 
   usePolling(async () => {
     if (!bridge) return;
-    setHealth(await bridge.health());
-  }, 3_000, visible && Boolean(bridge));
+    setHealth(await bridge.health({ detail: wantsDetail }));
+  }, 2_500, visible && Boolean(bridge));
 
   const loadListeners = useCallback(async () => {
     if (!bridge) return;
@@ -88,9 +372,8 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
   const diskPercent = disk ? Math.round(((disk.totalBytes - disk.freeBytes) / Math.max(1, disk.totalBytes)) * 100) : null;
   const processes = listeners?.ok ? listeners.processes.filter((entry) => showAll || entry.dev) : [];
   const hiddenCount = listeners?.ok ? listeners.processes.filter((entry) => !entry.dev).length : 0;
-  const span = useWidgetSpan(item);
-  const compact = span.w === 1 && span.h === 1;
   const devServers = listeners?.ok ? listeners.processes.filter((entry) => entry.dev) : [];
+  const detail = health?.detail ?? null;
 
   const renderProcess = (entry: (typeof processes)[number]) => (
                   <div key={entry.pid} role="listitem" className="ade-mh-row" data-dev={entry.dev || undefined}>
@@ -122,58 +405,111 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
                   </div>
   );
 
-  return (
-    <section className="kit-card ade-home-card ade-mh" aria-label="Machine health" data-size={item.size}>
-      <WelcomeCardHead icon={Cpu} title="Machine health">
-        {health ? <span className="ade-home-card-scope" title={health.cpuModel ?? undefined}>{health.hostname} · up {formatUptime(health.uptimeSec)}</span> : null}
-      </WelcomeCardHead>
-      <div className="kit-card-body ade-mh-body">
-        {!health ? (
-          <div className="ade-home-empty"><span>Reading this machine…</span></div>
-        ) : (
-          <div className="ade-mh-gauges">
-            <Gauge label="CPU" percent={health.cpuPercent} detail={`${health.cpuCount} cores`} />
-            <Gauge label="Memory" percent={memPercent} detail={`${formatBytesShort(health.memUsedBytes)} / ${formatBytesShort(health.memTotalBytes)}`} />
-            {disk ? <Gauge label="Disk" percent={diskPercent} detail={`${formatBytesShort(disk.freeBytes)} free`} /> : null}
-          </div>
-        )}
-        {compact ? (
-          <button type="button" className="ade-mh-summary" onClick={() => void loadListeners()} title="Dev servers holding ports">
-            <Plugs size={12} aria-hidden />
-            {!listeners ? "Scanning ports…" : !listeners.ok ? "Ports unavailable" : devServers.length === 0 ? "No dev servers running" : (
-              <>
-                <span>{devServers.length} dev server{devServers.length === 1 ? "" : "s"}</span>
-                <span className="ade-mh-port-list kit-num">
-                  {devServers.flatMap((entry) => entry.ports).slice(0, 3).map((port) => <i key={port}>:{port}</i>)}
-                </span>
-              </>
-            )}
+  const gauges = health ? (
+    <div className="ade-mh-gauges">
+      <Gauge label="CPU" percent={health.cpuPercent} detail={`${health.cpuCount} threads`} />
+      <Gauge label="Memory" percent={memPercent} detail={`${formatBytesShort(health.memUsedBytes)} / ${formatBytesShort(health.memTotalBytes)}`} />
+      {disk ? <Gauge label="Disk" percent={diskPercent} detail={`${formatBytesShort(disk.freeBytes)} free`} /> : null}
+    </div>
+  ) : null;
+
+  const ports = (
+    <div className="ade-mh-ports">
+      <div className="ade-mh-ports-head">
+        <span className="kit-eyebrow">Listening ports</span>
+        {hiddenCount > 0 ? (
+          <button type="button" className="kit-card-head-action ade-mh-toggle" onClick={() => setShowAll((value) => !value)}>
+            {showAll ? "Dev servers only" : `Show all (${hiddenCount} more)`}
           </button>
-        ) : (
-          <div className="ade-mh-ports">
-            <div className="ade-mh-ports-head">
-              <span className="kit-eyebrow">Listening ports</span>
-              {hiddenCount > 0 ? (
-                <button type="button" className="kit-card-head-action ade-mh-toggle" onClick={() => setShowAll((value) => !value)}>
-                  {showAll ? "Dev servers only" : `Show all (${hiddenCount} more)`}
-                </button>
-              ) : null}
-            </div>
-            {killError ? <div className="ade-hw-note" role="alert">{killError}</div> : null}
-            {!listeners ? (
-              <div className="ade-hw-note">Scanning ports…</div>
-            ) : !listeners.ok ? (
-              <div className="ade-hw-note" role="alert">Couldn't list ports: {listeners.error}</div>
-            ) : processes.length === 0 ? (
-              <div className="ade-hw-note"><Plugs size={13} aria-hidden /> No dev servers are listening.</div>
-            ) : (
-              <FitList listClassName="ade-mh-list" more={{ dialog: { title: "Listening ports", render: () => processes.map(renderProcess) } }}>
-                {processes.map(renderProcess)}
-              </FitList>
-            )}
-          </div>
-        )}
+        ) : null}
       </div>
+      {killError ? <div className="ade-hw-note" role="alert">{killError}</div> : null}
+      {!listeners ? (
+        <div className="ade-hw-note">Scanning ports…</div>
+      ) : !listeners.ok ? (
+        <div className="ade-hw-note" role="alert">Couldn't list ports: {listeners.error}</div>
+      ) : processes.length === 0 ? (
+        <div className="ade-hw-note"><Plugs size={13} aria-hidden /> No dev servers are listening.</div>
+      ) : (
+        <FitList listClassName="ade-mh-list" more={{ dialog: { title: "Listening ports", render: () => processes.map(renderProcess) } }}>
+          {processes.map(renderProcess)}
+        </FitList>
+      )}
+    </div>
+  );
+
+  const summary = (
+    <button type="button" className="ade-mh-summary" onClick={() => void loadListeners()} title="Dev servers holding ports">
+      <Plugs size={12} aria-hidden />
+      {!listeners ? "Scanning ports…" : !listeners.ok ? "Ports unavailable" : devServers.length === 0 ? "No dev servers running" : (
+        <>
+          <span>{devServers.length} dev server{devServers.length === 1 ? "" : "s"}</span>
+          <span className="ade-mh-port-list kit-num">
+            {devServers.flatMap((entry) => entry.ports).slice(0, 3).map((port) => <i key={port}>:{port}</i>)}
+          </span>
+        </>
+      )}
+    </button>
+  );
+
+  let body: ReactNode;
+  if (!health) {
+    body = <div className="ade-home-empty"><span>Reading this machine…</span></div>;
+  } else if (view === "compact" || !detail) {
+    body = (
+      <>
+        {gauges}
+        {view === "compact" ? summary : ports}
+      </>
+    );
+  } else if (view === "wide") {
+    body = (
+      <div className="ade-mh-wide">
+        {gauges}
+        <div className="ade-mh-col">
+          <CpuSection health={health} detail={detail} chartHeight={34} />
+          {summary}
+        </div>
+      </div>
+    );
+  } else if (view === "regular") {
+    body = (
+      <>
+        {gauges}
+        <CpuSection health={health} detail={detail} chartHeight={38} />
+        <NetworkSection detail={detail} chartHeight={26} />
+        <MemorySection health={health} detail={detail} rows={3} />
+        {ports}
+      </>
+    );
+  } else {
+    body = (
+      <div className="ade-mh-large">
+        <div className="ade-mh-col">
+          {gauges}
+          <CpuSection health={health} detail={detail} chartHeight={64} />
+          <NetworkSection detail={detail} chartHeight={44} />
+        </div>
+        <div className="ade-mh-col">
+          <MemorySection health={health} detail={detail} rows="fit" />
+          <DrivesSection detail={detail} fallback={disk} />
+          {ports}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <section className="kit-card ade-home-card ade-mh" aria-label="Machine health" data-size={item.size} data-view={view}>
+      <WelcomeCardHead icon={Cpu} title="Machine health">
+        {health ? (
+          <span className="ade-mh-head-meta">
+            {battery ? <BatteryChip battery={battery} /> : null}
+            <span className="ade-home-card-scope" title={health.cpuModel ?? undefined}>{health.hostname} · up {formatUptime(health.uptimeSec)}</span>
+          </span>
+        ) : null}
+      </WelcomeCardHead>
+      <div className="kit-card-body ade-mh-body">{body}</div>
     </section>
   );
 }

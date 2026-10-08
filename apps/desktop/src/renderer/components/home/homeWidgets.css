@@ -455,6 +455,25 @@
 .ade-clip-row[data-kind="code"] .ade-clip-text, .ade-clip-row[data-kind="path"] .ade-clip-text, .ade-clip-row[data-kind="color"] .ade-clip-text { font-family: var(--font-mono); font-size: 11.5px; }
 .ade-clip-row[data-kind="link"] .ade-clip-text { -webkit-line-clamp: 1; color: var(--kit-text-2); }
 .ade-clip-meta { font-size: 10px; color: var(--kit-text-3); }
+/* A copied picture: its thumbnail in the glyph's place, at the picture's own
+   shape (clamped), then "Image" and its size. */
+.ade-clip-image-main { flex-direction: row; align-items: center; gap: 10px; padding-left: 0; }
+.ade-clip-thumb {
+  flex: none;
+  position: relative;
+  height: 40px;
+  max-width: 96px;
+  border-radius: 6px;
+  overflow: hidden;
+  background:
+    repeating-conic-gradient(color-mix(in srgb, var(--color-fg) 7%, transparent) 0 25%, transparent 0 50%) 0 0 / 10px 10px;
+  box-shadow: inset 0 0 0 1px var(--kit-rule), 0 1px 2px rgb(0 0 0 / 18%);
+}
+.ade-clip-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ade-clip-thumb::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 10%, transparent); pointer-events: none; }
+.ade-clip-image-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ade-clip-row[data-kind="image"] .ade-clip-text { -webkit-line-clamp: 1; }
+.ade-clip-row[data-kind="image"]:hover .ade-clip-thumb { box-shadow: inset 0 0 0 1px var(--kit-rule), 0 2px 8px rgb(0 0 0 / 28%); }
 .ade-clip-actions { display: flex; align-items: center; gap: 1px; padding-right: 4px; opacity: 0; transition: opacity 100ms ease; }
 .ade-clip-row:hover .ade-clip-actions, .ade-clip-row:focus-within .ade-clip-actions { opacity: 1; }
 .ade-clip-foot {
@@ -528,6 +547,110 @@
 .ade-mh-confirm { display: inline-flex; gap: 4px; }
 .ade-mh-confirm .kit-btn { height: 24px; padding: 0 8px; font-size: 11px; }
 .ade-mh-stop { color: var(--kit-crit); border-color: color-mix(in srgb, var(--kit-crit) 40%, transparent); }
+
+/* Regular and Large: sections stacked under the rings, each an eyebrow head
+   and its readout. Fixed sections take their height; the lists (ports, and in
+   Large the memory users) share what is left and show "N more". */
+.ade-mh-head-meta { margin-left: auto; display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.ade-mh-battery { display: inline-flex; align-items: center; gap: 3px; flex: none; font-size: 11px; color: var(--kit-text-2); }
+.ade-mh-battery[data-level="warn"] { color: var(--kit-warn); }
+.ade-mh-battery[data-level="crit"] { color: var(--kit-crit); }
+.ade-mh[data-view="regular"] .ade-mh-body,
+.ade-mh[data-view="large"] .ade-mh-body { gap: 0; }
+.ade-mh[data-view="regular"] .ade-mh-body > * + *,
+.ade-mh-col > * + * { margin-top: 10px; }
+.ade-mh[data-view="regular"] .ade-mh-gauges,
+.ade-mh[data-view="large"] .ade-mh-gauges,
+.ade-mh[data-view="wide"] .ade-mh-gauges { flex: none; padding: 0; }
+.ade-mh[data-view="regular"] .ade-mh-gauge,
+.ade-mh[data-view="large"] .ade-mh-gauge { padding: 4px 2px 2px; }
+.ade-mh[data-view="regular"] .ade-mh-ring { width: 44px; margin-bottom: 2px; }
+
+.ade-mh-large { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; }
+.ade-mh-wide { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 18px; align-items: center; }
+.ade-mh-col { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.ade-mh-large .ade-mh-col:first-child { justify-content: space-between; }
+.ade-mh-large .ade-mh-col:first-child > * + * { margin-top: 12px; }
+.ade-mh-large .ade-mh-ring { width: 54px; }
+
+.ade-mh-section { flex: none; display: flex; flex-direction: column; gap: 5px; min-width: 0; padding-top: 9px; border-top: 1px solid var(--kit-rule); }
+.ade-mh-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.ade-mh-section-aside { min-width: 0; font-size: 11px; color: var(--kit-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-mh-large .ade-mh-col:first-child .ade-mh-gauges + .ade-mh-section { margin-top: 4px; }
+
+.ade-mh-chart { display: block; width: 100%; overflow: visible; }
+.ade-mh-chart-grid { stroke: var(--kit-rule); stroke-width: 1; stroke-dasharray: 2 3; }
+.ade-mh-chart-line { fill: none; stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+.ade-mh-chart-line[data-tone="fg"] { stroke: color-mix(in srgb, var(--color-fg) 62%, transparent); }
+.ade-mh-chart-line[data-tone="accent"] { stroke: var(--color-accent); }
+.ade-mh-chart-stop[data-tone="fg"] { stop-color: var(--color-fg); }
+.ade-mh-chart-stop[data-tone="accent"] { stop-color: var(--color-accent); }
+.ade-mh-chart-empty { display: grid; place-items: center; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-fg) 3%, transparent); font-size: 11px; color: var(--kit-text-3); }
+
+.ade-mh-cores { display: flex; align-items: flex-end; gap: 2px; height: 16px; }
+.ade-mh-large .ade-mh-cores { height: 22px; }
+.ade-mh-cores i { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; border-radius: 2px; background: var(--kit-track); overflow: hidden; }
+.ade-mh-cores b { display: block; width: 100%; border-radius: 2px; background: color-mix(in srgb, var(--color-fg) 52%, transparent); }
+.ade-mh-cores i[data-level="warn"] b { background: var(--kit-warn); }
+.ade-mh-cores i[data-level="crit"] b { background: var(--kit-crit); }
+.ade-mh-cpu-model { font-size: 10.5px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.ade-mh-net-legend { display: inline-flex; gap: 10px; }
+.ade-mh-net-legend .kit-legend { font-size: 11px; gap: 5px; }
+.ade-mh-net-legend .kit-legend > b { color: var(--kit-text-2); }
+.ade-mh-net-legend .kit-legend > i[data-tone="accent"] { background: var(--color-accent); }
+.ade-mh-net-legend .kit-legend > i[data-tone="fg"] { background: color-mix(in srgb, var(--color-fg) 62%, transparent); }
+
+.ade-mh-mem-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; font-size: 11px; color: var(--kit-text-2); }
+.ade-mh-proc-list { display: flex; flex-direction: column; margin: 0 -6px; }
+.ade-mh-proc {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(40px, 0.7fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.ade-mh-proc:hover { background: var(--kit-hover); }
+.ade-mh-proc-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-mh-proc-name i { margin-left: 5px; font-style: normal; font-size: 10.5px; color: var(--kit-text-3); }
+.ade-mh-proc-meter { height: 3px; }
+.ade-mh-proc-cpu { font-size: 11px; color: var(--kit-text-3); min-width: 34px; text-align: right; }
+.ade-mh-proc-value { font-size: 11px; color: var(--kit-text-2); min-width: 54px; text-align: right; }
+.ade-mh-proc:not(:has(.ade-mh-proc-cpu)) { grid-template-columns: minmax(0, 1fr) minmax(40px, 0.7fr) auto; }
+
+/* Large: memory users and ports share the right column's spare height. */
+.ade-mh-large .ade-mh-mem { flex: 1 1 0; min-height: 96px; }
+.ade-mh-large .ade-mh-mem .ade-mh-proc-fit { flex: 1 1 auto; min-height: 0; }
+.ade-mh-large .ade-mh-ports { flex: 1 1 0; min-height: 90px; }
+.ade-mh-large .ade-mh-col:last-child > .ade-mh-section:first-child { border-top: 0; padding-top: 0; }
+
+.ade-mh-drive-list { display: flex; flex-direction: column; gap: 6px; }
+.ade-mh-drive { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; align-items: center; gap: 10px; font-size: 12px; }
+.ade-mh-drive-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-mh-drive-value { font-size: 11px; color: var(--kit-text-2); }
+
+.ade-mh[data-view="wide"] .ade-mh-section { border-top: 0; padding-top: 0; }
+.ade-mh[data-view="wide"] .ade-mh-summary { margin-top: 8px; }
+
+/* Short cards give up their least important parts first: the processor
+   line, then network, then the memory users. The ports list never goes. */
+@container widget (max-height: 560px) {
+  .ade-mh[data-view="regular"] .ade-mh-cpu-model { display: none; }
+}
+@container widget (max-height: 500px) {
+  .ade-mh[data-view="regular"] .ade-mh-net { display: none; }
+  .ade-mh-large .ade-mh-cpu-model { display: none; }
+}
+@container widget (max-height: 430px) {
+  .ade-mh[data-view="regular"] .ade-mh-mem { display: none; }
+  .ade-mh-large .ade-mh-drives { display: none; }
+}
+@container widget (max-height: 380px) {
+  .ade-mh-large .ade-mh-net { display: none; }
+}
 
 /* ── contributions ──────────────────────────────────────────────── */
 /* The chart is the shared ContributionSkyline (ui/contributionSkyline.css);

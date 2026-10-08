@@ -73,6 +73,35 @@ export function AppleMusicMark({ compact = false }: { compact?: boolean }) {
   );
 }
 
+/**
+ * The Apple Music app icon as it looks on an iPhone: the red-to-pink rounded
+ * square with a white beamed eighth note. Drawn here as an SVG, not Apple's
+ * file; for strict brand compliance swap in the icon from Apple Music
+ * Marketing Tools (tools.applemediaservices.com) at the same size.
+ */
+export function AppleMusicAppIcon({ size = 16, className }: { size?: number; className?: string }) {
+  const id = `amg-${React.useId().replace(/:/g, "")}`;
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 100 100" aria-hidden focusable="false">
+      <defs>
+        <linearGradient id={id} x1="50" y1="100" x2="50" y2="0" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#FA233B" />
+          <stop offset="1" stopColor="#FB5C74" />
+        </linearGradient>
+      </defs>
+      <rect width="100" height="100" rx="22.5" fill={`url(#${id})`} />
+      <g fill="#fff">
+        {/* Beam, slanting up to the right, then the two stems and their heads. */}
+        <path d="M38.2 25.6 L71.6 18.4 C72.9 18.1 74 19 74 20.4 V27.2 L38.2 34.9 Z" />
+        <rect x="38.2" y="27" width="4.4" height="42.5" rx="1.2" />
+        <rect x="69.6" y="20" width="4.4" height="42.5" rx="1.2" />
+        <ellipse cx="32.4" cy="69.6" rx="9.6" ry="7.4" transform="rotate(-18 32.4 69.6)" />
+        <ellipse cx="63.8" cy="62.6" rx="9.6" ry="7.4" transform="rotate(-18 63.8 62.6)" />
+      </g>
+    </svg>
+  );
+}
+
 /** Apple's official "Listen on Apple Music" badge, unmodified, as attribution. */
 export function AppleMusicBadge({ height = 28, className }: { height?: number; className?: string }) {
   return (

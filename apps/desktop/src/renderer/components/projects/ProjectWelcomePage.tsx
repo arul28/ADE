@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { BROWSER_TAB_ROUTE, browserTabAvailable } from "../browser/browserTab";
-import { AppleMusicBadge } from "../music/musicParts";
+import { AppleMusicAppIcon } from "../music/musicParts";
 import { musicActions } from "../music/musicStore";
 import { musicTabAvailable } from "../music/musicTab";
 import {
@@ -1040,24 +1040,28 @@ export function ProjectWelcomePage() {
                 disabled={webMode && !activeWebMachine}
                 onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
               />
-              {/* The desktop's own browser, as a tab of its own. */}
+              {/* The desktop's own browser and Apple Music, each a tab of its
+                  own, as square app-icon buttons beside the text actions. */}
               {browserAvailable ? (
-                <HomeAction
-                  icon={Globe}
-                  label="Browser"
+                <button
+                  type="button"
+                  className="ade-home-action ade-home-icon-action"
+                  aria-label="Browser"
+                  title="Browser"
                   onClick={() => navigate(BROWSER_TAB_ROUTE)}
-                />
+                >
+                  <Globe size={17} aria-hidden />
+                </button>
               ) : null}
-              {/* Apple Music, as a tab of its own; the tab is the player while it is open. */}
               {musicAvailable ? (
                 <button
                   type="button"
                   className="ade-home-apple-music"
-                  aria-label="Open Apple Music"
-                  title="Open Apple Music"
+                  aria-label="Apple Music"
+                  title="Apple Music"
                   onClick={musicActions.open}
                 >
-                  <AppleMusicBadge height={30} />
+                  <AppleMusicAppIcon size={34} />
                 </button>
               ) : null}
               {showSide ? (

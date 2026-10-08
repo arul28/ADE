@@ -13499,7 +13499,7 @@ const adeBridge = {
       },
     },
     machine: {
-      health: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.machineHealth),
+      health: (args?: { detail?: boolean }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.machineHealth, args ?? {}),
       listeners: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.machineListeners),
       kill: (pid: number) => ipcRenderer.invoke(HOME_WIDGETS_IPC.machineKill, pid),
     },

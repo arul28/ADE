@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,11 +7,15 @@ import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import type {
   HomeClipboardEntry,
+  HomeClipboardImage,
   HomeClipboardState,
   HomeKillResult,
   HomeListenersResult,
   HomeListeningProcess,
+  HomeMachineDetail,
+  HomeMachineDrive,
   HomeMachineHealth,
+  HomeMachineProcessGroup,
   HomeWeather,
   HomeWeatherPlace,
   HomeWeatherResult,
@@ -27,9 +31,13 @@ import { HOME_WIDGETS_IPC } from "../../../shared/types/homeWidgets";
  * in this file spawns synchronously, nothing starts PowerShell, and nothing
  * runs unless a widget asked for it.
  *
- * - Clipboard history polls `clipboard.readText()` once a second, only while
- *   the Clipboard widget is on the home page (`enabled`). A read is a few
- *   hundred microseconds; a slow read (a huge copy) backs the poll off.
+ * - Clipboard history polls `clipboard.readText()` and `availableFormats()`
+ *   once a second, only while the Clipboard widget is on the home page
+ *   (`enabled`). Both are tens of microseconds; a slow read (a huge copy)
+ *   backs the poll off. An image is read (≈5 ms for a 1440p screenshot) only
+ *   when it changed: the PNG copy apps put beside it is compared first
+ *   (≈0.03 ms), and an image with no PNG copy (Print Screen) is re-read at
+ *   most every few seconds.
  * - Machine health is `os` counters plus one async `statfs`, answered when the
  *   widget asks (every few seconds while it is on screen).
  * - Listening ports come from `netstat -ano` and `tasklist` on Windows (native
@@ -39,10 +47,26 @@ import { HOME_WIDGETS_IPC } from "../../../shared/types/homeWidgets";
  *   minutes per place.
  */
 
+/** An image on the clipboard, read once, with what the history needs from it. */
+export type HomeClipboardImageRead = {
+  width: number;
+  height: number;
+  /** Raw pixels, for the content hash. */
+  bitmap: () => Buffer;
+  /** The whole image as PNG (the encode costs ~15 ms for 1440p; called once per new image). */
+  png: () => Buffer;
+  /** A copy whose long side is at most `maxPx`, as PNG or JPEG bytes. */
+  thumbnail: (maxPx: number) => { mime: "image/png" | "image/jpeg"; data: Buffer };
+};
+
 export type HomeWidgetsClipboard = {
   readText: () => string;
   writeText: (text: string) => void;
   readBuffer: (format: string) => Buffer;
+  availableFormats?: () => string[];
+  /** Null when the clipboard has no image (or it is empty). */
+  readImage?: () => HomeClipboardImageRead | null;
+  writeImage?: (png: Buffer) => boolean;
 };
 
 export type HomeWidgetsServiceDeps = {
@@ -61,6 +85,15 @@ const CLIPBOARD_POLL_MS = 1_000;
 const CLIPBOARD_SLOW_POLL_MS = 3_000;
 /** A read slower than this (a multi-megabyte copy) moves the poll to the slow interval. */
 const CLIPBOARD_SLOW_READ_MS = 8;
+/** Full images kept for copying back, in memory (and on disk when kept): oldest go first. */
+const CLIPBOARD_IMAGE_BYTES_CAP = 50 * 1024 * 1024;
+const CLIPBOARD_MAX_IMAGES = 30;
+const CLIPBOARD_THUMB_PX = 320;
+/** An image with no PNG copy beside it is re-read at most this often to notice a new one. */
+const CLIPBOARD_IMAGE_REREAD_MS = 3_000;
+const CLIPBOARD_IMAGE_SLOW_REREAD_MS = 10_000;
+/** The PNG format apps put beside a bitmap: Windows' registered "PNG", macOS' UTI. */
+const PNG_CLIPBOARD_FORMAT: Partial<Record<NodeJS.Platform, string>> = { win32: "PNG", darwin: "public.png" };
 const LISTENERS_TTL_MS = 5_000;
 const WEATHER_TTL_MS = 15 * 60_000;
 const FETCH_TIMEOUT_MS = 8_000;
@@ -207,6 +240,95 @@ function parseLsof(text: string): { byPid: Map<number, Set<number>>; names: Map<
   return { byPid, names };
 }
 
+/**
+ * `netstat -e` (Windows): the first row with two counters is bytes received
+ * and sent since boot. The row's label is localized; its place is not.
+ */
+export function parseNetstatBytes(text: string): { rx: number; tx: number } | null {
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\S.*?\s+(\d+)\s+(\d+)\s*$/.exec(line.trim());
+    if (match) return { rx: Number(match[1]), tx: Number(match[2]) };
+  }
+  return null;
+}
+
+/** `netstat -ib` (macOS): one `<Link#n>` row per interface; bytes in and out are 5th and 2nd from the end. */
+export function parseNetstatInterfaceBytes(text: string): { rx: number; tx: number } | null {
+  let rx = 0;
+  let tx = 0;
+  let found = false;
+  for (const line of text.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 8 || !/^<Link#\d+>$/.test(parts[2] ?? "") || /^lo\d*$/.test(parts[0] ?? "")) continue;
+    const inBytes = Number(parts.at(-5));
+    const outBytes = Number(parts.at(-2));
+    if (!Number.isFinite(inBytes) || !Number.isFinite(outBytes)) continue;
+    rx += inBytes;
+    tx += outBytes;
+    found = true;
+  }
+  return found ? { rx, tx } : null;
+}
+
+/** `/proc/net/dev` (Linux): receive bytes are the first counter, transmit bytes the ninth. */
+export function parseProcNetDev(text: string): { rx: number; tx: number } | null {
+  let rx = 0;
+  let tx = 0;
+  let found = false;
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s*([^:\s]+):\s*(.*)$/.exec(line);
+    if (!match || match[1] === "lo") continue;
+    const fields = match[2]!.trim().split(/\s+/).map(Number);
+    if (fields.length < 9 || !Number.isFinite(fields[0]) || !Number.isFinite(fields[8])) continue;
+    rx += fields[0]!;
+    tx += fields[8]!;
+    found = true;
+  }
+  return found ? { rx, tx } : null;
+}
+
+function groupProcesses(rows: Array<{ name: string; memBytes: number; cpu: number | null }>): HomeMachineProcessGroup[] {
+  const groups = new Map<string, HomeMachineProcessGroup>();
+  for (const row of rows) {
+    const key = row.name.toLowerCase();
+    const group = groups.get(key) ?? { name: row.name, count: 0, memBytes: 0, cpuPercent: row.cpu == null ? null : 0 };
+    group.count += 1;
+    group.memBytes += row.memBytes;
+    if (group.cpuPercent != null && row.cpu != null) group.cpuPercent += row.cpu;
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map((group) => ({ ...group, cpuPercent: group.cpuPercent == null ? null : Math.round(group.cpuPercent * 10) / 10 }))
+    .sort((a, b) => b.memBytes - a.memBytes);
+}
+
+/** `tasklist /FO CSV /NH`, grouped by name: memory is the last column ("123,456 K", separators vary by locale). */
+export function parseTasklistMemory(text: string): HomeMachineProcessGroup[] {
+  const rows: Array<{ name: string; memBytes: number; cpu: null }> = [];
+  for (const line of text.split(/\r?\n/)) {
+    const cells = [...line.trim().matchAll(/"([^"]*)"/g)].map((match) => match[1]!);
+    if (cells.length < 5 || !/^\d+$/.test(cells[1]!)) continue;
+    const pid = Number(cells[1]);
+    const kb = Number(cells[cells.length - 1]!.replace(/[^\d]/g, ""));
+    // The idle and kernel pseudo-processes are not something to act on.
+    if (pid <= 4 || !Number.isFinite(kb) || kb <= 0) continue;
+    rows.push({ name: cells[0]!.replace(/\.exe$/i, ""), memBytes: kb * 1024, cpu: null });
+  }
+  return groupProcesses(rows);
+}
+
+/** `ps -Ao rss=,pcpu=,comm=` (macOS, Linux), grouped by name; CPU becomes a share of all cores. */
+export function parsePsList(text: string, cpuCount: number): HomeMachineProcessGroup[] {
+  const rows: Array<{ name: string; memBytes: number; cpu: number }> = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+([\d.]+)\s+(.+)$/.exec(line);
+    if (!match) continue;
+    const name = path.posix.basename(match[3]!.trim());
+    rows.push({ name, memBytes: Number(match[1]) * 1024, cpu: Number(match[2]) / Math.max(1, cpuCount) });
+  }
+  return groupProcesses(rows);
+}
+
 type WeatherCodeSource = {
   current?: {
     temperature_2m?: number;
@@ -245,11 +367,21 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
   const settingsPath = path.join(dir, "settings.json");
   const historyPath = path.join(dir, "clipboard-history.json");
 
+  const imagesDir = path.join(dir, "clipboard-images");
+  const pngFormat = PNG_CLIPBOARD_FORMAT[platform] ?? null;
+
   let clipboardEnabled = false;
   let clipboardPersist = false;
   let entries: HomeClipboardEntry[] = [];
   let skippedSecrets = 0;
-  let lastText: string | null = null;
+  /** What the last poll saw: "t:<text>", "i:<image key>" or "" for nothing. Null before the first poll. */
+  let lastSeen: string | null = null;
+  let lastFormats = "";
+  /** When an image with no PNG copy was last read, and how long that read took. */
+  let lastImageReadAt = 0;
+  let lastImageReadMs = 0;
+  /** Full PNGs of image entries, by hash. A kept history reads the rest from disk on copy. */
+  const fullImages = new Map<string, Buffer>();
   let pollTimer: NodeJS.Timeout | null = null;
   let pollInterval = CLIPBOARD_POLL_MS;
   let writeTimer: NodeJS.Timeout | null = null;
@@ -269,13 +401,33 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
     await fs.writeFile(settingsPath, JSON.stringify({ clipboard: { enabled: clipboardEnabled, persist: clipboardPersist } }));
   };
 
+  const imageFile = (hash: string) => path.join(imagesDir, `${hash}.png`);
+
+  /** Writes the history and the image files it names, and removes image files it no longer names. */
+  const writeHistory = async () => {
+    await fs.mkdir(imagesDir, { recursive: true });
+    const wanted = new Set(entries.flatMap((entry) => (entry.image ? [`${entry.image.hash}.png`] : [])));
+    for (const entry of entries) {
+      if (!entry.image) continue;
+      const full = fullImages.get(entry.image.hash);
+      if (!full) continue;
+      const file = imageFile(entry.image.hash);
+      const exists = await fs.stat(file).then(() => true, () => false);
+      if (!exists) await fs.writeFile(file, full);
+    }
+    for (const name of await fs.readdir(imagesDir).catch(() => [] as string[])) {
+      if (!wanted.has(name)) await fs.rm(path.join(imagesDir, name), { force: true });
+    }
+    await fs.writeFile(historyPath, JSON.stringify(entries));
+  };
+
   const scheduleHistoryWrite = () => {
     if (writeTimer) clearTimeout(writeTimer);
     writeTimer = setTimeout(() => {
       writeTimer = null;
       const task = clipboardPersist
-        ? fs.mkdir(dir, { recursive: true }).then(() => fs.writeFile(historyPath, JSON.stringify(entries)))
-        : fs.rm(historyPath, { force: true });
+        ? writeHistory()
+        : Promise.all([fs.rm(historyPath, { force: true }), fs.rm(imagesDir, { recursive: true, force: true })]);
       task.catch((error: unknown) => deps.logger?.warn("home.clipboard.persist_failed", { error: String(error) }));
     }, 1_500);
     writeTimer.unref?.();
@@ -300,35 +452,150 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
     return false;
   };
 
+  /**
+   * Puts `entry` first and drops what is over the caps: 50 entries, and at
+   * most 30 pictures and 50 MB of full images (the oldest pictures go first).
+   */
+  const pushEntry = (entry: HomeClipboardEntry, replacing: number) => {
+    let images = 0;
+    let imageBytes = 0;
+    entries = [entry, ...entries.filter((_, index) => index !== replacing)]
+      .slice(0, CLIPBOARD_MAX_ENTRIES)
+      .filter((candidate) => {
+        if (!candidate.image) return true;
+        images += 1;
+        imageBytes += candidate.image.bytes;
+        return candidate === entry || (images <= CLIPBOARD_MAX_IMAGES && imageBytes <= CLIPBOARD_IMAGE_BYTES_CAP);
+      });
+    const kept = new Set(entries.flatMap((candidate) => (candidate.image ? [candidate.image.hash] : [])));
+    for (const hash of [...fullImages.keys()]) if (!kept.has(hash)) fullImages.delete(hash);
+    announce();
+    if (clipboardPersist) scheduleHistoryWrite();
+  };
+
+  /** A cheap identity for the PNG copy on the clipboard: its length and a hash of its two ends. */
+  const pngProbe = (): { key: string; png: Buffer } | null => {
+    if (!pngFormat) return null;
+    let png: Buffer;
+    try {
+      png = deps.clipboard.readBuffer(pngFormat);
+    } catch {
+      return null;
+    }
+    if (!png || png.length < 8) return null;
+    const edge = 64 * 1024;
+    const hash = createHash("sha1").update(png.subarray(0, edge));
+    if (png.length > edge) hash.update(png.subarray(Math.max(edge, png.length - edge)));
+    return { key: `png:${png.length}:${hash.digest("hex")}`, png };
+  };
+
+  const pixelHash = (read: HomeClipboardImageRead) =>
+    createHash("sha1").update(`${read.width}x${read.height}:`).update(read.bitmap()).digest("hex");
+
+  const recordImage = (read: HomeClipboardImageRead, hash: string, pngCopy: Buffer | null) => {
+    const existing = entries.findIndex((entry) => entry.image?.hash === hash);
+    if (existing >= 0) {
+      pushEntry({ ...entries[existing]!, copiedAt: Date.now() }, existing);
+      return;
+    }
+    const full = pngCopy ?? read.png();
+    // One picture bigger than the whole budget is not kept.
+    if (full.length === 0 || full.length > CLIPBOARD_IMAGE_BYTES_CAP) return;
+    const thumb = read.thumbnail(CLIPBOARD_THUMB_PX);
+    const image: HomeClipboardImage = {
+      thumb: `data:${thumb.mime};base64,${thumb.data.toString("base64")}`,
+      width: read.width,
+      height: read.height,
+      bytes: full.length,
+      hash,
+    };
+    fullImages.set(hash, full);
+    pushEntry({ id: randomUUID(), text: "", image, copiedAt: Date.now(), length: 0 }, -1);
+  };
+
+  const recordText = (text: string) => {
+    if (isConcealed() || looksLikeSecret(text)) {
+      skippedSecrets += 1;
+      announce();
+      return;
+    }
+    const kept = text.slice(0, CLIPBOARD_MAX_CHARS);
+    const existing = entries.findIndex((entry) => !entry.image && entry.text === kept);
+    const entry: HomeClipboardEntry = existing >= 0
+      ? { ...entries[existing]!, copiedAt: Date.now() }
+      : { id: randomUUID(), text: kept, copiedAt: Date.now(), length: text.length };
+    pushEntry(entry, existing);
+  };
+
   const poll = () => {
     const started = performance.now();
     let text: string;
+    let formats: string[];
     try {
       text = deps.clipboard.readText() ?? "";
+      formats = deps.clipboard.availableFormats?.() ?? [];
     } catch {
       return;
     }
     const elapsed = performance.now() - started;
     const nextInterval = elapsed > CLIPBOARD_SLOW_READ_MS ? CLIPBOARD_SLOW_POLL_MS : CLIPBOARD_POLL_MS;
     if (nextInterval !== pollInterval) restartPoll(nextInterval);
-    if (text === lastText) return;
-    const first = lastText == null;
-    lastText = text;
+    const formatKey = formats.join("|");
+    const formatsChanged = formatKey !== lastFormats;
+    lastFormats = formatKey;
+    const first = lastSeen == null;
     // The first read is what was on the clipboard before ADE looked; it is
     // recorded only when the history is empty, so a relaunch does not re-add it.
-    if (!text.trim() || (first && entries.length > 0)) return;
-    if (isConcealed() || looksLikeSecret(text)) {
+    const skipFirst = first && entries.length > 0;
+
+    // Text wins: a spreadsheet or document copy also carries a picture of itself.
+    const imageOnly = !text.trim() && deps.clipboard.readImage != null && formats.some((format) => format.startsWith("image/"));
+    if (!imageOnly) {
+      const seen = text.trim() ? `t:${text}` : "";
+      if (seen === lastSeen) return;
+      lastSeen = seen;
+      if (seen && !skipFirst) recordText(text);
+      return;
+    }
+
+    // An image. With a PNG copy beside it, compare that (cheap) and read the picture only when it changed.
+    const probe = pngProbe();
+    if (probe) {
+      const seen = `i:${probe.key}`;
+      if (seen === lastSeen) return;
+      lastSeen = seen;
+      if (skipFirst) return;
+    } else {
+      // No PNG copy (Print Screen, Paint): re-read the picture now and then, at once when the formats changed.
+      const wait = lastImageReadMs > 20 ? CLIPBOARD_IMAGE_SLOW_REREAD_MS : CLIPBOARD_IMAGE_REREAD_MS;
+      if (!first && !formatsChanged && lastSeen?.startsWith("i:") && Date.now() - lastImageReadAt < wait) return;
+    }
+    const readStarted = performance.now();
+    let read: HomeClipboardImageRead | null = null;
+    try {
+      read = deps.clipboard.readImage?.() ?? null;
+    } catch {
+      read = null;
+    }
+    lastImageReadAt = Date.now();
+    if (!read) {
+      if (!probe) lastSeen = "";
+      return;
+    }
+    const hash = pixelHash(read);
+    lastImageReadMs = performance.now() - readStarted;
+    if (!probe) {
+      const seen = `i:bmp:${hash}`;
+      if (seen === lastSeen) return;
+      lastSeen = seen;
+      if (skipFirst) return;
+    }
+    if (isConcealed()) {
       skippedSecrets += 1;
       announce();
       return;
     }
-    const existing = entries.findIndex((entry) => entry.text === text.slice(0, CLIPBOARD_MAX_CHARS));
-    const entry: HomeClipboardEntry = existing >= 0
-      ? { ...entries[existing]!, copiedAt: Date.now() }
-      : { id: randomUUID(), text: text.slice(0, CLIPBOARD_MAX_CHARS), copiedAt: Date.now(), length: text.length };
-    entries = [entry, ...entries.filter((_, index) => index !== existing)].slice(0, CLIPBOARD_MAX_ENTRIES);
-    announce();
-    if (clipboardPersist) scheduleHistoryWrite();
+    recordImage(read, hash, probe?.png ?? null);
   };
 
   function restartPoll(interval: number) {
@@ -340,7 +607,7 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
 
   const startPolling = () => {
     if (pollTimer) return;
-    lastText = null;
+    lastSeen = null;
     restartPoll(CLIPBOARD_POLL_MS);
     poll();
   };
@@ -348,7 +615,14 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
   const stopPolling = () => {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
-    lastText = null;
+    lastSeen = null;
+  };
+
+  const validImage = (value: unknown): value is HomeClipboardImage => {
+    const image = value as HomeClipboardImage | null;
+    return image != null && typeof image.thumb === "string" && image.thumb.startsWith("data:image/")
+      && typeof image.hash === "string" && /^[0-9a-f]{40}$/.test(image.hash)
+      && typeof image.width === "number" && typeof image.height === "number" && typeof image.bytes === "number";
   };
 
   /** Reads the saved switches (and history, when kept) once; later calls share the read. */
@@ -367,7 +641,8 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
           if (Array.isArray(saved)) {
             entries = saved
               .filter((entry): entry is HomeClipboardEntry =>
-                entry != null && typeof entry.id === "string" && typeof entry.text === "string" && typeof entry.copiedAt === "number")
+                entry != null && typeof entry.id === "string" && typeof entry.text === "string" && typeof entry.copiedAt === "number"
+                && (entry.image === undefined || validImage(entry.image)))
               .slice(0, CLIPBOARD_MAX_ENTRIES)
               .map((entry) => ({ ...entry, length: typeof entry.length === "number" ? entry.length : entry.text.length }));
           }
@@ -382,25 +657,132 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
 
   // ── machine ──────────────────────────────────────────────────────
 
-  let lastCpu: { idle: number; total: number } | null = null;
-  const cpuTotals = () => {
+  let lastCpu: { idle: number; total: number; cores: Array<{ idle: number; total: number }> } | null = null;
+  const cpuTimes = (cpus: os.CpuInfo[]) => {
     let idle = 0;
     let total = 0;
-    for (const cpu of os.cpus()) {
+    const cores = cpus.map((cpu) => {
       const times = cpu.times;
+      const coreTotal = times.user + times.nice + times.sys + times.idle + times.irq;
       idle += times.idle;
-      total += times.user + times.nice + times.sys + times.idle + times.irq;
-    }
-    return { idle, total };
+      total += coreTotal;
+      return { idle: times.idle, total: coreTotal };
+    });
+    return { idle, total, cores };
+  };
+  const busyPercent = (now: { idle: number; total: number }, before: { idle: number; total: number } | undefined) => {
+    if (!before || now.total <= before.total) return null;
+    const busy = 1 - (now.idle - before.idle) / (now.total - before.total);
+    return Math.max(0, Math.min(100, Math.round(busy * 100)));
   };
 
-  const health = async (): Promise<HomeMachineHealth> => {
-    const now = cpuTotals();
-    let cpuPercent: number | null = null;
-    if (lastCpu && now.total > lastCpu.total) {
-      const busy = 1 - (now.idle - lastCpu.idle) / (now.total - lastCpu.total);
-      cpuPercent = Math.max(0, Math.min(100, Math.round(busy * 100)));
+  // Detail state: the last minute of readings, kept while the widget asks.
+  type Sample = { at: number; cpu: number; rx: number | null; tx: number | null };
+  let samples: Sample[] = [];
+  let lastNet: { at: number; rx: number; tx: number } | null = null;
+  let lastDetail: { at: number; detail: HomeMachineDetail } | null = null;
+  let drivesCache: { at: number; drives: HomeMachineDrive[] } | null = null;
+  /** Drive letters whose statfs did not answer (a sleeping network share): never asked again. */
+  const stalledDrives = new Set<string>();
+  let processCache: { at: number; groups: HomeMachineProcessGroup[] } | null = null;
+  let processInFlight: Promise<void> | null = null;
+
+  const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T | "timeout"> =>
+    Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), ms).unref?.())]);
+
+  const statDrive = async (drivePath: string): Promise<HomeMachineDrive | null> => {
+    const result = await withTimeout(fs.statfs(drivePath).catch(() => null), 1_500);
+    if (result === "timeout") {
+      stalledDrives.add(drivePath);
+      return null;
     }
+    if (!result || result.blocks <= 0) return null;
+    return { path: drivePath, totalBytes: result.blocks * result.bsize, freeBytes: result.bavail * result.bsize };
+  };
+
+  /** Fixed drives (Windows letters C–Z) or mounted volumes (macOS), re-listed every 30 s. */
+  const readDrives = async (): Promise<HomeMachineDrive[]> => {
+    if (drivesCache && Date.now() - drivesCache.at < 30_000) return drivesCache.drives;
+    let candidates: string[];
+    if (platform === "win32") {
+      candidates = "CDEFGHIJKLMNOPQRSTUVWXYZ".split("").map((letter) => `${letter}:\\`).filter((drive) => !stalledDrives.has(drive));
+    } else if (platform === "darwin") {
+      const volumes = await fs.readdir("/Volumes", { withFileTypes: true }).catch(() => []);
+      // "Macintosh HD" is a symlink to /; real mounts are directories.
+      candidates = ["/", ...volumes.filter((entry) => entry.isDirectory()).map((entry) => path.posix.join("/Volumes", entry.name))];
+    } else {
+      candidates = ["/"];
+    }
+    const drives = (await Promise.all(candidates.map(statDrive))).filter((drive): drive is HomeMachineDrive => drive != null);
+    drivesCache = { at: Date.now(), drives };
+    return drives;
+  };
+
+  /** Bytes received and sent since boot, from native tools; null where it cannot be read. */
+  const readNetTotals = async (): Promise<{ rx: number; tx: number } | null> => {
+    try {
+      if (platform === "win32") return parseNetstatBytes(await runText(windowsSystemTool("netstat.exe"), ["-e"], 4_000));
+      if (platform === "darwin") return parseNetstatInterfaceBytes(await runText("/usr/sbin/netstat", ["-ib"], 4_000));
+      return parseProcNetDev(await fs.readFile("/proc/net/dev", "utf8"));
+    } catch {
+      return null;
+    }
+  };
+
+  const refreshProcesses = () => {
+    if (processInFlight || (processCache && Date.now() - processCache.at < 10_000)) return;
+    processInFlight = (async () => {
+      try {
+        const groups = platform === "win32"
+          ? parseTasklistMemory(await runText(windowsSystemTool("tasklist.exe"), ["/FO", "CSV", "/NH"]))
+          : parsePsList(await runText("ps", ["-Ao", "rss=,pcpu=,comm="]), os.cpus().length);
+        processCache = { at: Date.now(), groups: groups.slice(0, 12) };
+      } catch (error) {
+        deps.logger?.warn("home.machine.processes_failed", { error: String(error) });
+        processCache = { at: Date.now(), groups: processCache?.groups ?? [] };
+      }
+    })().finally(() => {
+      processInFlight = null;
+    });
+  };
+
+  const readDetail = async (cpuPercent: number | null, cores: number[]): Promise<HomeMachineDetail> => {
+    const at = Date.now();
+    // Two windows asking at once share one reading.
+    if (lastDetail && at - lastDetail.at < 1_500) return lastDetail.detail;
+    refreshProcesses();
+    const [drives, totals] = await Promise.all([readDrives(), readNetTotals()]);
+    let rx: number | null = null;
+    let tx: number | null = null;
+    if (totals && lastNet && at > lastNet.at && totals.rx >= lastNet.rx && totals.tx >= lastNet.tx && at - lastNet.at < 15_000) {
+      const seconds = (at - lastNet.at) / 1_000;
+      rx = Math.round((totals.rx - lastNet.rx) / seconds);
+      tx = Math.round((totals.tx - lastNet.tx) / seconds);
+    }
+    if (totals) lastNet = { at, ...totals };
+    // A gap (the widget was off screen) starts the minute over rather than drawing a straight line across it.
+    if (samples.length > 0 && at - samples[samples.length - 1]!.at > 12_000) samples = [];
+    if (cpuPercent != null) samples.push({ at, cpu: cpuPercent, rx, tx });
+    samples = samples.filter((sample) => at - sample.at <= 62_000);
+    const netSamples = samples.filter((sample) => sample.rx != null && sample.tx != null);
+    const detail: HomeMachineDetail = {
+      cores,
+      cpuHistory: samples.map((sample) => sample.cpu),
+      netHistory: netSamples.length > 0 ? { rx: netSamples.map((sample) => sample.rx!), tx: netSamples.map((sample) => sample.tx!) } : null,
+      net: rx != null && tx != null ? { rxBps: rx, txBps: tx } : null,
+      drives,
+      processes: processCache?.groups ?? null,
+      memAvailableBytes: os.freemem(),
+    };
+    lastDetail = { at, detail };
+    return detail;
+  };
+
+  const health = async (args?: { detail?: boolean }): Promise<HomeMachineHealth> => {
+    const cpus = os.cpus();
+    const now = cpuTimes(cpus);
+    const cpuPercent = busyPercent(now, lastCpu ?? undefined);
+    const cores = now.cores.map((core, index) => busyPercent(core, lastCpu?.cores[index]) ?? 0);
     lastCpu = now;
     const diskPath = platform === "win32" ? path.parse(os.homedir()).root : "/";
     let disk: HomeMachineHealth["disk"] = null;
@@ -410,7 +792,6 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
     } catch {
       disk = null;
     }
-    const cpus = os.cpus();
     return {
       cpuPercent,
       cpuCount: cpus.length,
@@ -421,6 +802,7 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
       uptimeSec: Math.round(os.uptime()),
       hostname: os.hostname(),
       platform,
+      ...(args?.detail ? { detail: await readDetail(cpuPercent, cores) } : {}),
     };
   };
 
@@ -607,6 +989,7 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
       clear: async () => {
         await load();
         entries = [];
+        fullImages.clear();
         skippedSecrets = 0;
         scheduleHistoryWrite();
         announce();
@@ -614,7 +997,9 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
       },
       remove: async (id: string) => {
         await load();
+        const removed = entries.find((entry) => entry.id === id);
         entries = entries.filter((entry) => entry.id !== id);
+        if (removed?.image) fullImages.delete(removed.image.hash);
         scheduleHistoryWrite();
         announce();
         return state();
@@ -622,8 +1007,13 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
       copy: async (id: string) => {
         const entry = entries.find((candidate) => candidate.id === id);
         if (!entry) return false;
-        deps.clipboard.writeText(entry.text);
-        return true;
+        if (!entry.image) {
+          deps.clipboard.writeText(entry.text);
+          return true;
+        }
+        const full = fullImages.get(entry.image.hash)
+          ?? await fs.readFile(imageFile(entry.image.hash)).catch(() => null);
+        return Boolean(full && deps.clipboard.writeImage?.(full));
       },
     },
     machine: { health, listeners, kill },

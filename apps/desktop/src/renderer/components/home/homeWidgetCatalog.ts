@@ -133,12 +133,12 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   machine: {
     category: "system",
     title: "Machine health",
-    description: "CPU, memory, disk, and the dev servers holding ports.",
+    description: "CPU, memory, disks, network, the biggest apps, and the dev servers holding ports.",
     icon: Cpu,
     desktopOnly: true,
-    classes: { compact: { w: 1, h: 1 }, regular: { w: 1, h: 2 } },
+    classes: { compact: { w: 1, h: 1 }, regular: { w: 1, h: 2 }, large: { w: 2, h: 2 } },
     defaultClass: "regular",
-    minHeight: { compact: 230, regular: 330 },
+    minHeight: { compact: 230, regular: 330, large: 330 },
     grow: true,
   },
   heatmap: {
