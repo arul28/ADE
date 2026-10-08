@@ -708,7 +708,8 @@ function buildSlashCommands(
   return result;
 }
 
-const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0";
+// Clipped when it gives up width, so its label never runs over the next chip.
+const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0 overflow-hidden";
 // The model name is the priority control: it keeps a readable floor and only
 // shrinks after the permission/fast labels collapse and the reasoning picker
 // has given up its width.
@@ -747,6 +748,12 @@ export type ComposerMachineChipAction = {
   note?: string | null;
 };
 
+/**
+ * The machine chip gives up width first in a narrow composer (a dock): its
+ * name truncates down to the icon instead of crowding the pickers beside it.
+ */
+const MACHINE_CHIP_WRAPPER = "min-w-[1.5rem] shrink-[8] overflow-hidden";
+
 function ComposerMachineChip({
   machineName,
   cloud = false,
@@ -759,21 +766,21 @@ function ComposerMachineChip({
   if (action) {
     return (
       <>
-        <SmartTooltip forceEnabled content={{ label: machineName, description: action.tooltip }}>
+        <SmartTooltip forceEnabled wrapperClassName={MACHINE_CHIP_WRAPPER} content={{ label: machineName, description: action.tooltip }}>
           <button
             type="button"
             data-chat-composer-machine-chip="action"
             aria-label={action.tooltip}
             onClick={action.onClick}
             className={cn(
-              "inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1 transition-colors",
+              "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md px-1 transition-colors",
               "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-fg/[0.05] hover:text-fg/85",
               action.offline && "opacity-60",
             )}
             style={{ whiteSpace: "nowrap" }}
           >
-            <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
-            <span className="max-w-24 truncate">{machineName}</span>
+            <DesktopTower size={11} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
+            <span className="min-w-0 max-w-24 truncate">{machineName}</span>
             {action.offline ? (
               <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-fg/40" />
             ) : null}
@@ -794,6 +801,7 @@ function ComposerMachineChip({
   return (
     <SmartTooltip
       forceEnabled
+      wrapperClassName={MACHINE_CHIP_WRAPPER}
       content={{
         label: machineName,
         description: cloud
@@ -805,17 +813,17 @@ function ComposerMachineChip({
         data-chat-composer-machine-chip="readonly"
         aria-label={`Running on ${machineName}`}
         className={cn(
-          "inline-flex h-6 shrink-0 items-center gap-1 px-1",
+          "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden px-1",
           "font-sans text-[9px] font-medium text-muted-fg/60",
         )}
         style={{ whiteSpace: "nowrap" }}
       >
         {cloud ? (
-          <CloudArrowUp size={11} weight="fill" className="text-violet-300/85" aria-hidden />
+          <CloudArrowUp size={11} weight="fill" className="shrink-0 text-violet-300/85" aria-hidden />
         ) : (
-          <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
+          <DesktopTower size={11} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
         )}
-        <span className="max-w-24 truncate">{machineName}</span>
+        <span className="min-w-0 max-w-24 truncate">{machineName}</span>
       </span>
     </SmartTooltip>
   );
