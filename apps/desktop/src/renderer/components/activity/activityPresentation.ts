@@ -282,11 +282,13 @@ export function activityRowStatus(item: AttentionItem): SessionStatusPresentatio
     return { label: "Working", tone: "blue", glyph: "working", showsElapsed: true, prominent: false };
   }
   if (column === "waiting") {
+    // No time, like `activityStateElapsed`: the row's `statusSince` is when the
+    // chat entered its status, not when the wait began.
     return {
       label: "Waiting",
       tone: "neutral",
       glyph: activityWaitingReason(item) === "snoozed" ? "snoozed" : "stale",
-      showsElapsed: true,
+      showsElapsed: false,
       prominent: false,
     };
   }

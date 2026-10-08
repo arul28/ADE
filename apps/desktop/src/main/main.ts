@@ -5958,6 +5958,11 @@ app.whenReady().then(async () => {
 
     function buildAdeActionRuntimeForAutomations(): AdeRuntime {
       return {
+        // The notification step names its project (so a chat or PR link opens
+        // on this machine), refuses while signed out, and is counted.
+        projectRoot,
+        accountAuthService,
+        productAnalyticsService,
         sendCustomNotification: sendCustomNotificationFromDesktop,
         laneService,
         gitService,

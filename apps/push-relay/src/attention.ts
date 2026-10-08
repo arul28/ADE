@@ -3270,8 +3270,9 @@ function parseCustomNotification(
  * It goes to every phone on the account the way an urgent Activity alert does,
  * and it respects the same switches: notifications off, quiet hours, a muted
  * machine (when the caller names its machine), and Hide previews, which keeps
- * only the title on the lock screen. The relay adds nothing to the text. At most `ACCOUNT_NOTIFY_LIMIT_PER_HOUR` are admitted per account
- * per hour window; past that it answers 429 with `retryAfterSeconds`.
+ * only the title on the lock screen. The relay adds nothing to the text. At
+ * most `ACCOUNT_NOTIFY_LIMIT_PER_HOUR` are admitted per account per hour
+ * window; past that it answers 429 with `retryAfterSeconds`.
  */
 async function handleCustomNotification(
   request: Request,

@@ -230,20 +230,22 @@ describe("Activity columns", () => {
    * Waiting with its reason, matching the heading above it.
    */
   it.each([
-    ["a raised hand", { phase: "needs_you" }, "Needs you", "amber", null],
-    ["a failure, with its red mark", { phase: "failed" }, "Failed", "red", null],
-    ["a running turn", { phase: "running" }, "Working", "blue", null],
-    ["a planning turn, folded into Working", { phase: "running", chatActivityMode: "planning" }, "Working", "blue", null],
-    ["a running turn waiting on CI", { phase: "running", boardColumn: "waiting", waitingReason: "ci" }, "Waiting", "neutral", "CI running"],
-    ["a snoozed session", { phase: "stale", boardColumn: "waiting", waitingReason: "snoozed" }, "Waiting", "neutral", "Snoozed"],
-    ["a requested review", { phase: "completed", boardColumn: "waiting", waitingReason: "review" }, "Waiting", "neutral", "Review requested"],
-    ["a session gone quiet, folded into Done", { phase: "running", activityTier: "idle" }, "Done", "emerald", null],
-    ["a finished turn", { phase: "completed" }, "Done", "emerald", null],
-  ] as const)("reads %s", (_name, patch, label, tone, reason) => {
+    ["a raised hand", { phase: "needs_you" }, "Needs you", "amber", null, true],
+    ["a failure, with its red mark", { phase: "failed" }, "Failed", "red", null, true],
+    ["a running turn", { phase: "running" }, "Working", "blue", null, true],
+    ["a planning turn, folded into Working", { phase: "running", chatActivityMode: "planning" }, "Working", "blue", null, true],
+    ["a running turn waiting on CI", { phase: "running", boardColumn: "waiting", waitingReason: "ci" }, "Waiting", "neutral", "CI running", false],
+    ["a snoozed session", { phase: "stale", boardColumn: "waiting", waitingReason: "snoozed" }, "Waiting", "neutral", "Snoozed", false],
+    ["a requested review", { phase: "completed", boardColumn: "waiting", waitingReason: "review" }, "Waiting", "neutral", "Review requested", false],
+    ["a session gone quiet, folded into Done", { phase: "running", activityTier: "idle" }, "Done", "emerald", null, true],
+    ["a finished turn", { phase: "completed" }, "Done", "emerald", null, true],
+  ] as const)("reads %s", (_name, patch, label, tone, reason, showsTime) => {
     const item = { kind: "agent", ...patch } as unknown as AttentionItem;
     const status = activityRowStatus(item);
     expect(status?.label).toBe(label);
     expect(status?.tone).toBe(tone);
+    // A Waiting row's statusSince predates the wait, so it shows no time.
+    expect(status?.showsElapsed).toBe(showsTime);
     expect(activityWaitingReasonLabel(item)).toBe(reason);
   });
 
