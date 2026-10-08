@@ -67,6 +67,7 @@ import {
 import { registerIpc } from "./services/ipc/registerIpc";
 import { registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
 import { registerMusicIpc } from "./services/music/registerMusicIpc";
+import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
 import {
@@ -9290,9 +9291,9 @@ app.whenReady().then(async () => {
   registerHomeWidgetsIpc({ logger: getMachineMainLogger() });
 
   // The Music tab: Apple Music through an on-demand player host. The user's
-  // Music-User-Token goes in the same machine credential store as API keys.
+  // Music-User-Token stays in this app's own user data (see musicTokenStore).
   registerMusicIpc({
-    credentials: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+    credentials: createMusicTokenStore({ dir: path.join(app.getPath("userData"), "music-player"), logger: getMachineMainLogger() }),
     directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }),
     getAccountToken: () => getSignedInAccountAccessToken(getSharedAccountAuthService({
       secretsDir: machineAdeLayout.secretsDir,
