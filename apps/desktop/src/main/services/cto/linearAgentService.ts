@@ -139,6 +139,8 @@ function shortenWorktreePaths(text: string): string {
  */
 export function describeShellCommand(command: string, description = ""): string {
   let text = unwrapShell(command);
+  // `cmd /c "…"` hands back the command still inside the quotes cmd wrapped it in.
+  if (text !== command.trim() && /^"[^"]*"$/.test(text)) text = text.slice(1, -1);
   for (;;) {
     const next = text.replace(/^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*/, "");
     if (next === text) break;
