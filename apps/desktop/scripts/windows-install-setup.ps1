@@ -11,7 +11,9 @@ param(
   # app's job on its first launch after an update (`runUpdateTransaction`
   # reinstalls, restarts and verifies it), so reading its status and starting it
   # here as well cost 27s of every update (measured: service_status_read 9.1s,
-  # brain_start 18.2s) before ADE could reopen, only to be redone.
+  # brain_start 18.2s) before ADE could reopen, only to be redone. A failure in
+  # an update is logged and rolled back but never fails the installer: see the
+  # end of the catch block below.
   [switch]$Updating
 )
 
@@ -245,8 +247,24 @@ try {
   } catch {
     $rollbackErrors.Add("could not restore the previous user PATH: $($_.Exception.Message)")
   }
+  $failureMessage = if ($rollbackErrors.Count -gt 0) {
+    "ADE setup failed ($($setupError.Exception.Message)) and compensation failed: $($rollbackErrors -join '; ')"
+  } else {
+    $setupError.Exception.Message
+  }
+  # An update must not abort here. The new files are already in place and the
+  # update flow has already stopped and removed the background service, so an
+  # abort leaves no brain and no ADE window: the installer does not relaunch
+  # the app after Abort. Exiting 0 lets it relaunch, and the relaunched app's
+  # update transaction reinstalls the service. The terminal command was rolled
+  # back above; the reason is logged for the next diagnostic report.
+  if ($Updating) {
+    Write-AdeInstallStep "update_continues" 0 "terminal command not refreshed: $failureMessage"
+    Write-Warning "ADE could not refresh its terminal command during the update; continuing so ADE can reopen. $failureMessage"
+    exit 0
+  }
   if ($rollbackErrors.Count -gt 0) {
-    throw "ADE setup failed ($($setupError.Exception.Message)) and compensation failed: $($rollbackErrors -join '; ')"
+    throw $failureMessage
   }
   throw $setupError
 } finally {
