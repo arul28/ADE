@@ -2445,7 +2445,13 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    `agent_explicit` provenance, marks a live tracked CLI as waiting-input, and
    publishes a time-sensitive push; the next accepted user message clears it,
    including an active-turn steer. Agent-to-agent steers do not dismiss the
-   user's pending question. Provider
+   user's pending question. A chat whose turn ends while it still owns live
+   background work reads as running, so ADE raises the same hand for a
+   question left in that reply, with source `turn_end_question`
+   (`chat/turnEndQuestionCheck.ts`): rules on the reply's ending raise it for
+   a clear ask and skip a progress note, and an unsure ending goes to the
+   provider's cheap model (Claude, Codex, Cursor) with a staleness guard on
+   the turn id. Subagents are skipped, and nothing runs on replay. Provider
    structured input carries its own pending item id. OSC markers and
    prompt-looking output never create `Needs you`. `ade chat note ""` clears
    only the status line. Status notes are trimmed to at

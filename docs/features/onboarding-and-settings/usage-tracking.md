@@ -79,7 +79,8 @@ that handoff does not hop again on its own.
 Auto-start windows are off by default. When enabled, the usage service arms one
 unref'd timer per Claude or Codex instance that has a future five-hour reset.
 Five seconds after that reset, ADE sends one small provider request through the
-instance's own config home, using Claude Haiku 5.5 or Codex GPT-5.6 Luna, then
+instance's own config home, using Claude Haiku 5.5 (no tools) or Codex GPT-6 Luna at low effort and
+standard speed, then
 refreshes quota data. The timer is replaced when a newer reset arrives and is
 reconstructed from the next snapshot; no timer state is persisted. Accounts
 without a five-hour window, including API-key-only accounts, never run the

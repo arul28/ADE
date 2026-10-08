@@ -975,11 +975,13 @@ implements a two-layer transform:
    - **The answer** is the turn's last `text` row, or its last
      `phase: "final_answer"` row when the provider labelled one; a
      `commentary` row is never the answer. When the provider labels none
-     (Claude), a short last text can be a postscript to an earlier answer: if
-     the last text is at most 280 characters, the previous non-empty text of
-     the same turn is at least 400 characters and at least three times as long,
-     and no more than three non-trivial drawn rows sit between them, that
-     earlier text is the answer and the postscript draws below it. The search
+     (Claude), the last text can be a postscript to an earlier answer: if the
+     previous non-empty text of the same turn is at least 400 characters and
+     at least three times as long as the last text, and no more than three
+     non-trivial drawn rows sit between them, that earlier text is the answer
+     and the postscript draws below it. The last text has no length cap of its
+     own; a paragraph of status after an in-depth answer is a postscript too.
+     The search
      steps over empty text and rows of another turn, and stops at a
      `commentary` row. A turn with no answer (tool-only,
      interrupted before any text, an error) does not fold. Neither does a turn
@@ -1011,7 +1013,18 @@ implements a two-layer transform:
      cluster, else an id-less `done` (given the inferred id). Only when none of
      that exists does the most-tokens `done` win. Usage and cost are still
      summed across the cluster.
-   - **Only history folds.** Thought rows, interim (non-answer) text, a Codex
+   - **Narration folds; substance stays.** A non-answer text row folds only
+     when it is narration ("Now I'll scroll to the DRM section."). It stays
+     visible below the fold row when it embeds proof or any markdown image
+     (`ade-proof://…`), is at least 400 UTF-16 code units, or has markdown
+     structure (a list item, heading, fenced code, or table separator) —
+     typically the reply to a question the user asked alongside the work,
+     written before the agent went off to work and ended on a status message
+     (`proseStaysVisible`). A `commentary` row is narration by the provider's
+     own label and folds unless it embeds proof. A text that repeats the
+     answer word for word still folds, however long. The decision reads only
+     the row's own prose, so replays reproduce it.
+   - **Only history folds.** Thought rows, interim narration text, a Codex
      plan-mode proposal card, finished activity bundles, the Turn details row,
      spawned/completed chips, compaction dividers, goal pills, the host-sleep
      chip, a finished stall card, and warning, info, hook, and config notices
