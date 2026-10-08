@@ -12,9 +12,16 @@ import {
   prepareGlossary,
   type VoiceGlossary,
 } from "./dictationCleanup";
+import { downloadSpeechModel, speechModelPath } from "./speechModelStore";
 import { createTranscriptionService, TranscriptionError } from "./transcriptionService";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
+// The network download is the boundary; its own behaviour is pinned in
+// speechModelStore.test.ts. Every other export stays real.
+vi.mock("./speechModelStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./speechModelStore")>();
+  return { ...actual, downloadSpeechModel: vi.fn(actual.downloadSpeechModel) };
+});
 
 // Load the real shipped glossary so the table cases assert against the actual
 // corrections/fillers users get, not a fixture that can drift.
@@ -238,6 +245,53 @@ describe("desktop voice transcription", () => {
       const failure = await service.transcribe(new Int16Array(1600)).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(TranscriptionError);
       expect(failure).toMatchObject({ code: "transcribe_failed" });
+      service.dispose();
+    });
+
+    it("holds every install caller until the warm-up ends, and a failed warm-up still installs", async () => {
+      vi.mocked(downloadSpeechModel).mockImplementationOnce(async ({ modelDir, onProgress }) => {
+        writeCompleteModel(speechModelPath(modelDir));
+        onProgress?.({ receivedBytes: 1, totalBytes: 1 });
+        return { modelPath: speechModelPath(modelDir) };
+      });
+      // The warm-up's transcribe-cli run: held open until the test ends it, then
+      // it fails, which must not fail the install.
+      let finishWarmup!: () => void;
+      const warmupSpawned = new Promise<void>((resolveSpawned) => {
+        vi.mocked(spawn).mockImplementation((() => {
+          const child = Object.assign(new EventEmitter(), {
+            stdout: new EventEmitter(),
+            stderr: new EventEmitter(),
+            kill: vi.fn(),
+          });
+          finishWarmup = () => child.emit("close", 1);
+          resolveSpawned();
+          return child;
+        }) as never);
+      });
+      const service = createService();
+      const stages: Array<string | undefined> = [];
+      const settled: string[] = [];
+
+      const first = service
+        .downloadModel((progress) => {
+          stages.push(progress.stage);
+          if (progress.stage === "warmup") throw new Error("listener blew up");
+        })
+        .then(() => settled.push("first"));
+      await warmupSpawned;
+      // The model is on disk now, yet a second caller (the renderer rejoining
+      // after an IPC failure) must wait for the same install.
+      const second = service.downloadModel().then(() => settled.push("second"));
+      await new Promise((resolveTick) => setImmediate(resolveTick));
+      expect(settled).toEqual([]);
+      expect(service.getStatus()).toMatchObject({ downloading: true, modelInstalled: true });
+
+      finishWarmup();
+      await Promise.all([first, second]);
+      expect(settled.sort()).toEqual(["first", "second"]);
+      expect(stages).toEqual([undefined, "warmup"]);
+      expect(service.getStatus()).toMatchObject({ downloading: false, installed: true });
       service.dispose();
     });
   });
