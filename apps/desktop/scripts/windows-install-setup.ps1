@@ -259,6 +259,19 @@ try {
   # update transaction reinstalls the service. The terminal command was rolled
   # back above; the reason is logged for the next diagnostic report.
   if ($Updating) {
+    # The previous shim could not be put back either, so the command may be
+    # half-written. The relaunched app rewrites it when this request exists
+    # (adeCliAutoInstall.ts), even on a machine whose one-time install already
+    # ran; it removes the request once the rewrite succeeds.
+    if ($rollbackErrors.Count -gt 0) {
+      try {
+        $repairDir = Join-Path $env:ADE_HOME "runtime"
+        New-Item -ItemType Directory -Path $repairDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $repairDir "cli-shim-repair-request") -Value $failureMessage -Encoding UTF8
+      } catch {
+        $failureMessage = "$failureMessage; could not request a repair: $($_.Exception.Message)"
+      }
+    }
     Write-AdeInstallStep "update_continues" 0 "terminal command not refreshed: $failureMessage"
     Write-Warning "ADE could not refresh its terminal command during the update; continuing so ADE can reopen. $failureMessage"
     exit 0

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import type { Logger } from "../logging/logger";
 import type { AdeCliAutoInstall, GlobalState } from "../state/globalState";
 import type { createAdeCliService } from "./adeCliService";
@@ -42,6 +43,13 @@ type AdeCliAutoInstallArgs = {
   logger: Logger;
   readState: () => GlobalState;
   writeState: (state: GlobalState) => void;
+  /**
+   * A file the Windows installer leaves when an update could neither refresh
+   * nor restore ADE's own `ade` shim (`windows-install-setup.ps1`). Its presence
+   * overrides the run-once marker: the shim may be half-written, so it is
+   * rewritten, and the file is removed only once that succeeds.
+   */
+  repairRequestPath?: string;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 };
@@ -68,18 +76,23 @@ async function attemptAdeCliAutoInstall(
   const env = args.env ?? process.env;
   if (env.ADE_DISABLE_CLI_AUTO_INSTALL === "1") return "disabled";
 
+  const repairRequested = args.repairRequestPath != null && fs.existsSync(args.repairRequestPath);
   const state = args.readState();
-  if (state.adeCliAutoInstall) return "already-settled";
+  if (state.adeCliAutoInstall && !repairRequested) return "already-settled";
 
   const settle = (marker: AdeCliAutoInstall): void => {
     // Re-read: the state file is shared with the rest of main, and this task is
     // deliberately deferred, so anything could have written it meanwhile.
     args.writeState({ ...args.readState(), adeCliAutoInstall: marker });
+    if (repairRequested && args.repairRequestPath) {
+      fs.rmSync(args.repairRequestPath, { force: true });
+    }
   };
   const completedAt = (args.now ?? (() => new Date()))().toISOString();
 
   const status = await args.adeCli.getStatus();
-  if (status.terminalInstalled) {
+  // A half-written shim still resolves on PATH, so a repair skips this check.
+  if (status.terminalInstalled && !repairRequested) {
     settle({ completedAt, outcome: "already-available", command: status.command });
     return "already-available";
   }
