@@ -605,6 +605,9 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
   ): Promise<AgentChatCrossMachineHandoffRecord> => {
     const sourceSessionId = args.sourceSessionId?.trim();
     if (!sourceSessionId) throw new Error("A source chat is required.");
+    // Load the chat first (getSource does, synchronously): loading can emit a
+    // delivery update of an old message, which must land before the snapshot.
+    if (!deps.getSource(sourceSessionId)) throw new Error("The source chat could not be loaded.");
     const watch = { before: new Set(deps.listUserMessageIds(sourceSessionId)), newMessage: false };
     const watches = startsInFlight.get(sourceSessionId) ?? new Set();
     watches.add(watch);
