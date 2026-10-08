@@ -11,8 +11,9 @@ import { logMusicDeveloperTokenRequest } from "./logging";
  * signed with ADE's MusicKit private key. The key lives only here, as the
  * `MUSICKIT_PRIVATE_KEY` secret; the desktop app never ships it. The token is
  * public by design (MusicKit JS hands it to Apple from the page), so one token
- * per isolate serves every caller until it is within `REISSUE_MARGIN_S` of
- * expiry. The account bearer only rations who can ask, the same check the model
+ * per isolate serves every caller until it is within `reissueMarginSeconds` of
+ * expiry. A player configured with a token keeps it for its whole run, so every
+ * token handed out has days left. The account bearer only rations who can ask, the same check the model
  * registry uses.
  *
  * A Worker without the key answers 503 `music_unavailable` rather than failing
@@ -20,18 +21,18 @@ import { logMusicDeveloperTokenRequest } from "./logging";
  */
 
 export const MUSIC_DEVELOPER_TOKEN_PATH = "/music/developer-token";
-export const DEFAULT_MUSIC_TOKEN_TTL_SECONDS = 24 * 60 * 60;
+export const DEFAULT_MUSIC_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 /** Apple's ceiling for a developer token's lifetime (6 months). */
 const MAX_TTL_SECONDS = 15_777_000;
-/** Hand out a fresh token once the cached one has less than this left. */
-const REISSUE_MARGIN_S = 6 * 60 * 60;
+/** Hand out a fresh token once the cached one has less than this left (half a short lifetime). */
+const reissueMarginSeconds = (ttl: number): number => Math.min(7 * 24 * 60 * 60, Math.floor(ttl / 2));
 
 export type MusicDeveloperTokenEnv = CallerTokenEnv & {
   /** PKCS#8 PEM of the MusicKit `.p8` key. A secret. */
   MUSICKIT_PRIVATE_KEY?: string;
   MUSICKIT_KEY_ID?: string;
   MUSICKIT_TEAM_ID?: string;
-  /** Lifetime in seconds; unset or unparseable means 24 h. */
+  /** Lifetime in seconds; unset or unparseable means 30 days. */
   MUSICKIT_TOKEN_TTL_SECONDS?: string;
 };
 
@@ -45,6 +46,11 @@ export function isMusicDeveloperTokenRequest(url: URL): boolean {
 }
 
 let cached: { fingerprint: string; token: string; exp: number } | null = null;
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 function ttlSeconds(raw: string | undefined): number {
   const parsed = Number.parseInt(raw?.trim() ?? "", 10);
@@ -60,13 +66,14 @@ export async function mintMusicDeveloperToken(
   const kid = env.MUSICKIT_KEY_ID?.trim();
   const iss = env.MUSICKIT_TEAM_ID?.trim();
   if (!pem || !kid || !iss) return null;
-  // Rotate the key or the ids and the cache misses on its own.
-  const fingerprint = `${kid}:${iss}:${pem.length}:${pem.slice(-24)}`;
-  if (cached && cached.fingerprint === fingerprint && cached.exp - nowSeconds > REISSUE_MARGIN_S) {
+  const ttl = ttlSeconds(env.MUSICKIT_TOKEN_TTL_SECONDS);
+  // Rotate the key, the ids or the lifetime and the cache misses on its own.
+  const fingerprint = `${kid}:${iss}:${ttl}:${await sha256Hex(pem)}`;
+  if (cached && cached.fingerprint === fingerprint && cached.exp - nowSeconds > reissueMarginSeconds(ttl)) {
     return { token: cached.token, exp: cached.exp };
   }
   const key = await importPKCS8(pem, "ES256");
-  const exp = nowSeconds + ttlSeconds(env.MUSICKIT_TOKEN_TTL_SECONDS);
+  const exp = nowSeconds + ttl;
   const token = await new SignJWT({})
     .setProtectedHeader({ alg: "ES256", kid })
     .setIssuer(iss)

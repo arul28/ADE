@@ -65,7 +65,7 @@
     // nothing else on this Worker depends on it.
     "MUSICKIT_KEY_ID": "3NNQ5Y43RA",
     "MUSICKIT_TEAM_ID": "VQ372F39G6",
-    "MUSICKIT_TOKEN_TTL_SECONDS": "86400"
+    "MUSICKIT_TOKEN_TTL_SECONDS": "2592000"
   },
   // REQUIRED, not optional. Cloudflare refuses a Worker's fetch to another
   // Worker of the same account through its workers.dev URL (error 1042): the
@@ -114,7 +114,7 @@
         // secret here too: wrangler secret put MUSICKIT_PRIVATE_KEY --env production
         "MUSICKIT_KEY_ID": "3NNQ5Y43RA",
         "MUSICKIT_TEAM_ID": "VQ372F39G6",
-        "MUSICKIT_TOKEN_TTL_SECONDS": "86400"
+        "MUSICKIT_TOKEN_TTL_SECONDS": "2592000"
       },
       "services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }],
       "d1_databases": [

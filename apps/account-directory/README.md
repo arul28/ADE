@@ -618,9 +618,10 @@ ADE caller: the same Clerk bearer check as `GET /router/registry`, GET only, no
 CORS, `cache-control: no-store`. The token is an ES256 JWT with header
 `{ alg: "ES256", kid: MUSICKIT_KEY_ID }` and claims
 `{ iss: MUSICKIT_TEAM_ID, iat, exp }`, lifetime `MUSICKIT_TOKEN_TTL_SECONDS`
-(default 86400, capped at Apple's six months). One token per isolate is reused
-until it has under six hours left; it is public by design (MusicKit JS sends it
-from the page), the key is not.
+(default 30 days, capped at Apple's six months). One token per isolate is
+reused until it has under seven days left (half its lifetime when that is
+shorter), because a desktop player keeps the token it started with; it is
+public by design (MusicKit JS sends it from the page), the key is not.
 
 The key is the secret `MUSICKIT_PRIVATE_KEY`, the `.p8` file's PEM text. Without
 it (or with a malformed one) the route answers 503 `music_unavailable` and the
