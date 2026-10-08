@@ -54,8 +54,8 @@ const scratch = fs.mkdtempSync(path.join(scratchRoot, "now-playing-"));
 try {
   const temporary = path.join(scratch, "ade-now-playing.exe");
   execFileSync("cl.exe", [
-    // The SDK's C++/WinRT predates standard coroutines; /await enables the ones it uses.
-    "/nologo", "/std:c++17", "/await", "/EHsc", "/O2", "/MT", "/utf-8", "/W3", "/bigobj",
+    // C++20 gives C++/WinRT standard coroutines; MSVC 14.51+ rejects the old /await ones.
+    "/nologo", "/std:c++20", "/EHsc", "/O2", "/MT", "/utf-8", "/W3", "/bigobj",
     "/DUNICODE", "/D_UNICODE", "/D_WIN32_WINNT=0x0A00", "/DWINVER=0x0A00", "/DNOMINMAX",
     `/I${cppwinrt}`,
     source, `/Fe:${temporary}`,
