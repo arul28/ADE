@@ -154,10 +154,17 @@ store) and classify each one as hide, route or n/a.
 `Mod+Shift+B`, Ask agent dock with the tab attached and leased, Chats ⇄ Browser
 jumps. Details: "The Browser top tab" in `docs/features/chat/README.md`.
 Open: the dock chat follows the window's machine binding (remote project tab
-means a remote chat beside this computer's browser), and an agent's `click` on
-a Wikipedia link did not navigate in the verification run (it fell back to
-`ade browser open` on the same tab), which is worth a look in the browser
-service.
+means a remote chat beside this computer's browser).
+Fixed (2026-10-07): an agent's `click` on a Wikipedia link did not navigate.
+CDP reads `Input.dispatchMouseEvent` in the page's drawn space, and an
+agent-held tab is drawn at the 1280x800 agent viewport scaled to fit the pane,
+so a click aimed at an element's CSS centre landed at centre ÷ scale. Mouse
+input now goes through `dispatchPageMouseEvent`, which maps CSS points to the
+drawn scale. A tab nobody was looking at had no compositor surface and dropped
+input outright; agent actions now hold the tab parked for their duration
+(`withCaptureSurface` in `runTracedAgentAction`). The attached-tab badge now
+tells the agent to read the live tab with `ade browser observe` instead of
+fetching the URL.
 
 ### What is true today
 

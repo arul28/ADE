@@ -2867,7 +2867,11 @@ function createBuiltInBrowserWindowService(args: {
     actionEffectTrackers.set(tab, effectEntry);
     try {
       await prepareAgentActionTab(tab, input);
-      const result = await fn();
+      // A tab nobody is looking at has no compositor surface, and Chromium
+      // drops synthesized input to it: a click found its element, was sent,
+      // and nothing happened. Hold the tab parked (attached, off screen) for
+      // the whole action, as observe already does for its screenshot.
+      const result = await withCaptureSurface(tab, fn);
       const trace = finishActionTrace(tab, traceDraft, "ok", {
         sessionId: sessionEntry?.id ?? null,
         observationId: result.observation?.id ?? null,
@@ -5141,14 +5145,14 @@ function createBuiltInBrowserWindowService(args: {
       const button = normalizeMouseButton(input.button);
       const clickCount = normalizeClickCount(input.clickCount);
       await withTemporaryDebugger(wc, async () => {
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mousePressed",
           x,
           y,
           button,
           clickCount,
         });
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseReleased",
           x,
           y,
@@ -5213,7 +5217,7 @@ function createBuiltInBrowserWindowService(args: {
         point: scrollX != null && scrollY != null ? { x: normalizeDimension(scrollX), y: normalizeDimension(scrollY) } : null,
       });
       await withTemporaryDebugger(tab.webContents, async () => {
-        await sendDebuggerCommand(tab.webContents, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseWheel",
           x: normalizeDimension(finiteNumber(input.x)),
           y: normalizeDimension(finiteNumber(input.y)),
@@ -5825,6 +5829,32 @@ function createBuiltInBrowserWindowService(args: {
     return normalizeDomSnapshot(isRecord(result) ? result.snapshot : null);
   };
 
+  /**
+   * Send a synthesized mouse event at a point in CSS viewport pixels.
+   *
+   * Chromium reads `Input.dispatchMouseEvent` coordinates in the space it
+   * draws the page in, and an emulation override with `scale` draws CSS pixels
+   * smaller: the agent viewport (1280×800) fitted into a narrower pane, or a
+   * device preset letterboxed into it. Element rects, handles and `--x/--y`
+   * are CSS pixels, so without this a click aimed at an element's centre
+   * landed at centre ÷ scale, on some other element or off the page, and was
+   * "delivered" without doing anything. Every synthesized mouse event goes
+   * through here.
+   */
+  const dispatchPageMouseEvent = async (
+    tab: BrowserTabState,
+    params: { type: string; x: number; y: number } & Record<string, unknown>,
+  ): Promise<void> => {
+    const scale = tab.emulation
+      ? clampBuiltInBrowserEmulationViewScale(emulationViewScale)
+      : agentViewport.inputScale(tab);
+    await sendDebuggerCommand(
+      tab.webContents,
+      "Input.dispatchMouseEvent",
+      scale === 1 ? params : { ...params, x: params.x * scale, y: params.y * scale },
+    );
+  };
+
   const resolveClickTarget = async (
     tab: BrowserTabState,
     input: BuiltInBrowserClickArgs,
@@ -6172,6 +6202,7 @@ function createBuiltInBrowserWindowService(args: {
     releaseDebuggerHold,
     sendDebuggerCommand,
     withTemporaryDebugger,
+    dispatchPageMouseEvent,
     resolveClickTarget,
     focusElementTarget,
     observationDirectory,

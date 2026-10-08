@@ -327,6 +327,11 @@ export type BuiltInBrowserTabCapabilityDeps = {
     params?: Record<string, unknown>,
   ) => Promise<T>;
   withTemporaryDebugger: <T>(wc: WebContents, fn: () => Promise<T>) => Promise<T>;
+  /** A synthesized mouse event at a CSS viewport point, mapped to the page's drawn scale. */
+  dispatchPageMouseEvent: (
+    tab: BrowserTabState,
+    params: { type: string; x: number; y: number } & Record<string, unknown>,
+  ) => Promise<void>;
   resolveClickTarget: (
     tab: BrowserTabState,
     input: BuiltInBrowserClickArgs,
@@ -356,6 +361,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   const {
     acquireDebuggerHold,
     actionResult,
+    dispatchPageMouseEvent,
     emit,
     emitStatus,
     focusElementTarget,
@@ -878,7 +884,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       const wc = tab.webContents;
       const { x, y } = await resolveClickTarget(tab, input as BuiltInBrowserClickArgs);
       await withTemporaryDebugger(wc, async () => {
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseMoved",
           x,
           y,
@@ -901,13 +907,13 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         Math.max(1, Math.floor(optionalFiniteNumber(input.steps) ?? DEFAULT_DRAG_STEPS)),
       );
       await withTemporaryDebugger(wc, async () => {
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseMoved",
           x: from.x,
           y: from.y,
           button: "none",
         });
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mousePressed",
           x: from.x,
           y: from.y,
@@ -916,7 +922,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         });
         for (let step = 1; step <= steps; step += 1) {
           const ratio = step / steps;
-          await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+          await dispatchPageMouseEvent(tab, {
             type: "mouseMoved",
             x: Math.round(from.x + (to.x - from.x) * ratio),
             y: Math.round(from.y + (to.y - from.y) * ratio),
@@ -924,7 +930,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
             buttons: 1,
           });
         }
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseReleased",
           x: to.x,
           y: to.y,

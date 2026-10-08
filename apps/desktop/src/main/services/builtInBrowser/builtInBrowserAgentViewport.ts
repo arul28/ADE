@@ -194,6 +194,12 @@ export function createBuiltInBrowserAgentViewport(deps: {
     if (repark) deps.reattachViews();
   };
 
+  /**
+   * The scale Chromium is drawing the tab's page at under our override, 1 when
+   * none is in force. Synthesized mouse input is read in that drawn space.
+   */
+  const inputScale = (tab: BrowserTabState): number => agentViewports.get(tab)?.applied ?? 1;
+
   /** Resolves once the tab's queued override calls have run. */
   const settleAgentViewport = async (tab: BrowserTabState): Promise<void> => {
     await agentViewports.get(tab)?.chain;
@@ -204,5 +210,6 @@ export function createBuiltInBrowserAgentViewport(deps: {
     refresh: refreshAgentViewport,
     reconcile: reconcileAgentViewports,
     settle: settleAgentViewport,
+    inputScale,
   };
 }

@@ -1,5 +1,6 @@
 import type { BuiltInBrowserContextItem, BuiltInBrowserTab } from "../../../../shared/types/builtInBrowser";
 import type { AgentChatPaneComposerHandle } from "../AgentChatPane";
+import { BROWSER_LIVE_TAB_CONTEXT_KIND } from "../../../lib/visualContextFormatting";
 
 type AttachableTab = Pick<BuiltInBrowserTab, "id" | "url" | "title" | "isLaunchpad">;
 
@@ -9,7 +10,8 @@ type AttachableTab = Pick<BuiltInBrowserTab, "id" | "url" | "title" | "isLaunchp
  * The id is the tab's own, so the composer keeps one badge per tab: attaching
  * the same tab again (after it navigated, or from a second entry point) replaces
  * its badge instead of adding another. The agent gets the tab id, URL and title,
- * which is what it needs to read and drive that tab with `ade browser`.
+ * with guidance to read and drive that live tab with `ade browser` (see
+ * `formatBuiltInBrowserContextForPrompt`).
  *
  * Null for a tab with nothing loaded (a launchpad, a blank tab).
  */
@@ -37,10 +39,9 @@ export function browserTabContextItem(tab: AttachableTab): BuiltInBrowserContext
       url: tab.url,
       title,
       tabId: tab.id,
-      selectionExplanation:
-        `The user attached this whole browser tab (tab ${tab.id}), not one element. `
-        + "It is open in ADE's browser in front of them: read and drive that tab with "
-        + "`ade browser` (pass this tab id) so they can watch it happen.",
+      // Read by `formatBuiltInBrowserContextForPrompt`, which turns this badge
+      // into "the user's live tab" guidance instead of an element packet.
+      contextKind: BROWSER_LIVE_TAB_CONTEXT_KIND,
     },
   };
 }

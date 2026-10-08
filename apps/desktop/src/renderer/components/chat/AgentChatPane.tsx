@@ -459,6 +459,7 @@ import {
   getBuiltInBrowserContextAttachmentPath,
   getIosContextAttachmentPath,
   iosContextSurface,
+  isLiveBrowserTabContext,
   normalizeBuiltInBrowserContextItem,
   stripDataUrlPrefix,
   applyVisualContext,
@@ -9645,7 +9646,10 @@ export function AgentChatPane({
     }
     // The same element or page added again (the Browser tab's "Ask agent"
     // stages its page on every open) replaces its earlier chip, not stacks.
+    // A live tab also replaces an older chip for the same page: tab ids are
+    // new after a restart, so a kept draft's chip names a tab that is gone.
     const originalElementId = item.metadata.originalElementId ?? item.id;
+    const liveTabUrl = isLiveBrowserTabContext(item) ? item.url : null;
     setBuiltInBrowserContextItems((current) => [
       {
         ...item,
@@ -9658,7 +9662,10 @@ export function AgentChatPane({
           ...(attachmentPath ? { attachmentPath } : {}),
         },
       },
-      ...current.filter((existing) => existing.metadata.originalElementId !== originalElementId).slice(0, 4),
+      ...current.filter((existing) => (
+        existing.metadata.originalElementId !== originalElementId
+        && !(liveTabUrl && isLiveBrowserTabContext(existing) && existing.url === liveTabUrl)
+      )).slice(0, 4),
     ]);
   }, [claimDraftAttachmentOwner, saveContextScreenshot, selectedSessionId]);
 
