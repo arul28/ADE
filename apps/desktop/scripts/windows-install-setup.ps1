@@ -5,7 +5,14 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$AppExecutableName,
   [ValidateSet("stable", "beta", "alpha")]
-  [string]$PackageChannel = "stable"
+  [string]$PackageChannel = "stable",
+  # An in-place update (the NSIS installer runs with --updated). Only the
+  # terminal shim is refreshed here. The background service is the desktop
+  # app's job on its first launch after an update (`runUpdateTransaction`
+  # reinstalls, restarts and verifies it), so reading its status and starting it
+  # here as well cost 27s of every update (measured: service_status_read 9.1s,
+  # brain_start 18.2s) before ADE could reopen, only to be redone.
+  [switch]$Updating
 )
 
 $ErrorActionPreference = "Stop"
@@ -154,6 +161,14 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($saved.NODE_PATH.Value)) { $saved.NODE_PATH.Value }
   )
   $env:NODE_PATH = $nodePathEntries -join [IO.Path]::PathSeparator
+
+  if ($Updating) {
+    Invoke-AdeTimedStep "path_shim_install" { & $pathInstaller $cliTarget }
+    if ($LASTEXITCODE -ne 0) {
+      throw "The ADE terminal command installer exited with code $LASTEXITCODE."
+    }
+    return
+  }
 
   $serviceStatusJson = $null
   Invoke-AdeTimedStep "service_status_read" {

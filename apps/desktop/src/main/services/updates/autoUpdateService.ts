@@ -137,6 +137,15 @@ type CreateAutoUpdateServiceArgs = {
    */
   beforeQuitAndInstall?: (resumeChats: boolean) => void | Promise<UpdateInterruptedChat[] | void>;
   rollbackQuitAndInstall?: (reason: string) => void | Promise<void>;
+  /**
+   * Runs right before the native installer takes over, so something can be on
+   * screen while ADE is gone (a Windows install is silent). Returns a cancel
+   * that runs when the install unwinds and ADE stays open.
+   */
+  onInstallHandoff?: (args: {
+    version: string;
+    installerPath: string | null;
+  }) => (() => void) | null;
   /** Quits and reopens ADE, after the usual quit warnings. */
   /** Resolves true once the person agreed to restart; false when they kept ADE open. */
   relaunchApp?: () => Promise<boolean>;
@@ -348,6 +357,18 @@ function reconcilePersistedUpdateState(args: {
     changed = true;
   }
 
+  // A failure for a version this launch already runs is resolved, however it
+  // got here: a retry that landed without a pending record, or a manual
+  // install. Left alone it re-reported `install_did_not_land` on the version it
+  // named, and counted toward evicting the next download.
+  if (
+    nextState.failedInstallAttempts
+    && compareUpdateVersions(args.currentVersion, nextState.failedInstallAttempts.targetVersion) >= 0
+  ) {
+    nextState.failedInstallAttempts = undefined;
+    changed = true;
+  }
+
   // The counter outlives the launch that recorded it, so the notice has to as
   // well. Without this, one ordinary quit-and-reopen drops lastInstallFailed
   // from the snapshot while the persisted counter still makes the next failure
@@ -443,6 +464,7 @@ export function createAutoUpdateService({
   updater = autoUpdater as unknown as AutoUpdaterLike,
   beforeQuitAndInstall,
   rollbackQuitAndInstall,
+  onInstallHandoff,
   relaunchApp,
   forceQuit,
   getRuntimeActivitySummary,
@@ -608,6 +630,8 @@ export function createAutoUpdateService({
   let autoApplyDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
   let idleSinceMs: number | null = null;
   let installQuitArmed = false;
+  /** Cancels whatever `onInstallHandoff` put on screen for the armed install. */
+  let cancelInstallHandoff: (() => void) | null = null;
   let activityCheckFailed = false;
   let activityCheckInProgress = false;
   let downloadedFilePath: string | null = null;
@@ -1712,6 +1736,7 @@ export function createAutoUpdateService({
   }
 
   async function unwindArmedInstall(rollbackReason: string): Promise<void> {
+    runInstallHandoffCancel();
     clearQuitDeadline();
     installQuitArmed = false;
     clearPendingInstallUpdate();
@@ -1894,6 +1919,19 @@ export function createAutoUpdateService({
     });
   }
 
+  function runInstallHandoffCancel(): void {
+    const cancel = cancelInstallHandoff;
+    cancelInstallHandoff = null;
+    if (!cancel) return;
+    try {
+      cancel();
+    } catch (error) {
+      logger.warn("autoUpdate.install_handoff_surface_cancel_failed", {
+        message: formatErrorMessage(error),
+      });
+    }
+  }
+
   async function quitAndInstall(resumeChats = false): Promise<boolean> {
     // Mirrors checkPromise: collapse concurrent IPC/idle-timer calls onto one
     // transaction so cleanup, rollback, and native handoff cannot race.
@@ -1987,6 +2025,20 @@ export function createAutoUpdateService({
       });
       try {
         currentPhase = "install";
+        // Started before the quit deadline is armed, so whatever the hook
+        // costs is not counted as quitting.
+        runInstallHandoffCancel();
+        try {
+          cancelInstallHandoff = onInstallHandoff?.({
+            version: snapshot.version ?? installVersion,
+            installerPath: downloadedFilePath,
+          }) ?? null;
+        } catch (error) {
+          // The window is a courtesy; the install goes ahead without it.
+          logger.warn("autoUpdate.install_handoff_surface_failed", {
+            message: formatErrorMessage(error),
+          });
+        }
         // Mark the quit before entering electron-updater: it calls app.quit()
         // synchronously, and ADE's before-quit handler must recognize this
         // consented path instead of opening the normal quit confirmation.

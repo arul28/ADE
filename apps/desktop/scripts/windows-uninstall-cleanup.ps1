@@ -8,7 +8,14 @@ param(
   [string]$CliBinDir = "",
   [switch]$SkipServiceRemoval,
   [switch]$SkipUserPathUpdate,
-  [switch]$SkipProtocolRemoval
+  [switch]$SkipProtocolRemoval,
+  # A newer ADE is replacing this install in place (the NSIS uninstaller runs
+  # with --updated). Only the background service is stopped, so nothing respawns
+  # a brain from the folder being replaced. The terminal shim, the user PATH
+  # entry, the ade:// protocol and file associations all stay: the new version
+  # rewrites them seconds later, and tearing them down here cost a PATH
+  # broadcast plus a walk of HKCU\Software\Classes on every update.
+  [switch]$Updating
 )
 
 $ErrorActionPreference = "Stop"
@@ -179,11 +186,47 @@ function Get-ShortSha256([string]$Value) {
   }
 }
 
+function Get-ChannelServiceName([string]$Channel) {
+  if ($Channel -eq "stable") { "com.ade.runtime" } else { "com.ade.runtime.$Channel" }
+}
+
+function Get-ChannelLauncherPath([string]$AdeHome, [string]$Channel) {
+  Join-Path $AdeHome "runtime\brain-service-$(Get-ShortSha256 (Get-ChannelServiceName $Channel)).ps1"
+}
+
+# An update must not proceed while a supervisor for this channel still runs: it
+# lives in System32's powershell.exe, so the installer's install-folder sweep
+# never stops it, and it would start the brain again from the folder being
+# replaced. Unlike an uninstall, which finishes whatever is left running, this
+# finds every supervisor by its launcher (a missing PID record hides none),
+# stops each tree, and fails the update if one survives.
+function Stop-ChannelSupervisorsForUpdate([string]$AdeHome, [string]$Channel) {
+  $launcherPath = Get-ChannelLauncherPath $AdeHome $Channel
+  $findSupervisors = {
+    @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction Stop | Where-Object {
+      ([string]$_.CommandLine).IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    })
+  }
+  foreach ($supervisor in (& $findSupervisors)) {
+    & taskkill.exe /PID ([string]$supervisor.ProcessId) /T /F | Out-Null
+  }
+  # A supervisor that is already gone makes taskkill exit nonzero; whether one
+  # survived is answered below, not by that exit code.
+  $global:LASTEXITCODE = 0
+  $deadline = (Get-Date).AddSeconds(5)
+  while (($survivors = & $findSupervisors).Count -gt 0) {
+    if ((Get-Date) -gt $deadline) {
+      throw "ADE could not stop its background service for the update (PID $(($survivors | ForEach-Object { $_.ProcessId }) -join ', '))."
+    }
+    Start-Sleep -Milliseconds 200
+  }
+}
+
 function Remove-ChannelStartupWithoutPackagedCli(
   [string]$AdeHome,
   [string]$Channel
 ) {
-  $serviceName = if ($Channel -eq "stable") { "com.ade.runtime" } else { "com.ade.runtime.$Channel" }
+  $serviceName = Get-ChannelServiceName $Channel
   $baseUserName = $env:USERNAME
   if ([string]::IsNullOrWhiteSpace($baseUserName)) {
     throw "ADE could not resolve the current Windows user for startup cleanup."
@@ -195,7 +238,7 @@ function Remove-ChannelStartupWithoutPackagedCli(
   }
   $identity = "$($serviceName.ToLowerInvariant())`0$($userName.ToLowerInvariant())"
   $taskName = "ADE Runtime ($Channel-$(Get-ShortSha256 $identity))"
-  $launcherPath = Join-Path $AdeHome "runtime\brain-service-$(Get-ShortSha256 $serviceName).ps1"
+  $launcherPath = Get-ChannelLauncherPath $AdeHome $Channel
   $pidPath = "$launcherPath.pid.json"
 
   if (Test-Path -LiteralPath $pidPath -PathType Leaf) {
@@ -258,13 +301,35 @@ function Remove-ChannelStartupWithoutPackagedCli(
   Remove-Item -LiteralPath $launcherPath -Force -ErrorAction SilentlyContinue
 }
 
+# Same line format as windows-install-setup.ps1 writes to the same file, so an
+# update's uninstall and install halves read as one timeline. Best effort only.
+function Write-AdeUninstallStep([string]$Step, [double]$Seconds, [string]$Detail) {
+  try {
+    $logDir = Join-Path $channelAdeHome "runtime"
+    if (-not (Test-Path -LiteralPath $logDir -PathType Container)) { return }
+    $line = "{0} uninstall-cleanup {1} {2:N2}s {3}" -f `
+      ([DateTime]::UtcNow.ToString("o")), $Step, $Seconds, $Detail
+    Add-Content -LiteralPath (Join-Path $logDir "install-steps.log") -Value $line -Encoding UTF8
+  } catch {
+    # Best effort only.
+  }
+}
+
 $resolvedInstallDir = Resolve-NormalizedPath $InstallDir
 $normalizedPackageChannel = $PackageChannel.Trim().ToLowerInvariant()
 if (@("stable", "alpha", "beta") -notcontains $normalizedPackageChannel) {
   throw "Unsupported ADE package channel: $PackageChannel"
 }
+$homeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
+$channelAdeHome = if ([string]::IsNullOrWhiteSpace($AdeHome)) {
+  Join-Path ([System.Environment]::GetFolderPath("UserProfile")) $homeName
+} else {
+  Resolve-NormalizedPath $AdeHome
+}
+$cleanupMode = if ($Updating) { "updating" } else { "uninstall" }
 
 if (-not $SkipServiceRemoval) {
+  $serviceRemovalTimer = [Diagnostics.Stopwatch]::StartNew()
   $normalizedAppExecutableName = [System.IO.Path]::GetFileName($AppExecutableName)
   if (
     [string]::IsNullOrWhiteSpace($normalizedAppExecutableName) -or
@@ -274,15 +339,17 @@ if (-not $SkipServiceRemoval) {
     throw "The installer did not provide a valid ADE executable name."
   }
 
-  $homeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
-  $channelAdeHome = if ([string]::IsNullOrWhiteSpace($AdeHome)) {
-    Join-Path ([System.Environment]::GetFolderPath("UserProfile")) $homeName
-  } else {
-    Resolve-NormalizedPath $AdeHome
-  }
   $appExe = Join-Path $resolvedInstallDir $normalizedAppExecutableName
   $cliPath = Join-Path $resolvedInstallDir "resources\ade-cli\cli.cjs"
-  if ((Test-Path -LiteralPath $appExe -PathType Leaf) -and (Test-Path -LiteralPath $cliPath -PathType Leaf)) {
+  if ($Updating) {
+    # The app already took its startup entry down before quitting
+    # (`autoUpdate.runtime_service_uninstalled_before_install`); what is left is
+    # to stop a supervisor that could respawn the brain from this folder. The
+    # validated PowerShell path does exactly that, without starting ADE.exe as
+    # Node to run the CLI, which measured 10.2s of every update.
+    Stop-ChannelSupervisorsForUpdate $channelAdeHome $normalizedPackageChannel
+    Remove-ChannelStartupWithoutPackagedCli $channelAdeHome $normalizedPackageChannel
+  } elseif ((Test-Path -LiteralPath $appExe -PathType Leaf) -and (Test-Path -LiteralPath $cliPath -PathType Leaf)) {
     $electronRunAsNodePresent = Test-Path Env:ELECTRON_RUN_AS_NODE
     $electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
     $disableCliInstallPresent = Test-Path Env:ADE_DISABLE_CLI_AUTO_INSTALL
@@ -325,6 +392,11 @@ if (-not $SkipServiceRemoval) {
     Write-Warning "The packaged ADE executable or CLI is missing; removing only validated per-user startup state."
     Remove-ChannelStartupWithoutPackagedCli $channelAdeHome $normalizedPackageChannel
   }
+  Write-AdeUninstallStep "service_removal" $serviceRemovalTimer.Elapsed.TotalSeconds "ok mode=$cleanupMode"
+}
+
+if ($Updating) {
+  exit 0
 }
 
 if ([string]::IsNullOrWhiteSpace($CliBinDir)) {
@@ -386,6 +458,15 @@ Restore-FileAssociationDefaults $normalizedPackageChannel
 
 if (-not $SkipProtocolRemoval -and $normalizedPackageChannel -eq "stable" -and -not [string]::IsNullOrWhiteSpace($AppExecutableName)) {
   Remove-OwnedStableProtocolRegistration (Join-Path $resolvedInstallDir $AppExecutableName)
+}
+
+# The update window's working folder (windowsInstallProgress.ts). Only on a real
+# uninstall: an update is about to use it.
+if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+  $updateProgressDir = Join-Path $env:LOCALAPPDATA "ADE\update-progress-$normalizedPackageChannel"
+  if (Test-Path -LiteralPath $updateProgressDir -PathType Container) {
+    Remove-Item -LiteralPath $updateProgressDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 
 # The capture helper registers NOTHING that survives it: its WH_KEYBOARD_LL hook

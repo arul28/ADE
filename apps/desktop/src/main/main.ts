@@ -43,6 +43,7 @@ type NodePtyType = typeof NodePty;
 import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
 import {
   PACKAGE_CHANNEL_ARGV_PREFIX,
+  appPackageChannelDisplayName,
   normalizeAppPackageChannel,
 } from "../shared/packageChannel";
 import {
@@ -293,7 +294,7 @@ import {
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "../../../ade-cli/src/jsonrpc";
-import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
@@ -310,6 +311,11 @@ import {
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
+import {
+  deferToRunningWindowsInstall,
+  startWindowsInstallProgress,
+  takeWindowsInstallProgressReport,
+} from "./services/updates/windowsInstallProgress";
 import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
@@ -514,6 +520,20 @@ function applyPackagedChannelDefaults(): void {
 }
 
 applyPackagedChannelDefaults();
+
+// Opened by hand while a Windows update installs: this is the old copy, and the
+// installer would kill it a few seconds into startup. The update window comes
+// forward instead, before ADE starts anything of its own.
+if (
+  process.platform === "win32"
+  && app.isPackaged
+  && deferToRunningWindowsInstall({
+    channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    appVersion: app.getVersion(),
+  })
+) {
+  process.exit(0);
+}
 const packagedReleaseRepository = readBundledAdeReleaseRepository();
 
 function configureDesktopUserDataPath(): void {
@@ -3006,6 +3026,19 @@ app.whenReady().then(async () => {
     autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
+    onInstallHandoff: process.platform === "win32" && app.isPackaged
+      ? ({ version, installerPath }) => startWindowsInstallProgress({
+          channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+          productName: appPackageChannelDisplayName(normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)),
+          currentVersion: app.getVersion(),
+          targetVersion: version,
+          appExe: process.execPath,
+          installerPath,
+          resourcesPath: process.resourcesPath,
+          adeHome: resolveMachineAdeDir(),
+          log: (event, data) => updateLogger.info(event, data),
+        })
+      : undefined,
     // The remedy for a wedged updater session. Same quit warnings as any quit,
     // so running agents are never ended without the user seeing them.
     relaunchApp: () => requestQuitAfterWarnings(null, "relaunch"),
@@ -3023,6 +3056,14 @@ app.whenReady().then(async () => {
       app.exit(0);
     },
   });
+  if (process.platform === "win32" && app.isPackaged) {
+    // The update window keeps running until this launch's window is on screen,
+    // so its account is read a little later, once it has closed itself.
+    setTimeout(() => {
+      const report = takeWindowsInstallProgressReport(normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL));
+      if (report) updateLogger.info("autoUpdate.install_progress_report", { lines: report });
+    }, 30_000).unref();
+  }
   remoteUpdateInstaller = createRemoteUpdateInstaller({
     getService: () => autoUpdateService,
     // The same gate as the update checks themselves: a development or channel
