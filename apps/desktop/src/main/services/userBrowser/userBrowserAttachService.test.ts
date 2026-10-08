@@ -78,6 +78,9 @@ describe("userBrowserAttachService attach lifecycle", () => {
     await vi.waitFor(() => expect(connect).toHaveBeenCalledWith("ws://127.0.0.1:9222/devtools/browser/abc-123", expect.anything()));
 
     await cancel(service);
+    // Cancelling ends the handshake, which is what takes Chrome's prompt down.
+    const connectOptions = connect.mock.calls[0]?.[1] as { signal?: AbortSignal } | undefined;
+    expect(connectOptions?.signal?.aborted).toBe(true);
 
     // The user clicks Allow only after the chat gave up.
     const browser = fakeBrowserConnection({ targetId: "t-1", title: "Inbox", url: "https://mail.test/" });
@@ -100,6 +103,8 @@ describe("userBrowserAttachService attach lifecycle", () => {
     await vi.waitFor(() => expect(CdpClient.connect).toHaveBeenCalledTimes(1));
     const newer = service.attach({ chatSessionId: "chat-1", userDataDir });
     await vi.waitFor(() => expect(CdpClient.connect).toHaveBeenCalledTimes(2));
+    const signals = vi.mocked(CdpClient.connect).mock.calls.map((call) => (call[1] as { signal?: AbortSignal }).signal);
+    expect(signals.map((signal) => signal?.aborted)).toEqual([true, false]);
 
     const newerBrowser = fakeBrowserConnection({ targetId: "t-new", title: "Docs", url: "https://docs.test/" });
     second.resolve(newerBrowser.client);

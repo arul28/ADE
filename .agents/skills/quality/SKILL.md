@@ -300,14 +300,19 @@ Cite the doc section in the finding.
    fix-induced correctness regressions and maintainability debt before `/test`
    or `/ship`.
 
-   **Cap: one full review, then at most two delta re-reviews.** If the second
-   delta re-review still finds a Blocker, High, or Medium, fix it and run one
-   last delta check. Do not loop further:
-   - Fix a Blocker, High, or Medium from the last check, but leave it out of
-     the reviewed range: set `qualityReviewedSha` (step 10) to the commit
-     before that fix, so the next delta review at push time covers it.
-   - List a Low from the last check under **Leftovers** in the summary. It is
-     not a gate row and does not block `/ship`.
+   **Cap: one full review, then at most two delta re-reviews.** The cap limits
+   how many times you *review*. It never limits what you *fix*. If the second
+   delta re-review still finds anything, run one last delta check, then stop
+   reviewing:
+   - Fix every accepted finding from the last check, at any severity, Low
+     included. Leave those fixes out of the reviewed range: set
+     `qualityReviewedSha` (step 10) to the commit before them, so the next
+     delta review at push time covers them.
+   - **Leftovers** is only for a Low you could not fix in this run, with the
+     reason (for example, the code it needs to change is owned by another
+     lane). A small, clear fix is never a leftover. A finding that matches one
+     of step 8's three gate reasons goes to the gate, not to Leftovers.
+     Leftovers are not gate rows and do not block `/ship`.
 
    A long chain of re-reviews usually chases fix-induced regressions, not real
    progress. The cap never moves a finding to the gate; only step 8's three
@@ -374,7 +379,7 @@ the two permitted reasons — not findings you chose to defer.
 - Auto-applied: [count] (safe correctness fixes + structural judo moves)
 - Re-review passes: [n]
 - Reviewed head: `qualityReviewedSha` [sha]
-- Leftovers (Low, found by the last capped check): [list | none]
+- Leftovers (Low from the last capped check that could not be fixed, each with the reason): [list | none]
 
 ### PR harvest
 - PR: #[n] ([opened by this run | existing | skipped — reason])
@@ -405,5 +410,5 @@ Next: /test (pass it the "For /test" list and the accepted correctness
 findings; it adds a test only where no existing test would catch the bug).
 
 **Before you print this:** every accepted finding is in "Auto-applied", the
-Gate section, or (Low from the last capped check only) Leftovers. If one is in neither, go back to step 6 and fix it.
+Gate section, or (an unfixable Low from the last capped check only, with its reason) Leftovers. If one is in neither, go back to step 6 and fix it.
 ```

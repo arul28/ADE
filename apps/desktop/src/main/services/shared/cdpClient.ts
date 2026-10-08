@@ -98,29 +98,46 @@ export class CdpClient implements CdpCommandChannel {
   /**
    * Open a connection. `timeoutMs` bounds the handshake; without it the
    * socket library's own behavior applies (App Control's historic default).
+   * `signal` ends the handshake early: closing the socket is what makes
+   * Chrome take down its "Allow remote debugging?" prompt.
    */
-  static connect(wsUrl: string, options: { timeoutMs?: number } = {}): Promise<CdpClient> {
+  static connect(wsUrl: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<CdpClient> {
     return new Promise((resolve, reject) => {
+      if (options.signal?.aborted) {
+        reject(new Error(`Connecting to ${wsUrl} was cancelled.`));
+        return;
+      }
       const ws = new WebSocket(wsUrl);
       let settled = false;
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        ws.terminate();
+        reject(new Error(`Connecting to ${wsUrl} was cancelled.`));
+      };
       const timer = options.timeoutMs
         ? setTimeout(() => {
           if (settled) return;
           settled = true;
+          options.signal?.removeEventListener("abort", onAbort);
           ws.terminate();
           reject(new Error(`Timed out connecting to ${wsUrl} after ${options.timeoutMs}ms.`));
         }, options.timeoutMs)
         : null;
+      options.signal?.addEventListener("abort", onAbort, { once: true });
       ws.once("open", () => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
+        options.signal?.removeEventListener("abort", onAbort);
         resolve(new CdpClient(ws));
       });
       ws.once("error", (error) => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
+        options.signal?.removeEventListener("abort", onAbort);
         reject(error instanceof Error ? error : new Error(String(error)));
       });
     });
