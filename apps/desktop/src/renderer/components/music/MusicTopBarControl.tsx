@@ -3,6 +3,7 @@ import { CircleNotch, MusicNotes, Pause, Play, SkipForward } from "@phosphor-ico
 
 import { musicActions, useMusicNowPlaying } from "./musicStore";
 import { MusicArt } from "./musicParts";
+import { MusicMiniProgress, PlayerIconButton } from "./MusicPlayer";
 import { musicTabAvailable } from "./musicTab";
 import "./music.css";
 
@@ -11,9 +12,10 @@ const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
 /**
  * The top bar's Music entry, on every tab.
  *
- * With something loaded it is a mini player: artwork, title and artist (opens
- * the Music tab), play/pause and next. Otherwise it is one quiet music-note
- * button that opens the Music tab.
+ * With something loaded it is a mini player in the Music tab's language:
+ * round artwork, title and artist (opens the Music tab), play/pause and next as
+ * round ghost buttons, and a hairline of progress along the bottom. Otherwise
+ * it is one quiet music-note button that opens the Music tab.
  */
 export function MusicTopBarControl({ shortcutLabel, active }: { shortcutLabel?: string; active?: boolean }) {
   const view = useMusicNowPlaying();
@@ -52,19 +54,19 @@ export function MusicTopBarControl({ shortcutLabel, active }: { shortcutLabel?: 
           <span> · {nowPlaying.artist}</span>
         </span>
       </button>
-      <button
-        type="button"
-        className="ade-mini-player-btn"
+      <PlayerIconButton
+        size="sm"
+        className="h-5 w-5"
+        label={isPlaying ? "Pause" : "Play"}
         onClick={() => void musicActions.toggle()}
-        aria-label={isPlaying ? "Pause" : "Play"}
-        title={isPlaying ? "Pause" : "Play"}
-        data-testid="topbar-mini-toggle"
+        testId="topbar-mini-toggle"
       >
         {busy ? <CircleNotch size={11} className="animate-spin" /> : isPlaying ? <Pause size={11} weight="fill" /> : <Play size={11} weight="fill" />}
-      </button>
-      <button type="button" className="ade-mini-player-btn" onClick={() => void musicActions.next()} aria-label="Next" title="Next">
+      </PlayerIconButton>
+      <PlayerIconButton size="sm" className="h-5 w-5" label="Next" onClick={() => void musicActions.next()}>
         <SkipForward size={11} weight="fill" />
-      </button>
+      </PlayerIconButton>
+      <MusicMiniProgress />
     </div>
   );
 }

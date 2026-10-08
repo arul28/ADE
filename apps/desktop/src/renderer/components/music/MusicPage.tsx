@@ -22,6 +22,7 @@ import {
 import type { MusicItem, MusicLibraryKind, MusicQueue, MusicSearchResult, MusicSearchScope } from "../../../shared/types/music";
 import { ChatSceneBackdrop } from "../personalChats/ChatSceneBackdrop";
 import { MusicNowPlayingBar } from "./MusicNowPlayingBar";
+import { MusicArtBackdrop, MusicPlayerCard } from "./MusicPlayer";
 import {
   AppleMusicMark,
   CollectionTile,
@@ -30,7 +31,7 @@ import {
   SONG_ROW_HEIGHT,
   SongRow,
 } from "./musicParts";
-import { formatMusicTime, musicActions, useMusicLastError, useMusicState } from "./musicStore";
+import { musicActions, useMusicLastError, useMusicState } from "./musicStore";
 import "./music.css";
 
 type View =
@@ -41,6 +42,50 @@ type View =
   | { kind: "detail"; item: MusicItem; back: View };
 
 const LIBRARY_LABELS: Record<MusicLibraryKind, string> = { playlists: "Playlists", albums: "Albums", songs: "Songs" };
+
+/** Quick searches for the empty search page: a tap fills the field. */
+const SEARCH_IDEAS = ["Deep focus", "Lo-fi beats", "Synthwave", "Jazz for work", "Film scores", "Ambient", "Classical piano", "Coding mix"];
+
+/** Whether the Now Playing card is shown (on wide windows) or folded into the bar. */
+const PLAYER_CARD_KEY = "ade.music.playerCard";
+function usePlayerCardPreference(): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = React.useState(() => {
+    try {
+      return window.localStorage.getItem(PLAYER_CARD_KEY) !== "hidden";
+    } catch {
+      return true;
+    }
+  });
+  const set = React.useCallback((next: boolean) => {
+    setOpen(next);
+    try {
+      window.localStorage.setItem(PLAYER_CARD_KEY, next ? "shown" : "hidden");
+    } catch {
+      // Private storage is optional.
+    }
+  }, []);
+  return [open, set];
+}
+
+/** The card needs this much page width; below it the bar takes over. */
+const PLAYER_CARD_MIN_WIDTH = 1080;
+
+/** True while the element is at least `minWidth` wide. One observer, no polling. */
+function useWideEnough(ref: React.RefObject<HTMLElement | null>, minWidth: number): boolean {
+  const [wide, setWide] = React.useState(true);
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    setWide(el.clientWidth >= minWidth);
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? el.clientWidth;
+      setWide(width >= minWidth);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, minWidth]);
+  return wide;
+}
 
 function errorText(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -80,12 +125,21 @@ function useLoad<T>(load: (() => Promise<T>) | null, deps: React.DependencyList)
 }
 
 export function MusicPage() {
-  const state = useMusicState((s) => s);
+  // Field selectors, not the whole state: the main process pushes once a second
+  // while playing, and only the scrubber needs that.
+  const hasState = useMusicState((s) => s !== null);
+  const availability = useMusicState((s) => s?.availability ?? null);
+  const message = useMusicState((s) => s?.message ?? null);
+  const queueRevision = useMusicState((s) => s?.queueRevision ?? 0);
+  const hostStatus = useMusicState((s) => s?.host.status ?? "stopped");
+  const authorized = useMusicState((s) => Boolean(s?.authorized));
+  const nowPlayingId = useMusicState((s) => s?.playback.nowPlaying?.id ?? null);
+  const isPlaying = useMusicState((s) => Boolean(s?.playback.isPlaying));
   const lastError = useMusicLastError();
   const [view, setView] = React.useState<View>({ kind: "search" });
-  const authorized = Boolean(state?.authorized);
-  const nowPlayingId = state?.playback.nowPlaying?.id ?? null;
-  const isPlaying = Boolean(state?.playback.isPlaying);
+  const [cardOpen, setCardOpen] = usePlayerCardPreference();
+  const pageRef = React.useRef<HTMLDivElement>(null);
+  const wide = useWideEnough(pageRef, PLAYER_CARD_MIN_WIDTH);
 
   // Start the player while the user is looking at the tab, so the first play is
   // instant. The main process unloads it again after five idle minutes.
@@ -126,7 +180,7 @@ export function MusicPage() {
     }
   };
 
-  if (!state) {
+  if (!hasState) {
     return (
       <MusicFrame>
         <div className="ade-music-center"><CircleNotch size={20} className="animate-spin text-muted-fg" /></div>
@@ -134,14 +188,14 @@ export function MusicPage() {
     );
   }
 
-  if (state.availability === "unsupported") {
+  if (availability === "unsupported") {
     return (
       <MusicFrame>
         <div className="ade-music-center">
           <section className="ade-music-gate ade-chat-scene-plane" data-testid="music-unsupported">
             <span className="ade-music-gate-glyph"><MusicNotes size={30} weight="fill" /></span>
             <h1>Music on Mac is coming</h1>
-            <p>{state.message ?? "Apple Music plays in ADE on Windows today."}</p>
+            <p>{message ?? "Apple Music plays in ADE on Windows today."}</p>
             <AppleMusicMark />
           </section>
         </div>
@@ -149,14 +203,14 @@ export function MusicPage() {
     );
   }
 
-  if (state.availability === "unavailable") {
+  if (availability === "unavailable") {
     return (
       <MusicFrame>
         <div className="ade-music-center">
           <section className="ade-music-gate ade-chat-scene-plane" data-testid="music-unavailable">
             <span className="ade-music-gate-glyph is-muted"><WarningCircle size={30} weight="fill" /></span>
             <h1>Music isn't available right now</h1>
-            <p>{state.message ?? "ADE couldn't reach its music service."}</p>
+            <p>{message ?? "ADE couldn't reach its music service."}</p>
             <button type="button" className="kit-btn" onClick={() => void musicActions.refresh()}>
               <ArrowClockwise size={13} /> Try again
             </button>
@@ -185,7 +239,7 @@ export function MusicPage() {
           <RecentView nowPlayingId={nowPlayingId} isPlaying={isPlaying} onOpen={openDetail} onPlayContainer={playContainer} />
         ) : <ConnectHero />;
       case "queue":
-        return <QueueView nowPlayingId={nowPlayingId} isPlaying={isPlaying} revision={state.queueRevision} hostStatus={state.host.status} />;
+        return <QueueView nowPlayingId={nowPlayingId} isPlaying={isPlaying} revision={queueRevision} hostStatus={hostStatus} />;
       case "library":
         return authorized ? (
           <LibraryView kind={view.library} nowPlayingId={nowPlayingId} isPlaying={isPlaying} onOpen={openDetail} onPlayContainer={playContainer} />
@@ -205,8 +259,14 @@ export function MusicPage() {
   const isActive = (target: View) =>
     view.kind === target.kind && (target.kind !== "library" || (view.kind === "library" && view.library === target.library));
 
+  const toggleQueue = () => setView((current) => (current.kind === "queue" ? { kind: "search" } : { kind: "queue" }));
+  // One player form at a time, so only one scrubber ticks: the card on wide
+  // pages (unless the user folded it away), the bar otherwise.
+  const showCard = cardOpen && wide && Boolean(nowPlayingId);
+  const showBar = !showCard && (Boolean(nowPlayingId) || hostStatus === "starting");
+
   return (
-    <MusicFrame>
+    <MusicFrame pageRef={pageRef}>
       <div className="ade-music-layout">
         <aside className="ade-music-rail ade-chat-scene-plane" aria-label="Music">
           <div className="ade-music-rail-head">
@@ -225,7 +285,7 @@ export function MusicPage() {
             {authorized ? (
               <button type="button" className="ade-music-account" onClick={() => void musicActions.disconnect()} title="Disconnect Apple Music from ADE">
                 <span className="kit-dot" data-state="ok" />
-                <span className="min-w-0 flex-1 truncate">Connected</span>
+                <span className="min-w-0 flex-1 truncate">Apple Music connected</span>
                 <SignOut size={13} />
               </button>
             ) : (
@@ -234,10 +294,10 @@ export function MusicPage() {
           </div>
         </aside>
         <main className="ade-music-main ade-chat-scene-plane" data-testid="music-main">
-          {state.message || lastError ? (
+          {message || lastError ? (
             <div role="alert" className="ade-music-alert">
               <WarningCircle size={14} weight="fill" />
-              <span className="min-w-0 flex-1 truncate" title={lastError ?? state.message ?? undefined}>{lastError ?? state.message}</span>
+              <span className="min-w-0 flex-1 truncate" title={lastError ?? message ?? undefined}>{lastError ?? message}</span>
               {lastError ? (
                 <button type="button" className="kit-icon-btn" onClick={musicActions.clearError} aria-label="Dismiss"><X size={12} /></button>
               ) : null}
@@ -245,18 +305,24 @@ export function MusicPage() {
           ) : null}
           {main}
         </main>
+        {showCard ? (
+          <MusicPlayerCard queueOpen={view.kind === "queue"} onToggleQueue={toggleQueue} onCollapse={() => setCardOpen(false)} />
+        ) : null}
       </div>
-      <MusicNowPlayingBar
-        queueOpen={view.kind === "queue"}
-        onToggleQueue={() => setView((current) => (current.kind === "queue" ? { kind: "search" } : { kind: "queue" }))}
-      />
+      {showBar ? (
+        <MusicNowPlayingBar
+          queueOpen={view.kind === "queue"}
+          onToggleQueue={toggleQueue}
+          onExpand={!cardOpen && wide ? () => setCardOpen(true) : undefined}
+        />
+      ) : null}
     </MusicFrame>
   );
 }
 
-function MusicFrame({ children }: { children: React.ReactNode }) {
+function MusicFrame({ children, pageRef }: { children: React.ReactNode; pageRef?: React.Ref<HTMLDivElement> }) {
   return (
-    <div className="ade-chat-scene ade-music relative flex h-full min-h-0 flex-col text-fg" data-testid="music-page">
+    <div ref={pageRef} className="ade-chat-scene ade-music relative flex h-full min-h-0 flex-col text-fg" data-testid="music-page">
       <ChatSceneBackdrop />
       <div className="ade-music-frame">{children}</div>
     </div>
@@ -294,10 +360,16 @@ function ConnectHero() {
   const connecting = useMusicState((s) => Boolean(s?.connecting));
   return (
     <div className="ade-music-connect-hero" data-testid="music-connect-hero">
+      <div className="ade-music-connect-glow" aria-hidden />
       <span className="ade-music-connect-glyph"><MusicNotes size={34} weight="fill" /></span>
       <h1>Your music, inside ADE</h1>
-      <p>Connect your Apple Music account to play songs, your library and playlists. Playback needs an Apple Music subscription.</p>
+      <p>Connect Apple Music to play songs, albums and your playlists while you work. Playback needs an Apple Music subscription.</p>
       <ConnectButton />
+      <ul className="ade-music-connect-points">
+        <li><Playlist size={14} /> Your library and playlists</li>
+        <li><Queue size={14} /> A queue that keeps playing on every tab</li>
+        <li><MagnifyingGlass size={14} /> Search the whole catalog</li>
+      </ul>
       {connecting ? <p className="ade-music-connect-note">Finish signing in to Apple in its own window. It may be behind ADE.</p> : null}
     </div>
   );
@@ -393,18 +465,27 @@ function SearchView({
       <div className="ade-music-scroll">
         {error ? <MusicEmpty icon={<WarningCircle size={22} />} title="Search failed" hint={error} /> : null}
         {!debounced ? (
-          authorized ? (
-            <MusicEmpty icon={<MagnifyingGlass size={22} />} title="Search songs, albums, playlists and artists" hint="Results play straight from Apple Music." />
-          ) : (
-            <ConnectHero />
-          )
+          <>
+            {authorized ? (
+              <MusicEmpty icon={<MagnifyingGlass size={22} />} title="Search songs, albums, playlists and artists" hint="Results play straight from Apple Music." />
+            ) : (
+              <ConnectHero />
+            )}
+            <div className="ade-music-ideas" aria-label="Search ideas">
+              {SEARCH_IDEAS.map((idea) => (
+                <button key={idea} type="button" className="ade-music-idea" onClick={() => setTerm(idea)}>
+                  {idea}
+                </button>
+              ))}
+            </div>
+          </>
         ) : null}
         {results && !error && songs.length + results.albums.length + results.playlists.length + results.artists.length === 0 && !loading ? (
           <MusicEmpty icon={<MagnifyingGlass size={22} />} title={`Nothing found for “${debounced}”`} />
         ) : null}
         {songs.length ? (
           <section className="ade-music-section">
-            <h3 className="kit-eyebrow">Songs</h3>
+            <h3 className="ade-music-section-title">Songs</h3>
             <div className="ade-music-songs" role="table">
               {songs.slice(0, 10).map((item, index) => (
                 <SongRow
@@ -448,7 +529,7 @@ function TileSection({
 }) {
   return (
     <section className="ade-music-section">
-      <h3 className="kit-eyebrow">{title}</h3>
+      <h3 className="ade-music-section-title">{title}</h3>
       <div className="ade-music-tiles is-grid">
         {items.slice(0, 12).map((item) => (
           <CollectionTile key={`${item.kind}:${item.id}`} item={item} onOpen={() => onOpen(item)} onPlay={onPlay ? () => onPlay(item) : undefined} />
@@ -476,7 +557,7 @@ function RecentView({ nowPlayingId, isPlaying, onOpen, onPlayContainer }: RowPro
         {data?.containers.length ? <TileSection title="Jump back in" items={data.containers} onOpen={onOpen} onPlay={onPlayContainer} /> : null}
         {tracks.length ? (
           <section className="ade-music-section">
-            <h3 className="kit-eyebrow">Songs</h3>
+            <h3 className="ade-music-section-title">Songs</h3>
             <div className="ade-music-songs" role="table">
               {tracks.map((item, index) => (
                 <SongRow
@@ -637,12 +718,13 @@ function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps & { item
 
   return (
     <div className="ade-music-view" data-testid="music-detail">
+      <MusicArtBackdrop artwork={item.artwork} className="is-hero" />
       <div className="ade-music-scroll" ref={scrollRef}>
         <button type="button" className="ade-music-back" onClick={onBack}>
           <ArrowLeft size={13} /> Back
         </button>
         <header className="ade-music-hero">
-          <MusicArt artwork={item.artwork} size={184} eager className="ade-music-hero-art" />
+          <MusicArt artwork={item.artwork} size={208} eager className="ade-music-hero-art" />
           <div className="ade-music-hero-text">
             <div className="kit-eyebrow">{item.library ? `Library ${kind}` : kind}</div>
             <h1>{item.title}</h1>

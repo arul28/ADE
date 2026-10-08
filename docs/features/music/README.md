@@ -1,9 +1,40 @@
 # Music
 
 The Music top tab plays Apple Music inside ADE with ADE's own UI: search,
-library, recently played, an Up Next queue and a now-playing bar. A mini
-player sits in the top bar on every tab while a song is loaded. The home page's
-Now Playing widget reads the same renderer store.
+library, recently played, an Up Next queue and a player. A mini player sits in
+the top bar on every tab while a song is loaded. The home page's Now Playing
+widget reads the same renderer store.
+
+## The player
+
+One visual language in three sizes (`MusicPlayer.tsx`):
+
+- **Now Playing card** on the right of the Music tab: big artwork (it settles
+  back while paused), the song's artwork blurred as a tint behind the card,
+  title, artist and album, Love, the scrubber with times, the transport pill
+  (shuffle, back, play/pause, forward, repeat), volume and Up Next. Shown when
+  the page is at least 1080px wide; the caret folds it into the bar, and the
+  choice is remembered (`localStorage` `ade.music.playerCard`).
+- **Bottom bar** when the card is folded or the window is narrow: the same
+  parts in one row. Only one of the two is mounted at a time.
+- **Top-bar mini player** on every tab: round artwork, title and artist (opens
+  the Music tab), play/pause and next, and a 2px progress line.
+
+The scrubber and volume are `MusicSlider`: click or drag anywhere (the pointer
+is captured, so a drag may leave the track), or use the arrow, Page, Home and
+End keys. Only `MusicSeek` and `MusicMiniProgress` re-render on the position
+tick (twice and once a second); the store keeps `nowPlaying` and `host` objects
+stable across the main process's once-a-second pushes, so nothing else does.
+Buttons grow on hover and press and the fill springs on a real jump; all of
+that is off under the OS or ADE's Reduce motion.
+
+**Dev preview.** Playback needs a signed-in Apple Music account. In a dev build
+(`import.meta.env.DEV`), run `window.__adeMusicPreview("<search term>")` in the
+renderer's DevTools to load the first catalog song for that term into the
+player without playing anything; transport, seek, volume and Love then act on
+the preview locally. It is remembered in `localStorage`
+(`ade.music.devPreview`); `window.__adeMusicPreview(null)` turns it off. A
+packaged build compiles the hook out.
 
 Status (2026-10-08): **Windows works up to sign-in; playback after sign-in is
 not yet verified by a person.** macOS shows "Music on Mac is coming".
@@ -104,7 +135,8 @@ useMusicNowPlaying(): {
   artworkUrl(cssPx: number): string | null; // 2x applied
 }
 useMusicPosition(intervalMs = 500): number  // seconds, ticks while playing
-useMusicState(selector)                      // the full MusicState
+useMusicState(selector)                      // the full MusicState; select fields, not the whole object
+useMusicLike(): { liked, canLike, toggle }   // Love for the playing song, shared by every button
 musicActions.toggle() / play() / pause() / next() / previous() / seek(s)
 musicActions.setVolume(0..1) / setShuffle(bool) / setRepeat(0|1|2)
 musicActions.playItems(ids, index?, shuffle?) / playCollection(kind, id, index?, shuffle?)
@@ -134,7 +166,7 @@ formatMusicTime(seconds)
 | `apps/desktop/src/main/services/music/appleMusicApi.ts` | Apple Music API client and item normalization. |
 | `apps/desktop/src/main/services/music/musicDeveloperToken.ts` | Dev-only local minting and the Worker fetch. |
 | `apps/desktop/src/main/services/music/registerMusicIpc.ts` | IPC handlers (ADE renderer only) and app wiring. |
-| `apps/desktop/src/renderer/components/music/` | `MusicPage`, `MusicNowPlayingBar`, `MusicTopBarControl`, `musicParts`, `musicStore`, `musicTab`, `music.css`. |
+| `apps/desktop/src/renderer/components/music/` | `MusicPage`, `MusicPlayer` (card, slider, transport, volume, Love, artwork backdrop), `MusicNowPlayingBar`, `MusicTopBarControl`, `musicParts`, `musicStore`, `musicTab`, `music.css`. |
 | `apps/desktop/native/ADEMusicHostWin/` | The Windows player host and its page. |
 | `apps/desktop/scripts/build-music-host-win.mjs` | Reproducible host build. |
 | `apps/account-directory/src/musicDeveloperToken.ts` | The Worker route that mints developer tokens. |
