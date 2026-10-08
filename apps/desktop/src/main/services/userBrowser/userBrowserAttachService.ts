@@ -148,6 +148,9 @@ export type UserBrowserAttachServiceDeps = {
   captureAttached?: (() => void) | null;
 };
 
+const ATTACH_CANCELLED_MESSAGE =
+  "This attach was cancelled: the chat detached (or attached again) while it waited. This chat stays on ADE's browser.";
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -474,9 +477,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
         break;
       } catch (error) {
         if (superseded()) {
-          throw new UserBrowserAttachError(
-            "This attach was cancelled: the chat detached (or attached again) while it waited. This chat stays on ADE's browser.",
-          );
+          throw new UserBrowserAttachError(ATTACH_CANCELLED_MESSAGE);
         }
         const message = errorMessage(error);
         // A port file left behind by a browser that has since quit: nothing
@@ -555,18 +556,14 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
       };
       attachment.actions = buildActions(attachment);
       if (superseded()) {
-        throw new UserBrowserAttachError(
-          "This attach was cancelled: the chat detached (or attached again) while it waited. This chat stays on ADE's browser.",
-        );
+        throw new UserBrowserAttachError(ATTACH_CANCELLED_MESSAGE);
       }
       // A fresh attach replaces this chat's old one — only once it succeeded,
       // so a refused re-attach leaves the working attachment alone.
       await detachChat(chatSessionId);
       // Closing the old attachment awaited; a detach may have run meanwhile.
       if (superseded()) {
-        throw new UserBrowserAttachError(
-          "This attach was cancelled: the chat detached (or attached again) while it waited. This chat stays on ADE's browser.",
-        );
+        throw new UserBrowserAttachError(ATTACH_CANCELLED_MESSAGE);
       }
       attachments.set(chatSessionId, attachment);
       subscribePage(attachment);
@@ -615,9 +612,9 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
 
   const detach = async (input: { chatSessionId?: string | null } = {}): Promise<UserBrowserDetachResult> => {
     const chatSessionId = requireChat(input);
-    // Cancel an attach still waiting on the browser's prompt. A chat that
-    // never attached has no generation and nothing to cancel; leave it out of
-    // the map so detaching every ending chat stays free.
+    // Cancel an attach still waiting on the browser's prompt. A chat with no
+    // pending attach has nothing to cancel, so detaching every ending chat
+    // stays free and adds nothing to the map.
     const cancelledPending = cancelPendingAttach(chatSessionId);
     const existing = await detachChat(chatSessionId);
     if (!existing) {
