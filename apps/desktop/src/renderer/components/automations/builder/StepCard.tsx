@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Trash } from "@phosphor-icons/react";
-import type { TestSuiteDefinition } from "../../../../shared/types";
+import type { OpenProjectBinding, TestSuiteDefinition } from "../../../../shared/types";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { SettingsToggle } from "../../settings/settingsSectionUi";
@@ -102,6 +102,7 @@ export function StepCard({
   total,
   triggerType,
   suites,
+  runtimePin = null,
   isCleanup,
   onChange,
   onRemove,
@@ -112,6 +113,8 @@ export function StepCard({
   total: number;
   triggerType: string;
   suites: TestSuiteDefinition[];
+  /** The machine the rule runs on; null is this window's. */
+  runtimePin?: OpenProjectBinding | null;
   isCleanup: boolean;
   onChange: (next: WorkflowStep) => void;
   onRemove: () => void;
@@ -195,6 +198,7 @@ export function StepCard({
           <NotifyStepEditor
             value={step.adeAction}
             triggerType={triggerType}
+            runtimePin={runtimePin}
             onChange={(adeAction) => onChange({ ...step, adeAction })}
           />
         ) : null}

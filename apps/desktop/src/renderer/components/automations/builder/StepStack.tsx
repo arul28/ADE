@@ -1,6 +1,6 @@
 import { useRef, useState, type RefObject } from "react";
 import { Broom, CaretDown, Plus } from "@phosphor-icons/react";
-import type { TestSuiteDefinition } from "../../../../shared/types";
+import type { OpenProjectBinding, TestSuiteDefinition } from "../../../../shared/types";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { cn } from "../../ui/cn";
 import { ADD_STEP_ORDER, NOTIFY_STEP, stepDef, type StepKind } from "../actionCatalog";
@@ -44,11 +44,14 @@ export function StepStack({
   steps,
   triggerType,
   suites,
+  runtimePin = null,
   onChange,
 }: {
   steps: WorkflowStep[];
   triggerType: string;
   suites: TestSuiteDefinition[];
+  /** The machine the rule runs on; null is this window's. */
+  runtimePin?: OpenProjectBinding | null;
   onChange: (next: WorkflowStep[]) => void;
 }) {
   const keysRef = useRef<string[]>(steps.map(() => newKey()));
@@ -112,6 +115,7 @@ export function StepStack({
               total={normalCount}
               triggerType={triggerType}
               suites={suites}
+              runtimePin={runtimePin}
               isCleanup={false}
               onChange={(next) => updateStep(index, next)}
               onRemove={() => removeStep(index)}

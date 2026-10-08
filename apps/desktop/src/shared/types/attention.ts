@@ -732,3 +732,45 @@ export function customNotificationProblem(input: {
   }
   return null;
 }
+
+/** What `attention.sendNotification` answers. */
+export type CustomNotificationResult = {
+  sent?: boolean;
+  devices: number;
+  delivered: number;
+  skipped: number;
+  failed: number;
+  remaining: number | null;
+  /** Why the link was left off, when it could not be opened. */
+  linkSkipped?: string;
+};
+
+/**
+ * One sentence about what a custom notification did, for `ade notify --text`
+ * and the automation editor's test send, so the two say it the same way.
+ */
+export function describeCustomNotificationResult(
+  result: Partial<CustomNotificationResult>,
+): { tone: "ok" | "warn"; message: string } {
+  const devices = Number(result.devices) || 0;
+  const delivered = Number(result.delivered) || 0;
+  const skipped = Number(result.skipped) || 0;
+  if (devices === 0) {
+    return {
+      tone: "warn",
+      message: "No phone is signed in to this ADE account, so nothing was sent. Sign in on the ADE iPhone app to get notifications.",
+    };
+  }
+  if (delivered === 0) {
+    return {
+      tone: "warn",
+      message: skipped > 0
+        ? "Nothing was sent: every phone on the account has notifications off, is in quiet hours, or muted this machine."
+        : "ADE couldn't deliver the notification to any phone. Try again in a moment.",
+    };
+  }
+  const quiet = skipped > 0 ? ` · ${skipped} quiet` : "";
+  const left = typeof result.remaining === "number" ? ` · ${result.remaining} left this hour` : "";
+  const link = result.linkSkipped ? `. The link was left off: ${result.linkSkipped}` : "";
+  return { tone: "ok", message: `Sent to ${delivered} phone${delivered === 1 ? "" : "s"}${quiet}${left}${link}` };
+}

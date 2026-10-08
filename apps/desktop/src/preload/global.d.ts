@@ -1797,19 +1797,10 @@ declare global {
          * project's runtime (`attention.sendNotification`). The automation
          * editor's "Send a test" uses it. Absent where no runtime can send.
          */
-        sendNotification?: (args: {
-          title: string;
-          body?: string | null;
-          open?: string | null;
-        }) => Promise<{
-          sent: boolean;
-          devices: number;
-          delivered: number;
-          skipped: number;
-          failed: number;
-          remaining: number | null;
-          linkSkipped?: string;
-        }>;
+        sendNotification?: (
+          args: { title: string; body?: string | null; open?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").CustomNotificationResult>;
         getSnapshot: (
           since?: number,
           streamId?: string | null,

@@ -102,7 +102,14 @@ export function buildNotifyLink({ kind, fields }: NotifyLink): string {
         : `ade://pr/${encodePart(number)}`;
     }
     case "linear":
-      return f.linearIssue?.trim() ? `ade://linear-issue/${encodePart(f.linearIssue.toUpperCase())}` : "";
+      // Upper-cased for the identifier's own shape (ade-123 → ADE-123), but a
+      // `{{…}}` value is left alone: upper-casing it names a field that does
+      // not exist.
+      return f.linearIssue?.trim()
+        ? `ade://linear-issue/${encodePart(
+          f.linearIssue.split(/(\{\{[^}]*\}\})/).map((part) => (hasVariable(part) ? part : part.toUpperCase())).join(""),
+        )}`
+        : "";
     case "lane":
       return f.laneId?.trim() ? `ade://lane/${encodePart(f.laneId)}` : "";
     case "file":

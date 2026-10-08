@@ -679,6 +679,7 @@ import type {
   ProjectConfigValidationResult,
   ProjectInfo,
   OpenProjectBinding,
+  CustomNotificationResult,
   ProjectTabAdoptRequest,
   CreateProjectInput,
   CreateProjectResult,
@@ -6213,8 +6214,11 @@ const adeBridge = {
     },
   },
   attention: {
-    sendNotification: async (args: { title: string; body?: string | null; open?: string | null }) =>
-      callProjectRuntimeActionOr("attention", "sendNotification", { args }, () =>
+    sendNotification: async (
+      args: { title: string; body?: string | null; open?: string | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<CustomNotificationResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "attention", "sendNotification", { args }, () =>
         Promise.reject(new Error("Open a project in ADE to send a test notification."))),
     getSnapshot: async (
       since = 0,

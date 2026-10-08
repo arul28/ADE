@@ -22,9 +22,10 @@ import {
   CUSTOM_NOTIFICATION_BODY_MAX,
   CUSTOM_NOTIFICATION_HOURLY_LIMIT,
   CUSTOM_NOTIFICATION_TITLE_MAX,
+  describeCustomNotificationResult,
 } from "../../../../shared/types/attention";
 import { WORK_BOARD_COLUMN_LABEL, WORK_BOARD_COLUMNS } from "../../../../shared/types/chat";
-import type { PrSummary, TerminalSessionSummary } from "../../../../shared/types";
+import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { cn } from "../../ui/cn";
@@ -83,7 +84,7 @@ function isSessionTrigger(triggerType: string): boolean {
 }
 
 function isPrTrigger(triggerType: string): boolean {
-  return triggerType.includes("pr_") || triggerType.includes(".pr") || triggerType === "lane.merged";
+  return /^(github|git)\.pr_/.test(triggerType) || triggerType === "lane.merged";
 }
 
 function isLaneTrigger(triggerType: string): boolean {
@@ -319,30 +320,57 @@ function ChoiceGrid({
   );
 }
 
-function useProjectChoices(kind: NotifyLinkKind) {
-  const lanes = useAppStore((state) => state.lanes);
+/**
+ * The chats, pull requests, lanes and branches to choose from, read from the
+ * machine the rule runs on. The sender stamps that machine onto a chat or PR
+ * link, so a chat chosen from this window's machine while the rule runs on
+ * another would open on the wrong one.
+ */
+function useProjectChoices(kind: NotifyLinkKind, pin: OpenProjectBinding | null) {
+  const windowLanes = useAppStore((state) => state.lanes);
+  const [pinnedLanes, setPinnedLanes] = useState<LaneSummary[] | null>(null);
   const [sessions, setSessions] = useState<TerminalSessionSummary[] | null>(null);
   const [prs, setPrs] = useState<PrSummary[] | null>(null);
   const wantsSessions = kind === "chat";
   const wantsPrs = kind === "pr" || kind === "branch";
+  const wantsLanes = kind === "lane" || kind === "file" || kind === "commit" || kind === "branch";
+  const lanes = useMemo(() => (pin ? pinnedLanes ?? [] : windowLanes), [pin, pinnedLanes, windowLanes]);
+
+  // A different machine has different everything: read it again. Keyed on the
+  // binding's value, so a rebuilt but equal pin does not refetch.
+  const pinKey = pin ? JSON.stringify(pin) : "";
+  useEffect(() => {
+    setPinnedLanes(null);
+    setSessions(null);
+    setPrs(null);
+  }, [pinKey]);
+
+  useEffect(() => {
+    if (!pin || !wantsLanes || pinnedLanes) return;
+    let cancelled = false;
+    void window.ade.lanes.list({ includeArchived: false, includeStatus: false }, pin)
+      .then((rows) => { if (!cancelled) setPinnedLanes(rows); })
+      .catch(() => { if (!cancelled) setPinnedLanes([]); });
+    return () => { cancelled = true; };
+  }, [pin, pinnedLanes, wantsLanes]);
 
   useEffect(() => {
     if (!wantsSessions || sessions) return;
     let cancelled = false;
-    void window.ade.sessions.list({ limit: 60 })
+    void window.ade.sessions.list({ limit: 60 }, pin)
       .then((rows) => { if (!cancelled) setSessions(rows); })
       .catch(() => { if (!cancelled) setSessions([]); });
     return () => { cancelled = true; };
-  }, [sessions, wantsSessions]);
+  }, [pin, sessions, wantsSessions]);
 
   useEffect(() => {
     if (!wantsPrs || prs) return;
     let cancelled = false;
-    void window.ade.prs.listAll()
+    void window.ade.prs.listAll(pin)
       .then((rows) => { if (!cancelled) setPrs(rows); })
       .catch(() => { if (!cancelled) setPrs([]); });
     return () => { cancelled = true; };
-  }, [prs, wantsPrs]);
+  }, [pin, prs, wantsPrs]);
 
   const laneOptions: PickOption[] = useMemo(
     () => lanes
@@ -395,15 +423,17 @@ function useProjectChoices(kind: NotifyLinkKind) {
 function LinkFields({
   link,
   triggerType,
+  runtimePin,
   onChange,
 }: {
   link: NotifyLink;
   triggerType: string;
+  runtimePin: OpenProjectBinding | null;
   onChange: (next: NotifyLinkFields) => void;
 }) {
   const f = link.fields;
   const set = (patch: NotifyLinkFields) => onChange({ ...f, ...patch });
-  const choices = useProjectChoices(link.kind);
+  const choices = useProjectChoices(link.kind, runtimePin);
   const laneTrigger = isLaneTrigger(triggerType) ? [{ label: "The run's lane", value: "{{trigger.lane.id}}" }] : [];
   const laneField = (label: string, hint?: string) => (
     <PickField
@@ -588,33 +618,6 @@ type TestState =
   | { state: "sending" }
   | { state: "done"; message: string; tone: "ok" | "warn" | "error" };
 
-function describeTestResult(result: Awaited<ReturnType<NonNullable<Window["ade"]["attention"]["sendNotification"]>>>): {
-  message: string;
-  tone: "ok" | "warn";
-} {
-  if (result.devices === 0) {
-    return {
-      tone: "warn",
-      message: "No phone is signed in to this ADE account. Sign in on the ADE iPhone app to get notifications.",
-    };
-  }
-  if (result.delivered === 0) {
-    return {
-      tone: "warn",
-      message: result.skipped > 0
-        ? "Nothing arrived: every phone has notifications off, is in quiet hours, or muted this computer."
-        : "ADE couldn't deliver it to any phone. Try again in a moment.",
-    };
-  }
-  const left = typeof result.remaining === "number" ? ` ${result.remaining} left this hour.` : "";
-  return {
-    tone: "ok",
-    message: `Sent to ${result.delivered} phone${result.delivered === 1 ? "" : "s"}.${left}${
-      result.linkSkipped ? ` The link was left off: ${result.linkSkipped}` : ""
-    }`,
-  };
-}
-
 /**
  * The "Send notification to mobile app" step: what the push says, what a tap
  * opens, a preview, and a real test send. It stores an ordinary
@@ -624,10 +627,13 @@ function describeTestResult(result: Awaited<ReturnType<NonNullable<Window["ade"]
 export function NotifyStepEditor({
   value,
   triggerType,
+  runtimePin = null,
   onChange,
 }: {
   value: AdeActionValue;
   triggerType: string;
+  /** The machine the rule runs on; null is this window's. */
+  runtimePin?: OpenProjectBinding | null;
   onChange: (next: AdeActionValue) => void;
 }) {
   const args = (value.args && !Array.isArray(value.args) ? value.args : {}) as Record<string, unknown>;
@@ -660,6 +666,9 @@ export function NotifyStepEditor({
     writeArgs({ open: built });
   };
 
+  const selectKind = (kind: NotifyLinkKind) =>
+    updateLink({ kind, fields: kind === link.kind ? link.fields : {} });
+
   const builtLink = buildNotifyLink(link);
   const check = checkNotifyLink(builtLink);
   const needsInput = link.kind !== "none" && check.state === "empty";
@@ -687,12 +696,14 @@ export function NotifyStepEditor({
       // A link with trigger values has nothing to fill them with yet, so the
       // test goes without it rather than with a link that cannot open.
       const testLink = check.state === "ok" && !check.checkedWithSamples ? builtLink : null;
+      // Sent from the rule's machine, so a chat or PR link is stamped with
+      // the machine it will be stamped with when the rule runs.
       const result = await send({
         title: withVariableNames(title.trim(), triggerType).slice(0, CUSTOM_NOTIFICATION_TITLE_MAX),
         body: withVariableNames(body.trim(), triggerType).slice(0, CUSTOM_NOTIFICATION_BODY_MAX) || null,
         open: testLink,
-      });
-      const described = describeTestResult(result);
+      }, runtimePin);
+      const described = describeCustomNotificationResult(result);
       setTest({
         state: "done",
         tone: described.tone,
@@ -744,13 +755,13 @@ export function NotifyStepEditor({
             title="On the phone"
             choices={PHONE_CHOICES}
             selected={link.kind}
-            onSelect={(kind) => updateLink({ kind, fields: kind === link.kind ? link.fields : {} })}
+            onSelect={selectKind}
           />
           <ChoiceGrid
             title="On your computer (the phone offers to open it there)"
             choices={COMPUTER_CHOICES}
             selected={link.kind}
-            onSelect={(kind) => updateLink({ kind, fields: kind === link.kind ? link.fields : {} })}
+            onSelect={selectKind}
           />
           <button
             type="button"
@@ -769,6 +780,7 @@ export function NotifyStepEditor({
         <LinkFields
           link={link}
           triggerType={triggerType}
+          runtimePin={runtimePin}
           onChange={(fields) => updateLink({ kind: link.kind, fields })}
         />
       </div>

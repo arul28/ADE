@@ -386,7 +386,7 @@ export function RuleBuilder({
             title="Workflow"
             hint={`${steps.length} step${steps.length === 1 ? "" : "s"} — runs top to bottom`}
           >
-            <StepStack steps={steps} triggerType={primaryTrigger.type} suites={suites} onChange={setSteps} />
+            <StepStack steps={steps} triggerType={primaryTrigger.type} suites={suites} runtimePin={runtimePin} onChange={setSteps} />
           </Section>
         </div>
       </div>

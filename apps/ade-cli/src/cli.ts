@@ -93,7 +93,7 @@ import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/d
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
 import { USER_BROWSER_TARGET_PREFIX } from "../../desktop/src/shared/userBrowserLabels";
-import { customNotificationProblem } from "../../desktop/src/shared/types/attention";
+import { customNotificationProblem, describeCustomNotificationResult } from "../../desktop/src/shared/types/attention";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
@@ -30597,20 +30597,7 @@ function formatTextOutput(
     case "notify": {
       const result = isRecord(value) && isRecord(value.result) ? value.result : value;
       if (!isRecord(result)) return "Notification sent.";
-      const devices = Number(result.devices) || 0;
-      const delivered = Number(result.delivered) || 0;
-      const skipped = Number(result.skipped) || 0;
-      if (devices === 0) {
-        return "No phone is signed in to this ADE account, so nothing was sent. Sign in on the ADE iPhone app to get notifications.";
-      }
-      if (delivered === 0) {
-        return skipped > 0
-          ? "Nothing was sent: every phone on the account has notifications off, is in quiet hours, or muted this machine."
-          : "ADE couldn't deliver the notification to any phone. Try again in a moment.";
-      }
-      const remaining = typeof result.remaining === "number" ? ` · ${result.remaining} left this hour` : "";
-      const quiet = skipped > 0 ? ` · ${skipped} quiet` : "";
-      return `Sent to ${delivered} phone${delivered === 1 ? "" : "s"}${quiet}${remaining}`;
+      return describeCustomNotificationResult(result).message;
     }
     case "action-result":
     default:
