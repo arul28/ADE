@@ -15,7 +15,7 @@
 // see apps/desktop/scripts/build-music-host-win.mjs.
 //
 // Usage: ade-music-host.exe --udf <dir> --page <dir> [--host music.ade.local]
-//                           [--parent-pid <pid>] [--show]
+//                           [--parent-pid <pid>] [--show] [--gpu]
 //
 // Never pass --disable-component-update to WebView2: it removes the Widevine CDM
 // and Apple Music then plays nothing but 30-second previews.
@@ -111,6 +111,7 @@ static class Program {
     string vhost = "music.ade.local";
     int parentPid = 0;
     bool show = false;
+    bool gpu = false;
     for (int i = 0; i < argv.Length; i++) {
       string a = argv[i];
       if (a == "--udf" && i + 1 < argv.Length) udf = argv[++i];
@@ -118,6 +119,7 @@ static class Program {
       else if (a == "--host" && i + 1 < argv.Length) vhost = argv[++i];
       else if (a == "--parent-pid" && i + 1 < argv.Length) int.TryParse(argv[++i], out parentPid);
       else if (a == "--show") show = true;
+      else if (a == "--gpu") gpu = true;
     }
     if (string.IsNullOrEmpty(udf)) {
       Emit("{\"event\":\"hostError\",\"code\":\"usage\",\"error\":\"--udf is required\"}");
@@ -157,7 +159,13 @@ static class Program {
     mainForm.Load += async (s, e) => {
       try {
         // Autoplay without a gesture: every play comes from ADE's own UI, never this page.
-        var options = new CoreWebView2EnvironmentOptions("--autoplay-policy=no-user-gesture-required");
+        // A hidden audio player needs no GPU, one renderer and no extensions.
+        // Measured while playing: 248 MB private across the process tree with
+        // the defaults, 141 MB with these flags. --gpu keeps the GPU process.
+        string flags = "--autoplay-policy=no-user-gesture-required --renderer-process-limit=1 --disable-extensions"
+          + " --disable-features=msSmartScreenProtection,msWebOOUI,msPdfOOUI,SpareRendererForSitePerProcess";
+        if (!gpu) flags += " --disable-gpu";
+        var options = new CoreWebView2EnvironmentOptions(flags);
         environment = await CoreWebView2Environment.CreateAsync(null, udf, options);
         await webView.EnsureCoreWebView2Async(environment);
         var core = webView.CoreWebView2;

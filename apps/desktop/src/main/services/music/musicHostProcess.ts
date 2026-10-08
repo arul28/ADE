@@ -88,6 +88,9 @@ export function startMusicHost(args: {
       "--page", path.join(path.dirname(args.executable), "page"),
       "--parent-pid", String(process.pid),
       ...(args.show ? ["--show"] : []),
+      // The host runs without a GPU process (half the memory). Escape hatch if
+      // some machine's DRM playback ever needs it.
+      ...(process.env.ADE_MUSIC_HOST_GPU === "1" ? ["--gpu"] : []),
     ],
     { stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
   );
