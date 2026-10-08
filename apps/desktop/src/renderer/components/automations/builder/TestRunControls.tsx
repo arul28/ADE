@@ -12,7 +12,7 @@
  * labels it a test and offers Clean up for the lanes it made.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CaretDown, Flask } from "@phosphor-icons/react";
 import type {
   AutomationRun,
@@ -423,7 +423,6 @@ export function TestRunDialog({
 
   // A preview shows the real run, so it asks for the live plan.
   const planMode: AutomationTestRunMode = kind === "safe" ? "safe" : "live";
-  const eventKey = useMemo(() => JSON.stringify(event), [event]);
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -439,8 +438,7 @@ export function TestRunDialog({
       cancelled = true;
       window.clearTimeout(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `eventKey` stands for `event`.
-  }, [eventKey, open, pin, planMode, ruleId]);
+  }, [event, open, pin, planMode, ruleId]);
 
   const start = async () => {
     if (kind === "preview") return;

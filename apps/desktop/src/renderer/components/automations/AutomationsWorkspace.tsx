@@ -923,7 +923,7 @@ export function AutomationsWorkspace({
                   })
                 }
                 onSave={() => void saveDraft()}
-                onTest={selectedRule ? (kind) => setTestKind(kind) : undefined}
+                onTest={(kind) => setTestKind(kind)}
                 testBlockedReason={selectedRule ? null : "Save this automation to test it."}
                 onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
                 onIngressChanged={() => {

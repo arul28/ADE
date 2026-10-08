@@ -253,9 +253,9 @@ quiet hours, or muting this machine; an account may send 60 an hour, and past
 that the step fails with the time to wait. A link that resolves to something
 ADE cannot open (a trigger value that was empty makes `ade://pr/`) is left off
 and named in the step's `linkSkipped` output, so the notification still
-arrives. A link with a `{{run.*}}` value the run never filled (the agent step
-failed before its chat existed) is dropped before it is resolved, for the
-same reason. An `agent-session` step can do the same from its shell with
+arrives. A `{{run.*}}` value the run never filled (the agent step failed
+before its chat existed) leaves an empty id, so that link is left off the
+same way. An `agent-session` step can do the same from its shell with
 `ade notify`. See
 [Custom notifications](../sync-and-multi-device/push-notifications.md#custom-notifications).
 
