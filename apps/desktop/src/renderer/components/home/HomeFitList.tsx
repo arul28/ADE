@@ -20,7 +20,8 @@ const MORE_LINE = 26;
 
 export type FitListMore =
   | { onMore: () => void }
-  | { dialog: { title: string; render: () => ReactNode } };
+  /** `close` shuts the dialog: call it when a row opens something else (a viewer, a page). */
+  | { dialog: { title: string; render: (close: () => void) => ReactNode } };
 
 export function FitList({
   children,
@@ -111,7 +112,7 @@ export function FitList({
       ) : null}
       {open && more && "dialog" in more ? (
         <Dialog open onOpenChange={setOpen} title={more.dialog.title} width={560} maxHeight="78vh">
-          <div className="ade-fit-dialog">{more.dialog.render()}</div>
+          <div className="ade-fit-dialog">{more.dialog.render(() => setOpen(false))}</div>
         </Dialog>
       ) : null}
     </div>

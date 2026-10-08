@@ -360,7 +360,10 @@ export default function FeedWidget({ item }: HomeWidgetProps) {
         ) : (
           <FitList
             ariaLabel="Recent events"
-            more={{ dialog: { title: "Feed", render: () => feedRows(groups, now, open) } }}
+            more={{ dialog: { title: "Feed", render: (close) => feedRows(groups, now, (event) => {
+              close();
+              open(event);
+            }) } }}
           >
             {feedRows(groups, now, open)}
           </FitList>
