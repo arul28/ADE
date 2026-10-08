@@ -578,13 +578,27 @@ there is no concrete dashboard question or card for them yet. The existing
 surface/feature volume views continue to include the shared event without a
 dashboard contract change.
 
+An issue made in ADE's create composer records the existing `ade_feature_used`
+event with `feature: "issues"`, `action: "issue_created"`,
+`source: "renderer_route"`, and the tracker on a closed `outcome`:
+`tracker_linear` or `tracker_github`. It is captured in
+`IssueCreateDialog.tsx` only after the tracker accepted the issue; an issue an
+agent makes through `ade linear create` or `ade github issue create` is not
+counted, because the question is whether people file issues from ADE's own
+form. Nothing about the issue crosses: no repository, team, title, labels,
+number or id. A per-tracker one-minute deduplication key folds a "Create more"
+burst into one event, so the worst case is two events a minute, inside the
+existing `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was
+raised and no dashboard card asks this yet.
+
 Which tool an installation opens in the Work tools pane records the existing
 `ade_feature_used` event at the pane's single writer (`useWorkSidebarTool`'s
 `setTool`, which every entry point funnels through — a picker card, the command
 palette, and the reveal channel a dev-server chip uses) with `feature: "work"`,
 `action: "tool_opened"`, `source: "renderer_route"`, and the tool id on a
 closed, prefixed `outcome`: `tool_terminal`, `tool_git`, `tool_files`,
-`tool_ios`, `tool_app_control`, `tool_browser`, or `tool_pr`. It is emitted from
+`tool_ios`, `tool_app_control`, `tool_browser`, `tool_pr`, `tool_mac_desktop`,
+`tool_windows_desktop`, or `tool_issues`. It is emitted from
 the renderer because tool selection has no durable backend mutation — the
 runtime publish that mirrors it to iOS and the hosted web client is a
 device-mirror push, not a record of the choice.

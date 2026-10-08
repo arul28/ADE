@@ -5466,6 +5466,8 @@ export function createLaneService({
           evidence,
         }));
       }
+      // The lane summary carries these links ("Linked in ADE", the PR's closes).
+      if (laneId && links.length > 0) invalidateLaneListCache();
       return links;
     },
 
@@ -5500,6 +5502,7 @@ export function createLaneService({
         try { db.run("rollback"); } catch { /* keep original detach error */ }
         throw err;
       }
+      if (target.some((link) => link.laneId)) invalidateLaneListCache();
       return true;
     },
 

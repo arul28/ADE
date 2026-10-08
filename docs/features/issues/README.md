@@ -139,7 +139,8 @@ The form is a big title, the description, a row of property chips (the same
   (`shared/githubIssueTemplates.ts`). `blank_issues_enabled: false` makes a
   template required.
 - **Pictures.** Paste or drop an image into the description. Linear uploads it
-  at once (`cto.uploadLinearFile`) and inserts the markdown. GitHub has no API
+  at once (`cto.uploadLinearFile`; from the web client or a phone the bytes
+cross the sync channel, capped at 10 MB) and inserts the markdown. GitHub has no API
   for issue attachments, so the pictures go with the create through
   `gh issue create --attach` (GitHub CLI 2.99 or later on the brain machine);
   labels and the other fields follow in one PATCH.
@@ -149,6 +150,8 @@ The form is a big title, the description, a row of property chips (the same
   draft, a create clears it. "Create more" keeps the form open.
 - **Context footer.** An issue started from a chat gets a collapsed "Context"
   section with an `https` ADE link back to that chat and its lane.
+- **Analytics.** One `ade_feature_used` fact per issue made here, with only
+  the tracker (`docs/logging.md`).
 - **After a create.** A toast with "Start lane". From a pane, the pane selects
   the new issue; from anywhere else it opens where you are. The GitHub lists
   show it at once and re-read in the background (one GraphQL point).
@@ -167,6 +170,8 @@ session's issue link. The lane itself is linked too (`githubIssue` on
 `lanes.create`, stored as a `session_github_issues` row under the session id
 `lane:<laneId>`), so "Lane only" also shows under "Linked in ADE" and the
 lane's PR says `Closes #123`. Lanes carry these links as `githubIssueLinks`.
+Detaching the issue from a chat in that lane removes the lane's link too, so
+the PR no longer closes an issue the user took off.
 The machine picker is the Linear launcher's: the lane and its chat go to one
 machine that has the repository open.
 If the chat fails to start, the new lane is deleted again. The Linear batch
@@ -201,8 +206,11 @@ ade linear set-state ADE-123 "In Progress"
 ```
 
 The name lookups and value checks are in `apps/ade-cli/src/issueCliFields.ts`;
-the commands are `buildLinearPlan` and `buildGithubIssuePlan` in
-`apps/ade-cli/src/cli.ts`.
+the commands are `buildLinearPlan` in `apps/ade-cli/src/cli.ts` and
+`buildGithubIssuePlan` in `apps/ade-cli/src/cliGithubIssue.ts`. A GitHub write
+(`edit`, `close`, `reopen`, `label`, `assign`, `milestone`, `type`,
+`comment`) reads the number first and refuses a pull request: GitHub numbers
+both from one sequence and `/issues` accepts either.
 
 ## Top-bar settings
 
@@ -220,24 +228,24 @@ Issues tab and the sheet. Turning Linear off is signing out.
 - `apps/desktop/src/renderer/lib/issueNavigation.ts` — the router.
   `openIssueRef` sends to the tools pane when an in-place host is registered,
   else to the sheet; `openIssueInSheet` always uses the sheet (command
-  palette, inbound deeplink modal). `hasNativeIssueViewer` limits it to Linear
-  for now, so a GitHub issue link falls through to the browser.
+  palette, inbound deeplink modal). Both trackers have a native viewer.
 - `apps/desktop/src/renderer/lib/openExternal.ts` — `openLinkFromUi` checks
   for an issue link first, so every markdown link and URL chip in ADE routes
   through the issue viewer with no per-surface wiring.
 - `apps/desktop/src/renderer/components/issues/`
-  - `IssueViewer.tsx` — the shared chrome: 40px header (provider mark, id,
-    state, refresh, open on the web, ⋯ copy menu, "All issues" in the sheet,
-    close), the load and failure states, and the action dock (Launch agent,
-    Lane only, Attach to chat). Also "Linked in ADE": the lanes carrying the
-    issue and how many chats in each were handed it, read from lane data.
+  - `IssueViewer.tsx` — picks the provider's viewer.
+  - `LinearIssueViewer.tsx` — the Linear viewer: reads by identifier, edits,
+    the load and failure states that say what fixes them, and "Linked in ADE".
   - `LinearIssueView.tsx` — the Linear issue body: title, description,
     relations and activity, with the floated property box. The Linear pane's
     detail side renders it too. `IssueMarkdown` is shared with GitHub.
   - `issueViewer.css` — the layout (see above).
-  - `linearIssueStore.ts` — one cache per issue shared by the tab, the sheet
-    and chip hover cards: reads, optimistic edits with rollback, the picker
-    catalog, and `useLinearIssuePeek` for chips that must not fetch.
+  - `issueEntryCache.ts` — the single-issue cache both trackers use: one read
+    in flight per issue, a freshness window, LRU eviction, and optimistic
+    edits where only the newest edit's reply or rollback lands.
+  - `linearIssueStore.ts` — the Linear issue cache shared by the tab, the
+    sheet and chip hover cards, the picker catalog, and `useLinearIssuePeek`
+    for chips that must not fetch.
   - `IssuesToolPanel.tsx` + `issueTabsStore.ts` — the Issues tool: one chip per
     open issue (provider mark, state, id; middle-click closes; draggable onto
     the composer), stored per lane in `localStorage`.
@@ -245,17 +253,31 @@ Issues tab and the sheet. Turning Linear off is signing out.
     native browser view while open.
   - `GitHubIssueViewer.tsx`, `GitHubIssueView.tsx`, `githubIssueStore.ts` — the
     GitHub viewer, its body, and its cache (issue, comments, repo, badge
-    summary, lists).
+    summary, lists). A list row is a partial copy (the list query carries only
+    the first labels and assignees): it shows at once, opening it reads the
+    whole issue, and edits wait for that read so a label change cannot drop
+    labels the row never had. An open issue that a list refresh turns partial
+    is read again. The comment thread is read again when the
+    issue's update time or comment count changes.
   - `GitHubIssuesButton.tsx`, `GitHubIssuesPane.tsx` — the top-bar button and
     the pane (list + viewer) inside the shared `LinearPaneModal` shell.
-  - `issueViewerParts.tsx` — the header, copy-with-toast and "Linked in ADE"
-    shared by both providers.
+  - `issueViewerParts.tsx` — what both viewers share: the frame (header,
+    scrolling body, action dock), the 40px header, the "last copy" banner, the
+    action dock (Launch agent, Lane only, Attach to chat), copy-with-toast, and
+    "Linked in ADE" (`lanesCarryingIssue`).
+  - `IssuePickerMenu.tsx` — the filterable picker every property chip opens,
+    and the GitHub label and person options.
   - `issueTopBarPreferences.ts` — the two top-bar toggles.
   - `issueEditing.tsx` — inline title, description and the comment box, shared
     by both providers; `issueMarkdown.tsx` — the markdown renderer they share.
     A failed image retries three times: a picture GitHub has just taken fails
     for a few seconds before it is served.
   - `IssueCreateDialog.tsx` + `IssueCreateHost.tsx` — the create composer.
+    Its parts: `issueCreateDraft.ts` (form state and the draft, per tracker
+    and project; the parent is never saved, GitHub form answers are),
+    `issueCreateChips.tsx` (the property chips), `GitHubIssueFormFields.tsx`,
+    `useSimilarIssues.tsx`, and `issueCreateSubmit.ts`. A sub-issue is created
+    in its parent's repository.
   - `githubIssueLaunch.tsx` — the GitHub lane and agent launch, and its host.
 - `apps/desktop/src/renderer/components/ui/dialog/Dialog.tsx` — `placement:
   "right"` is the side sheet: full height, docked right, opaque, a lighter
@@ -264,9 +286,16 @@ Issues tab and the sheet. Turning Linear off is signing out.
   issue" requests, and the "issue created" event the panes select from.
 - `apps/desktop/src/shared/githubIssueTemplates.ts` — issue template and form
   parsing, and the body a form produces.
-- `apps/desktop/src/main/services/github/githubIssueOps.ts` — GitHub create,
-  templates, issue types and sub-issue links, shared by the desktop service and
-  the headless runtime.
+- `apps/desktop/src/main/services/github/githubIssueOps.ts` — every GitHub
+  issue operation (reads, the App's issue grant, write access, edits,
+  comments, creates, templates, issue types, sub-issue links), shared by the
+  desktop service and the headless runtime; each service passes only its
+  transport and how it runs `gh`.
+- `apps/desktop/src/shared/linearIssueCreateInput.ts` — the one parser for a
+  Linear create request; the tracker's `createIssue` applies it, so IPC, the
+  runtime action and the phone read input the same way.
+- `apps/ade-cli/src/cliGithubIssue.ts` — `ade github issue`; every write reads
+  the number first and refuses a pull request.
 - `apps/desktop/src/renderer/lib/linearLaunchRequests.ts` — the viewer asks the
   top-bar Linear host to launch; the launch modal and runner keep one owner.
 - `apps/desktop/src/renderer/lib/linearIssueQuickViewNavigation.ts` — now only

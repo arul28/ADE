@@ -59,6 +59,26 @@ import { useSimilarIssues } from "./useSimilarIssues";
 
 const MOD = () => (isMacRuntimeTarget() ? "⌘" : "Ctrl");
 
+/**
+ * One coarse product fact per issue made here: which tracker it went to.
+ * Captured after the tracker accepted it. A burst ("Create more") counts once a
+ * minute per tracker, inside the `ade_feature_used` 140-per-day / 30-per-minute
+ * limits. Nothing about the issue itself crosses the boundary.
+ */
+function captureIssueCreated(provider: IssueProvider): void {
+  void window.ade?.analytics?.capture({
+    event: "ade_feature_used",
+    properties: {
+      feature: "issues",
+      action: "issue_created",
+      outcome: provider === "linear" ? "tracker_linear" : "tracker_github",
+      source: "renderer_route",
+    },
+    dedupeKey: `issue_created:${provider}`,
+    minimumIntervalMs: 60_000,
+  }).catch(() => undefined);
+}
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -281,6 +301,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
           message: issue.title,
           actions: [{ label: "Start lane", onClick: () => requestLinearIssueLaunch({ issues: [issue], laneOnly: false }) }],
         });
+        captureIssueCreated("linear");
         announceIssueCreated({ provider: "linear", issue });
         if (!createMore && request.origin !== "pane") {
           openIssueRef({ ref: { provider: "linear", identifier: issue.identifier, url: issue.url }, source: "issue-viewer" });
@@ -306,6 +327,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
           ...(warnings.length ? { durationMs: 18_000 } : {}),
           actions: [{ label: "Start lane", onClick: () => requestGitHubIssueLaunch(issue) }],
         });
+        captureIssueCreated("github");
         announceIssueCreated({ provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number });
         if (!createMore && request.origin !== "pane") {
           openIssueRef({ ref: { provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url }, source: "issue-viewer" });

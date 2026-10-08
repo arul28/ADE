@@ -16984,3 +16984,40 @@ describe("findFlagName", () => {
     expect(findFlagName(["--provider", "codex"], ["--type", "--chat-parent"])).toBeNull();
   });
 });
+
+describe("ade github issue writes", () => {
+  // GitHub numbers issues and pull requests from one sequence and `/issues`
+  // accepts both, so every issue write reads the number first and refuses a
+  // pull request before anything is sent.
+  const writeStep = (argv: string[]) => {
+    const plan = buildCliPlan(["github", "issue", ...argv, "--repo", "arul28/ADE"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") throw new Error("expected an execute plan");
+    const read = plan.steps.find((step) => step.key === "current");
+    const write = plan.steps.find((step) => step.key === "result");
+    expect(read, "the issue is read before the write").toBeTruthy();
+    expect(write).toBeTruthy();
+    return (current: Record<string, unknown>) => (typeof write!.params === "function"
+      ? write!.params({ current })
+      : write!.params) as { arguments: { action: string; args: Record<string, unknown> } };
+  };
+
+  it.each([
+    ["close", ["close", "12"], "updateIssue"],
+    ["edit", ["edit", "12", "--title", "New title"], "updateIssue"],
+    ["label", ["label", "12", "--add", "bug"], "updateIssue"],
+    ["comment", ["comment", "12", "Fixed in main"], "commentOnIssue"],
+  ])("%s refuses a pull request and writes to an issue", (_name, argv, action) => {
+    const send = writeStep(argv);
+    expect(() => send({ number: 12, pull_request: { url: "https://api.github.com/repos/arul28/ADE/pulls/12" } }))
+      .toThrow(/#12 is a pull request, not an issue/);
+    const params = send({ number: 12, labels: [], assignees: [] });
+    expect(params.arguments.action).toBe(action);
+    expect(params.arguments.args).toMatchObject({ owner: "arul28", name: "ADE", number: 12 });
+  });
+
+  it("refuses a write when the issue cannot be read", () => {
+    const send = writeStep(["close", "12"]);
+    expect(() => send(null as unknown as Record<string, unknown>)).toThrow(/was not found, or ADE could not read it/);
+  });
+});

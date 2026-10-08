@@ -197,11 +197,14 @@ export function useGitHubIssue(ref: { owner: string; repo: string; number: numbe
   const owner = ref?.owner ?? null;
   const repo = ref?.repo ?? null;
   const number = ref?.number ?? null;
+  // A list refresh can replace the whole copy with a newer partial row while
+  // the issue is open; that read again is what lets editing come back.
+  const partial = entry.issue != null && !isCompleteGitHubIssue(entry);
   useEffect(() => {
     if (!owner || !repo || !number) return;
     ensureIssueEventSubscription();
     void loadGitHubIssue(projectRoot, owner, repo, number);
-  }, [number, owner, projectRoot, repo]);
+  }, [number, owner, partial, projectRoot, repo]);
   const refresh = useCallback(() => {
     if (owner && repo && number) void loadGitHubIssue(projectRoot, owner, repo, number, { force: true });
   }, [number, owner, projectRoot, repo]);

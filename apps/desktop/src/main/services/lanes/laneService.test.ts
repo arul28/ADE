@@ -6948,6 +6948,77 @@ describe("laneService - branchSwitch", () => {
   });
 });
 
+describe("laneService GitHub issue links", () => {
+  const issue = (number: number) => ({
+    id: `acme/ade#${number}`,
+    number,
+    owner: "acme",
+    repo: "ade",
+    title: `Issue ${number}`,
+    body: null,
+    url: `https://github.com/acme/ade/issues/${number}`,
+    state: "open" as const,
+    stateReason: null,
+    labels: [],
+    assignees: [],
+    authorLogin: "octo",
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+  });
+
+  it("lists a lane's GitHub links, and detaching the issue from its chat also unlinks the lane", async () => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-github-links-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-gh-links", repoRoot });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-gh-links",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+      // A lane made for #12 carries its own link, the way `create({ githubIssue })`
+      // stores it; #13 is linked to the lane the same way.
+      const now = "2026-10-01T00:00:00.000Z";
+      for (const number of [12, 13]) {
+        db.run(
+          `
+            insert into session_github_issues(
+              id, project_id, session_id, lane_id, issue_id, issue_json, role, source,
+              include_in_pr, close_on_merge, evidence_json, created_at, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [`lane-link-${number}`, "proj-gh-links", "lane:lane-child", "lane-child", `acme/ade#${number}`, JSON.stringify(issue(number)), "primary", "lane_link", 1, 1, null, now, now],
+        );
+      }
+      db.run(
+        `
+          insert into claude_sessions(session_id, lane_id, chat_session_id, title, tags_json, created_at, updated_at)
+          values (?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["chat-on-child", "lane-child", null, null, null, now, now],
+      );
+      service.attachGitHubIssueToSession({ chatSessionId: "chat-on-child", issues: [issue(12)] });
+
+      // "Linked in ADE" reads these off the lane summary.
+      const before = (await service.list({ includeStatus: false })).find((lane) => lane.id === "lane-child");
+      expect(before?.githubIssueLinks?.map((link) => link.issue.number).sort()).toEqual([12, 12, 13]);
+
+      expect(service.detachGitHubIssueFromSession({ chatSessionId: "chat-on-child", issueId: "acme/ade#12" })).toBe(true);
+
+      // #12 is gone from the chat and from the lane, so the lane's PR no
+      // longer closes it; #13, never detached, stays.
+      const after = (await service.list({ includeStatus: false })).find((lane) => lane.id === "lane-child");
+      expect(after?.githubIssueLinks?.map((link) => link.issue.number)).toEqual([13]);
+      expect(service.listGitHubIssuesForSession({ chatSessionId: "chat-on-child" })).toHaveLength(0);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("laneService session-scoped Linear issue links", () => {
   function seedClaudeSession(db: any, args: { sessionId: string; laneId: string; title?: string | null }) {
     const now = "2026-05-20T10:00:00.000Z";
