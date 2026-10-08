@@ -171,7 +171,9 @@ Only the user opens or closes it: the open chat's lane folds like any other, so
 its card is hidden until the user unfolds the shelf. The rule lives
 in `workLaneFocus.ts` (`summarizeLaneFocus`) so the shelf and the lane headers
 cannot disagree with the board's columns. A lane folds only when at least one
-live row is actually busy: a raised hand (`needs_you`), a stale run, a stalled
+live agent row (a chat or a tracked agent CLI) is actually busy. A plain shell
+never counts as busy: a dev server or App Control shell runs indefinitely, so
+it cannot keep a lane folded once its chat is done. A raised hand (`needs_you`), a stale run, a stalled
 turn, or a finished row the user has not left holds the whole lane out with its
 rows visible. Snoozed and settled rows take no part. A finished nested row
 (attached shell, subagent) can never hold its lane out — nobody opens a helper

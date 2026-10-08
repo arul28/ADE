@@ -129,6 +129,22 @@ func isWorkChatToolType(_ toolType: String?) -> Bool {
   return raw.hasSuffix("-chat")
 }
 
+/// Agent chats and tracked agent CLIs; plain shells are not agents. Mirrors
+/// desktop `isChatToolType || isTrackedAgentCliToolType`.
+func isWorkAgentToolType(_ toolType: String?) -> Bool {
+  if isWorkChatToolType(toolType) { return true }
+  let raw = toolType?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased() ?? ""
+  return workTrackedAgentCliToolTypes.contains(raw)
+}
+
+/// Mirrors desktop `isTrackedAgentCliToolType`.
+private let workTrackedAgentCliToolTypes: Set<String> = [
+  "claude", "codex", "cursor-cli", "droid", "opencode", "pi", "qwen", "kimi", "grok",
+  "copilot", "devin", "claude-orchestrated", "codex-orchestrated", "opencode-orchestrated",
+]
+
 /// The tri-state settle override persisted on `terminal_sessions.settle_override`.
 /// Mirrors the desktop `SessionSettleOverride`. Consulted at the declared-settle
 /// tier.
