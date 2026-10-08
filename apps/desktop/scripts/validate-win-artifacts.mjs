@@ -636,6 +636,8 @@ async function validatePackagedRuntime(appDir) {
   const crsqliteDllPath = path.join(unpackedPath, "vendor", "crsqlite", "win32-x64", "crsqlite.dll");
   const captureHelperExePath = path.join(resourcesPath, "native", "ade-capture-helper.exe");
   const desktopDriverExePath = path.join(resourcesPath, "native", "ade-desktop-driver.exe");
+  const nowPlayingExePath = path.join(resourcesPath, "native", "ade-now-playing.exe");
+  const musicHostExePath = path.join(resourcesPath, "native", "ade-music-host", "ade-music-host.exe");
   const bundledAdeCliFiles = resolveBundledAdeCliFiles();
   assertRequiredBundledAdeCliFiles(bundledAdeCliFiles);
 
@@ -665,6 +667,18 @@ async function validatePackagedRuntime(appDir) {
   } else {
     await assertPathExists(captureHelperExePath, "packaged Windows capture helper");
     await assertPathExists(desktopDriverExePath, "packaged Windows Desktop driver");
+  }
+  // The home page's Now Playing widget and the Music tab. Each build has its own
+  // skip switch, honored only by a local test build, like the helpers above.
+  if (isLocalWindowsTestBuild && process.env.ADE_SKIP_NOW_PLAYING_BUILD === "1") {
+    console.warn("[validate-win-artifacts] Local test build without the Now Playing helper (ADE_SKIP_NOW_PLAYING_BUILD=1).");
+  } else {
+    await assertPathExists(nowPlayingExePath, "packaged Windows Now Playing helper");
+  }
+  if (isLocalWindowsTestBuild && process.env.ADE_SKIP_MUSIC_HOST_BUILD === "1") {
+    console.warn("[validate-win-artifacts] Local test build without the music player host (ADE_SKIP_MUSIC_HOST_BUILD=1).");
+  } else {
+    await assertPathExists(musicHostExePath, "packaged Windows music player host");
   }
   assertPackagedTuiEsmShims(await fsp.readFile(adeCliTuiPath, "utf8"));
   if (isLocalWindowsTestBuild) {
@@ -978,6 +992,16 @@ async function validateReleaseArtifacts() {
   await validateAuthenticodeSignature(
     path.join(appDir, "resources", "native", "ade-desktop-driver.exe"),
     "Windows Desktop driver",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-now-playing.exe"),
+    "Windows Now Playing helper",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-music-host", "ade-music-host.exe"),
+    "Windows music player host",
     expectedIdentity,
   );
   // Both artifacts are pinned to the same Subject above, but a Subject match

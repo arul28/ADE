@@ -19,13 +19,13 @@ if (process.platform !== "win32") {
   console.log("[now-playing-win] Skipping outside Windows.");
   process.exit(0);
 }
-if (process.env.ADE_SKIP_CAPTURE_HELPER_BUILD === "1") {
-  console.log("[now-playing-win] Skipping local native helper build (ADE_SKIP_CAPTURE_HELPER_BUILD=1).");
+if (process.env.ADE_SKIP_NOW_PLAYING_BUILD === "1") {
+  console.log("[now-playing-win] Skipping (ADE_SKIP_NOW_PLAYING_BUILD=1).");
   process.exit(0);
 }
 let compilerEnv = process.env;
 if (spawnSync("cl.exe", [], { stdio: "ignore", windowsHide: true }).error) {
-  const vswhere = path.join(process.env["ProgramFiles(x86)"] ?? "C:\Program Files (x86)", "Microsoft Visual Studio", "Installer", "vswhere.exe");
+  const vswhere = path.join(process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)", "Microsoft Visual Studio", "Installer", "vswhere.exe");
   const installation = execFileSync(vswhere, ["-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"], { encoding: "utf8", windowsHide: true }).trim();
   const devCommand = path.join(installation, "Common7", "Tools", "VsDevCmd.bat");
   if (!installation || !fs.existsSync(devCommand) || /["\r\n%]/.test(devCommand)) {

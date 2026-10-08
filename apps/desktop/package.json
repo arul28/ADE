@@ -333,15 +333,7 @@
           "ade-capture-helper.exe",
           "ade-sim-helper",
           "ade-media",
-          "ade-desktop-driver.exe",
-          "ade-now-playing.exe"
-        ]
-      },
-      {
-        "from": "resources/native/ade-music-host",
-        "to": "native/ade-music-host",
-        "filter": [
-          "**/*"
+          "ade-desktop-driver.exe"
         ]
       },
       {
@@ -396,6 +388,20 @@
           "filter": [
             "ade-win32-x64.exe",
             "ade-win32-x64.native.tar.gz"
+          ]
+        },
+        {
+          "from": "resources/native",
+          "to": "native",
+          "filter": [
+            "ade-now-playing.exe"
+          ]
+        },
+        {
+          "from": "resources/native/ade-music-host",
+          "to": "native/ade-music-host",
+          "filter": [
+            "**/*"
           ]
         }
       ]

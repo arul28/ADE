@@ -67,6 +67,11 @@ std::condition_variable g_wake;
 bool g_dirty = true;
 std::atomic<bool> g_quit{false};
 std::mutex g_out;
+// Set by the manager's SessionsChanged handler, which runs on a WinRT thread.
+std::atomic<bool> g_sessionsChanged{true};
+// Commands from the stdin thread, which is detached and may outlive main().
+std::mutex g_commandMutex;
+std::vector<std::string> g_commands;
 
 void Signal() {
   {
@@ -353,6 +358,9 @@ struct Tracker {
     std::string signature;
     std::string body;
     const std::string current = CurrentId();
+    // Only sessions that made it into the line count as sent: a read that
+    // failed sends its artwork and icon next time.
+    std::vector<Tracked*> published;
     for (auto& [id, entry] : tracked) {
       try {
         const auto props = entry.session.TryGetMediaPropertiesAsync().get();
@@ -394,6 +402,7 @@ struct Tracker {
         }
         if (!body.empty()) body += ",";
         body += line + extra + "}";
+        published.push_back(&entry);
       } catch (const hresult_error&) {
         // A session closing under us; the next SessionsChanged drops it.
       }
@@ -401,9 +410,9 @@ struct Tracker {
     signature = current + "\n" + signature;
     if (signature == lastSignature) return;
     lastSignature = signature;
-    for (auto& [id, entry] : tracked) {
-      entry.sentArtworkKey = entry.artworkKey;
-      entry.iconSent = true;
+    for (Tracked* entry : published) {
+      entry->sentArtworkKey = entry->artworkKey;
+      entry->iconSent = true;
     }
     Emit("{\"type\":\"sessions\",\"current\":" + (current.empty() ? std::string("null") : Json(current)) + ",\"sessions\":[" + body + "]}");
   }
@@ -445,23 +454,21 @@ int main() {
     Emit("{\"type\":\"error\",\"message\":" + Json(Utf8(error.message())) + "}");
     return 1;
   }
-  std::atomic<bool> sessionsChanged{true};
-  tracker.manager.SessionsChanged([&](auto&&, auto&&) {
-    sessionsChanged = true;
+  // Revoked when main returns, before anything they touch is gone.
+  const auto sessionsChangedRevoker = tracker.manager.SessionsChanged(auto_revoke, [](auto&&, auto&&) {
+    g_sessionsChanged = true;
     Signal();
   });
-  tracker.manager.CurrentSessionChanged([&](auto&&, auto&&) { Signal(); });
+  const auto currentChangedRevoker = tracker.manager.CurrentSessionChanged(auto_revoke, [](auto&&, auto&&) { Signal(); });
 
-  std::mutex commandMutex;
-  std::vector<std::string> commands;
-  std::thread input([&] {
+  std::thread input([] {
     std::string line;
     while (std::getline(std::cin, line)) {
       while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
       if (line == "quit") break;
       {
-        std::lock_guard<std::mutex> lock(commandMutex);
-        commands.push_back(line);
+        std::lock_guard<std::mutex> lock(g_commandMutex);
+        g_commands.push_back(line);
       }
       Signal();
     }
@@ -479,7 +486,7 @@ int main() {
       g_dirty = false;
     }
     if (g_quit) break;
-    if (sessionsChanged.exchange(false)) {
+    if (g_sessionsChanged.exchange(false)) {
       try {
         tracker.Attach();
       } catch (const hresult_error& error) {
@@ -488,12 +495,13 @@ int main() {
     }
     std::vector<std::string> pending;
     {
-      std::lock_guard<std::mutex> lock(commandMutex);
-      pending.swap(commands);
+      std::lock_guard<std::mutex> lock(g_commandMutex);
+      pending.swap(g_commands);
     }
     for (const auto& command : pending) tracker.Command(command);
     tracker.Publish();
   }
   input.detach();
+  for (auto& [id, entry] : tracker.tracked) Tracker::Detach(entry);
   return 0;
 }
