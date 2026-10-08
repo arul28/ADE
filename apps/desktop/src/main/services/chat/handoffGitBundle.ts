@@ -88,6 +88,27 @@ async function gitOut(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Pro
   return (await runGitOrThrow(args, { cwd, timeoutMs: GIT_TIMEOUT_MS, ...(env ? { env } : {}) })).trim();
 }
 
+/**
+ * The first added path that would overwrite or delete a file only this
+ * machine has. A path `commit` tracks (a directory the change turns into a
+ * file, say) is git's to replace, unless an untracked or ignored local file
+ * sits inside it, which the replacement would delete.
+ */
+async function findLocalFileCollision(
+  worktreePath: string,
+  commit: string,
+  added: string[],
+): Promise<string | undefined> {
+  for (const relPath of added) {
+    if (!fs.existsSync(path.join(worktreePath, relPath))) continue;
+    const tracked = await gitOut(worktreePath, ["ls-tree", "-r", "--name-only", commit, "--", relPath]);
+    if (!tracked) return relPath;
+    const local = await gitOut(worktreePath, ["ls-files", "--others", "-z", "--", relPath]);
+    if (local.replace(/\0/g, "")) return relPath;
+  }
+  return undefined;
+}
+
 async function gitOk(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<boolean> {
   return (await runGit(args, { cwd, timeoutMs: GIT_TIMEOUT_MS, ...(env ? { env } : {}) })).exitCode === 0;
 }
@@ -455,23 +476,7 @@ export async function applyHandoffGitBundle(args: {
         const added = (await gitOut(worktreePath, ["diff", "--name-only", "--diff-filter=A", "-z", current, tip]))
           .split("\0")
           .filter(Boolean);
-        // A path the lane's commit tracks (a directory the commits turn into a
-        // file, say) is git's to replace; only untracked or ignored files are
-        // at risk.
-        let collision: string | undefined;
-        for (const relPath of added) {
-          if (!fs.existsSync(path.join(worktreePath, relPath))) continue;
-          const tracked = await gitOut(worktreePath, ["ls-tree", "-r", "--name-only", current, "--", relPath]);
-          // A tracked directory git replaces can still hold ignored or
-          // untracked local files, which the replacement would delete.
-          const local = tracked
-            ? await gitOut(worktreePath, ["ls-files", "--others", "-z", "--", relPath])
-            : "";
-          if (!tracked || local.replace(/\0/g, "")) {
-            collision = relPath;
-            break;
-          }
-        }
+        const collision = await findLocalFileCollision(worktreePath, current, added);
         if (collision) {
           throw new Error(
             `The destination lane already has '${collision}' (an ignored or untracked file) where the handed-off commits add one. Move it aside, then hand off again.`,
@@ -526,7 +531,7 @@ export async function applyHandoffGitBundle(args: {
       const added = (await gitOut(worktreePath, ["diff", "--no-renames", "--name-only", "-z", "--diff-filter=A", tip, snapshot]))
         .split("\0")
         .filter(Boolean);
-      const collision = added.find((relative) => fs.existsSync(path.join(worktreePath, relative)));
+      const collision = await findLocalFileCollision(worktreePath, tip, added);
       if (collision) {
         throw new Error(
           `'${collision}' already exists in the destination lane and would be overwritten. Move it aside, then hand off again.`,

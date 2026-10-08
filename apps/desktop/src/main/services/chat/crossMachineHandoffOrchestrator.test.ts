@@ -682,6 +682,41 @@ describe("handoff git bundle", () => {
     expect(git(lanePath, "status", "--porcelain=v1")).toBe("");
   });
 
+  it("carries an uncommitted directory-to-file change into a new lane", async () => {
+    const { source, clone } = makeRepos();
+    git(source, "checkout", "--quiet", "-b", "dir-snapshot");
+    fs.mkdirSync(path.join(source, "config"));
+    fs.writeFileSync(path.join(source, "config", "settings.json"), "{}\n");
+    git(source, "add", "-A");
+    git(source, "commit", "--quiet", "-m", "config dir");
+    git(source, "push", "--quiet", "-u", "origin", "dir-snapshot");
+    // Uncommitted: the directory becomes a file.
+    fs.rmSync(path.join(source, "config"), { recursive: true });
+    fs.writeFileSync(path.join(source, "config"), "now a file\n");
+    const bundle = await packHandoffGitBundle({ worktreePath: source, branchRef: "dir-snapshot", handoffId: "handoff:dir-snap-1" });
+    if (!bundle) throw new Error("an uncommitted change must pack");
+
+    const destination = clone("dir-snap-destination");
+    const lanePath = path.join(path.dirname(destination), "dir-snap-lane");
+    await applyHandoffGitBundle({
+      projectRoot: destination,
+      handoffId: "handoff:dir-snap-1",
+      branchRef: "dir-snapshot",
+      bundle,
+      target: {
+        kind: "attach",
+        attach: async (branch) => {
+          git(destination, "worktree", "add", "--quiet", lanePath, branch);
+          return { worktreePath: lanePath, undo: async () => { git(destination, "worktree", "remove", "--force", lanePath); } };
+        },
+      },
+    });
+    expect(fs.readFileSync(path.join(lanePath, "config"), "utf8")).toBe("now a file\n");
+    expect(git(lanePath, "diff", "--cached", "--name-only")).toBe("");
+    expect(git(lanePath, "status", "--porcelain=v1", "--untracked-files=all").split("\n").sort())
+      .toEqual([" D config/settings.json", "?? config"]);
+  });
+
   it("lands one move at a time into a destination lane, so a second can't undo the first", async () => {
     const { source, clone } = makeRepos();
     const other = clone("other-source");

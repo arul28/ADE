@@ -375,6 +375,7 @@ struct WorkAutoHandoffForm: Equatable {
     !targetModelId.isEmpty
       && !conditions.isEmpty
       && !(laneTarget == "explicit" && targetLaneId.trimmingCharacters(in: .whitespaces).isEmpty)
+      && (mode != "fork" || laneTarget == "same")
   }
 }
 
@@ -403,7 +404,8 @@ func workAutoHandoffForm(from rules: [WorkAutomationRuleSummary], fallback: Work
     form.reasoningEffort = action.reasoningEffort ?? fallback.reasoningEffort
     form.prompt = action.promptTemplate ?? ""
     form.mode = action.handoffMode == "brief" ? "brief" : "fork"
-    form.laneTarget = action.targetLaneMode == "new" || action.targetLaneMode == "explicit" ? action.targetLaneMode! : "same"
+    let laneMode = action.targetLaneMode
+    form.laneTarget = form.mode == "brief" && (laneMode == "new" || laneMode == "explicit") ? laneMode! : "same"
     form.targetLaneId = action.targetLaneId ?? ""
   }
   if let maxRuns = rules.compactMap(\.maxRuns).first { form.retries = maxRuns }
@@ -589,13 +591,19 @@ struct WorkAutoHandoffSheet: View {
           Text("Brief").tag("brief")
         }
         .pickerStyle(.segmented)
-        Picker("Lane", selection: $form.laneTarget) {
-          Text("This lane").tag("same")
-          Text("A new lane").tag("new")
-          if !laneOptions.isEmpty { Text("Another lane").tag("explicit") }
+        .onChange(of: form.mode) { _, mode in
+          // A fork keeps its source lane; only a brief can move to another lane.
+          if mode == "fork" { form.laneTarget = "same" }
         }
-        .pickerStyle(.segmented)
-        if form.laneTarget == "explicit" {
+        if form.mode == "brief" {
+          Picker("Lane", selection: $form.laneTarget) {
+            Text("This lane").tag("same")
+            Text("A new lane").tag("new")
+            if !laneOptions.isEmpty { Text("Another lane").tag("explicit") }
+          }
+          .pickerStyle(.segmented)
+        }
+        if form.mode == "brief" && form.laneTarget == "explicit" {
           Picker("Lane", selection: $form.targetLaneId) {
             Text("Choose a lane").tag("")
             ForEach(laneOptions) { lane in
