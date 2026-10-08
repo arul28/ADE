@@ -6266,6 +6266,10 @@ describe("prService.land", () => {
       headSha?: string;
       compare?: unknown;
       baseBranches?: Record<number, string>;
+      layered?: boolean;
+      restackedContentChanged?: boolean;
+      mergedOnRefusal?: boolean;
+      lowerLayerMoved?: boolean;
       refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
     } = {},
   ) => {
@@ -6277,11 +6281,13 @@ describe("prService.land", () => {
       if (String(sql).includes("from github_pr_stack_entries")) return { github_stack_number: 19 };
       return getPullRequestRow?.(sql, params) ?? null;
     });
+    let bottomLayerMerged = false;
+    let refusedLayerMergedElsewhere: number | null = null;
     const stackPayload = {
       id: 1019, number: 19, node_id: "PRS_19", base: { ref: "main" }, open: true, created_at: "2026-10-01T00:00:00Z",
       pull_requests: [
         { number: 89, state: "closed", draft: false, merged_at: "2026-09-30T00:00:00Z", head: { ref: "s-0", sha: "s0" } },
-        { number: 90, state: "open", draft: false, merged_at: null, head: { ref: "s-1", sha: "s1" } },
+        { number: 90, state: "open", draft: false, merged_at: null, head: { ref: "s-1", sha: opts.lowerLayerMoved ? "s1-pushed" : "s1" } },
         { number: 91, state: "open", draft: false, merged_at: null, head: { ref: "s-2", sha: "s2" } },
         { number: 92, state: "open", draft: false, merged_at: null, head: { ref: "s-3", sha: "s3" } },
       ],
@@ -6290,15 +6296,33 @@ describe("prService.land", () => {
     const asyncCalls: Array<{ method: string; path: string; body?: any }> = [];
     const githubService = makeGithubService({
       apiRequest: vi.fn(async (args: { method: string; path: string; body?: unknown }) => {
-        if (args.path === `/repos/${REPO.owner}/${REPO.name}/stacks/19`) return { data: stackPayload };
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/stacks/19`) {
+          if (opts.layered && bottomLayerMerged) {
+            stackPayload.pull_requests[1] = {
+              ...stackPayload.pull_requests[1]!,
+              state: "closed",
+              merged_at: "2026-10-08T00:00:00Z",
+            };
+            stackPayload.pull_requests[2] = {
+              ...stackPayload.pull_requests[2]!,
+              head: { ref: "s-2", sha: "restacked-s2" },
+            };
+          }
+          return { data: stackPayload };
+        }
         if (args.path.includes("/merge-async")) {
           asyncCalls.push(args as any);
           const reply = queue.length > 1 ? queue.shift()! : queue[0]!;
           if (reply.status && reply.status >= 400) {
+            const pullNumber = Number(args.path.match(/\/pulls\/(\d+)\//)?.[1]);
+            if (opts.mergedOnRefusal) refusedLayerMergedElsewhere = pullNumber;
             throw Object.assign(new Error((reply.body as any)?.details?.message ?? "failed"), {
               status: reply.status,
               responseBody: reply.body,
             });
+          }
+          if (opts.layered && args.method === "PUT" && args.path.endsWith("/pulls/90/merge-async")) {
+            bottomLayerMerged = true;
           }
           return { data: reply.body };
         }
@@ -6307,13 +6331,26 @@ describe("prService.land", () => {
           return {
             data: {
               state: "open",
-              merged_at: null,
+              merged_at: pullNumber === refusedLayerMergedElsewhere ? "2026-10-01T00:00:00Z" : null,
               base: { ref: opts.baseBranches?.[pullNumber] ?? "main" },
-              ...(opts.headSha ? { head: { sha: opts.headSha } } : {}),
+              ...(opts.layered && bottomLayerMerged && pullNumber === 91
+                ? { head: { sha: "restacked-s2" } }
+                : opts.headSha ? { head: { sha: opts.headSha } } : {}),
             },
           };
         }
-        if (args.method === "GET" && args.path.includes("/compare/") && opts.compare) return { data: opts.compare };
+        if (args.method === "GET" && args.path.includes("/compare/")) {
+          if (opts.layered && args.path.endsWith("/compare/s1-pushed...s2")) {
+            return { data: { status: "diverged", total_commits: 1, commits: [{ commit: { message: "second layer" } }], files: [{ filename: "second.ts", status: "modified", sha: "content-a" }] } };
+          }
+          if (opts.layered && args.path.endsWith("/compare/s1...s2")) {
+            return { data: { status: "ahead", total_commits: 1, commits: [{ commit: { message: "second layer" } }], files: [{ filename: "second.ts", status: "modified", sha: "content-a" }] } };
+          }
+          if (opts.layered && args.path.endsWith("/compare/main...restacked-s2")) {
+            return { data: { total_commits: 1, commits: [{ commit: { message: "second layer" } }], files: [{ filename: "second.ts", status: "modified", sha: opts.restackedContentChanged ? "content-b" : "content-a" }] } };
+          }
+          if (opts.compare) return { data: opts.compare };
+        }
         return { data: {} };
       }),
     });
@@ -6358,9 +6395,23 @@ describe("prService.land", () => {
       puts: 1,
     },
     {
+      // Its own options, and no result commit yet: still this merge.
+      name: "already running (409) with matching options follows it",
+      replies: [{
+        status: 409,
+        body: { status: "pending", details: { message: "A merge request already exists for this pull request.", uuid: "u-running", sha: null, merge_method: "rebase", expected_head_sha: "s2" } },
+      }, { body: merged }],
+      expected: { success: true, mergeStatus: "merged", mergeCommitSha: "merge-sha", error: null },
+      puts: 1,
+    },
+    {
       name: "a rule fails during the merge",
       replies: [{ status: 202, body: pending() }, { body: { status: "failed", details: { message: "Required status check \"ci\" is expected." } } }],
-      expected: { success: false, mergeCommitSha: null, error: "Required status check \"ci\" is expected." },
+      expected: {
+        success: false,
+        mergeCommitSha: null,
+        error: "Required status check \"ci\" is expected. To override, merge again with \"Bypass branch rules\" (needs bypass permission).",
+      },
       puts: 1,
     },
     {
@@ -6392,6 +6443,143 @@ describe("prService.land", () => {
     if (replies[0]!.status === 409) {
       expect(asyncCalls.some((call) => call.method === "GET" && call.path.endsWith("/merge-async/u-running"))).toBe(true);
     }
+  });
+
+  it("bypass-merges each covered layer bottom-up with its guarded head SHA", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([{ body: merged }, { body: merged }], { layered: true });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+
+    expect(result).toMatchObject({ success: true, mergeStatus: "merged", stackPrNumbers: [90, 91] });
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toEqual([
+      expect.objectContaining({
+        path: `/repos/${REPO.owner}/${REPO.name}/pulls/90/merge-async`,
+        body: expect.objectContaining({ merge_method: "squash", merge_action: "default", bypass_rules: true, sha: "s1" }),
+      }),
+      expect.objectContaining({
+        path: `/repos/${REPO.owner}/${REPO.name}/pulls/91/merge-async`,
+        body: expect.objectContaining({ merge_method: "squash", merge_action: "default", bypass_rules: true, sha: "restacked-s2" }),
+      }),
+    ]);
+  });
+
+  it.each([
+    { name: "a lower layer inside the confirmed head merges", lowerLayerMoved: false, puts: 2, success: true },
+    { name: "a lower layer pushed to after the confirm stops the run", lowerLayerMoved: true, puts: 0, success: false },
+  ])("binds a layered bypass to the confirmed top head: $name", async ({ lowerLayerMoved, puts, success }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([{ body: merged }, { body: merged }], { layered: true, lowerLayerMoved, headSha: "s2" });
+
+    const result = await landWithTimers(() => service.land({
+      prId: "pr-stacked",
+      method: "squash",
+      bypassRules: true,
+      expectedHeadSha: "s2",
+    }));
+
+    expect(result.success).toBe(success);
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(puts);
+    if (!success) expect(result.error).toMatch(/#90 has commits that #91/);
+  });
+
+  it.each([
+    { name: "another merge method", options: { merge_method: "squash", expected_head_sha: "s2" } },
+    { name: "another head", options: { merge_method: "rebase", expected_head_sha: "other-head" } },
+  ])("does not adopt a running merge of $name", async ({ options }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { service, asyncCalls } = buildStackLand([
+      {
+        status: 409,
+        body: { status: "pending", details: { message: "A merge request already exists.", uuid: "u-different", ...options } },
+      },
+    ]);
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "rebase", expectedHeadSha: "s2" }));
+
+    expect(result.error).toMatch(/another merge of #91 with different options is already running on GitHub/i);
+    expect(asyncCalls.some((call) => call.method === "GET" && call.path.endsWith("/merge-async/u-different"))).toBe(false);
+  });
+
+  it("leaves a layered operation open when a layer stays pending through the background wait", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const refreshDefaultBranchAfterMerge = vi.fn(async () => {});
+    const { service, asyncCalls, operationService } = buildStackLand([
+      { body: merged },
+      { status: 202, body: pending("u-layer-pending") },
+    ], { layered: true, refreshDefaultBranchAfterMerge });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+    // Past the 15-minute background wait.
+    await vi.advanceTimersByTimeAsync(16 * 60_000);
+
+    expect(result).toMatchObject({ success: false, mergeStatus: "pending", stackPrNumbers: [90, 91] });
+    expect(asyncCalls.filter((call) => call.method === "PUT").map((call) => call.path)).toEqual([
+      `/repos/${REPO.owner}/${REPO.name}/pulls/90/merge-async`,
+      `/repos/${REPO.owner}/${REPO.name}/pulls/91/merge-async`,
+    ]);
+    expect(operationService.finish).not.toHaveBeenCalled();
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("main");
+  });
+
+  it("stops before the higher layer when its restacked changes differ", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([{ body: merged }], { layered: true, restackedContentChanged: true });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+
+    expect(result).toMatchObject({ success: false, stackPrNumbers: [90, 91] });
+    expect(result.error).toMatch(/Merged #90\. #91 did not merge:.*changes moved/);
+    expect(asyncCalls.filter((call) => call.method === "PUT").map((call) => call.path)).toEqual([
+      `/repos/${REPO.owner}/${REPO.name}/pulls/90/merge-async`,
+    ]);
+  });
+
+  it("counts a layer merged elsewhere after GitHub refuses its merge start", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([
+      { body: merged },
+      { status: 422, body: { details: { message: "Pull request cannot be merged" } } },
+    ], { layered: true, mergedOnRefusal: true });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+
+    expect(result).toMatchObject({ success: true, mergeStatus: "merged", stackPrNumbers: [90, 91] });
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(2);
+  });
+
+  it("does not retry a moved head on the bottom layer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([
+      { status: 400, body: { details: { message: "Pull request head branch was modified." } } },
+    ], { layered: true });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+    await vi.advanceTimersByTimeAsync(40_000);
+
+    expect(result).toMatchObject({ success: false, stackPrNumbers: [90, 91] });
+    expect(result.error).toMatch(/#90 did not merge: its head changed/);
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(1);
+    expect(asyncCalls.find((call) => call.method === "PUT")?.path).toMatch(/\/pulls\/90\/merge-async$/);
+  });
+
+  it("does not retry a branch-rules refusal on a layer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand([
+      { body: merged },
+      { status: 403, body: { details: { message: "Required status check is expected." } } },
+    ], { layered: true });
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash", bypassRules: true }));
+    await vi.advanceTimersByTimeAsync(40_000);
+
+    expect(result).toMatchObject({ success: false, stackPrNumbers: [90, 91] });
+    expect(result.error).toMatch(/Merged #90\. #91 did not merge: Required status check is expected\./);
+    expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(2);
+    expect(asyncCalls.filter((call) => call.method === "PUT").map((call) => call.path)).toEqual([
+      `/repos/${REPO.owner}/${REPO.name}/pulls/90/merge-async`,
+      `/repos/${REPO.owner}/${REPO.name}/pulls/91/merge-async`,
+    ]);
   });
 
   it("answers 'still merging' after the wait, then finishes the merge in the background", async () => {

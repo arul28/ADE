@@ -4669,6 +4669,10 @@ final class SyncService: ObservableObject {
   /// `hello.features.openCodeInboxSteer`: OpenCode chats on this host take a
   /// mid-turn "send during turn" message. Older hosts only queue for OpenCode.
   private(set) var supportsOpenCodeInboxSteer = false
+  /// `hello.features.prsStackLayeredBypass`: a bypass merge from above the
+  /// bottom of a GitHub stack merges layer by layer. Older hosts send one
+  /// bypass merge that GitHub refuses, so the override stays on the bottom PR.
+  private(set) var supportsStackLayeredBypass = false
   private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
   private let chatEventUnsubscribeRetentionLimit = 4
   private var recentFullChatSnapshotRequestBySession: [
@@ -20343,6 +20347,7 @@ final class SyncService: ObservableObject {
     advertisesMacDesktopStream = featureEnabled("macDesktopStream", "mac_desktop_stream")
     advertisesMacDesktopControl = featureEnabled("macDesktopControl", "mac_desktop_control")
     supportsOpenCodeInboxSteer = featureEnabled("openCodeInboxSteer", "open_code_inbox_steer")
+    supportsStackLayeredBypass = featureEnabled("prsStackLayeredBypass", "prs_stack_layered_bypass")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
     supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
     supportsChunkedEnvelopes = negotiation.chunkedMaxFrameBytes != nil

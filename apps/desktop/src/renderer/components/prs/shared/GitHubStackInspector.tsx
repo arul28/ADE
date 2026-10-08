@@ -1,26 +1,40 @@
 import React from "react";
 import {
-  ArrowSquareOut,
   ArrowsClockwise,
   CaretDown,
-  CaretUp,
   CheckCircle,
   Circle,
+  DotsThree,
+  GitBranch,
+  GitMerge,
   GitPullRequest,
-  Plus,
+  GithubLogo,
   Stack,
-  Warning,
+  XCircle,
 } from "@phosphor-icons/react";
-import type { GitHubPrListItem, GitHubPrStack } from "../../../../shared/types";
-import {
-  COLORS,
-  MONO_FONT,
-  SANS_FONT,
-  cardStyle,
-  outlineButton,
-  primaryButton,
-  fgTint,
-} from "../../lanes/laneDesignTokens";
+import type { GitHubPrListItem, GitHubPrStack, GitHubPrStackEntry, PrSummary } from "../../../../shared/types";
+import { confirmDialog } from "../../ui/dialog/confirm";
+import { Banner } from "../../ui/notice";
+import { prRouteCoordinatesMatch } from "../prsRouteState";
+import "./GitHubStackInspector.css";
+
+const EXPANDED_KEY = "ade:prs:stackStrip:expanded:v1";
+
+function readExpanded(): boolean {
+  try {
+    return window.localStorage.getItem(EXPANDED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeExpanded(value: boolean): void {
+  try {
+    window.localStorage.setItem(EXPANDED_KEY, value ? "1" : "0");
+  } catch {
+    // Storage is optional; the strip just starts collapsed next time.
+  }
+}
 
 function parsePullRequests(value: string): number[] | null {
   const values = value
@@ -37,9 +51,131 @@ function parsePullRequests(value: string): number[] | null {
   return values;
 }
 
+type LayerState = "open" | "draft" | "merged" | "closed";
+
+function layerState(entry: GitHubPrStackEntry): LayerState {
+  if (entry.mergedAt) return "merged";
+  if (entry.state === "closed") return "closed";
+  return entry.isDraft ? "draft" : "open";
+}
+
+const LAYER_STATE_LABEL: Record<LayerState, string> = {
+  open: "Open",
+  draft: "Draft",
+  merged: "Merged",
+  closed: "Closed",
+};
+
+function LayerStateIcon({ state, size = 13 }: { state: LayerState; size?: number }) {
+  switch (state) {
+    case "merged":
+      return <GitMerge size={size} weight="bold" style={{ color: "var(--pr-merged)" }} aria-hidden />;
+    case "closed":
+      return <XCircle size={size} weight="fill" style={{ color: "var(--pr-closed)" }} aria-hidden />;
+    case "draft":
+      return <Circle size={size} weight="bold" style={{ color: "var(--pr-draft)" }} aria-hidden />;
+    default:
+      return <GitPullRequest size={size} weight="bold" style={{ color: "var(--pr-open)" }} aria-hidden />;
+  }
+}
+
+/**
+ * What stands between an open layer and its merge, from the ADE row GitHub
+ * last reported. Null when nothing does, or when ADE has no row for the PR.
+ */
+type LayerBlocker = { reason: string; tone: "crit" | "warn" };
+
+function layerBlocker(state: LayerState, pr: PrSummary | null): LayerBlocker | null {
+  if (state === "draft") return { reason: "still a draft", tone: "warn" };
+  if (state !== "open" || !pr) return null;
+  if (pr.mergeConflicts) return { reason: "has conflicts", tone: "crit" };
+  if (pr.checksStatus === "failing") return { reason: "checks failing", tone: "crit" };
+  if (pr.reviewStatus === "changes_requested") return { reason: "changes requested", tone: "crit" };
+  if (pr.checksStatus === "pending") return { reason: "checks running", tone: "warn" };
+  if (pr.reviewStatus === "requested") return { reason: "waiting for review", tone: "warn" };
+  return null;
+}
+
+function ciDotState(pr: PrSummary | null): "ok" | "warn" | "crit" | null {
+  switch (pr?.checksStatus) {
+    case "passing": return "ok";
+    case "failing": return "crit";
+    case "pending": return "warn";
+    default: return null;
+  }
+}
+
+function ciLabel(pr: PrSummary | null): string | null {
+  switch (pr?.checksStatus) {
+    case "passing": return "Checks pass";
+    case "failing": return "Checks failing";
+    case "pending": return "Checks running";
+    case "not_run": return "No checks ran";
+    default: return null;
+  }
+}
+
+function reviewLabel(pr: PrSummary | null): string | null {
+  switch (pr?.reviewStatus) {
+    case "approved": return "Approved";
+    case "changes_requested": return "Changes requested";
+    case "requested": return "Review requested";
+    default: return null;
+  }
+}
+
+/** One line for the whole stack: what merges next, and what stops it. */
+function stackSummary(
+  entries: GitHubPrStackEntry[],
+  prFor: (entry: GitHubPrStackEntry) => PrSummary | null,
+): { text: string; tone: "ok" | "warn" | "crit" | null } {
+  const open = entries.filter((entry) => {
+    const state = layerState(entry);
+    return state === "open" || state === "draft";
+  });
+  const merged = entries.filter((entry) => layerState(entry) === "merged").length;
+  const closedWithoutMerging = entries.filter((entry) => layerState(entry) === "closed").length;
+  if (open.length === 0) {
+    if (closedWithoutMerging > 0) {
+      const text = merged > 0
+        ? `${merged} merged, ${closedWithoutMerging} closed without merging.`
+        : `${closedWithoutMerging} closed without merging.`;
+      return { text, tone: null };
+    }
+    return merged > 0
+      ? { text: `All ${merged} merged.`, tone: "ok" }
+      : { text: "No open pull requests left in this stack.", tone: null };
+  }
+  const mergedNote = merged > 0 ? ` ${merged} already merged.` : "";
+  for (const entry of open) {
+    const blocker = layerBlocker(layerState(entry), prFor(entry));
+    if (blocker) {
+      return { text: `Blocked at #${entry.githubPrNumber}: ${blocker.reason}.${mergedNote}`, tone: blocker.tone };
+    }
+  }
+  const ready = open.every((entry) => {
+    const pr = prFor(entry);
+    return pr?.checksStatus === "passing" && pr.mergeConflicts === false;
+  });
+  if (!ready) {
+    const count = `${open.length} open PR${open.length === 1 ? "" : "s"}`;
+    return { text: `No known blockers on the ${count}.${mergedNote}`, tone: null };
+  }
+  return {
+    text: open.length > 1 ? `All ${open.length} open PRs are ready to merge.${mergedNote}` : `Ready to merge.${mergedNote}`,
+    tone: "ok",
+  };
+}
+
+/**
+ * The GitHub stack a selected PR belongs to: a rail of its layers from the base
+ * up, a line saying what blocks the merge, and on demand the full layer list
+ * and the stack's management actions. Merging happens in the Merge card.
+ */
 export function GitHubStackInspector({
   stack,
   items,
+  prsById,
   selectedPrNumber,
   syncing,
   onSelectPr,
@@ -50,6 +186,8 @@ export function GitHubStackInspector({
 }: {
   stack: GitHubPrStack;
   items: GitHubPrListItem[];
+  /** ADE's PR rows, for each layer's checks and review state. */
+  prsById: ReadonlyMap<string, PrSummary>;
   selectedPrNumber: number;
   syncing: boolean;
   onSelectPr: (item: GitHubPrListItem) => void;
@@ -58,19 +196,45 @@ export function GitHubStackInspector({
   onAddPullRequests: (pullRequests: number[]) => Promise<void>;
   onUnstack: () => Promise<void>;
 }): React.ReactElement {
-  const [expanded, setExpanded] = React.useState(true);
+  const [expanded, setExpandedState] = React.useState(readExpanded);
   const [manageOpen, setManageOpen] = React.useState(false);
   const [pullInput, setPullInput] = React.useState("");
   const [busyAction, setBusyAction] = React.useState<"add" | "unstack" | null>(null);
-  const [confirmUnstack, setConfirmUnstack] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  const setExpanded = (value: boolean) => {
+    setExpandedState(value);
+    writeExpanded(value);
+  };
+
   const itemByPr = React.useMemo(
     () => new Map(items.map((item) => [item.githubPrNumber, item] as const)),
     [items],
   );
-  const selectedPosition = stack.entries.find(
-    (entry) => entry.githubPrNumber === selectedPrNumber,
-  )?.position;
+  // ADE's rows by number within the stack's repository. The list filter can
+  // hide a layer (a merged one under Open), so this does not go through it.
+  const prByNumber = React.useMemo(() => {
+    const byNumber = new Map<number, PrSummary>();
+    for (const pr of prsById.values()) {
+      if (prRouteCoordinatesMatch(
+        { prNumber: null, repoOwner: pr.repoOwner, repoName: pr.repoName },
+        { prNumber: null, repoOwner: stack.repoOwner, repoName: stack.repoName },
+      )) {
+        byNumber.set(pr.githubPrNumber, pr);
+      }
+    }
+    return byNumber;
+  }, [prsById, stack.repoName, stack.repoOwner]);
+  const prFor = React.useCallback(
+    (entry: GitHubPrStackEntry): PrSummary | null => prByNumber.get(entry.githubPrNumber) ?? null,
+    [prByNumber],
+  );
+  const bottomUp = React.useMemo(
+    () => [...stack.entries].sort((a, b) => a.position - b.position),
+    [stack.entries],
+  );
+  const summary = stackSummary(bottomUp, prFor);
+  const completed = !stack.open;
 
   const addPullRequests = async () => {
     const pullRequests = parsePullRequests(pullInput);
@@ -92,15 +256,18 @@ export function GitHubStackInspector({
   };
 
   const unstack = async () => {
-    if (!confirmUnstack) {
-      setConfirmUnstack(true);
-      return;
-    }
+    const confirmed = await confirmDialog({
+      title: `Unstack Stack #${stack.number}?`,
+      message: "GitHub removes the pull requests it can from this stack. They stay open, each with its current base branch.",
+      confirmLabel: "Unstack",
+      tone: "warning",
+    });
+    if (!confirmed) return;
     setBusyAction("unstack");
     setError(null);
     try {
       await onUnstack();
-      setConfirmUnstack(false);
+      setManageOpen(false);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "GitHub could not update this stack.");
     } finally {
@@ -108,204 +275,214 @@ export function GitHubStackInspector({
     }
   };
 
+  const selectEntry = (entry: GitHubPrStackEntry) => {
+    const item = itemByPr.get(entry.githubPrNumber);
+    if (item) onSelectPr(item);
+  };
+
   return (
-    <div style={{ padding: "10px 12px 0", flexShrink: 0 }}>
-      <div style={{
-        ...cardStyle({ padding: 0, overflow: "hidden" }),
-        borderColor: "rgba(167,139,250,0.22)",
-        background: `linear-gradient(135deg, rgba(139,92,246,0.08), ${fgTint(1.5)})`,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px" }}>
-          <span style={{
-            display: "inline-flex",
-            width: 28,
-            height: 28,
-            alignItems: "center",
-            justifyContent: "center",
-            borderRadius: 8,
-            color: "#C4B5FD",
-            background: "rgba(139,92,246,0.14)",
-            border: "1px solid rgba(167,139,250,0.22)",
-          }}>
-            <Stack size={16} weight="fill" />
+    <section className="ade-stack-strip" aria-label={`GitHub Stack #${stack.number}`} data-testid="github-stack-strip">
+      <div className="ade-stack-strip-body">
+      <div className="ade-stack-strip-row">
+        <span className="ade-stack-strip-title">
+          <Stack size={14} weight="fill" aria-hidden />
+          Stack #{stack.number}
+          <span className="ade-stack-strip-count kit-num">
+            {stack.entries.length} PRs
           </span>
+        </span>
+        <ol className="ade-stack-rail" aria-label="Pull requests in this stack, from the base up">
+          <li className="ade-stack-rail-base" title={`Base branch: ${stack.baseBranch}`}>
+            <GitBranch size={11} aria-hidden />
+            {stack.baseBranch}
+          </li>
+          {bottomUp.map((entry) => {
+            const state = layerState(entry);
+            const pr = prFor(entry);
+            const ci = ciDotState(pr);
+            const item = itemByPr.get(entry.githubPrNumber);
+            const selected = entry.githubPrNumber === selectedPrNumber;
+            const title = item?.title ?? pr?.title ?? entry.headBranch;
+            return (
+              <li key={entry.githubPrNumber}>
+                <button
+                  type="button"
+                  className="ade-stack-chip"
+                  data-selected={selected || undefined}
+                  data-terminal={state === "merged" || state === "closed" || undefined}
+                  disabled={!item}
+                  aria-current={selected ? "true" : undefined}
+                  onClick={() => selectEntry(entry)}
+                  title={`#${entry.githubPrNumber} · ${LAYER_STATE_LABEL[state]}${ciLabel(pr) ? ` · ${ciLabel(pr)}` : ""} · ${title}`}
+                >
+                  <LayerStateIcon state={state} size={11} />
+                  #{entry.githubPrNumber}
+                  {ci && state === "open" ? <span className="kit-dot" data-state={ci} aria-hidden /> : null}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+        <div className="ade-stack-strip-actions">
           <button
             type="button"
-            onClick={() => setExpanded((value) => !value)}
-            style={{ display: "grid", gap: 2, flex: 1, minWidth: 0, textAlign: "left", border: 0, background: "transparent", cursor: "pointer" }}
-            aria-expanded={expanded}
-          >
-            <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 700, color: COLORS.textPrimary }}>
-              GitHub Stack #{stack.number}
-            </span>
-            <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-              {selectedPosition ? `This is PR ${selectedPosition} of ${stack.entries.length}` : `${stack.entries.length} pull requests`}
-              {" · "}base {stack.baseBranch}
-            </span>
-          </button>
-          <button type="button" onClick={onOpenGitHub} style={outlineButton({ height: 28, padding: "0 9px", fontSize: 11 })}>
-            <ArrowSquareOut size={12} /> Review on GitHub
-          </button>
-          <button
-            type="button"
+            className="kit-icon-btn"
             onClick={onSync}
             disabled={syncing}
             title="Refresh this stack from GitHub"
             aria-label="Refresh GitHub stack"
-            style={outlineButton({ width: 28, height: 28, padding: 0, opacity: syncing ? 0.6 : 1 })}
           >
             <ArrowsClockwise size={13} className={syncing ? "animate-spin" : undefined} />
           </button>
           <button
             type="button"
-            onClick={() => setExpanded((value) => !value)}
-            aria-label={expanded ? "Collapse GitHub stack" : "Expand GitHub stack"}
-            style={outlineButton({ width: 28, height: 28, padding: 0 })}
+            className="kit-icon-btn"
+            onClick={onOpenGitHub}
+            title="Review on GitHub"
+            aria-label="Review on GitHub"
           >
-            {expanded ? <CaretUp size={12} /> : <CaretDown size={12} />}
+            <GithubLogo size={13} />
+          </button>
+          {completed ? null : (
+            <button
+              type="button"
+              className="kit-icon-btn"
+              onClick={() => {
+                setManageOpen((value) => !value);
+                setError(null);
+              }}
+              aria-expanded={manageOpen}
+              title="Manage stack"
+              aria-label="Manage stack"
+            >
+              <DotsThree size={15} weight="bold" />
+            </button>
+          )}
+          <button
+            type="button"
+            className="kit-icon-btn"
+            onClick={() => setExpanded(!expanded)}
+            aria-expanded={expanded}
+            title={expanded ? "Hide the layers" : "Show the layers"}
+            aria-label={expanded ? "Hide the stack's layers" : "Show the stack's layers"}
+          >
+            <CaretDown
+              size={12}
+              weight="bold"
+              style={{ transform: expanded ? "rotate(180deg)" : undefined, transition: "transform 120ms ease" }}
+            />
           </button>
         </div>
-
-        {expanded ? (
-          <div style={{ borderTop: `1px solid ${fgTint(6)}`, padding: "10px 12px 12px" }}>
-            {stack.lastError ? (
-              <div style={{ display: "flex", gap: 7, marginBottom: 10, color: COLORS.warning, fontFamily: SANS_FONT, fontSize: 11 }}>
-                <Warning size={13} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} />
-                <span>Showing the last saved stack state. {stack.lastError}</span>
-              </div>
-            ) : null}
-            <div style={{ display: "grid", gap: 0 }}>
-              {[...stack.entries].reverse().map((entry, index, reversed) => {
-                const item = itemByPr.get(entry.githubPrNumber);
-                const selected = entry.githubPrNumber === selectedPrNumber;
-                const merged = Boolean(entry.mergedAt);
-                const stateLabel = merged ? "Merged" : entry.isDraft ? "Draft" : entry.state === "closed" ? "Closed" : "Open";
-                return (
-                  <div key={entry.githubPrNumber} style={{ position: "relative", display: "grid", gridTemplateColumns: "22px minmax(0, 1fr) auto", alignItems: "center", minHeight: 34 }}>
-                    {index < reversed.length - 1 ? (
-                      <span style={{ position: "absolute", left: 7, top: 20, bottom: -15, width: 1, background: "rgba(167,139,250,0.24)" }} />
-                    ) : null}
-                    <span style={{ zIndex: 1, color: merged ? COLORS.success : selected ? "#C4B5FD" : COLORS.textDim }}>
-                      {merged ? <CheckCircle size={15} weight="fill" /> : <Circle size={15} weight={selected ? "fill" : "regular"} />}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={!item}
-                      onClick={() => item && onSelectPr(item)}
-                      style={{
-                        display: "grid",
-                        minWidth: 0,
-                        padding: "5px 8px",
-                        textAlign: "left",
-                        border: selected ? "1px solid rgba(167,139,250,0.22)" : "1px solid transparent",
-                        borderRadius: 7,
-                        background: selected ? "rgba(139,92,246,0.08)" : "transparent",
-                        cursor: item ? "pointer" : "default",
-                      }}
-                    >
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: SANS_FONT, fontSize: 11, fontWeight: selected ? 650 : 500, color: COLORS.textPrimary }}>
-                        {item?.title ?? entry.headBranch}
-                      </span>
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
-                        #{entry.githubPrNumber} · {entry.headBranch}
-                      </span>
-                    </button>
-                    <span style={{ paddingLeft: 8, fontFamily: SANS_FONT, fontSize: 10, color: merged ? COLORS.success : COLORS.textMuted }}>
-                      {stateLabel}
-                    </span>
-                  </div>
-                );
-              })}
-              <div style={{ display: "grid", gridTemplateColumns: "22px minmax(0, 1fr)", alignItems: "center", minHeight: 28 }}>
-                <span style={{ color: COLORS.textDim }}><GitPullRequest size={14} /></span>
-                <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>{stack.baseBranch}</span>
-              </div>
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: `1px solid ${fgTint(5)}` }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setManageOpen((value) => !value);
-                  setConfirmUnstack(false);
-                  setError(null);
-                }}
-                style={outlineButton({ height: 28, padding: "0 9px", fontSize: 11 })}
-              >
-                <Plus size={12} /> Manage stack
-              </button>
-              <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim }}>
-                GitHub keeps the stack rebased. Merge it from the Merge card.
-              </span>
-            </div>
-
-            {manageOpen ? (
-              <div style={{ display: "grid", gap: 8, marginTop: 10, padding: 10, borderRadius: 8, background: fgTint(2.5), border: `1px solid ${fgTint(6)}` }}>
-                <label style={{ display: "grid", gap: 5 }}>
-                  <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.textSecondary }}>
-                    Add pull requests above the current top
-                  </span>
-                  <div style={{ display: "flex", gap: 7 }}>
-                    <input
-                      value={pullInput}
-                      onChange={(event) => setPullInput(event.target.value)}
-                      placeholder="971, 972"
-                      aria-label="Pull request numbers to add"
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        height: 30,
-                        padding: "0 9px",
-                        borderRadius: 7,
-                        border: `1px solid ${fgTint(9)}`,
-                        background: "rgba(0,0,0,0.18)",
-                        color: COLORS.textPrimary,
-                        fontFamily: MONO_FONT,
-                        fontSize: 11,
-                        outline: "none",
-                      }}
-                    />
-                    <button
-                      type="button"
-                      disabled={busyAction != null}
-                      onClick={() => { void addPullRequests(); }}
-                      style={primaryButton({ height: 30, padding: "0 10px", fontSize: 11, opacity: busyAction ? 0.6 : 1 })}
-                    >
-                      {busyAction === "add" ? "Adding..." : "Add PRs"}
-                    </button>
-                  </div>
-                </label>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                  <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim }}>
-                    Remove PRs from this stack when GitHub allows it.
-                  </span>
-                  <button
-                    type="button"
-                    disabled={busyAction != null}
-                    onClick={() => { void unstack(); }}
-                    style={outlineButton({
-                      height: 28,
-                      padding: "0 9px",
-                      fontSize: 11,
-                      color: COLORS.warning,
-                      borderColor: "rgba(245,158,11,0.25)",
-                      opacity: busyAction ? 0.6 : 1,
-                    })}
-                  >
-                    {busyAction === "unstack" ? "Updating..." : confirmUnstack ? "Confirm unstack" : "Unstack"}
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            {error ? (
-              <div role="alert" style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.danger }}>
-                {error}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
       </div>
-    </div>
+
+      <div className="ade-stack-strip-summary" data-testid="github-stack-summary">
+        <span className="kit-dot" data-state={summary.tone ?? undefined} aria-hidden />
+        <span>{summary.text}</span>
+      </div>
+
+      {stack.lastError ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: `github-stack-stale:${stack.number}`,
+            tone: "warning",
+            icon: <GithubLogo size={13} />,
+            title: "Showing the last saved stack.",
+            detail: stack.lastError,
+          }}
+        />
+      ) : null}
+
+      {expanded ? (
+        <div className="ade-stack-layers">
+          {[...bottomUp].reverse().map((entry) => {
+            const state = layerState(entry);
+            const pr = prFor(entry);
+            const item = itemByPr.get(entry.githubPrNumber);
+            const selected = entry.githubPrNumber === selectedPrNumber;
+            const blocker = layerBlocker(state, pr);
+            const ci = ciLabel(pr);
+            const review = reviewLabel(pr);
+            const statusText = state === "open"
+              ? [ci, review].filter(Boolean).join(" · ") || LAYER_STATE_LABEL[state]
+              : LAYER_STATE_LABEL[state];
+            return (
+              <button
+                key={entry.githubPrNumber}
+                type="button"
+                className="kit-row ade-stack-layer"
+                data-selected={selected || undefined}
+                disabled={!item}
+                onClick={() => selectEntry(entry)}
+              >
+                <span className="ade-stack-layer-position">{entry.position}</span>
+                <LayerStateIcon state={state} />
+                <span className="ade-stack-layer-text">
+                  <span className="ade-stack-layer-title">{item?.title ?? pr?.title ?? entry.headBranch}</span>
+                  <span className="ade-stack-layer-meta">
+                    <span className="kit-num">#{entry.githubPrNumber}</span>
+                    {item?.linkedLaneName ? <span className="ade-stack-layer-lane"> · {item.linkedLaneName}</span> : null}
+                    {!item?.linkedLaneName && entry.headBranch ? <span className="ade-stack-layer-lane"> · {entry.headBranch}</span> : null}
+                  </span>
+                </span>
+                <span className="ade-stack-layer-status">
+                  {blocker ? <span className="kit-dot" data-state={blocker.tone} aria-hidden /> : null}
+                  {!blocker && state === "open" && pr?.checksStatus === "passing" ? (
+                    <CheckCircle size={12} weight="fill" style={{ color: "var(--kit-ok)" }} aria-hidden />
+                  ) : null}
+                  {statusText}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {manageOpen && !completed ? (
+        <div className="ade-stack-manage">
+          <span className="ade-stack-manage-label">Add pull requests above the top of the stack</span>
+          <div className="ade-stack-manage-row">
+            <input
+              className="ade-stack-manage-input"
+              value={pullInput}
+              onChange={(event) => setPullInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void addPullRequests();
+              }}
+              placeholder="PR numbers, e.g. 971, 972"
+              aria-label="Pull request numbers to add"
+              disabled={busyAction != null}
+            />
+            <button
+              type="button"
+              className="kit-btn kit-btn-primary"
+              disabled={busyAction != null || !pullInput.trim()}
+              onClick={() => { void addPullRequests(); }}
+            >
+              {busyAction === "add" ? "Adding…" : "Add"}
+            </button>
+          </div>
+          <div className="ade-stack-manage-row">
+            <span className="ade-stack-manage-hint">GitHub keeps the stack rebased. Merge it from the Merge card.</span>
+            <button
+              type="button"
+              className="kit-btn"
+              disabled={busyAction != null}
+              onClick={() => { void unstack(); }}
+            >
+              {busyAction === "unstack" ? "Unstacking…" : "Unstack…"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{ id: `github-stack-action:${stack.number}`, tone: "error", icon: <GithubLogo size={13} />, title: error, dismiss: { onDismiss: () => setError(null) } }}
+        />
+      ) : null}
+      </div>
+    </section>
   );
 }

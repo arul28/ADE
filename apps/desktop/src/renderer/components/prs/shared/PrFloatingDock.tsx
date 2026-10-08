@@ -428,10 +428,13 @@ export function PrMergeCard({
 }
 
 /** The card's text line for a stacked PR. `count` is how many open PRs one merge covers. */
-function stackCardText(pr: PrWithConflicts, stackNumber: number, count: number): string {
+function stackCardText(pr: PrWithConflicts, stackNumber: number, count: number, bypassing: boolean): string {
   if (pr.state === "merged") return `Merged as part of GitHub Stack #${stackNumber}.`;
   if (pr.state === "draft") return "This PR is a draft. Mark it ready for review before you merge the stack.";
   if (pr.state !== "open") return "GitHub manages this stack's rebases, reviews, and merge order.";
+  if (count > 1 && bypassing) {
+    return `ADE merges the ${count} open PRs up to #${pr.githubPrNumber} one at a time from the bottom, each bypassing the branch rules. If one fails, the ones below it stay merged.`;
+  }
   if (count > 1) {
     return `GitHub merges the ${count} open PRs up to #${pr.githubPrNumber} together, or none of them. It checks the branch rules during the merge.`;
   }
@@ -440,17 +443,19 @@ function stackCardText(pr: PrWithConflicts, stackNumber: number, count: number):
 
 function stackMergeButtonLabel(args: { armed: boolean; count: number; prNumber: number; bypassing: boolean }): string {
   if (args.armed) {
-    return args.count > 1 ? `Confirm: merge the ${args.count} open PRs up to #${args.prNumber}` : "Confirm: merge this PR";
+    const verb = args.bypassing ? "bypass and merge" : "merge";
+    return args.count > 1 ? `Confirm: ${verb} the ${args.count} open PRs up to #${args.prNumber}` : `Confirm: ${verb} this PR`;
   }
-  if (args.count > 1) return `Merge ${args.count} PRs`;
+  if (args.count > 1) return args.bypassing ? `Bypass & merge ${args.count} PRs` : `Merge ${args.count} PRs`;
   return args.bypassing ? "Bypass & merge" : "Merge";
 }
 
 /**
  * Merge card for a PR in a GitHub Stack. GitHub merges a stack as one unit:
- * every open PR from the stack base up to this one, all or none. The first
- * click arms the button and the second one merges, because one click merges
- * more than this PR.
+ * every open PR from the stack base up to this one, all or none. A bypass from
+ * above the bottom merges layer by layer instead (see `githubStackMerge`). The
+ * first click arms the button and the second one merges, because one click
+ * merges more than this PR.
  */
 function PrStackMergeCard({
   pr,
@@ -491,9 +496,6 @@ function PrStackMergeCard({
   const canMerge = pr.state === "open";
   // Older hosts do not send `openThroughHere`; the position is the upper bound.
   const count = stack.openThroughHere || stack.position;
-  // GitHub bypasses rules only for a merge of the bottom open PR.
-  const canBypass = count === 1;
-  const bypassing = canBypass && bypass;
 
   const merge = () => {
     if (!armed) {
@@ -502,7 +504,7 @@ function PrStackMergeCard({
     }
     setArmed(false);
     writeLastMergeMethod(method);
-    onMerge({ method, bypassRules: bypassing, expectedHeadSha: status?.headSha ?? undefined });
+    onMerge({ method, bypassRules: bypass, expectedHeadSha: status?.headSha ?? undefined });
   };
 
   return (
@@ -523,7 +525,7 @@ function PrStackMergeCard({
         </button>
       </div>
       <p className="mb-3 mt-1 text-[11.5px] leading-relaxed" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-        {stackCardText(pr, stack.number, count)}
+        {stackCardText(pr, stack.number, count, bypass)}
       </p>
       {pr.state === "merged" ? <div className="mb-3"><PrShippedSummary pr={pr} /></div> : null}
       {canMerge ? (
@@ -549,17 +551,23 @@ function PrStackMergeCard({
               </button>
             ))}
           </div>
-          {canBypass ? (
-            <label className="mb-2 flex items-center gap-2 text-[11.5px]" style={{ color: bypass ? COLORS.danger : COLORS.textMuted, fontFamily: SANS_FONT, cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={bypass}
-                onChange={(event) => { setBypass(event.target.checked); setArmed(false); }}
-                data-testid="pr-stack-merge-bypass"
-              />
-              Bypass branch rules (needs bypass permission)
-            </label>
-          ) : null}
+          <label className="mb-2 flex items-start gap-2 text-[11.5px]" style={{ color: bypass ? COLORS.danger : COLORS.textMuted, fontFamily: SANS_FONT, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={bypass}
+              onChange={(event) => { setBypass(event.target.checked); setArmed(false); }}
+              data-testid="pr-stack-merge-bypass"
+            />
+            <span className="min-w-0">
+              <span className="block">Bypass branch rules (needs bypass permission)</span>
+              {bypass && count === 1 ? (
+                <span className="block leading-snug" style={{ color: COLORS.textMuted }}>
+                  Merges without the reviews and checks the branch rules require.
+                </span>
+              ) : null}
+            </span>
+          </label>
           {/* Pinned to the card's bottom edge, so a short pane that scrolls
               the card still shows the merge button. */}
           <div className="ade-pr-dock-card-actions">
@@ -571,10 +579,10 @@ function PrStackMergeCard({
               data-testid="pr-stack-merge"
               data-armed={armed || undefined}
               className="mb-2 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-[12.5px] font-semibold disabled:opacity-60"
-              style={{ color: "#fff", background: bypassing ? COLORS.danger : MERGE_BUTTON_FILL, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+              style={{ color: "#fff", background: bypass ? COLORS.danger : MERGE_BUTTON_FILL, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
             >
               {actionBusy ? <CircleNotch size={13} className="animate-spin" /> : <GitMerge size={13} weight="bold" />}
-              {stackMergeButtonLabel({ armed, count, prNumber: pr.githubPrNumber, bypassing })}
+              {stackMergeButtonLabel({ armed, count, prNumber: pr.githubPrNumber, bypassing: bypass })}
             </button>
           </div>
         </>

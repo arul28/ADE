@@ -600,7 +600,10 @@ struct PrDetailView: View {
       Button("Cancel", role: .cancel) {}
     } message: {
       let skips = nextStep.mergeAnyway.skips
-      Text(skips.isEmpty ? "GitHub merges this PR now." : "Merging now skips: \(skips.joined(separator: ", ")).")
+      let skipText = skips.isEmpty ? "GitHub merges this PR now." : "Merging now skips: \(skips.joined(separator: ", "))."
+      Text(nativeStackMembership != nil && stackMergeCount > 1 && nextStep.mergeAnyway.bypass
+        ? "\(skipText) GitHub bypasses rules only for the bottom PR, so ADE merges the \(stackMergeCount) PRs one at a time from the bottom."
+        : skipText)
     }
     .sheet(item: $editorSheet) { sheet in
       editorSheetView(sheet)
@@ -724,8 +727,10 @@ struct PrDetailView: View {
                 .disabled(!canAutoMerge)
             }
           }
-          // GitHub bypasses rules for a stack only from its bottom open PR.
-          if step.mergeAnyway.visible && !step.mergeAnyway.blocked && (nativeStackMembership == nil || stackMergeCount == 1) {
+          // GitHub bypasses rules for a stack only from its bottom open PR; above
+          // it a current host merges the covered PRs one at a time, each bypassing.
+          if step.mergeAnyway.visible && !step.mergeAnyway.blocked
+            && (nativeStackMembership == nil || stackMergeCount == 1 || syncService.supportsStackLayeredBypass) {
             Button(role: step.mergeAnyway.bypass ? .destructive : nil) {
               mergeAnywayConfirmationPresented = true
             } label: {

@@ -115,6 +115,12 @@ export type PrSummary = {
   /** Chats that explicitly opened or worked on this PR. Empty/absent means legacy lane-wide routing. */
   chatSessionIds?: string[];
   /**
+   * The subset of `chatSessionIds` whose chat lives on another lane, such as a
+   * stack coordinator that linked every layer. Those links reference the PR;
+   * they do not take it away from the chats on the PR's own lane.
+   */
+  crossLaneChatSessionIds?: string[];
+  /**
    * Chats that unlinked this PR. Fallback display must not revive these;
    * an explicit re-link clears the tombstone.
    */

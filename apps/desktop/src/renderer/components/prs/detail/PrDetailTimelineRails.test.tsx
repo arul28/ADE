@@ -416,8 +416,10 @@ describe("PrDetailTimelineRails — Overview layout", () => {
 
   it.each([
     { name: "a PR with open PRs below it", openThroughHere: 2, bypass: false, label: /Merge 2 PRs/ },
+    // GitHub bypasses only the bottom PR, so above it the host merges layer by layer.
+    { name: "a PR with open PRs below it, with bypass", openThroughHere: 2, bypass: true, label: /Bypass & merge 2 PRs/ },
     { name: "the bottom open PR, with bypass", openThroughHere: 1, bypass: true, label: /Bypass & merge/ },
-  ])("merges a stacked PR as one stack merge after a confirm click: $name", ({ openThroughHere, bypass, label }) => {
+  ])("merges a stacked PR after a confirm click: $name", ({ openThroughHere, bypass, label }) => {
     const onMerge = vi.fn();
     renderRails({
       pr: {
@@ -429,14 +431,13 @@ describe("PrDetailTimelineRails — Overview layout", () => {
     });
     expect(screen.getByText("GitHub Stack 2 of 3")).toBeTruthy();
     expect(screen.queryByTestId("pr-merge-anyway")).toBeNull();
-    const bypassBox = screen.queryByTestId("pr-stack-merge-bypass");
-    // GitHub bypasses rules only from the bottom open PR of a stack.
-    expect(Boolean(bypassBox)).toBe(openThroughHere === 1);
-    if (bypass) fireEvent.click(bypassBox!);
+    // The override is offered on every layer, not only the bottom one.
+    const bypassBox = screen.getByTestId("pr-stack-merge-bypass");
+    if (bypass) fireEvent.click(bypassBox);
 
     fireEvent.click(screen.getByRole("button", { name: label }));
     expect(onMerge).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: /Confirm: merge/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Confirm: (bypass and )?merge/ }));
     expect(onMerge).toHaveBeenCalledWith("squash", expect.objectContaining({ bypassRules: bypass, expectedHeadSha: "abc123" }));
   });
 });

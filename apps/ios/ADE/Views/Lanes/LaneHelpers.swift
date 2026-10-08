@@ -542,6 +542,18 @@ private func lanePrChatSessionIds(_ pr: PullRequestListItem) -> [String] {
     .filter { !$0.isEmpty }
 }
 
+/// The linked chats that claim a PR away from the other chats on its lane:
+/// every linked chat except one on another lane (a stack coordinator), whose
+/// link is a reference. Mirrors desktop `claimingSessionIds`.
+func lanePrClaimingChatSessionIds(_ pr: PullRequestListItem) -> [String] {
+  let crossLane = Set(
+    (pr.crossLaneChatSessionIds ?? [])
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+  )
+  return lanePrChatSessionIds(pr).filter { !crossLane.contains($0) }
+}
+
 /// Non-empty unlink tombstones for a PR, trimmed. A dismissed chat must not
 /// revive the PR through the branch fallback.
 private func lanePrDismissedChatSessionIds(_ pr: PullRequestListItem) -> [String] {
@@ -601,7 +613,8 @@ func selectChatPrs(
 /// all is legacy data and may use the lane fallback; that fallback is decided
 /// PER PR, so one linked row does not hide every older row in the same lane.
 /// Unlike the desktop `selectPrsForChat` (edges-first), iOS scopes the lane list
-/// first via `selectChatPrs`, then drops rows another chat claimed or this chat
+/// first via `selectChatPrs`, then drops rows another chat on the PR's lane
+/// claimed (a cross-lane link is not a claim) or this chat
 /// unlinked. Named for its real semantics so it is not mistaken for the shared
 /// desktop function.
 func scopeLaneChatPrsByLinks(
@@ -612,8 +625,10 @@ func scopeLaneChatPrsByLinks(
   guard !trimmed.isEmpty else { return pullRequests }
   return pullRequests.filter { pr in
     if lanePrDismissedChatSessionIds(pr).contains(trimmed) { return false }
-    let linked = lanePrChatSessionIds(pr)
-    return linked.isEmpty || linked.contains(trimmed)
+    if lanePrChatSessionIds(pr).contains(trimmed) { return true }
+    // A link from a chat on another lane (a stack coordinator) is a reference,
+    // not a claim, so the chats on the PR's own lane keep it.
+    return lanePrClaimingChatSessionIds(pr).isEmpty
   }
 }
 

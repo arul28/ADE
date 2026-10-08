@@ -206,7 +206,7 @@ import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
 import { parseCheckLog } from "./checkLogParser";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
-import { selectStackSiblings } from "../../../shared/prChatScope";
+import { claimingSessionIds, selectStackSiblings } from "../../../shared/prChatScope";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
@@ -10430,7 +10430,7 @@ export function createPrService({
         githubPrNumber: pr.githubPrNumber,
         title: pr.title,
         laneId: pr.laneId,
-        claimedByOtherChat: (pr.chatSessionIds ?? []).some((id) => id !== sessionId),
+        claimedByOtherChat: claimingSessionIds(pr).some((id) => id !== sessionId),
       })),
     };
   };
