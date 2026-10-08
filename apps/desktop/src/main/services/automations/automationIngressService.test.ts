@@ -167,9 +167,10 @@ describe("automationIngressService", () => {
   });
 
   it.each([
-    ["only the raw event where a GitHub poller runs beside it", false],
-    ["the typed event too where no poller runs (the brain)", true],
-  ] as const)("polls GitHub relay events with the stored cursor, fills the PR cache, and dispatches %s", async (_label, typed) => {
+    ["only the raw event where a GitHub poller runs beside it", false, false],
+    ["the typed event too where no poller runs (the brain)", true, false],
+    ["the typed event even when the raw dispatch fails", true, true],
+  ] as const)("polls GitHub relay events with the stored cursor, fills the PR cache, and dispatches %s", async (_label, typed, rawFails) => {
     const updates: Array<Record<string, unknown>> = [];
     const cursors = new Map<string, string | null>([["github-relay", "delivery-1"]]);
     const ingestGithubWebhook = vi.fn(async () => ({
@@ -181,7 +182,10 @@ describe("automationIngressService", () => {
       linkedPrIds: [],
       reason: null,
     }));
-    const dispatchIngressTrigger = vi.fn(async (args: Record<string, unknown>): Promise<AutomationIngressEventRecord> => ({
+    const dispatchIngressTrigger = vi.fn(async (args: Record<string, unknown>): Promise<AutomationIngressEventRecord> => {
+      // A failed raw dispatch must not drop the typed one, nor stall the drain.
+      if (rawFails && args.triggerType === "github-webhook") throw new Error("raw dispatch failed");
+      return {
       id: "ingress-event-2",
       source: "github-relay",
       eventKey: String(args.eventKey),
@@ -193,7 +197,8 @@ describe("automationIngressService", () => {
       errorMessage: null,
       cursor: typeof args.cursor === "string" ? args.cursor : null,
       receivedAt,
-    }));
+      };
+    });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
       events: [
         {

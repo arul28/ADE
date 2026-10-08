@@ -269,11 +269,11 @@ export async function runAcpProviderUpdate(args: {
     cwd: args.cwd,
     ...(args.run ? { run: args.run } : {}),
     ...(args.installerIo ? { io: args.installerIo } : {}),
-  }).then((result) => {
-    if (result.ok) launchStandingCache.delete(key);
-    return result;
   }).finally(() => {
     updatesInFlight.delete(key);
+    // Any attempt may have changed the binary, even one whose version check
+    // then failed; the next chat re-reads it (one `--version` spawn).
+    launchStandingCache.delete(key);
   });
   updatesInFlight.set(key, pending);
   return pending;

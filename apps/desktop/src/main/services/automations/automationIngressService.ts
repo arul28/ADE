@@ -1321,6 +1321,14 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           if (ingested?.processed && !ingested.duplicate && ingested.linkedPrIds.length > 0) {
             for (const prId of ingested.linkedPrIds) pageIngestedPrIds.add(prId);
           }
+          const logDispatchFailure = (error: unknown, triggerType: string) => {
+            args.logger.warn("automations.github_relay_dispatch_failed", {
+              githubEvent,
+              eventId,
+              triggerType,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          };
           try {
             await run.wait(Promise.resolve(args.automationService?.dispatchIngressTrigger({
               source: "github-relay",
@@ -1332,13 +1340,19 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
               keywords: summary.split(/\s+/g).filter(Boolean),
               rawPayload,
             })));
-            // `github.pr_*` / `github.issue_*` rules match the typed event, not
-            // the raw one. Where no poller emits them, the relay must, or those
-            // rules never run. Same mapping as the local-webhook path.
-            const mapped = args.relayDispatchesTypedGithubEvents && isRecord(rawPayload)
-              ? withTrackedPrBranches(mapGithubWebhookToTrigger(githubEvent, rawPayload), args.prService)
-              : null;
-            if (mapped) {
+          } catch (error) {
+            if (error instanceof GithubRelayPollSupersededError) throw error;
+            logDispatchFailure(error, "github-webhook");
+          }
+          // `github.pr_*` / `github.issue_*` rules match the typed event, not
+          // the raw one. Where no poller emits them, the relay must, or those
+          // rules never run. Same mapping as the local-webhook path. Its own
+          // try: a failed raw dispatch must not drop the typed one.
+          const mapped = args.relayDispatchesTypedGithubEvents && isRecord(rawPayload)
+            ? withTrackedPrBranches(mapGithubWebhookToTrigger(githubEvent, rawPayload), args.prService)
+            : null;
+          if (mapped) {
+            try {
               await run.wait(Promise.resolve(args.automationService?.dispatchIngressTrigger({
                 source: "github-relay",
                 eventKey: `${eventId}:${mapped.triggerType}`,
@@ -1356,14 +1370,10 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
                 issue: mapped.issue,
                 pr: mapped.pr,
               })));
+            } catch (error) {
+              if (error instanceof GithubRelayPollSupersededError) throw error;
+              logDispatchFailure(error, mapped.triggerType);
             }
-          } catch (error) {
-            if (error instanceof GithubRelayPollSupersededError) throw error;
-            args.logger.warn("automations.github_relay_dispatch_failed", {
-              githubEvent,
-              eventId,
-              error: error instanceof Error ? error.message : String(error),
-            });
           }
           pageLastCursor = eventCursor ?? eventId;
         }
