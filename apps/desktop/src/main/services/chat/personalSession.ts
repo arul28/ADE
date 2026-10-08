@@ -61,6 +61,34 @@ export function isEmbeddedPersonalSession(
 export const PERSONAL_LANE_ONLY_AGENT_SKILLS = ["ade-lanes-git", "ade-pr-workflows"] as const;
 
 /**
+ * Which ADE skill catalog one chat's provider is handed — the one answer every
+ * skill channel (Claude plugin root and listing, Codex roots and slash
+ * commands, Cursor shim, the env roots, the `/` menu) reads:
+ *
+ * - `full`: a work or automation chat, unchanged.
+ * - `assistant`: an `assistant` personal chat — the catalog minus
+ *   `PERSONAL_LANE_ONLY_AGENT_SKILLS`, through the same channels.
+ * - `none`: an `embedded` personal chat (an SDK host's) gets no ADE skills
+ *   through the native channels, exactly as before profiles existed. The env
+ *   roots stay as they were (Pi reads them).
+ */
+export type AdeSkillCatalog = "full" | "assistant" | "none";
+
+export function adeSkillCatalogFor(
+  session: Pick<AgentChatSession, "surface" | "personalProfile">,
+): AdeSkillCatalog {
+  if (!isPersonalSession(session)) return "full";
+  return isAssistantPersonalSession(session) ? "assistant" : "none";
+}
+
+/** A `/` entry naming a lane-only skill (`/ade-lanes-git`, or plugin-namespaced `/ade:ade-lanes-git`). */
+export function isPersonalLaneOnlySkillCommand(name: string): boolean {
+  const bare = name.replace(/^\//, "");
+  const unscoped = bare.slice(bare.indexOf(":") + 1);
+  return (PERSONAL_LANE_ONLY_AGENT_SKILLS as readonly string[]).some((skill) => skill === bare || skill === unscoped);
+}
+
+/**
  * The directory a personal chat's provider actually runs in, when the host
  * named one.
  *

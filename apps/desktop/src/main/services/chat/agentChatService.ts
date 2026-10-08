@@ -1364,8 +1364,10 @@ import {
   PERSONAL_CHAT_SYSTEM_PROMPT,
   PERSONAL_LANE_ONLY_AGENT_SKILLS,
   buildPersonalAssistantSystemPrompt,
+  adeSkillCatalogFor,
   isAssistantPersonalSession,
   isEmbeddedPersonalSession,
+  isPersonalLaneOnlySkillCommand,
   isPersonalSession,
   normalizePersonalProfile,
   resolvePersonalHostCwd,
@@ -10715,7 +10717,7 @@ export function createAgentChatService(args: {
    * chat, `embedded` personal ones included, sees exactly what it always did.
    */
   const agentSkillRootEnvFor = (managed: ManagedChatSession): NodeJS.ProcessEnv => (
-    isAssistantPersonalSession(managed.session)
+    adeSkillCatalogFor(managed.session) === "assistant"
       ? withoutAgentSkillsEnv(agentSkillRootEnv(), PERSONAL_LANE_ONLY_AGENT_SKILLS)
       : agentSkillRootEnv()
   );
@@ -10852,7 +10854,7 @@ export function createAgentChatService(args: {
     // Every provider that discovers skills from these variables (Claude's
     // plugin root, Codex, Cursor, Qwen, Pi, `ade skill list`) then sees the
     // assistant catalog: ADE's skills minus the lane-only ones.
-    if (isAssistantPersonalSession(managed.session)) {
+    if (adeSkillCatalogFor(managed.session) === "assistant") {
       Object.assign(env, withoutAgentSkillsEnv(env, PERSONAL_LANE_ONLY_AGENT_SKILLS));
     }
     const linearContext = writeSessionLinearIssueContext(managed.session.id);
@@ -29938,7 +29940,7 @@ export function createAgentChatService(args: {
     // CLI gets `--plugin-dir` at the PTY boundary. Without this the background
     // CLI was the one Claude surface that saw ADE's own skills only as file
     // paths in prose, so it could not invoke them as `ade:<name>`.
-    const bundledPluginPaths = isEmbeddedPersonalSession(managed.session)
+    const bundledPluginPaths = adeSkillCatalogFor(managed.session) === "none"
       ? []
       : claudeAgentSkillPluginRoots(agentSkillRootEnvFor(managed));
     const cliArgs = [
@@ -37755,7 +37757,7 @@ export function createAgentChatService(args: {
 
     const runtime: CodexRuntime = {
       kind: "codex",
-      agentSkillRoots: isEmbeddedPersonalSession(managed.session) ? [] : existingAgentSkillRoots(spawnEnv),
+      agentSkillRoots: adeSkillCatalogFor(managed.session) === "none" ? [] : existingAgentSkillRoots(spawnEnv),
       serverVersion: null,
       process: proc,
       reader,
@@ -38117,7 +38119,7 @@ export function createAgentChatService(args: {
       const commands = agentSkillSlashCommands(
         codexSkillsForCwd(response, managed.laneWorktreePath),
       );
-      runtime.slashCommands = isEmbeddedPersonalSession(managed.session)
+      runtime.slashCommands = adeSkillCatalogFor(managed.session) === "none"
         ? commands.filter((command) => !isAdeBundledSkillSlashCommand(command))
         : commands;
     }).catch(() => { /* skills/list not supported — prompt/CLI fallback remains available */ });
@@ -38913,8 +38915,8 @@ export function createAgentChatService(args: {
             .filter((cmd) => cmd.modelInvocable !== false)
             // An assistant chat's catalog withholds the lane-only skills; the
             // listing walks the same bundled roots and must withhold them too.
-            .filter((cmd) => !assistantSession
-              || !(PERSONAL_LANE_ONLY_AGENT_SKILLS as readonly string[]).includes(cmd.name.replace(/^\//, "")));
+            .filter((cmd) => adeSkillCatalogFor(managed.session) !== "assistant"
+              || !isPersonalLaneOnlySkillCommand(cmd.name));
         } catch {
           return [];
         }
@@ -47846,7 +47848,7 @@ export function createAgentChatService(args: {
     // every session this declines (personal chats, orchestration leads, and any
     // launch where the shim could not be written).
     const cursorAgentSkills = resolveCursorAgentSkillDirs({
-      personalSession: isEmbeddedPersonalSession(managed.session),
+      personalSession: adeSkillCatalogFor(managed.session) === "none",
       settingSources: cursorSdkSettingSources(policy),
       skillRoots: existingAgentSkillRoots(cursorRuntimeEnv),
       shimRoot: cursorAgentSkillShimRoot({ laneWorktreePath: managed.laneWorktreePath }),
@@ -60980,7 +60982,7 @@ export function createAgentChatService(args: {
         .filter(isVisibleCodexSlashCommand)
         .filter((command) =>
           !managed
-          || !isEmbeddedPersonalSession(managed.session)
+          || adeSkillCatalogFor(managed.session) !== "none"
           || !isAdeBundledSkillSlashCommand(command)
         )
         .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
@@ -60989,7 +60991,7 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      const promptCommands = managed && isEmbeddedPersonalSession(managed.session)
+      const promptCommands = managed && adeSkillCatalogFor(managed.session) === "none"
         ? []
         : filesystemBackedCommands().filter(isVisibleCodexSlashCommand);
       return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);

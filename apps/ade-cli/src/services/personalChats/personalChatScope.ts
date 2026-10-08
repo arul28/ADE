@@ -15,7 +15,7 @@ import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import { stripHostOnlyChatMetadata } from "../../../../desktop/src/shared/chatAutoResume";
 import { stripHostAuthoredMessageProvenance } from "../../../../desktop/src/main/services/chat/spawnMissionOwnership";
-import { PERSONAL_LANE_ONLY_AGENT_SKILLS } from "../../../../desktop/src/main/services/chat/personalSession";
+import { isPersonalLaneOnlySkillCommand } from "../../../../desktop/src/main/services/chat/personalSession";
 import {
   personalHostPathContext,
   validatePersonalHostCwd,
@@ -179,12 +179,7 @@ async function saveFileTempAttachment(attachmentsDir: string, args: ObjectArgs):
 
 /** `/` entries minus the skills an assistant chat does not get (`PERSONAL_LANE_ONLY_AGENT_SKILLS`). */
 function withoutLaneOnlySkillCommands<T extends { name: string }>(commands: readonly T[]): T[] {
-  const withheld = new Set<string>(PERSONAL_LANE_ONLY_AGENT_SKILLS);
-  return commands.filter((command) => {
-    const name = command.name.replace(/^\//, "");
-    // A plugin-namespaced listing (`ade:ade-lanes-git`) names the same skill.
-    return !withheld.has(name) && !withheld.has(name.slice(name.indexOf(":") + 1));
-  });
+  return commands.filter((command) => !isPersonalLaneOnlySkillCommand(command.name));
 }
 
 /** The call's args without the ADE-surface claim, which no chat service method takes. */
