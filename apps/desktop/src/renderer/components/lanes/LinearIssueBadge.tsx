@@ -1,6 +1,8 @@
 import React from "react";
 import { ArrowSquareOut, ChatCircleText, Check, Clipboard, WarningCircle } from "@phosphor-icons/react";
 import type { LaneLinearIssue } from "../../../shared/types";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueRef } from "../../lib/issueNavigation";
 import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 
@@ -87,13 +89,27 @@ export function LinearIssueBadge({
     onStartChatWithIssue?.();
   }, [onStartChatWithIssue]);
 
+  // The badge opens the issue itself, where you are: the issue sheet on the
+  // Lanes page, the Issues tab when a Work view is on screen.
+  const openIssue = React.useCallback(() => {
+    const ref = linearIssueRef(issue.identifier, issue.url ?? null);
+    if (ref) openIssueRef({ ref, source: "lane" });
+  }, [issue.identifier, issue.url]);
+
   return (
     <span className="group relative inline-flex shrink-0" onClick={(event) => event.stopPropagation()}>
       <span
         tabIndex={0}
         role="button"
         aria-label={`${issue.identifier}: ${issue.title}`}
-        className="inline-flex items-center gap-1 rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
+        onClick={openIssue}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openIssue();
+          }
+        }}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
         style={{
           borderColor: LINEAR_BRAND.borderSubtle,
           background: LINEAR_BRAND.surface,

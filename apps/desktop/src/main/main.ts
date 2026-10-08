@@ -1,5 +1,5 @@
 import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -43,6 +43,7 @@ type NodePtyType = typeof NodePty;
 import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
 import {
   PACKAGE_CHANNEL_ARGV_PREFIX,
+  appPackageChannelDisplayName,
   normalizeAppPackageChannel,
 } from "../shared/packageChannel";
 import {
@@ -197,11 +198,6 @@ import {
 import { createPrSummaryService } from "./services/prs/prSummaryService";
 import { openExternalUrl } from "./services/shared/externalLinks";
 import {
-  AttentionNotchHelper,
-  type AttentionNotchOutput,
-} from "./services/attention/attentionNotchHelper";
-import { resolveAttentionNotchExecutablePath } from "./services/native/nativeHelperPaths";
-import {
   CaptureHelper,
   resolveCaptureHelperExecutablePath,
 } from "./services/capture/captureHelper";
@@ -218,13 +214,9 @@ import {
 } from "./services/analytics/captureGestureProductAnalytics";
 
 import {
-  attentionNotchAppNavigation,
   attentionItemNavigationRequest,
-  createAttentionNotchToastDeduper,
   remoteBindingMatchesProject,
-  resolveAttentionNotchOutput,
-  type AttentionNotchResolvedOutput,
-} from "./services/attention/attentionNotchRouter";
+} from "./services/attention/attentionItemRouting";
 import { pathsEqual } from "./services/shared/pathCompare";
 import { deriveProjectId } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
@@ -256,9 +248,6 @@ import type {
   AppNavigationRequest,
   AgentChatInterruptedChatRef,
   AttentionItem,
-  AttentionNotchAcknowledgeRequest,
-  AttentionNotchSettings,
-  AttentionSnapshot,
   AppMenuCommand,
   AppZoomCommand,
   CloneProjectInput,
@@ -296,7 +285,7 @@ import {
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "../../../ade-cli/src/jsonrpc";
-import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
@@ -314,6 +303,11 @@ import {
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
+import {
+  deferToRunningWindowsInstall,
+  startWindowsInstallProgress,
+  takeWindowsInstallProgressReport,
+} from "./services/updates/windowsInstallProgress";
 import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
@@ -373,6 +367,8 @@ import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
+import { getOrCreateLocalAccountMachineIdentity } from "./services/account/localMachineIdentity";
+import { stampCustomNotificationLinkOwner } from "../shared/customNotificationLink";
 import {
   buildRendererCspPolicy,
   isRendererFrameNavigationAllowed,
@@ -518,6 +514,20 @@ function applyPackagedChannelDefaults(): void {
 }
 
 applyPackagedChannelDefaults();
+
+// Opened by hand while a Windows update installs: this is the old copy, and the
+// installer would kill it a few seconds into startup. The update window comes
+// forward instead, before ADE starts anything of its own.
+if (
+  process.platform === "win32"
+  && app.isPackaged
+  && deferToRunningWindowsInstall({
+    channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    appVersion: app.getVersion(),
+  })
+) {
+  process.exit(0);
+}
 const packagedReleaseRepository = readBundledAdeReleaseRepository();
 
 function configureDesktopUserDataPath(): void {
@@ -783,7 +793,7 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
 }
 
 // Voice-to-text transcription is a project-independent capability (it only needs
-// the bundled whisper binary + model + shared glossary), so it lives as a single
+// the bundled transcribe-cli binary + model + shared glossary), so it lives as a single
 // shared instance threaded into every project/dormant context. Constructed lazily
 // on first context build.
 let sharedTranscriptionService: ReturnType<typeof createTranscriptionService> | null = null;
@@ -793,8 +803,8 @@ function getSharedTranscriptionService(logger: Logger): ReturnType<typeof create
       logger,
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
-      // The ~141 MB model is downloaded at runtime (not bundled) into userData
-      // so it never bloats the auto-update zip. See whisperModelStore.
+      // The ~464 MB model is downloaded at runtime (not bundled) into userData
+      // so it never bloats the auto-update zip. See speechModelStore.
       modelDir: path.join(app.getPath("userData"), "whisper"),
     });
   }
@@ -1287,7 +1297,7 @@ let dispatchAppNavigationForProjectRoot:
   | null = null;
 
 // Queue rather than drop when the window layer has not registered its
-// dispatcher yet. The notch, `ade://` deeplinks, and file opens can all fire
+// dispatcher yet. Activity opens, `ade://` deeplinks, and file opens can all fire
 // during launch, and a silent no-op is indistinguishable from a dead button.
 const MAX_PENDING_APP_NAVIGATION_REQUESTS = 32;
 
@@ -2098,7 +2108,6 @@ app.whenReady().then(async () => {
     // died with it. Set ADE_DEV_RUNTIME_SYNC=1 to opt a dev brain in on purpose.
     disableSync: !app.isPackaged && process.env.ADE_DEV_RUNTIME_SYNC !== "1",
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
-    desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
     onRuntimeStatusChange: (status) => {
       broadcast(IPC.appRuntimeStatusChanged, status);
       // A service manager that refused the brain is the fleet failure nobody
@@ -3011,6 +3020,19 @@ app.whenReady().then(async () => {
     autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
+    onInstallHandoff: process.platform === "win32" && app.isPackaged
+      ? ({ version, installerPath }) => startWindowsInstallProgress({
+          channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+          productName: appPackageChannelDisplayName(normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)),
+          currentVersion: app.getVersion(),
+          targetVersion: version,
+          appExe: process.execPath,
+          installerPath,
+          resourcesPath: process.resourcesPath,
+          adeHome: resolveMachineAdeDir(),
+          log: (event, data) => updateLogger.info(event, data),
+        })
+      : undefined,
     // The remedy for a wedged updater session. Same quit warnings as any quit,
     // so running agents are never ended without the user seeing them.
     relaunchApp: () => requestQuitAfterWarnings(null, "relaunch"),
@@ -3028,6 +3050,14 @@ app.whenReady().then(async () => {
       app.exit(0);
     },
   });
+  if (process.platform === "win32" && app.isPackaged) {
+    // The update window keeps running until this launch's window is on screen,
+    // so its account is read a little later, once it has closed itself.
+    setTimeout(() => {
+      const report = takeWindowsInstallProgressReport(normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL));
+      if (report) updateLogger.info("autoUpdate.install_progress_report", { lines: report });
+    }, 30_000).unref();
+  }
   remoteUpdateInstaller = createRemoteUpdateInstaller({
     getService: () => autoUpdateService,
     // The same gate as the update checks themselves: a development or channel
@@ -4617,6 +4647,7 @@ app.whenReady().then(async () => {
         conflictService,
         testService,
         agentChatService,
+        prService,
         onEvent: (event) =>
           emitProjectEvent(projectRoot, IPC.automationsEvent, event),
       });
@@ -5885,8 +5916,58 @@ app.whenReady().then(async () => {
     // locally-created services so that the registry's service map resolves.
     // Using a function closure means this stays reactive to late-bound refs
     // like CTO state bindings.
+    // Desktop automations run in this process, where no push publisher lives.
+    // A "Send notification" step still reaches the relay directly, with the
+    // same account sign-in and machine identity the brain's publisher uses.
+    let automationNotifyRelay: {
+      client: ReturnType<typeof createPushRelayClient>;
+      store: ReturnType<typeof createPushRegistrationStore>;
+    } | null = null;
+    const sendCustomNotificationFromDesktop: NonNullable<AdeRuntime["sendCustomNotification"]> = async (
+      notification,
+    ) => {
+      if (!automationNotifyRelay) {
+        const authService = getSharedAccountAuthService();
+        const store = createPushRegistrationStore({
+          filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
+        });
+        const client = createPushRelayClient({
+          store,
+          logger: localRuntimeLogger,
+          getAccountAccessToken: (options) => getSignedInAccountAccessToken(authService, options),
+          getAccountUserId: () => {
+            const status = authService.getStatus();
+            return status.signedIn ? status.userId?.trim() || null : null;
+          },
+        });
+        automationNotifyRelay = { client, store };
+      }
+      const { projectId, ...rest } = notification;
+      let accountMachineKey: string | null = null;
+      try {
+        accountMachineKey = getOrCreateLocalAccountMachineIdentity({
+          secretsDir: machineAdeLayout.secretsDir,
+        }).machineKey;
+      } catch {
+        // No machine identity: the link goes out as written.
+      }
+      return await automationNotifyRelay.client.sendAccountNotification({
+        ...rest,
+        deepLink: rest.deepLink
+          ? stampCustomNotificationLinkOwner(rest.deepLink, { accountMachineKey, projectId })
+          : null,
+        machineKey: automationNotifyRelay.store.getOrCreateIdentity().machineKey,
+      });
+    };
+
     function buildAdeActionRuntimeForAutomations(): AdeRuntime {
       return {
+        // The notification step names its project (so a chat or PR link opens
+        // on this machine), refuses while signed out, and is counted.
+        projectRoot,
+        accountAuthService,
+        productAnalyticsService,
+        sendCustomNotification: sendCustomNotificationFromDesktop,
         laneService,
         gitService,
         diffService,
@@ -7453,7 +7534,6 @@ app.whenReady().then(async () => {
   let quitWarningAcknowledged = false;
   let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
-  let attentionNotchHelper: AttentionNotchHelper | null = null;
   let captureHelper: CaptureHelper | null = null;
   /**
    * The ADE window the user was last in.
@@ -7523,12 +7603,6 @@ app.whenReady().then(async () => {
         // A failed drain must never block shutdown.
       });
     }
-    try {
-      attentionNotchHelper?.dispose();
-    } catch {
-      // ignore
-    }
-    attentionNotchHelper = null;
     try {
       captureHelper?.dispose();
     } catch {
@@ -8821,8 +8895,6 @@ app.whenReady().then(async () => {
 
   installApplicationMenu();
 
-  let latestAttentionNotchSnapshot: AttentionSnapshot | null = null;
-  const shouldForwardAttentionNotchToast = createAttentionNotchToastDeduper();
   let ipcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
   accountAuthServiceForOwnerId = attentionAccountAuthService;
@@ -8838,36 +8910,6 @@ app.whenReady().then(async () => {
       return status.signedIn ? status.userId?.trim() || null : null;
     },
   });
-
-  const attentionWindow = async (): Promise<BrowserWindow | null> => {
-    const existing =
-      BrowserWindow.getFocusedWindow()
-      ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
-      ?? null;
-    if (existing) return existing;
-    const opened = await openAdeWindow();
-    return opened.windowId == null ? null : BrowserWindow.fromId(opened.windowId);
-  };
-
-  const sendAttentionNotchAcknowledge = async (
-    request: AttentionNotchAcknowledgeRequest,
-    preferredWindow?: BrowserWindow | null,
-  ): Promise<void> => {
-    const target = preferredWindow && !preferredWindow.isDestroyed()
-      ? preferredWindow
-      : await attentionWindow();
-    if (!target || target.isDestroyed()) return;
-    target.webContents.send(IPC.attentionNotchAcknowledgeRequested, request);
-  };
-
-  const requestAttentionNotchRefresh = (force = false): void => {
-    const target =
-      BrowserWindow.getFocusedWindow()
-      ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
-      ?? null;
-    if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return;
-    target.webContents.send(IPC.attentionNotchRefreshRequested, { force });
-  };
 
   /**
    * The live window whose remote binding satisfies `predicate`.
@@ -8905,11 +8947,11 @@ app.whenReady().then(async () => {
   };
 
   /**
-   * The notch runs as a separate helper process, so clicking it never activates
-   * ADE. Without this the navigation lands correctly in a window the user is
-   * still not looking at, and every notch button reads as dead.
+   * Bring ADE itself in front of other apps. Window show/focus alone does not
+   * do this on macOS when the trigger came from outside ADE (a global capture
+   * chord), so the window would come forward behind the app the user is in.
    */
-  const activateAppForAttentionNotch = (): void => {
+  const activateAdeApp = (): void => {
     try {
       // `steal` is macOS-only; other platforms ignore it and rely on the
       // per-window show/focus that follows.
@@ -8956,15 +8998,8 @@ app.whenReady().then(async () => {
 
   const navigateFromAttentionItem = async (
     item: AttentionItem,
-    request: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>["request"],
-    options: {
-      acknowledge: boolean;
-      /** Notch-originated navigation must bring ADE itself forward. */
-      activateApp?: boolean;
-      fallbackAction?: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>["fallbackAction"];
-    },
+    request: AppNavigationRequest,
   ): Promise<void> => {
-    if (options.activateApp) activateAppForAttentionNotch();
     const accountMachineKey = item.machine.accountMachineKey?.trim() ?? "";
     const localMachineKey = ipcBridge?.getLocalMachineIdentity().machineKey ?? "";
     const targetId = accountMachineKey
@@ -9005,12 +9040,6 @@ app.whenReady().then(async () => {
     if (remoteWindow) {
       foregroundAttentionWindow(remoteWindow);
       remoteWindow.webContents.send(IPC.appNavigate, request);
-      if (options.acknowledge) {
-        await sendAttentionNotchAcknowledge(
-          { itemId: item.id, mode: "seen" },
-          remoteWindow,
-        );
-      }
       return;
     }
 
@@ -9026,152 +9055,11 @@ app.whenReady().then(async () => {
       if (!delivered.ok) {
         throw new Error(delivered.message);
       }
-      const win = BrowserWindow.fromId(delivered.windowId);
-      if (options.acknowledge) {
-        await sendAttentionNotchAcknowledge(
-          { itemId: item.id, mode: "seen" },
-          win,
-        );
-      }
-      if (options.fallbackAction) {
-        getActiveContext().logger.info("attention.notch_action_opened_destination", {
-          itemId: item.id,
-          actionKind: options.fallbackAction.kind,
-          reason: "inline_action_not_safe_for_account_scope",
-        });
-      }
       return;
     }
 
     dispatchOrQueueAppNavigationRequest(request);
-    if (options.acknowledge) {
-      await sendAttentionNotchAcknowledge({
-        itemId: item.id,
-        mode: "seen",
-      });
-    }
-    if (options.fallbackAction) {
-      getActiveContext().logger.info("attention.notch_action_opened_destination", {
-        itemId: item.id,
-        actionKind: options.fallbackAction.kind,
-        reason: "remote_destination_not_connected",
-      });
-    }
   };
-
-  const navigateFromAttentionNotch = async (
-    resolved: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>,
-  ): Promise<void> => {
-    await navigateFromAttentionItem(resolved.item, resolved.request, {
-      acknowledge: true,
-      activateApp: true,
-      fallbackAction: resolved.fallbackAction,
-    });
-  };
-
-  const handleAttentionNotchOutput = (output: AttentionNotchOutput): void => {
-    if (output.type === "surface") {
-      getActiveContext().logger.info("attention.notch_surface", {
-        displayId: output.displayId,
-        surface: output.surface,
-      });
-      return;
-    }
-    if (output.type === "protocol_error") {
-      getActiveContext().logger.warn("attention.notch_protocol_error", {
-        message: output.message,
-      });
-      return;
-    }
-    if (output.type === "refresh") {
-      requestAttentionNotchRefresh(true);
-      return;
-    }
-    const chromeNavigation = attentionNotchAppNavigation(output);
-    if (chromeNavigation) {
-      // Activate first, then dispatch: the dispatcher shows/focuses the target
-      // window, but only app activation gets ADE in front of the notch.
-      if (chromeNavigation.activatesApp) activateAppForAttentionNotch();
-      dispatchOrQueueAppNavigationRequest(chromeNavigation.request);
-      return;
-    }
-    if (output.type === "dismiss_item") {
-      void sendAttentionNotchAcknowledge({
-        itemId: output.itemId,
-        // "seen" stops the interrupting but leaves the row in Activity; only
-        // the panel's explicit dismiss files it away. Already narrowed to one
-        // of the two by the helper reader.
-        mode: output.mode,
-      }).catch((error: unknown) => {
-        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
-          itemId: output.itemId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      return;
-    }
-    if (output.type === "settings") {
-      const settings: AttentionNotchSettings = output.settings;
-      attentionNotchHelper?.updateSettings(settings);
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-        win.webContents.send(IPC.attentionNotchSettingsChanged, settings);
-      }
-      return;
-    }
-    if (output.type !== "open" && output.type !== "action") return;
-    const resolved = resolveAttentionNotchOutput(output, latestAttentionNotchSnapshot);
-    if (resolved.kind === "ignore") {
-      getActiveContext().logger.warn("attention.notch_output_ignored", {
-        itemId: output.itemId,
-        reason: resolved.reason,
-      });
-      return;
-    }
-    if (resolved.kind === "acknowledge") {
-      void sendAttentionNotchAcknowledge({
-        itemId: resolved.item.id,
-        mode: resolved.mode,
-      }).catch((error: unknown) => {
-        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
-          itemId: resolved.item.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      return;
-    }
-    void navigateFromAttentionNotch(resolved).catch((error: unknown) => {
-      getActiveContext().logger.warn("attention.notch_navigation_failed", {
-        itemId: resolved.item.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      // The notch already closed the card on click, so the acknowledgement
-      // cannot ride on navigation succeeding: a failed open would leave the
-      // card gone locally with nothing filed, and the next snapshot would toast
-      // the same row again. `seen` and not `dismiss` — the work is still
-      // unhandled, it just is not news any more.
-      void sendAttentionNotchAcknowledge({
-        itemId: resolved.item.id,
-        mode: "seen",
-      }).catch((ackError: unknown) => {
-        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
-          itemId: resolved.item.id,
-          error: ackError instanceof Error ? ackError.message : String(ackError),
-        });
-      });
-    });
-  };
-
-  attentionNotchHelper = new AttentionNotchHelper({
-    executablePath: resolveAttentionNotchExecutablePath({
-      isPackaged: app.isPackaged,
-      resourcesPath: process.resourcesPath,
-      appPath: app.getAppPath(),
-    }),
-    logger: getActiveContext().logger,
-    onOutput: handleAttentionNotchOutput,
-    onRefreshRequested: requestAttentionNotchRefresh,
-  });
 
   /**
    * Where a capture lands. The order is `pickCaptureGestureWindow`; what main
@@ -9236,7 +9124,7 @@ app.whenReady().then(async () => {
       // Bring ADE forward BEFORE the event: the renderer's fly-in animation is
       // pointless behind another app's window, and the whole gesture means
       // "take me to the CTO with this".
-      activateAppForAttentionNotch();
+      activateAdeApp();
       foregroundAttentionWindow(target);
       target.webContents.send(IPC.captureGestureShot, fitted);
       reportCapture("delivered");
@@ -9252,30 +9140,6 @@ app.whenReady().then(async () => {
       reportCapture("failed");
     },
   });
-  // Sleep does not always lock the machine, so resume must clear suspension
-  // without overriding the independent lock state.
-  let notchScreenLocked = false;
-  let notchSystemSuspended = false;
-  const syncNotchScreenState = () => {
-    attentionNotchHelper?.setScreenAwake(!notchScreenLocked && !notchSystemSuspended);
-  };
-  powerMonitor?.on?.("lock-screen", () => {
-    notchScreenLocked = true;
-    syncNotchScreenState();
-  });
-  powerMonitor?.on?.("unlock-screen", () => {
-    notchScreenLocked = false;
-    syncNotchScreenState();
-  });
-  powerMonitor?.on?.("suspend", () => {
-    notchSystemSuspended = true;
-    syncNotchScreenState();
-  });
-  powerMonitor?.on?.("resume", () => {
-    notchSystemSuspended = false;
-    syncNotchScreenState();
-  });
-
   // The account bridge is available on the welcome screen, before any project
   // context has initialized the API-key service. Bind the machine credential
   // store once here so a sign-out from that screen still purges account keys.
@@ -9400,37 +9264,8 @@ app.whenReady().then(async () => {
     retryCaptureGesture: (): CaptureGestureHealth =>
       captureHelper?.retry() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH,
     captureGestureNow: (): boolean => captureHelper?.captureNow() ?? false,
-    publishAttentionNotchSnapshot: (snapshot: AttentionSnapshot) => {
-      latestAttentionNotchSnapshot = snapshot;
-      attentionNotchHelper?.publishSnapshot(snapshot);
-    },
-    publishAttentionNotchToast: (toast) => {
-      if (!shouldForwardAttentionNotchToast(toast)) return;
-      attentionNotchHelper?.publishToast(toast);
-    },
-    updateAttentionNotchSettings: (settings: AttentionNotchSettings) => {
-      attentionNotchHelper?.updateSettings(settings);
-    },
-    getAttentionNotchHealth: () => attentionNotchHelper?.getHealth() ?? {
-      state: "unsupported",
-      title: "ADE Notch is unavailable",
-      message: "This ADE build does not include the native ambient surface.",
-      recovery: "reinstall_or_update",
-      surface: null,
-    },
-    retryAttentionNotch: () => attentionNotchHelper?.retry() ?? {
-      state: "unsupported",
-      title: "ADE Notch is unavailable",
-      message: "This ADE build does not include the native ambient surface.",
-      recovery: "reinstall_or_update",
-      surface: null,
-    },
     openAttentionItem: async (item: AttentionItem) => {
-      await navigateFromAttentionItem(
-        item,
-        attentionItemNavigationRequest(item),
-        { acknowledge: false },
-      );
+      await navigateFromAttentionItem(item, attentionItemNavigationRequest(item));
     },
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),

@@ -6,6 +6,7 @@ import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 import { AgentChatMessageList } from "../../chat/AgentChatMessageList";
 import { buildChatAppearanceRootStyle } from "../../chat/chatAppearance";
 import { SmartTooltip } from "../../ui/SmartTooltip";
+import { Banner } from "../../ui/notice";
 import { ToolLogo } from "../ToolLogos";
 import { PROVIDER_TOOL_TYPE, type ExternalSessionSummary } from "./contract";
 import { modelDisplayName, type SessionPlace } from "./importBrowserModel";
@@ -35,7 +36,7 @@ function CopyIdButton({ id }: { id: string }) {
         type="button"
         onClick={copy}
         aria-label="Copy session ID"
-        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
+        className="kit-icon-btn import-copy-btn"
       >
         {copied ? <Check size={12} weight="bold" className="text-emerald-300" /> : <Copy size={12} />}
       </button>
@@ -45,12 +46,12 @@ function CopyIdButton({ id }: { id: string }) {
 
 function TranscriptSkeleton() {
   return (
-    <div className="flex flex-col gap-4 px-6 py-6" aria-hidden="true">
-      <div className="ml-auto h-9 w-1/2 animate-pulse rounded-2xl bg-fg/[0.05]" />
-      <div className="h-4 w-4/5 animate-pulse rounded bg-fg/[0.04]" />
-      <div className="h-4 w-3/5 animate-pulse rounded bg-fg/[0.04]" />
-      <div className="ml-auto h-9 w-2/5 animate-pulse rounded-2xl bg-fg/[0.05]" />
-      <div className="h-4 w-2/3 animate-pulse rounded bg-fg/[0.04]" />
+    <div className="import-transcript-skeleton flex flex-col gap-4 px-6 py-6" aria-hidden="true">
+      <div className="ml-auto h-9 w-1/2 animate-pulse" />
+      <div className="h-4 w-4/5 animate-pulse" />
+      <div className="h-4 w-3/5 animate-pulse" />
+      <div className="ml-auto h-9 w-2/5 animate-pulse" />
+      <div className="h-4 w-2/3 animate-pulse" />
     </div>
   );
 }
@@ -83,28 +84,24 @@ export const ImportSessionPreview = memo(function ImportSessionPreview({
   const branch = place.kind === "lane" ? place.branch : null;
   const metaEntries: Array<{ key: string; node: ReactNode } | null> = [
     branch ? { key: "branch", node: <span className="max-w-[180px] truncate font-mono text-[10.5px]" title={branch}>{branch}</span> } : null,
-    formatUpdatedAt(summary.updatedAt) ? { key: "time", node: <span>{formatUpdatedAt(summary.updatedAt)}</span> } : null,
+    formatUpdatedAt(summary.updatedAt) ? { key: "time", node: <span className="kit-num">{formatUpdatedAt(summary.updatedAt)}</span> } : null,
     formatPromptCount(summary.messageCount) ? { key: "prompts", node: <span>{formatPromptCount(summary.messageCount)}</span> } : null,
     model ? { key: "model", node: <span className="max-w-[160px] truncate">{model}</span> } : null,
-    formatExternalSessionSize(summary.sizeBytes) ? { key: "size", node: <span>{formatExternalSessionSize(summary.sizeBytes)}</span> } : null,
+    formatExternalSessionSize(summary.sizeBytes) ? { key: "size", node: <span className="kit-num">{formatExternalSessionSize(summary.sizeBytes)}</span> } : null,
   ];
   const meta = metaEntries.filter((entry): entry is { key: string; node: ReactNode } => entry != null);
 
   return (
     <>
-      <header className="shrink-0 border-b border-fg/[0.06] px-5 pb-3 pt-3.5">
-        <div className="flex min-w-0 items-center gap-2.5">
+      <header className="import-preview-head">
+        <div className="import-preview-title">
           <ToolLogo toolType={PROVIDER_TOOL_TYPE[summary.provider]} size={18} className="shrink-0" />
-          <h3 className="min-w-0 flex-1 truncate text-[14px] font-semibold text-fg" title={heading}>
-            {heading}
-          </h3>
+          <h3 title={heading}>{heading}</h3>
           {summary.possiblyActive ? <LiveBadge /> : null}
           <CopyIdButton id={summary.id} />
         </div>
-        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 pl-[28px] text-[11px] text-muted-fg/65">
-          <span className="inline-flex max-w-[220px] items-center rounded-full border border-fg/[0.07] bg-fg/[0.03] px-2 py-0.5 text-fg/80">
-            <PlaceLabel place={place} />
-          </span>
+        <div className="import-meta">
+          <PlaceLabel place={place} className="max-w-[220px] text-(--kit-text-2)" />
           {meta.map((entry) => (
             <span key={entry.key} className="inline-flex min-w-0 items-center gap-1.5">
               <MetaSeparator />
@@ -114,7 +111,7 @@ export const ImportSessionPreview = memo(function ImportSessionPreview({
         </div>
       </header>
       <div
-        className="relative flex min-h-0 flex-1 flex-col"
+        className="import-transcript relative flex min-h-0 flex-1 flex-col"
         role="region"
         aria-label="Session conversation"
         data-import-transcript=""
@@ -122,7 +119,16 @@ export const ImportSessionPreview = memo(function ImportSessionPreview({
         style={appearanceStyle}
       >
         {transcript.error ? (
-          <p className="shrink-0 px-5 pt-3 text-[11px] text-amber-200/75">{transcript.error}</p>
+          <Banner
+            layout="inline"
+            style={{ margin: "12px 20px 0", flexShrink: 0 }}
+            model={{
+              id: "import-session-preview-error",
+              tone: "warning",
+              title: transcript.error,
+              ...(transcript.events.length ? { detail: "Showing the saved message snippets instead." } : {}),
+            }}
+          />
         ) : null}
         {!transcript.loaded && !transcript.error ? (
           <TranscriptSkeleton />
@@ -145,7 +151,7 @@ export const ImportSessionPreview = memo(function ImportSessionPreview({
             />
           </div>
         ) : (
-          <div className="flex flex-1 items-center justify-center px-6 text-[11.5px] text-muted-fg/50">
+          <div className="import-center text-[12px] text-(--kit-text-3)">
             No messages to show.
           </div>
         )}

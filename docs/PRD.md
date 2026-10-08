@@ -120,6 +120,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Integrations
 
+- [**Issues**](./features/issues/README.md) — Linear and GitHub issues opened where you are (the Work tools pane's Issues tab or a floating sheet), edited in place, and created from one composer; a GitHub Issues top-bar pane; lanes and agents started from an issue; `ade linear` and `ade github issue` for agents.
 - [**Linear Integration**](./features/linear-integration/README.md) — Issue read/search, lane/commit/PR attachment flow, batch launch, session-scoped attachment, and an optional live-status round-trip.
 - [**Computer Use**](./features/computer-use/README.md) — Direct signed Codex Computer Use, intentional proof capture, and active App Control. Canonical artifact model, ownership-linked storage.
 - [**Mac Desktop**](./features/mac-desktop/README.md) — A private macOS screen per lane. ADE creates a virtual display, parks the lane's windows on it, and drives them through the Accessibility API, so the user's real display and pointer stay untouched. macOS-only on the runtime host; Windows, web, and phone clients still see it for a Mac-hosted lane, and can watch, take the input lease, and (from the phone's Off card, or from the web client) start the display. Driven by `ade mac-desktop` (`ade desktop` remains the app launcher) and a bundled native driver; global pointer/keyboard input sits behind a per-chat lease, and screenshots/recordings reach the proof drawer through the existing computer-use broker as the `ade-mac-desktop` backend.

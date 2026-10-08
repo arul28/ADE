@@ -151,6 +151,7 @@ export function createAccountSettingsStore(args: {
     getAccountUserId: args.getAccountUserId,
     logger,
     defaultSyncIntervalMs: DEFAULT_SYNC_INTERVAL_MS,
+    changeMarkKind: "settings",
     events: {
       writeFailed: "account.settings_cache_write_failed",
       mutationDropped: "account.settings_mutation_dropped",

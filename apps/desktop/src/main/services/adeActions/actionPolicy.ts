@@ -1,6 +1,7 @@
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
+  USER_BROWSER_RUNTIME_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
@@ -268,6 +269,8 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
+  // An agent asking to move a chat must not approve its own request.
+  chat: ["resolveCrossMachineHandoffApproval"],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -338,6 +341,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getPreferences",
     "putPreferences",
     "putMachinePreferences",
+    // `ade notify`. Not CTO-only, so agents and automation steps can call it;
+    // the relay caps it at 60 an hour per account.
+    "sendNotification",
   ],
   lane: [
     "archive",
@@ -705,6 +711,20 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "fastForwardCrossMachineHandoffLane",
     "acceptCrossMachineHandoff",
     "markCrossMachineHandoff",
+    // The brain-owned move. `startCrossMachineHandoff` is open to agents on
+    // purpose ("move this chat to my Mac mini"); the RPC server stamps
+    // `requestedBy`, holds a bound agent to its own chat, and strips any
+    // permission fields so the move keeps the chat's own settings. An agent
+    // moving a chat that isn't full-auto waits for the person's approval
+    // (crossMachineHandoffOrchestrator). Approval itself is the person's: see
+    // ADE_ACTION_USER_ONLY. `previewCrossMachineHandoff` only reads.
+    "getCrossMachineHandoffOptions",
+    "previewCrossMachineHandoff",
+    "startCrossMachineHandoff",
+    "cancelCrossMachineHandoff",
+    "retryCrossMachineHandoff",
+    "resolveCrossMachineHandoffApproval",
+    "acknowledgeCrossMachineHandoff",
     "respondToInput",
     "dismissPendingInput",
     "resolveSmartLinkPreview",
@@ -893,6 +913,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createIssue",
     "createIssueRelation",
     "createProjectUpdate",
+    "getIssueCreateOptions",
+    "listProjectMilestones",
+    "uploadFile",
     "fetchIssueById",
     "fetchIssuesByIds",
     "fetchIssueComments",
@@ -933,6 +956,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRepoCollaborators",
     "listRepoIssues",
     "getIssue",
+    "getRepoIssueSummary",
+    "listRepoIssueList",
+    "getIssueWriteAccess",
+    "createIssue",
+    "listIssueTemplates",
+    "listIssueTypes",
+    "linkSubIssue",
+    "updateIssue",
+    "commentOnIssue",
+    "listRepoMilestones",
+    "listIssueComments",
     "listRepoLabels",
     "pollAppUserDeviceAuth",
     "publishCurrentProject",
@@ -1103,6 +1137,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   built_in_browser: [
     ...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
     BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+    // `ade browser attach` / `detach`: also runtime-served, so a desktop's own
+    // service object lacks them too.
+    ...USER_BROWSER_RUNTIME_METHODS,
   ],
   automations: [
     "list",

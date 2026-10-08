@@ -4,14 +4,6 @@ import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../lib/platform", async () => {
-  const actual = await vi.importActual<typeof import("../../lib/platform")>("../../lib/platform");
-  return {
-    ...actual,
-    supportsNativeNotch: true,
-  };
-});
-
 import { DEFAULT_ATTENTION_PREFERENCES } from "../../../shared/types";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { resetActivityStoreForTests } from "../../state/activityStore";
@@ -28,9 +20,8 @@ const signedInAccount = {
   imageUrl: null,
 };
 
-function installAde() {
+function installAde(saved: unknown = DEFAULT_ATTENTION_PREFERENCES) {
   const putPreferences = vi.fn(async () => undefined);
-  const updateSettings = vi.fn(async () => undefined);
   Object.defineProperty(window, "ade", {
     configurable: true,
     writable: true,
@@ -41,13 +32,12 @@ function installAde() {
         getSnapshot: vi.fn(),
         acknowledge: vi.fn(),
         reportPresence: vi.fn(),
-        getPreferences: vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES),
+        getPreferences: vi.fn(async () => saved),
         putPreferences,
       },
-      attentionNotch: { updateSettings, publishSnapshot: vi.fn() },
     },
   });
-  return { putPreferences, updateSettings };
+  return { putPreferences };
 }
 
 beforeEach(() => {
@@ -68,7 +58,7 @@ afterEach(() => {
 
 describe("ActivitySettingsPopover", () => {
   it("saves as you go, with no Save button to forget", async () => {
-    const { putPreferences, updateSettings } = installAde();
+    const { putPreferences } = installAde();
     render(<ActivitySettingsPopover />);
 
     fireEvent.click(screen.getByRole("button", { name: "Activity settings" }));
@@ -86,66 +76,45 @@ describe("ActivitySettingsPopover", () => {
           account: expect.objectContaining({ soundsEnabled: true }),
         }),
       );
-      expect(updateSettings).toHaveBeenCalledWith(
-        expect.objectContaining({ soundsEnabled: true }),
-      );
     });
   });
 
-  it("keeps the notch enabled flag on this Mac while syncing its presentation", async () => {
-    const { putPreferences, updateSettings } = installAde();
-    render(<ActivitySettingsPopover />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Activity settings" }));
-    await screen.findByRole("dialog", { name: "Activity settings" });
-    await waitFor(() => expect(screen.getByRole("switch", { name: "ADE notch" })).toBeTruthy());
-
-    fireEvent.click(screen.getByRole("switch", { name: "ADE notch" }));
-    await waitFor(() => {
-      expect(window.localStorage.getItem("ade:attention:notch-enabled")).toBe("false");
-      expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
+  it("saves preferences from an older build onto the current defaults", async () => {
+    // Every save writes the whole policy map, so "notify" for merge-ready, saved
+    // when that was the default, is the old default and not a choice. The
+    // removed notch's synced fields stop travelling too.
+    const { eventPolicyDefaultsVersion: _version, ...olderAccount } = DEFAULT_ATTENTION_PREFERENCES.account;
+    const { putPreferences } = installAde({
+      ...DEFAULT_ATTENTION_PREFERENCES,
+      account: {
+        ...olderAccount,
+        eventPolicies: {
+          ...DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies,
+          pr_merge_ready: "notify",
+          pr_review_requested: "notify",
+          agent_completed: "notify",
+        },
+        notchRevealMode: "always",
+        notchExpandedPanel: true,
+      },
     });
-    // Whether this Mac shows a notch at all is this Mac's business.
+    render(<ActivitySettingsPopover />);
+    fireEvent.click(screen.getByRole("button", { name: "Activity settings" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Activity sounds" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("switch", { name: "Activity sounds" }));
+
+    await waitFor(() => expect(putPreferences).toHaveBeenCalled());
     const [, savedPreferences] = putPreferences.mock.calls.at(-1) as unknown as [
       string,
-      { account: Record<string, unknown> },
+      { account: Record<string, unknown> & { eventPolicies: Record<string, string> } },
     ];
-    expect(savedPreferences.account).not.toHaveProperty("notchEnabled");
-  });
-
-  /**
-   * Two modes, both showing the identical compact strip, both opening the full
-   * panel on click. The third was "Compact + peek", whose peek layout no longer
-   * exists, and the reveal toggle beside them was a switch whose only outcome
-   * was a notch that never spoke.
-   */
-  it("offers exactly two notch modes and no automatic-reveal switch", async () => {
-    installAde();
-    render(<ActivitySettingsPopover />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Activity settings" }));
-    await screen.findByRole("dialog", { name: "Activity settings" });
-    const behavior = await screen.findByRole("combobox", { name: "Notch behavior" });
-
-    expect(Array.from((behavior as HTMLSelectElement).options).map((option) => [
-      option.value,
-      option.textContent,
-    ])).toEqual([
-      ["always", "Always show"],
-      ["hover", "Show on hover"],
-    ]);
-    expect(screen.queryByRole("switch", { name: "Automatic reveal" })).toBeNull();
-  });
-
-  it("maps a retired mode forward instead of hiding the notch", async () => {
-    window.localStorage.setItem("ade:attention:notch-reveal-mode", "click");
-    installAde();
-    render(<ActivitySettingsPopover />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Activity settings" }));
-    const behavior = await screen.findByRole("combobox", { name: "Notch behavior" });
-
-    expect((behavior as HTMLSelectElement).value).toBe("always");
+    expect(savedPreferences.account.eventPolicyDefaultsVersion).toBe(2);
+    expect(savedPreferences.account.eventPolicies.pr_merge_ready).toBe("ambient");
+    expect(savedPreferences.account.eventPolicies.pr_review_requested).toBe("ambient");
+    // A notify that was never a default is the user's own choice and stays.
+    expect(savedPreferences.account.eventPolicies.agent_completed).toBe("notify");
+    expect(savedPreferences.account).not.toHaveProperty("notchRevealMode");
+    expect(savedPreferences.account).not.toHaveProperty("notchExpandedPanel");
   });
 
   it("returns focus to the trigger when Escape dismisses it", async () => {
@@ -165,7 +134,7 @@ describe("ActivitySettingsPopover", () => {
   });
 
   it("links to Settings through the navigation bus, not the router", async () => {
-    // Activity mounts outside the router here (and in the notch), so the link
+    // Activity mounts outside the router here, so the link
     // must dispatch an app-navigation target rather than calling useNavigate —
     // which would throw "may be used only in the context of a <Router>".
     installAde();

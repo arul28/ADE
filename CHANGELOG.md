@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.95] - 2026-10-07
+
+### Desktop
+
+- Computer-use action rows, `ade browser attach`, one floating preview; ADE browser without a token gate (#1514, #1523, #1527).
+- Claude Haiku 5.5, provider SDK bumps, ACP tested-version checks, PR-branch automations (#1513, #1521).
+- Parked subagents keep lanes Working; full-conversation session import (#1510, #1506).
+- Parakeet Ultra dictation on transcribe.cpp (#1522).
+- Update checks fall back to Node and report failures (#1507, #1508).
+- Cloudflare relay D1 reads and writes cut sharply (#1504, #1511).
+
 ## [1.2.94] - 2026-10-07
 
 ### Desktop
@@ -2370,7 +2381,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.94...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.95...HEAD
+[1.2.95]: https://github.com/arul28/ADE/compare/v1.2.94...v1.2.95
 [1.2.94]: https://github.com/arul28/ADE/compare/v1.2.93...v1.2.94
 [1.2.93]: https://github.com/arul28/ADE/compare/v1.2.92...v1.2.93
 [1.2.92]: https://github.com/arul28/ADE/compare/v1.2.91...v1.2.92

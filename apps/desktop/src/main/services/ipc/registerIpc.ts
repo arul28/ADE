@@ -1,4 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
+import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import { execFile } from "node:child_process";
 import type { MachineResetOptions, MachineResetPlan } from "../../../shared/types/machineReset";
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
@@ -57,6 +59,7 @@ import {
 import { detectInstalledEditorTargets } from "../editors/editorDetection";
 import { detectBrowsersCached } from "../browsers/browserDetection";
 import { browserIconDataUrl } from "../browsers/browserIcons";
+import { appIconDataUrlByName } from "../apps/appIcons";
 import { openUrlInBrowser } from "../browsers/browserLauncher";
 import type { InstalledBrowser } from "../../../shared/browserTargets";
 import {
@@ -68,11 +71,7 @@ import type { AttemptedProjectRoots } from "./knownProjectRoots";
 import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
-  AttentionNotchSettings,
-  AttentionNotchToast,
-  AttentionSnapshot,
 } from "../../../shared/types/attention";
-import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types/attention";
 import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { buildMachineOnlySyncSnapshot } from "../sync/machineOnlySyncSnapshot";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
@@ -185,11 +184,7 @@ import {
   toShallowRecentProjectSummary,
 } from "../projects/recentProjectSummary";
 import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRuntimeAuthorization";
-import {
-  parseAttentionNotchSettings,
-  parseAttentionNotchSnapshot,
-  parseAttentionNotchToast,
-} from "../attention/attentionNotchRouter";
+import { parseAttentionItem } from "../attention/attentionItemRouting";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import { describeAttentionOpenFailure } from "../attention/attentionOpenErrors";
 import type {
@@ -480,6 +475,14 @@ import type {
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
+  AgentChatAcknowledgeCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffResult,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatResolveCrossMachineHandoffApprovalArgs,
+  AgentChatStartCrossMachineHandoffArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
@@ -694,6 +697,11 @@ import type {
   CtoCountLinearIssuesArgs,
   CtoCountLinearIssuesResult,
   CtoGetLinearIssueArgs,
+  CtoCreateLinearIssueCommentArgs,
+  LinearIssueCreateInput,
+  LinearIssueCreateOptions,
+  LinearProjectMilestone,
+  LinearUploadResult,
   CtoLinearCustomView,
   CtoUpdateLinearIssueArgs,
   NormalizedLinearIssue,
@@ -771,6 +779,7 @@ import type {
   ExternalSessionImportResult,
   ExternalSessionSummary,
   ExternalSessionDetail,
+  ExternalSessionDetailArgs,
   ExternalSessionDetailUpdatedEvent,
   ProviderInstance,
   ProviderInstanceCreateResult,
@@ -891,7 +900,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { capturePresetAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -906,6 +915,7 @@ import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import {
+  loadExternalSessionDetail,
   normalizeExternalSessionDetailArgs,
   startExternalSessionDetailWatch,
   stopExternalSessionDetailWatch,
@@ -1862,11 +1872,6 @@ export function registerIpc({
   getCaptureGestureHealth,
   retryCaptureGesture,
   captureGestureNow,
-  publishAttentionNotchSnapshot,
-  publishAttentionNotchToast,
-  updateAttentionNotchSettings,
-  getAttentionNotchHealth,
-  retryAttentionNotch,
   openAttentionItem,
   getCurrentAccountOwnerId,
   accountAttentionClient,
@@ -1943,11 +1948,6 @@ export function registerIpc({
   getCaptureGestureHealth?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
   retryCaptureGesture?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
   captureGestureNow?: () => boolean;
-  publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
-  publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
-  updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
-  getAttentionNotchHealth?: () => import("../../../shared/types").AttentionNotchHealth;
-  retryAttentionNotch?: () => import("../../../shared/types").AttentionNotchHealth;
   openAttentionItem?: (item: AttentionItem) => Promise<void>;
   getCurrentAccountOwnerId?: () => string | null;
   accountAttentionClient?: Pick<
@@ -3467,42 +3467,6 @@ export function registerIpc({
     started: captureGestureNow?.() ?? false,
   }));
 
-  ipcMain.handle(IPC.attentionNotchPublishSnapshot, async (_event, input: unknown) => {
-    const snapshot = parseAttentionNotchSnapshot(input);
-    if (!snapshot) throw new Error("Invalid ADE Notch snapshot.");
-    publishAttentionNotchSnapshot?.(snapshot);
-  });
-
-  ipcMain.handle(IPC.attentionNotchPublishToast, async (_event, input: unknown) => {
-    const toast = parseAttentionNotchToast(input);
-    if (!toast) throw new Error("Invalid ADE Notch toast.");
-    publishAttentionNotchToast?.(toast);
-  });
-
-  ipcMain.handle(IPC.attentionNotchUpdateSettings, async (_event, input: unknown) => {
-    const settings = parseAttentionNotchSettings(input);
-    if (!settings) throw new Error("Invalid ADE Notch settings.");
-    updateAttentionNotchSettings?.(settings);
-  });
-
-  ipcMain.handle(IPC.attentionNotchGetHealth, async () =>
-    getAttentionNotchHealth?.() ?? {
-      state: "unsupported",
-      title: "ADE Notch is unavailable",
-      message: "This ADE build does not include the native ambient surface.",
-      recovery: "reinstall_or_update",
-      surface: null,
-    });
-
-  ipcMain.handle(IPC.attentionNotchRetry, async () =>
-    retryAttentionNotch?.() ?? getAttentionNotchHealth?.() ?? {
-      state: "unsupported",
-      title: "ADE Notch is unavailable",
-      message: "This ADE build does not include the native ambient surface.",
-      recovery: "reinstall_or_update",
-      surface: null,
-    });
-
   ipcMain.handle(
     IPC.attentionGetSnapshot,
     async (_event, input: unknown) => attentionAccountCoordinator.getSnapshot(input),
@@ -3547,21 +3511,7 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
-    const snapshot = parseAttentionNotchSnapshot({
-      contractVersion: ATTENTION_CONTRACT_VERSION,
-      streamId: null,
-      revision: (
-        typeof input === "object"
-        && input !== null
-        && Number.isSafeInteger((input as { revision?: unknown }).revision)
-      )
-        ? Number((input as { revision: number }).revision)
-        : 0,
-      generatedAt: new Date().toISOString(),
-      items: [input],
-      tombstones: [],
-    });
-    const item = snapshot?.items[0] ?? null;
+    const item = parseAttentionItem(input);
     if (!item) throw new Error("Invalid Activity item.");
     await openAttentionItem?.(item);
   });
@@ -4313,6 +4263,21 @@ export function registerIpc({
         reason: error instanceof Error ? error.message : String(error),
       });
       return [];
+    }
+  });
+
+  /**
+   * An installed app's icon by name, for transcript rows that name the app an
+   * agent drove. Cached per name in the main process; a miss is null, never an
+   * error, because the row simply draws its glyph.
+   */
+  ipcMain.handle(IPC.appGetAppIcon, async (event, arg: { name?: unknown }): Promise<string | null> => {
+    // Only ADE's own renderer may ask: the answer says whether an app bundle exists.
+    assertTrustedAppControlSender(event, IPC.appGetAppIcon);
+    try {
+      return await appIconDataUrlByName(typeof arg?.name === "string" ? arg.name : "");
+    } catch {
+      return null;
     }
   });
 
@@ -5564,10 +5529,17 @@ export function registerIpc({
       const ctx = getCtx();
       // Same reasoning as diagnostics: this updates the CLI on the machine the
       // main process runs on, never a remote host's.
-      return await runAcpProviderUpdate({
+      const result = await runAcpProviderUpdate({
         provider: arg.provider,
         cwd: ctx.project.rootPath,
       });
+      captureProviderCliUpdateAnalytics({
+        analytics: productAnalyticsService,
+        surface: "desktop",
+        provider: arg.provider,
+        outcome: result.ok ? "completed" : "failed",
+      });
+      return result;
     },
   );
 
@@ -6780,9 +6752,13 @@ export function registerIpc({
     const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
     if (!watchId) throw new Error("external session detail watchId must be a string.");
     const args = normalizeExternalSessionDetailArgs(arg);
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["externalSessionsService"]);
-    const externalSessionsService = ctx.externalSessionsService;
+    // The watch reads this computer's provider stores, so it needs no project
+    // runtime. A runtime-backed project has no local external sessions
+    // service; read the same stores directly instead of refusing.
+    const externalSessionsService = getCtx().externalSessionsService;
+    const loadDetail = externalSessionsService
+      ? (detailArgs: ExternalSessionDetailArgs) => externalSessionsService.getDetail(detailArgs)
+      : (detailArgs: ExternalSessionDetailArgs) => loadExternalSessionDetail(detailArgs);
     const sender = event.sender;
     const senderId = sender.id;
     if (!detailWatchCleanupSenders.has(senderId)) {
@@ -6797,7 +6773,7 @@ export function registerIpc({
       watchId,
       provider: args.provider,
       sessionId: args.sessionId,
-      loadDetail: (detailArgs) => externalSessionsService.getDetail(detailArgs),
+      loadDetail,
       onUpdate: (detail) => {
         if (sender.isDestroyed()) return;
         const payload: ExternalSessionDetailUpdatedEvent = { watchId, detail };
@@ -7276,6 +7252,7 @@ export function registerIpc({
       baseBranch: arg.baseBranch,
       branchName: arg.branchName,
       linearIssue: arg.linearIssue ?? null,
+      githubIssue: arg.githubIssue ?? null,
     });
     await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -8595,7 +8572,7 @@ export function registerIpc({
 
   // ── Voice-to-text dictation ──────────────────────────────────────────────
   // The transcription service is project-independent (no DB / lane deps): it
-  // only needs the bundled whisper binary + model + the shared glossary. It is
+  // only needs the bundled transcribe-cli binary + model + the shared glossary. It is
   // resolved from the active context, where it is threaded as a shared
   // singleton (see main.ts).
   type TranscriptionPcmFormat = "int16" | "float32";
@@ -8700,7 +8677,7 @@ export function registerIpc({
     return service.getStatus();
   });
 
-  // Download the ~141 MB speech model on demand (first dictation). Streams to
+  // Download the ~464 MB speech model on demand (first dictation). Streams to
   // disk in the main process; progress is pushed to the requesting renderer.
   ipcMain.handle(
     IPC.transcriptionDownloadModel,
@@ -8873,6 +8850,49 @@ export function registerIpc({
       const ctx = ensureAgentChatContext();
       await ctx.agentChatService.markCrossMachineHandoff(arg);
     },
+  );
+
+  // The brain-owned move. These handlers only answer when no runtime is bound
+  // (the preload routes a bound or pinned chat to its brain first); the
+  // desktop's in-process service has no transport, so `start` refuses there
+  // with a plain message rather than pretending to move anything.
+  ipcMain.handle(
+    IPC.agentChatGetCrossMachineHandoffOptions,
+    async (_event, arg: AgentChatCrossMachineHandoffSessionArgs): Promise<AgentChatCrossMachineHandoffOptionsResult> =>
+      await ensureAgentChatContext().agentChatService.getCrossMachineHandoffOptions(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatPreviewCrossMachineHandoff,
+    async (_event, arg: AgentChatPreviewCrossMachineHandoffArgs): Promise<AgentChatPreviewCrossMachineHandoffResult> =>
+      await ensureAgentChatContext().agentChatService.previewCrossMachineHandoff(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatStartCrossMachineHandoff,
+    async (_event, arg: AgentChatStartCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord> => {
+      // Who asked is never taken from the renderer: a window is the person.
+      const { requestedBy: _ignored, ...startArgs } = (arg ?? {}) as AgentChatStartCrossMachineHandoffArgs & { requestedBy?: unknown };
+      return await ensureAgentChatContext().agentChatService.startCrossMachineHandoff({ ...startArgs, requestedBy: "user" });
+    },
+  );
+  ipcMain.handle(
+    IPC.agentChatCancelCrossMachineHandoff,
+    async (_event, arg: AgentChatCrossMachineHandoffSessionArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      await ensureAgentChatContext().agentChatService.cancelCrossMachineHandoff(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatRetryCrossMachineHandoff,
+    async (_event, arg: AgentChatCrossMachineHandoffSessionArgs): Promise<AgentChatCrossMachineHandoffRecord> =>
+      await ensureAgentChatContext().agentChatService.retryCrossMachineHandoff(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatResolveCrossMachineHandoffApproval,
+    async (_event, arg: AgentChatResolveCrossMachineHandoffApprovalArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      await ensureAgentChatContext().agentChatService.resolveCrossMachineHandoffApproval(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatAcknowledgeCrossMachineHandoff,
+    async (_event, arg: AgentChatAcknowledgeCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      await ensureAgentChatContext().agentChatService.acknowledgeCrossMachineHandoff(arg),
   );
 
   ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {
@@ -10445,6 +10465,11 @@ export function registerIpc({
     return ensureBuiltInBrowser().switchTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserSwitchTab), win);
   });
 
+  ipcMain.handle(IPC.builtInBrowserHandTabToChat, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserHandTabToChat, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().handTabToChat(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserHandTabToChat), win);
+  });
+
   ipcMain.handle(IPC.builtInBrowserCloseTab, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserCloseTab, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().closeTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserCloseTab), win);
@@ -11527,6 +11552,67 @@ export function registerIpc({
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.getIssue(owner, name, arg.number);
+  });
+
+  ipcMain.handle(IPC.githubGetRepoIssueSummary, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.getRepoIssueSummary(owner, name);
+  });
+
+  ipcMain.handle(IPC.githubListRepoIssueList, async (_event, arg: { owner?: string; name?: string; state?: "open" | "closed" | "all" }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoIssueList(owner, name, parseGitHubIssueListState(arg?.state));
+  });
+
+  ipcMain.handle(IPC.githubCreateIssue, async (_event, arg: { owner?: string; name?: string; input: unknown }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.createIssue(owner, name, parseGitHubIssueCreateInput(arg?.input));
+  });
+
+  ipcMain.handle(IPC.githubListIssueTemplates, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listIssueTemplates(owner, name);
+  });
+
+  ipcMain.handle(IPC.githubListIssueTypes, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listIssueTypes(owner);
+  });
+
+  ipcMain.handle(IPC.githubGetIssueWriteAccess, async (_event, arg: { owner?: string; name?: string; force?: boolean }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.getIssueWriteAccess(owner, name, { force: arg?.force === true });
+  });
+
+  ipcMain.handle(IPC.githubUpdateIssue, async (_event, arg: { owner?: string; name?: string; number: number; patch: unknown }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.updateIssue(owner, name, arg.number, parseGitHubIssueUpdate(arg?.patch));
+  });
+
+  ipcMain.handle(IPC.githubCommentOnIssue, async (_event, arg: { owner?: string; name?: string; number: number; body: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    if (typeof arg?.body !== "string" || !arg.body.trim()) throw new Error("A comment needs some text.");
+    return await ctx.githubService.commentOnIssue(owner, name, arg.number, arg.body);
+  });
+
+  ipcMain.handle(IPC.githubListRepoMilestones, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoMilestones(owner, name);
+  });
+
+  ipcMain.handle(IPC.githubListIssueComments, async (_event, arg: { owner?: string; name?: string; number: number }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listIssueComments(owner, name, arg.number);
   });
 
   ipcMain.handle(
@@ -13341,6 +13427,58 @@ export function registerIpc({
       const ctx = getCtx();
       if (!ctx.linearIssueTracker) return [];
       return ctx.linearIssueTracker.fetchIssueComments(arg.issueId);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoCreateLinearIssue,
+    async (_event, arg: LinearIssueCreateInput): Promise<NormalizedLinearIssue> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      return ctx.linearIssueTracker.createIssue(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoGetLinearIssueCreateOptions,
+    async (_event, arg: { teamKey: string }): Promise<LinearIssueCreateOptions> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      return ctx.linearIssueTracker.getIssueCreateOptions(String(arg?.teamKey ?? ""));
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoListLinearProjectMilestones,
+    async (_event, arg: { projectId: string }): Promise<LinearProjectMilestone[]> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker || typeof arg?.projectId !== "string") return [];
+      return ctx.linearIssueTracker.listProjectMilestones(arg.projectId);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoUploadLinearFile,
+    async (_event, arg: { filename: string; contentType: string; dataBase64: string }): Promise<LinearUploadResult> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      if (typeof arg?.dataBase64 !== "string") throw new Error("Nothing to upload.");
+      return ctx.linearIssueTracker.uploadFile({
+        filename: String(arg.filename ?? "upload"),
+        contentType: String(arg.contentType ?? "application/octet-stream"),
+        dataBase64: arg.dataBase64,
+      });
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoCreateLinearIssueComment,
+    async (_event, arg: CtoCreateLinearIssueCommentArgs): Promise<{ commentId: string }> => {
+      if (typeof arg?.issueId !== "string" || !arg.issueId.trim()) throw new Error("A comment needs an issue.");
+      if (typeof arg?.body !== "string" || !arg.body.trim()) throw new Error("A comment needs some text.");
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      return ctx.linearIssueTracker.createComment(arg.issueId.trim(), arg.body);
     }
   );
 

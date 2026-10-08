@@ -381,6 +381,20 @@ describe("ADE CLI", () => {
     });
     expect(shouldAutoRegisterProjectForPlan(logoutPlan)).toBe(false);
 
+    // `ade notify` is machine-wide: it never registers the current folder as a
+    // project (the home folder cannot be one), and it refuses what it cannot
+    // send before connecting at all.
+    const notifyPlan = expectExecutePlan(buildCliPlan([
+      "notify", "--title", "Deploy finished", "--open", "https://ade-app.dev/open?type=pr&number=12&repo=arul28/ADE",
+    ]));
+    expect(notifyPlan.steps[0]).toMatchObject({
+      method: "notify.send",
+      params: { args: { title: "Deploy finished", open: "https://ade-app.dev/open?type=pr&number=12&repo=arul28/ADE" } },
+    });
+    expect(shouldAutoRegisterProjectForPlan(notifyPlan)).toBe(false);
+    expect(() => buildCliPlan(["notify", "--body", "no title"])).toThrow(/needs a title/);
+    expect(() => buildCliPlan(["notify", "--title", "x", "--open", "ade://pr/"])).toThrow(/can't open/);
+
     expect(buildCliPlan(["login", "--max-wait", "42"])).toEqual({
       kind: "account-login",
       maxWaitSec: 42,
@@ -1967,6 +1981,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "list"])).toEqual({
       kind: "execute",
       label: "projects list",
+      machineOnly: true,
+      machineAutoStart: true,
       // The list `--all-machines` merges; `projects add` below must not carry it.
       machineList: "projects",
       formatter: "projects-list",
@@ -1975,6 +1991,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["project", "add", "/tmp/project"])).toEqual({
       kind: "execute",
       label: "projects add",
+      machineOnly: true,
+      machineAutoStart: true,
       formatter: "projects-list",
       steps: [
         {
@@ -1991,6 +2009,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "remove", "project_abc"])).toEqual({
       kind: "execute",
       label: "projects remove",
+      machineOnly: true,
+      machineAutoStart: true,
       steps: [
         {
           key: "result",
@@ -2004,6 +2024,8 @@ describe("ADE CLI", () => {
     ).toEqual({
       kind: "execute",
       label: "projects touch",
+      machineOnly: true,
+      machineAutoStart: true,
       formatter: "projects-list",
       steps: [
         {
@@ -2016,6 +2038,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "inspect", "/tmp/worktree"])).toEqual({
       kind: "execute",
       label: "projects inspect",
+      machineOnly: true,
+      machineAutoStart: true,
       steps: [
         {
           key: "result",
@@ -2569,6 +2593,8 @@ describe("ADE CLI", () => {
         lastInstallFailed: { targetVersion: "1.2.38", attempt: 2 },
         autoApplyPending: null,
         autoApplySuppressedUntil: null,
+        lastCheckedAt: Date.UTC(2026, 8, 30, 12),
+        checkFailure: { kind: "network", at: Date.UTC(2026, 8, 30, 11) },
       },
       { text: true } as any,
       inferFormatter(plan),
@@ -2578,6 +2604,10 @@ describe("ADE CLI", () => {
     expect(output).toContain("1.2.38 did not land");
     expect(output).toContain("attempt 2");
     expect(output).toContain("ade update install");
+    expect(output).toContain("last checked");
+    expect(output).toContain("2026-09-30T12:00:00.000Z");
+    expect(output).toContain("check failed");
+    expect(output).toContain("network at 2026-09-30T11:00:00.000Z");
   });
 
   it("renders progress and omits the install-failure row for a clean update snapshot", () => {
@@ -8205,6 +8235,38 @@ describe("ADE CLI", () => {
     });
   });
 
+  // The move form keeps --machine (it names the destination), so the session
+  // must resolve the same whichever side of the flag it is written on.
+  it.each([
+    ["session first", ["chat-1", "--machine", "Mac mini"]],
+    ["machine first", ["--machine", "Mac mini", "chat-1"]],
+    ["inline machine", ["--machine=Mac mini", "chat-1"]],
+    // A prompt that reads like a flag is text, not --cancel.
+    ["prompt that looks like a flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--cancel"]],
+    ["handoff note that looks like a flag", ["chat-1", "--machine", "Mac mini", "--handoff-note", "--cancel"]],
+    ["prompt that names a setting flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--fork"]],
+  ])("builds a move to another machine with the %s", (_label, head) => {
+    const move = expectExecutePlan(buildCliPlan([
+      "chat",
+      "handoff",
+      ...head,
+      "--model",
+      "anthropic/claude-haiku-4-5",
+      "--when-turn-ends",
+    ]));
+    expect(move.label).toBe("chat handoff to another machine");
+    const args = (move.steps[0]?.params as { arguments: { action: string; args: Record<string, unknown> } }).arguments;
+    expect(args.action).toBe("startCrossMachineHandoff");
+    expect(args.args).toMatchObject({
+      sourceSessionId: "chat-1",
+      machine: "Mac mini",
+      targetModelId: "anthropic/claude-haiku-4-5",
+      whenTurnEnds: true,
+      // The default mode, whatever the free text says.
+      mode: "brief",
+    });
+  });
+
   it("passes --target-lane through a brief handoff and rejects it for fork", () => {
     const handoff = expectExecutePlan(buildCliPlan([
       "chat",
@@ -11178,11 +11240,13 @@ describe("ADE CLI", () => {
       },
     });
 
-    const setState = buildCliPlan(["linear", "set-state", "ENG-431", "state-done"]);
+    // A state id goes straight to updateIssueState; a state name is looked up first.
+    const stateId = "5f0c2a1e-3b4d-4c6e-8f9a-0b1c2d3e4f50";
+    const setState = buildCliPlan(["linear", "set-state", "ENG-431", stateId]);
     expect(setState.kind).toBe("execute");
     if (setState.kind !== "execute") return;
     expect(setState.steps[0]?.params).toMatchObject({
-      arguments: { action: "updateIssueState", argsList: ["ENG-431", "state-done"] },
+      arguments: { action: "updateIssueState", argsList: ["ENG-431", stateId] },
     });
 
     const assignNone = buildCliPlan(["linear", "assign", "ENG-431", "none"]);
@@ -12049,27 +12113,27 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("automations create accepts require-on-trigger lane mode without a target lane", () => {
-    const plan = buildCliPlan([
-      "automations",
-      "create",
-      "--text",
-      "id: r1\n",
-      "--lane-mode",
-      "require-on-trigger",
-    ]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
-    expect(plan.steps[0]?.params).toMatchObject({
-      arguments: {
-        args: {
-          draft: {
-            execution: { laneMode: "require-on-trigger" },
-          },
-        },
-      },
-    });
-  });
+  it.each(["require-on-trigger", "pr-branch"])(
+    "automations create switches a saved reuse rule to %s and drops its fixed lane",
+    (laneMode) => {
+      const plan = buildCliPlan([
+        "automations",
+        "create",
+        "--text",
+        "id: r1\nexecution:\n  kind: agent-session\n  laneMode: reuse\n  targetLaneId: lane-old\n",
+        "--lane-mode",
+        laneMode,
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      const execution = (plan.steps[0]?.params as { arguments: { args: { draft: { execution: Record<string, unknown> } } } })
+        .arguments.args.draft.execution;
+      expect(execution.laneMode).toBe(laneMode);
+      expect(execution.kind).toBe("agent-session");
+      // Validation rejects a fixed lane next to these modes, so it must go.
+      expect(execution).not.toHaveProperty("targetLaneId");
+    },
+  );
 
   it("automations create rejects --lane with --lane-mode require-on-trigger", () => {
     expect(() =>
@@ -16975,5 +17039,55 @@ describe("findFlagName", () => {
 
   it("returns null when no spelling is written", () => {
     expect(findFlagName(["--provider", "codex"], ["--type", "--chat-parent"])).toBeNull();
+  });
+});
+
+describe("ade github issue writes", () => {
+  // GitHub numbers issues and pull requests from one sequence and `/issues`
+  // accepts both, so every issue write reads the number first and refuses a
+  // pull request before anything is sent.
+  const writeStep = (argv: string[]) => {
+    const plan = buildCliPlan(["github", "issue", ...argv, "--repo", "arul28/ADE"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") throw new Error("expected an execute plan");
+    const read = plan.steps.find((step) => step.key === "current");
+    const write = plan.steps.find((step) => step.key === "result");
+    expect(read, "the issue is read before the write").toBeTruthy();
+    expect(write).toBeTruthy();
+    return (current: Record<string, unknown>) => (typeof write!.params === "function"
+      ? write!.params({ current })
+      : write!.params) as { arguments: { action: string; args: Record<string, unknown> } };
+  };
+
+  it.each([
+    ["close", ["close", "12"], "updateIssue"],
+    ["edit", ["edit", "12", "--title", "New title"], "updateIssue"],
+    ["label", ["label", "12", "--add", "bug"], "updateIssue"],
+    ["comment", ["comment", "12", "Fixed in main"], "commentOnIssue"],
+  ])("%s refuses a pull request and writes to an issue", (_name, argv, action) => {
+    const send = writeStep(argv);
+    expect(() => send({ number: 12, pull_request: { url: "https://api.github.com/repos/arul28/ADE/pulls/12" } }))
+      .toThrow(/#12 is a pull request, not an issue/);
+    const params = send({ number: 12, labels: [], assignees: [] });
+    expect(params.arguments.action).toBe(action);
+    expect(params.arguments.args).toMatchObject({ owner: "arul28", name: "ADE", number: 12 });
+  });
+
+  it.each([
+    ["sub-issue", ["sub-issue", "12", "acme/app#10"]],
+    ["create --parent", ["create", "--title", "Child", "--parent", "acme/app#10"]],
+  ])("%s refuses an issue from another repository", (_name, argv) => {
+    const plan = buildCliPlan(["github", "issue", ...argv, "--repo", "arul28/ADE"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    const write = plan.steps.find((step) => step.key === "result");
+    expect(typeof write?.params).toBe("function");
+    expect(() => (write!.params as (values: Record<string, unknown>) => unknown)({}))
+      .toThrow(/is in acme\/app, but the issue is in arul28\/ADE/);
+  });
+
+  it("refuses a write when the issue cannot be read", () => {
+    const send = writeStep(["close", "12"]);
+    expect(() => send(null as unknown as Record<string, unknown>)).toThrow(/was not found, or ADE could not read it/);
   });
 });

@@ -253,6 +253,7 @@ export function sessionInlineStatusLabel(session: SessionCanonicalUiInput): stri
 export function sessionStatusDisplay(
   session: SessionCanonicalUiInput,
   overlay: SessionStatusOverlay = {},
+  context: { subagentBusy?: boolean } = {},
 ): SessionStatusPresentation | null {
   const state = sessionCanonicalUiState(session);
   return sessionStatusPresentation(state.phase, overlay, {
@@ -262,6 +263,7 @@ export function sessionStatusDisplay(
     liveness: state.liveness,
     backgroundWork: backgroundWorkFromSummary(session),
     nextWakeAt: session.nextWakeAt,
+    subagentBusy: context.subagentBusy,
     nowMs: session.nowMs,
     usageLimitResume: session.usageLimitResume ?? null,
   });

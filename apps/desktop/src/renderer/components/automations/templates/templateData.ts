@@ -128,6 +128,33 @@ export const TEMPLATES: AutomationTemplate[] = [
       actions: [],
     },
   },
+  {
+    id: "dependabot-pr-agent",
+    name: "Dependabot PR → its branch + agent",
+    description: "When Dependabot opens a PR, open the PR's own branch as a lane and let an agent finish and check the update there.",
+    group: "Pull requests",
+    triggerType: "github.pr_opened",
+    whatYouConfigure: ["Agent prompt", "Model", "Other bots or authors"],
+    draft: {
+      ...BASE,
+      name: "Dependabot PR → its branch + agent",
+      triggers: [{ type: "github.pr_opened", authors: ["dependabot[bot]"] }],
+      trigger: { type: "github.pr_opened", authors: ["dependabot[bot]"] },
+      execution: {
+        kind: "agent-session",
+        laneMode: "pr-branch",
+        laneNamePreset: "pr-title-author",
+        session: { title: "Dependabot PR" },
+      },
+      modelConfig: SONNET,
+      prompt:
+        "Dependabot opened PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Finish the update: run any generate steps the bump needs, run the checks for what changed, fix what breaks, then commit and push to this branch. End with what you checked and anything a human must decide.",
+      toolPalette: ["repo", "git", "github"],
+      guardrails: {},
+      billingCode: "auto:dependabot-pr-agent",
+      actions: [],
+    },
+  },
   // ---- Flagship 4 ----
   {
     id: "clean-up-merged-lanes",
@@ -440,7 +467,7 @@ export const TEMPLATES: AutomationTemplate[] = [
   },
 ];
 
-export const GROUP_ORDER = ["Agent workflows", "Issue intake", "Hygiene", "CI & tests"];
+export const GROUP_ORDER = ["Agent workflows", "Issue intake", "Pull requests", "Hygiene", "CI & tests"];
 
 export const TEMPLATE_GROUPS: Array<{ title: string; templates: AutomationTemplate[] }> = GROUP_ORDER.map(
   (title) => ({ title, templates: TEMPLATES.filter((t) => t.group === title) }),

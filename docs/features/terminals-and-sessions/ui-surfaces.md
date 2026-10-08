@@ -189,7 +189,31 @@ the row's status slot shows **No output** with the time since the last output
 exactly at the next stall deadline (`nextTurnStallDeadlineMs`) instead of
 polling. A resting chat is never stale or stalled: `canonicalSessionState`
 checks idle before silence, because a chat row keeps status `running` between
-turns and the old order filed every reply older than three hours as busy. Turning the option off forgets the return state, so turning it back on
+turns and the old order filed every reply older than three hours as busy.
+
+A resting chat with a **scheduled wake** still to come (a subagent polling CI,
+a `/loop`) is Waiting, not Done. `scheduledWakeState` is the one rule. A wake
+past due by more than `SCHEDULED_WAKE_GRACE_MS` (two minutes) that never started
+a turn is Done again and holds its lane out, even when nested or seen, so a
+paused or dead scheduler cannot leave a lane folded. A finished chat whose
+nested subagent is mid-turn or parked on such a wake is Waiting too, because the
+subagent wakes it when its turn ends: `subagentKeepsParentBusy` and
+`parentsWithBusySubagents` are the one rule. Archived and snoozed subagents do
+not count, and attached shells are never subagents, so a dev server left running
+cannot keep a lane busy.
+
+Every surface reads the same rule: the row label (`sessionStatusDisplay`'s
+`subagentBusy`), the lane rollup and Focus grid (`busySubagentParentIds`), the
+board (reason chips "Wake scheduled" and "Subagent working"), the host's
+`deriveWorkBoardColumn` (which reads the chat's wake and applies the same
+nesting rule to the lane's chats and tracked CLI rows, so a drag starts from the
+column the board shows), the Lanes
+overview, the command palette, `ade code`'s work list and iOS. The card, the
+sidebar and the board each re-evaluate at the instant a wake turns overdue
+(`nextScheduledWakeDeadlineMs`) rather than polling; the card owns that clock
+because it computes the label.
+
+Turning the option off forgets the return state, so turning it back on
 takes a fresh baseline instead of floating every lane at once.
 
 Each by-lane header carries one rolled-up status dot
@@ -495,21 +519,19 @@ tells the states apart. Only canonical `needs_you` contributes to the Work-tab
 highlight, notifications, and Dock badge. `useAppWideSessionAttention` owns
 that count at `AppShell`, so it remains live outside Work.
 
-The same canonical session phase feeds the account-wide Activity UI, where it is
-grouped by the six shared state groups — Needs you, Failed, Planning, Working,
-Idle, Done — defined by `activityStateGroup` in the renderer's
-`activity/activityPresentation.ts` and mirrored by the notch, iOS, and the relay.
-The desktop header popover omits Idle and Done; the full pane, Hub tree, and Mac
-notch compact strip keep them. Activity's session column is agents only; pull
-requests and checks render in its Notifications column. ADE Notch shows the same
-ordering as a compact strip of clickable state-glyph badges and can flash a
-needs-you card. The hook and wire-level `attention` vocabulary remain
-compatibility names; user-facing surfaces call the feature Activity.
-
-Planning is the one state the phase vocabulary cannot express. `AttentionPhase`
-is frozen push wire, so a planning turn publishes as `running` and carries the
-additive `chatActivityMode: "planning"` alongside it; readers that do not
-understand it fall back to Working.
+The same session state feeds the account-wide Activity UI, which groups agents
+by the Work board's four columns — Needs you, Working, Waiting, Done — through
+`activityBoardColumn` (`shared/attention/activityBoardColumn.ts`), so the board,
+Activity, the phone and the Live Activity count the same rows. A failed agent
+files under Needs you with a red **Failed** mark; a Waiting row carries its
+reason (Snoozed, CI running, Review requested, shared with the board through
+`WORK_BOARD_WAITING_REASON_LABEL`). Planning folds into Working and a resting
+session into Done. The top-bar popover and the "Open all" view are one panel in
+two sizes (`activity/ActivityPanel.tsx`); see
+[push-notifications.md](../sync-and-multi-device/push-notifications.md#desktop-activity).
+Activity's Sessions list is agents only; pull requests and checks render in its
+Inbox. The hook and wire-level `attention` vocabulary remain compatibility
+names; user-facing surfaces call the feature Activity.
 
 ## Work view: `WorkViewArea.tsx`
 
@@ -1396,9 +1418,15 @@ dismissal undone by the event it caused would never stick.
   before it has painted and outranks every non-floated activity, because the
   “Show preview when minimized” toggle is an explicit ask and a blank card
   with the tool's name is better feedback than a lit control that does
-  nothing.   The corner card's candidates are `browser` and `app-control`. The Apple
-  device and the Mac Desktop float in their own players (see below). Git and
+  nothing. The corner card's only candidate is `browser`. App Control, the
+  Apple device and the Mac Desktop float in their own players (see below). Git and
   Files have nothing to look at.
+- **It steps aside for a floating player.** While any floating player is on
+  screen (the Mac Desktop, App Control or an Apple device, read through
+  `useAnyFloatingPlayerShown` in `floatingPlayerSlots.ts`), the card is not
+  shown and its feed is torn down. The card does not take part in the players'
+  placement, so stepping aside is what keeps it off a player. A tool the user
+  floated by hand still shows.
 - **It belongs to the chat you are reading.** The card is passed the selected
   chat session id and shows only sessions that chat owns: a browser tab's
   `ownerChatSessionId`, an App Control or simulator session's `chatSessionId`.

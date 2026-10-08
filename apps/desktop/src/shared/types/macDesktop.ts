@@ -111,6 +111,13 @@ export type MacDesktopErrorCode =
 export const MAC_DESKTOP_MACOS_ONLY_MESSAGE =
   "A Mac Desktop display is only available on a macOS runtime host.";
 
+/**
+ * What a Linux host says instead. Neither seat exists there: it is not a
+ * wrong-OS mistake to correct, just not built yet.
+ */
+export const LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE =
+  "Lane screens are not supported on Linux yet. Use ade browser for web pages and ade app-control for Electron apps.";
+
 /** The one sentence every non-Windows rejection carries. */
 export const WINDOWS_DESKTOP_WINDOWS_ONLY_MESSAGE =
   "A Windows Desktop screen is only available on a Windows runtime host.";
@@ -143,8 +150,8 @@ export type MacDesktopPermissions = {
 export type MacDesktopSigningState = "adhoc" | "identity" | "unknown";
 
 /**
- * Helper health, modelled on `AttentionNotchHealth` so the same settings-style
- * recovery verbs reach the UI.
+ * Helper health, in the same shape as `CaptureGestureHealth` so the same
+ * settings-style recovery verbs reach the UI.
  */
 export type MacDesktopDriverState =
   | "running"

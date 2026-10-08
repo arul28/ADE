@@ -231,6 +231,7 @@ struct WorkRootSessionPresentation: Equatable {
   let displaySessions: [TerminalSessionSummary]
   let displaySessionIds: Set<String>
   let topLevelDisplaySessionIds: Set<String>
+  let busySubagentParentIds: Set<String>
   let nestedGroupsByParentId: [String: [WorkSessionChildGroup]]
   let sessionGroups: [WorkSessionGroup]
   let workOrderedLanes: [LaneSummary]
@@ -247,6 +248,7 @@ struct WorkRootSessionPresentation: Equatable {
     displaySessions: [TerminalSessionSummary],
     displaySessionIds: Set<String>,
     topLevelDisplaySessionIds: Set<String>,
+    busySubagentParentIds: Set<String> = [],
     nestedGroupsByParentId: [String: [WorkSessionChildGroup]],
     sessionGroups: [WorkSessionGroup],
     workOrderedLanes: [LaneSummary],
@@ -260,6 +262,7 @@ struct WorkRootSessionPresentation: Equatable {
     self.displaySessions = displaySessions
     self.displaySessionIds = displaySessionIds
     self.topLevelDisplaySessionIds = topLevelDisplaySessionIds
+    self.busySubagentParentIds = busySubagentParentIds
     self.nestedGroupsByParentId = nestedGroupsByParentId
     self.sessionGroups = sessionGroups
     self.workOrderedLanes = workOrderedLanes
@@ -273,6 +276,7 @@ struct WorkRootSessionPresentation: Equatable {
     displaySessions: [],
     displaySessionIds: [],
     topLevelDisplaySessionIds: [],
+    busySubagentParentIds: [],
     nestedGroupsByParentId: [:],
     sessionGroups: [],
     workOrderedLanes: [],
@@ -325,6 +329,12 @@ func buildWorkRootSessionPresentation(
   )
   let mergedSessions = (sessions + draftValues)
     .sorted { compareWorkSessionSortOrder($0, $1, chatSummaries: chatSummaries) }
+  let busySubagentParentIds = workBusySubagentParentIds(
+    sessions: mergedSessions,
+    chatSummaries: chatSummaries,
+    archivedSessionIds: archivedSessionIds,
+    now: now
+  )
 
   let displaySessions = workFilteredSessions(
     mergedSessions,
@@ -336,6 +346,7 @@ func buildWorkRootSessionPresentation(
     searchText: searchText,
     outputSearchBySessionId: outputSearchBySessionId,
     laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
+    busySubagentParentIds: busySubagentParentIds,
     now: now
   )
   let displaySessionIds = Set(displaySessions.map(\.id))
@@ -406,6 +417,7 @@ func buildWorkRootSessionPresentation(
     deletingLaneIds: deletingLaneIds,
     headerlessLaneIds: headerlessLaneIds,
     laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
+    busySubagentParentIds: busySubagentParentIds,
     nestedChildIds: childSessionIds,
     foldBusyLanes: foldBusyLanes,
     seenAtBySessionId: seenAtBySessionId,
@@ -441,6 +453,7 @@ func buildWorkRootSessionPresentation(
     displaySessions: displaySessions,
     displaySessionIds: displaySessionIds,
     topLevelDisplaySessionIds: topLevelDisplaySessionIds,
+    busySubagentParentIds: busySubagentParentIds,
     nestedGroupsByParentId: nestedGroupsByParentId,
     sessionGroups: sessionGroups,
     workOrderedLanes: workOrderedLanes,
@@ -456,6 +469,7 @@ func buildWorkRootSessionPresentation(
       workOrderedLanes: workOrderedLanes,
       lanePrTagsByLaneId: lanePrTagsByLaneId,
       laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
+      busySubagentParentIds: busySubagentParentIds,
       chatSummaries: chatSummaries
     )
   )
@@ -470,6 +484,7 @@ private func workRootSessionPresentationRenderSignature(
   workOrderedLanes: [LaneSummary],
   lanePrTagsByLaneId: [String: LanePrTag],
   laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason],
+  busySubagentParentIds: Set<String>,
   chatSummaries: [String: AgentChatSessionSummary]
 ) -> Int {
   var hasher = Hasher()
@@ -513,6 +528,7 @@ private func workRootSessionPresentationRenderSignature(
       hasher.combine(summary.status)
       hasher.combine(summary.idleSinceAt)
       hasher.combine(summary.endedAt)
+      hasher.combine(summary.nextWakeAt)
       hasher.combine(summary.steeringInput)
       hasher.combine(summary.usageLimitResume?.state.rawValue)
       hasher.combine(summary.usageLimitResume?.fireAt)
@@ -578,6 +594,11 @@ private func workRootSessionPresentationRenderSignature(
   for key in laneWaitingReasonByLaneId.keys.sorted() {
     hasher.combine(key)
     hasher.combine(laneWaitingReasonByLaneId[key])
+  }
+  // The busy-parent set moves with time (a subagent's wake turning overdue)
+  // without any row changing, and it decides the parent's Waiting label.
+  for parentId in busySubagentParentIds.sorted() {
+    hasher.combine(parentId)
   }
   return hasher.finalize()
 }
@@ -690,6 +711,7 @@ func workSessionGroups(
   /// by-status reads it — it is what its Waiting section is, and it is the same
   /// map the Waiting chip filters with.
   laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason] = [:],
+  busySubagentParentIds: Set<String> = [],
   nestedChildIds: Set<String> = [],
   /// By-lane only: lanes whose live rows are all busy (or done and left since
   /// they finished) move under a collapsed Working shelf. See `workLaneFoldsIntoWorking`.
@@ -738,6 +760,7 @@ func workSessionGroups(
       chatSummaries: chatSummaries,
       archivedSessionIds: archivedSessionIds,
       laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
+      busySubagentParentIds: busySubagentParentIds,
       now: now
     )
   case .byLane:
@@ -748,16 +771,17 @@ func workSessionGroups(
     let focusRoster = quietReferenceSessions ?? sessions
     var focusRowsByLaneId: [String: [WorkRowFocus?]] = [:]
     for session in focusRoster {
-      let focus = workRowFocus(
+      let focus = workCountedRowFocus(
         session: session,
         summary: chatSummaries[session.id],
         archived: archivedSessionIds.contains(session.id),
         laneWaiting: laneWaitingReasonByLaneId[session.laneId] != nil,
         seen: workIsRowSeen(session: session, seenAt: seenAtBySessionId[session.id]),
+        busySubagentParent: busySubagentParentIds.contains(session.id),
+        nestedChild: nestedChildIds.contains(session.id),
         now: now
       )
-      let counted = (focus?.status == .done && nestedChildIds.contains(session.id)) ? nil : focus
-      focusRowsByLaneId[session.laneId, default: []].append(counted)
+      focusRowsByLaneId[session.laneId, default: []].append(focus)
     }
     let laneGroups = workSessionGroupsByLane(
       sessions: awake,
@@ -935,10 +959,11 @@ func workSessionGroupsByStatus(
   chatSummaries: [String: AgentChatSessionSummary],
   archivedSessionIds: Set<String>,
   /// Lane → PR-derived wait, from `workLaneWaitingReasonByLaneId`. Empty is a
-  /// valid input (no PRs loaded yet): the Waiting section is then snoozed-only,
-  /// which on the normal path means empty, because `workSessionGroups` has
-  /// already lifted snoozed rows onto their own shelf.
+  /// valid input (no PRs loaded yet): scheduled wakes and busy subagent parents
+  /// can still reach Waiting. `workSessionGroups` lifts snoozed rows onto their
+  /// own shelf before this section is assembled.
   laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason] = [:],
+  busySubagentParentIds: Set<String> = [],
   now: Date = Date()
 ) -> [WorkSessionGroup] {
   var needsYou: [TerminalSessionSummary] = []
@@ -974,6 +999,8 @@ func workSessionGroupsByStatus(
       session: session,
       phase: canonical.phase,
       laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
+      nextWakeAt: chatSummaries[session.id]?.nextWakeAt,
+      busySubagentParentIds: busySubagentParentIds,
       now: now
     ) != nil {
       waiting.append(session)

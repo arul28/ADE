@@ -205,7 +205,6 @@ button.activity-hdr-freshness {
   color: var(--color-fg);
 }
 
-.activity-hdr-alert,
 .activity-hdr-note {
   display: flex;
   align-items: flex-start;
@@ -216,93 +215,9 @@ button.activity-hdr-freshness {
   border-bottom: 1px solid var(--activity-hdr-hairline);
 }
 
-.activity-hdr-alert {
-  color: var(--color-error, #ef4444);
-  background: color-mix(in srgb, var(--color-error, #ef4444) 10%, transparent);
-}
-
 .activity-hdr-note {
   color: var(--color-muted-fg);
   background: color-mix(in srgb, var(--color-fg) 4%, transparent);
-}
-
-.activity-hdr-notch-health span {
-  flex: 1;
-}
-
-.activity-hdr-notch-health button {
-  flex: 0 0 auto;
-  color: var(--color-accent);
-  font-weight: 650;
-}
-
-.activity-hdr-notch-health button:hover,
-.activity-hdr-notch-health button:focus-visible {
-  text-decoration: underline;
-  outline: none;
-}
-
-.activity-hdr-body {
-  display: flex;
-  min-height: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  overflow-y: auto;
-  padding: 6px;
-}
-
-/* ---- sections --------------------------------------------------------- */
-
-.activity-hdr-section {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-/* The heading is a wrapper for the toggle button, which carries the padding:
-   see `.activity-section-toggle` in Activity.css — one collapse control, both
-   surfaces, so a header cannot behave differently depending on where it is. */
-.activity-hdr-section-heading {
-  display: flex;
-  align-items: center;
-  margin: 0;
-  padding: 3px 0 1px;
-  font-size: var(--activity-hdr-fs-2xs);
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--color-muted-fg);
-}
-
-.activity-hdr-section-count {
-  font-family: var(--font-mono);
-  font-size: var(--activity-hdr-fs-2xs);
-  font-variant-numeric: tabular-nums;
-  color: var(--tone-color);
-}
-
-/* Done lives in the full list, so the dropdown owes the reader a pointer to
-   it — a count they can click, not a silent omission. */
-.activity-hdr-done-handoff {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  align-self: flex-start;
-  margin: 4px 0 2px 8px;
-  padding: 3px 5px;
-  border-radius: 6px;
-  color: var(--color-muted-fg);
-  font-size: var(--activity-hdr-fs-xs);
-  font-weight: 600;
-  transition: color 120ms ease, background-color 120ms ease;
-}
-
-.activity-hdr-done-handoff:hover,
-.activity-hdr-done-handoff:focus-visible {
-  color: var(--color-fg);
-  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
-  outline: none;
 }
 
 /* ---- offline disclosure ------------------------------------------------ */
@@ -376,27 +291,6 @@ button.activity-hdr-freshness {
   font-variant-numeric: tabular-nums;
 }
 
-.activity-hdr-overflow {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  align-self: flex-start;
-  margin: 2px 0 4px 8px;
-  padding: 2px 4px;
-  border-radius: 6px;
-  font-size: var(--activity-hdr-fs-xs);
-  font-weight: 600;
-  color: var(--color-muted-fg);
-  transition: color 120ms ease, background-color 120ms ease;
-}
-
-.activity-hdr-overflow:hover,
-.activity-hdr-overflow:focus-visible {
-  color: var(--color-fg);
-  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
-  outline: none;
-}
-
 /* ---- empty states and footer ------------------------------------------ */
 
 .activity-hdr-empty {
@@ -420,38 +314,6 @@ button.activity-hdr-freshness {
   max-width: 30ch;
   font-size: var(--activity-hdr-fs-xs);
   line-height: 1.5;
-}
-
-/* All-clear is a state worth designing, not a gap to apologise for: one calm
-   emerald dot breathing at rest, no icon shouting an absence. */
-.activity-hdr-calm-dot {
-  /* Emerald via the tone variable, not a literal: light mode swaps it for a
-     darker green so the dot stays legible on a pale popover. */
-  --tone-color: #34d399;
-  position: relative;
-  width: 9px;
-  height: 9px;
-  margin-bottom: 4px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--tone-color) 78%, transparent);
-}
-
-[data-theme="light"] .activity-hdr-calm-dot {
-  --tone-color: #047857;
-}
-
-.activity-hdr-calm-dot::after {
-  content: "";
-  position: absolute;
-  inset: -6px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--tone-color) 26%, transparent);
-  animation: activity-hdr-calm 3.6s ease-in-out infinite;
-}
-
-@keyframes activity-hdr-calm {
-  0%, 100% { opacity: 0.55; transform: scale(0.9); }
-  50% { opacity: 0.15; transform: scale(1.12); }
 }
 
 .activity-hdr-panel-foot {
@@ -505,8 +367,7 @@ button.activity-hdr-freshness {
     transition-duration: 0.001ms !important;
   }
 
-  .activity-hdr-trigger-live,
-  .activity-hdr-calm-dot::after {
+  .activity-hdr-trigger-live {
     animation: none;
   }
 }

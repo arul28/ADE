@@ -36,7 +36,8 @@ import type {
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import { extractError } from "../../lib/format";
-import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueInSheet } from "../../lib/issueNavigation";
 import { isChatToolType } from "../../lib/sessions";
 import { restartAgentSession, setChatGoal as setChatGoalFromPalette } from "../terminals/sessionLifecycleActions";
 import {
@@ -1532,11 +1533,9 @@ export function CommandPalette({
           const identifier = item.id.startsWith("linear:")
             ? item.id.slice(7)
             : item.id;
-          if (identifier) {
-            requestLinearIssueQuickView({
-              issueIdentifier: identifier,
-              source: "manual",
-            });
+          const ref = identifier ? linearIssueRef(identifier) : null;
+          if (ref) {
+            openIssueInSheet({ ref, source: "palette" });
           } else {
             navigate("/lanes");
           }

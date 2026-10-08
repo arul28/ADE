@@ -1,7 +1,7 @@
 /**
  * App-global voice-model installer (renderer singleton).
  *
- * The ~141 MB whisper speech model is downloaded on demand (not bundled). The
+ * The ~464 MB Parakeet Ultra speech model is downloaded on demand (not bundled). The
  * actual download runs in the MAIN process (transcription.downloadModel), which
  * is single-flight and streams to disk — so it keeps running even if the user
  * navigates away from Settings or unmounts the UI that started it. This module
@@ -20,7 +20,7 @@ export type VoiceModelPhase = "idle" | "downloading" | "installed" | "error";
 
 export interface VoiceModelInstallState {
   phase: VoiceModelPhase;
-  /** Bundled whisper-cli binary present (the half that ships with the app). */
+  /** Bundled transcribe-cli binary present (the half that ships with the app). */
   binaryInstalled: boolean;
   /** Downloaded model present on disk. */
   modelInstalled: boolean;
@@ -34,7 +34,7 @@ export interface VoiceModelInstallState {
 type Listener = (state: VoiceModelInstallState) => void;
 
 // Best-effort total for the progress bar before the server reports content-length.
-export const VOICE_MODEL_BYTES = 147_964_211;
+export const VOICE_MODEL_BYTES = 486_280_096;
 /** User-facing model size label, derived once so prose can't drift from the byte count. */
 export const VOICE_MODEL_SIZE_LABEL = `${Math.round(VOICE_MODEL_BYTES / 1024 / 1024)} MB`;
 

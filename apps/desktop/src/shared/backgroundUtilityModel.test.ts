@@ -4,6 +4,7 @@ import {
   adeBackgroundUtilityProviderFromToolType,
   BACKGROUND_UTILITY_CLAUDE_MODEL_ID,
   BACKGROUND_UTILITY_CODEX_MODEL_ID,
+  BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT,
   BACKGROUND_UTILITY_CODEX_REASONING_EFFORT,
   BACKGROUND_UTILITY_CURSOR_MODEL_ID,
   backgroundUtilityModelId,
@@ -31,10 +32,12 @@ describe("backgroundUtilityModel", () => {
     expect(adeBackgroundUtilityProviderFromToolType("shell")).toBeNull();
   });
 
-  it("pins Codex Luna to low reasoning and leaves other cheap models unset", () => {
+  it("pins Codex Luna and Claude Haiku to low reasoning and leaves other cheap models unset", () => {
     expect(backgroundUtilityReasoningEffort(BACKGROUND_UTILITY_CODEX_MODEL_ID))
       .toBe(BACKGROUND_UTILITY_CODEX_REASONING_EFFORT);
-    expect(backgroundUtilityReasoningEffort(BACKGROUND_UTILITY_CLAUDE_MODEL_ID)).toBeNull();
+    expect(backgroundUtilityReasoningEffort(BACKGROUND_UTILITY_CLAUDE_MODEL_ID))
+      .toBe(BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT);
+    expect(backgroundUtilityReasoningEffort("claude-haiku-5-5")).toBe(BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT);
     expect(backgroundUtilityReasoningEffort(BACKGROUND_UTILITY_CURSOR_MODEL_ID)).toBeNull();
   });
 });

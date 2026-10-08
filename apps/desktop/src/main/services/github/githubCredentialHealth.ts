@@ -15,6 +15,7 @@ import {
 import {
   GITHUB_OPERATION_CREDENTIAL_PRECEDENCE,
   githubOperationCredentialCapabilities,
+  type GithubOperationCredentialCapability,
 } from "../../../shared/githubOperationCredential";
 
 const FALLBACK_COOLDOWN_MS = 5 * 60_000;
@@ -46,7 +47,7 @@ const REQUEST_BUDGET_FAILURE_FRESHNESS_MS = 90_000;
 export type GithubCredentialCandidate = {
   source: GitHubCredentialSource;
   token: string;
-  capabilities: readonly GitHubCredentialCapability[];
+  capabilities: readonly GithubOperationCredentialCapability[];
   userLogin?: string | null;
 };
 
@@ -399,7 +400,9 @@ export function githubCredentialStates(args: {
     const health = candidate ? healthFor(candidate) : null;
     const cooling = candidate ? githubCredentialCooldown(candidate) : null;
     const sourceFailure = args.sourceFailures.get(source) ?? null;
-    const capabilities = [...githubOperationCredentialCapabilities(source)];
+    // Settings shows read/write; `issue-write` is an operation detail.
+    const capabilities = githubOperationCredentialCapabilities(source)
+      .filter((capability): capability is GitHubCredentialCapability => capability !== "issue-write");
     const activeFor: GitHubCredentialCapability[] = [];
     if (args.activeReadSource === source) activeFor.push("read");
     if (args.activeWriteSource === source) activeFor.push("write");

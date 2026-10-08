@@ -133,6 +133,8 @@ export class FakeD1Database {
   usageResearchDays = new Map<string, number>();
   /** `usage_research_identity_days`, keyed `${day}|${identity}`. */
   usageResearchIdentityDays = new Map<string, number>();
+  /** Sweep rewrites of the totals row, so a test can see an idle sweep write nothing. */
+  usageResearchTotalsWrites = 0;
   /** `usage_research_totals.bytes`. The migration seeds it at 0; `null` is the row missing. */
   usageResearchTotalBytes: number | null = 0;
   /**
@@ -267,9 +269,18 @@ export class FakeD1Database {
       if (normalized.includes("sum(bytes)")) {
         // Sweep, half one: subtract exactly the rows half two deletes.
         const [cutoff, limit] = values;
+        // The statement's own `exists` guard: with nothing expired the row is
+        // not rewritten at all (a billed write every minute otherwise).
+        if (
+          normalized.includes("exists (select 1 from usage_research_daily where day < ?)")
+          && this.expiredUsageResearchRows(String(values[2]), 1).length === 0
+        ) {
+          return 0;
+        }
         const freed = this.expiredUsageResearchRows(String(cutoff), Number(limit))
           .reduce((sum, row) => sum + row.bytes, 0);
         this.usageResearchTotalBytes = Math.max(0, this.usageResearchTotalBytes - freed);
+        this.usageResearchTotalsWrites += 1;
         return 1;
       }
       // Refund of a storage claim whose write did not happen.

@@ -9,6 +9,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatCliLaunchProvider,
+  AgentChatCrossMachineHandoffRecord,
   AgentChatDroidPermissionMode,
   AgentChatModelHandoff,
   AgentChatSpawnKind,
@@ -142,12 +143,9 @@ export function isPtySendPreDeliveryError(
  * Is this terminal running an agent CLI ADE tracks?
  *
  * "Tracked" buys the session the whole agent-CLI apparatus: TUI turn markers,
- * resume-target capture, scheduled turns, spawn lineage — and two
- * safety behaviours that are easy to miss, because both are about what
- * *stops*. A tracked launch is refused when the disk is exhausted, and a
- * tracked session's built-in-browser actor token is revoked when it closes.
- * The token is issued unconditionally, so a tool type missing from this list
- * gets a capability that outlives its terminal.
+ * resume-target capture, scheduled turns, spawn lineage — and a safety
+ * behaviour that is easy to miss, because it is about what *stops*: a tracked
+ * launch is refused when the disk is exhausted.
  *
  * Must stay in step with `TrackedAgentCliToolType` above.
  */
@@ -323,6 +321,8 @@ export type TerminalSessionSummary = {
   toolType: TerminalToolType | null;
   /** Completed model/provider transitions for an ADE chat, oldest first. */
   modelHandoffHistory?: AgentChatModelHandoff[];
+  /** The chat's latest move to another machine (banner, menu, Work-row chip). */
+  crossMachineHandoff?: AgentChatCrossMachineHandoffRecord | null;
   /**
    * The model this chat is currently running, projected from
    * `AgentChatSessionSummary` so a session ROW can name it without opening the

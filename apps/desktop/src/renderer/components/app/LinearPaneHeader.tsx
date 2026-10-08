@@ -1,5 +1,5 @@
 import React, { useState, type ReactNode } from "react";
-import { CircleNotch, X } from "@phosphor-icons/react";
+import { CircleNotch, Plus, X } from "@phosphor-icons/react";
 
 import type { CtoLinearQuickView } from "../../../shared/types";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
@@ -74,6 +74,8 @@ export function LinearPaneHeader({
   refreshTitle = "Refresh Linear",
   closeTitle = "Close Linear",
   onRefresh,
+  onNew,
+  newTitle = "New issue",
   onClose,
 }: {
   quickView?: CtoLinearQuickView | null;
@@ -88,6 +90,9 @@ export function LinearPaneHeader({
   refreshTitle?: string;
   closeTitle?: string;
   onRefresh: () => void;
+  /** Shows "New" when given: opens the create composer for this tracker. */
+  onNew?: () => void;
+  newTitle?: string;
   onClose: () => void;
 }) {
   const resolvedTitle = title ?? quickView?.organization?.name ?? "Linear";
@@ -118,6 +123,18 @@ export function LinearPaneHeader({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1">
+        {onNew ? (
+          <button
+            type="button"
+            className="ade-shell-control inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px]"
+            data-variant="ghost"
+            onClick={onNew}
+            title={newTitle}
+          >
+            <Plus size={11} weight="bold" />
+            New
+          </button>
+        ) : null}
         <button
           type="button"
           className="ade-shell-control inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px]"

@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
+import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
+import { openIssueRef } from "../../lib/issueNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
@@ -143,7 +146,12 @@ import {
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
-import { mentionChipMarkSvg, type ComposerAtChipKind } from "./mentionChipMark";
+import {
+  COMPOSER_MENTION_CHIP_CLASS,
+  COMPOSER_TOKEN_CHIP_ICON_CLASS,
+  mentionChipMarkSvg,
+  type ComposerAtChipKind,
+} from "./mentionChipMark";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
@@ -174,6 +182,8 @@ import {
 } from "../../../shared/smartLinks";
 import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
+import { hasBrowserTabMention, parseBrowserTabMentions } from "../../../shared/browserTabMention";
+import { hydrateBrowserTabChipsInEditor, insertBrowserTabChip } from "./composerBrowserTabChip";
 import type { ChatThreadComment } from "../../../shared/threadComments";
 import { ComposerThreadCommentsButton } from "./ThreadCommentControls";
 import { countCommentsForNextSend } from "./threadCommentsStore";
@@ -334,10 +344,6 @@ const SMART_LINK_ICON_MARK_CLASS =
   "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-violet-100/85";
 const SMART_LINK_ICON_GLYPH_CLASS =
   "inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-violet-200/10 px-0.5 font-mono text-[7px] font-bold text-violet-100/80";
-const COMPOSER_TOKEN_CHIP_ICON_CLASS =
-  "inline-flex h-3 w-3 shrink-0 items-center justify-center text-violet-100/75";
-const COMPOSER_MENTION_CHIP_CLASS =
-  "mx-0.5 inline-flex max-w-[10.5rem] translate-y-px items-center gap-1 rounded border border-violet-300/22 bg-violet-500/12 px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-4 text-violet-100/88 align-baseline";
 const COMPOSER_TOKEN_CHIP_CLASS =
   "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] leading-5 text-violet-100/88 align-baseline";
 
@@ -1893,6 +1899,7 @@ export function AgentChatComposer({
   isActive = false,
   shouldAutofocus = isActive,
   caretToEndRequest = 0,
+  browserTabInsertRequest = null,
   threadComments = EMPTY_THREAD_COMMENTS,
   threadCommentsSessionId = null,
   threadCommentsPin = null,
@@ -2061,6 +2068,12 @@ export function AgentChatComposer({
    * editor with the caret at the very end, after the added chip.
    */
   caretToEndRequest?: number;
+  /**
+   * A browser tab attached from the Browser panel ("Attach to chat"). Each new
+   * `id` inserts the tab's `<ade-browser-tab>` token as a chip at the caret the
+   * user last left in the composer, then focuses it after the chip.
+   */
+  browserTabInsertRequest?: { id: number; token: string } | null;
   /** The chat's pending thread comments; the ones marked for send go with the next message. */
   threadComments?: readonly ChatThreadComment[];
   threadCommentsSessionId?: string | null;
@@ -2378,11 +2391,7 @@ export function AgentChatComposer({
   const [issueContextMenuOpen, setIssueContextMenuOpen] = useState(false);
   const [addSecretOpen, setAddSecretOpen] = useState(false);
   const [linearIssuePickerOpen, setLinearIssuePickerOpen] = useState(false);
-  const [linearIssuePickerMode, setLinearIssuePickerMode] = useState<"attach" | "details">("attach");
   const [githubIssuePickerOpen, setGitHubIssuePickerOpen] = useState(false);
-  const [githubIssuePickerMode, setGitHubIssuePickerMode] = useState<"attach" | "details">("attach");
-  const [linearDetailsIssueId, setLinearDetailsIssueId] = useState<string | null>(null);
-  const [githubDetailsIssueId, setGitHubDetailsIssueId] = useState<string | null>(null);
   const [githubRepo, setGitHubRepo] = useState<{ owner: string; name: string } | null>(null);
 
   useEffect(() => {
@@ -2404,6 +2413,7 @@ export function AgentChatComposer({
   const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(
     () => findSmartLinks(draft).length > 0
       || hasChatOutputContext(draft)
+      || hasBrowserTabMention(draft)
       || parseChatMentions(draft).length > 0
       || parseModelMentions(draft).length > 0,
   );
@@ -2581,7 +2591,12 @@ export function AgentChatComposer({
     setSmartLinkEditorEnabled(true);
   };
   useEffect(() => {
-    if (hasChatOutputContext(draft) || parseChatMentions(draft).length > 0 || parseModelMentions(draft).length > 0) {
+    if (
+      hasChatOutputContext(draft)
+      || hasBrowserTabMention(draft)
+      || parseChatMentions(draft).length > 0
+      || parseModelMentions(draft).length > 0
+    ) {
       promoteToRichEditor();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- promotion follows the draft only
@@ -4148,6 +4163,36 @@ export function AgentChatComposer({
     richSelectionRef.current = range.cloneRange();
   }, []);
 
+  // Insert an attached browser tab at the caret the user last left here. The
+  // rich editor takes the chip directly, so the context chips around it keep
+  // their places; the plain textarea splices the token into the draft and lets
+  // promotion draw the chip, with the caret restored just after it.
+  const appliedBrowserTabInsertIdRef = useRef(browserTabInsertRequest?.id ?? 0);
+  useEffect(() => {
+    const request = browserTabInsertRequest;
+    if (!request || request.id === appliedBrowserTabInsertIdRef.current) return;
+    const match = parseBrowserTabMentions(request.token)[0];
+    if (!match) {
+      appliedBrowserTabInsertIdRef.current = request.id;
+      return;
+    }
+    if (useRichComposer) {
+      const editor = richEditorRef.current;
+      if (!editor) return;
+      appliedBrowserTabInsertIdRef.current = request.id;
+      placeCaretAfterChip(insertBrowserTabChip(editor, richSelectionRef.current, match));
+      syncRichDraft();
+      return;
+    }
+    appliedBrowserTabInsertIdRef.current = request.id;
+    const caret = Math.min(Math.max(0, lastPlainSelectionRef.current ?? draft.length), draft.length);
+    const head = draft.slice(0, caret);
+    const tail = draft.slice(caret);
+    const inserted = `${head && !/\s$/.test(head) ? " " : ""}${request.token}${/^\s/.test(tail) ? "" : " "}`;
+    richPromotionCaretRef.current = head.length + inserted.length;
+    onDraftChange(`${head}${inserted}${tail}`);
+  }, [browserTabInsertRequest, draft, onDraftChange, placeCaretAfterChip, syncRichDraft, useRichComposer]);
+
   /** Light up one part of a model chip and open its list. */
   const openModelChipSegment = useCallback((chip: HTMLElement, segment: ModelChipSegment) => {
     const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
@@ -4467,6 +4512,8 @@ export function AgentChatComposer({
       }
     }
 
+    // First, so a title inside an attached tab's block never chips on its own.
+    hydrateBrowserTabChipsInEditor(editor);
     hydrateMentionChipsInEditor();
     hydrateChatOutputContextChipsInEditor(editor);
 
@@ -5587,6 +5634,13 @@ export function AgentChatComposer({
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
+    if (event.dataTransfer.types.includes(ISSUE_CONTEXT_DND_MIME)) {
+      if (!canAttachIssueContext) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setDragActive("reference");
+      return;
+    }
     if (event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)) {
       if (composerInputLocked) return;
       event.preventDefault();
@@ -5610,6 +5664,12 @@ export function AgentChatComposer({
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
     setDragActive(false);
+    if (event.dataTransfer.types.includes(ISSUE_CONTEXT_DND_MIME)) {
+      event.preventDefault();
+      const issueContext = readIssueContextDrag(event.dataTransfer);
+      if (issueContext && canAttachIssueContext) onAddContextAttachment?.(issueContext);
+      return;
+    }
     const mention = event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)
       ? parseChatMentionDragPayload(event.dataTransfer.getData(CHAT_MENTION_DND_MIME))
       : null;
@@ -6058,7 +6118,6 @@ export function AgentChatComposer({
             onClick={() => {
               if (!canAttachIssueContext) return;
               setIssueContextMenuOpen(false);
-              setLinearIssuePickerMode("attach");
               setLinearIssuePickerOpen(true);
             }}
           >
@@ -6080,7 +6139,6 @@ export function AgentChatComposer({
               onClick={() => {
                 if (!canAttachIssueContext) return;
                 setIssueContextMenuOpen(false);
-                setGitHubIssuePickerMode("attach");
                 setGitHubIssuePickerOpen(true);
               }}
             >
@@ -6100,31 +6158,15 @@ export function AgentChatComposer({
     </ViewportOverlayPortal>
   ) : null;
 
-  const selectedLinearContextIssue = (
-    linearIssuePickerMode === "details" && linearDetailsIssueId
-      ? contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
-          attachment.type === "linear_issue" && attachment.issue.id === linearDetailsIssueId
-        ),
-      )
-      : contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
-          attachment.type === "linear_issue"
-        ),
-      )
+  const selectedLinearContextIssue = contextAttachments.find(
+    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
+      attachment.type === "linear_issue"
+    ),
   )?.issue ?? null;
-  const selectedGitHubContextIssue = (
-    githubIssuePickerMode === "details" && githubDetailsIssueId
-      ? contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
-          attachment.type === "github_issue" && attachment.issue.id === githubDetailsIssueId
-        ),
-      )
-      : contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
-          attachment.type === "github_issue"
-        ),
-      )
+  const selectedGitHubContextIssue = contextAttachments.find(
+    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
+      attachment.type === "github_issue"
+    ),
   )?.issue ?? null;
   const isMcpElicitation = pendingInput?.providerMetadata?.mcpElicitation === true;
   const mcpElicitationSupportsPersistence = pendingInput?.providerMetadata?.persistenceSupported === true;
@@ -6148,7 +6190,7 @@ export function AgentChatComposer({
       {issueContextMenu}
       <LinearIssueSelectModal
         open={linearIssuePickerOpen}
-        ariaLabel={linearIssuePickerMode === "details" ? "Linear issue" : "Attach Linear issue"}
+        ariaLabel="Attach Linear issue"
         selectedIssue={selectedLinearContextIssue}
         pinnedIssue={pinnedLinearIssue}
         pinnedIssueLabel={pinnedLinearIssue ? "Linked to this lane" : "Attached to chat"}
@@ -6156,7 +6198,7 @@ export function AgentChatComposer({
         actionBusyLabel="Attaching issue"
         actionDisabled={busy || parallelLaunchBusy}
         showBranchPreview={false}
-        mode={linearIssuePickerMode}
+        mode="attach"
         onOpenChange={setLinearIssuePickerOpen}
         onSelectIssue={(laneIssue) => {
           onAddContextAttachment?.(makeLinearIssueContextAttachment(
@@ -6174,9 +6216,9 @@ export function AgentChatComposer({
       />
       <GitHubIssueSelectModal
         open={githubIssuePickerOpen}
-        ariaLabel={githubIssuePickerMode === "details" ? "GitHub issue" : "Attach GitHub issue"}
+        ariaLabel="Attach GitHub issue"
         selectedIssue={selectedGitHubContextIssue}
-        mode={githubIssuePickerMode}
+        mode="attach"
         actionLabel="Attach issue"
         actionBusyLabel="Attaching issue"
         actionDisabled={busy || parallelLaunchBusy}
@@ -6588,15 +6630,17 @@ export function AgentChatComposer({
               onRemoveContext={onRemoveContextAttachment}
               onOpenContext={(attachment) => {
                 if (attachment.type === "linear_issue") {
-                  setLinearDetailsIssueId(attachment.issue.id);
-                  setLinearIssuePickerMode("details");
-                  setLinearIssuePickerOpen(true);
+                  // Peek at the issue before sending: the native viewer, where you are.
+                  const ref = linearIssueRef(attachment.issue.identifier, attachment.issue.url ?? null);
+                  if (ref) openIssueRef({ ref, source: "chip" });
                   return;
                 }
                 if (attachment.type === "github_issue") {
-                  setGitHubDetailsIssueId(attachment.issue.id);
-                  setGitHubIssuePickerMode("details");
-                  setGitHubIssuePickerOpen(true);
+                  const issue = attachment.issue;
+                  openIssueRef({
+                    ref: { provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url },
+                    source: "chip",
+                  });
                 }
               }}
               onRemovePendingImageAttachment={removePendingImageAttachment}

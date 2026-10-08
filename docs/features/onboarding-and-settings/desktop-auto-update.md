@@ -75,6 +75,55 @@ Windows x64 uses electron-builder's per-user NSIS target and
    to match `ADE_RELEASE_REPOSITORY`, preventing a fork build from silently
    checking a different repository.
 
+### What the person sees, and what the installer does
+
+The handoff is silent (`quitAndInstall(true, true)`; it has to be, or the
+assisted installer never relaunches ADE), so ADE shows its own window for the
+gap. Right before the handoff, `windowsInstallProgress.ts` copies
+`resources/ade-cli/windows-update-progress.ps1` to
+`%LOCALAPPDATA%\ADE\update-progress-<channel>\` and starts it through
+`cmd /c start`. It runs from outside the install folder because the installer
+renames that folder away and kills every process whose image lives in it, and
+not from `%TEMP%` because some machines point TEMP at a folder other users can
+write. It uses `cmd start` because, from Electron, a `detached`
+powershell.exe exits without running and an attached one dies with ADE. The
+small, topmost "Updating ADE to vX" window follows the old app quitting, the
+installer running, and the steps in `install-steps.log`. It closes when the new
+ADE has a window on screen. If the installer ends and no new ADE appears, it
+says so and offers Open ADE. Its log is read into `ade-update.jsonl` as
+`autoUpdate.install_progress_report` 30 s into the next launch.
+
+The window also writes a heartbeat. A copy of the old ADE opened by hand during
+the install (the person sees nothing happening and clicks the shortcut) reads
+it, brings the window forward, and exits before starting anything, instead of
+being force-killed by the installer seconds later. An `ade://` link opened in
+that window of time is dropped with it.
+
+An in-place update does only what an update needs. The old uninstaller runs with
+`--updated`, so `customUnInstall` passes `-Updating`: it stops the background
+service without starting ADE.exe, and leaves the terminal shim, the user PATH
+entry, `ade://`, file associations and the firewall rule in place.
+`customInstall` passes `-Updating` to `windows-install-setup.ps1`, which then
+refreshes only the shim. The relaunched app reinstalls, restarts and verifies
+the service itself (`runUpdateTransaction`). Every `--updated` install comes
+from `quitAndInstall` (`autoInstallOnAppQuit` is off), which records the
+pending install that makes that launch run the transaction. The trade: if the
+new ADE does not open at all, the brain stays down, and the machine is
+unreachable from the phone, until ADE is next opened. `install-path.cmd` broadcasts
+`WM_SETTINGCHANGE` only when PATH actually changed, and detached. Its 5 s
+per-window timeout stacked to 82 s inside the installer. `customCheckAppRunning`
+replaces electron-builder's app-running check with one PowerShell pass instead
+of three or four. Every step appends its duration to
+`runtime/install-steps.log` in the channel's ADE home (`~/.ade` on Stable,
+`~/.ade-beta` and `~/.ade-alpha` on the channels).
+
+Measured in Windows Sandbox with real installers (2026-10-07): from
+`quit_and_install` to the new ADE on screen took 77 s before these changes
+(1.2.94 → next). The steady state, one fixed version to the next, took 43-50 s.
+Over half of that was the sandbox copying files; the same copy takes 7 s on
+recent hardware. The first update after this change still runs the previous
+version's uninstaller, so it gets the install-side savings only.
+
 `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` is the single gate. It builds Windows
 fresh on the release tag and adds the installer, blockmap, and `latest.yml` to
 the draft release. The build is fail-closed on Authenticode: the installer and
@@ -145,7 +194,7 @@ labels this value as an estimate rather than an exact installer requirement.
 | `ENOSPC` | Synchronous throw, rejected download, or updater `error` event | `disk_full` at the active phase | Preserve a verified download; clear incomplete download data |
 | `EDQUOT` | Rejected download or updater `error` event | `quota` at the active phase | Same as `ENOSPC` |
 | Network | Rejected check/download or updater `error` event; `net::ERR_*` included | `network` (phase `check` when the feed request itself failed) | Retry; incomplete cache may be cleared |
-| Wedged updater session | Feed check fails with `net::ERR_*` while Node's `fetch` reaches the feed, and a fresh session did not help | `network_stuck` at phase `check`; the dialog offers Restart ADE | Same as a check failure |
+| Wedged updater session | Feed check fails with `net::ERR_*` while Node's `fetch` reaches the feed; ADE retries with a fresh session, then switches the updater to Node HTTP/HTTPS if Chromium still fails | Recovered checks continue normally; if the Node transport also fails, the check reports `network` at phase `check` | Same as a check failure |
 | Checksum/signature | Rejected verification or updater `error` event | `verification` / `signature` | Clear unsafe cached data |
 | Permission | Synchronous throw or updater `error` event | `permission` | Preserve only a previously verified download |
 | Installer handoff | Synchronous throw, async updater `error`, or watchdog expiry | `installer` | Preserve the verified download |
@@ -162,8 +211,9 @@ an explicit updater error clears it.
 
 electron-updater fetches through Chromium's `net` on one session it caches for
 the life of the process. That session can stop working while the machine is
-online: every check then fails with `net::ERR_FAILED` a few milliseconds after
-it starts, before any request leaves the machine, until ADE is relaunched.
+online: checks then fail with `net::ERR_FAILED` a few milliseconds after they
+start, before any request leaves the machine. ADE now recovers the updater
+transport for the rest of that launch.
 
 When a check fails with `net::ERR_*`, `checkFeedRecoveringNetSession` asks
 Node's `fetch` for the channel file (`latest-mac.yml` / `latest.yml`) on the
@@ -171,13 +221,20 @@ configured feed (`updaterNetRecovery.ts`). If Node gets no success response
 either (no answer, a 404, a 5xx, a captive portal's page), the feed itself is
 unavailable: `network`, "ADE can't reach the update server". If Node gets a
 success response, the updater gets a fresh in-memory session
-(`electron-updater-recovered-<n>`) and the check runs once more. Each step logs
-`autoUpdate.net_wedge_detected`, then `autoUpdate.net_wedge_recovered` or
-`autoUpdate.net_wedge_unrecovered`, with the probe result. Still failing ends in
-`network_stuck`, whose remedy is Restart ADE (`IPC.updateRelaunchApp`, through
-the normal quit warnings). One retry per check; after a fresh session fails,
-background checks stop making new ones until a check succeeds, while a user's
-Check again may try one more.
+(`electron-updater-recovered-<n>`) and the check runs once more. If Chromium
+still fails on that session, ADE replaces the updater executor's request
+creation with Node's `http` / `https` transports and retries again. The Node
+executor follows `location` redirects for both feed checks and artifact
+downloads, and remains active for the rest of that launch.
+
+`autoUpdate.net_wedge_detected` records the Node probe and starts recovery
+without waiting for Chromium diagnostics. `autoUpdate.chromium_net_diagnostics`
+later records default-session reachability, network-service pid/age, and app
+uptime. `autoUpdate.net_wedge_recovered` records whether a fresh Chromium
+session or Node transport recovered the check. Only if the final Node request
+also fails does the check report a normal `network` error; a feed reachable by
+Node no longer requires restarting ADE just because Chromium's updater session
+is stuck.
 
 ## Quit deadline during the native handoff
 
@@ -227,8 +284,10 @@ internal-only `ade_update_install_did_not_land` event with just the bounded
 `attempt` counter, and exposes `lastInstallFailed` on the snapshot so the
 top-bar pill reads "Retry install vX" instead of silently offering the same
 update again. Requesting another install clears `lastInstallFailed` (the new
-attempt supersedes the notice); a launch that does land on the target version
-clears `failedInstallAttempts` entirely.
+attempt supersedes the notice). A launch on the target version or newer clears
+`failedInstallAttempts` entirely, even when no pending marker remains, as when
+an earlier launch already consumed the marker; a landed retry does not log
+`install_did_not_land`.
 
 The first such failure **keeps** the cached archive. It was checksum-verified
 before the update was ever offered, so a lost quit race says nothing about the
@@ -247,7 +306,12 @@ same way for all of them while the status is `ready`:
 | --- | --- |
 | Same or older than the staged version | Ignored (`autoUpdate.update_available_ignored`). The status, the staged version, and the cached archive do not change; `latestKnownVersion` still records what the feed reported. |
 | Strictly newer | Supersedes. The recorded `downloadedFile` is dropped, the updater cache is wiped with reason `superseded_ready_update`, any auto-apply countdown for the old version is cancelled, and the snapshot runs `checking` → `downloading` → `ready` on the new version. The countdown re-arms on the new `ready`. |
-| The check fails | Nothing changes. Both the `error` event and a rejected `checkForUpdates()` return early while the status is still `ready`, logging `autoUpdate.ready_check_failed`. |
+| The check fails | The staged version, ready status, and cached archive stay intact. ADE records the failure kind, message, and time in `checkFailure`, and logs `autoUpdate.ready_check_failed`. |
+
+Every answered feed check records `lastCheckedAt` and clears any prior
+`checkFailure`. Settings → About shows the last check time, or the failure kind
+and time when the latest check did not get an answer. `ade update status` exposes
+the same timestamps and failure kind to CLI users.
 
 Every entry point first logs `autoUpdate.check_requested` with the current
 status and a `userInitiated` label, so an operator can tell whether a check was

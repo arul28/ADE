@@ -9,9 +9,14 @@
  * the state-group table, the roster projection, and the transition fingerprint
  * that decides whether a refresh is worth an APNs push.
  *
- * `activityStateGroup` here is one of four copies of the same rule (renderer,
- * notch, iOS, relay), pinned to a shared fixture; see
- * `apps/desktop/src/shared/attention/activityStateGroup.cases.json`.
+ * The content state leads with `columns`: agent counts in the Work board's four
+ * columns (needs you, working, waiting, done). `activityBoardColumn` here is one
+ * of three copies of that rule (renderer, iOS, relay), pinned to a shared
+ * fixture; see `apps/desktop/src/shared/attention/activityBoardColumn.cases.json`.
+ *
+ * `runs`, `prs`, `groups` and `activeCount` still ship for app builds that
+ * predate the four-column Live Activity. `activityStateGroup` below is the old
+ * six-group rule those builds read, pinned to `activityStateGroup.cases.json`.
  */
 import {
   sendApnsPush,
@@ -21,6 +26,7 @@ import {
 import {
   apnsConfig,
   boundedText,
+  isActivityBoardColumn,
   isRecord,
   logAttentionDeliveryError,
   preferenceBoolean,
@@ -29,6 +35,7 @@ import {
   LIVE_ACTIVITY_START_CLAIM_TTL_MS,
   MAX_PREVIEW_LENGTH,
   MAX_TITLE_LENGTH,
+  type ActivityBoardColumn,
   type AttentionDeviceRow,
   type AttentionRelayEnv,
   type OwnedAttentionDeviceRow,
@@ -54,8 +61,31 @@ function resolveActivityDevicePreferences(
 }
 
 /**
- * The six-way state vocabulary the Dynamic Island's compact leading, the
- * desktop notch strip and the renderer's Activity Center all share. Ordered by
+ * The Work-board column for an agent item. Mirrors `activityBoardColumn` in
+ * `apps/desktop/src/shared/attention/activityBoardColumn.ts` exactly: trust a
+ * column the brain published, and otherwise derive one from the phase for items
+ * an older brain sent. Pull-request items are never counted.
+ */
+function activityBoardColumn(item: ParsedAttentionItem): ActivityBoardColumn | null {
+  if (item.kind !== "agent") return null;
+  if (isActivityBoardColumn(item.boardColumn)) return item.boardColumn;
+  if (item.phase === "needs_you" || item.phase === "failed") return "needs_you";
+  if (item.activityTier === "idle") return "done";
+  if (item.phase === "starting" || item.phase === "running" || item.phase === "stale") {
+    return "working";
+  }
+  return "done";
+}
+
+/**
+ * Non-urgent count changes (working, waiting, done) refresh the Live Activity
+ * at most this often. A needs-you change always pushes at once.
+ */
+const LIVE_ACTIVITY_COUNT_REFRESH_MS = 5 * 60 * 1_000;
+
+/**
+ * The six-way state vocabulary of the Live Activity before the four-column
+ * redesign. Kept only for app builds that still read `groups`. Ordered by
  * urgency: the island shows the first nonzero group's glyph.
  *
  * `idle` is its own band rather than a corner of `done`: a session that went
@@ -82,8 +112,8 @@ const ACTIVITY_STATE_GROUP_ORDER: readonly ActivityStateGroup[] = [
 ];
 
 /**
- * Mirrors `notchStripGroupKind` (Swift) and `activityStateGroup` (renderer)
- * exactly, including the three rules that are easy to get wrong:
+ * Mirrors the renderer's `activityStateGroup` exactly, including the three rules
+ * that are easy to get wrong:
  *
  * - `planning` comes from `chatActivityMode`, never from a phase. The phase
  *   vocabulary is frozen wire and cannot carry the state, so an item that does
@@ -223,8 +253,9 @@ async function accountActivityContentState(
    * `activityTransitionSource` for why that would push on every agent turn.
    */
   transitionFingerprint: string;
+  /** The exact four column counts. A change here pushes, but rate-limited. */
+  countsFingerprint: string;
   count: number;
-  focusTitle: string | null;
 }> {
   const rows = await env.DB.prepare(`
     select payload_json, seen_at, dismissed_at
@@ -242,7 +273,13 @@ async function accountActivityContentState(
     try {
       const item = JSON.parse(row.payload_json) as ParsedAttentionItem;
       if (item.phase === "closed" || item.phase === "open") return [];
-      if ((item.phase === "completed" || item.phase === "merged") && row.seen_at) return [];
+      // Seen finished work leaves the activity, but a finished chat that waits
+      // on a scheduled wake is not finished: it stays counted in Waiting.
+      if (
+        (item.phase === "completed" || item.phase === "merged")
+        && row.seen_at
+        && activityBoardColumn(item) !== "waiting"
+      ) return [];
       return [item];
     } catch {
       return [];
@@ -301,9 +338,21 @@ async function accountActivityContentState(
   const groups = ACTIVITY_STATE_GROUP_ORDER
     .map((group) => ({ group, count: tally.get(group) ?? 0 }))
     .filter((entry) => entry.count > 0);
+  const columns = { needsYou: 0, working: 0, waiting: 0, done: 0 };
+  for (const item of agentItems) {
+    switch (activityBoardColumn(item)) {
+      case "needs_you": columns.needsYou += 1; break;
+      case "working": columns.working += 1; break;
+      case "waiting": columns.waiting += 1; break;
+      case "done": columns.done += 1; break;
+      default: break;
+    }
+  }
   const moreCount = Math.max(0, runCandidates.length - runs.length);
   const contentState = {
     updatedAt: Math.floor((newestUpdate || Date.now()) / 1_000),
+    // Always present, zeros included: the four tiles read these directly.
+    columns,
     activeCount,
     runs,
     prs,
@@ -315,10 +364,12 @@ async function accountActivityContentState(
   return {
     contentState,
     transitionFingerprint: await sha256Hex(
-      JSON.stringify(activityTransitionSource(items, tally, moreCount)),
+      JSON.stringify(activityTransitionSource(items, columns.needsYou)),
     ),
-    count: runs.length + prs.length,
-    focusTitle: boundedText(items[0]?.title, MAX_TITLE_LENGTH),
+    countsFingerprint: `${columns.needsYou}.${columns.working}.${columns.waiting}.${columns.done}`,
+    // The activity lives while any agent needs you, works, or waits. Done
+    // alone is not a reason to hold the Lock Screen.
+    count: columns.needsYou + columns.working + columns.waiting,
   };
 }
 
@@ -333,40 +384,30 @@ async function accountActivityContentState(
  * path used to — spent a push on every single publish, including the 30s
  * machine heartbeat's no-op republish.
  *
- * The rule, reusing the publisher's alert-fingerprint semantics (identity =
+ * Two gates, reusing the publisher's alert-fingerprint semantics (identity =
  * `{id, eventKind, phase, statusSince, itemId}`, which deliberately excludes
  * preview copy AND `chatActivityMode`):
  *
- * - EXACT counts for `needs_you` and `failed`, plus the set of alert
- *   fingerprints in those two groups. Any delta pushes — including a swap where
- *   the count holds but a *different* run is the one waiting on you.
- * - PRESENCE ONLY (`> 0`) for `planning`, `working`, `idle` and `done`, and for
- *   `moreCount`. Work ticking 3→4 while the island still reads "working" is not
- *   worth a push; the band emptying out (working→idle, working→done) is. `idle`
- *   is presence-only for the same reason as the rest: sessions go quiet in
- *   batches on a machine sleep, and nobody is blocked on any of them — exact
- *   counts stay reserved for the two bands that can actually want you.
- * - Pull-request rows contribute their alert fingerprints exactly: PR phase
- *   entries are rare, so they carry no churn risk.
- * - `planning` never pushes on its own. It flips several times a turn, which is
- *   precisely why the publisher keeps it out of the alert fingerprint too; the
- *   violet notepad rides along on the next meaningful transition.
+ * - The urgent gate (this function) pushes at once. It holds the exact
+ *   Needs-you count, the alert fingerprints of the Needs-you items (so a swap
+ *   where the count holds but a different run now waits on you still pushes),
+ *   and the pull-request alert fingerprints, whose phase entries are rare.
+ *   Nothing else: a chat moving between working, waiting and done must never
+ *   reach this gate, or it would skip the rate limit below.
+ * - The count gate (`countsFingerprint`) holds the exact four column counts.
+ *   A change pushes, but at most once per `LIVE_ACTIVITY_COUNT_REFRESH_MS`, so
+ *   a busy account cannot exhaust the ActivityKit budget while every number
+ *   still settles within minutes.
  *
- * Everything omitted here (previews, roster ordering, `updatedAt`, exact
- * working/done counts) still ships — on the next push that the rule above
- * earns, never on a push of its own.
+ * Everything else (previews, roster ordering, `updatedAt`) still ships, on the
+ * next push one of the two gates earns, never on a push of its own.
  */
 function activityTransitionSource(
   items: ParsedAttentionItem[],
-  tally: Map<ActivityStateGroup, number>,
-  moreCount: number,
+  needsYouCount: number,
 ): Record<string, unknown> {
   const alerting = items
-    .filter((item) => {
-      if (item.kind !== "agent") return false;
-      const group = activityStateGroup(item);
-      return group === "needs_you" || group === "failed";
-    })
+    .filter((item) => activityBoardColumn(item) === "needs_you")
     .map((item) => item.alertFingerprint)
     .sort();
   const pullRequests = items
@@ -374,16 +415,25 @@ function activityTransitionSource(
     .map((item) => item.alertFingerprint)
     .sort();
   return {
-    needsYou: tally.get("needs_you") ?? 0,
-    failed: tally.get("failed") ?? 0,
-    planning: (tally.get("planning") ?? 0) > 0,
-    working: (tally.get("working") ?? 0) > 0,
-    idle: (tally.get("idle") ?? 0) > 0,
-    done: (tally.get("done") ?? 0) > 0,
-    more: moreCount > 0,
+    needsYou: needsYouCount,
     alerting,
     pullRequests,
   };
+}
+
+/** "2 need you · 5 working", from the column counts. Never agent text. */
+function liveActivityStartSummary(contentState: Record<string, unknown>): string {
+  const columns = isRecord(contentState.columns) ? contentState.columns : {};
+  const count = (key: string): number => {
+    const value = Number(columns[key]);
+    return Number.isSafeInteger(value) && value > 0 ? value : 0;
+  };
+  const parts = [
+    count("needsYou") > 0 ? `${count("needsYou")} need${count("needsYou") === 1 ? "s" : ""} you` : null,
+    count("working") > 0 ? `${count("working")} working` : null,
+    count("waiting") > 0 ? `${count("waiting")} waiting` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(" · ") : "Agents are active";
 }
 
 function privacyPreservingActivityContentState(
@@ -498,7 +548,7 @@ export async function deliverAccountLiveActivity(
   if (!config) return;
   const activityId = "agent-runs";
   const [
-    { contentState, transitionFingerprint, count, focusTitle },
+    { contentState, transitionFingerprint, countsFingerprint, count },
     devicesResult,
     preferencesRow,
   ] = await Promise.all([
@@ -530,13 +580,14 @@ export async function deliverAccountLiveActivity(
     if (!Number.isSafeInteger(ownershipEpoch) || ownershipEpoch <= 0) continue;
     const override = resolveActivityDevicePreferences(device, preferences);
     const state = await env.DB.prepare(`
-      select started, fingerprint
+      select started, fingerprint, updated_at
       from attention_activity_state
       where user_id = ? and device_id = ? and activity_id = ?
       limit 1
     `).bind(userId, device.device_id, activityId).first<{
       started: number;
       fingerprint: string | null;
+      updated_at: string | null;
     }>();
     const started = state?.started === 1;
     const liveActivitiesEnabled = preferenceBoolean(
@@ -569,10 +620,21 @@ export async function deliverAccountLiveActivity(
     // The stored refresh gate. `transitionFingerprint` (not a content digest)
     // is what keeps a per-turn count tick from spending an APNs push; the
     // privacy and ownership dimensions are per-device, so they stay here.
-    const deviceFingerprint =
+    const urgentFingerprint =
       `${transitionFingerprint}:${hideDetails ? "private" : "public"}:owner:${ownershipEpoch}`;
+    const deviceFingerprint = `${urgentFingerprint}|${countsFingerprint}`;
     if (deviceCount === 0 && !started) continue;
     if (deviceCount > 0 && started && state?.fingerprint === deviceFingerprint) continue;
+    if (
+      deviceCount > 0
+      && started
+      && state?.fingerprint?.split("|")[0] === urgentFingerprint
+      && Date.now() - Date.parse(state.updated_at ?? "") < LIVE_ACTIVITY_COUNT_REFRESH_MS
+    ) {
+      // Only the working, waiting or done counts moved, and the last push was
+      // recent. The next publish after the window sends the settled numbers.
+      continue;
+    }
 
     let event: "start" | "update" | "end";
     let deviceToken: string | null;
@@ -644,13 +706,11 @@ export async function deliverAccountLiveActivity(
         accountWide: true,
         ownershipEpoch,
       };
+      // ActivityKit requires an alert to start an activity remotely. Keep it to
+      // the same numbers the tiles show.
       aps.alert = {
-        title: hideDetails
-          ? "ADE activity started"
-          : deviceCount === 1
-          ? focusTitle ?? "ADE activity started"
-          : `${deviceCount} ADE items active`,
-        body: "Across your signed-in machines",
+        title: "ADE",
+        body: liveActivityStartSummary(contentState),
       };
     }
     if (event === "end") aps["dismissal-date"] = nowSeconds + 60;
@@ -836,6 +896,7 @@ export async function deliverAccountLiveActivity(
 export const liveActivityTestInternals = Object.freeze({
   accountActivityContentState,
   activityPullRequest,
+  activityBoardColumn,
   activityRun,
   activityStateGroup,
   privacyPreservingActivityContentState,

@@ -163,6 +163,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // says the surface was reached — it cannot tell a Browser install from a Git
   // one. Never a lane, project, tab, URL, or session.
   "tool_opened",
+  // An issue made in ADE's create composer, by tracker. Never the repository,
+  // team, title, labels, or the issue's number or id.
+  "issue_created",
   // Whether an installation uses the Work tab's Focus view (busy lanes folded)
   // and its Focus grid (every waiting chat side by side). Two coarse modes,
   // never a lane, chat, count, or page.
@@ -180,6 +183,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // The same three coarse outcomes for the lane's App Control session: one
   // started, an agent drove it, or a recording was filed as proof.
   "app_control",
+  // Whether agents use the user's own browser (`ade browser attach`): one
+  // coarse `started` outcome. Never the browser, machine, tab, URL, or chat.
+  "user_browser",
   // One coarse fact per capture-gesture press: whether the shot reached the
   // composer. Never the window, its title, the app it belonged to, the path the
   // PNG passed through, or the image.
@@ -190,6 +196,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // with less history. Never the transcript, the models, the turn counts, or
   // the share of the window it took.
   "handoff_replay",
+  // How a move of a chat to another machine ended: continued there, failed,
+  // cancelled, or unknown (the answer was lost). Never the machine, the reason,
+  // the branch, or any capsule content.
+  "cross_machine_move",
   // Durable provider/account decisions. These are closed facts emitted by
   // brain/main owners; ids, labels, paths, keys, and model names never enter
   // the event.
@@ -227,6 +237,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // ended. Never the URL, the hook, the secret's name or value, or the chat.
   "webhook_url_created",
   "secret_requested",
+  // ADE's one-click update of a user-installed provider CLI. Never the version.
+  "provider_cli_updated",
+  // A custom notification (`ade notify`, an agent, an automation's "Send
+  // notification to mobile app" step): sent, refused by the hourly cap, or
+  // failed. Never the title, the body, the link, or which phones got it.
+  "notification_sent",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -332,6 +348,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "cto",
     // Account/provider decisions owned by the brain or desktop main process.
     "provider_accounts", "api_credentials", "presets", "proxy",
+    // Linear and GitHub issues opened, edited and created in ADE.
+    "issues",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -372,7 +390,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `shared/types/workTools.ts` — a new tool has to be added here
     // deliberately rather than arriving as free text.
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
-    "tool_browser", "tool_pr", "tool_mac_desktop", "tool_windows_desktop",
+    "tool_browser", "tool_pr", "tool_mac_desktop", "tool_windows_desktop", "tool_issues",
+    // Which tracker an issue made in ADE went to. Prefixed like the tool ids.
+    "tracker_linear", "tracker_github",
     // The two Work Focus modes, prefixed like the tool ids so they cannot be
     // confused with another action's outcome.
     "mode_focus", "mode_focus_grid",
@@ -401,6 +421,10 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // same for a brief handoff, and this funnel is only legible if fitting,
     // truncating, refusing, retrying and giving up are separable in one filter.
     "fit", "truncated", "refused", "retried", "gave_up",
+    // The two terminal states of a cross-machine move that the generic set
+    // lacks (`failed` and `cancelled` above cover the others): it continued on
+    // the other machine, or ADE lost the answer and can't tell.
+    "continued", "unknown",
     // Provider/account settings and reset-credit states. `enabled` and
     // `disabled` are the two boolean setting outcomes; the other mutations use
     // the existing completed/success buckets.

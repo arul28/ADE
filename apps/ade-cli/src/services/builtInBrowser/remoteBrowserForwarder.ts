@@ -218,7 +218,7 @@ export function createRemoteBrowserForwarder(args: {
 }
 
 /** Browser methods that a desktop elsewhere can satisfy on this machine's behalf. */
-export const FORWARDABLE_BUILT_IN_BROWSER_METHODS = new Set([
+const FORWARDABLE_BUILT_IN_BROWSER_METHODS = new Set([
   "navigate",
   "createTab",
   "showPanel",

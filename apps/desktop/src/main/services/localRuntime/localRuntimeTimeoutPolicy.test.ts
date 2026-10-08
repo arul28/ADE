@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS,
   localRuntimeActionTimeoutMs,
   longRunningLocalRuntimeActionTimeoutMs,
 } from "./localRuntimeTimeoutPolicy";
+import { ACP_PROVIDER_UPDATE_RUN_BUDGET_MS } from "../ai/acpProviderUpdate";
 
 describe("localRuntimeActionTimeoutMs", () => {
   it("gives Cursor Cloud open-chat the same long budget as handoff", () => {
@@ -23,6 +25,15 @@ describe("localRuntimeActionTimeoutMs", () => {
     expect(longRunningLocalRuntimeActionTimeoutMs("pr.land")).toBe(120_000);
   });
 
+  // `gh issue create --attach` may run 120s before the PATCH, read and link
+  // that follow it. Timing out first reports a failure while the issue is
+  // created, and a retry files it twice.
+  it("lets a GitHub issue create with pictures outlive its gh upload", () => {
+    expect(localRuntimeActionTimeoutMs("github", "createIssue")).toBeGreaterThan(120_000);
+    expect(localRuntimeActionTimeoutMs("linear_issue_tracker", "uploadFile")).toBeGreaterThan(30_000);
+    expect(localRuntimeActionTimeoutMs("github", "getIssue")).toBe(30_000);
+  });
+
   it("outlives a cold simulator launch and a preview build", () => {
     // boot (90s) + xcodebuild (600s) + install (180s) + launch (60s) = 930s
     // all run inside one daemon action, so the budget must exceed that sum.
@@ -32,6 +43,14 @@ describe("localRuntimeActionTimeoutMs", () => {
     for (const action of ["renderPreview", "renderCurrentPreview", "ensurePreviewWorkspace"]) {
       expect(localRuntimeActionTimeoutMs("ios_simulator", action)).toBe(10 * 60_000);
     }
+  });
+
+  it("lets a provider CLI update finish before the transport or the brain gives up on it", () => {
+    // The install plus the version re-read run inside one action. The remote
+    // transport must outlive it, and the brain's action outlive the transport.
+    // (The renderer's IPC budgets are pinned in ipcTimeouts.test.ts.)
+    expect(ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS).toBeGreaterThan(ACP_PROVIDER_UPDATE_RUN_BUDGET_MS);
+    expect(localRuntimeActionTimeoutMs("ai", "acpProviderUpdate")).toBeGreaterThan(ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS);
   });
 
   it("leaves cheap simulator actions on the default budget", () => {

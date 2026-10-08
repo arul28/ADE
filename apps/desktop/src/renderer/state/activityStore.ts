@@ -58,9 +58,7 @@ function isExpiredItem(item: AttentionItem, now: number): boolean {
  * Whether Activity surfaces may show agent-authored text. Unloaded preferences
  * resolve to `false` rather than `true`: hide-details is off by default, and
  * defaulting a *display* choice to "hidden" would make every surface look
- * broken for the seconds before the account load lands. The native notch takes
- * the opposite default because it paints over the menu bar of a locked-away
- * Mac — see `failClosedActivityNotchSettings` in `useActivitySync.ts`.
+ * broken for the seconds before the account load lands.
  */
 export function selectActivityHideDetails(
   state: Pick<ActivityStoreState, "preferences">,

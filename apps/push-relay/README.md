@@ -46,6 +46,7 @@ its own (single D1 database, no Durable Objects, no queues).
 | GET | `/attention/account/snapshot?since=<revision>` | Read account Activity changes |
 | POST | `/attention/account/ack` | Mark items seen or dismissed across devices |
 | POST | `/attention/account/presence` | Report foreground/ambient-surface presence for desktop-first escalation |
+| POST | `/attention/account/notify` | Send a custom push (`ade notify`): `title` (≤ 64), optional `body` (≤ 160), `deepLink` (`ade://` only) and `machineKey`. Sent as written to every phone not muted, off, or in quiet hours; 60 per account per hour, then `429` with `retryAfterSeconds`. |
 | GET, PUT | `/attention/account/preferences` | Read or replace account notification preferences |
 | PATCH | `/attention/account/preferences/devices/:deviceId` | Merge one device's overrides without rewriting the document |
 | PATCH | `/attention/account/preferences/machines/:machineKey` | Merge one machine's overrides (this is what "mute this Mac" writes) |
@@ -225,15 +226,26 @@ change and redeploy to apply:
 
 | Var | Default | What it bounds |
 |---|---|---|
-| `DAILY_REQUEST_BUDGET` | `500000` | Hard ceiling on total requests per UTC day. Once exceeded, every request returns `429` until midnight UTC. Sized to keep a full month pinned at the cap ≈ $1.50 of Cloudflare overage — this accounts for the guards' own D1 counter writes (~2/request), which stay inside the 50M/month D1 free tier at this volume, plus request overage. Still ~100–500× realistic single/small-team use. |
-| `IP_RATE_LIMIT_PER_MIN` | `120` | Requests per client IP per 60 s across all routes. |
+| `DAILY_REQUEST_BUDGET` | `750000` | Hard ceiling on total requests per UTC day. Once exceeded, every request returns `429` until midnight UTC. The guards no longer write D1 per request (the per-IP gate is in isolate memory; each isolate reserves the budget in blocks of 50 with one D1 upsert and spends the block from memory, so an isolate that stops early can only overcount), so a full month pinned at the cap costs about its request fee plus CPU, ≈ $7. That leaves ~2x headroom over legitimate traffic at ~100 users; raise it with the user base, not past the ~$10 ceiling. |
+| `IP_RATE_LIMIT_PER_MIN` | `120` | Requests per client IP per 60 s across all routes, counted per isolate. |
 | `CLAIM_RATE_LIMIT_PER_MIN` | `10` | Tighter per-IP limit on the unauthenticated `/claim` write path (bounds `machines`-table growth). |
 
-Backed by the `rate_counters` D1 table (migration `0002`, fixed-window). An
-over-limit window is rejected on a **read**, never a write, so the limiter
-never amplifies the spend it exists to bound; the daily budget latches in
-isolate memory once blown so further requests reject for free. `/health`
-bypasses every gate.
+Custom notifications (`POST /attention/account/notify`) have their own
+per-account cap in code (`ACCOUNT_NOTIFY_LIMIT_PER_HOUR`, 60 per hour window) in
+`rate_counters` under `notify:<account>`. Those rows are kept for two hours
+instead of the 15-minute rate-window prune, so a quiet spell cannot reopen the
+hour early. APNs is free; one custom push is about one Worker request and one
+D1 row write, and a call over the cap writes nothing.
+
+The general per-IP gate is a fixed window in isolate memory, so it costs no
+D1 write; a client spread across isolates can exceed it by that factor, and the
+daily budget remains the hard backstop. The `/claim` gate and the daily budget
+use the `rate_counters` D1 table (migration `0002`). The claim gate rejects an
+over-limit window on a **read**, never a write; the budget is reserved in
+blocks of 50 with one upsert each (concurrent requests wait on the reservation
+in flight, so none is judged against a stale count), then latches in isolate
+memory once blown so further requests reject for free. `/health` bypasses every
+gate.
 
 ## Observability
 

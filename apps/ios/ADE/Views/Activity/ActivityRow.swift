@@ -140,7 +140,7 @@ struct ActivityRow: View {
                 glyph: row.glyph,
                 showsElapsed: row.showsElapsed,
                 elapsedSince: row.showsElapsed ? row.elapsedSince : nil,
-                needsYou: row.stateGroup == .needsYou
+                needsYou: row.boardColumn == .needsYou && row.tone != .red
             )
         }
     }

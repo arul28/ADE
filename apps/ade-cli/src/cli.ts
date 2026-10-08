@@ -7,6 +7,7 @@ import "./lib/nodeWarnings";
 // older `ade` first on PATH, before the rest of the bundle loads.
 import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
+import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -15,11 +16,26 @@ import {
   createMachineRemoteConnection,
   executePlanAcrossMachines,
   extractMachineTargeting,
+  flagNamesOutsideFreeText,
   formatMachineFanOut,
   formatMachinesRoster,
   isMachineFanOutResult,
   withMachineColumns,
 } from "./cliMachineTargeting";
+import {
+  isNoneValue,
+  linearLookupNeeds,
+  looksLikeLinearId,
+  milestoneProjectId,
+  parseDueDate,
+  parseLinearEstimate,
+  parseLinearPriority,
+  resolveLinearFields,
+  teamKeyFromIdentifier,
+  type LinearFieldInput,
+  type LinearLookupContext,
+} from "./issueCliFields";
+import { buildGithubIssuePlan } from "./cliGithubIssue";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -76,6 +92,8 @@ import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
+import { USER_BROWSER_TARGET_PREFIX } from "../../desktop/src/shared/userBrowserLabels";
+import { customNotificationProblem, describeCustomNotificationResult } from "../../desktop/src/shared/types/attention";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
@@ -488,7 +506,7 @@ const MIN_RUNTIME_IDLE_EXIT_MS = 5_000;
 // off before answering with why nothing hosts sync.
 const REPAIR_SYNC_HOST_START_TIMEOUT_MS = 20_000;
 
-type InvocationStep = {
+export type InvocationStep = {
   key: string;
   method: string;
   params?: JsonObject | ((values: JsonObject) => JsonObject);
@@ -570,6 +588,7 @@ export type FormatterId =
   | "apple-action"
   | "apple-point-action"
   | "browser-action"
+  | "browser-attach"
   | "browser-status"
   | "browser-dev-servers"
   | "browser-sessions"
@@ -622,7 +641,8 @@ export type FormatterId =
   | "usage-prices"
   | "router-efficiency"
   | "router-shadow"
-  | "update-status";
+  | "update-status"
+  | "notify";
 
 type ChatWaitTarget =
   | "idle"
@@ -707,6 +727,14 @@ export type CliPlan =
        * exits 1 when a query returns no results, so scripts can branch on it).
        */
       exitCodeFromResult?: (result: unknown) => number;
+      /**
+       * Build the command's result from every step's value. The steps before
+       * `result` are lookups (a repo, an issue, a catalog); this picks what
+       * the caller sees and may throw when a lookup came back empty.
+       */
+      shapeResult?: (values: JsonObject) => unknown;
+      /** The `--text` rendering of the result, when no shared formatter fits. */
+      formatText?: (result: unknown) => string;
       /**
        * Marks a plan that files a proof record, so its result is summarized
        * into an explicit confirmation line and its failures are prefixed with
@@ -814,7 +842,7 @@ export function asCliUsageError(error: unknown): CliUsageError {
   throw error;
 }
 
-class CliToolError extends Error {
+export class CliToolError extends Error {
   details: unknown;
 
   constructor(message: string, details: unknown) {
@@ -1081,6 +1109,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
+                                                    Send a push to the phones on your ADE account
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1090,8 +1120,10 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Work with ADE agent chats
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
-    $ ade linear attach | comment | set-state | issue | graphql
-                                                    Read and write attached Linear issues
+    $ ade linear create | edit | comment | set-state | assign | issue | graphql
+                                                    Create, read, and edit Linear issues
+    $ ade github issue list | view | create | edit | comment | close
+                                                    Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -1101,6 +1133,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
@@ -1166,7 +1199,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
   Start with: ade doctor --text
 `;
 
-function topLevelHelpText(): string {
+export function topLevelHelpText(): string {
   let text = TOP_LEVEL_HELP;
   if (!automationsCliEnabled()) {
     text = text.replace(
@@ -1309,6 +1342,32 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     the brain must stay running for the machine to remain reachable.
     Undo with "ade logout" and "ade runtime uninstall-service".
 `,
+  notify: `${ADE_BANNER}
+  Send a notification to your phone
+
+  Sends a push you write to every phone signed in to your ADE account. Use it
+  from a terminal, from an agent ("tell me when the deploy is done"), or from
+  an automation. The text arrives exactly as written; nothing is added.
+
+    $ ade notify --title "Deploy finished"
+    $ ade notify --title "Tests failed" --body "3 failures in apps/desktop" --text
+    $ ade notify --title "Review ready" --open "ade://pr/1514"
+
+  Flags:
+    --title <text>                 Required. Up to 64 characters.
+    --body <text>                  Optional second line. Up to 160 characters.
+    --open <ade link>              Optional. What a tap opens: an ade:// or
+                                   https://ade-app.dev/open link for a chat,
+                                   PR, lane, file, commit, branch or Linear
+                                   issue (make one with \`ade link\`), or
+                                   ade://activity[?state=needs_you].
+
+  Notes:
+    Needs a signed-in account (\`ade login\`) and the running brain.
+    Phones that turned notifications off, are in quiet hours, or muted this
+    machine stay quiet. An account can send 60 an hour; past that the command
+    exits non-zero and says when to try again.
+`,
   auth: `${ADE_BANNER}
   ADE Account
 
@@ -1444,6 +1503,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text
                                                 Show active read/write credentials and cooldowns
 
+  Issues (see \`ade github issue --help\`):
+    $ ade github issue list --text              List open issues in this project's repo
+    $ ade github issue view 12 --comments --text
+    $ ade github issue create --title "Crash on launch" --label bug
+
   Notes:
     - login, clear (and the raw start/poll actions) require --role cto.
     - login keeps one connection open for the whole device flow because the
@@ -1462,6 +1526,41 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Flags (login):
     --max-wait <seconds>    Give up waiting after N seconds (default: GitHub's
                             device-code expiry, ~15 min).
+`,
+  "github issue": `${ADE_BANNER}
+  GitHub issues
+
+  Read, create, and edit issues in a GitHub repo. ADE uses the GitHub
+  connection of the running brain, so no token is needed here. Every command
+  works on this project's origin repo; pass --repo owner/name for another one.
+  An issue can be 12, #12, owner/name#12, or an issue URL.
+
+  Read:
+    $ ade github issue list --text              Open issues, newest activity first
+        [--state open|closed|all] [--label bug]... [--assignee <login|none>] [--limit 30]
+    $ ade github issue view 12 --text           Title, state, labels, assignees, milestone, body
+        [--comments]                            Also print the comments
+
+  Create:
+    $ ade github issue create --title "Crash on launch" --body-file notes.md --text
+        [--body "..." | --body-file <path|->]   Body inline, from a file, or from stdin with -
+        [--label bug]... [--assignee octocat]... [--milestone "v1.2"|<number>]
+        [--type Bug] [--parent 10]             Issue type (organization repos); parent issue
+        [--attach shot.png]...                  Attach files (needs GitHub CLI on the ADE machine)
+
+  Edit:
+    $ ade github issue edit 12 --title "New title" [--body "..." | --body-file <path|->]
+    $ ade github issue comment 12 "Fixed in #40"
+    $ ade github issue comment 12 --body-file reply.md
+    $ ade github issue close 12 [--reason completed|not-planned|duplicate]
+    $ ade github issue reopen 12
+    $ ade github issue label 12 --add bug --remove triage
+    $ ade github issue assign 12 --add octocat [--remove hubot] [--clear]
+    $ ade github issue milestone 12 "v1.2"      Milestone by title or number, or none
+    $ ade github issue type 12 Bug              Issue type by name, or none
+    $ ade github issue sub-issue 10 12          Put #12 under #10
+
+  Output is JSON by default. Add --text for a short summary.
 `,
   open: `${ADE_BANNER}
   ADE Open
@@ -2136,6 +2235,18 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
+    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+                                                    Move the chat to another machine on your account (brief by
+                                                    default; --fork carries full history). --machine names the
+                                                    DESTINATION; the chat moves from here. Add --effort,
+                                                    --permissions, --include-changes (bring uncommitted and unpushed
+                                                    work), --clone (set the repo up there), --when-turn-ends (queue
+                                                    it; a newer user message cancels it). An agent moves only its
+                                                    own chat, keeps its permissions, and waits for the person's
+                                                    approval unless the chat is full-auto.
+    $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
+    $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
+    $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
@@ -2858,10 +2969,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   waits up to 2 minutes, printing "waiting for the user to allow this chat to
   use the ADE browser" once, and a Block fails with "approval_blocked: the user
   blocked this chat from using the ADE browser". One answer covers every site.
-  The runtime
-  accepts browser commands only from ADE-launched chat/terminal sessions with
-  a browser capability, validates lane/chat identity, and rejects agent force
-  takeovers. Profile diagnostics and remembered-permission administration stay
+  Any process
+  on this machine may drive the browser; a chat's calls are tagged with that
+  chat and its lane so it owns its tabs, and agent force takeovers are
+  refused. Profile diagnostics and remembered-permission administration stay
   in the trusted ADE renderer.
 
   Every tab shares the user's sign-ins unless it is opened --isolated. An
@@ -2871,6 +2982,28 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   test can keep "owner" and "viewer" signed in side by side. A tab's sign-in is
   fixed when it opens: plain "open" reuses only this chat's shared-profile tab,
   and "open --profile viewer" reuses only this chat's "viewer" tab.
+
+  The user's own browser (only when the user asks for it):
+    $ ade --socket browser attach --text           The tab the user is looking at
+    $ ade --socket browser attach --tab "Stripe" --text
+                                                   The tab whose title or URL contains "Stripe"
+    $ ade --socket browser attach --browser edge --text
+                                                   chrome, edge, brave, arc, helium or chromium
+    $ ade --socket browser detach --text           Back to ADE's browser
+  ADE's browser is the default for all web work. Attach only when the user asks
+  you to look at or use their own browser ("the tab I have open", "use my
+  Chrome"), never on your own. Attach runs on the machine this chat runs on and
+  prints "attached: <browser> on <machine>, tab "<title>" (<url>)": tell the
+  user which machine and tab. The browser needs remote debugging on; when
+  attach says it is off, ask the user to open the page it names
+  (chrome://inspect/#remote-debugging, or edge:// / brave://) and turn it on.
+  The browser then asks them once to allow the connection. While attached, this
+  chat's observe, click, fill, clear, type, key, scroll, hover, wait, open,
+  reload, back, forward, screenshot, proof and trace act in that tab and print
+  "target: your <browser> on <machine>" first; other commands say to detach.
+  The attachment ends on detach, when the tab closes or the browser quits, or
+  after 30 idle minutes; the next command says so. "status" shows it.
+  --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
@@ -3365,15 +3498,40 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
     $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
     $ ade linear comment ENG-431 "Done"             Comment on a specific issue
-    $ ade linear set-state ENG-431 <state-id>       Move an issue to a workflow state
-    $ ade linear assign ENG-431 <user-id|none>      Assign or clear an issue assignee
+    $ ade linear set-state ENG-431 "In Progress"    Move an issue to a state (name in the issue's team, or id)
+    $ ade linear assign ENG-431 me                  Assign: me, none, a name, an email, or a user id
     $ ade linear label ENG-431 "needs-review"       Add a label to an issue
+    $ ade linear unlabel ENG-431 "needs-review"     Remove a label from an issue
     $ ade linear graphql --query 'query { viewer { id name } }'
                                                     Run Linear GraphQL through the project connection
     $ ade linear graphql --query-file query.graphql --variables-file vars.json
                                                     Use files for larger GraphQL operations
     $ ade linear detach --this-session [--issue-id ENG-431]
                                                     Detach one issue (or all) from this session
+
+  Create and edit issues. Names work where Linear has names: states, users,
+  labels, projects, milestones, cycles, and templates. Ids work too.
+
+    $ ade linear create --team ENG --title "Fix login redirect" --text
+                                                    Create an issue; prints its id and URL
+        [--description "..." | --description-file <path|->]
+        [--state "Todo"] [--assignee me|<name|email|id>] [--priority urgent|high|normal|low|none|0-4]
+        [--label bug]... [--project "Mobile"] [--milestone "Beta"] [--cycle current|next|<n>]
+        [--estimate 3] [--due 2026-11-01] [--parent ENG-400] [--template "Bug report"]
+        Inside a session with an attached issue, the new issue is linked to it
+        as related. --blocks, --blocked-by, --sub-issue, or --duplicate pick the
+        link. --standalone skips it. A near-duplicate of an open issue is not
+        created unless you pass --allow-duplicate.
+    $ ade linear edit ENG-431 --title "New title" --description-file notes.md
+                                                    Change any field; takes the create flags plus --remove-label
+    $ ade linear set-priority ENG-431 high          Priority: urgent, high, normal, low, none, or 0-4
+    $ ade linear set-estimate ENG-431 3             Estimate in the team's scale, or none
+    $ ade linear set-cycle ENG-431 current          Cycle: current, next, a number, an id, or none
+    $ ade linear set-project ENG-431 "Mobile"       Project by name or id, or none
+    $ ade linear set-milestone ENG-431 "Beta"       Milestone in the issue's project, or none
+    $ ade linear set-due ENG-431 2026-11-01         Due date as YYYY-MM-DD, or none
+    $ ade linear set-parent ENG-431 ENG-400         Make it a sub-issue, or none to detach it
+    $ ade linear relate ENG-431 --blocks ENG-432    Link issues: --blocks, --blocked-by, --related, --duplicate-of
 
   Workspace + automation (typically run with --role cto):
     $ ade --role cto linear quick-view --text      Show connected workspace, projects, and issues
@@ -3461,7 +3619,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations example                       Print an example rule (stdout)
 
   Lane mode flags (apply to create/update on top of --from-file/--stdin/--text):
-    --lane-mode <create|reuse|require-on-trigger>   Create, reuse, or require lane at trigger time
+    --lane-mode <create|reuse|require-on-trigger|pr-branch>
+                                                    Create, reuse, or require lane at trigger time;
+                                                    pr-branch runs in the trigger PR's own branch
     --lane <id>                                     Target lane (only with --lane-mode reuse)
     --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
     --lane-name-template <string>                   Template (only with preset custom)
@@ -3688,7 +3848,7 @@ export function readValue(args: string[], names: readonly string[]): string | nu
 }
 
 /** Repeatable option (`--file a --file b`), consumed like `readValue`. */
-function readRepeatedValues(args: string[], names: readonly string[]): string[] {
+export function readRepeatedValues(args: string[], names: readonly string[]): string[] {
   const values: string[] = [];
   for (;;) {
     const value = readValue(args, names);
@@ -3788,7 +3948,7 @@ function readCommandTextValue(args: string[], names: readonly string[]): string 
   return null;
 }
 
-function firstPositional(args: string[]): string | null {
+export function firstPositional(args: string[]): string | null {
   const index = args.findIndex((arg) => arg !== "--" && !arg.startsWith("-"));
   if (index < 0) return null;
   const [value] = args.splice(index, 1);
@@ -4436,7 +4596,7 @@ function parseReviewerRequestValues(args: string[]): {
   return { reviewers, teamReviewers };
 }
 
-function readIntOption(
+export function readIntOption(
   args: string[],
   names: readonly string[],
   fallback?: number,
@@ -9058,6 +9218,58 @@ export function formatChatLaunches(value: unknown): string {
  */
 const CHAT_SELF_REPORT_SUBCOMMANDS = new Set(["ask", "note", "activity"]);
 
+/**
+ * The target both handoff forms read the same way: the mode, the model (also
+ * `--target` or a bare positional) and its settings. `sub` "fork" implies
+ * fork mode.
+ */
+function readHandoffTarget(args: string[], sub: string): {
+  mode: "brief" | "fork";
+  targetModelId: string;
+  settings: {
+    reasoningEffort?: string;
+    fastMode?: boolean;
+    permissionMode?: string;
+    codexApprovalPolicy?: string;
+    codexSandbox?: string;
+    codexConfigSource?: string;
+  };
+} {
+  const modeArg = readValue(args, ["--mode"]);
+  const forkFlag = readFlag(args, ["--fork"]);
+  const briefFlag = readFlag(args, ["--brief"]);
+  if ((forkFlag && briefFlag) || (modeArg && (forkFlag || briefFlag))) {
+    throw new CliUsageError("Use either --mode, --fork, or --brief for chat handoff.");
+  }
+  const mode = sub === "fork" || forkFlag ? "fork" : briefFlag ? "brief" : modeArg ?? "brief";
+  if (mode !== "brief" && mode !== "fork") {
+    throw new CliUsageError("chat handoff --mode must be brief or fork.");
+  }
+  const targetModelId = requireValue(
+    readValue(args, ["--target-model", "--target-model-id", "--model", "--model-id", "--target"]) ??
+      firstStandalonePositional(args),
+    "targetModelId",
+  );
+  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
+  const fastMode = readFastModeFlag(args);
+  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  const codexApprovalPolicy = readValue(args, ["--codex-approval-policy", "--approval-policy"]);
+  const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
+  const codexConfigSource = readValue(args, ["--codex-config-source", "--config-source"]);
+  return {
+    mode,
+    targetModelId,
+    settings: {
+      ...(reasoningEffort !== null ? { reasoningEffort } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
+      ...(permissionMode !== null ? { permissionMode } : {}),
+      ...(codexApprovalPolicy !== null ? { codexApprovalPolicy } : {}),
+      ...(codexSandbox !== null ? { codexSandbox } : {}),
+      ...(codexConfigSource !== null ? { codexConfigSource } : {}),
+    },
+  };
+}
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
@@ -10032,33 +10244,64 @@ function buildChatPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "chat", "clearCodexGoal", withSession({ sessionId: requireSession() }))],
     };
   }
+  if (sub === "handoff") {
+    // The first control flag present wins. --machine with any of them is
+    // refused earlier, by extractMachineTargeting.
+    const controls = [
+      { flags: ["--cancel"], label: "chat handoff cancel", action: "cancelCrossMachineHandoff" },
+      { flags: ["--retry"], label: "chat handoff retry", action: "retryCrossMachineHandoff" },
+      { flags: ["--options", "--where"], label: "chat handoff options", action: "getCrossMachineHandoffOptions" },
+    ];
+    const flagNames = flagNamesOutsideFreeText(args);
+    const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
+    const handoffMachine = readValue(args, ["--machine", "--to-machine"]);
+    if (handoffMachine !== null && !handoffMachine.trim()) {
+      throw new CliUsageError("--machine needs a machine name or key (see `ade machines list`).");
+    }
+    if (control) {
+      return {
+        kind: "execute",
+        label: control.label,
+        steps: [actionStep("result", "chat", control.action, { sourceSessionId: requireSession() })],
+      };
+    }
+    if (handoffMachine !== null) {
+      // Move the chat to another machine on the account. The brain runs the
+      // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
+      // Never forwarded: --machine names the destination (cliMachineTargeting).
+      // Free text first: a prompt of "--fork" is text, not a flag.
+      const continuationPrompt = readValue(args, ["--prompt", "--note", "--handoff-note"]);
+      if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
+        throw new CliUsageError("--target-lane is for a handoff on this machine. The other machine picks or creates the lane.");
+      }
+      const target = readHandoffTarget(args, sub);
+      return {
+        kind: "execute",
+        label: "chat handoff to another machine",
+        steps: [
+          actionStep("result", "chat", "startCrossMachineHandoff", {
+            sourceSessionId: requireSession(),
+            machine: handoffMachine,
+            mode: target.mode,
+            targetModelId: target.targetModelId,
+            ...target.settings,
+            ...(continuationPrompt !== null ? { continuationPrompt } : {}),
+            ...(readFlag(args, ["--include-changes", "--bring-changes"]) ? { includeChanges: true } : {}),
+            ...(readFlag(args, ["--clone"]) ? { clone: true } : {}),
+            ...(readFlag(args, ["--when-turn-ends", "--after-turn"]) ? { whenTurnEnds: true } : {}),
+          }),
+        ],
+      };
+    }
+  }
   if (sub === "handoff" || sub === "fork") {
-    const modeArg = readValue(args, ["--mode"]);
-    const forkFlag = readFlag(args, ["--fork"]);
-    const briefFlag = readFlag(args, ["--brief"]);
-    if ((forkFlag && briefFlag) || (modeArg && (forkFlag || briefFlag))) {
-      throw new CliUsageError("Use either --mode, --fork, or --brief for chat handoff.");
-    }
-    const mode = sub === "fork" || forkFlag ? "fork" : briefFlag ? "brief" : modeArg ?? "brief";
-    if (mode !== "brief" && mode !== "fork") {
-      throw new CliUsageError("chat handoff --mode must be brief or fork.");
-    }
-    const targetModelId = requireValue(
-      readValue(args, ["--target-model", "--target-model-id", "--model", "--model-id", "--target"]) ??
-        firstStandalonePositional(args),
-      "targetModelId",
-    );
+    // Free text first: a note of "--fork" is text, not a flag.
+    const handoffNote = readValue(args, ["--handoff-note", "--note"]);
+    const { mode, targetModelId, settings } = readHandoffTarget(args, sub);
     const targetLaneId = readValue(args, ["--target-lane", "--target-lane-id"]);
     if (targetLaneId !== null && mode === "fork") {
       throw new CliUsageError("chat fork stays in the source lane; --target-lane is only valid for brief handoffs.");
     }
-    const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
-    const fastMode = readFastModeFlag(args);
-    const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
-    const codexApprovalPolicy = readValue(args, ["--codex-approval-policy", "--approval-policy"]);
-    const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
-    const codexConfigSource = readValue(args, ["--codex-config-source", "--config-source"]);
-    const handoffNote = readValue(args, ["--handoff-note", "--note"]);
     const throughTurnId = readValue(args, ["--through-turn", "--from-turn"]);
     if (throughTurnId !== null && mode !== "fork") {
       throw new CliUsageError("--through-turn only applies to chat fork.");
@@ -10076,12 +10319,8 @@ function buildChatPlan(args: string[]): CliPlan {
             targetModelId,
             mode,
             ...(targetLaneId !== null ? { targetLaneId } : {}),
-            ...(reasoningEffort !== null ? { reasoningEffort } : {}),
-            ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
-            ...(permissionMode !== null ? { permissionMode } : {}),
-            ...(codexApprovalPolicy !== null ? { codexApprovalPolicy } : {}),
-            ...(codexSandbox !== null ? { codexSandbox } : {}),
-            ...(codexConfigSource !== null ? { codexConfigSource } : {}),
+            ...settings,
+            ...(settings.fastMode !== undefined ? { codexFastMode: settings.fastMode } : {}),
             ...(handoffNote !== null ? { handoffNote } : {}),
             ...(throughTurnId !== null ? { throughTurnId } : {}),
           }),
@@ -14147,6 +14386,39 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       ],
     };
   }
+  // The user's own browser: only when the user asked for it. Runs on this
+  // chat's runtime host, which reaches the browser directly (no desktop).
+  // `--tab` here names a tab by title or URL text, not an ADE tab id.
+  if (sub === "attach" || sub === "connect") {
+    const browser = readValue(args, ["--browser"]);
+    const tab = readValue(args, ["--tab", "--tab-match"]);
+    const userDataDir = readValue(args, ["--user-data-dir", "--profile-dir"]);
+    const attachArgs: JsonObject = {
+      ...(browser ? { browser } : {}),
+      ...(tab ? { tab } : {}),
+      ...(userDataDir ? { userDataDir: path.resolve(userDataDir) } : {}),
+    };
+    return {
+      kind: "execute",
+      label: "browser attach",
+      formatter: "browser-attach",
+      // The attachment lives in the runtime's memory; a headless one-shot
+      // runtime would drop it when this command ends.
+      needsLiveRuntime: "Browser attachment",
+      // Chrome asks the user to allow the connection; the attach waits for them.
+      minTimeoutMs: 90_000,
+      progressNotice: "Connecting to the user's browser. If it asks to allow remote debugging, the user must click Allow.",
+      steps: [actionStep("result", "built_in_browser", "attachUserBrowser", attachArgs)],
+    };
+  }
+  if (sub === "detach" || sub === "disconnect") {
+    return {
+      kind: "execute",
+      label: "browser detach",
+      formatter: "browser-attach",
+      steps: [actionStep("result", "built_in_browser", "detachUserBrowser", {})],
+    };
+  }
   if (sub === "status" || sub === "tabs" || sub === "list") {
     return {
       kind: "execute",
@@ -16403,6 +16675,7 @@ const AUTOMATION_LANE_MODES = [
   "create",
   "reuse",
   "require-on-trigger",
+  "pr-branch",
 ] as const;
 const AUTOMATION_LANE_NAME_PRESETS = [
   "issue-title",
@@ -16475,9 +16748,10 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   ) {
     throw new CliUsageError("--lane is only valid with --lane-mode reuse.");
   }
-  if (preset != null && effectiveLaneMode !== "create") {
+  const namesLane = effectiveLaneMode === "create" || effectiveLaneMode === "pr-branch";
+  if (preset != null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-preset is only valid with --lane-mode create.",
+      "--lane-name-preset is only valid with --lane-mode create or pr-branch.",
     );
   }
   if (template != null && preset != null && preset !== "custom") {
@@ -16485,14 +16759,17 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
       "--lane-name-template is only valid with --lane-name-preset custom.",
     );
   }
-  if (template != null && preset == null && effectiveLaneMode !== "create") {
+  if (template != null && preset == null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-template requires --lane-mode create (with --lane-name-preset custom).",
+      "--lane-name-template requires --lane-mode create or pr-branch (with --lane-name-preset custom).",
     );
   }
 
   const execution: JsonObject = { ...existingExecution };
   if (laneMode != null) execution.laneMode = laneMode;
+  // Only "reuse" names a fixed lane. Switching a saved rule to another mode
+  // drops the old target, which validation rejects next to that mode.
+  if (laneMode != null && laneMode !== "reuse") delete execution.targetLaneId;
   if (laneId != null) execution.targetLaneId = laneId;
   if (preset != null) execution.laneNamePreset = preset;
   if (template != null) execution.laneNameTemplate = template;
@@ -16975,6 +17252,204 @@ function buildAutomationsPlan(args: string[]): CliPlan {
   );
 }
 
+/** Run a shared field parser, reporting its failure as a usage error. */
+export function asUsage<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    throw error instanceof CliUsageError ? error : asCliUsageError(error);
+  }
+}
+
+/**
+ * A `run_ade_action` step whose arguments come from earlier steps (a repo, an
+ * issue, a catalog). A lookup that cannot resolve what was typed stops the
+ * plan with a usage error before the write is sent.
+ */
+export function derivedActionStep(
+  key: string,
+  domain: string,
+  action: string,
+  build: (values: JsonObject) => { args: JsonObject } | { argsList: unknown[] },
+): InvocationStep {
+  return {
+    key,
+    method: "ade/actions/call",
+    unwrapToolResult: true,
+    params: (values) => asUsage(() => ({
+      name: "run_ade_action",
+      arguments: { domain, action, ...build(values) },
+    })),
+  };
+}
+
+/**
+ * Text from an inline flag or a file flag. A file of `-` reads stdin, so a
+ * long body can be piped in on any shell.
+ */
+export function readTextOrFileOption(
+  args: string[],
+  inlineNames: readonly string[],
+  fileNames: readonly string[],
+): string | undefined {
+  const inline = readValue(args, inlineNames);
+  const filePath = readValue(args, fileNames);
+  if (inline != null && filePath != null) {
+    throw new CliUsageError(`Use either ${inlineNames[0]} or ${fileNames[0]}, not both.`);
+  }
+  if (inline != null) return inline;
+  if (filePath == null) return undefined;
+  if (filePath === "-") return fs.readFileSync(0, "utf8");
+  try {
+    return fs.readFileSync(path.resolve(filePath), "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(`Could not read ${fileNames[0]} file '${filePath}': ${message}`);
+  }
+}
+
+const LINEAR_TRACKER = "linear_issue_tracker";
+
+/** Every field flag `ade linear create` and `ade linear edit` accept. */
+function readLinearFieldFlags(args: string[], mode: "create" | "update"): LinearFieldInput {
+  const input: LinearFieldInput = {};
+  const put = <K extends keyof LinearFieldInput>(key: K, value: LinearFieldInput[K] | null | undefined) => {
+    if (value != null) input[key] = value;
+  };
+  put("title", readValue(args, ["--title", "-t"]));
+  put("description", readTextOrFileOption(args, ["--description", "--body", "-d"], ["--description-file", "--body-file"]));
+  put("state", readValue(args, ["--state", "--status", "--state-id"]));
+  put("assignee", readValue(args, ["--assignee", "--assignee-id"]));
+  put("priority", readValue(args, ["--priority"]));
+  const labels = readRepeatedValues(args, ["--label", "--add-label"]);
+  if (labels.length) input.labels = labels;
+  if (mode === "update") {
+    const removeLabels = readRepeatedValues(args, ["--remove-label", "--unlabel"]);
+    if (removeLabels.length) input.removeLabels = removeLabels;
+  }
+  put("project", readValue(args, ["--project", "--project-id"]));
+  put("milestone", readValue(args, ["--milestone"]));
+  put("cycle", readValue(args, ["--cycle"]));
+  put("estimate", readValue(args, ["--estimate"]));
+  put("due", readValue(args, ["--due", "--due-date"]));
+  put("parent", readValue(args, ["--parent"]));
+  if (mode === "create") put("template", readValue(args, ["--template"]));
+  // Values that need no lookup fail here, before ADE connects.
+  asUsage(() => {
+    if (input.priority !== undefined) parseLinearPriority(input.priority);
+    if (input.estimate !== undefined) parseLinearEstimate(input.estimate);
+    if (input.due !== undefined) parseDueDate(input.due);
+  });
+  return input;
+}
+
+/**
+ * The lookups a Linear write needs (issue, picker catalog, viewer, team
+ * options, milestones, parent), then the write itself as the `result` step.
+ */
+function linearFieldWriteSteps(
+  input: LinearFieldInput,
+  target:
+    | { mode: "update"; issueId: string }
+    | { mode: "create"; teamKey: string; action: string; base: JsonObject },
+): InvocationStep[] {
+  const needs = linearLookupNeeds(input, target.mode);
+  const issueRef = target.mode === "update" ? target.issueId : null;
+  const steps: InvocationStep[] = [];
+  if (needs.issue && issueRef) steps.push(actionArgsListStep("issue", LINEAR_TRACKER, "fetchIssueById", [issueRef]));
+  if (needs.picker) steps.push(actionStep("picker", LINEAR_TRACKER, "getIssuePickerData"));
+  if (needs.viewer) steps.push(actionStep("viewer", LINEAR_TRACKER, "getConnectionStatus"));
+  if (needs.parent && input.parent) {
+    steps.push(actionArgsListStep("parent", LINEAR_TRACKER, "fetchIssueById", [input.parent.trim()]));
+  }
+  const context = (values: JsonObject): LinearLookupContext => {
+    const issue = needs.issue ? unwrapActionEnvelope(values.issue) : null;
+    if (needs.issue && !isRecord(issue)) throw new Error(`Linear issue ${issueRef} was not found.`);
+    const viewer = unwrapActionEnvelope(values.viewer);
+    const milestones = unwrapActionEnvelope(values.milestones);
+    const options = unwrapActionEnvelope(values.options);
+    const picker = unwrapActionEnvelope(values.picker);
+    const parentIssue = unwrapActionEnvelope(values.parent);
+    return {
+      issue: isRecord(issue) ? issue : null,
+      teamKey: target.mode === "create" ? target.teamKey : isRecord(issue) ? asString(issue.teamKey) : null,
+      picker: isRecord(picker) ? picker : null,
+      viewerId: isRecord(viewer) ? asString(viewer.viewerId) : null,
+      options: isRecord(options) ? options : null,
+      milestones: Array.isArray(milestones) ? milestones.filter(isRecord) : null,
+      parentIssue: isRecord(parentIssue) ? parentIssue : null,
+    };
+  };
+  if (needs.options) {
+    steps.push(derivedActionStep("options", LINEAR_TRACKER, "getIssueCreateOptions", (values) => {
+      const team = context(values).teamKey;
+      if (!team) throw new Error("ADE could not tell which Linear team this issue is in.");
+      return { argsList: [team] };
+    }));
+  }
+  if (needs.milestones) {
+    steps.push(derivedActionStep("milestones", LINEAR_TRACKER, "listProjectMilestones", (values) => ({
+      argsList: [milestoneProjectId(input, context(values))],
+    })));
+  }
+  if (target.mode === "update") {
+    steps.push(derivedActionStep("result", LINEAR_TRACKER, "updateIssue", (values) => ({
+      argsList: [target.issueId, resolveLinearFields(input, context(values), "update")],
+    })));
+  } else {
+    steps.push(derivedActionStep("result", LINEAR_TRACKER, target.action, (values) => ({
+      args: { ...resolveLinearFields(input, context(values), "create"), ...target.base },
+    })));
+  }
+  return steps;
+}
+
+function hasLinearFieldInput(input: LinearFieldInput): boolean {
+  return Object.values(input).some((value) => (Array.isArray(value) ? value.length > 0 : value !== undefined));
+}
+
+/** `Updated ADE-12: Title` plus the state line and URL; `fallbackId` when the action returns nothing. */
+function formatLinearIssueWrite(verb: string, fallbackId: string | null = null): (result: unknown) => string {
+  return (result) => {
+    const value = isRecord(result) ? result : {};
+    if (value.created === false && isRecord(value.duplicateOf)) {
+      const duplicate = value.duplicateOf;
+      return [
+        `Not created. An open issue looks the same: ${asString(duplicate.identifier) ?? ""} ${asString(duplicate.title) ?? ""}`.trim(),
+        asString(duplicate.url),
+        "Pass --allow-duplicate to create it anyway.",
+      ].filter(Boolean).join("\n");
+    }
+    const issue = isRecord(value.issue) ? value.issue : value;
+    const identifier = asString(issue.identifier);
+    if (!identifier) return fallbackId ? `${verb} ${fallbackId}.` : `${verb}.`;
+    const facts = [
+      asString(issue.stateName),
+      asString(issue.assigneeName) ? `assigned to ${asString(issue.assigneeName)}` : null,
+      asString(issue.priorityLabel) && issue.priority !== 0 ? `${asString(issue.priorityLabel)} priority` : null,
+      asString(issue.cycleName) ? `cycle ${asString(issue.cycleName)}` : null,
+      asString(issue.projectName),
+    ].filter(Boolean);
+    return [
+      `${verb} ${identifier}: ${asString(issue.title) ?? ""}`.trimEnd(),
+      facts.length ? facts.join(" · ") : null,
+      asString(issue.url),
+    ].filter(Boolean).join("\n");
+  };
+}
+
+/** `ade linear set-<field> <id> <value>`: the field each shorthand edits. */
+const LINEAR_SET_FIELD_COMMANDS: Record<string, { field: keyof LinearFieldInput; flags: string[]; noun: string }> = {
+  "set-priority": { field: "priority", flags: ["--priority"], noun: "priority" },
+  "set-estimate": { field: "estimate", flags: ["--estimate"], noun: "estimate" },
+  "set-cycle": { field: "cycle", flags: ["--cycle"], noun: "cycle" },
+  "set-project": { field: "project", flags: ["--project", "--project-id"], noun: "project" },
+  "set-milestone": { field: "milestone", flags: ["--milestone"], noun: "milestone" },
+  "set-due": { field: "due", flags: ["--due", "--due-date"], noun: "due date" },
+  "set-parent": { field: "parent", flags: ["--parent"], noun: "parent issue" },
+  "set-title": { field: "title", flags: ["--title", "-t"], noun: "title" },
+};
+
 function buildLinearPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "quick-view";
   // --- Daemon-bridge commands for a CLI-session agent ---
@@ -17085,25 +17560,89 @@ function buildLinearPlan(args: string[]): CliPlan {
   }
   if (sub === "set-state" || sub === "status" || sub === "state" || sub === "move") {
     const { issueId, value } = resolveLinearWriteCommand(args, ["--state-id", "--state", "--status"]);
-    const stateId = requireValue(value, "state id");
+    const state = requireValue(value, "state name or id");
+    // A state id goes straight through; a name ("In Progress") is matched
+    // within the issue's team first.
+    if (looksLikeLinearId(state)) {
+      return {
+        kind: "execute",
+        label: "linear set-state",
+        steps: [actionArgsListStep("result", LINEAR_TRACKER, "updateIssueState", [issueId, state])],
+        formatText: formatLinearIssueWrite("Updated", issueId),
+      };
+    }
     return {
       kind: "execute",
       label: "linear set-state",
-      steps: [actionArgsListStep("result", "linear_issue_tracker", "updateIssueState", [issueId, stateId])],
+      steps: linearFieldWriteSteps({ state }, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
     };
   }
   if (sub === "assign") {
     const { issueId, value } = resolveLinearWriteCommand(args, ["--assignee", "--assignee-id", "--user"]);
     // `none`/`null`/`unassigned` (or an omitted assignee) clears the assignee.
-    const normalized = (value ?? "").trim().toLowerCase();
-    const assigneeId =
-      value == null || normalized === "none" || normalized === "null" || normalized === "unassigned"
-        ? null
-        : value.trim();
+    const assignee = value?.trim() ?? "";
+    if (!assignee || isNoneValue(assignee) || looksLikeLinearId(assignee)) {
+      return {
+        kind: "execute",
+        label: "linear assign",
+        steps: [
+          actionArgsListStep("result", LINEAR_TRACKER, "updateIssueAssignee", [
+            issueId,
+            assignee && !isNoneValue(assignee) ? assignee : null,
+          ]),
+        ],
+        formatText: formatLinearIssueWrite("Updated", issueId),
+      };
+    }
+    // `me`, a name, or an email is matched against the workspace's users.
     return {
       kind: "execute",
       label: "linear assign",
-      steps: [actionArgsListStep("result", "linear_issue_tracker", "updateIssueAssignee", [issueId, assigneeId])],
+      steps: linearFieldWriteSteps({ assignee }, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
+    };
+  }
+  if (sub === "unlabel" || sub === "remove-label") {
+    const { issueId, value } = resolveLinearWriteCommand(args, ["--label", "--label-name", "--name"]);
+    const label = requireValue(value, "label name");
+    return {
+      kind: "execute",
+      label: "linear unlabel",
+      steps: linearFieldWriteSteps({ removeLabels: [label] }, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
+    };
+  }
+  if (sub === "edit" || sub === "update") {
+    const input = readLinearFieldFlags(args, "update");
+    const issueId = requireLinearIssueId(args);
+    if (!hasLinearFieldInput(input)) {
+      throw new CliUsageError(
+        "linear edit needs at least one field to change, like --title, --description, --state, or --priority.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "linear edit",
+      steps: linearFieldWriteSteps(input, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
+    };
+  }
+  const setField = LINEAR_SET_FIELD_COMMANDS[sub];
+  if (setField) {
+    const { issueId, value } = resolveLinearWriteCommand(args, setField.flags);
+    const fieldValue = requireValue(value, setField.noun);
+    const input: LinearFieldInput = { [setField.field]: fieldValue };
+    asUsage(() => {
+      if (input.priority !== undefined) parseLinearPriority(input.priority);
+      if (input.estimate !== undefined) parseLinearEstimate(input.estimate);
+      if (input.due !== undefined) parseDueDate(input.due);
+    });
+    return {
+      kind: "execute",
+      label: `linear ${sub}`,
+      steps: linearFieldWriteSteps(input, { mode: "update", issueId }),
+      formatText: formatLinearIssueWrite("Updated", issueId),
     };
   }
   if (sub === "label" || sub === "add-label") {
@@ -17113,6 +17652,7 @@ function buildLinearPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "linear add-label",
       steps: [actionArgsListStep("result", "linear_issue_tracker", "addLabel", [issueId, labelName])],
+      formatText: formatLinearIssueWrite("Updated", issueId),
     };
   }
   if (sub === "issue" || sub === "show-issue" || sub === "get-issue") {
@@ -17225,13 +17765,14 @@ function buildLinearPlan(args: string[]): CliPlan {
     // Files a follow-up issue. By default it links to the session's attached
     // issue (the one being worked on) as "related", in the same team/project,
     // and refuses near-duplicates of open issues unless --allow-duplicate.
-    const title = requireValue(asString(readValue(args, ["--title", "-t"]) ?? firstPositional(args)), "--title");
-    const input: JsonObject = { title };
-    maybePut(input, "description", readValue(args, ["--description", "--body", "-d"]));
+    // Every field flag is read before the positional title, so a flag's value
+    // (`--team ADE`) is never taken for the title.
+    const fields = readLinearFieldFlags(args, "create");
+    const base: JsonObject = {};
     const sourceIssueId = readFlag(args, ["--standalone", "--no-link"])
       ? null
       : asString(readValue(args, ["--from", "--source", "--source-issue"])) ?? sessionLinearIssueId();
-    if (sourceIssueId) input.sourceIssueId = sourceIssueId;
+    if (sourceIssueId) base.sourceIssueId = sourceIssueId;
     const relationFlags: Array<[string[], string]> = [
       [["--blocks"], "blocks"],
       [["--blocked-by"], "blocked_by"],
@@ -17239,18 +17780,29 @@ function buildLinearPlan(args: string[]): CliPlan {
       [["--duplicate"], "duplicate"],
     ];
     const relationFlag = relationFlags.find(([flags]) => readFlag(args, flags))?.[1];
-    if (relationFlag) input.relation = relationFlag;
+    if (relationFlag) base.relation = relationFlag;
     const teamKey = asString(readValue(args, ["--team", "--team-key"]))
-      ?? (sourceIssueId?.match(/^([A-Za-z0-9]+)-\d+$/)?.[1]?.toUpperCase() ?? null);
-    input.teamKey = requireValue(teamKey, "--team (or a --from issue to take the team from)");
-    maybePut(input, "projectId", readValue(args, ["--project-id"]));
-    const priority = readNumberOption(args, ["--priority"]);
-    if (priority !== undefined) input.priority = priority;
-    if (readFlag(args, ["--allow-duplicate", "--force"])) input.allowDuplicate = true;
+      ?? teamKeyFromIdentifier(sourceIssueId)
+      ?? teamKeyFromIdentifier(fields.parent);
+    base.teamKey = requireValue(teamKey, "--team (or a --from or --parent issue to take the team from)");
+    if (readFlag(args, ["--allow-duplicate", "--force"])) base.allowDuplicate = true;
+    Object.assign(base, collectGenericObjectArgs(args));
+    if (fields.title === undefined) {
+      const words: string[] = [];
+      for (let next = firstPositional(args); next != null; next = firstPositional(args)) words.push(next);
+      if (words.length) fields.title = words.join(" ");
+    }
+    requireValue(fields.title ?? null, "--title");
     return {
       kind: "execute",
       label: "linear create",
-      steps: [actionStep("result", "linear_issue_tracker", "createFollowUpIssue", collectGenericObjectArgs(args, input))],
+      steps: linearFieldWriteSteps(fields, {
+        mode: "create",
+        teamKey: String(base.teamKey),
+        action: "createFollowUpIssue",
+        base,
+      }),
+      formatText: formatLinearIssueWrite("Created"),
     };
   }
   if (sub === "relate" || sub === "link") {
@@ -17269,6 +17821,7 @@ function buildLinearPlan(args: string[]): CliPlan {
           kind: "execute",
           label: "linear relate",
           steps: [actionStep("result", "linear_issue_tracker", "createIssueRelation", { issueId, relatedIssueId, type })],
+          formatText: () => `Linked: ${issueId} ${({ blocks: "blocks", blocked_by: "is blocked by", related: "is related to", duplicate: "duplicates" } as Record<string, string>)[type]} ${relatedIssueId}.`,
         };
       }
     }
@@ -17299,7 +17852,9 @@ function buildLinearPlan(args: string[]): CliPlan {
   }
   throw new CliUsageError(
     `Unknown linear command '${sub}'. Supported: quick-view, picker-data, issues, my-issues, `
-      + `search-issues, issue, comments, attach, detach, comment, assign, label, set-state, create, relate, inbox, project-update, graphql.`,
+      + `search-issues, issue, comments, attach, detach, create, edit, comment, assign, label, unlabel, set-state, `
+      + `set-priority, set-estimate, set-cycle, set-project, set-milestone, set-due, set-parent, relate, inbox, `
+      + `project-update, graphql.`,
   );
 }
 
@@ -17417,6 +17972,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   // without them `ade browser --arg-json '{}' open` dispatched on the JSON.
   "--arg",
   "--arg-json",
+  "--browser",
   "--browser-session",
   "--browser-session-id",
   "--button",
@@ -17490,6 +18046,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--position",
   "--preset",
   "--profile",
+  "--profile-dir",
   "--query",
   "--reason",
   "--ref",
@@ -17505,6 +18062,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--steps",
   "--tab",
   "--tab-id",
+  "--tab-match",
   "--test-id",
   "--testid",
   "--text-match",
@@ -17530,6 +18088,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--upload",
   "--url",
   "--user-agent",
+  "--user-data-dir",
   "--value",
   "--wait-after-ms",
   "--why",
@@ -17553,6 +18112,11 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "-m",
   "-q",
   "-t",
+  // `chat handoff` keeps --machine (it names the move's destination, so it
+  // is not extracted for forwarding); a session given after it must not be
+  // read as the machine's value.
+  "--machine",
+  "--to-machine",
   "--additional-instructions",
   "--app",
   "--accent",
@@ -18082,6 +18646,36 @@ function buildCliPlan(
   if (primary === "sync") {
     return buildSyncPlan(args);
   }
+  if (primary === "notify") {
+    const title = readValue(args, ["--title", "-t"]) ?? firstStandalonePositional(args) ?? "";
+    const body = readValue(args, ["--body", "-b"]);
+    const open = readValue(args, ["--open", "--link"]);
+    const problem = customNotificationProblem({ title, body, open });
+    if (problem) {
+      throw new CliUsageError(`${problem} Usage: ade notify --title "<text>" [--body "<text>"] [--open <ade link>]`);
+    }
+    return {
+      kind: "execute",
+      label: "notify",
+      formatter: "notify",
+      needsLiveRuntime: "Notifications",
+      // Machine-wide (`notify.send`): it works from any folder and never
+      // registers the current one as a project. The folder only names the
+      // project a chat or PR link belongs to, when it is one.
+      steps: [{
+        key: "result",
+        method: "notify.send",
+        params: {
+          args: {
+            title: title.trim(),
+            ...(body?.trim() ? { body: body.trim() } : {}),
+            ...(open?.trim() ? { open: open.trim() } : {}),
+          },
+          projectRoot: resolveRoots({ projectRoot: options.projectRoot, workspaceRoot: null } as GlobalOptions).projectRoot,
+        },
+      }],
+    };
+  }
   if (primary === "status") {
     return {
       kind: "execute",
@@ -18372,10 +18966,14 @@ function buildGithubPlan(args: string[]): CliPlan {
       "github app-auth supports status, login, or clear.",
     );
   }
+  if (sub === "issue" || sub === "issues") {
+    return buildGithubIssuePlan(args);
+  }
   throw new CliUsageError(
-    "github supports app-auth (status | login | clear) and actions.",
+    "github supports issue, app-auth (status | login | clear), and actions.",
   );
 }
+
 
 function buildCursorPlan(args: string[]): CliPlan {
   // ade cursor <surface> <group> <sub> ... — only "cloud" is wired today.
@@ -20052,6 +20650,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "runtime/info" ||
     method === "machineInfo.get" ||
     method.startsWith("account.") ||
+    method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
     method.startsWith("personalChats.")
@@ -20428,9 +21027,16 @@ Usage:
 
 function buildProjectsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
+  // The registry lives only in the machine brain, so these never fall back to
+  // a headless single-project runtime.
+  const base = {
+    kind: "execute" as const,
+    machineOnly: true,
+    machineAutoStart: true,
+  };
   if (sub === "list" || sub === "ls") {
     return {
-      kind: "execute",
+      ...base,
       label: "projects list",
       machineList: "projects",
       formatter: "projects-list",
@@ -20443,7 +21049,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project path",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects add",
       formatter: "projects-list",
       steps: [{
@@ -20463,7 +21069,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project id",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects remove",
       steps: [
         { key: "result", method: "projects.remove", params: { projectId } },
@@ -20476,7 +21082,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project id",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects touch",
       formatter: "projects-list",
       steps: [
@@ -20490,7 +21096,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "path",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects inspect",
       steps: [
         {
@@ -20801,7 +21407,7 @@ function buildInitializeParams(
   const envStepId = asString(process.env.ADE_STEP_ID);
   const envAttemptId = asString(process.env.ADE_ATTEMPT_ID);
   const envOwnerId = asString(process.env.ADE_OWNER_ID);
-  const browserActorToken = asString(process.env.ADE_BROWSER_ACTOR_TOKEN);
+  const envChatScope = asString(process.env.ADE_CHAT_SCOPE);
   return {
     protocolVersion: PROTOCOL_VERSION,
     clientInfo: { name: clientName, version: VERSION },
@@ -20814,7 +21420,7 @@ function buildInitializeParams(
       ...(envStepId ? { stepId: envStepId } : {}),
       ...(envAttemptId ? { attemptId: envAttemptId } : {}),
       ...(envOwnerId ? { ownerId: envOwnerId } : {}),
-      ...(browserActorToken ? { browserActorToken } : {}),
+      ...(envChatScope === "personal" ? { chatScope: "personal" } : {}),
       computerUsePolicy: {
         mode: "auto",
         allowLocalFallback: options.role !== "external",
@@ -23428,8 +24034,14 @@ async function runServe(
         logger: headlessProjectLogger,
       }),
   };
+  // Bound once the agents' machine bridge exists (below); a move asked for
+  // before then is refused as "can't reach other machines".
+  let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    // An embedded guest can't reach other machines, so it owns no moves (and
+    // its chat services never sweep any).
+    ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
@@ -23498,15 +24110,13 @@ async function runServe(
     });
   };
 
-  // The bridge token this machine's desktop app announced when it connected.
-  // "Update & restart" uses it to ask that app to install its own update: an
-  // app that owns the brain puts its own runtime back over a standalone one.
-  let machineDesktopBridgeAuthToken: string | null = null;
+  // "Update & restart" asks this machine's desktop app, when one is running, to
+  // install its own update: an app that owns the brain puts its own runtime
+  // back over a standalone one.
   const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
     const { requestDesktopAppUpdate } = await import("./services/runtime/desktopAppUpdateBridge");
     const routing = await requestDesktopAppUpdate({
       socketPath: process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim() || layout.desktopBridgeSocketPath,
-      authToken: machineDesktopBridgeAuthToken,
       targetVersion,
     });
     headlessProjectLogger.info("brain.remote_update_route", routing.attached
@@ -23535,6 +24145,46 @@ async function runServe(
       call: async (input) => (await getAgentMachineBridge()).call(input),
       listMachines: async (input) => (await getAgentMachineBridge()).listMachines(input),
     };
+
+  // Moving a chat to another machine rides the same paired connection. The
+  // destination applies its own action policy to every step.
+  if (!embedded) {
+    crossMachineHandoffTransport = {
+      listMachines: async (options) => {
+        // Loaded on first use, not at startup: nothing on the brain's way to
+        // answering `ade/initialize` should wait for a move nobody asked for.
+        const { normalizeGitRemoteIdentity } = await import("../../desktop/src/shared/crossMachineHandoff");
+        const roster = await (await getAgentMachineBridge()).listMachines({ includeProjects: options?.includeProjects === true });
+        return roster.machines.map((machine) => ({
+          machineKey: machine.machineKey,
+          name: machine.name,
+          online: machine.online,
+          isThisMachine: machine.isThisMachine,
+          ...(machine.projects
+            ? { projects: machine.projects.map((project) => ({ origin: normalizeGitRemoteIdentity(project.origin) })) }
+            : {}),
+          note: machine.note ?? null,
+        }));
+      },
+      callAction: async (input) => (await getAgentMachineBridge()).call({
+        machine: input.machine,
+        scope: { kind: "repo", originUrl: input.originUrl },
+        method: "ade/actions/call",
+        params: { name: "run_ade_action", arguments: { domain: "chat", action: input.action, args: input.args } },
+        caller: { chatSessionId: null, permissionLevel: null },
+        ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+        ...(input.clone ? { clone: true } : {}),
+      }),
+      // A timeout or a dropped connection after sending (machineBridge's
+      // MachineCallTimeoutError / MachineConnectionDroppedError, matched by
+      // code). Offline, this-machine and refusals are thrown before or by
+      // the destination, so they are plain failures.
+      isLostAnswer: (error) => {
+        const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+        return code === "machine_call_timeout" || code === "machine_connection_dropped";
+      },
+    };
+  }
 
   // Children reporting to parents outside their own scope: another project,
   // the personal scope, or another machine. The brain owns the outbox; each
@@ -23605,12 +24255,6 @@ async function runServe(
             requestRestart: requestBrainServiceRestartFromServe,
             requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
           }),
-          onDesktopBridgeAuthToken: (authToken: string) => {
-            machineDesktopBridgeAuthToken = authToken;
-            // Personal chats run in their own runtime; it needs the same token
-            // to give its chats the ADE browser.
-            personalChatScope.setDesktopBridgeAuthToken(authToken);
-          },
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
         }),
       getRuntimeStatus: () => {
@@ -26627,6 +27271,11 @@ function formatUpdateStatus(value: unknown): string {
       asString(errorDetails.phase) ?? "unknown phase"
     }${errorDetails.preservesDownload === true ? " · download preserved" : ""}`
     : null;
+  const checkFailure = isRecord(value.checkFailure) ? value.checkFailure : null;
+  const checkFailureAt = formatEpochTimestamp(checkFailure?.at);
+  const checkFailureLine = checkFailure
+    ? `${asString(checkFailure.kind) ?? "unknown"}${checkFailureAt ? ` at ${checkFailureAt}` : ""}`
+    : null;
 
   return renderKeyValues("ADE update", [
     ["status", value.status],
@@ -26640,6 +27289,8 @@ function formatUpdateStatus(value: unknown): string {
     ["recently installed", recentlyInstalledLine],
     ["auto-apply at", formatEpochTimestamp(autoApplyPending?.deadlineAt)],
     ["auto-apply suppressed until", formatEpochTimestamp(value.autoApplySuppressedUntil)],
+    ["last checked", formatEpochTimestamp(value.lastCheckedAt)],
+    ["check failed", checkFailureLine],
     ["error", errorLine],
     ["error detail", errorDetailLine],
   ]);
@@ -28333,8 +28984,63 @@ function saveScreenshotResult(
   };
 }
 
+/**
+ * `ade browser attach` / `detach`. The first line is the one the transcript
+ * keys on (`attached:` / `detached:` / `not attached:`).
+ */
+function formatBrowserAttach(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const message = asString(result.message) ?? "";
+  if (result.attached !== true) return message;
+  const tab = firstRecord(result, ["tab"]);
+  const notes = Array.isArray(result.notes) ? result.notes.map((note) => asString(note)).filter(Boolean) : [];
+  return [
+    message,
+    "",
+    renderKeyValues("Your browser", [
+      ["browser", result.browserLabel],
+      ["machine", result.machine],
+      ["tab", tab?.title],
+      ["url", tab?.url],
+    ]),
+    ...notes.map((note) => `note: ${note}`),
+    "",
+    "This chat's ade browser commands now act in this tab. Tell the user which machine and tab, and run ade browser detach when you are done.",
+  ].join("\n");
+}
+
+/** The chat's attachment to the user's own browser, as `browser status` shows it. */
+function formatUserBrowserStatus(userBrowser: JsonObject): string {
+  const tab = firstRecord(userBrowser, ["tab"]);
+  const available = firstArray(userBrowser, ["available"]);
+  const rows: Array<[string, unknown]> = userBrowser.attached === true
+    ? [
+      ["attached", `${asString(userBrowser.browserLabel) ?? "browser"} on ${asString(userBrowser.machine) ?? "this computer"}`],
+      ["tab", tab?.title],
+      ["url", tab?.url],
+      ["since", userBrowser.attachedAt],
+    ]
+    : [
+      ["attached", "no — this chat uses ADE's browser"],
+      [
+        "remote debugging on",
+        available.filter((entry) => entry.remoteDebugging === true).map((entry) => entry.label).join(", ") || "none",
+      ],
+    ];
+  return renderKeyValues("Your browser", rows);
+}
+
 function formatBrowserStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
+  const userBrowser = firstRecord(status, ["userBrowser"]);
+  if (userBrowser) {
+    const { userBrowser: _userBrowser, builtInUnavailable, ...builtIn } = status;
+    const unavailable = asString(builtInUnavailable);
+    const rest = unavailable
+      ? `ADE browser: ${unavailable}`
+      : Object.keys(builtIn).length ? formatBrowserStatus(builtIn) : "";
+    return [formatUserBrowserStatus(userBrowser), ...(rest ? ["", rest] : [])].join("\n");
+  }
   // This machine has no desktop attached, so there is no browser here to
   // report on: the daemon handed the URL to a desktop that has this lane
   // pinned, which opens it over a tunnel back to this machine's localhost.
@@ -29881,6 +30587,8 @@ function formatTextOutput(
       return formatAppControlRecording(value);
     case "browser-status":
       return formatBrowserStatus(value);
+    case "browser-attach":
+      return formatBrowserAttach(value);
     case "browser-dev-servers":
       return formatBrowserDevServers(value);
     case "work-tools-state":
@@ -29983,6 +30691,11 @@ function formatTextOutput(
       return formatUpdateStatus(value);
     case "github-app-auth":
       return formatGithubAppUserAuth(value);
+    case "notify": {
+      const result = isRecord(value) && isRecord(value.result) ? value.result : value;
+      if (!isRecord(result)) return "Notification sent.";
+      return describeCustomNotificationResult(result).message;
+    }
     case "action-result":
     default:
       if (isRecord(value))
@@ -30298,6 +31011,9 @@ function summarizeProofFiling(
           : null,
       ].filter(Boolean).join(" ")
     : null;
+  // Proof of a page in the user's own browser says so, like every command there.
+  const observed = unwrapActionEnvelope(values.observation);
+  const userBrowserTarget = isRecord(observed) ? asString(observed.userBrowserTarget) : null;
   const owner = [
     `lane ${laneId ? shortProofOwnerId(laneId) : "none"}`,
     `chat ${chatSessionId ? shortProofOwnerId(chatSessionId) : "none"}`,
@@ -30318,6 +31034,7 @@ function summarizeProofFiling(
     })),
     ...(warnings.length ? { warnings } : {}),
     ...(capturedFrom ? { capturedFrom } : {}),
+    ...(userBrowserTarget ? { userBrowserTarget } : {}),
     confirmation:
       `Attached ${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"} `
       + `to ${owner} (${title})`,
@@ -30377,6 +31094,10 @@ function summarizeExecution(args: {
         ? readiness.auth.note
         : "ADE CLI auth is local project access.",
     };
+  }
+
+  if (plan.shapeResult) {
+    return plan.shapeResult(values);
   }
 
   if (plan.proofFiling) {
@@ -31230,7 +31951,7 @@ async function executePlan(
         workspaceRoot: roots.workspaceRoot,
         socketPath,
         nextAction: plan.machineOnly
-          ? "Start the machine-owned ADE brain with `ade brain start`, then retry the personal chat command."
+          ? "Start the machine-owned ADE brain with `ade brain start`, then retry."
           : options.requireSocket
             ? "Open the ADE app for this channel, or run the `ade` on PATH in an ADE terminal or agent shell. `--socket <endpoint>` picks another brain."
           : sourceRuntimeInterop
@@ -31562,9 +32283,25 @@ function formatOutput(
 ): string {
   if (options.text) {
     if (isMachineFanOutResult(value)) return `${formatMachineFanOut(value)}\n`;
-    return `${formatTextOutput(value, formatter)}\n`;
+    const targetLine = userBrowserTargetLine(value);
+    // Said once, on the first line; not again as a row of the result.
+    const shown = targetLine && isRecord(value)
+      ? (({ userBrowserTarget: _target, ...rest }) => rest)(value)
+      : value;
+    return `${targetLine}${formatTextOutput(shown, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
+}
+
+/**
+ * `target: your Google Chrome on <machine>` — printed first by every command
+ * that acted in the user's own browser (`ade browser attach`), so neither the
+ * agent nor the user mistakes it for ADE's browser. Empty otherwise.
+ */
+function userBrowserTargetLine(value: unknown): string {
+  if (!isRecord(value) || value.attached === true) return "";
+  const target = asString(value.userBrowserTarget);
+  return target ? `${USER_BROWSER_TARGET_PREFIX} ${target}\n` : "";
 }
 
 function appendOutputSuffix(output: string, suffix: string): string {
@@ -32079,7 +32816,7 @@ async function runParsedCli(
       const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath);
       return {
         output: parsed.options.text
-          ? `${renderKeyValues("ADE browser screenshot", [
+          ? `${userBrowserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
             ["saved", saved.savedPath],
             ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
             ["bytes", saved.bytes],
@@ -32090,9 +32827,13 @@ async function runParsedCli(
     }
     const formatter = inferFormatter(plan);
     const flagEffects = applySyncWebPairingFlags(plan, parsed.options, result);
+    const output =
+      parsed.options.text && plan.formatText && !isMachineFanOutResult(result)
+        ? `${plan.formatText(result)}\n`
+        : formatOutput(result, parsed.options, formatter);
     return {
       output: appendOutputSuffix(
-        formatOutput(result, parsed.options, formatter),
+        output,
         flagEffects.outputSuffix,
       ),
       exitCode:

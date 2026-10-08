@@ -9,6 +9,9 @@ import type {
   AgentChatInterruptResult,
   AgentChatLaunchCliResult,
   AgentChatMarkCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatPreviewCrossMachineHandoffResult,
   AgentChatModelCatalog,
   AgentChatLaunchDefaults,
   AgentChatPrepareCrossMachineHandoffResult,
@@ -303,6 +306,38 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     markCrossMachineHandoff: async (args: AgentChatMarkCrossMachineHandoffArgs, pin) => {
       guardPin("markCrossMachineHandoff", pin);
       await callRequiredMutation<void>("chat.markCrossMachineHandoff", args);
+    },
+    // The brain-owned move (registered `chat.*` remote commands). Reads are
+    // idempotent; start/cancel/retry/approve/acknowledge are not replayed.
+    getCrossMachineHandoffOptions: async (args, pin) => {
+      guardPin("getCrossMachineHandoffOptions", pin);
+      return await callRequiredRead<AgentChatCrossMachineHandoffOptionsResult>("chat.getCrossMachineHandoffOptions", args);
+    },
+    // Asks the destination through the source brain's own transport; a read,
+    // so it is safe to repeat.
+    previewCrossMachineHandoff: async (args, pin) => {
+      guardPin("previewCrossMachineHandoff", pin);
+      return await callRequiredRead<AgentChatPreviewCrossMachineHandoffResult>("chat.previewCrossMachineHandoff", args);
+    },
+    startCrossMachineHandoff: async (args, pin) => {
+      guardPin("startCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord>("chat.startCrossMachineHandoff", args);
+    },
+    cancelCrossMachineHandoff: async (args, pin) => {
+      guardPin("cancelCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.cancelCrossMachineHandoff", args);
+    },
+    retryCrossMachineHandoff: async (args, pin) => {
+      guardPin("retryCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord>("chat.retryCrossMachineHandoff", args);
+    },
+    resolveCrossMachineHandoffApproval: async (args, pin) => {
+      guardPin("resolveCrossMachineHandoffApproval", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.resolveCrossMachineHandoffApproval", args);
+    },
+    acknowledgeCrossMachineHandoff: async (args, pin) => {
+      guardPin("acknowledgeCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.acknowledgeCrossMachineHandoff", args);
     },
     send: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("send", pin);

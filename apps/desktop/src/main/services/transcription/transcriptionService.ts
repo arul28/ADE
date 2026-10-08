@@ -11,28 +11,29 @@ import {
   type PreparedGlossary,
 } from "./dictationCleanup";
 import {
-  WHISPER_MODEL_BASENAME,
   type DownloadProgress,
-  type WhisperModelSource,
-  downloadWhisperModel,
-  whisperModelPath,
-} from "./whisperModelStore";
+  type SpeechModelSource,
+  downloadSpeechModel,
+  isSpeechModelInstalled,
+  removeStaleModelFiles,
+  speechModelPath,
+} from "./speechModelStore";
 
 /**
  * Voice-to-text transcription service (desktop / Electron, v1).
  *
  * Records PCM is captured in the renderer and handed here as 16 kHz mono
  * samples over IPC. We write a self-contained WAV (no ffmpeg dependency), shell
- * out to the bundled whisper.cpp CLI against `ggml-base.en.bin`, parse the
- * transcript, then run the shared deterministic cleanup. There is NO AI polish
- * on desktop in v1 — deterministic cleanup only.
+ * out to the bundled transcribe.cpp CLI against the Parakeet Ultra GGUF, read
+ * the transcript, then run the shared deterministic cleanup. The model emits
+ * punctuation and casing itself; there is no AI polish pass.
  *
- * Calls are serialized: only one whisper process runs at a time (mirroring the
+ * Calls are serialized: only one transcribe process runs at a time (mirroring the
  * single-flight queue style of `services/jobs/jobEngine.ts`).
  *
- * Distribution note: the whisper BINARY is bundled under the packaged app's
- * `resources/whisper/` (small). The ~141 MB MODEL is NOT bundled — it is
- * downloaded once at runtime into `<userData>/whisper/` (see whisperModelStore),
+ * Distribution note: the transcribe-cli BINARY is bundled under the packaged app's
+ * `resources/whisper/` (small). The ~464 MB MODEL is NOT bundled — it is
+ * downloaded once at runtime into `<userData>/whisper/` (see speechModelStore),
  * because bundling it inflated the macOS auto-update zip past Squirrel.Mac's
  * in-memory download limit and crashed the updater. If the binary is missing we
  * return `model_not_installed`; if only the model is missing the UI offers a
@@ -47,20 +48,21 @@ export type TranscriptionResult = {
 export type TranscriptionStatus = {
   /** True only when BOTH the binary and the model are present (ready to transcribe). */
   installed: boolean;
-  /** Bundled whisper binary present. */
+  /** Bundled transcribe-cli binary present. */
   binaryInstalled: boolean;
   /** Runtime model present (downloaded). */
   modelInstalled: boolean;
   /** A model download is currently in flight. */
   downloading: boolean;
-  /** Resolved whisper binary path, when present. */
+  /** Resolved transcribe-cli binary path, when present. */
   binaryPath: string | null;
-  /** Resolved ggml model path, when present. */
+  /** Resolved GGUF model path, when present. */
   modelPath: string | null;
 };
 
 export type TranscriptionErrorCode =
   | "model_not_installed"
+  | "engine_unsupported"
   | "empty_audio"
   | "transcribe_failed";
 
@@ -85,33 +87,55 @@ export type TranscriptionService = {
   dispose: () => void;
 };
 
-const WHISPER_BINARY_BASENAMES = ["whisper-cli", "main", "whisper"];
+// Only transcribe-cli: a stale whisper-cli left in a dev resources dir cannot read
+// the GGUF model, so it must never be picked up.
+const TRANSCRIBE_BINARY_BASENAME = "transcribe-cli";
+// More threads than physical cores slows transcribe.cpp down sharply (measured
+// on a 16-core / 32-thread Ryzen: 5.5 s at 16 threads, 28 s at its default of 32).
+const MAX_TRANSCRIBE_THREADS = 16;
 const TARGET_SAMPLE_RATE = 16_000;
 const MIN_SAMPLE_RATE = 8_000;
 const MAX_SAMPLE_RATE = 48_000;
-const DEFAULT_WHISPER_PROCESS_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_TRANSCRIBE_PROCESS_TIMEOUT_MS = 5 * 60_000;
 
-function whisperBinaryCandidates(whisperDir: string): string[] {
+function transcribeBinaryPath(engineDir: string): string {
   const exeSuffix = process.platform === "win32" ? ".exe" : "";
-  return WHISPER_BINARY_BASENAMES.map((name) => path.join(whisperDir, `${name}${exeSuffix}`));
+  return path.join(engineDir, `${TRANSCRIBE_BINARY_BASENAME}${exeSuffix}`);
 }
 
-function firstExisting(paths: string[]): string | null {
-  for (const candidate of paths) {
-    try {
-      if (fs.statSync(candidate).isFile()) return candidate;
-    } catch {
-      // keep looking
-    }
+/**
+ * Approximate the physical core count. Node only reports logical CPUs, and
+ * x86 desktops almost always run two hardware threads per core; on Apple
+ * Silicon the heavy lifting runs on the GPU via Metal anyway.
+ */
+function resolveTranscribeThreads(logicalCpus = os.availableParallelism()): number {
+  return Math.max(1, Math.min(MAX_TRANSCRIBE_THREADS, Math.floor(logicalCpus / 2)));
+}
+
+function isFile(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
   }
-  return null;
 }
 
-function resolveWhisperProcessTimeoutMs(): number {
-  const configured = Number.parseInt(process.env.ADE_WHISPER_PROCESS_TIMEOUT_MS ?? "", 10);
+// Windows NTSTATUS for an illegal instruction, as an unsigned 32-bit exit code.
+const STATUS_ILLEGAL_INSTRUCTION = 0xc000001d;
+
+/**
+ * The binary targets AVX2 on x86-64, so an older CPU dies on its first vector
+ * instruction: SIGILL on macOS/Linux, STATUS_ILLEGAL_INSTRUCTION on Windows.
+ */
+function isUnsupportedCpuExit(exitCode: number | null, signal: NodeJS.Signals | null): boolean {
+  return signal === "SIGILL" || (exitCode != null && exitCode >>> 0 === STATUS_ILLEGAL_INSTRUCTION);
+}
+
+function resolveTranscribeProcessTimeoutMs(): number {
+  const configured = Number.parseInt(process.env.ADE_SPEECH_PROCESS_TIMEOUT_MS ?? "", 10);
   return Number.isFinite(configured) && configured > 0
     ? configured
-    : DEFAULT_WHISPER_PROCESS_TIMEOUT_MS;
+    : DEFAULT_TRANSCRIBE_PROCESS_TIMEOUT_MS;
 }
 
 function validateSampleRate(sampleRate: number): number {
@@ -125,11 +149,12 @@ function validateSampleRate(sampleRate: number): number {
 }
 
 /**
- * Resolve the directory that holds the whisper binary + model.
+ * Resolve the directory that holds the transcribe-cli binary (and, in dev, a
+ * locally materialized model).
  *   packaged: <resourcesPath>/whisper
  *   dev:      apps/desktop/resources/whisper
  */
-function resolveWhisperDir(options: { isPackaged: boolean; resourcesPath?: string | null }): string {
+function resolveEngineDir(options: { isPackaged: boolean; resourcesPath?: string | null }): string {
   return resolveBundledResource("whisper", options);
 }
 
@@ -177,64 +202,39 @@ function pcmToWavBuffer(pcm: Int16Array | Float32Array, sampleRate: number): Buf
 }
 
 /**
- * Extract transcript text from whisper.cpp output. whisper.cpp with
- * `--output-json` writes `<wavPath>.json` containing `{ transcription: [{ text }] }`.
- * We also accept plain stdout as a fallback when JSON is unavailable.
+ * Fallback when the `-o` transcript file is missing: transcribe-cli prints the
+ * transcript on stdout as a `text: ...` line.
  */
-function parseWhisperJson(jsonText: string): string | null {
-  try {
-    const parsed = JSON.parse(jsonText) as {
-      transcription?: Array<{ text?: string }>;
-      text?: string;
-    };
-    if (Array.isArray(parsed.transcription)) {
-      const joined = parsed.transcription
-        .map((segment) => (typeof segment.text === "string" ? segment.text : ""))
-        .join("")
-        .trim();
-      if (joined) return joined;
-    }
-    if (typeof parsed.text === "string" && parsed.text.trim()) {
-      return parsed.text.trim();
-    }
-  } catch {
-    // not JSON
+function parseTranscribeStdout(stdout: string): string {
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith("text:")) return line.slice("text:".length).trim();
   }
-  return null;
-}
-
-/** Strip whisper.cpp stdout timestamp lines down to the spoken text. */
-function parseWhisperStdout(stdout: string): string {
-  // Lines look like: "[00:00:00.000 --> 00:00:02.000]   hello world"
-  const lines = stdout.split(/\r?\n/);
-  const texts: string[] = [];
-  for (const line of lines) {
-    const match = line.match(/\]\s*(.*)$/);
-    if (match && match[1]) {
-      texts.push(match[1]);
-    } else if (line.trim() && !line.includes("[") && !line.startsWith("whisper_")) {
-      texts.push(line.trim());
-    }
-  }
-  return texts.join(" ").replace(/\s+/g, " ").trim();
+  return "";
 }
 
 /**
- * Build the whisper.cpp CLI arguments. Exported as a standalone function so the
- * flag set is unit-tested — notably that JSON output uses `-oj`. This whisper.cpp
- * build has NO `-otj` flag; passing it makes whisper write no JSON sidecar and
- * transcribe nothing (the original dictation "catches nothing" bug).
+ * Build the transcribe-cli arguments. The transcript is written to `outPath`
+ * as plain text; stdout carries a verbose report we only use as a fallback.
  */
-export function buildWhisperArgs(modelPath: string, wavPath: string): string[] {
+function buildTranscribeArgs(
+  modelPath: string,
+  wavPath: string,
+  outPath: string,
+  threads: number,
+): string[] {
   return [
     "-m",
     modelPath,
-    "-f",
-    wavPath,
     "-l",
     "en",
-    "-oj", // output transcript JSON sidecar (<wavPath>.json) — NOT -otj
-    "-np", // no prints (suppress progress/system info on stdout)
+    "-q", // suppress library logging
+    "--timestamps",
+    "none",
+    "--threads",
+    String(threads),
+    "-o",
+    outPath,
+    wavPath,
   ];
 }
 
@@ -255,32 +255,43 @@ export function createTranscriptionService({
    */
   modelDir?: string | null;
   /** Override the model download source (mainly for tests). */
-  modelSource?: WhisperModelSource;
+  modelSource?: SpeechModelSource;
   /** Optional pre-loaded glossary (mainly for tests). */
   glossary?: PreparedGlossary;
 }): TranscriptionService {
-  const whisperDir = resolveWhisperDir({ isPackaged, resourcesPath });
+  const engineDir = resolveEngineDir({ isPackaged, resourcesPath });
   // Runtime model dir: the model is downloaded here (not bundled). Fall back to
-  // the bundled whisper dir so a dev/test checkout with a local model still works.
-  const runtimeModelDir = modelDir?.trim() ? modelDir.trim() : whisperDir;
+  // the bundled engine dir so a dev/test checkout with a local model still works.
+  const runtimeModelDir = modelDir?.trim() ? modelDir.trim() : engineDir;
+  // Upgraded installs still hold the old ~141 MB whisper model, which the new
+  // engine cannot read; drop it at startup rather than waiting for the user to
+  // download the new one. Dictation stays off until the new model is present.
+  // A failure (e.g. a file locked on Windows) is retried on the next launch.
+  if (modelDir?.trim()) {
+    for (const failure of removeStaleModelFiles(runtimeModelDir)) {
+      logger.warn("transcription.stale_model_cleanup_failed", failure);
+    }
+  }
   const tmpDir = path.join(os.tmpdir(), "ade-voice");
   const activeChildren = new Set<ReturnType<typeof spawn>>();
   const pendingTempFiles = new Set<string>();
   let disposed = false;
 
-  // Single-flight queue: chain transcriptions so only one whisper process runs
+  // Single-flight queue: chain transcriptions so only one transcribe process runs
   // at a time, like the per-lane refresh serialization in jobEngine.
   let queueTail: Promise<unknown> = Promise.resolve();
 
   let modelDownloadPromise: Promise<void> | null = null;
 
-  const resolveBinary = (): string | null => firstExisting(whisperBinaryCandidates(whisperDir));
+  const resolveBinary = (): string | null => {
+    const binaryPath = transcribeBinaryPath(engineDir);
+    return isFile(binaryPath) ? binaryPath : null;
+  };
   const resolveModel = (): string | null => {
     // Runtime (downloaded) location first, then the bundled dir (dev fallback).
-    return firstExisting([
-      whisperModelPath(runtimeModelDir),
-      path.join(whisperDir, WHISPER_MODEL_BASENAME),
-    ]);
+    // A truncated file does not count, so the UI offers the download again.
+    if (isSpeechModelInstalled(runtimeModelDir)) return speechModelPath(runtimeModelDir);
+    return isSpeechModelInstalled(engineDir) ? speechModelPath(engineDir) : null;
   };
 
   const getStatus = (): TranscriptionStatus => {
@@ -302,7 +313,7 @@ export function createTranscriptionService({
     if (!modelDownloadPromise) {
       const startedAt = Date.now();
       logger.info("transcription.model_download_started", { runtimeModelDir });
-      modelDownloadPromise = downloadWhisperModel({
+      modelDownloadPromise = downloadSpeechModel({
         modelDir: runtimeModelDir,
         source: modelSource,
         onProgress,
@@ -328,23 +339,24 @@ export function createTranscriptionService({
   const cleanupTempFile = (filePath: string) => {
     pendingTempFiles.delete(filePath);
     fs.rm(filePath, { force: true }, () => {});
-    fs.rm(`${filePath}.json`, { force: true }, () => {});
+    fs.rm(`${filePath}.txt`, { force: true }, () => {});
   };
 
-  const runWhisper = async (
+  const runTranscribe = async (
     binaryPath: string,
     modelPath: string,
     wavPath: string,
   ): Promise<string> => {
     return await new Promise<string>((resolve, reject) => {
-      const args = buildWhisperArgs(modelPath, wavPath);
+      const outPath = `${wavPath}.txt`;
+      const args = buildTranscribeArgs(modelPath, wavPath, outPath, resolveTranscribeThreads());
       const child = spawn(binaryPath, args, {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });
       activeChildren.add(child);
 
-      const whisperTimeoutMs = resolveWhisperProcessTimeoutMs();
+      const timeoutMs = resolveTranscribeProcessTimeoutMs();
       let timeoutHandle: NodeJS.Timeout | null = null;
       let settled = false;
       let stdout = "";
@@ -390,39 +402,42 @@ export function createTranscriptionService({
         rejectOnce(
           new TranscriptionError(
             "transcribe_failed",
-            `whisper timed out after ${Math.round(whisperTimeoutMs / 1000)}s`,
+            `transcription timed out after ${Math.round(timeoutMs / 1000)}s`,
           ),
           false,
         );
-      }, whisperTimeoutMs);
+      }, timeoutMs);
       timeoutHandle.unref?.();
 
-      child.on("close", (exitCode) => {
+      child.on("close", (exitCode, signal) => {
         clearChildTimeout();
         activeChildren.delete(child);
         if (settled) return;
         settled = true;
         if (exitCode !== 0) {
+          logger.warn("transcription.process_failed", {
+            exitCode,
+            signal,
+            stderr: stderr.slice(0, 500),
+          });
           reject(
-            new TranscriptionError(
-              "transcribe_failed",
-              `whisper exited with code ${exitCode}: ${stderr.slice(0, 500)}`,
-            ),
+            isUnsupportedCpuExit(exitCode, signal)
+              ? new TranscriptionError("engine_unsupported", "This CPU lacks AVX2, which the speech engine needs.")
+              : new TranscriptionError(
+                  "transcribe_failed",
+                  `transcribe-cli exited with ${signal ? `signal ${signal}` : `code ${exitCode}`}: ${stderr.slice(0, 500)}`,
+                ),
           );
           return;
         }
-        // Prefer the JSON sidecar; fall back to stdout parsing.
-        let text: string | null = null;
+        // Prefer the transcript file; fall back to stdout parsing.
+        let text: string;
         try {
-          const jsonText = fs.readFileSync(`${wavPath}.json`, "utf8");
-          text = parseWhisperJson(jsonText);
+          text = fs.readFileSync(outPath, "utf8").trim();
         } catch {
-          // sidecar missing; use stdout
+          text = parseTranscribeStdout(stdout);
         }
-        if (text == null) {
-          text = parseWhisperStdout(stdout);
-        }
-        resolve(text ?? "");
+        resolve(text);
       });
     });
   };
@@ -440,7 +455,7 @@ export function createTranscriptionService({
 
     const status = getStatus();
     if (!status.installed || !status.binaryPath || !status.modelPath) {
-      logger.warn("transcription.model_not_installed", { whisperDir });
+      logger.warn("transcription.model_not_installed", { engineDir });
       throw new TranscriptionError(
         "model_not_installed",
         "Voice model not installed",
@@ -455,7 +470,7 @@ export function createTranscriptionService({
     try {
       fs.writeFileSync(wavPath, pcmToWavBuffer(pcm, sampleRate));
       const startedAt = Date.now();
-      const raw = (await runWhisper(status.binaryPath, status.modelPath, wavPath)).trim();
+      const raw = (await runTranscribe(status.binaryPath, status.modelPath, wavPath)).trim();
       const preparedGlossary = glossary ?? loadGlossary({ isPackaged, resourcesPath });
       const cleaned = cleanTranscript(raw, preparedGlossary);
       logger.info("transcription.done", {
@@ -473,7 +488,7 @@ export function createTranscriptionService({
     pcm: Int16Array | Float32Array,
     options?: { sampleRate?: number },
   ): Promise<TranscriptionResult> => {
-    // Serialize: append to the queue tail so only one whisper runs at a time.
+    // Serialize: append to the queue tail so only one transcribe-cli runs at a time.
     const run = queueTail.then(
       () => transcribeNow(pcm, options),
       () => transcribeNow(pcm, options),

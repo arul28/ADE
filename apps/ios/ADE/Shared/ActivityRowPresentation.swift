@@ -42,7 +42,7 @@ public func activityStatusShoutsLabel(glyph: ActivityGlyph?, tone: ActivityTone)
 /// table stays renderer-free. `systemImage` is the SF Symbols binding both
 /// Apple-platform consumers happen to share.
 ///
-/// The five headline shapes are the notch/dropdown language, verbatim:
+/// The five headline shapes are the desktop Activity language, verbatim:
 ///
 ///   ●  needsYou  filled dot      your move
 ///   ▤  planning  notepad         a plan is being written
@@ -58,10 +58,10 @@ public func activityStatusShoutsLabel(glyph: ActivityGlyph?, tone: ActivityTone)
 /// **What is shared and what is not.** The *glyph identity* is the contract
 /// (`ACTIVITY_STATE_GLYPHS` in `renderer/components/activity/activityPresentation.ts`);
 /// each surface maps it to its own icon set — Phosphor on the web,
-/// SF Symbols here and in the notch. Two Swift surfaces may therefore pick
-/// different symbols for one identity where their sizes differ: the notch
-/// strip draws bare 14pt marks (`circle`, `checkmark`), while these rows draw
-/// into a disc and use the enclosed forms. Divergence in *identity*, tone or
+/// SF Symbols here. Two Swift surfaces may therefore pick different symbols for
+/// one identity where their sizes differ: a bare small mark (`circle`,
+/// `checkmark`) in one place, the enclosed form drawn into a disc in these
+/// rows. Divergence in *identity*, tone or
 /// word is a drift bug; divergence in symbol at a different size is not.
 public enum ActivityGlyph: String, Codable, Hashable, Sendable {
     case working
@@ -90,8 +90,8 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
     public var systemImage: String {
         switch self {
         case .working: return "circle.dotted"
-        // Same notepad the notch strip uses; `list.bullet.rectangle` lost its
-        // rules below ~10pt and read as a smear.
+        // `list.bullet.rectangle` lost its rules below ~10pt and read as a
+        // smear.
         case .planning: return "note.text"
         case .exploring: return "binoculars.fill"
         case .implementing: return "chevron.left.forwardslash.chevron.right"
@@ -101,7 +101,8 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
         case .shipping: return "paperplane.fill"
         case .monitoring: return "eye.fill"
         case .recording: return "record.circle.fill"
-        case .waiting: return "hourglass"
+        // The Waiting column's own mark, so a row, its chip and its tile match.
+        case .waiting: return "pause.circle"
         // A filled dot, not a bell. The bell said "notification"; the row is
         // not a notification, it is a state, and the strip/island read it
         // beside four other state glyphs where a bell was the odd shape out.
@@ -116,7 +117,7 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
     }
 }
 
-/// The coarse state buckets the notch strip, the widget header and the Dynamic
+/// The coarse state buckets the older widget header and the Dynamic
 /// Island's compact leading all count by. Finer than `ActivityBand` (which
 /// folds failure into "needs you") and coarser than a phase — this is the level
 /// at which "glyph + count" is honest.
@@ -143,7 +144,7 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
     }
 
     /// The two resting bands. Surfaces with room for a glance and nothing more
-    /// — the island's compact pill, the notch popover — lead with the live
+    /// — the island's compact pill, the desktop popover — lead with the live
     /// bands and let these two be reached by opening the full list.
     public var isResting: Bool { self == .idle || self == .done }
 
@@ -210,6 +211,136 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
         default: return nil
         }
     }
+}
+
+/// The one state model every Activity surface counts by: the Work board's four
+/// columns. The Hub, the Activity drawer, the widgets and the Live Activity all
+/// group agent items with `activityBoardColumn(_:)`, so "2 need you" means the
+/// same rows on the phone as on the desktop.
+///
+/// The iOS mirror of `activityBoardColumn` in
+/// `apps/desktop/src/shared/attention/activityBoardColumn.ts`, pinned by
+/// `activityBoardColumn.cases.json` beside it.
+public enum ActivityBoardColumn: String, Codable, Hashable, Sendable, CaseIterable {
+    case needsYou
+    case working
+    case waiting
+    case done
+
+    /// Snake-case slug on the wire (`boardColumn`, `ade://activity?state=`).
+    /// Kept apart from `rawValue` so a Swift rename cannot change a payload.
+    public var wireValue: String {
+        switch self {
+        case .needsYou: return "needs_you"
+        case .working: return "working"
+        case .waiting: return "waiting"
+        case .done: return "done"
+        }
+    }
+
+    public init?(wireValue: String?) {
+        switch wireValue?.lowercased() {
+        case "needs_you": self = .needsYou
+        case "working": self = .working
+        case "waiting": self = .waiting
+        case "done": self = .done
+        default: return nil
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .needsYou: return "Needs you"
+        case .working: return "Working"
+        case .waiting: return "Waiting"
+        case .done: return "Done"
+        }
+    }
+
+    /// Amber for your move, blue for work in flight, neutral for a wait on
+    /// someone else, emerald for finished. A failure is Needs you and keeps its
+    /// own red mark on the row, not on the column.
+    public var tone: ActivityTone {
+        switch self {
+        case .needsYou: return .amber
+        case .working: return .blue
+        case .waiting: return .neutral
+        case .done: return .emerald
+        }
+    }
+
+    /// SF Symbol for the column's count tile.
+    public var systemImage: String {
+        switch self {
+        case .needsYou: return "exclamationmark.circle.fill"
+        case .working: return "circle.dashed"
+        case .waiting: return "pause.circle"
+        case .done: return "checkmark.circle.fill"
+        }
+    }
+}
+
+/// Why a Waiting item waits.
+public enum ActivityWaitingReason: String, Codable, Hashable, Sendable {
+    case snoozed
+    case ci
+    case review
+    case scheduled
+    case subagent
+
+    public init?(wireValue: String?) {
+        guard let wireValue, let value = ActivityWaitingReason(rawValue: wireValue.lowercased()) else {
+            return nil
+        }
+        self = value
+    }
+
+    public var label: String {
+        switch self {
+        case .snoozed: return "Snoozed"
+        case .ci: return "CI running"
+        case .review: return "Review requested"
+        case .scheduled: return "Wake scheduled"
+        case .subagent: return "Subagent working"
+        }
+    }
+}
+
+/// The column an Activity item counts in, or nil for a pull request (those are
+/// notifications, not agents, and are never counted).
+///
+/// Trusts a valid published `boardColumn`; otherwise derives one from the phase
+/// for an older brain. The fallback never answers Waiting, because an older
+/// brain cannot say why a row waits.
+public func activityBoardColumn(_ item: AccountAttentionItem) -> ActivityBoardColumn? {
+    guard item.kind == .agent else { return nil }
+    if let published = ActivityBoardColumn(wireValue: item.boardColumn) { return published }
+    switch item.phase {
+    case .needsYou, .failed: return .needsYou
+    default: break
+    }
+    if item.tier == .idle { return .done }
+    switch item.phase {
+    case .starting, .running, .stale: return .working
+    default: return .done
+    }
+}
+
+/// Why a Waiting item waits, or nil for every other column.
+public func activityWaitingReason(_ item: AccountAttentionItem) -> ActivityWaitingReason? {
+    guard activityBoardColumn(item) == .waiting else { return nil }
+    return ActivityWaitingReason(wireValue: item.waitingReason)
+}
+
+/// Agent items per column, all four keys present. Pull requests are not counted.
+public func countActivityBoardColumns<S: Sequence>(
+    _ items: S
+) -> [ActivityBoardColumn: Int] where S.Element == AccountAttentionItem {
+    var counts = Dictionary(uniqueKeysWithValues: ActivityBoardColumn.allCases.map { ($0, 0) })
+    for item in items {
+        if let column = activityBoardColumn(item) { counts[column, default: 0] += 1 }
+    }
+    return counts
 }
 
 /// Which of the three priority bands a row belongs to. Mirrors desktop's
@@ -497,6 +628,10 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     public let band: ActivityBand
     /// Counting bucket for the strip / widget header / island compact leading.
     public let stateGroup: ActivityStateGroup
+    /// The Work-board column this row counts in; nil for a pull request.
+    public let boardColumn: ActivityBoardColumn?
+    /// Why the row waits, when it sits in Waiting and the publisher said why.
+    public let waitingReason: ActivityWaitingReason?
     /// Anchor for the elapsed ticker. `statusSince` when the publisher supplies
     /// it (immutable for the life of a phase); `occurredAt` otherwise, which is
     /// approximate but never wrong enough to mislead.
@@ -535,10 +670,24 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     public let inlineActionsAllowed: Bool
 
     public init(item: AccountAttentionItem, inlineActionsAllowed: Bool = false) {
-        let presentation = ActivityPhaseVocabulary.presentation(
-            for: item.phase,
-            chatActivityMode: item.chatActivityMode
-        )
+        let column = activityBoardColumn(item)
+        let reason = activityWaitingReason(item)
+        // A Waiting row says why it waits instead of its phase: a snoozed row
+        // arrives as `stale` and a row waiting on CI as `running`, and neither
+        // word is what the reader needs.
+        let presentation = column == .waiting
+            ? ActivityPhasePresentation(
+                label: reason?.label ?? ActivityBoardColumn.waiting.label,
+                tone: .neutral,
+                glyph: .waiting,
+                showsElapsed: false,
+                prominent: false,
+                active: false
+            )
+            : ActivityPhaseVocabulary.presentation(
+                for: item.phase,
+                chatActivityMode: item.chatActivityMode
+            )
 
         id = item.id
         title = Self.nonEmpty(item.title) ?? "Untitled session"
@@ -555,6 +704,8 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
         // canonical idle rule (idle → the tail) once, for every surface.
         band = ActivityPhaseVocabulary.band(for: item)
         stateGroup = ActivityPhaseVocabulary.stateGroup(for: item)
+        boardColumn = column
+        waitingReason = reason
         elapsedSince = item.statusSince ?? item.occurredAt
         statusNote = Self.nonEmpty(item.preview)
             ?? Self.nonEmpty(item.detail)

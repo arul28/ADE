@@ -34,7 +34,8 @@ import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
-import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueRef } from "../../lib/issueNavigation";
 import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { cn } from "../ui/cn";
@@ -1276,8 +1277,8 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "settings") {
-      // Lets surfaces outside the router tree (the attention popover, the
-      // notch) open a settings tab — and land on a specific card — without
+      // Lets surfaces outside the router tree (the Activity popover) open a
+      // settings tab — and land on a specific card — without
       // taking a `useNavigate` dependency. Unknown tabs fall back to the
       // settings root rather than 404-ing to General.
       const tab = resolveSettingsTab(target.tab ?? null);
@@ -1332,11 +1333,11 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "linear-issue") {
-      requestLinearIssueQuickView({
-        issueIdentifier: target.issueIdentifier,
-        branch: target.branch ?? null,
-        source: "deeplink",
-      });
+      // Where you are: in the Work tools pane when a chat is on screen (an
+      // `ade://linear-issue` chip in a transcript lands here too), otherwise
+      // the issue sheet over the current page.
+      const ref = linearIssueRef(target.issueIdentifier);
+      if (ref) openIssueRef({ ref, branch: target.branch ?? null, source: "deeplink" });
       return true;
     }
 

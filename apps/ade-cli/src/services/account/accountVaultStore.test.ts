@@ -7,6 +7,7 @@ import {
   type AccountVaultRelay,
 } from "./accountVaultStore";
 import type { AccountVaultItem } from "../push/pushRelayClient";
+import { recordAccountChangeMarks } from "./accountChangeMarks";
 
 /**
  * The vault cache is the settings cache with one extra duty: what it holds is a
@@ -438,6 +439,94 @@ describe("account vault store", () => {
     expect(store.get("all", "provider_key", "linear")).toBe("a-key");
     expect(store.get("all", "integration", "linear")).toBe("an-oauth-token");
     expect(store.get("repo:github.com/arul28/ade", "integration", "linear")).toBe("a-repo-token");
+  });
+
+  it("keeps the ready tick for local follow-up while the vault mark holds, without pulling", async () => {
+    vi.useFakeTimers();
+    try {
+      const user = "user_vault_marks";
+      accountUserId = user;
+      const store = makeStore();
+      const ticks: string[] = [];
+      const stop = store.startPeriodicSync(30_000, (status) => ticks.push(status));
+      recordAccountChangeMarks(user, { settings: null, vault: "2026-10-07T12:00:00.000Z" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+      expect(ticks).toEqual(["ready"]);
+
+      for (let beat = 0; beat < 3; beat += 1) {
+        recordAccountChangeMarks(user, { settings: "s-moved", vault: "2026-10-07T12:00:00.000Z" });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      // A settings change does not pull the vault, and every tick still says ready.
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+      expect(ticks).toEqual(["ready", "ready", "ready", "ready"]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("pulls on the next tick after a purge, instead of reporting the emptied vault ready", async () => {
+    vi.useFakeTimers();
+    try {
+      const user = "user_vault_purge";
+      accountUserId = user;
+      const store = makeStore();
+      // Each "ready" records how many pulls had happened when it was reported.
+      const readyAfterPulls: number[] = [];
+      const stop = store.startPeriodicSync(30_000, (status) => {
+        if (status === "ready") readyAfterPulls.push(relay.getAccountVault.mock.calls.length);
+      });
+      const mark = { settings: null, vault: "2026-10-07T15:00:00.000Z" };
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+
+      store.purge();
+      const readyBeforePurge = readyAfterPulls.length;
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // The tick after a purge goes back to the relay from the beginning.
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(2);
+      expect(relay.getAccountVault).toHaveBeenLastCalledWith({ since: null });
+      // No "ready" after the purge is reported before the purged vault was pulled again.
+      const readyAfterPurge = readyAfterPulls.slice(readyBeforePurge);
+      expect(readyAfterPurge.length).toBeGreaterThan(0);
+      expect(readyAfterPurge.every((pulls) => pulls >= 2)).toBe(true);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps ticking and notifying when a sync listener throws", async () => {
+    vi.useFakeTimers();
+    try {
+      const user = "user_vault_throwing_listener";
+      accountUserId = user;
+      const store = makeStore();
+      const heard: string[] = [];
+      const stopThrowing = store.startPeriodicSync(30_000, () => {
+        throw new Error("listener bug");
+      });
+      const stopListening = store.startPeriodicSync(30_000, (status) => heard.push(status));
+      const mark = { settings: null, vault: "2026-10-07T16:00:00.000Z" };
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(0);
+      for (let beat = 0; beat < 2; beat += 1) {
+        recordAccountChangeMarks(user, mark);
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      // The pull and both skipped ticks still reached the healthy listener.
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+      expect(heard).toEqual(["ready", "ready", "ready"]);
+      stopThrowing();
+      stopListening();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does nothing at all when signed out", async () => {

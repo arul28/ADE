@@ -10,8 +10,6 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
  * in the ADE_RPC_URL value (`tcp://127.0.0.1:<port>?token=<token>`) so it
  * propagates to legitimate clients through the same channel as the URL.
  *
- * Mirrors the desktop built-in-browser bridge auth
- * (apps/desktop/src/main/services/builtInBrowser/desktopBridgeServer.ts):
  * 256-bit random token, per-request param, timing-safe comparison.
  */
 

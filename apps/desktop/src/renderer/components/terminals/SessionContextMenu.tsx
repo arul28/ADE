@@ -10,7 +10,6 @@ import {
   CheckCircle,
   ClockCountdown,
   Copy,
-  Desktop,
   GitBranch,
   GitFork,
   Globe,
@@ -74,6 +73,7 @@ import {
   loadAutoHandoffRulesForSession,
 } from "./AutoHandoffModal";
 import type { ChatHandoffIntent } from "../../lib/chatHandoffIntent";
+import { CrossMachineMoveSubmenu } from "./CrossMachineMoveSubmenu";
 
 const SESSION_METADATA_GENERATION_ACTIONS: ReadonlyArray<{
   label: string;
@@ -197,6 +197,8 @@ type SessionContextMenuProps = {
     session: TerminalSessionSummary,
     intent: ChatHandoffIntent,
     binding?: OpenProjectBinding | null,
+    /** "remote": the machine to preselect in the full setup. */
+    options?: { machine?: string | null },
   ) => void;
   pinnedSessionIds?: string[];
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
@@ -709,18 +711,13 @@ function SessionContextMenuPanel({
               <MenuRowIcon icon={GitFork} />
               Local handoff
             </button>
-            <button
-              type="button"
-              data-testid="session-menu-handoff-remote"
-              className={MENU_ITEM_CLASS}
-              onClick={() => {
-                onOpenChatHandoff(session, "remote", binding);
-                onClose();
-              }}
-            >
-              <MenuRowIcon icon={Desktop} />
-              Another machine
-            </button>
+            <CrossMachineMoveSubmenu
+              session={session}
+              binding={binding}
+              busy={isActivelyRunning}
+              onClose={onClose}
+              onOpenFullSetup={(machine) => onOpenChatHandoff(session, "remote", binding, { machine })}
+            />
             <MenuSeparator />
             <button
               type="button"

@@ -66,7 +66,6 @@ describe("createAdeWebAdapter", () => {
   it("boots before and after a bound project", async () => {
     const adapter = createAdeWebAdapter(fake.asClient());
 
-    expect("attentionNotch" in adapter.ade).toBe(false);
     await expect(adapter.ade.app.getProject()).resolves.toBeNull();
     await expect(adapter.ade.app.getWindowSession()).resolves.toMatchObject({
       windowId: null,

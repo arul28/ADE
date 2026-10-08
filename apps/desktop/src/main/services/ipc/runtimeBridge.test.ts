@@ -2878,7 +2878,7 @@ describe("registerIpc sync bridge", () => {
     expect(snapshot.availability.message).not.toMatch(/push relay|HTTP 401|account token rejected/i);
   });
 
-  it("reports an old brain Attention contract once instead of returning an empty notch", async () => {
+  it("reports an old brain Attention contract once instead of returning an empty Activity feed", async () => {
     const logger = {
       warn: vi.fn(),
       info: vi.fn(),

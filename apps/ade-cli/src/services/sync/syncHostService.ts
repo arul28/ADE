@@ -303,6 +303,7 @@ import type { AppControlSyncStream, AppControlSyncStreamSink } from "./appContro
 import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import type { WebhookRemoteSource } from "./webhookRemoteCommands";
+import type { AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
@@ -1153,6 +1154,8 @@ type SyncHostServiceArgs = {
    * rather than a namespace whose every call throws.
    */
   getWebhookAutomations?: () => WebhookRemoteSource | null;
+  /** Auto-handoff rules for the phone's session menu. Threaded like `getWebhookAutomations`. */
+  getAutomationRules?: () => AutomationRuleRemoteSource | null;
   /**
    * Subscription fan-out for the live Mac Desktop view. Production
    * (`syncService.ts`) creates it next to the remote-command service and
@@ -2354,6 +2357,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     macDesktopSyncStream,
     appControlSyncStream: args.appControlSyncStream ?? null,
     getWebhookAutomations: args.getWebhookAutomations,
+    getAutomationRules: args.getAutomationRules,
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,

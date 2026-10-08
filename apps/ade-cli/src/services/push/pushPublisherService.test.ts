@@ -26,7 +26,6 @@ import {
 } from "./activityFingerprint";
 import { deriveProjectId } from "../projects/projectRegistry";
 import {
-  buildAgentRunsContentState,
   countAwaitingAttentionRuns,
   createPushPublisherService,
   isWithinQuietHours,
@@ -142,37 +141,6 @@ describe("shouldDeliverAlertForPrefs", () => {
   it("blocks inside quiet hours", () => {
     const prefs = { enabled: true, quietHours: { start: "00:00", end: "23:59", timezone: "UTC" } };
     expect(shouldDeliverAlertForPrefs(prefs, "s-1", nowMs)).toBe(false);
-  });
-});
-
-describe("buildAgentRunsContentState", () => {
-  it("caps runs at 3, orders by recency, and counts active runs", () => {
-    const runs = [
-      run({ sessionId: "a", lastActiveAt: 10, phase: "running" }),
-      run({ sessionId: "b", lastActiveAt: 40, phase: "waiting_for_approval" }),
-      run({ sessionId: "c", lastActiveAt: 30, phase: "completed" }),
-      run({ sessionId: "d", lastActiveAt: 20, phase: "running" }),
-    ];
-    const state = buildAgentRunsContentState(runs, 1_000);
-    expect(state.updatedAt).toBe(1);
-    // 3 active (a, b, d); c is terminal.
-    expect(state.activeCount).toBe(3);
-    expect(state.runs.map((r) => r.id)).toEqual(["b", "c", "d"]);
-  });
-
-  it("redacts failed detail and caps detail length", () => {
-    const long = "x".repeat(300);
-    const state = buildAgentRunsContentState(
-      [
-        run({ sessionId: "f", phase: "failed", detail: "stack trace with secrets", lastActiveAt: 2 }),
-        run({ sessionId: "g", phase: "running", detail: long, lastActiveAt: 1 }),
-      ],
-      0,
-    );
-    const failed = state.runs.find((r) => r.id === "f");
-    const running = state.runs.find((r) => r.id === "g");
-    expect(failed?.detail).toBe("Run failed");
-    expect(running?.detail).toHaveLength(160);
   });
 });
 
@@ -478,192 +446,6 @@ describe("createPushPublisherService flush", () => {
     vi.clearAllMocks();
   });
 
-  it("keeps legacy machine Live Activities ownerless while deduping a repeat", async () => {
-    const { publisher, publish, emit } = makeHarness();
-    await publisher.start();
-
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(200);
-
-    expect(publish).toHaveBeenCalledTimes(1);
-    const payload = publish.mock.calls[0][0];
-    expect(payload.notifications).toHaveLength(1);
-    expect(payload.notifications[0].title).toBe("Codex needs you");
-    expect(payload.notifications[0].body).toBe("auth-lane · Fix login");
-    expect(payload.notifications[0].deviceIds).toEqual(["dev-1"]);
-    expect(payload.notifications[0].dedupeKey).toBe(alertDedupeKey("alert:s-1:approval"));
-    expect(payload.liveActivity).toHaveLength(1);
-    expect(payload.liveActivity[0].event).toBe("start");
-    expect(payload.liveActivity[0].activityId).toBe("agent-runs");
-    expect(payload.liveActivity[0].attributes).toEqual({ machineName: "MacBook" });
-    expect(payload.liveActivity[0].attributes.ownershipEpoch).toBeUndefined();
-    expect(payload.liveActivity[0].contentState.ownershipEpoch).toBeUndefined();
-    expect(payload.liveActivity[0].contentState.activeCount).toBe(1);
-    expect(payload.liveActivity[0].contentState.runs[0].id).toBe("s-1");
-
-    // Identical repeat: alert dedupes and the LA contentState is unchanged.
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish).toHaveBeenCalledTimes(1);
-
-    publisher.dispose();
-  });
-
-  it("keeps updating a healthy phone while another phone persistently fails to start", async () => {
-    const secondDevice = {
-      ...device,
-      deviceId: "dev-2",
-      apnsToken: "c".repeat(64),
-      pushToStartToken: "d".repeat(64),
-    };
-    const { publisher, publish, emit } = makeHarness([device, secondDevice]);
-    publish
-      .mockResolvedValueOnce({
-        ok: true,
-        delivered: 0,
-        failed: 1,
-        suppressed: 1,
-        outcomes: [
-          {
-            deviceId: "dev-1",
-            kind: "liveactivity",
-            delivered: false,
-            suppressed: true,
-            skipped: null,
-          },
-          {
-            deviceId: "dev-2",
-            kind: "liveactivity",
-            delivered: false,
-            suppressed: false,
-            skipped: null,
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        delivered: 1,
-        failed: 1,
-        outcomes: [
-          {
-            deviceId: "dev-1",
-            kind: "liveactivity",
-            delivered: true,
-            suppressed: false,
-            skipped: null,
-          },
-          {
-            deviceId: "dev-2",
-            kind: "liveactivity",
-            delivered: false,
-            suppressed: false,
-            skipped: null,
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        delivered: 0,
-        failed: 1,
-        outcomes: [
-          {
-            deviceId: "dev-2",
-            kind: "liveactivity",
-            delivered: false,
-            suppressed: false,
-            skipped: null,
-          },
-        ],
-      });
-    await publisher.start();
-
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(publish.mock.calls[0]?.[0].liveActivity?.[0]).toMatchObject({
-      event: "start",
-      deviceIds: ["dev-1", "dev-2"],
-    });
-
-    emit({
-      sessionId: "s-1",
-      timestamp: "",
-      event: { type: "pending_input_resolved", itemId: "i-1", resolution: "accepted" },
-    });
-    await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish).toHaveBeenCalledTimes(2);
-    expect(publish.mock.calls[1]?.[0].liveActivity).toEqual([
-      expect.objectContaining({
-        event: "start",
-        deviceIds: ["dev-2"],
-      }),
-      expect.objectContaining({
-        event: "update",
-        deviceIds: ["dev-1"],
-        contentState: expect.objectContaining({
-          runs: [expect.objectContaining({ id: "s-1", phase: "running" })],
-        }),
-      }),
-    ]);
-
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(publish).toHaveBeenCalledTimes(3);
-    expect(publish.mock.calls[2]?.[0].liveActivity).toEqual([
-      expect.objectContaining({
-        event: "start",
-        deviceIds: ["dev-2"],
-      }),
-    ]);
-
-    publisher.dispose();
-  });
-
-  it("retains a Live Activity hard failure as the latest delivery status", async () => {
-    const { publisher, publish, emit, store, cliSessions } = makeHarness();
-    await publisher.start();
-
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(publish).toHaveBeenCalledTimes(1);
-
-    publish.mockResolvedValueOnce({
-      ok: true,
-      delivered: 0,
-      suppressed: 0,
-      failed: 1,
-      outcomes: [
-        {
-          deviceId: "dev-1",
-          kind: "liveactivity",
-          delivered: false,
-          suppressed: false,
-          skipped: null,
-        },
-      ],
-    });
-    cliSessions.set("cli-1", { title: "Watch logs", toolType: "codex" });
-    publisher.handleCliRuntimeSignal("scope-1", {
-      laneId: "ops",
-      sessionId: "cli-1",
-      runtimeState: "running",
-    });
-    await vi.advanceTimersByTimeAsync(2_500);
-
-    expect(publish).toHaveBeenCalledTimes(2);
-    expect(publish.mock.calls[1]?.[0].notifications).toBeUndefined();
-    expect(publish.mock.calls[1]?.[0].liveActivity).toEqual([
-      expect.objectContaining({
-        event: "update",
-        deviceIds: ["dev-1"],
-      }),
-    ]);
-    expect(store.recordPublishResult).toHaveBeenLastCalledWith({
-      at: expect.any(String),
-      error: "relay failed 1 Live Activity target",
-    });
-
-    publisher.dispose();
-  });
-
   it("retries only failed alert phones while committing delivered and suppressed phones", async () => {
     const secondDevice = {
       ...device,
@@ -784,292 +566,6 @@ describe("createPushPublisherService flush", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expect(publish).toHaveBeenCalledTimes(2);
 
-    publisher.dispose();
-  });
-
-  it("restarts only the re-enabled device without duplicating other Live Activities", async () => {
-    const secondDevice = {
-      ...device,
-      deviceId: "dev-2",
-      apnsToken: "c".repeat(64),
-      pushToStartToken: "d".repeat(64),
-    };
-    const { publisher, publish, emit } = makeHarness([device, secondDevice]);
-    await publisher.start();
-
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(publish.mock.calls[0]?.[0].liveActivity?.[0]).toMatchObject({
-      event: "start",
-      deviceIds: ["dev-1", "dev-2"],
-    });
-
-    await publisher.handleDeviceRegistered({
-      deviceId: "dev-1",
-      bundleId: "com.ade.ios",
-      apsEnvironment: "sandbox",
-      clearPushToStartToken: true,
-    });
-    await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish).toHaveBeenCalledTimes(1);
-
-    await publisher.handleDeviceRegistered({
-      deviceId: "dev-1",
-      bundleId: "com.ade.ios",
-      apsEnvironment: "sandbox",
-      pushToStartToken: "e".repeat(64),
-    });
-    await vi.advanceTimersByTimeAsync(2_500);
-
-    expect(publish).toHaveBeenCalledTimes(2);
-    expect(publish.mock.calls[1]?.[0].liveActivity).toEqual([
-      expect.objectContaining({
-        event: "start",
-        deviceIds: ["dev-1"],
-      }),
-    ]);
-
-    publisher.dispose();
-  });
-
-  it("retries only the failed re-enabled device after a mixed restart", async () => {
-    const secondDevice = {
-      ...device,
-      deviceId: "dev-2",
-      apnsToken: "c".repeat(64),
-      pushToStartToken: "d".repeat(64),
-    };
-    const { publisher, publish, emit } = makeHarness([device, secondDevice]);
-    await publisher.start();
-
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(publish.mock.calls[0]?.[0].liveActivity?.[0]).toMatchObject({
-      event: "start",
-      deviceIds: ["dev-1", "dev-2"],
-    });
-
-    for (const deviceId of ["dev-1", "dev-2"]) {
-      await publisher.handleDeviceRegistered({
-        deviceId,
-        bundleId: "com.ade.ios",
-        apsEnvironment: "sandbox",
-        clearPushToStartToken: true,
-      });
-      await publisher.handleDeviceRegistered({
-        deviceId,
-        bundleId: "com.ade.ios",
-        apsEnvironment: "sandbox",
-        pushToStartToken: `${deviceId === "dev-1" ? "e" : "f"}`.repeat(64),
-      });
-    }
-    publish
-      .mockResolvedValueOnce({
-        ok: true,
-        delivered: 1,
-        failed: 1,
-        outcomes: [
-          {
-            deviceId: "dev-1",
-            kind: "liveactivity",
-            delivered: true,
-            suppressed: false,
-            skipped: null,
-          },
-          {
-            deviceId: "dev-2",
-            kind: "liveactivity",
-            delivered: false,
-            suppressed: false,
-            skipped: null,
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        delivered: 1,
-        failed: 0,
-        outcomes: [
-          {
-            deviceId: "dev-2",
-            kind: "liveactivity",
-            delivered: true,
-            suppressed: false,
-            skipped: null,
-          },
-        ],
-      });
-
-    await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish.mock.calls[1]?.[0].liveActivity?.[0]).toMatchObject({
-      event: "start",
-      deviceIds: ["dev-1", "dev-2"],
-    });
-
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(publish).toHaveBeenCalledTimes(3);
-    expect(publish.mock.calls[2]?.[0].liveActivity?.[0]).toMatchObject({
-      event: "start",
-      deviceIds: ["dev-2"],
-    });
-
-    publisher.dispose();
-  });
-
-  it("retries mixed Live Activity updates and ends only for failed phones", async () => {
-    const secondDevice = {
-      ...device,
-      deviceId: "dev-2",
-      apnsToken: "c".repeat(64),
-      pushToStartToken: "d".repeat(64),
-    };
-    const { publisher, publish, emit } = makeHarness([device, secondDevice]);
-    await publisher.start();
-
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(publish.mock.calls[0]?.[0].liveActivity?.[0]).toMatchObject({
-      event: "start",
-      deviceIds: ["dev-1", "dev-2"],
-    });
-
-    publish
-      .mockResolvedValueOnce({
-        ok: true,
-        delivered: 1,
-        failed: 1,
-        outcomes: [
-          {
-            deviceId: "dev-1",
-            kind: "liveactivity",
-            delivered: true,
-            suppressed: false,
-            skipped: null,
-          },
-          {
-            deviceId: "dev-2",
-            kind: "liveactivity",
-            delivered: false,
-            suppressed: false,
-            skipped: null,
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        delivered: 1,
-        failed: 0,
-        outcomes: [
-          {
-            deviceId: "dev-2",
-            kind: "liveactivity",
-            delivered: true,
-            suppressed: false,
-            skipped: null,
-          },
-        ],
-      });
-    emit({
-      sessionId: "s-1",
-      timestamp: "",
-      event: { type: "pending_input_resolved", itemId: "i-1", resolution: "accepted" },
-    });
-    await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish.mock.calls[1]?.[0].liveActivity).toEqual([
-      expect.objectContaining({
-        event: "update",
-        deviceIds: ["dev-1", "dev-2"],
-      }),
-    ]);
-
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(publish.mock.calls[2]?.[0].liveActivity).toEqual([
-      expect.objectContaining({
-        event: "update",
-        deviceIds: ["dev-2"],
-      }),
-    ]);
-
-    publish
-      .mockResolvedValueOnce({
-        ok: true,
-        delivered: 1,
-        failed: 1,
-        outcomes: [
-          {
-            deviceId: "dev-1",
-            kind: "liveactivity",
-            delivered: true,
-            suppressed: false,
-            skipped: null,
-          },
-          {
-            deviceId: "dev-2",
-            kind: "liveactivity",
-            delivered: false,
-            suppressed: false,
-            skipped: null,
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        delivered: 1,
-        failed: 0,
-        outcomes: [
-          {
-            deviceId: "dev-2",
-            kind: "liveactivity",
-            delivered: true,
-            suppressed: false,
-            skipped: null,
-          },
-        ],
-      });
-    emit({
-      sessionId: "s-1",
-      timestamp: "",
-      event: { type: "status", turnStatus: "completed" },
-    });
-    await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish.mock.calls[3]?.[0].liveActivity).toEqual([
-      expect.objectContaining({
-        event: "end",
-        deviceIds: ["dev-1", "dev-2"],
-      }),
-    ]);
-
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(publish.mock.calls[4]?.[0].liveActivity).toEqual([
-      expect.objectContaining({
-        event: "end",
-        deviceIds: ["dev-2"],
-      }),
-    ]);
-
-    publisher.dispose();
-  });
-
-  it("does not restart a running Live Activity when its push-to-start token rotates", async () => {
-    const { publisher, publish, emit } = makeHarness();
-    await publisher.start();
-
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(publish.mock.calls[0]?.[0].liveActivity?.[0]).toMatchObject({
-      event: "start",
-      deviceIds: ["dev-1"],
-    });
-
-    await publisher.handleDeviceRegistered({
-      deviceId: "dev-1",
-      bundleId: "com.ade.ios",
-      apsEnvironment: "sandbox",
-      pushToStartToken: "e".repeat(64),
-    });
-    await vi.advanceTimersByTimeAsync(2_500);
-
-    expect(publish).toHaveBeenCalledTimes(1);
     publisher.dispose();
   });
 
@@ -2193,13 +1689,53 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("publishes PR lifecycle alerts into the aggregate Live Activity", async () => {
+  it.each([
+    ["the relay delivers nothing", (publish: ReturnType<typeof vi.fn>) =>
+      publish.mockResolvedValueOnce({ ok: true, delivered: 0, suppressed: 0, failed: 1 })],
+    ["the relay call throws", (publish: ReturnType<typeof vi.fn>) =>
+      publish.mockRejectedValueOnce(new Error("network down"))],
+  ])("delivers a standalone session notice beside account Activity and retries only what it sent when %s", async (_label, failOnce) => {
+    const { publisher, publish, publishAttention, emit } = makeHarness();
+    // Account Activity publishes once, then is unreachable (null), so the
+    // retry flush falls back to plain alerts for whatever is still queued.
+    publishAttention.mockResolvedValueOnce({ ok: true, revision: 1 });
+    await publisher.start();
+    // The first phone send fails, then sends succeed.
+    failOnce(publish);
+    const alertTitles = (call: unknown[]) =>
+      ((call[0] as { notifications?: Array<{ title: string }> }).notifications ?? [])
+        .map((item) => item.title)
+        .filter(Boolean);
+
+    // One flush: an approval (account Activity carries it) and a move notice
+    // (no Activity item carries it).
+    emit(approval);
+    publisher.handleSessionNotice({
+      sessionId: "s-2",
+      dedupeKey: "cross-machine-move:handoff-1:continued",
+      title: "Continued on Mac mini",
+      body: "Open the chat for details.",
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publishAttention).toHaveBeenCalled();
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(alertTitles(publish.mock.calls[0]!)).toEqual(["Continued on Mac mini"]);
+
+    // The retry resends the notice it attempted, never the approval alert
+    // that account Activity already published.
+    await vi.advanceTimersByTimeAsync(60_000);
+    const retried = publish.mock.calls.slice(1).flatMap((call) => alertTitles(call));
+    expect(retried).toContain("Continued on Mac mini");
+    expect(retried.filter((title) => title !== "Continued on Mac mini")).toEqual([]);
+
+    publisher.dispose();
+  });
+
+  it("publishes a PR lifecycle alert with its exact repo deep link", async () => {
     const { publisher, publish } = makeHarness();
     let firstPrCb: (event: PushPrNotification) => void = () => {
       throw new Error("first PR notification source was not attached");
-    };
-    let secondPrCb: (event: PushPrNotification) => void = () => {
-      throw new Error("second PR notification source was not attached");
     };
     publisher.attachSources("project-a", {
       subscribePrNotifications: (cb) => {
@@ -2207,13 +1743,6 @@ describe("createPushPublisherService flush", () => {
         return () => {};
       },
       resolveLaneName: (laneId: string) => laneId === "lane-42" ? "Mobile PR lane" : laneId,
-    });
-    const detachProjectB = publisher.attachSources("project-b", {
-      subscribePrNotifications: (cb) => {
-        secondPrCb = cb;
-        return () => {};
-      },
-      resolveLaneName: (laneId: string) => laneId === "lane-other" ? "Other repo lane" : laneId,
     });
     await publisher.start();
 
@@ -2234,66 +1763,6 @@ describe("createPushPublisherService flush", () => {
       deepLink: "ade://pr/arul28/ADE/42",
       threadId: "pr:project-a:repo:arul28:ade:42",
     });
-    expect(payload.liveActivity[0].contentState.prs[0]).toMatchObject({
-      id: "pr:project-a:repo:arul28:ade:42",
-      prNumber: 42,
-      title: "Ship mobile PR view",
-      phase: "merged",
-      lane: "Mobile PR lane",
-      repoOwner: "arul28",
-      repoName: "ADE",
-    });
-    expect(payload.liveActivity[0].phase).toBe("running");
-
-    secondPrCb({
-      kind: "checks_failing",
-      prNumber: 42,
-      prTitle: "Same number, other repo",
-      laneId: "lane-other",
-      repoOwner: "other-org",
-      repoName: "other-repo",
-    });
-    await vi.advanceTimersByTimeAsync(2_500);
-
-    const updatePayload = publish.mock.calls.at(-1)?.[0];
-    expect(updatePayload?.liveActivity[0].contentState.prs).toMatchObject([
-      {
-        id: "pr:project-b:repo:other-org:other-repo:42",
-        prNumber: 42,
-        title: "Same number, other repo",
-        phase: "checks_failing",
-        lane: "Other repo lane",
-        repoOwner: "other-org",
-        repoName: "other-repo",
-      },
-      {
-        id: "pr:project-a:repo:arul28:ade:42",
-        prNumber: 42,
-        title: "Ship mobile PR view",
-        phase: "merged",
-        lane: "Mobile PR lane",
-        repoOwner: "arul28",
-        repoName: "ADE",
-      },
-    ]);
-
-    detachProjectB();
-    await vi.advanceTimersByTimeAsync(2_500);
-    const detachPayload = publish.mock.calls.at(-1)?.[0];
-    expect(detachPayload?.liveActivity[0].contentState.prs).toHaveLength(1);
-    expect(detachPayload?.liveActivity[0].contentState.prs[0]).toMatchObject({
-      id: "pr:project-a:repo:arul28:ade:42",
-      title: "Ship mobile PR view",
-    });
-
-    await vi.advanceTimersByTimeAsync(45 * 60 * 1000 + 1_000);
-    const endPayload = publish.mock.calls.at(-1)?.[0];
-    expect(endPayload.liveActivity[0]).toMatchObject({
-      event: "end",
-      phase: "terminal",
-    });
-    expect(endPayload.liveActivity[0].contentState.prs).toEqual([]);
-
     publisher.dispose();
   });
 
@@ -2341,10 +1810,6 @@ describe("createPushPublisherService flush", () => {
         threadId: "pr:project-a:repo:org-b:web:42",
         dedupeKey: alertDedupeKey("alert:pr:project-a:repo:org-b:web:42:opened"),
       },
-    ]);
-    expect(payload.liveActivity[0].contentState.prs).toMatchObject([
-      { id: "pr:project-a:repo:org-a:api:42", title: "API PR" },
-      { id: "pr:project-a:repo:org-b:web:42", title: "Web PR" },
     ]);
 
     publisher.dispose();
@@ -2399,114 +1864,7 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("uses the uncapped PR count in the aggregate Live Activity start alert", async () => {
-    const { publisher, publish } = makeHarness();
-    let prCb: (event: PushPrNotification) => void = () => {
-      throw new Error("PR notification source was not attached");
-    };
-    publisher.attachSources("project-prs", {
-      subscribePrNotifications: (cb) => {
-        prCb = cb;
-        return () => {};
-      },
-    });
-    await publisher.start();
-
-    for (const prNumber of [101, 102, 103]) {
-      prCb({
-        kind: "opened",
-        prNumber,
-        prTitle: `PR ${prNumber}`,
-        laneId: null,
-        repoOwner: "arul28",
-        repoName: "ADE",
-      });
-    }
-    await vi.advanceTimersByTimeAsync(2_500);
-
-    const liveActivity = publish.mock.calls[0][0].liveActivity[0];
-    expect(liveActivity.contentState.prs).toHaveLength(2);
-    expect(liveActivity.alert.title).toBe("3 pull requests updated");
-
-    publisher.dispose();
-  });
-
-  it("uses the PR title for a PR-only aggregate start when stale CLI rows exist", async () => {
-    const { publisher, publish, cliSessions } = makeHarness();
-    let prCb: (event: PushPrNotification) => void = () => {
-      throw new Error("PR notification source was not attached");
-    };
-    publisher.attachSources("project-prs", {
-      subscribePrNotifications: (cb) => {
-        prCb = cb;
-        return () => {};
-      },
-    });
-    cliSessions.set("cli-1", { title: "stale CLI title", toolType: "claude", chatSessionId: null });
-    await publisher.start();
-
-    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
-    await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish.mock.calls.every(([payload]) => !payload.liveActivity)).toBe(true);
-    publish.mockClear();
-
-    prCb({
-      kind: "opened",
-      prNumber: 42,
-      prTitle: "Actual PR title",
-      laneId: null,
-      repoOwner: "arul28",
-      repoName: "ADE",
-    });
-    await vi.advanceTimersByTimeAsync(2_500);
-
-    const liveActivity = publish.mock.calls[0][0].liveActivity[0];
-    expect(liveActivity.event).toBe("start");
-    expect(liveActivity.alert.title).toBe("PR #42 updated");
-    expect(liveActivity.alert.body).toBe("Actual PR title");
-
-    publisher.dispose();
-  });
-
-  it("drops terminal run rows before PR-backed Live Activity updates", async () => {
-    const { publisher, publish, emit } = makeHarness();
-    let prCb: (event: PushPrNotification) => void = () => {
-      throw new Error("PR notification source was not attached");
-    };
-    publisher.attachSources("project-prs", {
-      subscribePrNotifications: (cb) => {
-        prCb = cb;
-        return () => {};
-      },
-    });
-    await publisher.start();
-
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(publish.mock.calls[0][0].liveActivity[0].contentState.runs[0].id).toBe("s-1");
-    publish.mockClear();
-
-    emit({ sessionId: "s-1", timestamp: "", event: { type: "status", turnStatus: "completed" } });
-    prCb({
-      kind: "opened",
-      prNumber: 42,
-      prTitle: "Actual PR title",
-      laneId: null,
-      repoOwner: "arul28",
-      repoName: "ADE",
-    });
-    await vi.advanceTimersByTimeAsync(2_500);
-
-    const liveActivity = publish.mock.calls.at(-1)![0].liveActivity[0];
-    expect(liveActivity.event).toBe("update");
-    expect(liveActivity.contentState.prs[0].prNumber).toBe(42);
-    expect(liveActivity.contentState.runs.find((run: { id: string }) => run.id === "s-1")).toBeUndefined();
-    expect(publisher._debug.runs.has("s-1")).toBe(false);
-
-    publisher.dispose();
-  });
-
-  it("carries actionable fields: category + sessionId/itemId on the alert, itemId on the waiting LA row, badge count", async () => {
+  it("carries actionable fields: category + sessionId/itemId on the alert, the pending item on the run, badge count", async () => {
     const { publisher, publish, emit } = makeHarness();
     await publisher.start();
 
@@ -2518,21 +1876,21 @@ describe("createPushPublisherService flush", () => {
     expect(payload.notifications[0].sessionId).toBe("s-1");
     expect(payload.notifications[0].itemId).toBe("i-1");
     expect(payload.notifications[0].badge).toBe(1);
-    const laRun = payload.liveActivity[0].contentState.runs[0];
-    expect(laRun.phase).toBe("waiting_for_approval");
-    expect(laRun.itemId).toBe("i-1");
+    expect(publisher._debug.runs.get("s-1")).toMatchObject({
+      phase: "waiting_for_approval",
+      itemId: "i-1",
+    });
 
-    // Resolution clears the pending item id from later content states.
+    // Resolution clears the pending item id from the run.
     emit({
       sessionId: "s-1",
       timestamp: "",
       event: { type: "pending_input_resolved", itemId: "i-1", resolution: "accepted" },
     });
     await vi.advanceTimersByTimeAsync(2_500);
-    const lastPayload = publish.mock.calls.at(-1)?.[0];
-    const resolvedRun = lastPayload.liveActivity?.[0]?.contentState.runs[0];
+    const resolvedRun = publisher._debug.runs.get("s-1");
     expect(resolvedRun?.phase).toBe("running");
-    expect(resolvedRun?.itemId).toBeUndefined();
+    expect(resolvedRun?.itemId ?? null).toBeNull();
 
     publisher.dispose();
   });
@@ -2599,12 +1957,10 @@ describe("createPushPublisherService flush", () => {
     await vi.advanceTimersByTimeAsync(200);
 
     // Alert is quiet-hours-filtered AND no badge-only item may replace it —
-    // "mute pushes on a schedule" covers silent badge pushes too. Only the
-    // Live Activity (quiet-hours-exempt) goes out.
-    expect(publish).toHaveBeenCalledTimes(1);
-    const payload = publish.mock.calls[0][0];
-    expect(payload.notifications).toBeUndefined();
-    expect(payload.liveActivity[0].event).toBe("start");
+    // "mute pushes on a schedule" covers silent badge pushes too, so nothing
+    // goes out at all.
+    expect(publish).not.toHaveBeenCalled();
+    expect(publisher._debug.runs.get("s-1")?.phase).toBe("waiting_for_approval");
 
     publisher.dispose();
   });
@@ -2632,36 +1988,14 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("publishes a best-effort Live Activity end on shutdown, marking active runs stale", async () => {
-    const { publisher, publish, emit } = makeHarness();
-    await publisher.start();
-
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(publish).toHaveBeenCalledTimes(1);
-
-    await publisher.shutdown();
-    const lastPayload = publish.mock.calls.at(-1)?.[0];
-    expect(lastPayload.liveActivity[0].event).toBe("end");
-    expect(lastPayload.liveActivity[0].dismissalDate).toBe(
-      Math.floor(Date.parse("2026-07-05T12:00:00.000Z") / 1000) + 60,
-    );
-    expect(lastPayload.liveActivity[0].contentState.runs[0].phase).toBe("stale");
-
-    // Disposed: no further flush can fire.
-    emit(approval);
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(publish.mock.calls.at(-1)?.[0]).toBe(lastPayload);
-  });
-
-  it("shutdown is a no-op publish when no Live Activity start was committed", async () => {
+  it("publishes nothing on shutdown", async () => {
     const { publisher, publish } = makeHarness();
     await publisher.start();
     await publisher.shutdown();
     expect(publish).not.toHaveBeenCalled();
   });
 
-  it("suppresses a muted alert but still updates the Live Activity and badge", async () => {
+  it("suppresses a muted alert but still syncs the badge", async () => {
     const muted = { ...device, prefs: { ...device.prefs, mutedSessionIds: ["s-1"] } };
     const { publisher, publish, emit } = makeHarness(muted);
     await publisher.start();
@@ -2680,7 +2014,6 @@ describe("createPushPublisherService flush", () => {
     // No relay dedupeKey: the suppression hash ignores deviceIds, so a shared
     // key would starve other devices of the same count.
     expect(payload.notifications[0].dedupeKey).toBeUndefined();
-    expect(payload.liveActivity[0].event).toBe("start");
 
     publisher.dispose();
   });
@@ -2695,96 +2028,32 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("merges runs from two attached project scopes into one aggregate Live Activity", async () => {
-    const publish = vi.fn().mockResolvedValue({ ok: true });
-    const store = {
-      hasRegisteredDevices: () => true,
-      getStatusSnapshot: () => ({ enabled: true, claimed: true, registeredDeviceCount: 1, lastPublishAt: null, lastPublishError: null, lastRelayContactAt: null }),
-      listDevices: () => [device],
-      getDevice: () => device,
-      recordPublishResult: vi.fn(),
-      recordRelayContact: vi.fn(),
-    };
-    const relayClient = { publish, health: vi.fn().mockResolvedValue({ ok: true, apnsConfigured: true }), baseUrl: "https://relay.test" };
-    const makeChat = (sessionId: string) => {
-      let cb: ((env: AgentChatEventEnvelope) => void) | null = null;
-      return {
-        service: {
-          subscribeToEvents: (fn: (env: AgentChatEventEnvelope) => void) => { cb = fn; return () => {}; },
-          getSessionSummary: vi.fn().mockResolvedValue({
-            sessionId, laneId: "lane", title: "T", model: "gpt-5", provider: "codex",
-            status: "active", startedAt: "", endedAt: null, lastActivityAt: "", lastOutputPreview: null, summary: null,
-          }),
-        },
-        emit: (env: AgentChatEventEnvelope) => cb?.(env),
-      };
-    };
-    const projectA = makeChat("s-a");
-    const projectB = makeChat("s-b");
-    const publisher = createPushPublisherService({
-      logger: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as never,
-      store: store as never,
-      relayClient: relayClient as never,
-      machineName: "MacBook",
-      flushDebounceMs: 2_000,
-      promptFlushMs: 150,
-    });
-    publisher.attachSources("project-a", { agentChatService: projectA.service as never });
-    publisher.attachSources("project-b", { agentChatService: projectB.service as never });
-    await publisher.start();
-
-    projectA.emit({ sessionId: "s-a", timestamp: "", event: { type: "approval_request", itemId: "i", kind: "command", description: "x" } });
-    projectB.emit({ sessionId: "s-b", timestamp: "", event: { type: "approval_request", itemId: "i", kind: "command", description: "y" } });
-    await vi.advanceTimersByTimeAsync(2_500);
-
-    const laPayloads = publish.mock.calls.map((c) => c[0]).filter((p) => p.liveActivity);
-    const lastLa = laPayloads[laPayloads.length - 1].liveActivity[0];
-    expect(lastLa.contentState.activeCount).toBe(2);
-    expect(lastLa.contentState.runs.map((r: { id: string }) => r.id).sort()).toEqual(["s-a", "s-b"]);
-
-    publisher.dispose();
-  });
-
-  it("surfaces CLI runtime signals in the Live Activity without alert pushes", async () => {
+  it("tracks CLI runtime signals without alert pushes", async () => {
     const { publisher, publish, cliSessions } = makeHarness();
     cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });
     await publisher.start();
 
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
     await vi.advanceTimersByTimeAsync(2_500);
-
-    expect(publish).toHaveBeenCalledTimes(1);
-    const first = publish.mock.calls[0][0];
-    // Live Activity only — a CLI agent hits its prompt after every turn, so
-    // waiting-input must never generate user-facing alert pushes. (A silent
-    // badge-only item — no title — may ride along for icon-count sync.)
-    expect((first.notifications ?? []).filter((n: { title: string }) => n.title)).toHaveLength(0);
-    expect(first.liveActivity).toHaveLength(1);
-    const startRun = first.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
-    expect(startRun.phase).toBe("running");
-    expect(startRun.title).toBe("claude in auth");
-
-    // Heartbeat re-fires of the same state must not churn LA updates.
-    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
-    await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish).toHaveBeenCalledTimes(1);
+    // A CLI agent hits its prompt after every turn, so waiting-input must never
+    // generate user-facing alert pushes. (A silent badge-only item — no title —
+    // may ride along for icon-count sync.)
+    const titledAlerts = () => publish.mock.calls.flatMap((call) =>
+      (call[0].notifications ?? []).filter((n: { title: string }) => n.title));
+    expect(titledAlerts()).toHaveLength(0);
+    expect(publisher._debug.runs.get("cli-1")).toMatchObject({ phase: "running", title: "claude in auth" });
 
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "waiting-input" });
     await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish).toHaveBeenCalledTimes(2);
-    const second = publish.mock.calls[1][0];
-    expect((second.notifications ?? []).filter((n: { title: string }) => n.title)).toHaveLength(0);
+    expect(titledAlerts()).toHaveLength(0);
     // A CLI at its prompt is its resting state — it must not badge the icon.
-    // Assert on the counting function directly (a badge-only item is only
-    // emitted on count *changes*, so payload inspection here would be vacuous).
     expect(countAwaitingAttentionRuns([
       run({ sessionId: "cli-1", kind: "cli", phase: "waiting_for_input" }),
     ])).toBe(0);
     expect(countAwaitingAttentionRuns([
       run({ sessionId: "s-1", kind: "chat", phase: "waiting_for_input" }),
     ])).toBe(1);
-    const waitingRun = second.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
-    expect(waitingRun.phase).toBe("stale");
+    expect(publisher._debug.runs.get("cli-1")?.phase).toBe("stale");
 
     publisher.dispose();
   });
@@ -2849,8 +2118,7 @@ describe("createPushPublisherService flush", () => {
       sessionId: "cli-ask-1",
       dedupeKey: alertDedupeKey("alert:cli-ask-1:question"),
     });
-    expect(payload.liveActivity[0].contentState.runs[0]).toMatchObject({
-      id: "cli-ask-1",
+    expect(publisher._debug.runs.get("cli-ask-1")).toMatchObject({
       phase: "waiting_for_input",
       detail: "Which account should the e2e test use?",
     });
@@ -2861,20 +2129,13 @@ describe("createPushPublisherService flush", () => {
       runtimeState: "idle",
     });
     await vi.advanceTimersByTimeAsync(200);
-    const heartbeatPayload = publish.mock.calls.at(-1)?.[0];
-    expect(heartbeatPayload.liveActivity[0].contentState.runs[0]).toMatchObject({
-      id: "cli-ask-1",
-      phase: "waiting_for_input",
-    });
+    // An idle heartbeat must not clear the explicit ask.
+    expect(publisher._debug.runs.get("cli-ask-1")?.phase).toBe("waiting_for_input");
 
     publisher.handleSessionAttentionResolved("scope-1", "cli-ask-1");
     expect(publisher._debug.getPendingAlerts()).toEqual([]);
     await vi.advanceTimersByTimeAsync(200);
-    const resolvedPayload = publish.mock.calls.at(-1)?.[0];
-    expect(resolvedPayload.liveActivity[0].contentState.runs[0]).toMatchObject({
-      id: "cli-ask-1",
-      phase: "running",
-    });
+    expect(publisher._debug.runs.get("cli-ask-1")?.phase).toBe("running");
 
     publisher.dispose();
   });
@@ -2908,11 +2169,9 @@ describe("createPushPublisherService flush", () => {
       dedupeKey: alertDedupeKey("alert:s-ask-2:question"),
       body: "jwt or session auth?",
     });
-    const askRun = payload.liveActivity[0].contentState.runs.find(
-      (r: { id: string }) => r.id === "s-ask-2",
-    );
-    expect(askRun).toMatchObject({ phase: "waiting_for_input" });
-    expect(askRun.itemId).toBeUndefined();
+    const askRun = publisher._debug.runs.get("s-ask-2");
+    expect(askRun?.phase).toBe("waiting_for_input");
+    expect(askRun?.itemId ?? null).toBeNull();
 
     publisher.dispose();
   });
@@ -2965,29 +2224,27 @@ describe("createPushPublisherService flush", () => {
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "ghost-1", runtimeState: "running" });
     await vi.advanceTimersByTimeAsync(2_500);
 
-    // Both rows resolve to nothing user-facing → no alerts, no Live Activity
+    // Both rows resolve to nothing user-facing → no alerts and no tracked run
     // (the initial silent badge sync is the only thing allowed through).
     for (const call of publish.mock.calls) {
       expect((call[0].notifications ?? []).filter((n: { title: string }) => n.title)).toHaveLength(0);
-      expect(call[0].liveActivity ?? []).toHaveLength(0);
     }
+    expect([...publisher._debug.runs.keys()]).toEqual([]);
 
-    // With a real chat run present, the publish payload must still exclude them.
+    // With a real chat run present, the shell must still stay out.
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "shell-1", runtimeState: "running" });
     emit(approval);
     await vi.advanceTimersByTimeAsync(2_500);
     expect(publish).toHaveBeenCalled();
-    const runs = publish.mock.calls.at(-1)![0].liveActivity[0].contentState.runs;
-    expect(runs.map((r: { id: string }) => r.id)).toEqual(["s-1"]);
+    expect([...publisher._debug.runs.keys()]).toEqual(["s-1"]);
 
     publisher.dispose();
   });
 
   it("prunes a stale CLI row at the running TTL despite idle heartbeats", async () => {
-    // Regression (Greptile P1): idle heartbeats used to refresh lastActiveAt,
-    // so a quiet CLI's stale row never aged past the 2h TTL and pinned the
-    // Live Activity open forever.
-    const { publisher, publish, cliSessions } = makeHarness();
+    // Idle heartbeats used to refresh lastActiveAt, so a quiet CLI's stale row
+    // never aged past the 2h TTL and stayed in Activity forever.
+    const { publisher, cliSessions } = makeHarness();
     cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });
     await publisher.start();
 
@@ -2996,8 +2253,9 @@ describe("createPushPublisherService flush", () => {
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
     await vi.advanceTimersByTimeAsync(2_500);
 
+    expect(publisher._debug.runs.get("cli-1")?.phase).toBe("stale");
     // Re-fire idle heartbeats across 2h+; the frozen stale timestamp must let
-    // the row age out, ending the (now-empty) aggregate.
+    // the row age out.
     for (let i = 0; i < 5; i += 1) {
       publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
       await vi.advanceTimersByTimeAsync(25 * 60 * 1000);
@@ -3005,40 +2263,28 @@ describe("createPushPublisherService flush", () => {
     publisher.poke();
     await vi.advanceTimersByTimeAsync(2_500);
 
-    const last = publish.mock.calls.at(-1)![0];
-    const lastLa = last.liveActivity?.[0];
-    expect(lastLa?.event).toBe("end");
+    expect(publisher._debug.runs.has("cli-1")).toBe(false);
 
     publisher.dispose();
   });
 
-  it("publishes a quiet CLI as stale without ending the Live Activity", async () => {
-    const { publisher, publish, cliSessions } = makeHarness();
+  it("marks a quiet CLI stale and returns it to running when output resumes", async () => {
+    const { publisher, cliSessions } = makeHarness();
     cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });
     await publisher.start();
 
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
     await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish).toHaveBeenCalledTimes(1);
-    expect(publish.mock.calls[0][0].liveActivity[0].event).toBe("start");
+    expect(publisher._debug.runs.get("cli-1")?.phase).toBe("running");
 
-    // 12s-quiet idle → the row goes stale (not active) but the activity stays
-    // open: ending on a quiet spell would churn end→push-to-start cycles.
+    // A quiet spell is stale, not finished: the row stays tracked.
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
     await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish).toHaveBeenCalledTimes(2);
-    const idleItem = publish.mock.calls[1][0].liveActivity[0];
-    expect(idleItem.event).toBe("update");
-    expect(idleItem.contentState.activeCount).toBe(0);
-    expect(idleItem.contentState.runs[0].phase).toBe("stale");
+    expect(publisher._debug.runs.get("cli-1")?.phase).toBe("stale");
 
-    // Output resumes → back to an active running row on the same activity.
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
     await vi.advanceTimersByTimeAsync(2_500);
-    expect(publish).toHaveBeenCalledTimes(3);
-    const resumed = publish.mock.calls[2][0].liveActivity[0];
-    expect(resumed.event).toBe("update");
-    expect(resumed.contentState.runs[0].phase).toBe("running");
+    expect(publisher._debug.runs.get("cli-1")?.phase).toBe("running");
 
     publisher.dispose();
   });
@@ -3278,7 +2524,7 @@ describe("createPushPublisherService flush", () => {
     // ...and the run is waiting for INPUT, with no Approve/Deny category on the
     // notification: those buttons have nothing to do with a question.
     const payload = publish.mock.calls.at(-1)![0];
-    expect(payload.liveActivity[0].contentState.runs[0].phase).toBe("waiting_for_input");
+    expect(publisher._debug.runs.get("s-embedded")?.phase).toBe("waiting_for_input");
     expect(payload.notifications[0].category ?? null).toBeNull();
     publisher.dispose();
   });
@@ -3563,7 +2809,7 @@ describe("createPushPublisherService flush", () => {
   it("follows a chat that is renamed after its first frame was published", async () => {
     // A new Claude chat is created with a placeholder title and renamed a few
     // seconds later. The publisher used to latch the title on first resolve and
-    // never look again, so the notch card, the phone's push and the lock screen
+    // never look again, so the Activity row, the phone's push and the lock screen
     // all showed "Claude Chat" for the life of the session.
     const { publisher, emit, agentChatService } = makeHarness(device, undefined, {
       activityProtocol: 2,

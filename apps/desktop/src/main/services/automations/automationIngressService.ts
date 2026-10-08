@@ -61,6 +61,14 @@ type AutomationIngressServiceArgs = {
    * targeted reconciliation so freshness rides the webhook, not the next tick.
    */
   onPrStateIngested?: (prIds: string[]) => void;
+  /**
+   * Also hand each relay delivery to automations as its typed event
+   * (`github.pr_opened`, `github.issue_labeled`, ...), so `github.*` rules run.
+   * Set it only where no GitHub poller runs beside this ingress (the brain):
+   * the poller emits the same typed events, and ingress dedupes per source, so
+   * both together would start a rule twice for one PR.
+   */
+  relayDispatchesTypedGithubEvents?: boolean;
   secretService: AutomationSecretService;
   githubService?: {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
@@ -316,6 +324,36 @@ function buildPrContext(pr: Record<string, unknown> | null, repo: string | null)
   };
 }
 
+/**
+ * A comment webhook names the PR but not its branches, so a `github.pr_commented`
+ * rule with a branch filter could never match. Fill them from the PR row ADE
+ * already tracks (a local read, no network). A comment on an untracked PR stays
+ * branchless: a branch-filtered rule skips it rather than guessing.
+ */
+function withTrackedPrBranches(
+  mapped: ReturnType<typeof mapGithubWebhookToTrigger>,
+  prService: Pick<ReturnType<typeof createPrService>, "listAll"> | null | undefined,
+): ReturnType<typeof mapGithubWebhookToTrigger> {
+  if (!mapped?.pr || mapped.pr.headBranch || !prService) return mapped;
+  const [owner, name] = (mapped.pr.repo ?? "").toLowerCase().split("/");
+  let tracked: { headBranch: string; baseBranch: string } | undefined;
+  try {
+    tracked = prService.listAll().find((row) =>
+      row.githubPrNumber === mapped.pr!.number
+      && row.repoOwner.toLowerCase() === owner
+      && row.repoName.toLowerCase() === name);
+  } catch {
+    return mapped;
+  }
+  if (!tracked) return mapped;
+  return {
+    ...mapped,
+    branch: tracked.headBranch,
+    targetBranch: tracked.baseBranch,
+    pr: { ...mapped.pr, headBranch: tracked.headBranch, baseBranch: tracked.baseBranch },
+  };
+}
+
 function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, unknown>): {
   triggerType: AutomationTriggerType;
   summary: string;
@@ -359,8 +397,12 @@ function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, 
     const rawIssue = readNested(payload, "issue");
     const comment = readNested(payload, "comment");
     const issueIsPr = Boolean(readNested(rawIssue, "pull_request"));
-    const issue = buildIssueContext(rawIssue, repo);
-    if (!issue) return null;
+    const opened = buildIssueContext(rawIssue, repo);
+    if (!opened) return null;
+    // `bodyRegex` on a comment trigger reads the new comment, not the issue or
+    // PR description, the same as the GitHub poller's comment events.
+    const commentBody = readString(comment, "body");
+    const issue = { ...opened, body: commentBody ?? undefined };
     return {
       triggerType: issueIsPr ? "github.pr_commented" : "github.issue_commented",
       summary: `GitHub ${issueIsPr ? "PR" : "issue"} #${issue.number} commented: ${issue.title}`,
@@ -401,8 +443,11 @@ function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, 
 
   if (githubEvent === "pull_request_review") {
     if (action && action !== "submitted") return null;
-    const pr = buildPrContext(readNested(payload, "pull_request"), repo);
-    if (!pr) return null;
+    const opened = buildPrContext(readNested(payload, "pull_request"), repo);
+    if (!opened) return null;
+    // `bodyRegex` reads the submitted review, not the PR description, the same
+    // as the GitHub poller's review events.
+    const pr = { ...opened, body: readString(readNested(payload, "review"), "body") ?? undefined };
     return {
       triggerType: "github.pr_review_submitted",
       summary: `GitHub PR #${pr.number} review submitted: ${pr.title}`,
@@ -1279,6 +1324,14 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           if (ingested?.processed && !ingested.duplicate && ingested.linkedPrIds.length > 0) {
             for (const prId of ingested.linkedPrIds) pageIngestedPrIds.add(prId);
           }
+          const logDispatchFailure = (error: unknown, triggerType: string) => {
+            args.logger.warn("automations.github_relay_dispatch_failed", {
+              githubEvent,
+              eventId,
+              triggerType,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          };
           try {
             await run.wait(Promise.resolve(args.automationService?.dispatchIngressTrigger({
               source: "github-relay",
@@ -1292,11 +1345,38 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
             })));
           } catch (error) {
             if (error instanceof GithubRelayPollSupersededError) throw error;
-            args.logger.warn("automations.github_relay_dispatch_failed", {
-              githubEvent,
-              eventId,
-              error: error instanceof Error ? error.message : String(error),
-            });
+            logDispatchFailure(error, "github-webhook");
+          }
+          // `github.pr_*` / `github.issue_*` rules match the typed event, not
+          // the raw one. Where no poller emits them, the relay must, or those
+          // rules never run. Same mapping as the local-webhook path. Its own
+          // try: a failed raw dispatch must not drop the typed one.
+          const mapped = args.relayDispatchesTypedGithubEvents && isRecord(rawPayload)
+            ? withTrackedPrBranches(mapGithubWebhookToTrigger(githubEvent, rawPayload), args.prService)
+            : null;
+          if (mapped) {
+            try {
+              await run.wait(Promise.resolve(args.automationService?.dispatchIngressTrigger({
+                source: "github-relay",
+                eventKey: `${eventId}:${mapped.triggerType}`,
+                triggerType: mapped.triggerType,
+                eventName: githubEvent,
+                summary: mapped.summary,
+                cursor: eventCursor ?? eventId,
+                author: mapped.author ?? readLogin(readNested(rawPayload, "sender")) ?? null,
+                labels: mapped.labels,
+                branch: mapped.branch,
+                targetBranch: mapped.targetBranch,
+                draftState: mapped.draftState,
+                rawPayload,
+                repo: mapped.issue?.repo ?? mapped.pr?.repo ?? readRepoName(rawPayload),
+                issue: mapped.issue,
+                pr: mapped.pr,
+              })));
+            } catch (error) {
+              if (error instanceof GithubRelayPollSupersededError) throw error;
+              logDispatchFailure(error, mapped.triggerType);
+            }
           }
           pageLastCursor = eventCursor ?? eventId;
         }

@@ -1606,7 +1606,7 @@ export function claudeFastModeSettingsFlags(fastMode: boolean | null | undefined
   return [];
 }
 
-function claudeRuntimeEffortFlags(reasoningEffort: string | null | undefined): string[] {
+export function claudeRuntimeEffortFlags(reasoningEffort: string | null | undefined): string[] {
   const effort = normalizeCliFlagValue(reasoningEffort);
   if (!effort) return [];
   if (effort === "ultracode") return ["--effort", "xhigh"];

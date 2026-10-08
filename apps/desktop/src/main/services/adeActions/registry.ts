@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -60,11 +62,19 @@ import type {
   AutomationSaveDraftRequest,
   AutomationSaveDraftResult,
 } from "../../../shared/types/automations";
-import type {
-  AttentionPreferenceScope,
-  AttentionPreferences,
-  AttentionPresence,
+import {
+  CUSTOM_NOTIFICATION_HOURLY_LIMIT,
+  customNotificationProblem,
+  type AttentionPreferenceScope,
+  type AttentionPreferences,
+  type AttentionPresence,
 } from "../../../shared/types/attention";
+import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
+import { deriveProjectId } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import {
+  PushRelayNotifyRateLimitedError,
+  PushRelayRequestError,
+} from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
 import { buildMacDesktopDomainService } from "../macDesktop/macDesktopActionDomain";
 import { normalizeExternalSessionDetailArgs } from "../externalSessions/externalSessionDetail";
@@ -207,6 +217,8 @@ import { createAccountActionDomainService } from "../../../../../ade-cli/src/ser
 import { createProxyActionDomainService } from "../../../../../ade-cli/src/services/proxy/proxyService";
 import {
   captureSecretRequestedAnalytics,
+  captureNotificationSentAnalytics,
+  captureProviderCliUpdateAnalytics,
   captureWebhookUrlCreatedAnalytics,
   providerAccountAnalyticsCapture,
 } from "../analytics/featureProductAnalytics";
@@ -1337,9 +1349,89 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
   };
 }
 
+/**
+ * `ade notify`: a push the caller wrote, to every phone on the account. Open to
+ * agents and automation steps; the relay caps an account at
+ * `CUSTOM_NOTIFICATION_HOURLY_LIMIT` an hour.
+ */
+/**
+ * `attention.sendNotification`, and `notify.send` for `ade notify` (which runs
+ * machine-wide, outside any project). `projectRoot` names the project a chat
+ * or PR link belongs to; it defaults to the runtime's own, and null stamps no
+ * project.
+ */
+export function buildSendNotificationAction(
+  runtime: Pick<AdeRuntime, "accountAuthService" | "projectRoot" | "productAnalyticsService">,
+  send: NonNullable<AdeRuntime["sendCustomNotification"]>,
+  options: { projectRoot?: string | null } = {},
+) {
+  const projectRoot = options.projectRoot === undefined ? runtime.projectRoot : options.projectRoot;
+  return async (args?: { title?: unknown; body?: unknown; open?: unknown }) => {
+    // The link is checked apart from the text: an automation whose trigger
+    // left a link value empty still sends its notification, opening ADE, and
+    // says why the link was left off. `ade notify` refuses a bad link itself.
+    const problem = customNotificationProblem({ title: args?.title, body: args?.body });
+    if (problem) throw new Error(problem);
+    if (args?.open != null && typeof args.open !== "string") {
+      throw new Error("The open link must be text.");
+    }
+    // A process without the account service (desktop automations) learns the
+    // sign-in state from the relay's 401 below instead.
+    if (runtime.accountAuthService && !runtime.accountAuthService.getStatus().signedIn) {
+      throw new Error(
+        "Sign in to ADE first: run `ade login`. Notifications go to the phones on your ADE account.",
+      );
+    }
+    const body = typeof args?.body === "string" ? args.body.trim() : "";
+    const rawOpen = typeof args?.open === "string" ? args.open.trim() : "";
+    const link = rawOpen ? normalizeCustomNotificationLink(rawOpen) : null;
+    try {
+      const result = await send({
+        title: String(args?.title).trim(),
+        body: body || null,
+        deepLink: link?.ok ? link.link : null,
+        // The sender stamps its machine onto a chat or PR link; the project
+        // is this one, by the id every machine derives the same way.
+        projectId: projectRoot ? deriveProjectId(projectRoot) : null,
+      });
+      captureNotificationSentAnalytics({
+        analytics: runtime.productAnalyticsService,
+        surface: "api",
+        outcome: result.devices > 0 && result.failed === 0 ? "completed" : "failed",
+      });
+      return {
+        sent: result.delivered > 0,
+        ...result,
+        ...(link && !link.ok ? { linkSkipped: link.problem } : {}),
+      };
+    } catch (error) {
+      captureNotificationSentAnalytics({
+        analytics: runtime.productAnalyticsService,
+        surface: "api",
+        outcome: error instanceof PushRelayNotifyRateLimitedError ? "skipped_budget" : "failed",
+      });
+      if (error instanceof PushRelayNotifyRateLimitedError) {
+        const minutes = error.retryAfterSeconds ? Math.max(1, Math.ceil(error.retryAfterSeconds / 60)) : null;
+        throw new Error(
+          `This account has sent ${CUSTOM_NOTIFICATION_HOURLY_LIMIT} notifications in the last hour.`
+            + (minutes ? ` Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.` : " Try again later."),
+        );
+      }
+      if (error instanceof PushRelayRequestError && error.status === 401) {
+        throw new Error("Your ADE sign-in did not work. Run `ade login`, then try again.");
+      }
+      throw error;
+    }
+  };
+}
+
 function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null {
   const publisher = runtime.pushPublisherService;
-  if (!publisher) return null;
+  if (!publisher) {
+    // Desktop automations run without a publisher; they can still notify.
+    const send = runtime.sendCustomNotification;
+    return send ? { sendNotification: buildSendNotificationAction(runtime, send) } : null;
+  }
   const requireCurrentAccountOwner = (value: unknown): string => {
     const accountOwnerId = typeof value === "string" ? value.trim() : "";
     const status = runtime.accountAuthService?.getStatus();
@@ -1401,6 +1493,8 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
         args.preferences,
       );
     },
+    sendNotification: buildSendNotificationAction(runtime, (notification) =>
+      publisher.sendCustomNotification(notification)),
     putMachinePreferences: (args?: {
       accountOwnerId?: unknown;
       machineKey?: unknown;
@@ -2196,7 +2290,15 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     acpProviderUpdate: (args?: { provider?: string }) => {
       const provider = args?.provider;
       if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, copilot, devin.");
-      return runAcpProviderUpdate({ provider, cwd: runtime.projectRoot });
+      return runAcpProviderUpdate({ provider, cwd: runtime.projectRoot }).then((result) => {
+        captureProviderCliUpdateAnalytics({
+          analytics: runtime.productAnalyticsService,
+          surface: "api",
+          provider,
+          outcome: result.ok ? "completed" : "failed",
+        });
+        return result;
+      });
     },
     piLoginProviders: () => listPiLoginProviders(),
     piLoginStart: async (args?: { providerId?: string; method?: "oauth" | "api_key" }) => {
@@ -3098,6 +3200,109 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
         throw new Error("Expected 'number' to be a positive integer.");
       }
       return githubService.getIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
+      );
+    },
+    async getRepoIssueSummary(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.getRepoIssueSummary(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async createIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.createIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        parseGitHubIssueCreateInput(actionArgs.input),
+      );
+    },
+    async listIssueTemplates(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listIssueTemplates(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async linkSubIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const parentNumber = Number(actionArgs.parentNumber);
+      const childNumber = Number(actionArgs.childNumber);
+      if (!Number.isInteger(parentNumber) || parentNumber <= 0 || !Number.isInteger(childNumber) || childNumber <= 0) {
+        throw new Error("Expected positive integer 'parentNumber' and 'childNumber'.");
+      }
+      return githubService.linkSubIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        parentNumber,
+        childNumber,
+      );
+    },
+    async listIssueTypes(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listIssueTypes(requireNonEmptyString(actionArgs.owner, "owner"));
+    },
+    async getIssueWriteAccess(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.getIssueWriteAccess(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        { force: actionArgs.force === true },
+      );
+    },
+    async updateIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.updateIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
+        parseGitHubIssueUpdate(actionArgs.patch),
+      );
+    },
+    async commentOnIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.commentOnIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
+        requireNonEmptyString(actionArgs.body, "body"),
+      );
+    },
+    async listRepoMilestones(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listRepoMilestones(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async listRepoIssueList(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listRepoIssueList(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        parseGitHubIssueListState(actionArgs.state),
+      );
+    },
+    async listIssueComments(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = typeof actionArgs.number === "number"
+        ? actionArgs.number
+        : Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.listIssueComments(
         requireNonEmptyString(actionArgs.owner, "owner"),
         requireNonEmptyString(actionArgs.name, "name"),
         number,

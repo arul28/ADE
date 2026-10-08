@@ -1,6 +1,5 @@
 import {
   AgentChatEventEnvelope,
-  BrowserActorCapabilityIssuer,
   claudeSdkCreateSessionCompat,
   claudeSdkSession,
   clearCursorCliModelsCache,
@@ -21,6 +20,7 @@ import {
   respondWithSession,
   spawn,
   startup,
+  tmpRoot,
   waitFor,
   waitForEvent,
 } from "./agentChatService.testHarness";
@@ -518,6 +518,34 @@ describe("Pi follows the chat's effort and names another provider's route", () =
     service.forceDisposeAll();
   });
 
+  it("keeps pasted-file contents out of the Pi transcript while sending them to the worker", async () => {
+    const pooled = installFakePiWorker();
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await createPiSession(service);
+    const pastedPath = path.join(tmpRoot, "pasted-for-pi.txt");
+    const pastedBody = "Pi should receive this pasted file once.";
+    fs.writeFileSync(pastedPath, pastedBody);
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "",
+      displayText: "",
+      attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
+    }, { awaitDispatch: true });
+    await vi.waitFor(() => expect(pooled.sendPrompt).toHaveBeenCalled());
+
+    const userMessage = events.find((event) => event.sessionId === session.id && event.event.type === "user_message");
+    expect(userMessage?.event).toMatchObject({
+      displayText: "",
+      attachments: [expect.objectContaining({ path: pastedPath, intent: "user_prompt" })],
+    });
+    const providerPayload = JSON.stringify(pooled.sendPrompt.mock.calls[0]?.[0]);
+    expect(providerPayload.split(pastedBody)).toHaveLength(2);
+    expect(providerPayload).toContain("pasted-for-pi.txt");
+    service.forceDisposeAll();
+  });
+
   it.each([
     { label: "moves the row inline when the worker takes it", fails: false, states: ["accepted", "inline"] },
     { label: "fails the row and rethrows when the worker throws", fails: true, states: ["accepted", "failed"] },
@@ -581,222 +609,5 @@ describe("Pi follows the chat's effort and names another provider's route", () =
       servedModel: "openrouter/claude-sonnet-5",
     }));
     service.forceDisposeAll();
-  });
-});
-
-
-describe("browser actor capability on a daemon-hosted chat", () => {
-  /**
-   * The runtime daemon cannot mint browser tokens itself: its issuer only has
-   * the async `issue`, which asks the desktop over the bridge. Every provider
-   * launch must still hand the agent a token, or `ade browser` reports "no
-   * capability" from inside it. Each launch mints afresh, so the env must carry
-   * the token issued for THIS launch, not one left over from an earlier one.
-   */
-  /** Launches one provider and returns the env it handed the agent. */
-  type LaunchDriver = (issuer: BrowserActorCapabilityIssuer) => Promise<NodeJS.ProcessEnv | undefined>;
-
-  const teardown: Array<() => void | Promise<void>> = [];
-  afterEach(async () => {
-    for (const dispose of teardown.splice(0)) await dispose();
-  });
-
-  const openAcpService = (issuer: BrowserActorCapabilityIssuer) => {
-    const agent = createMockAcpAgent();
-    agent.on("session/new", respondWithSession("acp-session-1", {}));
-    agent.on("session/set_config_option", () => ({ result: {} }));
-    agent.on("session/prompt", async () => ({ result: { stopReason: "end_turn" } }));
-    const pool = createAcpSessionPool();
-    teardown.push(() => pool.disposeAll("test teardown"));
-    return createService({
-      browserActorCapabilityIssuer: issuer,
-      acpSpawnOverride: () => agent.child,
-      acpSessionPool: pool,
-    });
-  };
-
-  const installPiWorker = (): Array<Record<string, unknown>> => {
-    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pi-browser-actor-"));
-    const originalSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
-    process.env.PI_CODING_AGENT_SESSION_DIR = sessionDir;
-    teardown.push(() => {
-      if (originalSessionDir === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
-      else process.env.PI_CODING_AGENT_SESSION_DIR = originalSessionDir;
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    });
-    mockState.piInstallation = {
-      cliPath: null,
-      packageRoot: sessionDir,
-      packageEntry: path.join(sessionDir, "index.js"),
-      version: "0.0.0-test",
-      nodeVersion: process.versions.node,
-      sdkAvailable: true,
-      cliAvailable: false,
-      agentDir: sessionDir,
-      settingsPath: path.join(sessionDir, "settings.json"),
-      authPath: path.join(sessionDir, "auth.json"),
-      modelsPath: path.join(sessionDir, "models.json"),
-      modelsStorePath: path.join(sessionDir, "models-store.json"),
-      blocker: null,
-    };
-    const pooled: any = {
-      process: { exitCode: null, killed: false, connected: true },
-      bridge: { onEvent: null, onLifecycle: null, onUiRequest: null },
-      ready: null,
-      sessionFile: path.join(sessionDir, "pi-session.jsonl"),
-      sessionId: "pi-session-1",
-      currentModel: null,
-      account: null,
-      version: null,
-      availableModels: [],
-      request: vi.fn(async () => ({})),
-      steer: vi.fn(async () => ({})),
-      followUp: vi.fn(async () => ({})),
-      abort: vi.fn(async () => {}),
-      setModel: vi.fn(async () => ({})),
-      setThinking: vi.fn(async () => ({})),
-      compact: vi.fn(async () => ({})),
-      getContextUsage: vi.fn(async () => null),
-      requestModels: vi.fn(async () => []),
-      requestAuth: vi.fn(async () => ({})),
-      login: vi.fn(async () => undefined),
-      cancelLogin: vi.fn(),
-      respondToUi: vi.fn(),
-      dispose: vi.fn(),
-      sendPrompt: vi.fn(async () => ({})),
-    };
-    const acquireCalls: Array<Record<string, unknown>> = [];
-    mockState.piAcquire = async (args) => {
-      acquireCalls.push(args);
-      return { generation: 1, pooled };
-    };
-    return acquireCalls;
-  };
-
-  const sendAndDispose = async (
-    service: ReturnType<typeof createService>["service"],
-    sessionId: string,
-  ) => {
-    await service.sendMessage({ sessionId, text: "Open the app in the browser." }, { awaitDispatch: true });
-    teardown.push(() => service.forceDisposeAll());
-  };
-
-  const launchPaths: Array<[string, LaunchDriver]> = [
-    ["Claude pre-warm", async (issuer) => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-browser-warm") as any);
-      const { service } = createService({ browserActorCapabilityIssuer: issuer });
-      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
-      teardown.push(() => service.forceDisposeAll());
-      await vi.waitFor(() => expect(startup).toHaveBeenCalled());
-      await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalled());
-      return (vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as { env?: NodeJS.ProcessEnv }).env;
-    }],
-    ["Claude cold query start", async (issuer) => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-browser-cold") as any);
-      // No warm query to reuse, so the turn launches the SDK itself.
-      vi.mocked(startup).mockImplementationOnce(async () => {
-        throw new Error("warm-up unavailable");
-      });
-      const { service } = createService({ browserActorCapabilityIssuer: issuer });
-      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
-      await sendAndDispose(service, session.id);
-      await vi.waitFor(() => expect(query).toHaveBeenCalled());
-      return (vi.mocked(query).mock.calls.at(-1)?.[0] as { options?: { env?: NodeJS.ProcessEnv } }).options?.env;
-    }],
-    ["Codex app-server", async (issuer) => {
-      const { service } = createService({ browserActorCapabilityIssuer: issuer });
-      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
-      await sendAndDispose(service, session.id);
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
-      });
-      const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
-        call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server"));
-      return (spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
-    }],
-    ["Cursor SDK", async (issuer) => {
-      process.env.CURSOR_API_KEY = "cursor-test-key";
-      const { service } = createService({ browserActorCapabilityIssuer: issuer });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "cursor",
-        model: "composer-2",
-        modelId: "cursor/composer-2",
-      });
-      await sendAndDispose(service, session.id);
-      return mockState.cursorSdkAcquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv | undefined;
-    }],
-    ["Droid SDK", async (issuer) => {
-      const { service } = createService({ browserActorCapabilityIssuer: issuer });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "droid",
-        model: "custom:claude-sonnet-5-thinking-32000",
-        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
-      });
-      await sendAndDispose(service, session.id);
-      await vi.waitFor(() => expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0));
-      return mockState.droidAcquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv | undefined;
-    }],
-    ["ACP agent (Qwen)", async (issuer) => {
-      const { service } = openAcpService(issuer);
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "qwen",
-        model: "qwen3-coder-plus",
-        modelId: "qwen/qwen3-coder-plus",
-      });
-      await sendAndDispose(service, session.id);
-      await vi.waitFor(() => expect(createAcpRuntime).toHaveBeenCalled());
-      return vi.mocked(createAcpRuntime).mock.calls.at(-1)?.[0].spawnPlan.env;
-    }],
-    ["Pi SDK", async (issuer) => {
-      const acquireCalls = installPiWorker();
-      const descriptor = createDynamicPiModelDescriptor("anthropic", "claude-sonnet-5");
-      replaceDynamicPiModelDescriptors([descriptor]);
-      const { service } = createService({ browserActorCapabilityIssuer: issuer });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "pi",
-        model: descriptor.id,
-        modelId: descriptor.id as never,
-      } as any);
-      await sendAndDispose(service, session.id);
-      await vi.waitFor(() => expect(acquireCalls.length).toBeGreaterThan(0));
-      return acquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv | undefined;
-    }],
-    ["OpenCode chat", async (issuer) => {
-      const { service } = createService({ browserActorCapabilityIssuer: issuer });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-      await sendAndDispose(service, session.id);
-      // The OpenCode session's shell environment is applied through the SDK,
-      // not handed to a spawn, so this is the equivalent of the launch env the
-      // other rows read.
-      await vi.waitFor(() => expect(mockState.openCodeEnvironmentCalls.length).toBeGreaterThan(0));
-      return mockState.openCodeEnvironmentCalls.at(-1)?.variables as NodeJS.ProcessEnv | undefined;
-    }],
-  ];
-
-  it.each(launchPaths)("hands the %s launch the token issued for it", async (_label, launch) => {
-    const issued: string[] = [];
-    const issuer: BrowserActorCapabilityIssuer = {
-      issue: async (capability) => {
-        const token = `tok-${capability.chatSessionId}-${issued.length + 1}`;
-        issued.push(token);
-        return token;
-      },
-      revoke: async () => {},
-    };
-
-    const env = await launch(issuer);
-
-    expect(issued.length).toBeGreaterThan(0);
-    expect(env?.ADE_BROWSER_ACTOR_TOKEN).toBe(issued.at(-1));
-    expect(env?.ADE_BROWSER_ACTOR_TOKEN).toMatch(new RegExp(`^tok-${env?.ADE_CHAT_SESSION_ID}-`));
   });
 });

@@ -296,6 +296,21 @@ extension WorkChatSessionView {
 
   @ViewBuilder
   func timelineToolGroup(_ group: WorkToolGroupModel, entryId: String) -> some View {
+    if !group.computerUseActions.isEmpty {
+      WorkComputerUseRunView(
+        groupId: group.id,
+        actions: group.computerUseActions,
+        compactAll: group.computerUseCompact,
+        expandedIds: cardExpansion.expandedIds,
+        onToggle: { id in toggleNestedCard(id) }
+      )
+    } else {
+      toolCallsPanel(group, entryId: entryId)
+    }
+  }
+
+  @ViewBuilder
+  private func toolCallsPanel(_ group: WorkToolGroupModel, entryId: String) -> some View {
     WorkToolCallsPanelView(
       group: group,
       isExpanded: cardIsExpanded(group.id, entryId: entryId),

@@ -52,7 +52,8 @@ export type PrMarkdownProps = {
 
 /* ── Extended sanitization schema ──────────────────────────────────── */
 
-const PR_SAFE_SCHEMA = (() => {
+/** GitHub-flavoured HTML (details, img, task boxes) that is safe to render. Shared with issue bodies. */
+export const PR_SAFE_SCHEMA = (() => {
   const baseTagNames = SAFE_PREVIEW_SCHEMA.tagNames ?? defaultSchema.tagNames ?? [];
   const baseAttributes = {
     ...(defaultSchema.attributes ?? {}),

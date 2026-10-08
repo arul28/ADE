@@ -3,6 +3,7 @@ import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { isWindowsPlatform, requestWindowsBetaNotice } from "../../lib/windowsBetaNotice";
+import { canRestartAde, restartAde } from "../app/restartAde";
 import { AutoUpdatesControls } from "./AutoUpdatesSection";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 
@@ -69,6 +70,39 @@ function formatRuntimeTimestamp(value: string | null): string | null {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return value;
   return new Date(timestamp).toLocaleString();
+}
+
+/** "3:52 PM" today, "Oct 6, 3:52 PM" on any other day. */
+function formatCheckTime(epochMs: number): string {
+  const at = new Date(epochMs);
+  const time = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (at.toDateString() === new Date().toDateString()) return time;
+  return `${at.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+}
+
+/**
+ * What the failed-check note says and offers. Installing a downloaded update
+ * starts with a fresh feed check, so it cannot be the remedy for a failed
+ * one: a stuck connection needs a plain restart, anything else a retry.
+ */
+function checkFailureNote(args: {
+  stuck: boolean;
+  downloadedVersion: string | null;
+}): { message: string; action: "restart" | "check" } {
+  if (args.stuck && canRestartAde()) {
+    return {
+      message: args.downloadedVersion
+        ? `ADE's connection to the update server is stuck. Restart ADE, then install ${args.downloadedVersion}.`
+        : "ADE's connection to the update server is stuck. Restarting ADE clears it.",
+      action: "restart",
+    };
+  }
+  return {
+    message: args.downloadedVersion
+      ? `Latest may be out of date. ${args.downloadedVersion} stays downloaded; ADE tries again every 30 minutes.`
+      : "Latest may be out of date. ADE tries again every 30 minutes.",
+    action: "check",
+  };
 }
 
 function formatReleasedAgo(iso: string | null): string | null {
@@ -192,6 +226,30 @@ export function AboutSection() {
   } = resolveAboutVersionState(info.appVersion, updateSnapshot);
   const latestVersion = updateSnapshot.latestKnownVersion ?? latest?.version ?? info.appVersion;
   const latestReleasedAgo = releasedAgo && latest != null && latestVersion === latest.version ? releasedAgo : null;
+  // A failed check while an update is downloaded keeps the snapshot `ready`,
+  // so without this the stale Latest would read as current. An `error`
+  // snapshot has its own surface in the top bar.
+  const checkFailure = !isDev && updateSnapshot.status !== "error" ? updateSnapshot.checkFailure ?? null : null;
+  // With an update downloaded, one note covers both facts, so the plain
+  // "Will update when the app restarts" note steps aside.
+  const checkFailedWithDownload = checkFailure != null && restartPending && updateSnapshot.status === "ready";
+  const failureNote = checkFailure
+    ? checkFailureNote({
+        stuck: checkFailure.kind === "network_stuck",
+        downloadedVersion: checkFailedWithDownload ? downloadedVersion : null,
+      })
+    : null;
+  const lastCheckedAt = updateSnapshot.lastCheckedAt ?? null;
+  let latestSub: React.ReactNode;
+  if (checkFailure) {
+    latestSub = <span style={{ color: "var(--kit-warn)" }}>Check failed at {formatCheckTime(checkFailure.at)}</span>;
+  } else if (lastCheckedAt != null && !isDev) {
+    latestSub = `Checked at ${formatCheckTime(lastCheckedAt)}`;
+  } else if (latestReleasedAgo) {
+    latestSub = latestReleasedAgo.replace(/^released/, "Released");
+  } else {
+    latestSub = "Newest release ADE knows about";
+  }
 
   let pill: React.ReactNode = null;
   if (isDev) {
@@ -259,9 +317,7 @@ export function AboutSection() {
             <span className="ade-modern-stat-value">
               <span className="kit-stat kit-num">{latestVersion}</span>
             </span>
-            <span className="ade-modern-stat-sub">
-              {latestReleasedAgo ? latestReleasedAgo.replace(/^released/, "Released") : "Newest release ADE knows about"}
-            </span>
+            <span className="ade-modern-stat-sub">{latestSub}</span>
           </div>
 
           {runtime ? (
@@ -280,7 +336,26 @@ export function AboutSection() {
           ) : null}
         </div>
 
-        {restartPending ? (
+        {failureNote ? (
+          <div className="ade-modern-note" data-tone="warn">
+            <WarningCircle size={14} weight="fill" />
+            <div className="ade-modern-note-body">
+              <strong style={{ fontWeight: 600, color: "var(--color-fg)" }}>ADE couldn't check for newer versions</strong>
+              <span>{failureNote.message}</span>
+            </div>
+            {failureNote.action === "restart" ? (
+              <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => void restartAde()}>
+                Restart ADE
+              </button>
+            ) : (
+              <button type="button" className="ade-modern-btn" data-size="sm" disabled={checking} onClick={checkForUpdates}>
+                Check again
+              </button>
+            )}
+          </div>
+        ) : null}
+
+        {restartPending && !checkFailedWithDownload ? (
           <div className="ade-modern-note" data-tone="warn">
             <WarningCircle size={14} weight="fill" />
             <span>Will update when the app restarts</span>

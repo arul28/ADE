@@ -180,3 +180,18 @@ export function replaceInternalToolNames(text: string): string {
 
   return text.replace(NAMESPACED_TOOL_MENTION_PATTERN, normalizeToolMention);
 }
+
+/** The shell tools: Claude `Bash`, Codex `exec_command`, OpenCode `shell`, ADE `bash`. */
+const SHELL_TOOL_NAMES = new Set(["Bash", "bash", "shell", "exec_command"]);
+
+/**
+ * True for a tool that runs a shell command, including namespaced spellings
+ * (`functions.exec_command`). It imports nothing, so the transcript row
+ * modules stay free of icon and UI packages. The iOS app mirrors this rule in
+ * `WorkComputerUseActions.swift` (`workIsShellToolName`).
+ */
+export function isShellToolName(toolName: string): boolean {
+  if (SHELL_TOOL_NAMES.has(toolName)) return true;
+  const candidates = [toolName.split(".").at(-1) ?? "", toolName.split("__").at(-1) ?? ""];
+  return candidates.some((candidate) => SHELL_TOOL_NAMES.has(candidate));
+}

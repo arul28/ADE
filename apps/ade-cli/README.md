@@ -666,6 +666,8 @@ ade chat demote [session-id]                                     # take over a s
 ade chat promote [session-id]                                    # restore a peer as a subagent so it reports to its parent again
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
+ade chat handoff session-id --machine "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine; --fork, --include-changes, --clone, --when-turn-ends
+ade chat handoff session-id --options --json                     # where the chat can go, and the blockers with fixes; also --cancel, --retry
 ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
 ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # keep only the turns through a finished turn (Codex cuts natively; others replay the kept turns)
 ade chat models --provider codex --json                          # model order + supported reasoning tiers
@@ -789,6 +791,8 @@ ade --socket browser proof --tab tab-id --har --caption "Checkout 500s"
 ade --socket browser trace --tab tab-id --text                    # recent browser actions for this tab
 ade --socket browser screenshot --tab tab-id --text
 ade --socket browser actions --text                               # full built_in_browser action inventory
+ade --socket browser attach --tab "Stripe" --text                # only when the user asks: drive a tab of their own Chromium browser (needs remote debugging on)
+ade --socket browser detach --text                               # back to ADE's browser
 ade work-tools state --text                                       # read-only mirror of the desktop Work tools pane for this agent's lane
 ade work-tools state --lane lane-id --text                        # another lane; chat-bound agents always read their own
 ade work-tools actions --text                                     # full work_tools action inventory (setActiveTool is desktop-only)
@@ -972,20 +976,23 @@ same module behind an IPC snapshot feed for onboarding; there is nothing for
 `ade actions run` to reach that `ade tools status|ensure|gc` does not already
 cover.
 
-`ade browser` is capability-gated: the runtime accepts a `built_in_browser`
-action only from a chat or terminal ADE launched — one that carries the
-`ADE_BROWSER_ACTOR_TOKEN` the desktop minted for it — and the desktop, not the
-daemon, resolves that token, so a call always runs against the lane and tab
-collection it was minted for. A caller-supplied `--lane` on a
-`built_in_browser` action is dropped for that reason; `--lane` still selects
-which lane a *claim* attributes a tab to. `--force` is a reserved takeover
-flag and the runtime rejects it. The one relaxation is `open`/`new-tab`/`panel`
-on a machine with no ADE window: those three are forwarded to a desktop that
-has this lane pinned, which resolves its own capability there.
+`ade browser` needs no token: any process on this machine may use it, like
+`ade mac-desktop`. From a chat, the runtime tags each call with that chat and
+its lane (or the personal tab collection), so the chat owns the tabs it opens;
+a caller-supplied `--lane` is dropped there. From a plain terminal with no chat,
+`--lane` is kept and the call owns no tab. `--force` is a reserved takeover
+flag and the runtime rejects it, and calls from another machine's brain are
+refused. On a machine with no ADE window, `open`/`new-tab`/`panel` are
+forwarded to a desktop that has this lane pinned.
 
-`ade app-control` is not gated by a capability of its own — there is no
-app_control actor token, and the daemon has no app_control-specific scoping
-branch the way it has for `built_in_browser` and `work_tools`. A machine has
+`ade browser attach` / `detach`, and the page commands of a chat attached to
+the user's own browser, never reach ADE's browser or the desktop, so the
+runtime checks them itself: the caller must be a live chat of this project and
+may name only its own chat. See `docs/features/computer-use/README.md`
+("Attach to the user's own browser").
+
+`ade app-control` has no app_control-specific scoping branch the way the daemon
+has for `built_in_browser` and `work_tools`. A machine has
 one active App Control session at a time, and `--lane`/`--chat-session` (or
 `ade app-control claim`) attribute that session to the caller so the Work row,
 the trace and proof artifacts land on the right lane. `--force` here means
@@ -1215,6 +1222,10 @@ ade automations create --from-file rule.json \
 
 # Reuse an existing lane instead.
 ade automations create --from-file rule.json --lane-mode reuse --lane lane-42
+
+# Run in the trigger PR's own branch (PR triggers only), so the agent can push to the PR.
+# The run reuses the lane already linked to the PR, or opens the branch as a new lane.
+ade automations create --from-file dependabot-rule.json --lane-mode pr-branch
 
 # Custom template (only valid with --lane-name-preset custom).
 ade automations create --from-file rule.json \

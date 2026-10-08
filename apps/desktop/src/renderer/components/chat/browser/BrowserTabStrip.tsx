@@ -9,13 +9,15 @@
  * strip that draws a lone chip above the address bar is 28px of furniture
  * restating what the tool header already says.
  */
-import type { Dispatch, KeyboardEvent, MutableRefObject, SetStateAction } from "react";
-import { Detective, Globe, Plus, Robot, X } from "@phosphor-icons/react";
+import { useCallback, useMemo, useState } from "react";
+import type { Dispatch, KeyboardEvent, MouseEvent, MutableRefObject, SetStateAction } from "react";
+import { ChatCircleText, Detective, Globe, Plus, Robot, X } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type { BuiltInBrowserTab } from "../../../../shared/types/builtInBrowser";
 import { tunnelAwareUrl, type TabTunnelMap } from "../browserRemoteTunnels";
 import { browserTabLabel } from "./browserToolbarLabels";
 import { cn } from "../../ui/cn";
+import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../../ui/ContextMenu";
 import { TOOLBAR_FOCUS } from "./browserChrome";
 import { browserTabGroupKey } from "./browserTabGroups";
 import type { BrowserTab } from "./browserPanelTypes";
@@ -64,6 +66,8 @@ export type BrowserTabStripProps = {
   onNewTab: () => void;
   /** Lane color for the group outline. Missing lanes draw no outline. */
   laneColorById?: ReadonlyMap<string, string>;
+  /** Right-click → "Attach to chat". Absent where there is no chat to attach to. */
+  onAttachTab?: (tabId: string) => void;
 };
 
 export function BrowserTabStrip({
@@ -82,7 +86,35 @@ export function BrowserTabStrip({
   onCloseTab,
   onNewTab,
   laneColorById,
+  onAttachTab,
 }: BrowserTabStripProps) {
+  const [tabMenu, setTabMenu] = useState<(NonNullable<ContextMenuState> & { tabId: string }) | null>(null);
+  const closeTabMenu = useCallback(() => setTabMenu(null), []);
+  const menuTabId = tabMenu?.tabId ?? null;
+  const tabMenuEntries = useMemo<ContextMenuEntry[]>(() => (
+    menuTabId && onAttachTab
+      ? [{
+          kind: "item",
+          key: "attach-to-chat",
+          label: "Attach to chat",
+          icon: ChatCircleText,
+          onSelect: () => onAttachTab(menuTabId),
+        }]
+      : []
+  ), [menuTabId, onAttachTab]);
+  const openTabMenu = (event: MouseEvent<HTMLDivElement>, tabId: string) => {
+    if (!onAttachTab) return;
+    event.preventDefault();
+    // The keyboard's menu key reports no pointer, so open under the tab.
+    const rect = event.currentTarget.getBoundingClientRect();
+    const fromKeyboard = event.clientX === 0 && event.clientY === 0;
+    setTabMenu({
+      x: fromKeyboard ? rect.left : event.clientX,
+      y: fromKeyboard ? rect.bottom : event.clientY,
+      tabId,
+    });
+  };
+
   /*
     Roving focus, so the strip costs one Tab stop instead of 2N.
 
@@ -161,6 +193,7 @@ export function BrowserTabStrip({
                 if (!active) onSwitchTab(tab.id);
               }}
               onKeyDown={(event) => handleTabKeyDown(event, index)}
+              onContextMenu={(event) => openTabMenu(event, tab.id)}
               className={cn(
                 "group/tab relative inline-flex h-6 max-w-[144px] min-w-[84px] shrink-0 items-center",
                 "gap-1.5 rounded-md px-2 text-[12px]",
@@ -291,6 +324,15 @@ export function BrowserTabStrip({
       >
         <Plus size={12} />
       </button>
+      {/* Portaled: the strip sits over a native page view, and the menu has to
+          land under the pointer and be seen by the view's occlusion pass. */}
+      <ContextMenu
+        menu={tabMenu && tabMenuEntries.length > 0 ? tabMenu : null}
+        entries={tabMenuEntries}
+        onClose={closeTabMenu}
+        label="Browser tab actions"
+        portal
+      />
     </div>
   );
 }

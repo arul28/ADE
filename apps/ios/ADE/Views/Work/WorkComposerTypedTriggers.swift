@@ -101,6 +101,8 @@ struct WorkSmartLink: Equatable {
     case permission
     /// A slash command or skill this chat can run, e.g. `/quality`.
     case skill
+    /// A browser tab attached to a chat message.
+    case browserTab
     /// An `ade://` URL this build cannot parse — a newer ADE minted it.
     case adeLink
 
@@ -124,6 +126,7 @@ struct WorkSmartLink: Equatable {
       case .model: return "✦"
       case .permission: return "⛨"
       case .skill: return "/"
+      case .browserTab: return "🌐"
       case .adeLink: return "A"
       }
     }
@@ -962,6 +965,7 @@ struct WorkChip: Equatable {
     case permission(provider: String, value: String)
     /// A slash command or skill this chat can run (`/quality`).
     case skill(name: String)
+    case browserTab(WorkBrowserTabMention)
   }
 
   let kind: WorkSmartLink.Kind
@@ -1002,6 +1006,14 @@ struct WorkChip: Equatable {
     label = model.chipLabel(displayName: model.displayName)
     range = model.range
     origin = .model(model)
+  }
+
+  init(browserTab: WorkBrowserTabMention) {
+    kind = .browserTab
+    token = browserTab.token
+    label = browserTab.label
+    range = browserTab.range
+    origin = .browserTab(browserTab)
   }
 
   /// A chip whose kind and label were decided by the thread-entity rules
@@ -1047,7 +1059,8 @@ enum WorkChipDetector {
   static func chips(in text: NSString, limit: Int = defaultLimit) -> [WorkChip] {
     guard text.length > 0, limit > 0 else { return [] }
 
-    var candidates: [WorkChip] = WorkChatMentionDetector.mentions(in: text).map(WorkChip.init(mention:))
+    var candidates: [WorkChip] = WorkBrowserTabMentionDetector.mentions(in: text).map(WorkChip.init(browserTab:))
+    candidates.append(contentsOf: WorkChatMentionDetector.mentions(in: text).map(WorkChip.init(mention:)))
     // Model tokens follow chat mentions, the desktop's `parseChips` push order.
     candidates.append(contentsOf: WorkModelMentionDetector.mentions(in: text).map(WorkChip.init(model:)))
     candidates.append(contentsOf: WorkSmartLinkDetector.links(in: text).prefix(limit).map(WorkChip.init(link:)))
@@ -1123,6 +1136,59 @@ enum WorkChipDetector {
     }
     if cursor < ns.length { out += ns.substring(from: cursor) }
     return out
+  }
+}
+
+// MARK: - Browser tab mentions
+
+/// Swift twin of `apps/desktop/src/shared/browserTabMention.ts`. The attached
+/// block is deliberately one line: titles and URLs are display data, while the
+/// tab id is the stable pointer an agent can claim.
+struct WorkBrowserTabMention: Equatable {
+  let tabId: String
+  let title: String?
+  let url: String?
+  let token: String
+  let range: NSRange
+
+  var label: String {
+    if let title, !title.isEmpty { return title }
+    if let url, let host = URL(string: url)?.host, !host.isEmpty { return host }
+    return url ?? "Browser tab"
+  }
+}
+
+enum WorkBrowserTabMentionDetector {
+  private static let regex = try! NSRegularExpression(
+    pattern: #"<ade-browser-tab id="([^"\n]*)" title="([^"\n]*)" url="([^"\n]*)">[^\n]*?</ade-browser-tab>"#,
+    options: []
+  )
+
+  private static func unescape(_ value: String) -> String {
+    value
+      .replacingOccurrences(of: "&quot;", with: "\"")
+      .replacingOccurrences(of: "&lt;", with: "<")
+      .replacingOccurrences(of: "&gt;", with: ">")
+      .replacingOccurrences(of: "&amp;", with: "&")
+  }
+
+  static func mentions(in text: NSString) -> [WorkBrowserTabMention] {
+    guard text.length > 0 else { return [] }
+    let full = NSRange(location: 0, length: text.length)
+    return regex.matches(in: text as String, range: full).compactMap { match in
+      guard match.numberOfRanges == 4 else { return nil }
+      let tabId = unescape(text.substring(with: match.range(at: 1)))
+      guard !tabId.isEmpty else { return nil }
+      let title = unescape(text.substring(with: match.range(at: 2)))
+      let url = unescape(text.substring(with: match.range(at: 3)))
+      return WorkBrowserTabMention(
+        tabId: tabId,
+        title: title.isEmpty ? nil : title,
+        url: url.isEmpty ? nil : url,
+        token: text.substring(with: match.range),
+        range: match.range
+      )
+    }
   }
 }
 

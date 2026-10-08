@@ -28,7 +28,14 @@ export type GlobalVoiceRecorderError =
   | "mic_unavailable"
   | "no_audio"
   | "model_not_installed"
+  | "engine_unsupported"
   | "transcribe_failed";
+
+const TRANSCRIPTION_ERROR_PREFIXES: ReadonlyArray<readonly [string, GlobalVoiceRecorderError]> = [
+  ["model_not_installed:", "model_not_installed"],
+  ["engine_unsupported:", "engine_unsupported"],
+  ["empty_audio:", "no_audio"],
+];
 
 type ErrorListener = (error: GlobalVoiceRecorderError) => void;
 
@@ -294,13 +301,9 @@ class GlobalVoiceRecorder {
       }
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error);
-      this.emitError(
-        raw.includes("model_not_installed:")
-          ? "model_not_installed"
-          : raw.includes("empty_audio:")
-            ? "no_audio"
-            : "transcribe_failed",
-      );
+      // Main surfaces TranscriptionError codes as a `<code>:` message prefix.
+      const match = TRANSCRIPTION_ERROR_PREFIXES.find(([prefix]) => raw.includes(prefix));
+      this.emitError(match ? match[1] : "transcribe_failed");
     } finally {
       rootAppStoreApi.getState().resetDictationSession();
     }

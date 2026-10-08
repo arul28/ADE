@@ -275,6 +275,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `chat` | `voice_conversation_started` | `completed` | coarse chat provider family |
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
 | `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
+| `updates` | `provider_cli_updated` | `completed`, `failed` | coarse provider family (the ACP CLIs report `other`); never the version, install path, or output |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
@@ -283,6 +284,14 @@ keeps only the event's property keys and closed values; its `safeStringProperty`
 path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
+
+ADE's one-click update of a user-installed provider CLI (from the provider's
+Settings page or the chat warning for a CLI older than ADE supports) records
+`updates/provider_cli_updated` where the update runs: the desktop IPC handler
+(`surface: "desktop"`) and the `ai.acpProviderUpdate` action (`surface: "api"`).
+It is a rare, deliberate click, deduplicated per outcome and provider family
+for an hour, so the worst case is a few events a day inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute ceilings.
 
 Making a private webhook URL records `automations/webhook_url_created` where
 the URL is made: the desktop's IPC handler (`desktop`) or the
@@ -433,6 +442,36 @@ operational lines (`agent_chat.claude_replay_overflow_retry`,
 `agent_chat.claude_replay_overflow_gave_up`), which carry session and turn ids
 and turn counts, are not PostHog events.
 
+How a move of a chat to another machine ended records one coarse fact on the
+same `ade_feature_used` event with `feature: "chat"` and
+`action: "cross_machine_move"`, at the durable owner: the source brain's move
+orchestrator (`crossMachineHandoffOrchestrator.ts`), once per terminal state,
+through `onCrossMachineMoveOutcome` on the chat service and
+`captureCrossMachineMoveAnalytics`, wired in the brain's bootstrap (the only
+runtime with a transport, so the only one that runs moves). `outcome` is a
+closed set of four values — `continued` (the destination chat started),
+`failed` (a step failed or the destination refused), `cancelled` (kept here,
+denied, dismissed, or a new message won), and `unknown` (the answer was lost
+after acceptance started) — and `source` is the existing `runtime`. The product
+question is only whether moving a chat works, so nothing finer crosses the
+boundary: no session or handoff id, no machine name, no failure reason, no
+branch or commit, no model, and no capsule content. Who asked (`user` or
+`agent`) is left out because no existing key holds it, and no key was invented.
+A move whose chat was deleted records nothing.
+
+Volume is bounded by a `cross_machine_move:<handoffId>:<outcome>` deduplication
+key (hashed locally, never sent) with a one-hour minimum interval, so a retried
+move that ends `unknown` again inside the hour counts once. Moves are deliberate
+actions, and one move reaches at most four terminal outcomes (`unknown`, then a
+retry to `failed` or `continued`, or a dismissal to `cancelled`), so realistic
+volume is a handful per installation per day — inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling. No ceiling was raised, no PostHog definition changed (the provisioning
+scripts enumerate event names, not `action` or `outcome` values), and the
+dashboard spec is untouched until a product question needs it. The
+orchestrator's local operational lines (`agent_chat.cross_machine_handoff_*`),
+which carry session and handoff ids, are not PostHog events.
+
 ### Provider accounts, credentials, presets, proxy, and chat decisions
 
 Provider-account mutations are captured at the `provider_instances` action
@@ -569,13 +608,27 @@ there is no concrete dashboard question or card for them yet. The existing
 surface/feature volume views continue to include the shared event without a
 dashboard contract change.
 
+An issue made in ADE's create composer records the existing `ade_feature_used`
+event with `feature: "issues"`, `action: "issue_created"`,
+`source: "renderer_route"`, and the tracker on a closed `outcome`:
+`tracker_linear` or `tracker_github`. It is captured in
+`IssueCreateDialog.tsx` only after the tracker accepted the issue; an issue an
+agent makes through `ade linear create` or `ade github issue create` is not
+counted, because the question is whether people file issues from ADE's own
+form. Nothing about the issue crosses: no repository, team, title, labels,
+number or id. A per-tracker one-minute deduplication key folds a "Create more"
+burst into one event, so the worst case is two events a minute, inside the
+existing `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was
+raised and no dashboard card asks this yet.
+
 Which tool an installation opens in the Work tools pane records the existing
 `ade_feature_used` event at the pane's single writer (`useWorkSidebarTool`'s
 `setTool`, which every entry point funnels through — a picker card, the command
 palette, and the reveal channel a dev-server chip uses) with `feature: "work"`,
 `action: "tool_opened"`, `source: "renderer_route"`, and the tool id on a
 closed, prefixed `outcome`: `tool_terminal`, `tool_git`, `tool_files`,
-`tool_ios`, `tool_app_control`, `tool_browser`, or `tool_pr`. It is emitted from
+`tool_ios`, `tool_app_control`, `tool_browser`, `tool_pr`, `tool_mac_desktop`,
+`tool_windows_desktop`, or `tool_issues`. It is emitted from
 the renderer because tool selection has no durable backend mutation — the
 runtime publish that mirrors it to iOS and the hosted web client is a
 device-mirror push, not a record of the choice.
@@ -633,6 +686,27 @@ to at most three accepted events per installation per UTC day, inside the
 existing `ade_feature_used` 140-per-day / 30-per-minute limits and the shared
 200-event ceiling; no ceiling was raised. The dashboard spec is deliberately
 untouched: no card asks this yet.
+
+Whether agents use the user's own browser records the same `ade_feature_used`
+event once per successful `ade browser attach`, at the brain-side attach
+service (`createUserBrowserAttachService`, through an injected
+`captureAttached` callback — the service never reaches the analytics service
+or an id itself), with `feature: "work"`, `action: "user_browser"`, and
+`outcome: "started"`. A refused or cancelled attach, a detach, and every page
+action in the attached tab emit nothing: those are high-frequency or say
+nothing about adoption.
+
+The product question is only whether anyone lets agents into their own
+browser. Nothing finer crosses the boundary: no browser, machine name, tab,
+title, URL, or chat. A single `work_user_browser:started` key with a 24-hour
+minimum interval bounds this to at most one accepted event per installation
+per UTC day, inside the existing `ade_feature_used` 140-per-day / 30-per-minute
+limits and the shared 200-event ceiling; no ceiling was raised. The dashboard
+spec is deliberately untouched: no card asks this yet.
+
+The transcript's computer-use action rows are render-only and emit nothing:
+they describe tool calls an agent already made, and counting them would
+report agent activity as user engagement.
 
 The Work tab's Focus view (busy lanes folded) and its Focus grid (every
 waiting chat side by side) report adoption on the same event, emitted by the two
@@ -821,7 +895,7 @@ banner copy and in local logs. A per-outcome one-hour deduplication key bounds a
 click-loop to at most 24 accepted events per outcome — 48 across both — per
 installation per UTC day, inside the existing `ade_feature_used` and shared
 ceilings. The Activity feed's polling, rendering, section collapse, filters, and
-acknowledgements, notch and iOS widget updates, pairing-grant mint and redeem,
+acknowledgements, iOS widget updates, pairing-grant mint and redeem,
 and relay control sweeps remain untracked: they are high-frequency reads and UI
 mechanics, or they run on the relay and account-directory surfaces that have no
 analytics path.
@@ -980,6 +1054,24 @@ the existing `ade_feature_used` and shared daily ceilings. Hover, right-click,
 snapshot refresh, acknowledgements, delivery retries, APNs/ActivityKit frames,
 and native presentation changes remain untracked because they are either
 high-frequency mechanics or can expose work-specific interaction patterns.
+
+Sending a custom notification — `ade notify`, an agent, or an automation's
+**Send notification to mobile app** step — records the same `ade_feature_used`
+event at the brain's `attention.sendNotification` / `notify.send` boundary
+(`buildSendNotificationAction` in `adeActions/registry.ts`, through
+`captureNotificationSentAnalytics`), with `feature: "attention"`,
+`action: "notification_sent"`, `surface: "api"`, and a coarse `outcome`:
+`completed` (the relay took it for at least one phone and no delivery failed),
+`skipped_budget` (the account's hourly cap refused it), or `failed` (no phone on
+the account, a delivery failed, or the call failed). Input the caller got wrong
+(no title, a link ADE cannot open) and a signed-out machine are refused before
+anything is sent and emit nothing. The title, body, link, phone count and the
+sending project never cross the boundary. The product question is only whether
+people and agents use custom pushes and whether the cap bites. A per-outcome
+one-hour deduplication key bounds a looping automation to at most 72 accepted
+events per installation per UTC day, inside the existing `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling; no ceiling
+was raised. The dashboard spec is deliberately untouched: no card asks this yet.
 
 ### The capture gesture
 

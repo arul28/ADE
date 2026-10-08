@@ -30,8 +30,6 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.accountPairMachine]: new Set(["machineKey"]),
   [IPC.accountRenameMachine]: new Set(["machineKey", "customName"]),
   [IPC.accountRemoveMachine]: new Set(["machineKey"]),
-  [IPC.attentionNotchPublishSnapshot]: new Set(["items"]),
-  [IPC.attentionNotchPublishToast]: new Set(["title", "subtitle"]),
   // A Pi sign-in prompt answer is the credential itself when Pi asks for an
   // API key, so it must never reach a verbose IPC trace.
   [IPC.aiPiLoginSubmit]: new Set(["value"]),

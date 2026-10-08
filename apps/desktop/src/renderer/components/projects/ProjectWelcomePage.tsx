@@ -69,7 +69,7 @@ import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings"
 import { buildHomeHeadline, type HomeHeadline } from "../home/homeHeadline";
 import { openUsageDetails } from "./ProjectWelcomeSidePanels";
 import { localDayKey } from "../usage/ActivityHeatmap";
-import { activityStateGroup } from "../activity/activityPresentation";
+import { activityBoardColumn } from "../../../shared/attention/activityBoardColumn";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import {
   WebAddProjectNotice,
@@ -176,7 +176,7 @@ export function ProjectWelcomePage() {
   }, []);
   const running = useRunningChats();
   const recentStats = useRecentStats();
-  const needsYouCount = running.filter((item) => activityStateGroup(item) === "needs-you").length;
+  const needsYouCount = running.filter((item) => activityBoardColumn(item) === "needs_you").length;
   const pullRequests = usePullRequests(project?.rootPath ?? null);
   const usageGroups = useUsageGroups();
   const editingHome = useHomeLayoutStore((s) => s.editing);

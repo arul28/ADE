@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import type { SessionFilingBucket } from "../../lib/terminalAttention";
+import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import { workFocusQueue } from "./workLaneFocus";
 
 const EMPTY_ID_SET: ReadonlySet<string> = new Set();
@@ -51,6 +52,18 @@ export function useWorkFocusQueueReport({
     if (!active) return [];
     const next: WorkFocusQueueItem[] = [];
     const localById = new Map(localSessions.map((session) => [session.id, session] as const));
+    // Busy parents come from each machine's whole roster, the same rule the
+    // local queue reads, so a parent its subagent keeps busy gets no tile.
+    const rosterByMachine = new Map<string, TerminalSessionSummary[]>();
+    for (const row of foreignRows) {
+      const roster = rosterByMachine.get(row.machineId) ?? [];
+      roster.push(...row.sessions);
+      rosterByMachine.set(row.machineId, roster);
+    }
+    const busyParentsByMachine = new Map<string, Set<string>>();
+    for (const [machineId, roster] of rosterByMachine) {
+      busyParentsByMachine.set(machineId, parentsWithBusySubagents(roster, nowMs));
+    }
     for (const id of localIds) {
       const session = localById.get(id);
       if (session) next.push({ session, binding: null });
@@ -64,6 +77,7 @@ export function useWorkFocusQueueReport({
         foldedLaneIds: EMPTY_ID_SET,
         laneWaiting: () => false,
         nestedSessionIds: foreignNesting.get(compositeLaneId)?.excludedTopLevelIds ?? EMPTY_ID_SET,
+        busySubagentParentIds: busyParentsByMachine.get(row.machineId),
         nowMs,
       });
       const byId = new Map(row.sessions.map((session) => [session.id, session] as const));

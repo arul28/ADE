@@ -38,6 +38,7 @@ import type {
   RunAdeActionConfig,
 } from "../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../shared/types";
+import { advanceLaneToPrHead, resolvePrBranchLane, type AutomationPrLaneService } from "./automationPrBranchLane";
 import { AUTOMATION_CHAT_SESSION_PREFIX } from "../../../shared/types/macDesktop";
 import { stripHostAuthoredMessageProvenance } from "../chat/spawnMissionOwnership";
 import type { Logger } from "../logging/logger";
@@ -679,6 +680,12 @@ export function readTriggerPath(trigger: TriggerContext, pathExpr: string): unkn
   const raw = pathExpr.trim();
   if (!raw) return undefined;
   const segments = (raw.startsWith("trigger.") ? raw.slice("trigger.".length) : raw).split(".").filter(Boolean);
+  // `trigger.lane.*` is what the variable menu offers, but the context carries
+  // the run's lane flat (`laneId`, `laneName`); read it through that shape.
+  if (segments[0] === "lane" && !("lane" in trigger)) {
+    const lane: Record<string, unknown> = { id: trigger.laneId, name: trigger.laneName };
+    return segments.length === 1 ? lane : lane[segments[1] ?? ""];
+  }
   let cursor: unknown = trigger.webhook && WEBHOOK_REQUEST_FIELDS.has(segments[0] ?? "")
     ? trigger.webhook
     : trigger as unknown;
@@ -718,6 +725,20 @@ export function resolvePlaceholders(node: unknown, trigger: TriggerContext): unk
       out[key] = resolvePlaceholders(value, trigger);
     }
     return out;
+  }
+  if (typeof node === "string" && /\{\{\s*(?:date|time)\s*\}\}/.test(node)) {
+    // `{{date}}` and `{{time}}` are offered for every trigger; they read the
+    // scheduled time when there is one, else now, like lane names do.
+    const scheduledAt = trigger.scheduledAt ? new Date(trigger.scheduledAt) : null;
+    const clock = formatLaneTemplateClock(
+      scheduledAt && Number.isFinite(scheduledAt.getTime()) ? scheduledAt : new Date(),
+    );
+    return resolvePlaceholders(
+      node
+        .replace(/\{\{\s*date\s*\}\}/g, clock.date)
+        .replace(/\{\{\s*time\s*\}\}/g, clock.time),
+      trigger,
+    );
   }
   if (typeof node === "string") {
     const wholeMatch = /^\{\{\s*(trigger\.[^}\s]+)\s*\}\}$/.exec(node);
@@ -771,10 +792,21 @@ function listMatches(expected: string[] | undefined, actual: string[] | undefine
  * stable across a rule's runs (so its own retry keeps its lease), distinct
  * between rules, and obviously not a chat to anyone reading a status payload.
  */
-export function scopeAutomationAdeActionArgs(domain: string, resolvedArgs: unknown, ruleId: string): void {
+export function scopeAutomationAdeActionArgs(
+  domain: string,
+  resolvedArgs: unknown,
+  ruleId: string,
+  action?: string,
+): void {
   const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
   if (domain === "chat") {
     for (const candidate of candidates) {
+      // An unattended rule is never the person: a move it starts waits for
+      // approval unless the chat is full-auto, and the orchestrator runs it at
+      // the chat's own permission level.
+      if (action === "startCrossMachineHandoff" && isRecord(candidate)) {
+        candidate.requestedBy = "agent";
+      }
       // A send wait's prompt provenance is the host's to derive; an
       // unattended rule has no agent identity, so it gets none.
       if (isRecord(candidate)) delete candidate.sendMetadata;
@@ -833,12 +865,15 @@ export function triggerMatches(
   // A rule can hold several webhook triggers; each answers only its own URL.
   if (ruleTrigger.webhook?.hookId && ruleTrigger.webhook.hookId !== trigger.webhook?.hookId) return false;
 
-  const triggerAuthor = (trigger.issue?.author ?? trigger.pr?.author ?? trigger.author ?? "").trim().toLowerCase();
+  // GitHub names bot accounts `<name>[bot]`; a rule that says `dependabot`
+  // means the same account, so the suffix and a leading `@` are ignored.
+  const normalizeAuthor = (login: string) => login.trim().toLowerCase().replace(/^@/, "").replace(/\[bot\]$/, "");
+  const triggerAuthor = normalizeAuthor(trigger.issue?.author ?? trigger.pr?.author ?? trigger.author ?? "");
   const expectedAuthors = [
     ...(ruleTrigger.authors ?? []),
     ...(ruleTrigger.author ? [ruleTrigger.author] : []),
   ]
-    .map((a) => a.trim().toLowerCase())
+    .map(normalizeAuthor)
     .filter(Boolean);
   if (expectedAuthors.length) {
     if (!triggerAuthor || !expectedAuthors.includes(triggerAuthor)) return false;
@@ -1059,8 +1094,9 @@ function deriveIncludeProjectContext(rule: AutomationRuleInput): boolean {
 
 function normalizeAutomationLaneMode(mode: unknown): AutomationExecution["laneMode"] | undefined {
   if (mode === "provided" || mode === "prompt-at-run") return "require-on-trigger";
-  return mode === "create" || mode === "reuse" || mode === "require-on-trigger" ? mode : undefined;
+  return mode === "create" || mode === "reuse" || mode === "require-on-trigger" || mode === "pr-branch" ? mode : undefined;
 }
+
 
 /**
  * Attempt budget for a one-shot rule that did not configure one. A one-shot
@@ -1375,6 +1411,7 @@ export function createAutomationService({
   linearIngressAvailable,
   cursorCloudIngressAvailable,
   githubPollingAvailable,
+  prService,
   onEvent,
   cronScheduler = cron,
 }: {
@@ -1401,6 +1438,8 @@ export function createAutomationService({
   cursorCloudIngressAvailable?: () => boolean;
   /** True when direct GitHub polling can resolve a configured repository. */
   githubPollingAvailable?: () => boolean;
+  /** Imports a PR's head branch as a lane, for `execution.laneMode: "pr-branch"`. */
+  prService?: AutomationPrLaneService | null;
   /** Injectable only for deterministic scheduler tests. */
   cronScheduler?: CronScheduler;
   onEvent?: (payload: AutomationServiceEvent) => void;
@@ -1417,6 +1456,7 @@ export function createAutomationService({
   let linearAgentHooksRef: AutomationLinearAgentHooks | null = null;
   let cursorCloudIngressAvailableRef = cursorCloudIngressAvailable ?? (() => false);
   let githubPollingAvailableRef = githubPollingAvailable ?? (() => hasConfiguredGitHubOrigin(projectRoot));
+  const prServiceRef: AutomationPrLaneService | null = prService ?? null;
   const readWebhookGatewayPublicUrl = (): string | null => {
     try {
       return normalizePublicWebhookUrl(projectConfigService.get().effective.ui?.webhookGatewayPublicUrl ?? null)
@@ -3132,6 +3172,10 @@ export function createAutomationService({
   const requiresTriggerLane = (rule: AutomationRule): boolean =>
     rule.execution?.laneMode === "require-on-trigger";
 
+  /** Lane modes that resolve (and may create) the run's lane before a step runs. */
+  const createsLaneForRun = (rule: AutomationRule): boolean =>
+    rule.execution?.laneMode === "create" || rule.execution?.laneMode === "pr-branch";
+
   const missingTriggerLaneMessage = (trigger: Pick<TriggerContext, "triggerType">): string =>
     trigger.triggerType === "manual"
       ? "This automation requires a lane when triggered manually. Pass laneId / --lane."
@@ -3176,7 +3220,7 @@ export function createAutomationService({
     }
 
     try {
-      scopeAutomationAdeActionArgs(domain, resolvedArgs, ruleId);
+      scopeAutomationAdeActionArgs(domain, resolvedArgs, ruleId, actionName);
       const callable = fn as (...a: unknown[]) => unknown;
       const result = Array.isArray(resolvedArgs)
         ? await callable(...resolvedArgs)
@@ -3209,7 +3253,7 @@ export function createAutomationService({
     }
     if (action.type === "predict-conflicts") {
       if (!conflictService) throw new Error("Conflict service unavailable");
-      const laneId = requiresTriggerLane(rule) || rule.execution?.laneMode === "create"
+      const laneId = requiresTriggerLane(rule) || createsLaneForRun(rule)
         ? await resolveExecutionLaneId(rule, trigger, action, runId)
         : getConfiguredTargetLaneId(rule, action) ?? trigger.laneId;
       await conflictService.runPrediction(laneId ? { laneId } : {});
@@ -3292,7 +3336,7 @@ export function createAutomationService({
       if (!testService) throw new Error("Test service unavailable");
       const activeLanes = await laneService.list({ includeArchived: false });
       const configuredLaneId = getConfiguredTargetLaneId(rule, action);
-      const laneId = requiresTriggerLane(rule) || rule.execution?.laneMode === "create"
+      const laneId = requiresTriggerLane(rule) || createsLaneForRun(rule)
         ? await resolveExecutionLaneId(rule, trigger, action, runId)
         : configuredLaneId
           ?? trigger.laneId
@@ -3518,7 +3562,7 @@ export function createAutomationService({
     if (action.type === "run-command") {
       const command = (action.command ?? "").trim();
       if (!command) throw new Error("run-command requires command");
-      const laneId = requiresTriggerLane(rule) || rule.execution?.laneMode === "create"
+      const laneId = requiresTriggerLane(rule) || createsLaneForRun(rule)
         ? await resolveExecutionLaneId(rule, trigger, action, runId)
         : getConfiguredTargetLaneId(rule, action) ?? trigger.laneId;
       const baseCwd = laneId ? laneService.getLaneWorktreePath(laneId) : projectRoot;
@@ -3726,6 +3770,30 @@ export function createAutomationService({
     return { laneId: lane.id, laneName: lane.name };
   };
 
+  /** The `pr-branch` lane for this run; see `automationPrBranchLane.ts`. */
+  const resolvePrBranchLaneForRun = async (
+    rule: AutomationRule,
+    trigger: TriggerContext,
+  ): Promise<{ laneId: string; laneName: string }> => {
+    const template = rule.execution?.laneNamePreset && rule.execution.laneNamePreset !== "custom"
+      ? presetToTemplate(rule.execution.laneNamePreset)
+      : rule.execution?.laneNameTemplate ?? "";
+    const rendered = resolveLaneNameTemplate(template, trigger, rule.name);
+    const triggerLaneId = trimToNull(trigger.laneId);
+    const lane = await resolvePrBranchLane({
+      pr: trigger.pr,
+      triggerLane: triggerLaneId ? { id: triggerLaneId, name: trigger.laneName ?? triggerLaneId } : null,
+      laneName: rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered.trim() : "",
+      prService: prServiceRef,
+      listActiveLanes: () => laneService.list({ includeArchived: false }),
+      advanceLaneToPrHead: (lane, prNumber) => advanceLaneToPrHead(laneService.getLaneWorktreePath(lane.id), lane.name, prNumber),
+    });
+    trigger.laneId = lane.id;
+    trigger.laneName = lane.name;
+    if (lane.branchRef) trigger.branch = lane.branchRef;
+    return { laneId: lane.id, laneName: lane.name };
+  };
+
   /**
    * Resolve which lane an automation should run in. When the rule opts into
    * `execution.laneMode === "create"`, allocate a fresh lane via
@@ -3750,13 +3818,15 @@ export function createAutomationService({
 
     if (actionLaneId) return actionLaneId;
 
-    if (rule.execution?.laneMode === "create") {
+    if (createsLaneForRun(rule)) {
       const existingCreatedLaneId = loadLaneSetupLaneId(runId);
       if (existingCreatedLaneId) return existingCreatedLaneId;
 
       const setupActionId = runId ? insertAction(runId, -1, "lane-setup") : null;
       try {
-        const { laneId, laneName } = await createLaneForRun(rule, trigger);
+        const { laneId, laneName } = rule.execution?.laneMode === "pr-branch"
+          ? await resolvePrBranchLaneForRun(rule, trigger)
+          : await createLaneForRun(rule, trigger);
         if (setupActionId) {
           finishAction({
             id: setupActionId,

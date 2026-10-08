@@ -362,10 +362,6 @@ import {
   BACKGROUND_UTILITY_CODEX_MODEL_ID,
   BACKGROUND_UTILITY_CURSOR_MODEL_ID,
 } from "../../../shared/backgroundUtilityModel";
-import {
-  resolveBuiltInBrowserActorCapability,
-  type BrowserActorCapabilityIssuer,
-} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
 import { devServerRegistry } from "../devServers/devServerRegistry";
 
@@ -430,7 +426,7 @@ function createHarness(overrides: {
   projectConfigService?: {
     get: ReturnType<typeof vi.fn>;
   };
-  browserActorCapabilityIssuer?: BrowserActorCapabilityIssuer;
+  releaseChatBrowser?: (chatSessionId: string) => void;
 } = {}) {
   const mockPty = createMockPty();
   const broadcastData = vi.fn();
@@ -602,9 +598,7 @@ function createHarness(overrides: {
       ? { sessionActivityReportingEnabled: overrides.sessionActivityReportingEnabled }
       : {}),
     ...(overrides.projectConfigService ? { projectConfigService: overrides.projectConfigService as any } : {}),
-    ...(overrides.browserActorCapabilityIssuer
-      ? { browserActorCapabilityIssuer: overrides.browserActorCapabilityIssuer }
-      : {}),
+    ...(overrides.releaseChatBrowser ? { releaseChatBrowser: overrides.releaseChatBrowser } : {}),
     logger: logger as any,
     broadcastData,
     broadcastExit,
@@ -1600,112 +1594,7 @@ describe("ptyService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: "/tmp/test-project",
       }));
-      const actorToken = opts?.env?.ADE_BROWSER_ACTOR_TOKEN;
-      expect(resolveBuiltInBrowserActorCapability(actorToken)).toMatchObject({
-        chatSessionId: result.sessionId,
-        laneId: "lane-1",
-        projectRoot: "/tmp/test-project",
-      });
-
       service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
-
-      expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
-    });
-
-    // The ACP CLIs joined `TrackedAgentCliToolType` before the runtime predicate
-    // caught up, and the browser-actor token is issued unconditionally — so a
-    // qwen/kimi/grok/copilot terminal used to leave a live capability behind
-    // after its session closed.
-    it.each(["qwen", "kimi", "grok", "copilot"] as const)(
-      "revokes the browser actor capability when a %s session closes",
-      async (toolType) => {
-        const { service, loadPty } = createHarness();
-
-        const result = await service.create({
-          laneId: "lane-1",
-          title: `${toolType} CLI`,
-          cols: 80,
-          rows: 24,
-          toolType,
-          command: toolType,
-        });
-
-        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-        const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-        const actorToken = opts?.env?.ADE_BROWSER_ACTOR_TOKEN;
-        expect(resolveBuiltInBrowserActorCapability(actorToken)).toMatchObject({
-          chatSessionId: result.sessionId,
-        });
-
-        service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
-
-        expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
-      },
-    );
-
-    // The registry that validates `ADE_BROWSER_ACTOR_TOKEN` lives in Electron
-    // main; the runtime daemon that builds this env is a different process. It
-    // must take the token from the desktop rather than mint a local one that
-    // nothing could ever validate.
-    it("takes the browser actor capability from the injected desktop issuer", async () => {
-      const issue = vi.fn(async () => "desktop-issued-token");
-      const revoke = vi.fn(async () => {});
-      const { service, loadPty } = createHarness({
-        browserActorCapabilityIssuer: { issue, revoke } satisfies BrowserActorCapabilityIssuer,
-      });
-
-      const result = await service.create({
-        laneId: "lane-1",
-        title: "Codex CLI",
-        cols: 80,
-        rows: 24,
-        toolType: "codex",
-        command: "codex",
-      });
-
-      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-      expect(opts?.env?.ADE_BROWSER_ACTOR_TOKEN).toBe("desktop-issued-token");
-      expect(issue).toHaveBeenCalledWith({
-        chatSessionId: result.sessionId,
-        laneId: "lane-1",
-        projectRoot: "/tmp/test-project",
-        tabCollection: null,
-      });
-      // Nothing was written to this process's registry.
-      expect(resolveBuiltInBrowserActorCapability("desktop-issued-token")).toBeNull();
-
-      service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
-
-      expect(revoke).toHaveBeenCalledWith(result.sessionId);
-    });
-
-    // Headless machine, or ADE Desktop closed: the bridge cannot mint a
-    // capability. Launching the terminal without one is right — failing the
-    // launch, or leaking the host process's token, is not.
-    it("omits the browser actor token when the desktop issuer is unreachable", async () => {
-      const { service, loadPty } = createHarness({
-        browserActorCapabilityIssuer: {
-          issue: async () => {
-            throw new Error("Desktop browser bridge not running at /tmp/desktop-bridge.sock.");
-          },
-          revoke: async () => {},
-        },
-      });
-
-      const result = await service.create({
-        laneId: "lane-1",
-        title: "Codex CLI",
-        cols: 80,
-        rows: 24,
-        toolType: "codex",
-        command: "codex",
-      });
-
-      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-      expect(opts?.env).not.toHaveProperty("ADE_BROWSER_ACTOR_TOKEN");
-      expect(opts?.env?.ADE_CHAT_SESSION_ID).toBe(result.sessionId);
     });
 
     it("exports spawn lineage without replacing the tracked CLI session identity", async () => {
@@ -6951,6 +6840,16 @@ describe("ptyService", () => {
       expect(broadcastExit).toHaveBeenCalledWith(
         expect.objectContaining({ ptyId, sessionId, exitCode: null }),
       );
+    });
+
+    it("releases a user-browser attachment when an unbound tracked CLI ends", async () => {
+      const releaseChatBrowser = vi.fn();
+      const { service, mockPty } = createHarness({ releaseChatBrowser });
+      const { sessionId } = await service.create({ laneId: "lane-1", title: "d", cols: 80, rows: 24, toolType: "codex" });
+
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+
+      expect(releaseChatBrowser).toHaveBeenCalledWith(sessionId);
     });
 
     it("does not kill a live PTY when the supplied session id belongs to another session", async () => {

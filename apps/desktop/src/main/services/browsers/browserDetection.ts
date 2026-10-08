@@ -71,7 +71,7 @@ function runToCompletion(
  * the system volume's cryptex — so the search covers the standard homes before
  * falling back to Launch Services.
  */
-function macApplicationDirectories(env: NodeJS.ProcessEnv): string[] {
+export function macApplicationDirectories(env: NodeJS.ProcessEnv): string[] {
   const home = env.HOME?.trim();
   return [
     "/Applications",

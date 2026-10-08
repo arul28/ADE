@@ -1,4 +1,7 @@
 import fs from "node:fs";
+import { createGithubIssueOps } from "./githubIssueOps";
+import { issueWriteCandidates } from "./githubIssueWriteAccess";
+import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -958,7 +961,7 @@ export function createGithubService({
         token: environment.token,
         source: "environment",
         patTokenStored,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     if (appToken) {
@@ -968,7 +971,7 @@ export function createGithubService({
         patTokenStored,
         ghCliPath: null,
         ghAuthError: null,
-        capabilities: ["read"],
+        capabilities: ["read", "issue-write"],
         userLogin: appStatus.userLogin,
       });
     }
@@ -978,7 +981,7 @@ export function createGithubService({
         token: gh.token,
         source: "gh",
         patTokenStored,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     if (patLookup?.token) {
@@ -986,7 +989,7 @@ export function createGithubService({
         ...patLookup,
         token: patLookup.token,
         source: "pat",
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     return {
@@ -1414,7 +1417,7 @@ export function createGithubService({
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
     const explicitToken = args.token?.trim() ?? "";
-    const candidates: GitHubTokenCandidate[] = explicitToken
+    const candidatePool: GitHubTokenCandidate[] = explicitToken
       ? [{
           token: explicitToken,
           source: "environment",
@@ -1427,6 +1430,16 @@ export function createGithubService({
           (await readCredentialInventory()).candidates,
           capability,
         );
+    // An issue write uses the App only when its installation grants
+    // `Issues: write`; otherwise it would 403 on every edit (see
+    // `githubIssueWriteAccess.ts`).
+    const candidates = capability === "issue-write" && !explicitToken
+      ? await issueWriteCandidates(
+        candidatePool,
+        args.repo?.owner ?? classifyGitHubRepositoryApiPath(args.path)?.owner ?? null,
+        readAppIssueGrant,
+      )
+      : candidatePool;
     if (candidates.length === 0) {
       throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
     }
@@ -2190,6 +2203,27 @@ export function createGithubService({
     });
   };
 
+  // Issue reads, edits and creates (see githubIssueOps.ts).
+  const issueOps = createGithubIssueOps({
+    apiRequest,
+    apiRequestAllPages,
+    readCredentialCandidates: async () => (await readCredentialInventory()).candidates,
+    logger,
+    runGh: async (ghArgs, options) => {
+      const resolved = resolveExecutableFromKnownLocations("gh");
+      if (!resolved?.path) throw new Error("GitHub CLI was not found. Install gh, or remove the pictures.");
+      const { stdout } = await execFileAsync(resolved.path, ghArgs, {
+        cwd: options.cwd,
+        encoding: "utf8",
+        timeout: options.timeoutMs,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      });
+      return String(stdout);
+    },
+  });
+  const readAppIssueGrant = issueOps.readAppIssueGrant;
+
   const getIssue = async (owner: string, name: string, number: number): Promise<GitHubIssue | null> => {
     try {
       const { data } = await apiRequest<GitHubIssue>({
@@ -2671,6 +2705,16 @@ export function createGithubService({
     listRepoCollaborators,
     listRepoIssues,
     getIssue,
+    getRepoIssueSummary: issueOps.getRepoIssueSummary,
+    createIssue: issueOps.createIssue,
+    listIssueTemplates: issueOps.listIssueTemplates,
+    listIssueTypes: issueOps.listIssueTypes,
+    linkSubIssue: issueOps.linkSubIssue,
+    getIssueWriteAccess: issueOps.getIssueWriteAccess,
+    updateIssue: issueOps.updateIssue,
+    commentOnIssue: issueOps.commentOnIssue,
+    listRepoMilestones: issueOps.listRepoMilestones,
+    listRepoIssueList: issueOps.listRepoIssueList,
     listIssueComments,
     listRepoPulls,
     listPullRequestReviews,
@@ -2696,6 +2740,16 @@ export type GitHubLabel = {
   color?: string;
   default?: boolean;
   description?: string | null;
+};
+
+/** The fields `updateIssue` may change; anything omitted is left as it is. */
+export type GitHubIssueUpdate = GitHubIssuePatch;
+
+export type GitHubMilestone = {
+  number: number;
+  title: string;
+  state?: "open" | "closed";
+  due_on?: string | null;
 };
 
 export type GitHubUser = {

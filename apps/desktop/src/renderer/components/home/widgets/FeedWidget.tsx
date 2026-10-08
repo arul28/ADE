@@ -13,7 +13,8 @@ import {
 import type { AutoUpdateSnapshot, NormalizedLinearIssue } from "../../../../shared/types";
 import { useActivityStore } from "../../../state/activityStore";
 import { openExternalUrl } from "../../../lib/openExternal";
-import { requestLinearIssueQuickView } from "../../../lib/linearIssueQuickViewNavigation";
+import { openIssueRef } from "../../../lib/issueNavigation";
+import { linearIssueRef } from "../../../../shared/issueRefs";
 import { LinearMark } from "../../lanes/linearBrand";
 import { WelcomeCardHead, openAttentionItem, openMachines, type MachineRow } from "../../projects/ProjectWelcomeSidePanels";
 import { useWidgetVisible } from "../HomeWidgetGrid";
@@ -305,10 +306,12 @@ export default function FeedWidget({ item }: HomeWidgetProps) {
         openExternalUrl(target.url);
         return;
       case "linear":
-        // The quick view lives in a project's top bar; with none open, Linear itself.
-        if (projectRoot) requestLinearIssueQuickView({ issueIdentifier: target.identifier, source: "manual" });
-        else if (target.url) openExternalUrl(target.url);
+      {
+        // The issue viewer lives in a project; with none open, Linear itself.
+        const ref = linearIssueRef(target.identifier, target.url);
+        if (!(projectRoot && ref && openIssueRef({ ref, source: "chip" })) && target.url) openExternalUrl(target.url);
         return;
+      }
       case "machines":
         openMachines(webMode);
         return;

@@ -45,9 +45,12 @@
 		E2A00000000000000000C1 /* CursorCloudModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C1 /* CursorCloudModels.swift */; };
 		E2A00000000000000000C2 /* CursorCloudPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C2 /* CursorCloudPaneStore.swift */; };
 		E2A00000000000000000C3 /* CursorCloudPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C3 /* CursorCloudPaneSheet.swift */; };
+		E2A00000000000000000D3 /* GitHubIssuesPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000D3 /* GitHubIssuesPaneStore.swift */; };
+		E2A00000000000000000D2 /* GitHubIssuesPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000D2 /* GitHubIssuesPaneSheet.swift */; };
 		E2A00000000000000000C4 /* CursorCloudAgentListScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C4 /* CursorCloudAgentListScreen.swift */; };
 		E2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift */; };
 		E2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift */; };
+		E2A00000000000000000D4 /* GitHubIssuesPaneContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000D4 /* GitHubIssuesPaneContractTests.swift */; };
 		E2000000000000000000009A /* LinearOAuthRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000009A /* LinearOAuthRunner.swift */; };
 		E2000000000000000000009B /* LinearConnectionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000009B /* LinearConnectionScreen.swift */; };
 		AA1100000000000000000001 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
@@ -189,6 +192,9 @@
 		E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000034 /* WorkMarkdownParsing.swift */; };
 		E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0B /* WorkUsageLimitResume.swift */; };
 		E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */; };
+		E10000000000000000000F82 /* SyncService+SessionHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F82 /* SyncService+SessionHandoff.swift */; };
+		E10000000000000000000F81 /* WorkSessionHandoffSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F81 /* WorkSessionHandoffSheets.swift */; };
+		E10000000000000000000F80 /* WorkCrossMachineHandoffViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F80 /* WorkCrossMachineHandoffViews.swift */; };
 		E10000000000000000000035 /* WorkTimelineHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000035 /* WorkTimelineHelpers.swift */; };
 		E7C001000000000000000001 /* WorkChatTaskListHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C001000000000000000001 /* WorkChatTaskListHelpers.swift */; };
 		E7C001000000000000000002 /* WorkChatSourceHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C001000000000000000002 /* WorkChatSourceHelpers.swift */; };
@@ -201,6 +207,9 @@
 		FB000000000000000000CA01 /* WorkSessionActivityPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000CA01 /* WorkSessionActivityPresentation.swift */; };
 		E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */; };
 		E1000000000000000000003A /* WorkReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003A /* WorkReasoningCard.swift */; };
+		E10000000000000000CC0001 /* WorkComputerUseActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0001 /* WorkComputerUseActions.swift */; };
+		E10000000000000000CC0002 /* WorkComputerUseSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0002 /* WorkComputerUseSummary.swift */; };
+		E10000000000000000CC0003 /* WorkComputerUsePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0003 /* WorkComputerUsePresentation.swift */; };
 		E10000000000000000000F0A /* WorkCardExpansion.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0A /* WorkCardExpansion.swift */; };
 		E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003B /* WorkActivityIndicator.swift */; };
 		E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003C /* WorkSessionGrouping.swift */; };
@@ -476,9 +485,12 @@
 		D2A00000000000000000C1 /* CursorCloudModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudModels.swift; path = ADE/Views/CursorCloud/CursorCloudModels.swift; sourceTree = "<group>"; };
 		D2A00000000000000000C2 /* CursorCloudPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudPaneStore.swift; path = ADE/Views/CursorCloud/CursorCloudPaneStore.swift; sourceTree = "<group>"; };
 		D2A00000000000000000C3 /* CursorCloudPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudPaneSheet.swift; path = ADE/Views/CursorCloud/CursorCloudPaneSheet.swift; sourceTree = "<group>"; };
+		D2A00000000000000000D3 /* GitHubIssuesPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubIssuesPaneStore.swift; path = ADE/Views/GitHubIssues/GitHubIssuesPaneStore.swift; sourceTree = "<group>"; };
+		D2A00000000000000000D2 /* GitHubIssuesPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubIssuesPaneSheet.swift; path = ADE/Views/GitHubIssues/GitHubIssuesPaneSheet.swift; sourceTree = "<group>"; };
 		D2A00000000000000000C4 /* CursorCloudAgentListScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudAgentListScreen.swift; path = ADE/Views/CursorCloud/CursorCloudAgentListScreen.swift; sourceTree = "<group>"; };
 		D2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudAgentDetailScreen.swift; path = ADE/Views/CursorCloud/CursorCloudAgentDetailScreen.swift; sourceTree = "<group>"; };
 		D2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudContractDecodingTests.swift; path = ADETests/CursorCloudContractDecodingTests.swift; sourceTree = "<group>"; };
+		D2A00000000000000000D4 /* GitHubIssuesPaneContractTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubIssuesPaneContractTests.swift; path = ADETests/GitHubIssuesPaneContractTests.swift; sourceTree = "<group>"; };
 		D2000000000000000000009A /* LinearOAuthRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearOAuthRunner.swift; path = ADE/Views/Linear/LinearOAuthRunner.swift; sourceTree = "<group>"; };
 		D2000000000000000000009B /* LinearConnectionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearConnectionScreen.swift; path = ADE/Views/Linear/LinearConnectionScreen.swift; sourceTree = "<group>"; };
 		AA1000000000000000000001 /* ADESharedContainer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedContainer.swift; path = ADE/Shared/ADESharedContainer.swift; sourceTree = "<group>"; };
@@ -581,6 +593,9 @@
 		D10000000000000000000034 /* WorkMarkdownParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownParsing.swift; path = ADE/Views/Work/WorkMarkdownParsing.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0B /* WorkUsageLimitResume.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResume.swift; path = ADE/Views/Work/WorkUsageLimitResume.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResumeViews.swift; path = ADE/Views/Work/WorkUsageLimitResumeViews.swift; sourceTree = "<group>"; };
+		D10000000000000000000F82 /* SyncService+SessionHandoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+SessionHandoff.swift"; path = "ADE/Services/SyncService+SessionHandoff.swift"; sourceTree = "<group>"; };
+		D10000000000000000000F81 /* WorkSessionHandoffSheets.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionHandoffSheets.swift; path = ADE/Views/Work/WorkSessionHandoffSheets.swift; sourceTree = "<group>"; };
+		D10000000000000000000F80 /* WorkCrossMachineHandoffViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCrossMachineHandoffViews.swift; path = ADE/Views/Work/WorkCrossMachineHandoffViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000035 /* WorkTimelineHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTimelineHelpers.swift; path = ADE/Views/Work/WorkTimelineHelpers.swift; sourceTree = "<group>"; };
 		D7C001000000000000000001 /* WorkChatTaskListHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatTaskListHelpers.swift; path = ADE/Views/Work/WorkChatTaskListHelpers.swift; sourceTree = "<group>"; };
 		D7C001000000000000000002 /* WorkChatSourceHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatSourceHelpers.swift; path = ADE/Views/Work/WorkChatSourceHelpers.swift; sourceTree = "<group>"; };
@@ -593,6 +608,9 @@
 		FA000000000000000000CA01 /* WorkSessionActivityPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionActivityPresentation.swift; path = ADE/Views/Work/WorkSessionActivityPresentation.swift; sourceTree = "<group>"; };
 		D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Timeline.swift"; path = "ADE/Views/Work/WorkChatSessionView+Timeline.swift"; sourceTree = "<group>"; };
 		D1000000000000000000003A /* WorkReasoningCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkReasoningCard.swift"; path = "ADE/Views/Work/WorkReasoningCard.swift"; sourceTree = "<group>"; };
+		D10000000000000000CC0001 /* WorkComputerUseActions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUseActions.swift"; path = "ADE/Views/Work/WorkComputerUseActions.swift"; sourceTree = "<group>"; };
+		D10000000000000000CC0002 /* WorkComputerUseSummary.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUseSummary.swift"; path = "ADE/Views/Work/WorkComputerUseSummary.swift"; sourceTree = "<group>"; };
+		D10000000000000000CC0003 /* WorkComputerUsePresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUsePresentation.swift"; path = "ADE/Views/Work/WorkComputerUsePresentation.swift"; sourceTree = "<group>"; };
 		D10000000000000000000F0A /* WorkCardExpansion.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkCardExpansion.swift"; path = "ADE/Views/Work/WorkCardExpansion.swift"; sourceTree = "<group>"; };
 		D1000000000000000000003B /* WorkActivityIndicator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkActivityIndicator.swift; path = ADE/Views/Work/WorkActivityIndicator.swift; sourceTree = "<group>"; };
 		D1000000000000000000003E /* WorkContextCompactDivider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkContextCompactDivider.swift; path = ADE/Views/Work/WorkContextCompactDivider.swift; sourceTree = "<group>"; };
@@ -891,6 +909,15 @@
 			name = CursorCloud;
 			sourceTree = "<group>";
 		};
+		D2A00000000000000000DA /* GitHubIssues */ = {
+			isa = PBXGroup;
+			children = (
+				D2A00000000000000000D3 /* GitHubIssuesPaneStore.swift */,
+				D2A00000000000000000D2 /* GitHubIssuesPaneSheet.swift */,
+			);
+			name = GitHubIssues;
+			sourceTree = "<group>";
+		};
 		D2000000000000000000009F /* Linear */ = {
 			isa = PBXGroup;
 			children = (
@@ -975,6 +1002,7 @@
 				H10000000000000000000020 /* Cto */,
 				D2000000000000000000009F /* Linear */,
 				D2A00000000000000000CA /* CursorCloud */,
+				D2A00000000000000000DA /* GitHubIssues */,
 				G20000000000000000000000 /* PRs */,
 				A10000000000000000000015 /* Settings */,
 				AD0000000000000000000C01 /* Account */,
@@ -1110,6 +1138,9 @@
 				D1000000000000000000002B /* WorkChatSessionView+Actions.swift */,
 				D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */,
 				D1000000000000000000003A /* WorkReasoningCard.swift */,
+				D10000000000000000CC0001 /* WorkComputerUseActions.swift */,
+				D10000000000000000CC0002 /* WorkComputerUseSummary.swift */,
+				D10000000000000000CC0003 /* WorkComputerUsePresentation.swift */,
 				D10000000000000000000F0A /* WorkCardExpansion.swift */,
 				D1000000000000000000003B /* WorkActivityIndicator.swift */,
 				D1000000000000000000003E /* WorkContextCompactDivider.swift */,
@@ -1187,6 +1218,8 @@
 				D10000000000000000000034 /* WorkMarkdownParsing.swift */,
 				D10000000000000000000F0B /* WorkUsageLimitResume.swift */,
 				D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */,
+				D10000000000000000000F81 /* WorkSessionHandoffSheets.swift */,
+				D10000000000000000000F80 /* WorkCrossMachineHandoffViews.swift */,
 				D10000000000000000000035 /* WorkTimelineHelpers.swift */,
 				D7C001000000000000000001 /* WorkChatTaskListHelpers.swift */,
 				D7C001000000000000000002 /* WorkChatSourceHelpers.swift */,
@@ -1251,6 +1284,7 @@
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				A90000000000000000000011 /* ProductAnalytics.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
+				D10000000000000000000F82 /* SyncService+SessionHandoff.swift */,
 				D20000000000000000000F02 /* MachineFleet.swift */,
 				D20000000000000000000F01 /* MachineConnection.swift */,
 				D20000000000000000000F07 /* SyncService+Fleet.swift */,
@@ -1507,6 +1541,7 @@
 				A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */,
 				C5A00000000000000000000E /* SSHBootstrapTests.swift */,
 				D2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift */,
+				D2A00000000000000000D4 /* GitHubIssuesPaneContractTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -1806,6 +1841,8 @@
 				E2A00000000000000000C1 /* CursorCloudModels.swift in Sources */,
 				E2A00000000000000000C2 /* CursorCloudPaneStore.swift in Sources */,
 				E2A00000000000000000C3 /* CursorCloudPaneSheet.swift in Sources */,
+				E2A00000000000000000D3 /* GitHubIssuesPaneStore.swift in Sources */,
+				E2A00000000000000000D2 /* GitHubIssuesPaneSheet.swift in Sources */,
 				E2A00000000000000000C4 /* CursorCloudAgentListScreen.swift in Sources */,
 				E2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift in Sources */,
 				E20000000000000000000092 /* LinearSVGPath.swift in Sources */,
@@ -2009,6 +2046,9 @@
 				E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */,
 				E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */,
 				E1000000000000000000003A /* WorkReasoningCard.swift in Sources */,
+				E10000000000000000CC0001 /* WorkComputerUseActions.swift in Sources */,
+				E10000000000000000CC0002 /* WorkComputerUseSummary.swift in Sources */,
+				E10000000000000000CC0003 /* WorkComputerUsePresentation.swift in Sources */,
 				E10000000000000000000F0A /* WorkCardExpansion.swift in Sources */,
 				E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */,
 				E1000000000000000000003E /* WorkContextCompactDivider.swift in Sources */,
@@ -2086,6 +2126,9 @@
 				E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */,
 				E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */,
 				E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */,
+				E10000000000000000000F82 /* SyncService+SessionHandoff.swift in Sources */,
+				E10000000000000000000F81 /* WorkSessionHandoffSheets.swift in Sources */,
+				E10000000000000000000F80 /* WorkCrossMachineHandoffViews.swift in Sources */,
 				E10000000000000000000035 /* WorkTimelineHelpers.swift in Sources */,
 				E7C001000000000000000001 /* WorkChatTaskListHelpers.swift in Sources */,
 				E7C001000000000000000002 /* WorkChatSourceHelpers.swift in Sources */,
@@ -2174,6 +2217,7 @@
 				A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */,
 				C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */,
 				E2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift in Sources */,
+				E2A00000000000000000D4 /* GitHubIssuesPaneContractTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -1,6 +1,5 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
-import { DESKTOP_CLIENT_NAMES } from "../../desktop/src/shared/runtimeClientNames";
 import {
   PROJECT_ICON_MIME_TYPES_BY_EXTENSION,
   PROJECT_ICON_TYPE_ERROR,
@@ -19,6 +18,7 @@ import {
 import { inspectProjectPath } from "../../desktop/src/main/services/projects/projectPathInspector";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
+import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/chat/handoffGitBundle";
 import type { SyncHostRecoveryResult } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION, isSearchDocKind } from "../../desktop/src/shared/types";
@@ -78,6 +78,7 @@ import {
   isCtoOnlyAdeAction,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/actionPolicy";
+import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import {
   createSyncAccountDirectoryHealth,
@@ -337,12 +338,6 @@ export type MultiProjectRpcHandlerOptions = {
    */
   machineUpdateControls?: MachineUpdateAndRestartDeps;
   /**
-   * The desktop bridge token the machine's own desktop app announced on
-   * `ade/initialize`. Machine scope keeps the latest one so "Update & restart"
-   * can ask that app to install its own update (see `desktopAppUpdateBridge`).
-   */
-  onDesktopBridgeAuthToken?: (authToken: string) => void;
-  /**
    * Backs `machine.reportPowerTransition`: the desktop's OS-level pre-suspend
    * beat, forwarded into the brain.
    *
@@ -428,6 +423,7 @@ const RUNTIME_METHODS = new Set([
   "runtime.activitySummary",
   "account.call",
   "attention.call",
+  "notify.send",
   "providers.status",
   "personalChats.call",
   "personalChats.streamEvents",
@@ -926,12 +922,10 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
       blockingErrors.push("Destination Git authentication preflight received invalid repository details.");
     } else if (fs.existsSync(normalizedParent) && fs.statSync(normalizedParent).isDirectory()) {
       const githubService = createHeadlessGitHubService(normalizedParent, machineProjectLogger);
-      let destinationAuthHeader = "";
+      let destinationToken = "";
       if (githubService.parseGitHubRepoFromRemoteUrl(originUrl) && /^https:\/\//i.test(originUrl)) {
         try {
-          const token = await githubService.getGitTransportTokenOrThrowAsync();
-          const basic = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
-          destinationAuthHeader = `AUTHORIZATION: basic ${basic}`;
+          destinationToken = await githubService.getGitTransportTokenOrThrowAsync();
         } catch {
           // The destination may still have a system credential helper. Let
           // Git try it with terminal prompting disabled below.
@@ -948,19 +942,8 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
         {
           cwd: normalizedParent,
           timeoutMs: 30_000,
-          env: {
-            GIT_TERMINAL_PROMPT: "0",
-            GCM_INTERACTIVE: "Never",
-            ...(destinationAuthHeader
-              ? {
-                  // Keep destination-owned credentials out of command-line
-                  // arguments, which may be visible to other local processes.
-                  GIT_CONFIG_COUNT: "1",
-                  GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-                  GIT_CONFIG_VALUE_0: destinationAuthHeader,
-                }
-              : {}),
-          },
+          // Destination-owned credentials stay out of command-line arguments.
+          env: githubExtraHeaderGitEnv(destinationToken),
           maxOutputBytes: 64_000,
         },
       );
@@ -969,7 +952,9 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
         blockingErrors.push(`The destination cannot read the published repository with its own Git credentials: ${detail}`);
       } else {
         const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0] ?? "";
-        if (remoteHeadSha !== sourceHeadSha) {
+        // A move that carries its own commits (`hasGitBundle`) only needs the
+        // repository to be readable; the branch may be behind or unpublished.
+        if (params.hasGitBundle !== true && remoteHeadSha !== sourceHeadSha) {
           blockingErrors.push("The destination sees a different published branch commit than the source machine.");
         }
       }
@@ -1833,17 +1818,6 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "ade/initialize") {
       initializedParams = params;
-      const clientInfo = params.clientInfo && typeof params.clientInfo === "object"
-        ? params.clientInfo as Record<string, unknown>
-        : {};
-      const clientName = typeof params.clientName === "string" ? params.clientName : clientInfo.name;
-      if (
-        clientName === DESKTOP_CLIENT_NAMES.local
-        && typeof params.desktopBridgeAuthToken === "string"
-        && params.desktopBridgeAuthToken.trim()
-      ) {
-        options.onDesktopBridgeAuthToken?.(params.desktopBridgeAuthToken.trim());
-      }
       return {
         protocolVersion:
           typeof params.protocolVersion === "string"
@@ -2189,6 +2163,52 @@ export function createMultiProjectRpcRequestHandler(
         return { accepted: false, reason: outcome.reason ?? "unsupported" };
       }
       return { accepted: true };
+    }
+
+    // `ade notify`: machine-wide, so it neither needs nor registers the
+    // caller's folder as a project. Open to agents, like the
+    // `attention.sendNotification` action it shares its rules with.
+    if (method === "notify.send") {
+      if (!callerHasRoleAtLeast(callerRole(), "agent")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "notify.send requires the agent role.",
+        );
+      }
+      // A chat or PR link is stamped with the caller's project only when that
+      // folder is an ADE project; any other folder stamps none.
+      const callerRoot = typeof params.projectRoot === "string" ? params.projectRoot.trim() : "";
+      const callerProject = callerRoot ? projectRegistry.findByRootPath(callerRoot) : null;
+      const registeredRoot = callerProject?.rootPath ?? null;
+      // The push publisher is one per brain, shared by every project, so any
+      // project's runtime can send: the caller's, else the sync host's (null
+      // while sync is off), else the first registered one.
+      const fallbackProjectId = projectRegistry.list()[0]?.projectId ?? null;
+      const scope = callerProject
+        ? await scopeRegistry.get(callerProject.projectId)
+        : await scopeRegistry.resolveActiveSyncHost()
+          ?? (fallbackProjectId ? await scopeRegistry.get(fallbackProjectId) : null);
+      const runtime = scope?.runtime;
+      const publisher = runtime?.pushPublisherService;
+      if (!runtime || !publisher) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "Notifications are unavailable until the ADE brain has a project open.",
+        );
+      }
+      const send = buildSendNotificationAction(
+        runtime,
+        (notification) => publisher.sendCustomNotification(notification),
+        { projectRoot: registeredRoot },
+      );
+      try {
+        return await send(isRecord(params.args) ? params.args : {});
+      } catch (error) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
 
     if (method === "attention.call") {

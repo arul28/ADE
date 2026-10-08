@@ -527,7 +527,7 @@ function buildChannel(repoRoot, channel, options) {
   }
 
   ensureHostRuntimeResources(repoRoot, options, env);
-  // The native helpers (attention notch, Mac Desktop driver, capture helper,
+  // The native helpers (Mac Desktop driver, capture helper,
   // sim helper) are gitignored build outputs. `dist:mac` builds them; a channel
   // package must too, or the app ships without the driver and the sim helper:
   // every lane reports "Mac Desktop needs reinstalling" and every Apple device

@@ -55,7 +55,22 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
-const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--title", "--reason"]);
+const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--handoff-note", "--title", "--reason"]);
+
+/**
+ * The flag names in `args`, skipping each free-text flag's value: in
+ * `--prompt --cancel` the prompt is the text "--cancel", not a flag.
+ */
+export function flagNamesOutsideFreeText(args: readonly string[]): Set<string> {
+  const flags = new Set<string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") break;
+    if (FREE_TEXT_VALUE_FLAGS.has(token)) { index += 1; continue; }
+    flags.add(token.split("=")[0]!);
+  }
+  return flags;
+}
 
 /**
  * Pull `--machine <name>`, `--all-machines`, `--machine-project <sel>`,
@@ -66,6 +81,17 @@ const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt"
 export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   const primary = parsed.command[0]?.toLowerCase() ?? "";
   if (!MACHINE_TARGETABLE_PRIMARIES.has(primary)) return parsed;
+  // `ade chat handoff <session> --machine X` moves a chat FROM here TO X: the
+  // flag names the destination, so the command runs on this machine and is
+  // never forwarded. The other handoff forms act on this machine's own move,
+  // so --machine with them is a mistake, not a target.
+  if (primary === "chat" && parsed.command[1]?.toLowerCase() === "handoff") {
+    const flags = flagNamesOutsideFreeText(parsed.command);
+    if ((flags.has("--machine") || flags.has("--to-machine")) && ["--cancel", "--retry", "--options", "--where"].some((flag) => flags.has(flag))) {
+      throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options/--where.");
+    }
+    return parsed;
+  }
   const kept: string[] = [];
   let machine: string | null = null;
   let allMachines = false;

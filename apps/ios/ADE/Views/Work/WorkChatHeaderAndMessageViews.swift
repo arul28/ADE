@@ -612,6 +612,9 @@ func workChipNavigationURL(_ chip: WorkChip) -> URL? {
   case .model, .permission, .skill:
     // A model, permission or skill chip names a setting, not a place.
     return nil
+  case .browserTab:
+    // The tab is a live host-side resource, not an iOS deeplink target.
+    return nil
   case .path:
     // Same reasoning as a terminal mention: the desktop routes a path chip to
     // its in-app Files view, and iOS has no counterpart to navigate to from a

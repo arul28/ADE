@@ -48,13 +48,14 @@ import {
   type WorkLaneSortMode,
   type WorkLaneTier,
 } from "../../../desktop/src/renderer/components/terminals/workLaneOrder";
-import { ACTIVITY_STATE_GLYPHS, activityStateGroup } from "../../../desktop/src/renderer/components/activity/activityPresentation";
+import { activityRowStatus } from "../../../desktop/src/renderer/components/activity/activityPresentation";
 import type { TuiChatSessionSummary } from "./adeApi";
 import type { AdeCodeProvider } from "./types";
 import { getPreviewLine, toWorkSessionSummary, type SessionPreviewLine } from "./workRow";
 import {
   indexNestedSubagents,
   nestedDrawerStatus,
+  parentsWithBusySubagents,
   type NestedDrawerStatus,
 } from "../../../desktop/src/shared/sessionSpawnNesting";
 
@@ -317,6 +318,8 @@ function buildSessionRow(args: {
   laneName: string | null;
   activeSessionId: string | null;
   draftSessionIds: ReadonlySet<string>;
+  /** A nested subagent still keeps this chat busy, so a finished row reads Waiting. */
+  subagentBusy: boolean;
   nowMs: number;
 }): WorkListSessionRow {
   const summary = args.summary;
@@ -333,6 +336,7 @@ function buildSessionRow(args: {
       woke,
       snoozeWakeLabel: snoozed ? snoozeWakeLabel(summary.snoozedUntil, args.nowMs) : null,
     },
+    { subagentBusy: args.subagentBusy },
   );
   const steeringInput = Boolean(
     status && status.glyph === "working"
@@ -475,7 +479,9 @@ export function foreignRowsFromAttention(args: {
     const dedupeKey = `${machineKey}:${sessionId}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
-    const glyph = ACTIVITY_STATE_GLYPHS[activityStateGroup(item)];
+    // The row says its Work-board column, like the Activity panel row: a
+    // failed agent reads "Failed" under Needs you, a parked one "Waiting".
+    const status = activityRowStatus(item);
     rows.push({
       sessionId,
       machine: {
@@ -492,14 +498,11 @@ export function foreignRowsFromAttention(args: {
       preview: item.preview?.trim() || null,
       provider: item.provider ?? null,
       status: {
-        label: glyph.label,
-        // `ACTIVITY_STATE_GLYPHS` only ever names the five session hues, so the
-        // narrowing below cannot lose a tone; it exists because AttentionTone
-        // also carries two PR-only hues this pane never receives.
-        tone: glyph.tone as SessionStatusTone,
-        glyph: glyph.glyph,
+        label: status?.label ?? "Done",
+        tone: status?.tone ?? "emerald",
+        glyph: status?.glyph ?? "done",
         showsElapsed: false,
-        prominent: glyph.tone === "amber" || glyph.tone === "red",
+        prominent: status?.prominent ?? false,
       },
       lastActivityAt: item.statusSince ?? item.updatedAt ?? null,
       projectCanonicalId: canonical,
@@ -527,12 +530,15 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
     summary: toWorkSessionSummary(session, laneById.get(session.laneId)?.name ?? null),
   }));
   const sessionSummaries = prepared.map((entry) => entry.summary);
+  // Same rule as the desktop Work list: a chat its subagent keeps busy reads Waiting.
+  const busySubagentParents = parentsWithBusySubagents(sessionSummaries, nowMs);
   const rowsBySession = prepared.map((entry) => buildSessionRow({
     session: entry.session,
     summary: entry.summary,
     laneName: laneById.get(entry.session.laneId)?.name ?? null,
     activeSessionId: input.activeSessionId,
     draftSessionIds,
+    subagentBusy: busySubagentParents.has(entry.session.sessionId),
     nowMs,
   }));
 

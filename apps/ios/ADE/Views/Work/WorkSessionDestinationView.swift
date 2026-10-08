@@ -537,7 +537,14 @@ struct WorkSessionDestinationView: View {
     if let navigationTitleOverride {
       return navigationTitleOverride
     }
-    return chatSummary?.title ?? session?.title ?? "Session"
+    // A restored chat has no live summary yet; the durable cache and the
+    // roster still know its name, so the header never reads "Session" for a
+    // chat the phone can name.
+    return chatSummary?.title
+      ?? session?.title
+      ?? syncService.chatSummaryCache[sessionId]?.title
+      ?? syncService.remoteMachineRosterChat(sessionId: sessionId)?.title
+      ?? "Session"
   }
 
   /// The machine name under the header title: the host this phone is
@@ -1321,8 +1328,7 @@ struct WorkSessionDestinationView: View {
         )
         .adeScreenBackground()
       } else {
-        WorkChatOpeningSessionPlaceholder()
-          .accessibilityLabel("Opening session")
+        connectingFrame
       }
     }
   }
@@ -1335,9 +1341,67 @@ struct WorkSessionDestinationView: View {
       makeWorkChatSessionView(for: session, thread: threadModel)
         .id("main-\(session.id)-\(threadModel.key.description)")
     } else {
-      WorkChatOpeningSessionPlaceholder()
-        .accessibilityLabel("Opening session")
+      connectingFrame
     }
+  }
+
+  /// Shown until the chat loads. Its task resolves the owning machine and,
+  /// when the machine stays unreachable for `SyncService.workSessionNavigationTimeout`,
+  /// leaves for the Hub with a notice. A slow load over a live connection is
+  /// progress, not a failure, so it never times out. The task is cancelled the
+  /// moment the real chat replaces the frame.
+  private var connectingFrame: some View {
+    WorkChatConnectingFrame(machineName: sessionDestinationNavigationSubtitle)
+      .task(id: sessionId) { await watchChatConnecting() }
+  }
+
+  private func watchChatConnecting() async {
+    var deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+    var ownerResolved = false
+    while Date() < deadline {
+      try? await Task.sleep(nanoseconds: 500_000_000)
+      if Task.isCancelled { return }
+      // Same owner lookup an outside link gets, but only once Clerk has
+      // restored the account: resolving during the cold launch's own
+      // reconnect turned a plain launch into a machine switch.
+      if !ownerResolved,
+         AccountService.shared.phase == .signedIn,
+         syncService.connectionState != .connecting,
+         let ownerKey = syncService.navigationMachineKey(rawMachineKey: nil, sessionId: sessionId),
+         !syncService.accountMachineIsFocused(ownerKey) {
+        ownerResolved = true
+        _ = await syncService.ensureAccountMachineForNavigation(ownerKey, sessionId: sessionId)
+        if Task.isCancelled { return }
+        // The wait above can include the Wake & open prompt, however long the
+        // person took. Give the chat a fresh window to load on the machine
+        // it just reached.
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+      }
+      // Connected to the chat's own machine: the chat is loading, however
+      // slowly. Only an unreachable owner runs the clock down.
+      let ownerKey = syncService.navigationMachineKey(rawMachineKey: nil, sessionId: sessionId)
+      if syncService.connectionState == .connected,
+         ownerKey == nil || syncService.accountMachineIsFocused(ownerKey) {
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+      }
+      // Never time out under the Wake & open prompt; give the open a fresh
+      // window once the person has answered.
+      if syncService.pendingMachineWake != nil {
+        while syncService.pendingMachineWake != nil {
+          try? await Task.sleep(nanoseconds: 500_000_000)
+          if Task.isCancelled { return }
+        }
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+      }
+    }
+    guard !Task.isCancelled else { return }
+    let machine = sessionDestinationNavigationSubtitle
+    syncService.clearOpenWorkSessionRoute()
+    dismiss()
+    syncService.landOnHub(
+      notice: machine.map { "\($0) did not answer. The chat did not open." }
+        ?? "The chat did not open."
+    )
   }
 
   private func makeWorkChatSessionView(
@@ -1638,7 +1702,8 @@ struct WorkSessionDestinationView: View {
       onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil,
       threadComments: threadCommentsForView,
       onUpdateThreadComment: updateThreadCommentAction,
-      onDeleteThreadComment: deleteThreadCommentAction
+      onDeleteThreadComment: deleteThreadCommentAction,
+      crossMachineHandoffActions: crossMachineHandoffActions
     )
   }
 
@@ -1768,6 +1833,19 @@ struct WorkSessionDestinationView: View {
        current.title != cached.title {
       current.title = cached.title
     }
+    // A cross-machine move record folded from a live notice (or an action's
+    // answer). Newer wins, so a fetched summary is never rolled back by an
+    // older cache entry.
+    // The brain's explicit clear drops the live record too; a merely absent
+    // cached record (an older host) does not.
+    if cached.crossMachineHandoff == nil, syncService.crossMachineHandoffClears[sessionId] != nil {
+      current.crossMachineHandoff = nil
+    } else {
+      current.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+        current: current.crossMachineHandoff,
+        incoming: cached.crossMachineHandoff
+      )
+    }
     if current != chatSummary {
       chatSummary = current
     }
@@ -1790,7 +1868,9 @@ struct WorkSessionDestinationView: View {
     guard !isCrossProject || onOtherMachine else { return }
 
     if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
-       let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+       let rawSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+      // A fetch that started before the brain cleared the move still carries it.
+      let fetchedSummary = syncService.withCrossMachineHandoffClearApplied(rawSummary)
       if chatSummary != fetchedSummary {
         chatSummary = fetchedSummary
       }
@@ -1806,8 +1886,9 @@ struct WorkSessionDestinationView: View {
           !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           syncService.supportsRemoteAction("chat.listSessions"),
           let summaries = try? await syncService.listChatSessions(laneId: laneId),
-          let fallbackSummary = summaries.first(where: { $0.sessionId == sessionId })
+          let rawFallback = summaries.first(where: { $0.sessionId == sessionId })
     else { return }
+    let fallbackSummary = syncService.withCrossMachineHandoffClearApplied(rawFallback)
 
     if chatSummary != fallbackSummary {
       chatSummary = fallbackSummary

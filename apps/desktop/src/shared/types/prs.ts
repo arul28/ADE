@@ -505,6 +505,19 @@ export type PrDetailBundle = {
 
 export type PrEventPayload =
   | {
+      /**
+       * A GitHub issue (not a pull request) changed: an `issues` or
+       * `issue_comment` webhook delivery. Open issue views re-read it; nothing
+       * else reacts. Rides the PR event channel because that is where GitHub
+       * webhook deliveries already land on both the desktop and the runtime.
+       */
+      type: "github-issue-changed";
+      repoOwner: string;
+      repoName: string;
+      issueNumber: number;
+      action: string | null;
+    }
+  | {
       type: "prs-updated";
       polledAt: string;
       prs: PrSummary[];

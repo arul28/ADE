@@ -32,6 +32,7 @@
 //     `@lane:<id>` and `ade://lane/<id>` are both a `lane` chip; only the token
 //     differs. That is what lets one renderer serve every surface.
 
+import { parseBrowserTabMentions, type BrowserTabMentionTarget } from "./browserTabMention";
 import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
 import { getModelById } from "./modelRegistry";
@@ -66,7 +67,9 @@ export type ChipKind =
   /** A slash command or skill this chat can run, e.g. `/quality`. */
   | "skill"
   /** An `ade://` URL this build cannot parse — a newer ADE minted it. */
-  | "ade_link";
+  | "ade_link"
+  /** A built-in browser tab the user attached to a message (`<ade-browser-tab …>`). */
+  | "browser_tab";
 
 /**
  * Where the chip came from, which is what a click needs in order to route.
@@ -80,7 +83,8 @@ export type ChipSource =
   | { origin: "url"; url: string }
   | { origin: "model"; mention: ModelMention }
   | { origin: "permission"; provider: string; value: string }
-  | { origin: "skill"; name: string };
+  | { origin: "skill"; name: string }
+  | { origin: "browser_tab"; tabId: string; url: string | null };
 
 export type Chip = {
   kind: ChipKind;
@@ -126,6 +130,7 @@ export const CHIP_GLYPH: Record<ChipKind, string> = {
   permission: "⛨",
   skill: "/",
   ade_link: "A",
+  browser_tab: "🌐",
 };
 
 export function chipGlyph(kind: ChipKind): string {
@@ -156,6 +161,7 @@ export const CHIP_GLYPH_ASCII: Record<ChipKind, string> = {
   permission: "P",
   skill: "/",
   ade_link: "A",
+  browser_tab: "B",
 };
 
 export function chipGlyphAscii(kind: ChipKind): string {
@@ -232,6 +238,23 @@ function defaultMentionLabel(mentionKind: ChatMentionKind, id: string): string {
   if (mentionKind === "chat") return `Chat ${shortId(id)}`;
   if (mentionKind === "lane") return `Lane ${shortId(id)}`;
   return `Terminal ${shortId(id)}`;
+}
+
+/** An attached browser tab. The label is the tab title, then its host. */
+export function chipFromBrowserTab(target: BrowserTabMentionTarget, token: string): Chip {
+  let host: string | null = null;
+  try {
+    host = target.url ? new URL(target.url).host || null : null;
+  } catch {
+    host = null;
+  }
+  return {
+    kind: "browser_tab",
+    token,
+    label: target.title?.trim() || host || target.url || "Browser tab",
+    detail: target.url,
+    source: { origin: "browser_tab", tabId: target.tabId, url: target.url },
+  };
 }
 
 /**
@@ -424,6 +447,12 @@ export function parseChips(text: string, limit = 24): ChipMatch[] {
   }
 
   matches.push(...parsePathMentions(text));
+
+  // An attached tab's block holds a URL and a title that would otherwise chip
+  // on their own; the block starts first, so the overlap pass below drops them.
+  for (const tab of parseBrowserTabMentions(text)) {
+    matches.push({ ...chipFromBrowserTab(tab, tab.token), start: tab.start, end: tab.end });
+  }
 
   matches.sort((a, b) => a.start - b.start);
 

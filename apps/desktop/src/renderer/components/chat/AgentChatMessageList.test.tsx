@@ -1667,16 +1667,20 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByTestId("user-message-send-confirmations")).toBeNull();
   });
 
-  it("uses the paperclip icon line for file-only attachments when delivered", async () => {
+  it.each([
+    { label: "empty", displayText: "" },
+    { label: "missing", displayText: undefined },
+  ])("uses the paperclip icon line for pasted files when delivered with $label display text", async ({ displayText }) => {
     renderMessageList([
       {
         sessionId: "session-1",
         timestamp: "2026-04-28T10:00:00.000Z",
         event: {
           type: "user_message",
-          text: "See file",
+          text: "Attached file contents:\n\nprivate pasted source body",
+          ...(displayText !== undefined ? { displayText } : {}),
           deliveryState: "delivered",
-          attachments: [{ path: "/tmp/doc.txt", type: "file" }],
+          attachments: [{ path: "/tmp/doc.txt", type: "file", intent: "user_prompt" }],
         },
       },
     ]);
@@ -1685,6 +1689,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       expect(screen.getByTestId("user-message-attachment-analyzed")).toBeTruthy();
     });
     expect(screen.getByTestId("user-message-attachment-analyzed").textContent).toContain("Attachment analyzed");
+    expect(screen.getByText("doc.txt")).toBeTruthy();
+    expect(screen.queryByText(/private pasted source body/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy message" })).toBeNull();
   });
 
   it("surfaces the model attribution on an interrupted end-of-turn divider", () => {
@@ -5179,13 +5186,13 @@ describe("AgentChatMessageList transcript rendering", () => {
           type: "done",
           turnId: "turn-claude-runtime",
           status: "failed",
-          model: "claude-haiku-4-5-20260707",
-          modelId: "anthropic/claude-haiku-4-5",
+          model: "claude-haiku-5-5-20260707",
+          modelId: "anthropic/claude-haiku-5-5",
         },
       },
     ]);
 
-    expect(screen.getAllByText("Claude Haiku 4.5 (claude-haiku-4-5-20260707)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Claude Haiku 5.5 (claude-haiku-5-5-20260707)").length).toBeGreaterThan(0);
   });
 
   it("surfaces the latest turn task rollup and inline file changes", () => {

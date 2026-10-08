@@ -129,6 +129,7 @@ export function ThreadCommentLayer({
   comments,
   layoutVersion,
   onAddToChat,
+  onCreateIssue,
 }: {
   rootRef: { current: HTMLElement | null };
   contentRef: { current: HTMLElement | null };
@@ -140,6 +141,7 @@ export function ThreadCommentLayer({
   layoutVersion: unknown;
   /** The selection toolbar's "Add to chat" action. */
   onAddToChat?: (text: string) => void;
+  onCreateIssue?: (text: string) => void;
 }) {
   const actions = useThreadCommentActions(sessionId, pin, comments);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -557,7 +559,7 @@ export function ThreadCommentLayer({
         )
         : null}
 
-      <AssistantOutputSelectionToolbar rootRef={rootRef} onAddToChat={onAddToChat} onComment={startFromSelection} />
+      <AssistantOutputSelectionToolbar rootRef={rootRef} onAddToChat={onAddToChat} onComment={startFromSelection} onCreateIssue={onCreateIssue} />
     </>
   );
 }

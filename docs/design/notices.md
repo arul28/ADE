@@ -30,6 +30,7 @@ its own folder. Do not build a one-off version in a feature folder.
 | Yes/no before an action | `await confirmDialog({...})` |
 | One line of text input | `await promptDialog({...})` |
 | A modal with its own content: a form or a picker | `<Dialog open onOpenChange title ...>` |
+| One thing to read beside the page you are on (an issue) | `<Dialog placement="right" ...>`, the side sheet |
 | A dropdown that hangs off the top bar | `<HeaderSheet>` |
 
 Rules of thumb. A banner describes a **state**: it stays while the state

@@ -228,7 +228,8 @@ export type WorkSidebarTab =
   | "browser"
   | "mac-desktop"
   | "windows-desktop"
-  | "pr";
+  | "pr"
+  | "issues";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
@@ -483,6 +484,7 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
     || value === "mac-desktop"
     || value === "windows-desktop"
     || value === "pr"
+    || value === "issues"
   ) return value;
   return null;
 }
@@ -1816,6 +1818,11 @@ export function selectActiveProjectRoot(state: Pick<AppState, "project" | "proje
     ? state.projectBinding.rootPath
     : state.project?.rootPath;
   return root?.trim() || null;
+}
+
+/** The project this tab works in: the remote root on a remote tab. */
+export function useActiveProjectRoot(): string | null {
+  return useAppStore(selectActiveProjectRoot);
 }
 
 export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";

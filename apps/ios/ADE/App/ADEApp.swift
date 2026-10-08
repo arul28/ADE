@@ -177,6 +177,19 @@ struct ADEApp: App {
 /// Kept in a tiny bridge so App Intent actions do not link `SyncService`.
 @MainActor
 private final class ADESyncIntentBridge: ADEIntentCommandBridge {
+  /// A notification action can launch the app in the background before the
+  /// account has started. Restore the account and its machine list first, so
+  /// the push's machine can be found. When they cannot load, the push's machine
+  /// cannot be verified, and the action sends nothing (see `dispatch`).
+  @MainActor
+  private static func accountMachinesReady() async -> Bool {
+    let account = AccountService.shared
+    await account.bootstrap()
+    guard account.phase == .signedIn else { return false }
+    if account.machines.isEmpty { await account.loadMachines() }
+    return !account.machines.isEmpty
+  }
+
   static let shared = ADESyncIntentBridge()
 
   private init() {}
@@ -190,6 +203,27 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
     case .retryPrChecks: mapped = .retryPrChecks
     }
     guard let sync = SyncService.shared else { return }
+    // An account push names the machine that asked. Approve or deny THAT
+    // machine's request, never whichever host happens to be focused: connect to
+    // it first, and send nothing if it cannot be reached.
+    if let machineKey = (payload["accountMachineKey"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !machineKey.isEmpty {
+      // A machine that cannot be verified is never assumed to be the focused
+      // one: sending there could approve another machine's request.
+      var reached = await Self.accountMachinesReady()
+      if reached, !sync.accountMachineIsCurrent(machineKey) {
+        // Notification actions run in the background, where nobody can answer
+        // a Wake & open sheet: one bounded attempt, no prompt.
+        reached = await sync.ensureAccountMachineForNavigation(machineKey, promptToWake: false)
+      }
+      guard reached else {
+        let name = AccountService.shared.machines
+          .first { $0.machineKey == machineKey }?.displayName ?? "that computer"
+        sync.landOnHub(notice: "Could not reach \(name). Nothing was sent.")
+        return
+      }
+    }
     // A notification action or Live Activity button can background-launch the
     // app before the sync socket is up; these commands are not queueable
     // (approving a stale item later would be wrong), so give the socket a

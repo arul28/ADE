@@ -3,35 +3,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { makeGitHubIssueContextAttachment } from "../../../shared/chatContextAttachments";
-import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import type { LaneGitHubIssue } from "../../../shared/types";
+import { clearPendingIssueSheetRequest, subscribeIssueSheetRequests } from "../../lib/issueNavigation";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
 
 vi.mock("../app/LinearIssueSelectModal", () => ({
   LinearIssueSelectModal: () => null,
-}));
-
-vi.mock("../app/GitHubIssueSelectModal", () => ({
-  GitHubIssueSelectModal: ({
-    open,
-    selectedIssue,
-    onRemoveIssue,
-  }: {
-    open: boolean;
-    selectedIssue: LaneGitHubIssue | null;
-    onRemoveIssue?: (issue: LaneGitHubIssue) => void;
-  }) => (
-    open && selectedIssue
-      ? (
-        <button
-          type="button"
-          onClick={() => onRemoveIssue?.(selectedIssue)}
-        >
-          {`Remove ${githubIssueIdentifier(selectedIssue)} from details`}
-        </button>
-      )
-      : null
-  ),
 }));
 
 function makeGitHubIssue(overrides: Partial<LaneGitHubIssue> = {}): LaneGitHubIssue {
@@ -93,11 +70,19 @@ describe("UserMessageIssueContext", () => {
       />,
     );
 
+    // With no Work tools pane registered, a click opens the issue in the sheet.
+    const opened: number[] = [];
+    const unsubscribe = subscribeIssueSheetRequests((request) => {
+      if (request.ref.provider === "github") opened.push(request.ref.number);
+    });
     const chips = screen.getAllByTestId("github-issue-context-chip");
     expect(chips).toHaveLength(2);
     fireEvent.click(chips[1]!);
+    unsubscribe();
+    clearPendingIssueSheetRequest();
+    expect(opened).toEqual([42]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove ade/app#42 from details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove ade/app#42" }));
 
     expect(detachGitHubIssueFromSession).toHaveBeenCalledWith({
       chatSessionId: "chat-1",

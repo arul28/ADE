@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { formatBrowserTabMentionToken } from "../../../shared/browserTabMention";
 import { AppWindow, ArrowLeft, Globe, SpinnerGap, TerminalWindow } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type {
@@ -445,6 +446,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                   onInsertDraft={insertIntoComposer}
                   onAddContext={addBrowserContextToComposer}
                   onAddAttachment={attachToComposer}
+                  onAttachTab={(tab) => insertIntoComposer(formatBrowserTabMentionToken(tab))}
                 />
               </div>
             ) : null}

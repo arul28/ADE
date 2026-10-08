@@ -33,6 +33,7 @@ import {
   type AgentChatDispatchSteerMode,
   type AgentChatReplayForkDisclosure,
   type AgentChatSteerResult,
+  type AgentChatCrossMachineHandoffRecord,
   type AgentChatStopMode,
   type AiProviderConnectionStatus,
   type AiRuntimeConnectionStatus,
@@ -114,6 +115,7 @@ import {
 } from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import {
+  machineIdForBinding,
   machineNameForBinding,
   THIS_MACHINE_ID,
   THIS_MACHINE_NAME,
@@ -193,6 +195,7 @@ import { AgentChatApiProvider, type AgentChatApi, type ChatPaneScope } from "./a
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
+import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatEventDedupKey,
@@ -276,7 +279,13 @@ import { CursorRuntimeNotice } from "./CursorRuntimeNotice";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { deriveChatSources } from "../../../shared/chatSources";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
-import { subscribeChatHandoff, takeChatHandoff, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
+import {
+  CrossMachineArrivalBanner,
+  CrossMachineHandoffBanner,
+  openChatOnOtherMachine,
+  useCrossMachineArrival,
+} from "./CrossMachineHandoffBanner";
+import { subscribeChatHandoff, takeChatHandoffRequest, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 import { useWorkSidebarTool } from "../terminals/useWorkSidebarTool";
 import {
   patchChatCompanionUiState,
@@ -347,6 +356,11 @@ import { WorkActivityModule } from "../usage/ActivityModule";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import {
+  crossMachineSendsElsewhere,
+  pickNewerCrossMachineHandoffRecord,
+} from "../../../shared/crossMachineHandoff";
+import { showToast } from "../app/toast/toastStore";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { openCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
@@ -1116,7 +1130,8 @@ function buildDraftChatMessageArgs(
 ): Omit<AgentChatSendArgs, "sessionId"> {
   return {
     text: prepared.finalText,
-    displayText: prepared.finalDisplayText || "Selected visual app context",
+    displayText: prepared.finalDisplayText
+      || (hasPastedTextPromptAttachment(prepared.selectedAttachments) ? "" : "Selected visual app context"),
     attachments: prepared.selectedAttachments,
     contextAttachments: prepared.selectedContextAttachments,
     reasoningEffort: prepared.reasoningEffort,
@@ -4540,6 +4555,8 @@ export function AgentChatPane({
   // longer preselects one; defaulted to the source session model on tab open.
   const [remoteHandoffModelId, setRemoteHandoffModelId] = useState("");
   const [crossMachineHandoffOpen, setCrossMachineHandoffOpen] = useState(false);
+  /** Machine the session menu's "Choose in full setup…" picked, if any. */
+  const [crossMachinePreselectedMachine, setCrossMachinePreselectedMachine] = useState<string | null>(null);
   const [localHandoffOpen, setLocalHandoffOpen] = useState(false);
   // The form covers the pane's error line, so a failed local handoff also
   // shows its error in the form.
@@ -5066,6 +5083,9 @@ export function AgentChatPane({
       : { ...current, [token]: label });
   }, []);
   const [composerCaretToEndRequest, setComposerCaretToEndRequest] = useState(0);
+  // A browser tab attached from the Browser panel, for the composer to insert
+  // at its caret (the pane cannot see the caret, only the draft).
+  const [browserTabInsertRequest, setBrowserTabInsertRequest] = useState<{ id: number; token: string } | null>(null);
   const insertComposerDraft = useCallback((value: string) => {
     const previousText = draft;
     const foregroundChatLaunchPending = (rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
@@ -5118,6 +5138,8 @@ export function AgentChatPane({
       ?? peekAgentChatSessionViewCache(renderedSessionId)?.events
       ?? EMPTY_CHAT_EVENTS
     : EMPTY_CHAT_EVENTS;
+  // A chat that arrived from another machine carries one durable marker.
+  const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
   const selectedSyncPending = renderedSessionId ? syncPendingBySession[renderedSessionId] === true : false;
   /**
    * Genuinely cold: a real session with neither a committed event list nor a
@@ -5680,8 +5702,9 @@ export function AgentChatPane({
     setLocalHandoffOpen(true);
   }, [localHandoffOpen]);
 
-  const openHandoffDestination = useCallback((intent: ChatHandoffIntent) => {
+  const openHandoffDestination = useCallback((intent: ChatHandoffIntent, machine: string | null = null) => {
     if (intent === "remote") {
+      setCrossMachinePreselectedMachine(machine);
       setCrossMachineHandoffOpen(true);
       return;
     }
@@ -5699,11 +5722,11 @@ export function AgentChatPane({
     if (!selectedSessionId || !isTileActive) return undefined;
     const unsubscribe = subscribeChatHandoff((targetSessionId) => {
       if (targetSessionId !== selectedSessionId) return;
-      const intent = takeChatHandoff(targetSessionId);
-      if (intent) openHandoffDestination(intent);
+      const request = takeChatHandoffRequest(targetSessionId);
+      if (request) openHandoffDestination(request.intent, request.machine);
     });
-    const queued = takeChatHandoff(selectedSessionId);
-    if (queued) openHandoffDestination(queued);
+    const queued = takeChatHandoffRequest(selectedSessionId);
+    if (queued) openHandoffDestination(queued.intent, queued.machine);
     return unsubscribe;
   }, [isTileActive, openHandoffDestination, selectedSessionId]);
 
@@ -6696,9 +6719,13 @@ export function AgentChatPane({
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
   const defaultMessagePlaceholder = "Type to vibecode...";
   const messagePlaceholder = presentation?.messagePlaceholder?.trim() || defaultMessagePlaceholder;
+  // After a move, say where a message will go before it is typed.
+  const sendsElsewhereTo = crossMachineSendsElsewhere(selectedSession?.crossMachineHandoff)?.targetMachineName ?? null;
   const effectiveMessagePlaceholder = projectTransitionBlocksChat
     ? "Project is switching..."
-    : messagePlaceholder;
+    : sendsElsewhereTo
+      ? `Message the chat on ${sendsElsewhereTo}…`
+      : messagePlaceholder;
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
   const selectedSessionImportedProvider = readImportedFrom(selectedSession)?.provider ?? null;
@@ -9063,6 +9090,31 @@ export function AgentChatPane({
     });
   }, []);
 
+  /**
+   * Applies a chat's move record from wherever it came (a live event, an
+   * action's answer). They arrive in any order, so a late older record never
+   * replaces a newer one; an explicit null clears it.
+   */
+  const applyCrossMachineHandoffRecord = useCallback((
+    sessionId: string,
+    record: AgentChatCrossMachineHandoffRecord | null,
+  ) => {
+    setSessions((prev) => {
+      let changed = false;
+      const next = prev.map((session) => {
+        if (session.sessionId !== sessionId) return session;
+        const current = session.crossMachineHandoff ?? null;
+        // An explicit null is the brain clearing the move (dismissed, or its
+        // chat's move dropped); only a real record competes on recency.
+        const kept = record === null ? null : pickNewerCrossMachineHandoffRecord(current, record);
+        if (kept === current) return session;
+        changed = true;
+        return { ...session, crossMachineHandoff: kept };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
   // Host-computed usage-limit resume state (`AgentChatUsageLimitResume`). It is
   // the ONE fact this feature renders from: the compact pill above the composer
   // owns the countdown and every action, the quota card stands down while it is
@@ -9099,6 +9151,22 @@ export function AgentChatPane({
         || optimisticSessionIdsRef.current.has(envelope.sessionId)
         || pendingSelectedSessionIdRef.current === envelope.sessionId;
       if (!acceptsEvent) return;
+
+      // A move to another machine: the record rides on the session summary,
+      // which drives the banner above the composer. The live-only state notice
+      // is not transcript content; the durable "ended" notice is, and also
+      // carries the final record.
+      if (
+        envelope.event.type === "system_notice"
+        && (envelope.event.status === "cross_machine_handoff_state"
+          || envelope.event.status === "cross_machine_handoff_ended")
+      ) {
+        const detail = envelope.event.detail;
+        if (detail && typeof detail === "object" && "crossMachineHandoffState" in detail) {
+          applyCrossMachineHandoffRecord(envelope.sessionId, detail.crossMachineHandoffState ?? null);
+        }
+        if (envelope.event.status === "cross_machine_handoff_state") return;
+      }
 
       // session_meta_updated is a UI-state-only patch — don't queue it as a
       // chat event since it doesn't represent transcript content.
@@ -9350,7 +9418,7 @@ export function AgentChatPane({
       }
     }, chatRuntimePin);
     return unsubscribe;
-  }, [chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [applyCrossMachineHandoffRecord, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -9739,23 +9807,41 @@ export function AgentChatPane({
       if (!detail?.item) return;
       void addBuiltInBrowserContext(detail.item);
     };
+    const onAddContextAttachment = (event: Event) => {
+      const detail = composerDetail(event);
+      const incoming = normalizeChatContextAttachments([detail?.attachment]);
+      if (incoming.length === 0) return;
+      setContextAttachments((prev) => mergeChatContextAttachments(prev, incoming));
+    };
+    const onInsertBrowserTab = (event: Event) => {
+      const detail = composerDetail(event);
+      if (!detail || typeof detail.token !== "string" || !detail.token) return;
+      const token = detail.token;
+      clearPromptSuggestionForSession(selectedSessionIdRef.current);
+      setBrowserTabInsertRequest((current) => ({ id: (current?.id ?? 0) + 1, token }));
+    };
     window.addEventListener("ade:agent-chat:add-attachment", onAddAttachment);
+    window.addEventListener("ade:agent-chat:add-context-attachment", onAddContextAttachment);
     window.addEventListener("ade:agent-chat:insert-draft", onInsertDraft);
     window.addEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
     window.addEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
     window.addEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
+    window.addEventListener("ade:agent-chat:insert-browser-tab", onInsertBrowserTab);
     return () => {
       window.removeEventListener("ade:agent-chat:add-attachment", onAddAttachment);
+      window.removeEventListener("ade:agent-chat:add-context-attachment", onAddContextAttachment);
       window.removeEventListener("ade:agent-chat:insert-draft", onInsertDraft);
       window.removeEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
       window.removeEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
       window.removeEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
+      window.removeEventListener("ade:agent-chat:insert-browser-tab", onInsertBrowserTab);
       };
   }, [
     addAppControlContext,
     addAttachment,
     addBuiltInBrowserContext,
     addIosElementContext,
+    clearPromptSuggestionForSession,
     draftContextTargetId,
     forceDraft,
     insertComposerDraft,
@@ -10675,19 +10761,14 @@ export function AgentChatPane({
       // plus where the composer and text sat so both can animate into place.
       const prepared = launch.firstMessage;
       const isPastedTextPrompt = hasPastedTextPromptAttachment(prepared.selectedAttachments);
-      const visibleAttachments = isPastedTextPrompt
-        ? prepared.selectedAttachments.filter((attachment) => !(
-          attachment.type === "file" && attachment.intent === "user_prompt"
-        ))
-        : prepared.selectedAttachments;
       const firstMessage: AgentChatEventEnvelope = {
         sessionId: launch.sessionId,
         timestamp: new Date().toISOString(),
         event: {
           type: "user_message",
           text: prepared.finalText,
-          displayText: prepared.finalDisplayText || (isPastedTextPrompt ? "Pasted text prompt" : "Selected visual app context"),
-          ...(visibleAttachments.length ? { attachments: visibleAttachments } : {}),
+          displayText: prepared.finalDisplayText || (isPastedTextPrompt ? "" : "Selected visual app context"),
+          ...(prepared.selectedAttachments.length ? { attachments: prepared.selectedAttachments } : {}),
           ...(prepared.selectedContextAttachments.length ? { contextAttachments: prepared.selectedContextAttachments } : {}),
         },
       };
@@ -12703,6 +12784,154 @@ export function AgentChatPane({
     }
   }, [refreshSessions, selectedSessionId, touchSession]);
 
+  /**
+   * After a move the work lives on the other machine, so a message typed here
+   * goes THERE: it is sent to the destination chat and that chat opens. The
+   * banner's "Work here instead" (`resumedHere`) turns this off. Resolves true
+   * when the message was handled (sent or handed over) and must not be sent
+   * here. A slash command is never routed: commands control this chat.
+   */
+  const crossMachineRouteInFlightRef = useRef(false);
+  const draftValueRef = useRef(draft);
+  draftValueRef.current = draft;
+  const sendToContinuedChat = useCallback(async (): Promise<boolean> => {
+    const continuation = crossMachineSendsElsewhere(selectedSession?.crossMachineHandoff);
+    const text = draft.trim();
+    const contextCount = contextAttachments.length
+      + iosElementContextItems.length
+      + appControlContextItems.length
+      + builtInBrowserContextItems.length;
+    if (!continuation || (!text.length && !attachments.length && !contextCount)) return false;
+    // A command controls this chat; "/automate is a command, right?" is chat text.
+    if (isProviderSlashCommandInput(text)) return false;
+    if (crossMachineRouteInFlightRef.current) return true;
+    crossMachineRouteInFlightRef.current = true;
+    const where = continuation.targetMachineName;
+    const sentDraft = draft;
+    const sentFromSessionId = selectedSessionId;
+    // Only a lane this window actually reads routes safely: without it the
+    // send would reach this machine's brain with the other machine's chat id.
+    // A pinned route needs the lane on that machine's list; a lane on the
+    // tab's own binding is routed unpinned.
+    // A lane id alone can name a row on more than one machine (a project's
+    // lanes sync), so the destination machine's own entry decides: the one
+    // that has the lane and carries the move's destination name.
+    const laneOnActiveBinding = lanes.some((lane) => lane.id === continuation.targetLaneId);
+    const holders = Object.values(crossMachineLanesByMachineId).filter((machine) =>
+      machine.binding && machine.lanes.some((lane) => lane.id === continuation.targetLaneId));
+    const destination = holders.find((machine) => machine.machineName === continuation.targetMachineName)
+      ?? (holders.length === 1 && !laneOnActiveBinding ? holders[0] : null);
+    const pin = destination?.binding ?? null;
+    const routesPinned = pin != null;
+    // Unpinned goes to the tab's own machine, so it must be the destination:
+    // never the machine this chat runs on (the source). A remote tab carries
+    // the destination's name; a local tab has no account name ("This
+    // computer"), so this computer's account key must be the destination's.
+    const activeIsSource = machineIdForBinding(projectBinding)
+      === machineIdForBinding(chatEffectiveBinding ?? projectBinding);
+    let activeIsDestination = false;
+    if (!activeIsSource && laneOnActiveBinding && !routesPinned) {
+      if (projectBinding?.kind === "remote") {
+        activeIsDestination = machineNameForBinding(projectBinding) === continuation.targetMachineName;
+      } else {
+        // Unknown (no account, ADE Web) is not the destination: hand it over.
+        let localMachineKey: string | null = null;
+        try {
+          localMachineKey = (await window.ade?.account?.getLocalMachineIdentity?.())?.machineKey?.trim() || null;
+        } catch {
+          localMachineKey = null;
+        }
+        activeIsDestination = localMachineKey != null && localMachineKey === continuation.targetMachineKey;
+      }
+    }
+    const routesUnpinned = !routesPinned && laneOnActiveBinding && activeIsDestination;
+    const routable = routesPinned || routesUnpinned;
+    /**
+     * Hand the words over rather than lose them: files and attached context
+     * can't travel this way, and a machine this window can't reach can't take
+     * a send from here. The draft stays put either way.
+     */
+    const handOver = async () => {
+      let copied = false;
+      if (text.length) {
+        try {
+          if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+      openChatOnOtherMachine(continuation.targetSessionId);
+      const stays = attachments.length && contextCount
+        ? "Attachments and attached context stay on this machine."
+        : attachments.length
+          ? "Attachments stay on this machine."
+          : contextCount
+            ? "Attached context stays on this machine."
+            : null;
+      const copyLine = !text.length
+        ? `Add them again in the chat on ${where}.`
+        : copied
+          ? stays
+            ? `Your message is copied; paste it there and add them again on ${where}.`
+            : `Your message is copied. Paste it in the chat on ${where}.`
+          : "Paste failed — your draft is still here.";
+      const copyFailed = text.length > 0 && !copied;
+      showToast({
+        tone: copyFailed ? "warning" : "info",
+        title: `Continue in the chat on ${where}`,
+        message: [stays, copyLine].filter(Boolean).join(" "),
+      });
+    };
+    try {
+      if (!routable || attachments.length || contextCount) {
+        await handOver();
+        return true;
+      }
+      try {
+        await window.ade.agentChat.send({ sessionId: continuation.targetSessionId, text }, pin);
+      } catch (sendError) {
+        // ADE Web reaches one machine; a chat elsewhere gets the hand-over.
+        if (isWebRuntimePinUnroutableError(sendError)) {
+          await handOver();
+          return true;
+        }
+        throw sendError;
+      }
+      // Typing went on while the send was in flight: keep the newer draft.
+      if (draftValueRef.current === sentDraft && selectedSessionIdRef.current === sentFromSessionId) {
+        setDraft("");
+        if (sentFromSessionId) draftsPerSessionRef.current.delete(sentFromSessionId);
+      }
+      openChatOnOtherMachine(continuation.targetSessionId);
+      showToast({ tone: "success", title: `Sent to the chat on ${where}` });
+      return true;
+    } catch (routeError) {
+      showToast({
+        tone: "warning",
+        title: `Couldn't send to ${where}`,
+        message: `${stripElectronErrorWrapper(routeError instanceof Error ? routeError.message : String(routeError))} Your draft is still here.`,
+      });
+      return true;
+    } finally {
+      crossMachineRouteInFlightRef.current = false;
+    }
+  }, [
+    appControlContextItems.length,
+    attachments.length,
+    builtInBrowserContextItems.length,
+    chatEffectiveBinding,
+    contextAttachments.length,
+    crossMachineLanesByMachineId,
+    draft,
+    iosElementContextItems.length,
+    lanes,
+    projectBinding,
+    selectedSession,
+    selectedSessionId,
+  ]);
+
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     // A turn is about to run against this worktree — surface the branch-drift
     // strip if HEAD has wandered off the lane's branch. No-op when it hasn't.
@@ -12726,6 +12955,7 @@ export function AgentChatPane({
         setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
         return;
       }
+      if (await sendToContinuedChat()) return;
     }
     clearPromptSuggestionForSession(selectedSessionId);
 
@@ -13202,16 +13432,12 @@ export function AgentChatPane({
     // Show the optimistic bubble immediately when we already have a session.
     // Awaiting session-create roundtrips before this setter delays the bubble
     // by hundreds of ms on a typical send.
-    const selectedAttachmentsForOptimistic = isLiteralSlashCommand
-      ? []
-      : attachmentsSnapshot.filter((attachment) => !(
-        attachment.type === "file" && attachment.intent === "user_prompt"
-      ));
+    const selectedAttachmentsForOptimistic = isLiteralSlashCommand ? [] : attachmentsSnapshot;
     const selectedContextAttachmentsForOptimistic = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
     let optimisticDisplayText = composedWithVisualContext.displayText;
     if (optimisticDisplayText == null) {
       if (attachmentsSnapshot.length) {
-        optimisticDisplayText = hasPastedPrompt ? "Pasted text prompt" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
+        optimisticDisplayText = hasPastedPrompt ? text : DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
       } else if (contextAttachmentsSnapshot.length) {
         optimisticDisplayText = "Attached issue context";
       } else if (!text.length && includeThreadComments) {
@@ -13247,7 +13473,7 @@ export function AgentChatPane({
       }
       const finalDisplayText = composedWithVisualContext.displayText
         ?? (attachmentsSnapshot.length
-          ? (hasPastedPrompt ? "" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST)
+          ? (hasPastedPrompt ? text : DEFAULT_PARALLEL_ATTACHMENT_REQUEST)
           : contextAttachmentsSnapshot.length || !includeThreadComments
             ? "Attached issue context"
             : "");
@@ -13381,7 +13607,9 @@ export function AgentChatPane({
           await agentChatApiRef.current.send({
             sessionId,
             text: finalText,
-            displayText: finalDisplayText || (includeThreadComments ? "" : "Selected visual app context"),
+            displayText: hasPastedPrompt
+              ? finalDisplayText
+              : finalDisplayText || (includeThreadComments ? "" : "Selected visual app context"),
             ...threadCommentSendFields,
             attachments: selectedAttachments,
             contextAttachments: selectedContextAttachments,
@@ -13474,6 +13702,7 @@ export function AgentChatPane({
     buildNativeControlPayload,
     busy,
     clearPromptSuggestionForSession,
+    sendToContinuedChat,
     fastMode,
     constrainedModelSelectionError,
     copyPromptForLaunch,
@@ -15718,6 +15947,7 @@ export function AgentChatPane({
   const composerElement = (
       <AgentChatComposer
             caretToEndRequest={composerCaretToEndRequest}
+            browserTabInsertRequest={browserTabInsertRequest}
             threadComments={threadComments}
             threadCommentsSessionId={threadCommentsSessionId}
             threadCommentsPin={chatRuntimePin}
@@ -16291,6 +16521,29 @@ export function AgentChatPane({
       }}
     />
   ) : null;
+  // This chat's move to another machine (source side), and where it came from
+  // (destination side). Same column and spacing as the stall banner.
+  const composerBannerStyle = layoutVariant === "grid-tile"
+    ? { width: "100%", marginBottom: 6 }
+    : { width: "100%", maxWidth: "var(--chat-column,52rem)", margin: "0 auto 6px" };
+  const crossMachineMoveBanner = selectedSessionId && renderedSessionId === selectedSessionId ? (
+    <CrossMachineHandoffBanner
+      key={`move:${selectedSessionId}`}
+      sessionId={selectedSessionId}
+      record={selectedSession?.crossMachineHandoff}
+      runtimePin={chatRuntimePin}
+      onRecord={(next) => applyCrossMachineHandoffRecord(selectedSessionId, next)}
+      style={composerBannerStyle}
+    />
+  ) : null;
+  const crossMachineArrivalBanner = renderedSessionId && crossMachineArrival ? (
+    <CrossMachineArrivalBanner
+      key={`arrival:${renderedSessionId}`}
+      sessionId={renderedSessionId}
+      arrival={crossMachineArrival}
+      style={composerBannerStyle}
+    />
+  ) : null;
 
   const composerWithTypographyRoot = (
     <div
@@ -16389,6 +16642,8 @@ export function AgentChatPane({
       {composerStatusStrip}
       {takeoverBanner}
       {stalledTurnBanner}
+      {crossMachineMoveBanner}
+      {crossMachineArrivalBanner}
       {steeringPendingInput ? (
         <div
           data-testid="codex-steering-question"
@@ -16837,6 +17092,8 @@ export function AgentChatPane({
                         {composerStatusStrip}
                         {takeoverBanner}
                         {stalledTurnBanner}
+                        {crossMachineMoveBanner}
+                        {crossMachineArrivalBanner}
                         {usageLimitPill}
                         {composerElement}
                       </div>
@@ -17166,8 +17423,6 @@ export function AgentChatPane({
           sourceSessionId={selectedSessionId}
           sourceLaneId={(selectedSession?.laneId ?? laneId)!}
           runtimePin={chatRuntimePin}
-          sourceMachineTargetId={chatEffectiveBinding?.kind === "remote" ? chatEffectiveBinding.targetId : null}
-          sourceMachineName={isRemoteChat ? chatMachineName : null}
           sourceProvider={selectedSession?.provider}
           target={crossMachineHandoffTarget}
           modelId={remoteHandoffModelId}
@@ -17184,10 +17439,14 @@ export function AgentChatPane({
           turnActive={turnActive}
           awaitingInput={selectedSessionAwaitingInput}
           onStopTurn={interrupt}
-          onClose={() => setCrossMachineHandoffOpen(false)}
-          onFinished={() => {
+          preselectedMachine={crossMachinePreselectedMachine}
+          onClose={() => {
+            setCrossMachineHandoffOpen(false);
+            setCrossMachinePreselectedMachine(null);
+          }}
+          onStarted={(record) => {
             setHandoffNote("");
-            void refreshSessions({ force: true }).catch(() => undefined);
+            applyCrossMachineHandoffRecord(selectedSessionId, record);
           }}
         />
       ) : null}

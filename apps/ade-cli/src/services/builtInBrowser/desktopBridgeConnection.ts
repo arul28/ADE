@@ -1,13 +1,12 @@
 import fs from "node:fs";
 import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
-import { BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM } from "./desktopBridgeMethods";
 
 /**
  * One lazily opened connection from the runtime daemon to the desktop bridge
  * socket, shared by the clients that reach desktop-only engines through it (the
  * App Control recorder, the demo engine, the scene previewer).
  *
- * Every call carries the bridge token. The socket is opened on the first call,
+ * The socket is opened on the first call,
  * with a connect deadline, and reopened after it closes. A transport failure
  * drops the socket so the next call reconnects; an error ANSWER does not,
  * because the desktop ties work (a recording, a demo job) to the connection
@@ -17,22 +16,29 @@ import { BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM } from "./desktopBridgeMethods";
 const CONNECT_TIMEOUT_MS = 3_000;
 
 export type DesktopBridgeConnection = {
-  /** Call `method` with the bridge token added. Rejects with `unavailableMessage` when no desktop is attached. */
+  /** Call `method`. Rejects with `unavailableMessage` when no desktop is attached. */
   request<T>(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<T>;
   /** Close the socket and refuse later calls. */
   close(): void;
 };
 
+/**
+ * True when nothing can be listening at `socketPath`: a Unix socket file that
+ * does not exist. A Windows named pipe has no file to check, so it is never
+ * reported missing here; connecting answers that.
+ */
+export function desktopBridgeSocketMissing(socketPath: string): boolean {
+  return !socketPath.startsWith("\\\\") && !fs.existsSync(socketPath);
+}
+
 export function createDesktopBridgeConnection(args: {
   socketPath: string;
-  getAuthToken: () => string | null;
   /** Why a call cannot run: no desktop app attached on this machine. */
   unavailableMessage: string;
   /** The error a call made after `close()` rejects with. */
   closedMessage: string;
 }): DesktopBridgeConnection {
   const { socketPath } = args;
-  const isNamedPipe = socketPath.startsWith("\\\\");
   let client: JsonRpcClient | null = null;
   let connecting: Promise<JsonRpcClient> | null = null;
   let closed = false;
@@ -42,7 +48,7 @@ export function createDesktopBridgeConnection(args: {
     if (closed) throw new Error(args.closedMessage);
     if (!connecting) {
       connecting = (async () => {
-        if (!isNamedPipe && !fs.existsSync(socketPath)) throw new Error(args.unavailableMessage);
+        if (desktopBridgeSocketMissing(socketPath)) throw new Error(args.unavailableMessage);
         let timer: ReturnType<typeof setTimeout> | null = null;
         try {
           const next = await Promise.race([
@@ -69,11 +75,9 @@ export function createDesktopBridgeConnection(args: {
   return {
     async request<T>(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<T> {
       if (closed) throw new Error(args.closedMessage);
-      const token = args.getAuthToken()?.trim();
-      if (!token) throw new Error(args.unavailableMessage);
       const c = await ensureClient();
       try {
-        return await c.request<T>(method, { ...params, [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: token }, { timeoutMs });
+        return await c.request<T>(method, params, { timeoutMs });
       } catch (error) {
         // A call's own failure is an answer; only a transport failure drops the socket.
         if (client === c && !(error instanceof JsonRpcResponseError)) {

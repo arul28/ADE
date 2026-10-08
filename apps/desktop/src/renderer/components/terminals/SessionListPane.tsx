@@ -117,6 +117,7 @@ import {
 import {
   attachedShellSectionId,
   nestedSubagentSectionId,
+  parentsWithBusySubagents,
   workNestingDrawers,
   type WorkNestingDrawers,
 } from "../../../shared/sessionSpawnNesting";
@@ -1605,8 +1606,34 @@ export const SessionListPane = React.memo(function SessionListPane({
     [workPinnedLaneIds],
   );
 
-  // The stall rule depends on time passing, not on new data.
-  const stallNowMs = useTurnStallClock(allSessionsUnfiltered);
+  // The stall and wake rules depend on time passing, not on new data. Foreign
+  // rows count too: a missed wake on another machine must unfold its lane here.
+  const clockSessions = useMemo(
+    () => (foreignRows.length === 0
+      ? allSessionsUnfiltered
+      : [...allSessionsUnfiltered, ...foreignRows.flatMap((row) => row.sessions)]),
+    [allSessionsUnfiltered, foreignRows],
+  );
+  const stallNowMs = useTurnStallClock(clockSessions);
+
+  /**
+   * Chats a busy subagent keeps open, so their row reads Waiting like the lane
+   * and the board. Each machine's roster is indexed on its own: a subagent only
+   * nests under a parent on the same machine and lane.
+   */
+  const busySubagentParentIds = useMemo(() => {
+    const ids = parentsWithBusySubagents(allSessionsUnfiltered, stallNowMs);
+    const foreignByMachine = new Map<string, TerminalSessionSummary[]>();
+    for (const row of foreignRows) {
+      const list = foreignByMachine.get(row.machineId) ?? [];
+      list.push(...row.sessions);
+      foreignByMachine.set(row.machineId, list);
+    }
+    for (const sessions of foreignByMachine.values()) {
+      for (const id of parentsWithBusySubagents(sessions, stallNowMs)) ids.add(id);
+    }
+    return ids;
+  }, [allSessionsUnfiltered, foreignRows, stallNowMs]);
 
   /**
    * Each local lane's rolled-up focus status and whether it folds into the
@@ -1624,6 +1651,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         laneWaiting: lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
         seenAtBySessionId: workSeenAtBySessionId,
         nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
+        busySubagentParentIds,
         launching: unfilteredHandoffCountByLaneId.get(laneId) ?? 0,
         nowMs: stallNowMs,
       }));
@@ -1636,6 +1664,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     stallNowMs,
     unfilteredHandoffCountByLaneId,
     unfilteredNesting.excludedTopLevelIds,
+    busySubagentParentIds,
     unfilteredSessionsByLane,
     workSeenAtBySessionId,
   ]);
@@ -1668,6 +1697,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       foldedLaneIds,
       laneWaiting: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
       nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
+      busySubagentParentIds,
       nowMs: stallNowMs,
     });
   }, [
@@ -1679,6 +1709,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     foldedLaneIds,
     prsByLaneId,
     unfilteredNesting.excludedTopLevelIds,
+    busySubagentParentIds,
   ]);
 
   // Foreign lanes worth a row: ones with chats, after the same search, lane, and
@@ -1779,6 +1810,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       nowMs: foreignFilingNowMs,
       machines: [...sessionsByMachine.entries()].map(([machineId, sessions]) => ({
         sessions,
+        rosterSessions: fullSessionsByMachine.get(machineId) ?? sessions,
         filingBuckets: filingBucketsForForeignSessions(fullSessionsByMachine.get(machineId) ?? sessions),
         laneWaitingReason: (laneId) => lanePrWaitingReason(
           lanePrsForMachine(prsByLaneId, machineId, laneId),
@@ -1860,6 +1892,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       laneWaiting: false,
       seenAtBySessionId: workSeenAtBySessionId,
       nestedSessionIds: excluded,
+      busySubagentParentIds,
       nowMs: stallNowMs,
     });
     const shelf = ((): WorkLaneShelf | null => {
@@ -2498,6 +2531,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         session={session}
         lane={sessionLane}
         liveChildrenCount={foreignRow ? 0 : liveChildrenByParentId.get(session.id) ?? 0}
+        subagentBusy={busySubagentParentIds.has(session.id)}
         parentSessionTitle={
           !foreignRow && session.orchestrationParentSessionId
             ? sessionTitleById.get(session.orchestrationParentSessionId) ?? null

@@ -5,11 +5,9 @@ import {
   type AttentionPhase,
 } from "../../../shared/types/attention";
 import {
-  ACTIVITY_POPOVER_SECTION_IDS,
   ACTIVITY_SECTION_DESCRIPTORS,
   activityBadgeCount,
   ACTIVITY_SECTION_TONE,
-  activityFeedOrder,
   activityFooterLine,
   activityHeadline,
   activityNotificationItems,
@@ -57,94 +55,48 @@ function sectionMap(sections: ReturnType<typeof activitySections>) {
 }
 
 describe("activity priority", () => {
-  it("always exposes every state group as a descriptor, in priority order", () => {
-    expect(ACTIVITY_SECTION_DESCRIPTORS.map(({ id }) => id)).toEqual([
-      "needs-you",
-      "failed",
-      "planning",
-      "working",
-      "idle",
-      "done",
+  it("always exposes the four board columns as descriptors, in board order", () => {
+    expect(ACTIVITY_SECTION_DESCRIPTORS.map(({ id, label }) => [id, label])).toEqual([
+      ["needs_you", "Needs you"],
+      ["working", "Working"],
+      ["waiting", "Waiting"],
+      ["done", "Done"],
     ]);
     expect(activitySections([], NOW).map(({ id, items }) => [id, items])).toEqual([
-      ["needs-you", []],
-      ["failed", []],
-      ["planning", []],
+      ["needs_you", []],
       ["working", []],
-      ["idle", []],
+      ["waiting", []],
       ["done", []],
     ]);
   });
 
   /**
-   * The two resting bands are full-list only; everything live or actionable
-   * stays in the glance. Idle joins done here for the same reason done was
-   * excluded: on a real account both are large, and a dropdown that opens onto
-   * them buries the rows that wanted a human.
+   * The columns are the Work board's. A failure is the user's move, planning
+   * is work, a session gone quiet is resting, and Waiting is whatever the
+   * publishing brain said waits.
    */
-  it("keeps both resting bands out of the popover section list", () => {
-    expect(ACTIVITY_POPOVER_SECTION_IDS).toEqual([
-      "needs-you",
-      "failed",
-      "planning",
-      "working",
-    ]);
-  });
-
-  it("maps phases into the six state bands", () => {
+  it("files every agent under its board column", () => {
     const sections = activitySections([
       activityItem("done", "completed"),
       activityItem("working", "running"),
       activityItem("broke", "failed"),
       activityItem("needs", "needs_you"),
-      activityItem("quiet", "stale"),
       activityItem("planning", "running", { chatActivityMode: "planning" }),
+      activityItem("quiet", "running", { activityTier: "idle" }),
+      activityItem("ci", "running", { boardColumn: "waiting", waitingReason: "ci" }),
+      activityItem("snoozed", "stale", { boardColumn: "waiting", waitingReason: "snoozed" }),
     ], NOW);
 
-    expect(sectionMap(sections)).toEqual({
-      "needs-you": ["needs"],
-      failed: ["broke"],
-      planning: ["planning"],
-      working: ["working"],
-      // Gone quiet is its own band: it is neither live work nor a finished
-      // outcome, and filing it with either one is what made the counts lie.
-      idle: ["quiet"],
-      done: ["done"],
+    // Membership only: order within a column is the shared priority sorter's.
+    const membership = Object.fromEntries(
+      Object.entries(sectionMap(sections)).map(([id, ids]) => [id, [...ids].sort()]),
+    );
+    expect(membership).toEqual({
+      needs_you: ["broke", "needs"],
+      working: ["planning", "working"],
+      waiting: ["ci", "snoozed"],
+      done: ["done", "quiet"],
     });
-  });
-
-  /**
-   * A publisher this build does not understand must not be able to invent a
-   * state: anything but the one literal falls back to the phase.
-   */
-  it("refuses an unrecognized activity mode instead of inventing a band", () => {
-    const sections = activitySections([
-      activityItem("odd", "running", { chatActivityMode: "daydreaming" as never }),
-    ], NOW);
-
-    expect(sectionMap(sections).planning).toEqual([]);
-    expect(sectionMap(sections).working).toEqual(["odd"]);
-  });
-
-  it("files explicit idle rows under idle, never under done", () => {
-    const sections = activitySections([
-      activityItem("idle-running", "running", { activityTier: "idle" }),
-      activityItem("fresh-done", "completed", {
-        updatedAt: "2026-08-01T10:00:00.000Z",
-      }),
-      activityItem("idle-stale", "stale", {
-        activityTier: "idle",
-        updatedAt: "2026-08-01T11:30:00.000Z",
-      }),
-    ], NOW);
-
-    expect(sectionMap(sections).working).toEqual([]);
-    // `done` keeps only work that actually finished, so the section stops
-    // being a bucket that fills with week-old roster rows.
-    expect(sectionMap(sections).done).toEqual(["fresh-done"]);
-    // Within idle, the shared priority sorter still orders by preserved phase
-    // before recency — the band is quiet, but it is not unordered.
-    expect(sectionMap(sections).idle).toEqual(["idle-running", "idle-stale"]);
   });
 
   /**
@@ -164,8 +116,7 @@ describe("activity priority", () => {
     expect(activitySections(items, NOW).flatMap((section) =>
       section.items.map((item) => item.id))).toEqual(["agent"]);
     expect(activityNotificationItems(items, NOW).map((item) => item.id)).toEqual(["pr"]);
-    // The notch reads one ordering: agents first, notifications after.
-    expect(activityFeedOrder(items, NOW).map((item) => item.id)).toEqual(["agent", "pr"]);
+    expect(summarizeActivity(items, NOW).counts).toEqual({ needs_you: 0, working: 1, waiting: 0, done: 0 });
   });
 
   it("filters dismissed and expired rows before deriving badge and headline", () => {
@@ -181,7 +132,8 @@ describe("activity priority", () => {
 
     expect(activityBadgeCount(items, NOW)).toBe(1);
     expect(activityHeadline(items, NOW)).toBe("1 needs you");
-    expect(activityHeadline([activityItem("broke", "failed")], NOW)).toBe("1 failed");
+    // A failure is the user's move: it counts toward the badge.
+    expect(activityBadgeCount([activityItem("broke", "failed")], NOW)).toBe(1);
     expect(activityHeadline([activityItem("work", "running")], NOW)).toBe("1 working");
     expect(activityHeadline([activityItem("done", "completed")], NOW)).toBe("1 done");
     expect(activityHeadline([], NOW)).toBe("All clear");
@@ -312,46 +264,28 @@ describe("activity header summary", () => {
     expect(summarizeActivity([activityItem("work", "running")], NOW).tone).toBe("blue");
     expect(summarizeActivity([activityItem("done", "completed")], NOW).tone).toBe("emerald");
     expect(summarizeActivity([], NOW).tone).toBe("neutral");
-    expect(ACTIVITY_SECTION_TONE["needs-you"]).toBe("amber");
+    expect(ACTIVITY_SECTION_TONE.needs_you).toBe("amber");
   });
 
   /**
-   * The headline, the tone and the trigger label are one table now, not three
-   * ladders. They had already drifted: the headline folded `planning` into "N
-   * working" while the trigger label reported it separately and the tone went
-   * violet — a surface that said "working" in blue prose above a violet badge.
-   * Planning is its own state group with its own hue and its own glyph, so it
-   * is named in every sentence.
+   * A failure sits under Needs you, so it is amber and counted in the badge,
+   * and the summary still knows how many of those raised hands are failures.
    */
-  it("names planning in the headline, the tone and the trigger alike", () => {
-    const planning = [
-      activityItem("plan-a", "running", { chatActivityMode: "planning" }),
-      activityItem("work-a", "running"),
-    ];
-    const summary = summarizeActivity(planning, NOW);
-
-    expect(summary.planningCount).toBe(1);
-    expect(summary.workingCount).toBe(1);
-    expect(summary.tone).toBe("violet");
-    expect(summary.headline).toBe("1 planning");
-    expect(activityHeadline(planning, NOW)).toBe("1 planning");
-    expect(activityTriggerLabel(summary)).toBe("Activity · 1 planning · 1 working");
-  });
-
-  /**
-   * Failure outranks planning and working, and never wears amber: `needs_you`
-   * is the only phase that may claim the reader's move.
-   */
-  it("leads with failed when nothing needs you", () => {
+  it("counts a failure as needing you, and separately as failed", () => {
     const summary = summarizeActivity(
       [
         activityItem("broke", "failed"),
+        activityItem("asks", "needs_you"),
         activityItem("plan", "running", { chatActivityMode: "planning" }),
       ],
       NOW,
     );
-    expect(summary.tone).toBe("red");
-    expect(summary.headline).toBe("1 failed");
+    expect(summary.needsYouCount).toBe(2);
+    expect(summary.failedCount).toBe(1);
+    expect(summary.workingCount).toBe(1);
+    expect(summary.tone).toBe("amber");
+    expect(summary.headline).toBe("2 need you");
+    expect(activityTriggerLabel(summary)).toBe("Activity · 2 need you · 1 working");
   });
 
   /**
@@ -372,9 +306,9 @@ describe("activity header summary", () => {
       .toBe("No machines reporting yet");
   });
 
-  it("says all agents are idle rather than enumerating zeroes", () => {
+  it("says nothing is running rather than enumerating zeroes", () => {
     expect(activityTriggerLabel(summarizeActivity([], NOW))).toBe(
-      "Activity · all agents idle",
+      "Activity · nothing running",
     );
   });
 

@@ -1138,6 +1138,12 @@ export type SyncRosterChat = {
   snoozedUntil?: string | null;
   snoozedAt?: string | null;
   /**
+   * The chat's next scheduled wake, when its project is booted and a wake is
+   * parked. A finished chat with a pending wake waits rather than being Done.
+   * Optional: older hosts omit it.
+   */
+  nextWakeAt?: string | null;
+  /**
    * Agent chats only (`chatLogV2` hosts): the chat's durable envelope
    * `sequence` high-water and `historyGeneration`, so a client can tell which
    * cached chat logs are current without subscribing to each one.
@@ -1153,6 +1159,12 @@ export type SyncRosterLane = {
   icon?: string | null;
   laneType?: string | null;
   branchRef?: string | null;
+  /**
+   * Why a running session in this lane waits rather than works: the lane's
+   * open PR has CI in flight, or a review requested (`lanePrWaitingReason`).
+   * Optional: older hosts omit it, and a client then shows no Waiting reason.
+   */
+  prWaitingReason?: "ci" | "review" | null;
 };
 
 export type SyncRosterProject = {
@@ -2536,6 +2548,13 @@ export type SyncRemoteCommandAction =
   | "chat.fastForwardCrossMachineHandoffLane"
   | "chat.acceptCrossMachineHandoff"
   | "chat.markCrossMachineHandoff"
+  | "chat.getCrossMachineHandoffOptions"
+  | "chat.previewCrossMachineHandoff"
+  | "chat.startCrossMachineHandoff"
+  | "chat.cancelCrossMachineHandoff"
+  | "chat.retryCrossMachineHandoff"
+  | "chat.resolveCrossMachineHandoffApproval"
+  | "chat.acknowledgeCrossMachineHandoff"
   | "chat.getContextUsage"
   | "chat.rewindFiles"
   | "chat.getTurnFileDiff"
@@ -2633,6 +2652,11 @@ export type SyncRemoteCommandAction =
   | "cto.getLinearIssueComments"
   | "cto.getLinearIssue"
   | "cto.updateLinearIssue"
+  | "cto.createLinearIssueComment"
+  | "cto.createLinearIssue"
+  | "cto.getLinearIssueCreateOptions"
+  | "cto.listLinearProjectMilestones"
+  | "cto.uploadLinearFile"
   | "cto.countLinearIssues"
   | "cto.getLinearCustomViews"
   | "cto.updateIdentity"
@@ -2697,6 +2721,18 @@ export type SyncRemoteCommandAction =
   | "github.detectRepo"
   | "github.listRepoIssues"
   | "github.getIssue"
+  | "github.getRepoIssueSummary"
+  | "github.listRepoIssueList"
+  | "github.listIssueComments"
+  | "github.getIssueWriteAccess"
+  | "github.listRepoMilestones"
+  | "github.listRepoLabels"
+  | "github.listRepoCollaborators"
+  | "github.updateIssue"
+  | "github.createIssue"
+  | "github.listIssueTemplates"
+  | "github.listIssueTypes"
+  | "github.commentOnIssue"
   | "github.publishCurrentProject"
   | "projectConfig.get"
   | "projectConfig.save"
@@ -2868,6 +2904,12 @@ export type SyncRemoteCommandAction =
   | "automations.webhookList"
   | "automations.webhookListDeliveries"
   | "automations.webhookGetDelivery"
+  // Auto-handoff rules from the phone's chat menu: the same automations
+  // surface the desktop menu writes through (`automations.list`,
+  // `automation_planner.saveDraft`, `automations.deleteRule`).
+  | "automations.list"
+  | "automations.saveDraft"
+  | "automations.deleteRule"
   | "apple.streamTicket"
   | "apple.input"
   | "apple.invoke"

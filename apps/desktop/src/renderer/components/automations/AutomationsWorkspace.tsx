@@ -142,6 +142,14 @@ export function AutomationsWorkspace({
   const [suites, setSuites] = useState<TestSuiteDefinition[]>([]);
   const [ingressStatus, setIngressStatus] = useState<AutomationIngressStatus | null>(null);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
+  // True while a new, unsaved draft is open. "Nothing selected" is also the
+  // first-load state, where a refresh picks the first rule; without this, the
+  // next background refresh (automation events fire often) replaced a new
+  // draft with that rule a moment after New automation was pressed.
+  const draftingNewRef = useRef(false);
+  useEffect(() => {
+    if (selectedRuleId) draftingNewRef.current = false;
+  }, [selectedRuleId]);
   // `?rule=<id>` (from Settings → Linear → ADE agent) opens that rule once it loads.
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedRuleId = searchParams.get("rule");
@@ -264,6 +272,7 @@ export function AutomationsWorkspace({
         if (current && (nextRules.some((r) => r.id === current) || foreignRuleKeyStateRef.current(current) !== "gone")) {
           return current;
         }
+        if (!current && draftingNewRef.current) return null;
         return nextRules[0]?.id ?? null;
       });
     } catch (err) {
@@ -303,6 +312,7 @@ export function AutomationsWorkspace({
   const machinesRef = useRef(machines);
   machinesRef.current = machines;
   const startNewDraftMachine = useCallback(() => {
+    draftingNewRef.current = true;
     const eligible = machinesRef.current.filter((machine) => machine.online);
     const only = eligible.length === 1 ? eligible[0]! : null;
     loadedRuleKeyRef.current = null;

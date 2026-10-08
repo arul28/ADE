@@ -933,6 +933,11 @@ function createCtoNamespace(
     searchLinearIssues: (args?: unknown) => call("cto.searchLinearIssues", args, { issues: [] }),
     getLinearIssueComments: (args?: unknown) => call("cto.getLinearIssueComments", args, []),
     getLinearIssue: (args?: unknown) => call("cto.getLinearIssue", args, null),
+    createLinearIssueComment: (args?: unknown) => call("cto.createLinearIssueComment", args, null, false),
+    createLinearIssue: (args?: unknown) => call("cto.createLinearIssue", args, null, false),
+    getLinearIssueCreateOptions: (args?: unknown) => call("cto.getLinearIssueCreateOptions", args, null),
+    listLinearProjectMilestones: (args?: unknown) => call("cto.listLinearProjectMilestones", args, []),
+    uploadLinearFile: (args?: unknown) => call("cto.uploadLinearFile", args, null, false),
     updateLinearIssue: (args?: unknown) => call("cto.updateLinearIssue", args, null),
     cancelLinearIssue: (issueId: string) => call(
       "linear_issue_tracker.cancelIssue",

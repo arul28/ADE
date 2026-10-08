@@ -99,16 +99,11 @@ export function captureGestureChord(): string {
   return captureGestureChordLabel(rendererRuntimeTarget().platform);
 }
 
-export function supportsNativeNotchPlatform(platformValue = getPlatformValue()): boolean {
-  return isMacPlatform(platformValue);
-}
-
 export function supportsIosSimulatorPlatform(platformValue = getPlatformValue()): boolean {
   return isMacPlatform(platformValue);
 }
 
 export const isMac = isMacPlatform();
-export const supportsNativeNotch = supportsNativeNotchPlatform();
 const rendererPlatform = rendererPlatformAttribute();
 export const revealLabel = isMac
   ? "Reveal in Finder"

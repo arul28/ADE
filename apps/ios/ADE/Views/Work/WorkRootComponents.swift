@@ -724,6 +724,7 @@ struct WorkSessionListRow: View {
   /// True when no lane header sits above this row — the singleton form, where
   /// the row carries the lane identity itself.
   var showsLaneIdentity: Bool = true
+  var waitingOnSubagent: Bool = false
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -770,15 +771,32 @@ struct WorkSessionListRow: View {
   /// Deletes a CLI/shell session (running or stopped). Chats keep `onDelete`;
   /// the two go through different host commands and different confirmations.
   var onDeleteSession: (TerminalSessionSummary) -> Void = { _ in }
-  /// Opens this session in the hosted web client. Purely local — it builds a URL
-  /// and hands it to the system, so it needs no host command and no gate.
-  var onOpenInWeb: (TerminalSessionSummary) -> Void = { _ in }
   /// Lane-scoped actions for the `Lane ▸` submenu. Nil (the default) renders no
   /// submenu at all, which is also what a row with no resolvable lane gets.
   var laneMenu: WorkSessionLaneMenuActions? = nil
   /// The host advertises `chat.regenerateSessionMetadata`.
   var generateNamesAvailable: Bool = false
   var onGenerateNames: (TerminalSessionSummary, [String]) -> Void = { _, _ in }
+  /// The host advertises `chat.updateSession` (desktop "Set tag…").
+  var tagAvailable: Bool = false
+  var onSetTag: (TerminalSessionSummary) -> Void = { _ in }
+  /// The host advertises `chat.restartSession`.
+  var restartAvailable: Bool = false
+  var onRestartAgent: (TerminalSessionSummary) -> Void = { _ in }
+  /// `Hand off ▸` destinations, asked of the brain that owns THIS chat. Each
+  /// false hides its item: `chat.handoff`, `chat.startCrossMachineHandoff`, and
+  /// the three `automations.*` rule commands.
+  var localHandoffAvailable: Bool = false
+  var crossMachineHandoffAvailable: Bool = false
+  /// The chat's brain takes `chat.cancelCrossMachineHandoff` /
+  /// `chat.retryCrossMachineHandoff` (Keep it here or Dismiss / Retry move).
+  var crossMachineCancelAvailable: Bool = false
+  var crossMachineRetryAvailable: Bool = false
+  var autoHandoffAvailable: Bool = false
+  /// Auto-handoff rules already scoped to this chat; nil while unknown. Drives
+  /// "Edit auto handoff…" and "Remove auto handoff" like desktop's menu.
+  var autoHandoffRuleCount: Int? = nil
+  var onHandoff: (TerminalSessionSummary, WorkSessionHandoffIntent) -> Void = { _, _ in }
 
   /// Observed so the muted glyph and menu label re-render the moment a mute
   /// flips anywhere (this menu, the open chat's header menu, settings).
@@ -930,7 +948,8 @@ struct WorkSessionListRow: View {
           isSelectedTransitionSource: selectedSessionId == session.id,
           compact: compact,
           nestedSubagent: nestedSubagent,
-          showsLaneIdentity: showsLaneIdentity
+          showsLaneIdentity: showsLaneIdentity,
+          waitingOnSubagent: waitingOnSubagent
         )
         .equatable()
       }
@@ -1005,9 +1024,13 @@ struct WorkSessionListRow: View {
     // cosmetic here: a mis-tap right after the menu opens lands mid-list, which
     // is exactly where the deletes used to sit.
     .contextMenu {
-      identityMenuSection
+      nameMenuSection
+      fileMenuSection
       lifecycleMenuSection(status: rowStatus)
-      goToMenuSection
+      handoffMenuSection
+      agentMenuSection
+      laneMenuSection
+      copyMenuSection
       destructiveMenuSection(status: rowStatus)
     }
     .overlay {
@@ -1055,63 +1078,60 @@ struct WorkSessionListRow: View {
   }
 
   // MARK: - Menu sections
+  //
+  // Desktop's tree in desktop's order (`SessionContextMenu.tsx`), one native
+  // `Section` per block so iOS draws the dividers:
+  //   name · tag · lifecycle · hand off · agent · lane · copy · delete.
+  // Every item calls the command the desktop item calls, and an item the
+  // session type or the host cannot honour is hidden, not greyed.
 
-  /// What this row is called and how it is filed. Unlabelled: it is the first
-  /// block under the finger and needs no signpost.
+  private var canRename: Bool {
+    !CursorCloudNaming.ownsName(session.cursorCloudAgentId)
+      && !CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId)
+  }
+
+  /// Desktop shows "Set tag…" only on a running Claude chat: tag writes need a
+  /// live Claude SDK runtime.
+  private var canSetTag: Bool {
+    tagAvailable && session.toolType == "claude-chat" && session.status == "running"
+  }
+
+  /// Section 1 — what the row is called: Rename, Generate ▸.
   @ViewBuilder
-  private var identityMenuSection: some View {
-    Button {
-      onLongPressSelect(session)
-    } label: {
-      Label("Select", systemImage: "checkmark.circle")
-    }
-    if !CursorCloudNaming.ownsName(session.cursorCloudAgentId)
-      && !CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId) {
-      Button {
-        onRename(session)
-      } label: {
-        Label("Rename", systemImage: "pencil")
+  private var nameMenuSection: some View {
+    Section {
+      if canRename {
+        Button {
+          onRename(session)
+        } label: {
+          Label("Rename", systemImage: "pencil")
+        }
       }
+      generateNamesMenu
     }
-    Button {
-      onPin(session)
-    } label: {
-      Label(session.pinned ? "Unpin from front" : "Pin to front",
-            systemImage: session.pinned ? "pin.slash" : "pin")
-    }
-    if isChat {
-      Button {
-        PushNotificationService.shared.setMuted(!isMuted, sessionId: session.id)
-      } label: {
-        Label(isMuted ? "Unmute notifications" : "Mute notifications",
-              systemImage: isMuted ? "bell" : "bell.slash")
-      }
-    }
-    generateNamesMenu
   }
 
   @ViewBuilder
   private var generateNamesMenu: some View {
     if isChat && generateNamesAvailable {
-      let cloudOwned = CursorCloudNaming.ownsName(session.cursorCloudAgentId)
-        || CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId)
+      let cloudOwned = !canRename
       Menu {
         if !cloudOwned {
           Button {
             onGenerateNames(session, ["title"])
           } label: {
-            Label("Generate chat title", systemImage: "textformat")
+            Label("Chat title", systemImage: "textformat")
           }
         }
         Button {
           onGenerateNames(session, ["laneName"])
         } label: {
-          Label("Generate lane name", systemImage: "arrow.triangle.branch")
+          Label("Lane name", systemImage: "arrow.triangle.branch")
         }
         Button {
           onGenerateNames(session, ["statusLine"])
         } label: {
-          Label("Generate status line", systemImage: "text.alignleft")
+          Label("Status line", systemImage: "text.alignleft")
         }
         Button {
           onGenerateNames(
@@ -1119,33 +1139,81 @@ struct WorkSessionListRow: View {
             cloudOwned ? ["laneName", "statusLine"] : ["title", "laneName", "statusLine"]
           )
         } label: {
-          Label(cloudOwned ? "Generate lane & status" : "Generate all three", systemImage: "sparkles")
+          Label(cloudOwned ? "Lane & status" : "All three", systemImage: "sparkles")
         }
       } label: {
-        Label("Generate names", systemImage: "sparkles")
+        Label("Generate", systemImage: "sparkles")
       }
     }
   }
 
-  /// Everything that changes where the list files this row: stop (runtime),
-  /// snooze/wake (visibility), settle/keep-active (state). Durations use a
-  /// native nested `Menu`, never a popover — this is a long press on a phone.
-  ///
-  /// Keep it exhaustive. A row that reaches the end of this block with nothing
-  /// rendered is a row the user cannot un-hide.
+  /// Section 2 — how the row is filed: Pin, Set tag…, plus the phone-only
+  /// Mute and Select (the one way into multi-select).
+  @ViewBuilder
+  private var fileMenuSection: some View {
+    Section {
+      Button {
+        onPin(session)
+      } label: {
+        Label(session.pinned ? "Unpin" : "Pin", systemImage: session.pinned ? "pin.slash" : "pin")
+      }
+      if canSetTag {
+        Button {
+          onSetTag(session)
+        } label: {
+          Label("Set tag…", systemImage: "tag")
+        }
+      }
+      if isChat {
+        Button {
+          PushNotificationService.shared.setMuted(!isMuted, sessionId: session.id)
+        } label: {
+          Label(isMuted ? "Unmute notifications" : "Mute notifications",
+                systemImage: isMuted ? "bell" : "bell.slash")
+        }
+      }
+      Button {
+        onLongPressSelect(session)
+      } label: {
+        Label("Select", systemImage: "checkmark.circle")
+      }
+    }
+  }
+
+  /// Section 3 — everything that changes where the list files this row:
+  /// settle (state), snooze/wake (visibility), stop (runtime). Durations use a
+  /// native nested `Menu`. Keep it exhaustive: a row that reaches the end of
+  /// this block with nothing rendered is a row the user cannot un-hide.
   @ViewBuilder
   private func lifecycleMenuSection(status: String) -> some View {
     let canStopRuntime = isStoppableRuntimeStatus(session, status: status)
-    if canStopRuntime || lifecycleAvailable || snoozeAvailable || canDemoteToPeer || canPromoteToSubagent {
-      Divider()
-      // Stop runtime moved here from the identity block: it is a lifecycle
-      // change, and it is NOT destructive — the session and its transcript
-      // survive — so it must not sit next to the deletes.
-      if canStopRuntime {
+    Section {
+      if canSettle {
         Button {
-          onStopRuntime(session)
+          settle()
         } label: {
-          Label("Stop runtime", systemImage: "stop.fill")
+          Label(settleLabel, systemImage: "checkmark.circle")
+        }
+      } else if settleBlockedOnInput {
+        // Disabled on purpose: it states the precondition instead of an item
+        // that silently vanished.
+        Button {} label: {
+          Label("Resolve input to settle", systemImage: "exclamationmark.bubble")
+        }
+        .disabled(true)
+      }
+      if canUnsettle {
+        Button {
+          onUnsettle(session)
+        } label: {
+          Label("Unsettle", systemImage: "arrow.uturn.backward.circle")
+        }
+      }
+      if canKeepActive {
+        Button {
+          onKeepActive(session)
+        } label: {
+          Label("Keep active", systemImage: "pin.circle")
         }
       }
       if snoozeAvailable {
@@ -1169,101 +1237,115 @@ struct WorkSessionListRow: View {
           }
         }
       }
-      if canSettle {
+      // Not destructive — the session and its transcript survive — so it sits
+      // here and never next to the deletes.
+      if canStopRuntime {
         Button {
-          settle()
+          onStopRuntime(session)
         } label: {
-          Label(settleLabel, systemImage: "checkmark.circle")
-        }
-      } else if settleBlockedOnInput {
-        // Disabled on purpose. Hiding Settle here would leave the user hunting
-        // for an item that simply vanished; this states the precondition.
-        Button {} label: {
-          Label("Resolve input to settle", systemImage: "exclamationmark.bubble")
-        }
-        .disabled(true)
-      }
-      if canUnsettle {
-        Button {
-          onUnsettle(session)
-        } label: {
-          Label("Unsettle", systemImage: "arrow.uturn.backward.circle")
-        }
-      }
-      if canKeepActive {
-        Button {
-          onKeepActive(session)
-        } label: {
-          Label("Keep active", systemImage: "pin.circle")
-        }
-      }
-      if canDemoteToPeer {
-        Button {
-          onDemoteToPeer(session)
-        } label: {
-          Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
-        }
-      }
-      if canPromoteToSubagent {
-        Button {
-          onPromoteToSubagent(session)
-        } label: {
-          Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
+          Label("Stop runtime", systemImage: "stop.fill")
         }
       }
     }
   }
 
-  /// The other surfaces that show this same session, plus the clipboard rows and
-  /// the lane submenu. Copy and Lane are nested because a phone context menu
-  /// past roughly ten top-level rows stops being scannable.
+  /// Section 4 — Hand off ▸ (`WorkSessionHandoffMenu`, kept with the hand-off
+  /// sheets it opens).
+  private var handoffMenuSection: some View {
+    WorkSessionHandoffMenu(
+      session: session,
+      record: chatSummary?.crossMachineHandoff ?? session.crossMachineHandoff,
+      isChat: isChat,
+      localHandoffAvailable: localHandoffAvailable,
+      crossMachineHandoffAvailable: crossMachineHandoffAvailable,
+      crossMachineCancelAvailable: crossMachineCancelAvailable,
+      crossMachineRetryAvailable: crossMachineRetryAvailable,
+      autoHandoffAvailable: autoHandoffAvailable,
+      autoHandoffRuleCount: autoHandoffRuleCount,
+      onHandoff: onHandoff
+    )
+  }
+
+  /// Section 5 — the agent itself: restart, promote / demote.
   @ViewBuilder
-  private var goToMenuSection: some View {
-    Divider()
-    Button {
-      onGoToLane(session)
-    } label: {
-      Label("Go to lane", systemImage: "arrow.triangle.branch")
-    }
-    if let pullRequest {
-      Button {
-        onOpenPullRequest(session, pullRequest)
-      } label: {
-        Label("Open in PRs tab", systemImage: "arrow.triangle.pull")
+  private var agentMenuSection: some View {
+    if isChat && (restartAvailable || canDemoteToPeer || canPromoteToSubagent) {
+      Section {
+        if restartAvailable {
+          Button {
+            onRestartAgent(session)
+          } label: {
+            Label("Restart agent session", systemImage: "arrow.clockwise")
+          }
+        }
+        if canPromoteToSubagent {
+          Button {
+            onPromoteToSubagent(session)
+          } label: {
+            Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
+          }
+        }
+        if canDemoteToPeer {
+          Button {
+            onDemoteToPeer(session)
+          } label: {
+            Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
+          }
+        }
       }
     }
-    Button {
-      onOpenInWeb(session)
-    } label: {
-      Label("Open in web", systemImage: "safari")
-    }
-    Menu {
-      Button {
-        onCopyId(session)
-      } label: {
-        Label("Session ID", systemImage: "number")
-      }
-      Button {
-        onCopyDeepLink(session)
-      } label: {
-        Label("Session link", systemImage: "link")
-      }
-    } label: {
-      Label("Copy", systemImage: "doc.on.doc")
-    }
-    laneMenuSection
   }
 
-  /// `Lane ▸`. Rendered only when the row actually resolves a lane and the
-  /// screen wired the actions — on iOS every row has a lane header or a lane
-  /// chip, so this is the lane menu for the whole app, not just singleton rows.
+  /// Section 6 — the lane: Go to lane, Manage lane, the PR shortcut, and the
+  /// `Lane ▸` submenu with the rest of the lane's own menu.
   @ViewBuilder
   private var laneMenuSection: some View {
-    if let lane, let laneMenu {
-      Menu {
-        WorkLaneContextMenuContent(lane: lane, actions: laneMenu)
+    Section {
+      Button {
+        onGoToLane(session)
       } label: {
-        Label("Lane", systemImage: "arrow.triangle.branch")
+        Label("Go to lane", systemImage: "arrow.triangle.branch")
+      }
+      if let lane, let laneMenu, laneMenu.manageAvailable {
+        Button {
+          laneMenu.onManage(lane)
+        } label: {
+          Label("Manage lane", systemImage: "slider.horizontal.3")
+        }
+      }
+      if let pullRequest {
+        Button {
+          onOpenPullRequest(session, pullRequest)
+        } label: {
+          Label("Open in PRs tab", systemImage: "arrow.triangle.pull")
+        }
+      }
+      if let lane, let laneMenu {
+        Menu {
+          WorkLaneContextMenuContent(lane: lane, actions: laneMenu)
+        } label: {
+          Label("Lane", systemImage: "square.stack.3d.up")
+        }
+      }
+    }
+  }
+
+  /// Section 7 — Copy ▸.
+  private var copyMenuSection: some View {
+    Section {
+      Menu {
+        Button {
+          onCopyId(session)
+        } label: {
+          Label("Session ID", systemImage: "number")
+        }
+        Button {
+          onCopyDeepLink(session)
+        } label: {
+          Label("Session deep link", systemImage: "link")
+        }
+      } label: {
+        Label("Copy", systemImage: "doc.on.doc")
       }
     }
   }
@@ -1272,7 +1354,7 @@ struct WorkSessionListRow: View {
   @ViewBuilder
   private func destructiveMenuSection(status: String) -> some View {
     if canStopAndDeleteSession(status: status) || shouldShowDeleteAction || canDeleteStoppedSession(status: status) {
-      Divider()
+      Section {
       if canStopAndDeleteSession(status: status) {
         Button(role: .destructive) {
           onDeleteSession(session)
@@ -1293,6 +1375,7 @@ struct WorkSessionListRow: View {
         } label: {
           Label("Delete session", systemImage: "trash")
         }
+      }
       }
     }
   }
@@ -1660,6 +1743,7 @@ struct WorkRootHeaderActions {
   var onOpenActivity: () -> Void = {}
   var onOpenLinear: () -> Void = {}
   var onOpenCursorCloud: () -> Void = {}
+  var onOpenGitHubIssues: () -> Void = {}
   var onOpenSettings: () -> Void = {}
 }
 
@@ -1679,6 +1763,7 @@ struct WorkRootHeader: View {
   let isLive: Bool
   let showsLinear: Bool
   let showsCursorCloud: Bool
+  var showsGitHubIssues = false
   /// Non-nil while multi-select is on; the row becomes "N selected · Cancel".
   let selectionCount: Int?
   let actions: WorkRootHeaderActions
@@ -1724,6 +1809,7 @@ struct WorkRootHeader: View {
         WorkHeaderOverflowMenu(
           showsLinear: showsLinear,
           showsCursorCloud: showsCursorCloud,
+          showsGitHubIssues: showsGitHubIssues,
           actions: actions
         )
       }
@@ -1863,6 +1949,7 @@ private struct WorkHeaderOverflowMenu: View {
   @EnvironmentObject private var drawer: ActivityDrawerModel
   let showsLinear: Bool
   let showsCursorCloud: Bool
+  var showsGitHubIssues = false
   let actions: WorkRootHeaderActions
 
   private var unread: Int { drawer.unreadCount }
@@ -1884,6 +1971,14 @@ private struct WorkHeaderOverflowMenu: View {
           actions.onOpenLinear()
         } label: {
           Label { Text("Linear") } icon: { Image("LinearLogo") }
+        }
+      }
+      if showsGitHubIssues {
+        Button {
+          ADEHaptics.light()
+          actions.onOpenGitHubIssues()
+        } label: {
+          Label { Text("GitHub Issues") } icon: { Image("ProviderGitHub") }
         }
       }
       if showsCursorCloud {
@@ -1918,7 +2013,7 @@ private struct WorkHeaderOverflowMenu: View {
     .buttonStyle(.plain)
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
-    .accessibilityHint("Activity, Linear, Cursor Cloud and Settings")
+    .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
   }
 }
 

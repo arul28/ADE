@@ -1,31 +1,21 @@
 /**
  * Where ADE's native helper binaries live.
  *
- * Both `ade-attention-notch` and `ade-desktop-driver` are produced by the same
- * build step into the same `resources/native` directory and copied by the same
- * `extraResources` entry, so where they are is one question with one answer,
- * and it is answered here rather than inside either helper's client.
+ * The native helpers are produced by the build into the same
+ * `resources/native` directory and copied by the same `extraResources` entry,
+ * so where they are is one question with one answer, and it is answered here
+ * rather than inside each helper's client.
  *
- * Kept out of `attentionNotchHelper.ts` because the Mac Desktop service runs in
- * the ADE runtime daemon as well as in Electron main, and importing the notch
- * helper — a spawner with its own process state — to ask where a file is was a
- * dependency neither side wanted.
+ * Kept out of the helper clients because the Mac Desktop service runs in the
+ * ADE runtime daemon as well as in Electron main, and importing a spawner with
+ * its own process state to ask where a file is was a dependency neither side
+ * wanted.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 
-export function resolveAttentionNotchExecutablePath(input: {
-  isPackaged: boolean;
-  resourcesPath: string;
-  appPath: string;
-}): string {
-  return input.isPackaged
-    ? path.join(input.resourcesPath, "native", "ade-attention-notch")
-    : path.join(input.appPath, "resources", "native", "ade-attention-notch");
-}
-
-/** The name of the Mac Desktop helper, next to `ade-attention-notch`. */
+/** The name of the Mac Desktop helper in `resources/native`. */
 const MAC_DESKTOP_DRIVER_BINARY = "ade-desktop-driver";
 
 /** The Windows Desktop helper, beside the capture helper. */
@@ -72,11 +62,11 @@ export function resolveWindowsDesktopDriverBinary(input: {
 }
 
 /**
- * The Mac Desktop native helper, resolved beside the notch helper.
+ * The Mac Desktop native helper, resolved in `resources/native`.
  *
- * Both binaries are materialized by the same build step into the same
- * `resources/native` directory and copied by the same `extraResources` entry,
- * so one file means a packaging change is one edit. Every input is optional
+ * Every native binary is materialized into the same `resources/native`
+ * directory and copied by the same `extraResources` entry, so one file means a
+ * packaging change is one edit. Every input is optional
  * because this service runs in the ADE runtime daemon as well as in Electron
  * main, and the daemon has no `app.getAppPath()`.
  *

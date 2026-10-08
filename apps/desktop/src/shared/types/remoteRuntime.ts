@@ -361,6 +361,11 @@ export type RemoteRuntimeHandoffStoragePreflightArgs = {
   originUrl?: string;
   branchRef?: string;
   sourceHeadSha?: string;
+  /**
+   * The handoff carries its commits in a git bundle, so the destination does
+   * not require origin's branch to be at `sourceHeadSha`.
+   */
+  hasGitBundle?: boolean;
 };
 
 export type RemoteRuntimeCloneProjectOptions = {

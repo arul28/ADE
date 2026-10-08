@@ -385,6 +385,8 @@ export type CreateLaneArgs = {
   branchName?: string;
   startPoint?: string;
   linearIssue?: LaneLinearIssue | null;
+  /** A GitHub issue the lane is for: linked to the lane itself, so its PR says "Closes #N". */
+  githubIssue?: LaneGitHubIssue | null;
 };
 
 export type CreateChildLaneArgs = {

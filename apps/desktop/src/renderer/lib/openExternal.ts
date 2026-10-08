@@ -5,6 +5,8 @@ import { completeBrowserUrl } from "./browserUrl";
 import { isMacRuntimeTarget } from "./platform";
 import { resolveLinkOpenTarget, type LinkOpenModifiers } from "./linkOpenTarget";
 import { holdBrowserLinkOpen } from "./pendingBrowserLinkOpens";
+import { issueRefFromUrl } from "../../shared/issueRefs";
+import { openIssueRef } from "./issueNavigation";
 
 export const ADE_OPEN_BUILT_IN_BROWSER_EVENT = "ade:open-built-in-browser";
 
@@ -297,10 +299,19 @@ export function openLinkFromUi(
   // then swallowed: the click did nothing at all, with no error, for every
   // scheme-less link once the preference was "In system browser".
   const normalized = completeBrowserUrl(url, { fallback: "passthrough" }) ?? url;
+  // An issue link opens ADE's own issue viewer, where you are. Mod+Click keeps
+  // its "somewhere else" meaning and Shift+Click still asks for the page in
+  // ADE's browser, so the web page is always one modifier away.
+  const isMac = isMacRuntimeTarget();
+  const modPressed = isMac ? Boolean(modifiers?.metaKey) : Boolean(modifiers?.ctrlKey);
+  if (!modPressed && !modifiers?.shiftKey) {
+    const issueRef = issueRefFromUrl(normalized);
+    if (issueRef && openIssueRef({ ref: issueRef, source: "chat-link" })) return;
+  }
   const target = resolveLinkOpenTarget({
     mode: linkOpenMode,
     modifiers,
-    isMac: isMacRuntimeTarget(),
+    isMac,
   });
   if (!canOpenInAdeBrowser(normalized)) {
     openExternalUrl(normalized);

@@ -137,6 +137,7 @@ const ADE_ACTION_PHRASES: Record<string, string> = {
   "issue.close": "close the issue",
   "issue.addComment": "comment on the issue",
   "linear_sync.runSyncNow": "sync Linear",
+  "attention.sendNotification": "notify your phone",
 };
 
 function adeActionPhrase(action: AutomationAction): string {
@@ -198,6 +199,7 @@ export function buildRuleSentence(rule: RuleLike): RuleSentence {
   const steps: string[] = [];
 
   if (rule.execution?.laneMode === "create") steps.push("create a lane");
+  if (rule.execution?.laneMode === "pr-branch") steps.push("open the PR's branch");
 
   if (rule.execution?.kind === "agent-session") {
     steps.push("run an agent");

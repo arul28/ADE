@@ -19,11 +19,12 @@ import {
   useActivityStore,
 } from "../../state/activityStore";
 import { activitySections } from "../activity/activityPriority";
+import { activityBoardColumn } from "../../../shared/attention/activityBoardColumn";
 import {
-  ACTIVITY_STATE_GLYPHS,
-  activityStateGroup,
+  ACTIVITY_COLUMN_PRESENTATION,
+  activityItemFailed,
 } from "../activity/activityPresentation";
-import { ActivityStateGlyphMark } from "../activity/ActivityStateGlyphMark";
+import { ActivityColumnMark } from "../activity/ActivityColumnMark";
 import { deriveLaneMachineOptions } from "../lanes/laneMachines";
 import {
   buildAccountRows,
@@ -77,7 +78,7 @@ export function WelcomeCardHead({
 
 // ── still running ──────────────────────────────────────────────────
 
-const RUNNING_GROUPS = new Set(["needs-you", "planning", "working"]);
+const RUNNING_GROUPS = new Set(["needs_you", "working"]);
 
 function navigationErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
@@ -132,8 +133,10 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
     <>
     <FitList more={onMore ? { onMore } : null}>
       {items.map((item) => {
-        const group = activityStateGroup(item);
-        const glyph = ACTIVITY_STATE_GLYPHS[group];
+        const column = activityBoardColumn(item) ?? "working";
+        const failed = activityItemFailed(item);
+        const label = failed ? "Failed" : ACTIVITY_COLUMN_PRESENTATION[column].label;
+        const tone = failed ? "red" : ACTIVITY_COLUMN_PRESENTATION[column].tone;
         const since = welcomeRelativeTime(item.statusSince ?? item.updatedAt);
         return (
           <button
@@ -144,8 +147,8 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
             onClick={() => void openItem(item)}
             title={`${item.title} — ${item.project.name} · ${item.machine.name}`}
           >
-            <span className={`ade-welcome-item-glyph activity-tone-${glyph.tone}`} aria-label={glyph.label}>
-              <ActivityStateGlyphMark group={group} size={12} />
+            <span className={`ade-welcome-item-glyph activity-tone-${tone}`} aria-label={label}>
+              <ActivityColumnMark column={column} failed={failed} size={12} />
             </span>
             <span className="ade-welcome-item-text">
               <span className="ade-welcome-item-title">{item.title}</span>
@@ -153,8 +156,8 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
                 {item.project.name} · {item.machine.name}
               </span>
             </span>
-            <span className={`ade-welcome-item-state activity-tone-${glyph.tone}`}>
-              {group === "needs-you" ? glyph.label : since ?? glyph.label}
+            <span className={`ade-welcome-item-state activity-tone-${tone}`}>
+              {column === "needs_you" ? label : since ?? label}
             </span>
           </button>
         );

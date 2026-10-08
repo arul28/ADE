@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
+import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
 import { useNavigate } from "react-router-dom";
 import { Play } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
 import type {
+  AgentChatContextAttachment,
   AgentChatFileRef,
   AppControlContextItem,
   GitCommitSummary,
@@ -18,6 +20,7 @@ import { formatToolTypeLabel } from "../../lib/sessions";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatPrPane } from "../chat/ChatPrPane";
+import { IssuesToolPanel } from "../issues/IssuesToolPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
@@ -77,8 +80,11 @@ export type WorkToolPanelProps = {
   onClearDiffSelection: () => void;
   onAddAttachment: ((attachment: AgentChatFileRef) => void) | undefined;
   onAddBuiltInBrowserContext: ((item: unknown) => void) | undefined;
+  onAttachBrowserTab: ((tab: BrowserTabMentionTarget) => void) | undefined;
   onAddAppControlContext: ((item: AppControlContextItem) => void) | undefined;
   onAddIosContext: ((item: IosElementContextItem) => void) | undefined;
+  /** Attaches an issue to the chat the pane serves; throws with the reason when it cannot. */
+  onAddContextAttachment: ((attachment: AgentChatContextAttachment) => void) | undefined;
   onInsertDraft: ((text: string) => void) | undefined;
   onResumeEndedSession: () => void;
   onToolChange: (tool: WorkSidebarTab | null) => void;
@@ -221,6 +227,7 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
     shouldPersistPanelAttachment,
     onAddAttachment,
     onAddBuiltInBrowserContext,
+    onAttachBrowserTab,
     onInsertDraft,
   } = props;
   const mountScope = useWorkToolMountScope(runtimePin);
@@ -245,6 +252,9 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
         runtimePin={runtimePin}
         onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
         onAddContext={canInsertContext ? onAddBuiltInBrowserContext : undefined}
+        // A chat on another machine cannot reach this desktop's tabs: its
+        // `ade browser claim` runs there.
+        onAttachTab={canInsertContext && runtimePin?.kind !== "remote" ? onAttachBrowserTab : undefined}
         onInsertDraft={canInsertContext ? onInsertDraft : undefined}
       />
     </NativePanelFrame>
@@ -623,6 +633,20 @@ function WorkPrTool({
   );
 }
 
+/**
+ * Issues opened from this lane's chats. Needs no lane: an issue read from a
+ * projectless chat still has somewhere to open. "Attach to chat" appears only
+ * when the pane serves a chat or draft it can attach to.
+ */
+function WorkIssuesTool({ laneId, canInsertContext, onAddContextAttachment }: WorkToolPanelProps) {
+  return (
+    <IssuesToolPanel
+      laneId={laneId}
+      onAttachToChat={canInsertContext ? onAddContextAttachment : undefined}
+    />
+  );
+}
+
 export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkToolPanelProps>> = {
   terminal: WorkTerminalTool,
   browser: WorkBrowserTool,
@@ -633,4 +657,5 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   "mac-desktop": WorkMacDesktopTool,
   "windows-desktop": WorkWindowsDesktopTool,
   pr: WorkPrTool,
+  issues: WorkIssuesTool,
 };

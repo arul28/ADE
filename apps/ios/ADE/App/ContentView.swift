@@ -163,6 +163,10 @@ struct ContentView: View {
         CursorCloudPaneSheet(syncService: syncService)
           .environmentObject(syncService)
       }
+      .sheet(isPresented: $syncService.githubIssuesPanePresented) {
+        GitHubIssuesPaneSheet(syncService: syncService)
+          .environmentObject(syncService)
+      }
       // Presented rather than bound to the request itself: the card's stage
       // changes under a stable id as the wake runs, and `sheet(item:)` would
       // keep rendering the state the card was opened with.
@@ -534,8 +538,16 @@ private struct WorkSessionNavigationModifier: ViewModifier {
       // build is one of those. Only an externally-minted request offers it:
       // this task also runs for the cold-launch restore, and resolving an owner
       // there would turn a plain launch into a machine transition.
-      guard await syncService.ensureAccountMachineForNavigation(for: request),
-      syncService.requestedWorkSessionNavigation?.id == request.id else { return }
+      let reached = await syncService.ensureAccountMachineForNavigation(for: request)
+      guard syncService.requestedWorkSessionNavigation?.id == request.id else { return }
+      guard reached else {
+        // The owner is offline, unknown, or the user said "Not now" to Wake &
+        // open. An outside tap must still land somewhere: the Hub, with why.
+        if request.origin == .external {
+          syncService.landOnHub(notice: syncService.unresolvedNavigationNotice(for: request))
+        }
+        return
+      }
       // A scoped or roster-resolved session may belong to any project. Keep
       // the machine-wide Hub mounted so it can activate and hydrate the target.
       if syncService.navigationDestination(request) == .hub {

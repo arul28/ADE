@@ -379,6 +379,103 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  /**
+   * `ade notify` runs machine-wide: an agent may send, it never needs the
+   * caller's folder to be a project, and it works with sync off. A chat or PR
+   * link names the caller's project only when that folder is a registered one.
+   */
+  it("sends ade notify for an agent from any folder, naming only a registered project", async () => {
+    const sendCustomNotification = vi.fn(async () => ({
+      devices: 1, delivered: 1, skipped: 0, failed: 0, remaining: 59,
+    }));
+    const accountAuthService = makeAccountAuthServiceMock();
+    (accountAuthService.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+      signedIn: true, userId: "account-a", email: null, name: null, expiresAt: null,
+    });
+    const runtime = {
+      projectRoot: "/repo/ade",
+      accountAuthService,
+      productAnalyticsService: null,
+      pushPublisherService: { sendCustomNotification },
+    };
+    const scopeRegistry = {
+      // Sync is off: there is no sync host to borrow.
+      resolveActiveSyncHost: vi.fn(async () => null),
+      get: vi.fn(async () => ({ runtime })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const record = { projectId: "p1", rootPath: "/repo/ade" };
+    const projectRegistry = {
+      list: () => [record],
+      findByRootPath: (root: string) => (root === record.rootPath ? record : null),
+      add: vi.fn(),
+    };
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        scopeRegistry,
+        accountAuthService,
+        projectRegistry: projectRegistry as never,
+      });
+      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { identity: { role: "agent" } } });
+
+      const fromProject = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "notify.send",
+        params: { args: { title: "Deploy finished", open: "ade://session/abc" }, projectRoot: "/repo/ade" },
+      });
+      expect(fromProject).toMatchObject({ sent: true, delivered: 1, remaining: 59 });
+      expect(sendCustomNotification).toHaveBeenLastCalledWith(expect.objectContaining({
+        title: "Deploy finished",
+        deepLink: "ade://session/abc",
+        projectId: expect.stringMatching(/^project_/),
+      }));
+
+      await handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "notify.send",
+        params: { args: { title: "From home", open: "ade://session/abc" }, projectRoot: "/Users/me" },
+      });
+      expect(sendCustomNotification).toHaveBeenLastCalledWith(expect.objectContaining({
+        title: "From home",
+        projectId: null,
+      }));
+      // Neither call registered a folder as a project.
+      expect(projectRegistry.add).not.toHaveBeenCalled();
+
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "notify.send",
+        params: { args: { title: "" } },
+      })).rejects.toThrow(/needs a title/);
+      handler.dispose();
+
+      const external = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        scopeRegistry,
+        accountAuthService,
+        projectRegistry: projectRegistry as never,
+      });
+      await external({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { identity: { role: "external" } } });
+      await expect(external({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "notify.send",
+        params: { args: { title: "Hi" } },
+      })).rejects.toThrow(/requires the agent role/);
+      expect(sendCustomNotification).toHaveBeenCalledTimes(2);
+      external.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousRole);
+    }
+  });
+
   it("prewarms the production shared personal-chat scope only at creation", () => {
     const warmExisting = vi.spyOn(PersonalChatScope.prototype, "warmExisting")
       .mockResolvedValue();
@@ -1737,13 +1834,17 @@ describe("multi-project RPC server", () => {
       ]);
       expect(args?.join(" ")).not.toContain(destinationToken);
       expect(args?.join(" ")).not.toContain(expectedAuthorization);
-      expect(options?.env).toMatchObject({
-        GIT_TERMINAL_PROMPT: "0",
-        GCM_INTERACTIVE: "Never",
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-        GIT_CONFIG_VALUE_0: expectedAuthorization,
-      });
+      expect(options?.env).toMatchObject({ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" });
+      // A clone that already stores a header must not send two: the env resets
+      // the inherited list first, then sets exactly one Authorization header.
+      const env = options?.env ?? {};
+      const entries = Array.from({ length: Number(env.GIT_CONFIG_COUNT) }, (_, index) => ({
+        key: env[`GIT_CONFIG_KEY_${index}`],
+        value: env[`GIT_CONFIG_VALUE_${index}`],
+      }));
+      expect(entries[0]).toEqual({ key: "http.https://github.com/.extraheader", value: "" });
+      expect(entries.filter((entry) => entry.key === "http.https://github.com/.extraheader" && entry.value))
+        .toEqual([{ key: "http.https://github.com/.extraheader", value: expectedAuthorization }]);
     } finally {
       handler.dispose();
       runGitSpy.mockRestore();

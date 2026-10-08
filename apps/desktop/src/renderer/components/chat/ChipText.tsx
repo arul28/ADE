@@ -26,6 +26,7 @@ import {
   GitBranch,
   GitCommit,
   GitPullRequest,
+  Globe,
   Images,
   Lightning,
   type Icon,
@@ -78,8 +79,14 @@ function openChip(
     navigateToAppTarget({ kind: "file", path: source.path, line: null, laneId: null });
     return;
   }
-  // A model, permission or skill chip names a setting, not a place.
-  if (source.origin === "model" || source.origin === "permission" || source.origin === "skill") return;
+  // A model, permission or skill chip names a setting, not a place; an
+  // attached browser tab is a handle for the agent.
+  if (
+    source.origin === "model"
+    || source.origin === "permission"
+    || source.origin === "skill"
+    || source.origin === "browser_tab"
+  ) return;
   if (source.mentionKind === "chat") {
     openAdeDeeplink(buildDeeplink({ kind: "session", sessionId: source.id }));
     return;
@@ -91,12 +98,24 @@ function openChip(
   // A terminal mention has no deeplink target; it stays a label.
 }
 
+/** The hover title: the token, or for an attached tab the tab itself (its token is the agent's instruction block). */
+function chipTokenTitle(chip: Chip, label: string): string {
+  if (chip.kind === "browser_tab") return [label, chip.detail].filter(Boolean).join(" — ");
+  return chip.detail ? `${chip.token} — ${chip.detail}` : chip.token;
+}
+
 function isActionable(chip: Chip): boolean {
   // A folder chip is a label, like a terminal mention: there is no folder
   // destination to open, and a pill that looks clickable and does nothing is
   // worse than one that plainly is not. iOS reaches the same answer for the
   // same reason (`workChipNavigationURL` returns nil for a path).
-  if (chip.kind === "folder" || chip.kind === "model" || chip.kind === "permission" || chip.kind === "skill") return false;
+  if (
+    chip.kind === "folder"
+    || chip.kind === "model"
+    || chip.kind === "permission"
+    || chip.kind === "skill"
+    || chip.kind === "browser_tab"
+  ) return false;
   return chip.source.origin !== "mention" || chip.source.mentionKind !== "terminal";
 }
 
@@ -131,6 +150,7 @@ const KIND_ICONS: Partial<Record<Chip["kind"], Icon>> = {
   branch: GitBranch,
   skill: Lightning,
   artifact: Images,
+  browser_tab: Globe,
 };
 
 const ICON_MARK_CLASS = "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center opacity-80";
@@ -276,7 +296,7 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
   const label = facts.label ?? chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
   const actionable = isActionable(chip);
   const hoverCard = useChipHoverCard(chip, preview?.title ?? null, scoped);
-  const tokenTitle = chip.detail ? `${chip.token} — ${chip.detail}` : chip.token;
+  const tokenTitle = chipTokenTitle(chip, label);
 
   return (
     <>

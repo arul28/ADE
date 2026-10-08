@@ -26,9 +26,11 @@ does and does not travel, and the layers that implement it. Deep-dives:
 - `cross-machine-agents.md` — agents and the CLI on other machines:
   `--machine`, `--all-machines`, children that wake parents across machines and
   projects, remote device drive with proof filed back.
-- `cross-machine-session-handoff.md` — the clean/published Git contract,
-  bounded context capsule, destination setup, route binding, and
-  idempotent recovery used by **Continue on another machine**.
+- `cross-machine-session-handoff.md` — moving a Work chat to another
+  machine: the brain-owned move record and its states, agent and CLI control,
+  approval, the source banner and send routing, the Git contract (clean and
+  published, or uncommitted work carried as a bundle), the bounded context
+  capsule, destination setup, and idempotent recovery.
 - `push-notifications.md` — Activity's account-wide source of truth and
   its APNs + Live Activity pipeline: machine publishers, the Cloudflare
   consolidation relay, desktop/web/ADE Code/iOS reads, native Mac presentation,
@@ -808,7 +810,8 @@ Runtime support files outside `services/sync/`:
   end-to-end failure is never retained. The relay route therefore appears
   in the directory without waiting for an external client to open the first
   tunnel. A 30-second heartbeat keeps the Worker row inside its 90-second online
-  window and carries the bounded, token-free provider/model/preset inventory
+  window (a heartbeat whose fields are unchanged updates only `last_seen_at`,
+  one billed D1 row) and carries the bounded, token-free provider/model/preset inventory
   summary used by the Accounts page. Failed publications retry after 1, 2, 5,
   10, then 20 seconds so a
   short outage normally recovers within the lease, and a 401 forces one token
@@ -1150,6 +1153,19 @@ Runtime support files outside `services/sync/`:
   and it is built only when sync is enabled — a `--no-sync` brain has no store
   at all, which is a stronger guarantee that a test runtime cannot reach the
   account than a store with its uploads turned off.
+  The background sync is a 30 s tick, but it pulls only when it must: the push
+  relay returns per-account settings and vault **change marks** on every
+  machine publish (`accountChanges`, recorded by `pushRelayClient` into
+  `accountChangeMarks.ts`). A moved mark pulls at once; otherwise a tick pulls
+  only with queued edits, after a failed or never-run sync, when marks are
+  older than 90 s (no presence heartbeat, or an older relay that sends none),
+  or every 5 min as a safety net. A skipped tick still notifies listeners
+  `ready`, so the vault's follow-up work keeps its cadence. "Already synced" is
+  bound to the account and the cache epoch, so a reset, purge, or
+  account switch always pulls again before reporting `ready`, and a failing
+  sync retries once per tick rather than on every heartbeat as well. A mark is
+  `<newest updated_at>#<rows at that instant>`, so a second write in the same
+  millisecond still moves it.
 - `apps/ade-cli/src/services/account/accountVaultStore.ts` — the machine's
   account-credential cache. It uses `account-vault.json.enc`, an atomic
   machine-key-encrypted envelope with `0600` permissions; a legacy
@@ -1661,25 +1677,42 @@ Cross-machine Work union:
 
 Cross-machine Work chat handoff:
 
-- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` and
-  `CrossMachineHandoffModal.tsx` — Handoff-tab entry point and the staged
-  source/destination/clone/review/completion UI, including the destination
-  chat's model / reasoning / fast-mode / permission controls and the
-  fast-forward offer for a clean-but-behind destination lane.
+- `apps/desktop/src/main/services/chat/crossMachineHandoffOrchestrator.ts` —
+  the source brain's move: the durable record per chat (approval, queued
+  until the turn ends, sending checkpoints, continued / failed / cancelled /
+  unknown), the outbox capsule that retry and restart reuse, agent permission
+  mapping, and the copy for the approval card and ended notice.
+- `apps/desktop/src/main/services/chat/crossMachineHandoffSource.ts` — the kv
+  move store, the outbox files, and `inspectLane`, the one source check that
+  returns every blocker with its fix.
+- `apps/desktop/src/main/services/chat/handoffGitBundle.ts` — opt-in transfer
+  of uncommitted and unpushed work: private-index snapshot, bundle of what
+  origin lacks, LFS and submodule refusal, apply with full rollback, and the
+  GitHub auth header env.
+- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx`,
+  `CrossMachineHandoffBanner.tsx` — the source banner for every move state,
+  the arrival banner on the destination, and the routed send after a chat
+  continues elsewhere.
+- `apps/desktop/src/renderer/components/chat/CrossMachineHandoffModal.tsx`
+  and `CrossMachineHandoffChooseStage.tsx` — the setup UI, a thin client of
+  `getCrossMachineHandoffOptions`, `previewCrossMachineHandoff` and
+  `startCrossMachineHandoff`.
+- `apps/desktop/src/renderer/components/terminals/CrossMachineMoveSubmenu.tsx`
+  — **Hand off › Another machine ▸** in the session menu, with quick brief.
 - `apps/desktop/src/renderer/components/chat/crossMachineHandoffPresentation.tsx`
-  — the modal's pure presentation half: stage/mode types, the `SourceCheck`
-  shape, the branch-row and route/repo-readiness copy, permission tone and icon
-  lookups, send-step labels, and the `CheckRow` component. Split out because
-  these are exactly the pieces that shipped wrong (a tone map that rendered
-  every permission pill grey, a branch row that called a two-commits-behind
-  branch "pushed") and were unreachable from a test inside the stateful modal.
+  — the modal's pure presentation half: permission tone and icon lookups and
+  the `CheckRow` component.
+- `apps/ios/ADE/Views/Work/WorkCrossMachineHandoffViews.swift`,
+  `WorkSessionHandoffSheets.swift`, and
+  `apps/ios/ADE/Services/SyncService+SessionHandoff.swift` — the phone's
+  handoff sheet, in-chat card, send gate, and session long-press menu.
 - `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` and
   `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` —
   cross-surface primitives the modal reuses rather than reimplementing: the
   reason-carrying blocked-action button/list, and the composer's permission
   pill.
-- `apps/desktop/src/main/services/chat/agentChatService.ts` — authoritative
-  source readiness, capsule creation and validation, destination preflight,
+- `apps/desktop/src/main/services/chat/agentChatService.ts` — the wiring of
+  the orchestrator, capsule creation and validation, destination preflight,
   deterministic lane/chat acceptance, durable replay record, and source notice;
   it also owns the one-call session metadata regeneration action for bound chats.
 - `apps/desktop/src/shared/crossMachineHandoff.ts` and
@@ -2788,7 +2821,7 @@ Account Activity and push:
   to `stale`/`idle` unless it is failed or needs-you), the title/preview tables, the
   2 h / 24 h / 7-day lifetimes, and `attentionProjectRef`. The `needs_you`
   privacy preview reads "An ADE agent needs you." — the same two words the status
-  label, the title suffix, and the notch's section heading use.
+  label and the title suffix use.
 - `apps/ade-cli/src/services/push/pushRegistrationStore.ts` — durable device,
   delivery, machine-revocation, and machine-acknowledgment state. Machine
   acknowledgments are keyed by account owner + item and remain pending until a
@@ -2829,7 +2862,7 @@ Account Activity and push:
   the D1 write when the roster did not move; item `revision` is excluded because
   it is a republish timestamp.
 - `apps/desktop/src/shared/types/attention.ts` — cross-client item, snapshot,
-  destination, availability, preference, and native-presentation contract.
+  destination, availability, and preference contract.
   `ATTENTION_CONTRACT_VERSION` is the *item* contract; the publish protocol
   version is separate (see `push-notifications.md`). It also owns the
   acknowledgment mechanics every shell shares:
@@ -2837,16 +2870,17 @@ Account Activity and push:
   bound), `chunkAttentionAcknowledgmentItemIds`, `runAcknowledgmentChunks` (with
   the abort-on-first-failing-chunk policy), and
   `AttentionAcknowledgmentOutcome`.
+- `apps/desktop/src/shared/attention/activityBoardColumn.ts` and
+  `activityBoardColumn.cases.json` — the four states every Activity surface
+  counts by (needs you, working, waiting, done; the Work board's columns), and
+  the fixture that pins the TypeScript, Swift and relay copies of the rule. The
+  brain writes the column on each agent item as `boardColumn`; see
+  [push-notifications.md › The four states](push-notifications.md#the-four-states).
 - `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the
-  cross-language conformance fixture for the six-group state table. The mapping
-  is implemented four times (renderer TypeScript, native notch Swift, iOS Swift,
-  and the hermetic relay Worker) because the surfaces cannot share code, and
-  documentation alone did not keep them in step. Every implementation runs these
-  cases through its own mapper. Canonical source of truth:
-  `activityStateGroup` in
-  `apps/desktop/src/renderer/components/activity/activityPresentation.ts`.
-  There are six groups, not five: `idle` was split out of `done` because a
-  session that went quiet mid-work is not a session that finished.
+  conformance fixture for the older six-group table. Desktop, the web client and
+  ADE Code no longer group by it; the relay still fills the Live Activity's
+  legacy `groups` field from it for old iOS builds, so the relay (and the iOS
+  mirror, until it moves) run these cases.
 - `apps/desktop/src/shared/activityCatalog.ts` — one table naming every
   Activity event: its group (agents / pull requests), its icon key, and its
   default delivery policy. Desktop settings, the Activity columns, and the
@@ -2859,28 +2893,28 @@ Account Activity and push:
   `stale` and `unreached` each roll back only their own rows, with different
   copy.
 - `apps/desktop/src/renderer/components/activity/useActivitySync.ts` — the
-  single account poller, mounted in `AppShell` so the header control and ADE
-  Notch stay truthful while `/activity` is closed. It also derives the notch
-  toast stream.
+  single account poller, mounted in `AppShell` so the header control stays
+  truthful while `/activity` is closed. It also loads the account's Activity
+  preferences, and clears the localStorage keys the removed notch left behind.
+- `apps/desktop/src/renderer/components/activity/ActivityPanel.tsx` — the one
+  Activity panel, in two sizes: a Sessions / Inbox switch with counts, the All /
+  Needs you / Working / Waiting / Done chips, the rows grouped by column with
+  Done folded into one "N done" line, and the Inbox list
+  (`ActivityInboxList.tsx`, PR/CI and review outcomes grouped by project).
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx` —
-  the global-header count (the `needs-you` group and nothing else) and its
-  popover preview, which shows every state section except the two resting bands
-  (`idle` and `done`).
+  the global-header count (the Needs you column, failures included) and the
+  compact panel in its popover, mounted only while open.
 - `apps/desktop/src/renderer/components/activity/ActivityPane.tsx` — the
-  `/activity` two-column pane, with `ActivitySessionsColumn.tsx` (the agent feed,
-  one section per state group, split per machine and divided where an offline
-  machine's rows become last-known state), `ActivityInboxColumn.tsx` (the
-  Notifications column: PR/CI and review outcomes grouped by project),
-  `ActivityFilters.tsx` (machine / project / chat type / model, plus a
-  single-select state-group glyph strip whose counts come from the unfiltered
-  snapshot), and `ActivityDetailSheet.tsx`.
+  expanded panel behind "Open all": `ActivityFilters.tsx` (machine / project /
+  chat type / model), multi-select with bulk Mark seen / Dismiss / Open, and
+  `ActivityDetailSheet.tsx`.
 - `apps/desktop/src/renderer/components/activity/ActivitySectionHeader.tsx`,
-  `activitySectionCollapse.ts`, `ActivityStateGlyphMark.tsx`,
+  `activitySectionCollapse.ts`, `ActivityColumnMark.tsx`,
   `ActivityAllClear.tsx`, and `useAllClearBeat.ts` — the shared section header
-  (the whole strip is the button, with the `<h3>`/`<h4>` outline preserved for
-  screen readers), per-surface collapsed-section memory, the Phosphor half of the
-  state glyph language, and the all-clear beat that fires on the transition to
-  zero raised hands and never on arrival.
+  (a toggle only where a section folds: Done, and the Inbox project groups),
+  per-surface collapsed-section memory for those Inbox groups, the column glyphs
+  (with the red warning mark for a failed agent), and the all-clear beat that
+  fires on the transition to zero raised hands and never on arrival.
 - `apps/desktop/src/renderer/components/activity/ActivityCard.tsx` and
   `ActivityCardSkeleton.tsx` — the row and its fixed-height placeholder. The
   card deliberately does **not** reuse `terminals/SessionCard`: an Activity row
@@ -2890,24 +2924,19 @@ Account Activity and push:
   shared instead through the pure `terminals/SessionStatusLabel.tsx`, extracted
   from `SessionStatusSlot` for exactly this reason. Read the comment at the top
   of `ActivityCard.tsx` before "simplifying" it.
-- `apps/desktop/src/renderer/components/activity/activityPresentation.ts` — the
-  canonical state glyph language: `ActivityStateGroup`, `ACTIVITY_STATE_GLYPHS`,
-  `ACTIVITY_STATE_GROUPS` (also the priority order), `activityStateGroup`, plus
-  the per-item label/tone/glyph derivation and the detail sheet's
-  `activityStateSentence` / `activityStateElapsed`. Change the rule here first;
-  the notch, iOS, and relay mirrors follow.
+- `apps/desktop/src/renderer/components/activity/activityPresentation.ts` — how
+  a column looks (`ACTIVITY_COLUMN_PRESENTATION`), the red mark
+  (`activityItemFailed`), a waiting row's reason (`activityWaitingReasonLabel`),
+  a row's column-based state (`activityRowStatus`), plus the per-item phase
+  presentation and the detail sheet's `activityStateSentence` /
+  `activityStateElapsed`.
 - `apps/desktop/src/renderer/components/activity/activityPriority.ts` — the
   projection every surface reads: `activityFeedItems` (agents only),
-  `activitySections` (one per state group, empties included),
-  `activityNotificationItems` (non-agent, inbox-eligible),
-  `activityFeedOrder` (what the notch mirrors), and the counts/leading-group
-  helpers that replaced four hand-written priority ladders.
+  `activitySections` (one per Work-board column, empties included),
+  `activityNotificationItems` (non-agent, inbox-eligible), and the counts and
+  phrases the trigger, chips and footer share.
 - `apps/desktop/src/renderer/components/activity/useProgressiveRows.ts` — the
   bounded row budget (60, stepped by 60) that keeps long columns cheap.
-- `apps/desktop/src/renderer/components/activity/activityNotchLocalSettings.ts`
-  — this Mac's offline cache of the notch presentation. Account preferences win
-  when loaded. The three original `ade:attention:notch-*` localStorage keys are
-  frozen wire for anyone who already made a choice; new settings got new keys.
 - `apps/desktop/src/renderer/components/activity/ActivitySettingsPopover.tsx` —
   the gear in both the popover and the pane. It mounts
   `settings/ActivitySettingsControls.tsx` in its `popover` variant, which
@@ -4228,7 +4257,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | Legacy manual-pairing adoption into an account (DPoP-gated) + `localTrustOrigin` demotion on sign-out | Implemented (`syncPairingStore.pairPeerViaAccount` / `revokeAccountOwnedExcept`, `syncHostService` account hello) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
-| Clean, published lane + Work chat handoff between connected desktops | Implemented ([contract](./cross-machine-session-handoff.md)) |
+| Work chat move to another machine (desktop, phone, CLI and agents; clean or with uncommitted work) | Implemented ([contract](./cross-machine-session-handoff.md)) |
 
 ## Gotchas
 

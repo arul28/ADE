@@ -1669,6 +1669,9 @@ export function createBuiltInBrowserService(args: {
     switchTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
       return serviceForInput(input, sourceWindow).switchTab(input);
     },
+    handTabToChat(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
+      return serviceForInput(input, sourceWindow).handTabToChat(input);
+    },
     /**
      * Closing a tab ends whatever the agent was doing on it, and the closure is
      * the last moment its id is knowable — a status emitted afterwards simply
@@ -4882,6 +4885,33 @@ function createBuiltInBrowserWindowService(args: {
     return { ...scopeStatusForInput(getStatus(), input), targetTabId: tab.id, targetTabCreated: true };
   }
 
+  /**
+   * "Attach to chat": the person hands a tab to one chat. The tab's lease moves
+   * to that chat (or is dropped, for a chat that does not exist yet), so the
+   * agent's `ade browser claim` is not refused by another chat's lease.
+   * Renderer-only — deliberately absent from the desktop-bridge allowlist, so
+   * an agent can never reassign a tab this way.
+   */
+  function handTabToChat(input: BuiltInBrowserTabArgs): BuiltInBrowserStatus {
+    const tabId = input.tabId?.trim();
+    if (!tabId) throw new Error("Browser tab id is required.");
+    const tab = tabs.find((entry) => entry.id === tabId);
+    if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+    if (tab.handoff) throw new Error("Someone is signing in on this tab. Hand it back before attaching it to a chat.");
+    const chatSessionId = stringOrNull(input.chatSessionId);
+    const laneId = chatSessionId ? stringOrNull(input.laneId) : null;
+    tab.ownerChatSessionId = chatSessionId;
+    tab.ownerLaneId = laneId;
+    tab.ownerClaimedAt = chatSessionId ? new Date().toISOString() : null;
+    tab.ownerLeaseExpiresAt = chatSessionId
+      ? new Date(Date.now() + normalizeLeaseTtlMs(null)).toISOString()
+      : null;
+    tab.agentNavigationGuard = null;
+    assignTabGroupLane(tab, { laneId });
+    emitStatus();
+    return scopeStatusForInput(getStatus(), input);
+  }
+
   async function switchTab(input: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> {
     const tabId = input.tabId?.trim();
     if (!tabId) throw new Error("Browser tab id is required.");
@@ -6361,6 +6391,7 @@ function createBuiltInBrowserWindowService(args: {
     navigate,
     createTab,
     switchTab,
+    handTabToChat,
     closeTab,
     reload,
     goBack,

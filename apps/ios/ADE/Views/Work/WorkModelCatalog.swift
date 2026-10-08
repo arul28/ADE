@@ -525,7 +525,15 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             defaultReasoningEffort: "high"
           ),
           WorkModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "claude"),
-          WorkModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest · cheapest", provider: "claude"),
+          WorkModelOption(
+            id: "claude-haiku-5-5",
+            displayName: "Claude Haiku 5.5",
+            tier: .fast,
+            tagline: "Fastest · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "medium"
+          ),
           WorkModelOption(
             id: "claude-opus-5",
             displayName: "Claude Opus 5",
@@ -1166,8 +1174,13 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "anthropic/claude-sonnet-5"
-  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5",
-       "opencode/anthropic/claude-haiku-4-5":
+  case "haiku", "haiku-5.5", "haiku-5-5",
+       "claude-haiku-5-5", "anthropic/claude-haiku-5-5", "anthropic/claude-haiku-5-5-api",
+       "opencode/anthropic/claude-haiku-5-5",
+       "haiku-4.5", "haiku-4-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001",
+       "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5-api":
+    return "anthropic/claude-haiku-5-5"
+  case "opencode/anthropic/claude-haiku-4-5":
     return "anthropic/claude-haiku-4-5"
   default:
     return nil
@@ -1208,8 +1221,13 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "claude-sonnet-5"
-  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5",
-       "opencode/anthropic/claude-haiku-4-5":
+  case "haiku", "haiku-5.5", "haiku-5-5",
+       "claude-haiku-5-5", "anthropic/claude-haiku-5-5", "anthropic/claude-haiku-5-5-api",
+       "opencode/anthropic/claude-haiku-5-5",
+       "haiku-4.5", "haiku-4-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001",
+       "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5-api":
+    return "claude-haiku-5-5"
+  case "opencode/anthropic/claude-haiku-4-5":
     return "claude-haiku-4-5"
   default:
     return nil
@@ -1366,8 +1384,13 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
        "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "Claude Sonnet 5"
-  case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5",
-       "opencode/anthropic/claude-haiku-4-5":
+  case "haiku", "haiku-5.5", "haiku-5-5",
+       "claude-haiku-5-5", "anthropic/claude-haiku-5-5", "anthropic/claude-haiku-5-5-api",
+       "opencode/anthropic/claude-haiku-5-5",
+       "haiku-4.5", "haiku-4-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001",
+       "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5-api":
+    return "Claude Haiku 5.5"
+  case "opencode/anthropic/claude-haiku-4-5":
     return "Claude Haiku 4.5"
   case "astra", "gpt-6-astra", "openai/gpt-6-astra":
     return "GPT-6 Astra"

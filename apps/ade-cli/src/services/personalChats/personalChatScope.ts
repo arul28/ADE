@@ -211,25 +211,6 @@ function isPersonalChatAction(value: unknown): value is PersonalChatAction {
  */
 export class PersonalChatScope {
   private runtimePromise: Promise<AdeRuntime> | null = null;
-  /** The local desktop's bridge token, handed on by the brain. */
-  private desktopBridgeAuthToken: string | null = null;
-
-  /**
-   * The local desktop's bridge token, so this runtime can mint browser
-   * capabilities for its chats (`ADE_BROWSER_ACTOR_TOKEN`): without it an
-   * assistant chat's `ade browser` is refused. Applied to a live runtime now
-   * and to a runtime created later on creation. An embedded runtime never
-   * receives one (the brain only forwards it on the chat profile).
-   */
-  setDesktopBridgeAuthToken(authToken: string): void {
-    const token = authToken.trim();
-    if (!token || this.options.runtimeProfile === "embedded") return;
-    this.desktopBridgeAuthToken = token;
-    if (!this.runtimePromise) return;
-    void this.runtimePromise
-      .then((runtime) => runtime.configureBuiltInBrowserDesktopBridgeAuth?.(token))
-      .catch(() => undefined);
-  }
   private readonly personalTerminalSessions = new Map<string, string>();
 
   constructor(private readonly options: PersonalChatScopeOptions = {}) {}
@@ -865,11 +846,7 @@ export class PersonalChatScope {
 
   private async getRuntime(): Promise<AdeRuntime> {
     if (this.runtimePromise) return await this.runtimePromise;
-    this.runtimePromise = this.createRuntime().then((runtime) => {
-      const token = this.desktopBridgeAuthToken;
-      if (token) void runtime.configureBuiltInBrowserDesktopBridgeAuth?.(token)?.catch(() => undefined);
-      return runtime;
-    });
+    this.runtimePromise = this.createRuntime();
     try {
       return await this.runtimePromise;
     } catch (error) {

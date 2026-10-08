@@ -7,6 +7,7 @@ import {
   type AccountSettingsRelay,
 } from "./accountSettingsStore";
 import type { AccountSettingRecord } from "../push/pushRelayClient";
+import { recordAccountChangeMarks } from "./accountChangeMarks";
 
 /**
  * The cache is what makes a settings page usable on a train, so the properties
@@ -460,6 +461,126 @@ describe("account settings store", () => {
 
     await store.sync();
     expect(relay.getAccountSettings).toHaveBeenLastCalledWith({ since: "2026-09-16T00:00:00.000Z" });
+  });
+
+  describe("periodic sync driven by the relay's change marks", () => {
+    const TICK = 30_000;
+    let markUser = 0;
+    let user = "";
+    beforeEach(() => {
+      vi.useFakeTimers();
+      // Marks are process-wide per account; a fresh account per test keeps
+      // one test's marks out of the next.
+      markUser += 1;
+      user = `user_marks_${markUser}`;
+      accountUserId = user;
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("pulls when the mark moves, skips the network while it holds, and polls again once marks go stale", async () => {
+      const store = makeStore();
+      const stop = store.startPeriodicSync(TICK);
+
+      // No marks yet: the timer polls exactly as before.
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(1);
+
+      // A mark that moved pulls at once, without waiting for the tick.
+      recordAccountChangeMarks(user, { settings: "2026-10-07T10:00:00.000Z", vault: null });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(2);
+
+      // The same mark on every heartbeat: ticks stay off the network.
+      for (let beat = 0; beat < 3; beat += 1) {
+        recordAccountChangeMarks(user, { settings: "2026-10-07T10:00:00.000Z", vault: "v-moved" });
+        await vi.advanceTimersByTimeAsync(TICK);
+      }
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(2);
+
+      // The mark moves again (another machine wrote a setting): pull now.
+      recordAccountChangeMarks(user, { settings: "2026-10-07T10:05:00.000Z", vault: "v-moved" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(3);
+
+      // The heartbeat stops carrying marks: after the freshness window the
+      // timer is back to polling every tick.
+      await vi.advanceTimersByTimeAsync(4 * TICK);
+      const pullsOnceStale = relay.getAccountSettings.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(2 * TICK);
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(pullsOnceStale + 2);
+      stop();
+    });
+
+    it("pulls on the next tick after the account switches away and back, even with an unchanged mark", async () => {
+      const store = makeStore();
+      const stop = store.startPeriodicSync(TICK);
+      const mark = { settings: "2026-10-07T13:00:00.000Z", vault: null };
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(0);
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(TICK);
+      const pullsWhileHeld = relay.getAccountSettings.mock.calls.length;
+      expect(pullsWhileHeld).toBe(1);
+
+      // Reading as another account empties the cache; reading as this one
+      // again starts from an empty cache that has never been pulled.
+      accountUserId = "user_someone_else";
+      store.get("all", "appearance.theme");
+      accountUserId = user;
+      store.get("all", "appearance.theme");
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(pullsWhileHeld + 1);
+      expect(relay.getAccountSettings).toHaveBeenLastCalledWith({ since: null });
+      stop();
+    });
+
+    it("retries a failing sync once per tick, not again on every heartbeat", async () => {
+      relay.getAccountSettings.mockRejectedValue(new Error("relay unavailable"));
+      const store = makeStore();
+      const stop = store.startPeriodicSync(TICK);
+      const mark = { settings: "2026-10-07T14:00:00.000Z", vault: null };
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(1);
+
+      for (let beat = 0; beat < 4; beat += 1) {
+        recordAccountChangeMarks(user, mark);
+        await vi.advanceTimersByTimeAsync(TICK);
+      }
+      // Four ticks, four retries: the heartbeat's unchanged mark adds none.
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(5);
+      stop();
+    });
+
+    it("still uploads queued edits and runs a safety pull while marks hold", async () => {
+      const store = makeStore();
+      const stop = store.startPeriodicSync(TICK);
+      recordAccountChangeMarks(user, { settings: "2026-10-07T11:00:00.000Z", vault: null });
+      await vi.advanceTimersByTimeAsync(0);
+      const pullsAfterFirstMark = relay.getAccountSettings.mock.calls.length;
+
+      // A local edit is queued: the next tick uploads it even though no mark moved.
+      store.set("all", "appearance.theme", "dark");
+      recordAccountChangeMarks(user, { settings: "2026-10-07T11:00:00.000Z", vault: null });
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(relay.putAccountSettings).toHaveBeenCalledTimes(1);
+
+      // Marks stay fresh and unchanged for five minutes: one safety pull still happens.
+      const pullsBefore = relay.getAccountSettings.mock.calls.length;
+      for (let beat = 0; beat < 10; beat += 1) {
+        recordAccountChangeMarks(user, { settings: "2026-10-07T11:00:00.000Z", vault: null });
+        await vi.advanceTimersByTimeAsync(TICK);
+      }
+      const safetyPulls = relay.getAccountSettings.mock.calls.length - pullsBefore;
+      expect(pullsAfterFirstMark).toBeGreaterThan(0);
+      expect(safetyPulls).toBeGreaterThanOrEqual(1);
+      expect(safetyPulls).toBeLessThanOrEqual(2);
+      stop();
+    });
   });
 
   it("writes the cache with owner-only permissions", () => {

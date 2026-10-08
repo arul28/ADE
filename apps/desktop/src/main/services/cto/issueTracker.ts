@@ -10,6 +10,9 @@ import type {
   LinearCatalogUser,
   LinearInboxNotification,
   LinearIssueCreateInput,
+  LinearIssueCreateOptions,
+  LinearProjectMilestone,
+  LinearUploadResult,
   LinearIssueRelationKind,
   NormalizedLinearIssue,
 } from "../../../shared/types";
@@ -141,6 +144,10 @@ export type IssueTracker = {
     userDisplayName: string;
   }>>;
   createIssue(input: LinearIssueCreateInput): Promise<NormalizedLinearIssue>;
+  getIssueCreateOptions(teamKeyOrId: string): Promise<LinearIssueCreateOptions>;
+  listProjectMilestones(projectId: string): Promise<LinearProjectMilestone[]>;
+  /** Upload bytes (base64 over IPC) and return the asset URL for markdown. */
+  uploadFile(args: { filename: string; contentType: string; dataBase64: string }): Promise<LinearUploadResult>;
   createIssueRelation(args: { issueId: string; relatedIssueId: string; type: LinearIssueRelationKind }): Promise<{ id: string }>;
   /**
    * Files a follow-up found while working on `sourceIssueId`: refuses when an

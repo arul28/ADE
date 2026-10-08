@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import {
   type AppOpenSystemSettingsPaneArgs,
@@ -45,8 +46,6 @@ import {
 import {
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
-  type AttentionNotchAcknowledgeRequest,
-  type AttentionNotchSettings,
   type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
@@ -312,6 +311,11 @@ import type {
   CtoCountLinearIssuesArgs,
   CtoCountLinearIssuesResult,
   CtoGetLinearIssueArgs,
+  CtoCreateLinearIssueCommentArgs,
+  LinearIssueCreateInput,
+  LinearIssueCreateOptions,
+  LinearProjectMilestone,
+  LinearUploadResult,
   CtoLinearCustomView,
   LinearAgentOverview,
   LinearInboxNotification,
@@ -422,6 +426,11 @@ import type {
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
+  GitHubRepoIssueSummary,
+  GitHubIssueWriteAccess,
+  GitHubIssueCreateInput,
+  GitHubIssueCreateResult,
+  GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
@@ -542,6 +551,15 @@ import type {
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
+  AgentChatAcknowledgeCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatRetryCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffResult,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatResolveCrossMachineHandoffApprovalArgs,
+  AgentChatStartCrossMachineHandoffArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
@@ -661,6 +679,7 @@ import type {
   ProjectConfigValidationResult,
   ProjectInfo,
   OpenProjectBinding,
+  CustomNotificationResult,
   ProjectTabAdoptRequest,
   CreateProjectInput,
   CreateProjectResult,
@@ -1118,7 +1137,7 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
-import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
+import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "../shared/laneGitHubIssue";
 import { MUSIC_IPC, type MusicBridge, type MusicState } from "../shared/types/music";
 import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState } from "../shared/types/homeWidgets";
 
@@ -1916,6 +1935,11 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "prepareCrossMachineHandoff",
   "validateCrossMachineSource",
   "markCrossMachineHandoff",
+  "startCrossMachineHandoff",
+  "cancelCrossMachineHandoff",
+  "retryCrossMachineHandoff",
+  "resolveCrossMachineHandoffApproval",
+  "acknowledgeCrossMachineHandoff",
   "launchCli",
   "launchHeadless",
   "setClaudeOutputStyle",
@@ -4502,6 +4526,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appGetInstalledBrowsers),
     openInBrowser: async (args: { url: string; browserId: string }): Promise<void> =>
       ipcRenderer.invoke(IPC.appOpenInBrowser, args),
+    getAppIcon: async (args: { name: string }): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.appGetAppIcon, args),
     onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -6190,6 +6216,12 @@ const adeBridge = {
     },
   },
   attention: {
+    sendNotification: async (
+      args: { title: string; body?: string | null; open?: string | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<CustomNotificationResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "attention", "sendNotification", { args }, () =>
+        Promise.reject(new Error("Open a project in ADE to send a test notification."))),
     getSnapshot: async (
       since = 0,
       streamId?: string | null,
@@ -6264,48 +6296,6 @@ const adeBridge = {
       ) => cb(failure);
       ipcRenderer.on(IPC.captureGestureFailed, listener);
       return () => ipcRenderer.removeListener(IPC.captureGestureFailed, listener);
-    },
-  },
-  attentionNotch: {
-    publishSnapshot: async (snapshot: AttentionSnapshot): Promise<void> =>
-      ipcRenderer.invoke(IPC.attentionNotchPublishSnapshot, snapshot),
-    publishToast: async (
-      toast: import("../shared/types").AttentionNotchToast,
-    ): Promise<void> => ipcRenderer.invoke(IPC.attentionNotchPublishToast, toast),
-    updateSettings: async (settings: AttentionNotchSettings): Promise<void> =>
-      ipcRenderer.invoke(IPC.attentionNotchUpdateSettings, settings),
-    getHealth: async (): Promise<import("../shared/types").AttentionNotchHealth> =>
-      ipcRenderer.invoke(IPC.attentionNotchGetHealth),
-    retry: async (): Promise<import("../shared/types").AttentionNotchHealth> =>
-      ipcRenderer.invoke(IPC.attentionNotchRetry),
-    onAcknowledgeRequested: (
-      cb: (request: AttentionNotchAcknowledgeRequest) => void,
-    ) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        request: AttentionNotchAcknowledgeRequest,
-      ) => cb(request);
-      ipcRenderer.on(IPC.attentionNotchAcknowledgeRequested, listener);
-      return () =>
-        ipcRenderer.removeListener(IPC.attentionNotchAcknowledgeRequested, listener);
-    },
-    onRefreshRequested: (cb: (request?: { force?: boolean }) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        request?: { force?: boolean },
-      ) => cb(request);
-      ipcRenderer.on(IPC.attentionNotchRefreshRequested, listener);
-      return () =>
-        ipcRenderer.removeListener(IPC.attentionNotchRefreshRequested, listener);
-    },
-    onSettingsChanged: (cb: (settings: AttentionNotchSettings) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        settings: AttentionNotchSettings,
-      ) => cb(settings);
-      ipcRenderer.on(IPC.attentionNotchSettingsChanged, listener);
-      return () =>
-        ipcRenderer.removeListener(IPC.attentionNotchSettingsChanged, listener);
     },
   },
   usage: {
@@ -7733,6 +7723,62 @@ const adeBridge = {
     ): Promise<void> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "markCrossMachineHandoff", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatMarkCrossMachineHandoff, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    getCrossMachineHandoffOptions: async (
+      args: AgentChatCrossMachineHandoffSessionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffOptionsResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getCrossMachineHandoffOptions", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetCrossMachineHandoffOptions, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    previewCrossMachineHandoff: async (
+      args: AgentChatPreviewCrossMachineHandoffArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatPreviewCrossMachineHandoffResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "previewCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatPreviewCrossMachineHandoff, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    startCrossMachineHandoff: async (
+      args: AgentChatStartCrossMachineHandoffArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "startCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatStartCrossMachineHandoff, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    cancelCrossMachineHandoff: async (
+      args: AgentChatCrossMachineHandoffSessionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "cancelCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatCancelCrossMachineHandoff, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    retryCrossMachineHandoff: async (
+      args: AgentChatRetryCrossMachineHandoffArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "retryCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatRetryCrossMachineHandoff, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    resolveCrossMachineHandoffApproval: async (
+      args: AgentChatResolveCrossMachineHandoffApprovalArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "resolveCrossMachineHandoffApproval", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatResolveCrossMachineHandoffApproval, args),
+      ),
+    // Brain-owned move: a chat pinned to another machine reaches that brain.
+    acknowledgeCrossMachineHandoff: async (
+      args: AgentChatAcknowledgeCrossMachineHandoffArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "acknowledgeCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatAcknowledgeCrossMachineHandoff, args),
       ),
     send: async (args: AgentChatSendArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       agentChatSummaryCache.clear();
@@ -9745,10 +9791,9 @@ const adeBridge = {
    * to drive. The pin only localizes URLs: on a remote pin a loopback URL is
    * rewritten onto a port forward (`withLocalizedBrowserUrl`), and
    * `acknowledgeRemoteRequest` deliberately answers the pinned daemon. A local pin
-   * must not go through that checkout's runtime: the runtime's browser gate admits
-   * only an agent's own chat (with its actor capability), so this window — a
-   * person's client with no chat identity — was refused every call whenever its
-   * session sat on another binding than the tab. Methods keep their `pin`
+   * must not go through that checkout's runtime: the runtime tags calls with the
+   * caller's chat and lane, and this window — a person's client with no chat
+   * identity — must act on the tab it shows, not on another binding's. Methods keep their `pin`
    * parameter so every call site stays uniform.
    */
   builtInBrowser: {
@@ -9887,6 +9932,13 @@ const adeBridge = {
       clearAround(
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserSwitchTab, args),
+      ),
+    // Local IPC only: the tab is this desktop's own, and reassigning it is the
+    // person's move, never the bridge's.
+    handTabToChat: async (args: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserHandTabToChat, args),
       ),
     closeTab: async (
       args: BuiltInBrowserTabArgs,
@@ -11810,6 +11862,46 @@ const adeBridge = {
       callProjectRuntimeActionOr("github", "getIssue", { args }, () =>
         ipcRenderer.invoke(IPC.githubGetIssue, args),
       ),
+    getRepoIssueSummary: async (args: { owner: string; name: string }): Promise<GitHubRepoIssueSummary> =>
+      callProjectRuntimeActionOr("github", "getRepoIssueSummary", { args }, () =>
+        ipcRenderer.invoke(IPC.githubGetRepoIssueSummary, args),
+      ),
+    listRepoIssueList: async (args: { owner: string; name: string; state: "open" | "closed" | "all" }): Promise<GitHubIssueLike[]> =>
+      callProjectRuntimeActionOr("github", "listRepoIssueList", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListRepoIssueList, args),
+      ),
+    createIssue: async (args: { owner: string; name: string; input: GitHubIssueCreateInput }): Promise<GitHubIssueCreateResult> =>
+      callProjectRuntimeActionOr("github", "createIssue", { args }, () =>
+        ipcRenderer.invoke(IPC.githubCreateIssue, args),
+      ),
+    listIssueTemplates: async (args: { owner: string; name: string }): Promise<GitHubIssueTemplateSet> =>
+      callProjectRuntimeActionOr("github", "listIssueTemplates", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListIssueTemplates, args),
+      ),
+    listIssueTypes: async (args: { owner: string; name: string }): Promise<GitHubIssueTypeOption[]> =>
+      callProjectRuntimeActionOr("github", "listIssueTypes", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListIssueTypes, args),
+      ),
+    getIssueWriteAccess: async (args: { owner: string; name: string; force?: boolean }): Promise<GitHubIssueWriteAccess> =>
+      callProjectRuntimeActionOr("github", "getIssueWriteAccess", { args }, () =>
+        ipcRenderer.invoke(IPC.githubGetIssueWriteAccess, args),
+      ),
+    updateIssue: async (args: { owner: string; name: string; number: number; patch: GitHubIssuePatch }): Promise<GitHubIssueLike | null> =>
+      callProjectRuntimeActionOr("github", "updateIssue", { args }, () =>
+        ipcRenderer.invoke(IPC.githubUpdateIssue, args),
+      ),
+    commentOnIssue: async (args: { owner: string; name: string; number: number; body: string }): Promise<GitHubIssueCommentLike | null> =>
+      callProjectRuntimeActionOr("github", "commentOnIssue", { args }, () =>
+        ipcRenderer.invoke(IPC.githubCommentOnIssue, args),
+      ),
+    listRepoMilestones: async (args: { owner: string; name: string }): Promise<Array<{ number: number; title: string }>> =>
+      callProjectRuntimeActionOr("github", "listRepoMilestones", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListRepoMilestones, args),
+      ),
+    listIssueComments: async (args: { owner: string; name: string; number: number }): Promise<GitHubIssueCommentLike[]> =>
+      callProjectRuntimeActionOr("github", "listIssueComments", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListIssueComments, args),
+      ),
     listRepoAutolinks: async (args: {
       owner?: string;
       name?: string;
@@ -13207,8 +13299,35 @@ const adeBridge = {
       callProjectRuntimeActionOr(
         "linear_issue_tracker",
         "fetchIssueComments",
-        { args },
+        // The tracker takes the id itself, like `fetchIssueById` below; passing
+        // `{ args }` handed it the whole object and every runtime read failed.
+        { arg: args.issueId },
         () => ipcRenderer.invoke(IPC.ctoGetLinearIssueComments, args),
+      ),
+    createLinearIssue: async (args: LinearIssueCreateInput): Promise<NormalizedLinearIssue> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "createIssue", { arg: args }, () =>
+        ipcRenderer.invoke(IPC.ctoCreateLinearIssue, args),
+      ),
+    getLinearIssueCreateOptions: async (args: { teamKey: string }): Promise<LinearIssueCreateOptions> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "getIssueCreateOptions", { arg: args.teamKey }, () =>
+        ipcRenderer.invoke(IPC.ctoGetLinearIssueCreateOptions, args),
+      ),
+    listLinearProjectMilestones: async (args: { projectId: string }): Promise<LinearProjectMilestone[]> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "listProjectMilestones", { arg: args.projectId }, () =>
+        ipcRenderer.invoke(IPC.ctoListLinearProjectMilestones, args),
+      ),
+    uploadLinearFile: async (args: { filename: string; contentType: string; dataBase64: string }): Promise<LinearUploadResult> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "uploadFile", { arg: args }, () =>
+        ipcRenderer.invoke(IPC.ctoUploadLinearFile, args),
+      ),
+    createLinearIssueComment: async (
+      args: CtoCreateLinearIssueCommentArgs,
+    ): Promise<{ commentId: string }> =>
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "createComment",
+        { argsList: [args.issueId, args.body] },
+        () => ipcRenderer.invoke(IPC.ctoCreateLinearIssueComment, args),
       ),
     getLinearIssue: async (
       args: CtoGetLinearIssueArgs,

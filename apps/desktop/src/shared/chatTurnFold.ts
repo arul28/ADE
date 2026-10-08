@@ -305,9 +305,11 @@ const KEEP_IF_LIVE_EVENT_TYPES: ReadonlySet<string> = new Set(KEEP_IF_LIVE_EVENT
 function classifySystemNotice(event: SystemNoticeProjection): TurnFoldRowRole {
   const { status, noticeKind, severity } = event;
   const detail = readRecord(event.detail);
-  // Needs the user: a continuity recovery card and a spendable reset credit.
+  // Needs the user: a continuity recovery card, a spendable reset credit, and a
+  // provider CLI too old for ADE (its row carries the Update button).
   if (detail?.kind === "continuity_recovery") return "keep";
   if (status === "reset_credit_available") return "keep";
+  if (status === "acp_provider_outdated") return "keep";
   // Spawn chips: the spawn/result cards carry the same facts and stay visible.
   if (status === "subagent_spawned" || status === "spawn_completed") return "history";
   if (event.hostSleep) return "history";

@@ -112,6 +112,70 @@ struct WorkChatOpeningSessionPlaceholder: View {
   }
 }
 
+/// The chat's own frame while it connects: the destination's header stays on
+/// top (title and machine), a centred "Connecting to <machine>…" line fills the
+/// thread, and the composer sits at the bottom, disabled until the chat loads.
+/// It replaces a bare top-aligned skeleton that showed no header and no
+/// composer, and read as a broken screen.
+struct WorkChatConnectingFrame: View {
+  let machineName: String?
+
+  private var connectingText: String {
+    guard let machineName = machineName?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !machineName.isEmpty else { return "Connecting…" }
+    return "Connecting to \(machineName)…"
+  }
+
+  var body: some View {
+    VStack(spacing: 0) {
+      Spacer(minLength: 0)
+      VStack(spacing: 10) {
+        ProgressView()
+          .controlSize(.regular)
+        Text(connectingText)
+          .font(.subheadline.weight(.medium))
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+      }
+      .padding(.horizontal, 32)
+      .accessibilityElement(children: .combine)
+      .accessibilityAddTraits(.updatesFrequently)
+      Spacer(minLength: 0)
+      disabledComposer
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .adeScreenBackground()
+    .adeInspectable("Work.Chat.Connecting")
+  }
+
+  /// The composer's shape with nothing live in it: you cannot send until the
+  /// chat has loaded, and the frame says so instead of hiding the field.
+  private var disabledComposer: some View {
+    HStack(spacing: 8) {
+      Text("Message")
+        .font(.body)
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      Image(systemName: "arrow.up")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 32, height: 32)
+        .background(ADEColor.textMuted.opacity(0.15), in: Circle())
+    }
+    .padding(.leading, 16)
+    .padding(.trailing, 6)
+    .padding(.vertical, 6)
+    .frame(minHeight: 44)
+    .workChatGlass(in: Capsule(style: .continuous))
+    .opacity(0.6)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Message field")
+    .accessibilityValue("Unavailable while connecting")
+  }
+}
+
 /// `distanceFromTop` is how far the reader has scrolled from the first row, so
 /// it grows downward — the inverse of the geometry-probe `topY` this used to
 /// take, which was published from a per-frame `GeometryReader` riding the
@@ -201,6 +265,9 @@ struct WorkChatSummaryRenderContext: Equatable {
   /// deprecated `usageLimitParkedUntil` mirror for older hosts). Non-nil is the
   /// one and only reason the resume pill renders.
   let usageLimitResume: WorkUsageLimitResumeModel?
+  /// This chat's move to another machine, when there is one (drives the card
+  /// above the composer and the first-send confirmation).
+  let crossMachineHandoff: AgentChatCrossMachineHandoffRecord?
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -230,6 +297,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.pendingInputItemId = nil
       self.activeBackgroundTaskCount = nil
       self.usageLimitResume = nil
+      self.crossMachineHandoff = nil
       return
     }
 
@@ -259,6 +327,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.pendingInputItemId = summary.pendingInputItemId
     self.activeBackgroundTaskCount = summary.activeBackgroundTaskCount
     self.usageLimitResume = workUsageLimitResumeModel(for: summary)
+    self.crossMachineHandoff = summary.crossMachineHandoff
   }
 
   var currentModelId: String {
@@ -358,6 +427,11 @@ func workTimelineEntryExpansionSignature(
   case .toolGroup(let group):
     owned.insert(group.id)
     for member in group.members { owned.insert(member.id) }
+    // Computer-use rows and their app folds open by id too.
+    for action in group.computerUseActions {
+      owned.insert(WorkComputerUseRunView.expansionId(groupId: group.id, itemId: action.id))
+      owned.insert(WorkComputerUseRunView.expansionId(groupId: group.id, itemId: "fold:\(action.id)"))
+    }
   case .changedFiles(let group):
     owned.insert(group.id)
     for file in group.files { owned.insert(file.id) }
@@ -604,8 +678,13 @@ struct WorkChatSessionView: View {
   /// hides the comments chip, which is how an older host shows nothing new.
   var onUpdateThreadComment: (@MainActor (String, String?, Bool?) async throws -> Void)? = nil
   var onDeleteThreadComment: (@MainActor (String) async throws -> Void)? = nil
+  /// Cross-machine handoff card actions and the send gate (where new messages
+  /// go). Nil hides the card's buttons and sends without asking (an older host
+  /// has no record).
+  var crossMachineHandoffActions: WorkCrossMachineHandoffActions? = nil
 
   @State private var threadCommentsSheetPresented = false
+  @StateObject var handoffSendGate = WorkHandoffSendGate()
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
   @State var toolActivitySheet: WorkToolActivitySheetSelection?
@@ -1427,6 +1506,39 @@ struct WorkChatSessionView: View {
     }
   }
 
+  /// After a move the work lives on the other machine, so a send here asks
+  /// where it goes: "Continue on <machine>" copies the message and opens that
+  /// chat; "Work here instead" records `resumedHere` (acknowledge) and sends
+  /// here, after which sends go straight through.
+  var crossMachineSendGate: (@MainActor (String) async -> Bool)? {
+    let record = chatSummaryContext.crossMachineHandoff
+    guard let actions = crossMachineHandoffActions,
+          let record,
+          workCrossMachineHandoffNeedsSendConfirmation(record)
+    else { return nil }
+    let gate = handoffSendGate
+    let branch = lanes.first { $0.id == session.laneId }?.branchRef
+      .replacingOccurrences(of: "refs/heads/", with: "")
+    let machine = record.sendsElsewhere?.targetMachineName ?? record.machineLabel
+    return { text in
+      switch await gate.ask(machine: machine, branch: branch) {
+      case .workHere:
+        // Sending here proceeds only once "working here" is recorded.
+        return await actions.acknowledge()
+      case .continueThere:
+        // This phone can't send to a chat on another machine from here, so
+        // the words travel by clipboard into the chat that opens; the draft
+        // stays put too.
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { UIPasteboard.general.string = trimmed }
+        actions.open()
+        return false
+      case .cancel:
+        return false
+      }
+    }
+  }
+
   /// Single desktop-shaped composer card: text field on top, chip strip and
   /// send button on the bottom, everything wrapped in one rounded container
   /// with clear contrast against the chat background.
@@ -1557,6 +1669,17 @@ struct WorkChatSessionView: View {
         .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       }
 
+      if let record = chatSummaryContext.crossMachineHandoff,
+         let model = workCrossMachineHandoffCardModel(record) {
+        WorkCrossMachineHandoffCard(
+          record: record,
+          model: model,
+          enabled: !hostUnreachable,
+          actions: crossMachineHandoffActions
+        )
+        .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+
       if chatSummaryContext.spawnKind == .subagent,
          let parentId = chatSummaryContext.orchestrationParentSessionId,
          !parentId.isEmpty,
@@ -1638,10 +1761,35 @@ struct WorkChatSessionView: View {
         onSent: {
           transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
         },
-        hasSendableThreadComments: hasSendableThreadComments
+        hasSendableThreadComments: hasSendableThreadComments,
+        sendGate: crossMachineSendGate
       )
     }
     .padding(.horizontal, compactComposer ? 12 : 16)
+    // A prompt left open when the chat goes away would strand its send
+    // forever; answer it for the person.
+    .onDisappear { handoffSendGate.answer(.cancel) }
+    .onChange(of: session.id) { _, _ in handoffSendGate.answer(.cancel) }
+    .confirmationDialog(
+      "This chat continues on \(handoffSendGate.prompt?.machine ?? "another machine")",
+      isPresented: Binding(
+        get: { handoffSendGate.prompt != nil },
+        set: { if !$0 { handoffSendGate.answer(.cancel) } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("Continue on \(handoffSendGate.prompt?.machine ?? "the other machine")") {
+        handoffSendGate.answer(.continueThere)
+      }
+      Button("Work here instead") { handoffSendGate.answer(.workHere) }
+      Button("Cancel", role: .cancel) { handoffSendGate.answer(.cancel) }
+    } message: {
+      Text(
+        "Continue there takes your message to that chat (it's copied, paste it there). "
+          + (handoffSendGate.prompt?.branch.map { "Working here instead means both machines may change \($0)." }
+            ?? "Working here instead means both machines may change the same branch.")
+      )
+    }
   }
 
   /// The transcript.
@@ -2435,6 +2583,10 @@ private struct WorkChatComposerCard: View {
   /// Pending thread comments will ride the next send, so an empty field may
   /// still send.
   var hasSendableThreadComments = false
+  /// Asked BEFORE the field is emptied (a chat that continues on another
+  /// machine asks where the message goes). False keeps the draft untouched
+  /// and shows no failure, because nothing was sent.
+  var sendGate: (@MainActor (String) async -> Bool)? = nil
 
   var body: some View {
     WorkChatComposerDraftInput(
@@ -2468,7 +2620,8 @@ private struct WorkChatComposerCard: View {
       onSelectRuntimeMode: onSelectRuntimeMode,
       onSend: onSend,
       onSent: onSent,
-      hasSendableThreadComments: hasSendableThreadComments
+      hasSendableThreadComments: hasSendableThreadComments,
+      sendGate: sendGate
     )
   }
 }
@@ -2513,6 +2666,10 @@ private struct WorkChatComposerDraftInput: View {
   /// Pending thread comments will ride the next send, so an empty field may
   /// still send.
   var hasSendableThreadComments = false
+  /// Asked BEFORE the field is emptied (a chat that continues on another
+  /// machine asks where the message goes). False keeps the draft untouched
+  /// and shows no failure, because nothing was sent.
+  var sendGate: (@MainActor (String) async -> Bool)? = nil
 
   @EnvironmentObject private var syncService: SyncService
   @StateObject private var draftState = WorkChatComposerDraftState()
@@ -2686,6 +2843,20 @@ private struct WorkChatComposerDraftInput: View {
   /// it entirely.
   @MainActor
   private func performSend(mode: WorkActiveSendMode) {
+    guard sendEnabled else { return }
+    if let sendGate {
+      let text = draftState.text
+      Task { @MainActor in
+        guard await sendGate(text) else { return }
+        sendNow(mode: mode)
+      }
+      return
+    }
+    sendNow(mode: mode)
+  }
+
+  @MainActor
+  private func sendNow(mode: WorkActiveSendMode) {
     guard sendEnabled else { return }
     let key = draftPersistenceKey
     let pendingSend = draftState.beginPendingSend()

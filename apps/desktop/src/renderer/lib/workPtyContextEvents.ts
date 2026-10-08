@@ -7,6 +7,7 @@ export type WorkPtyContextInsertKind =
   | "ios"
   | "app-control"
   | "browser"
+  | "issue"
   | "draft";
 
 export type WorkPtyContextInsertedDetail = {

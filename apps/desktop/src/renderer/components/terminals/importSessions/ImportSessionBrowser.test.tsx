@@ -319,6 +319,54 @@ describe("ImportSessionBrowser", () => {
     expect(watchDetail).toHaveBeenCalledWith(expect.objectContaining({ provider: "claude", sessionId: "a" }));
   });
 
+  it("loads the full transcript when the detail watch rejects", async () => {
+    const row = summary({
+      id: "a",
+      title: "Alpha",
+      messages: [{ role: "assistant", text: "sampled snippet only", at: 3 }],
+    });
+    listRows([row]);
+    watchDetail.mockRejectedValue(new Error("watch unavailable"));
+    getDetail.mockResolvedValue(detailFor(row, {
+      events: [envelope("text", "detail-only full transcript", 1)],
+      messages: [],
+    }));
+
+    renderBrowser();
+
+    const transcript = within(await screen.findByRole("region", { name: "Session conversation" }));
+    expect(await transcript.findByText("detail-only full transcript")).toBeTruthy();
+    expect(transcript.queryByText("sampled snippet only")).toBeNull();
+    expect(screen.queryByText("Couldn't load this conversation.")).toBeNull();
+    expect(getDetail).toHaveBeenCalledWith({ provider: "claude", sessionId: "a" }, null);
+  });
+
+  it("shows sampled snippets and a warning when watched detail is empty", async () => {
+    const row = summary({
+      id: "a",
+      title: "Alpha",
+      messages: [
+        { role: "user", text: "sampled user message", at: 1 },
+        { role: "assistant", text: "sampled assistant message", at: 2 },
+      ],
+    });
+    listRows([row]);
+    watchDetail.mockResolvedValue(detailFor(row, {
+      sourcePath: null,
+      events: [],
+      messages: [],
+      watchable: false,
+    }));
+
+    renderBrowser();
+
+    const conversation = within(await screen.findByRole("region", { name: "Session conversation" }));
+    expect(await conversation.findByText("sampled user message")).toBeTruthy();
+    expect(await conversation.findByText("sampled assistant message")).toBeTruthy();
+    expect(conversation.getByText("Couldn't load this conversation.")).toBeTruthy();
+    expect(conversation.queryByText("No messages to show.")).toBeNull();
+  });
+
   it("falls back to plain messages when the host sends no events", async () => {
     listRows([summary({ id: "a", title: "Alpha" })]);
     watchDetail.mockResolvedValue(detailFor(summary({ id: "a" }), {

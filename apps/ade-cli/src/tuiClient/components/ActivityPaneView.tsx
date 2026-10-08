@@ -6,6 +6,7 @@ import {
   activityItemContext,
   activityItemElapsed,
   activityItemMark,
+  activityPaneChips,
   activityPaneEntries,
   type ActivityPaneMarkTone,
 } from "../activityPane";
@@ -24,8 +25,6 @@ function activityToneColor(tone: ActivityPaneMarkTone): string {
       return theme.color.attention;
     case "error":
       return theme.color.error;
-    case "violet":
-      return theme.color.violet;
     case "running":
       return theme.color.running;
     case "done":
@@ -64,26 +63,22 @@ export function ActivityPaneView({
       ? theme.color.attention
       : theme.color.error;
   const window = activityPaneEntries(model, selectedIndex, 11);
-  const notificationCount =
-    model.groups.find((group) => group.id === "notifications")?.items.length ?? 0;
   const inner = Math.max(18, width - 4);
+  const chips = activityPaneChips(model);
   return (
     <Box flexDirection="column">
       <Text color={stateTone} wrap="wrap">{model.message}</Text>
-      <Text color={theme.color.t4} dimColor>
-        {[
-          model.waitingCount > 0
-            ? `${model.waitingCount} waiting${model.liveCount ? ` · ${model.liveCount} live` : ""}`
-            : model.liveCount > 0
-              ? `${model.liveCount} live · nothing waiting`
-              : "Nothing needs you",
-          // Counted apart from the agent bands, like desktop's footer: PR, CI
-          // and review rows are notifications, not work waiting on you, so
-          // folding them into "waiting" would overstate what needs a decision.
-          notificationCount > 0
-            ? `${notificationCount} notification${notificationCount === 1 ? "" : "s"}`
-            : null,
-        ].filter(Boolean).join(" · ")}
+      {/* The chips: the four-column summary and the filter at once, keyed 0–4. */}
+      <Text wrap="truncate-end">
+        {chips.map((chip, index) => (
+          <Text
+            key={chip.key}
+            color={chip.selected ? theme.color.violet : theme.color.t3}
+            bold={chip.selected}
+          >
+            {`${index > 0 ? " · " : ""}${chip.label} ${chip.count}`}
+          </Text>
+        ))}
       </Text>
       {window.hiddenBefore > 0 ? (
         <Text color={theme.color.t4} dimColor>{`↑ ${window.hiddenBefore} earlier`}</Text>
@@ -93,6 +88,13 @@ export function ActivityPaneView({
           return (
             <Box key={entry.key} marginTop={1}>
               <Text color={theme.color.t4} bold>{entry.label}</Text>
+            </Box>
+          );
+        }
+        if (entry.kind === "fold") {
+          return (
+            <Box key={entry.key} marginTop={1}>
+              <Text color={theme.color.done} dimColor>{entry.label}</Text>
             </Box>
           );
         }
@@ -139,7 +141,7 @@ export function ActivityPaneView({
         {model.items.length ? (
           <Text color={theme.color.t4} dimColor>{"↑↓ move · Enter opens exact destination"}</Text>
         ) : null}
-        <Text color={theme.color.t4} dimColor>{"R refresh"}</Text>
+        <Text color={theme.color.t4} dimColor>{"0–4 filter · R refresh"}</Text>
       </Box>
     </Box>
   );

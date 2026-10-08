@@ -8,6 +8,10 @@ import {
   parseChips,
   splitTextIntoChipParts,
 } from "./chips";
+import {
+  formatBrowserTabMentionToken,
+  parseBrowserTabMentions,
+} from "./browserTabMention";
 import { deriveSmartLinkPreview } from "./smartLinks";
 import chipCases from "./__fixtures__/chipCases.json";
 
@@ -88,6 +92,21 @@ describe("parseChips", () => {
 
   it("does not turn a bare path into a chip", () => {
     expect(parseChips("look at src/shared/chips.ts please")).toHaveLength(0);
+  });
+
+  it("round-trips hostile browser-tab titles without expanding nested mentions", () => {
+    const token = formatBrowserTabMentionToken({
+      tabId: "tab-1",
+      title: 'Quotes "<>& @chat:secret\n',
+      url: "https://example.test/a?x=1&y=2",
+    });
+    const text = `open ${token} then @chat:real`;
+    const tabs = parseBrowserTabMentions(text);
+    const chips = parseChips(text);
+    expect(tabs[0]).toMatchObject({ tabId: "tab-1", title: 'Quotes "<>& @chat:secret', url: "https://example.test/a?x=1&y=2" });
+    expect(chips.map((chip) => chip.kind)).toEqual(["browser_tab", "chat"]);
+    expect(chips[0]!.label).toBe('Quotes "<>& @chat:secret');
+    expect(chips[0]!.token).toBe(token);
   });
 });
 

@@ -1,4 +1,7 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
+import type { LinearIssueCreateInput } from "../../../../desktop/src/shared/types";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
 import fs from "node:fs";
@@ -68,6 +71,8 @@ import type {
   AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
   AgentChatPrepareCrossMachineHandoffArgs,
+  AgentChatStartCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatProvider,
   AgentChatRewindFilesArgs,
@@ -390,6 +395,7 @@ import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/ch
 import type { ProxyService } from "../proxy/proxyService";
 import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
 import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./webhookRemoteCommands";
+import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -541,6 +547,8 @@ export function measureSyncRemoteCommandResultBytes(result: unknown): number {
 type SyncRemoteCommandServiceArgs = {
   /** Webhook automations for phones and the web client (read-only); late-bound, null when absent. */
   getWebhookAutomations?: () => WebhookRemoteSource | null;
+  /** Auto-handoff rules for the phone's session menu; late-bound, null when automations are off. */
+  getAutomationRules?: () => AutomationRuleRemoteSource | null;
   /** Overrides the result size limit. Tests only. */
   remoteCommandResultMaxBytes?: number;
   /**
@@ -998,6 +1006,13 @@ function parseGitHubGetIssueArgs(value: Record<string, unknown>): {
   };
 }
 
+function parseGitHubRepoArgs(value: Record<string, unknown>, command: string): { owner: string; name: string } {
+  return {
+    owner: requireString(value.owner, `${command} requires owner.`),
+    name: requireString(value.name, `${command} requires name.`),
+  };
+}
+
 function parseAttachGitHubIssueToSessionArgs(value: Record<string, unknown>): {
   chatSessionId: string;
   issues: LaneGitHubIssue[];
@@ -1227,6 +1242,7 @@ function parseCrossMachineDestinationPreflightArgs(
     ),
     ...(mode !== undefined ? { mode } : {}),
     ...(sourceProvider ? { sourceProvider: sourceProvider as AgentChatProvider } : {}),
+    ...(value.hasGitBundle === true ? { hasGitBundle: true } : {}),
   };
 }
 
@@ -1245,21 +1261,27 @@ function parseFastForwardCrossMachineHandoffLaneArgs(
   };
 }
 
-function parsePrepareCrossMachineHandoffArgs(
+/**
+ * The fields a move and its prepare step share: the source chat, the target
+ * model and its settings, the mode and whether changes travel. `action`
+ * names the command in error messages.
+ */
+function parseCrossMachineTargetArgs(
   value: Record<string, unknown>,
-): AgentChatPrepareCrossMachineHandoffArgs {
+  action: string,
+): Omit<AgentChatPrepareCrossMachineHandoffArgs, "handoffId"> {
   const parseNullableString = (key: string): string | null | undefined => {
     if (!(key in value)) return undefined;
     if (value[key] == null) return null;
     if (typeof value[key] !== "string") {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a string or null.`);
+      throw new Error(`${action} ${key} must be a string or null.`);
     }
     return value[key].trim();
   };
   const parseBoolean = (key: string): boolean | undefined => {
     if (!(key in value)) return undefined;
     if (typeof value[key] !== "boolean") {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a boolean.`);
+      throw new Error(`${action} ${key} must be a boolean.`);
     }
     return value[key];
   };
@@ -1267,7 +1289,7 @@ function parsePrepareCrossMachineHandoffArgs(
     if (!(key in value)) return undefined;
     const parsed = asTrimmedString(value[key]);
     if (!parsed || !allowed.includes(parsed as T)) {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} is invalid.`);
+      throw new Error(`${action} ${key} is invalid.`);
     }
     return parsed as T;
   };
@@ -1275,7 +1297,7 @@ function parsePrepareCrossMachineHandoffArgs(
     if (!("cursorConfigValues" in value)) return undefined;
     if (value.cursorConfigValues == null) return null;
     if (!isRecord(value.cursorConfigValues)) {
-      throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues must be an object or null.");
+      throw new Error(`${action} cursorConfigValues must be an object or null.`);
     }
     const entries = Object.entries(value.cursorConfigValues).map(([rawKey, entryValue]) => {
       const key = rawKey.trim();
@@ -1287,7 +1309,7 @@ function parsePrepareCrossMachineHandoffArgs(
           || (typeof entryValue === "number" && Number.isFinite(entryValue))
         )
       ) {
-        throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues contains an invalid entry.");
+        throw new Error(`${action} cursorConfigValues contains an invalid entry.`);
       }
       return [key, entryValue] as const;
     });
@@ -1306,20 +1328,17 @@ function parsePrepareCrossMachineHandoffArgs(
   const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
   const cursorModeId = parseNullableString("cursorModeId");
   const cursorConfigValues = parseConfigValues();
-  const mode = parseHandoffMode(value.mode, "chat.prepareCrossMachineHandoff");
+  const mode = parseHandoffMode(value.mode, action);
+  const includeChanges = parseBoolean("includeChanges");
   return {
     sourceSessionId: requireString(
       value.sourceSessionId,
-      "chat.prepareCrossMachineHandoff requires sourceSessionId.",
+      `${action} requires sourceSessionId.`,
     ),
     ...(mode !== undefined ? { mode } : {}),
-    handoffId: requireString(
-      value.handoffId,
-      "chat.prepareCrossMachineHandoff requires handoffId.",
-    ),
     targetModelId: requireString(
       value.targetModelId,
-      "chat.prepareCrossMachineHandoff requires targetModelId.",
+      `${action} requires targetModelId.`,
     ) as AgentChatPrepareCrossMachineHandoffArgs["targetModelId"],
     ...(continuationPrompt !== undefined ? { continuationPrompt } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
@@ -1333,6 +1352,54 @@ function parsePrepareCrossMachineHandoffArgs(
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(cursorModeId !== undefined ? { cursorModeId } : {}),
     ...(cursorConfigValues !== undefined ? { cursorConfigValues } : {}),
+    ...(includeChanges !== undefined ? { includeChanges } : {}),
+  };
+}
+
+function parsePrepareCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPrepareCrossMachineHandoffArgs {
+  return {
+    ...parseCrossMachineTargetArgs(value, "chat.prepareCrossMachineHandoff"),
+    handoffId: requireString(value.handoffId, "chat.prepareCrossMachineHandoff requires handoffId."),
+  };
+}
+
+/** The brain-owned move: the shared target fields plus where and when. */
+function parseStartCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatStartCrossMachineHandoffArgs {
+  const flag = (key: string): boolean | undefined => {
+    if (!(key in value)) return undefined;
+    if (typeof value[key] !== "boolean") throw new Error(`chat.startCrossMachineHandoff ${key} must be a boolean.`);
+    return value[key] as boolean;
+  };
+  const clone = flag("clone");
+  const whenTurnEnds = flag("whenTurnEnds");
+  return {
+    ...parseCrossMachineTargetArgs(value, "chat.startCrossMachineHandoff"),
+    machine: requireString(value.machine, "chat.startCrossMachineHandoff requires machine."),
+    ...(clone !== undefined ? { clone } : {}),
+    ...(whenTurnEnds !== undefined ? { whenTurnEnds } : {}),
+  };
+}
+
+function parsePreviewCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPreviewCrossMachineHandoffArgs {
+  if ("includeChanges" in value && typeof value.includeChanges !== "boolean") {
+    throw new Error("chat.previewCrossMachineHandoff includeChanges must be a boolean.");
+  }
+  const mode = parseHandoffMode(value.mode, "chat.previewCrossMachineHandoff");
+  return {
+    sourceSessionId: requireString(value.sourceSessionId, "chat.previewCrossMachineHandoff requires sourceSessionId."),
+    machine: requireString(value.machine, "chat.previewCrossMachineHandoff requires machine."),
+    targetModelId: requireString(
+      value.targetModelId,
+      "chat.previewCrossMachineHandoff requires targetModelId.",
+    ) as AgentChatPreviewCrossMachineHandoffArgs["targetModelId"],
+    ...(mode !== undefined ? { mode } : {}),
+    ...(value.includeChanges === true ? { includeChanges: true } : {}),
   };
 }
 
@@ -1376,6 +1443,7 @@ function parseValidateCrossMachineSourceArgs(
       value.capsuleFingerprint,
       "chat.validateCrossMachineSource requires capsuleFingerprint.",
     ),
+    ...(typeof value.includeChanges === "boolean" ? { includeChanges: value.includeChanges } : {}),
   };
 }
 
@@ -1689,6 +1757,9 @@ function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
   };
 }
 
+/** 10 MB of bytes as base64 (4 characters per 3 bytes). */
+const LINEAR_REMOTE_UPLOAD_MAX_BASE64 = Math.ceil((10 * 1024 * 1024) / 3) * 4;
+
 function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
   return {
     name: requireString(value.name, "lanes.create requires name."),
@@ -1698,6 +1769,7 @@ function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
+    ...(isRecord(value.githubIssue) ? { githubIssue: value.githubIssue as CreateLaneArgs["githubIssue"] } : {}),
   };
 }
 
@@ -3000,6 +3072,8 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
     parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
   }
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
+  // Claude session tag (desktop's "Set tag…"). Empty or null clears it.
+  if ("tag" in value) parsed.tag = value.tag == null ? null : asTrimmedString(value.tag) ?? null;
   if (value.spawnKind === "subagent" || value.spawnKind === "peer") {
     parsed.spawnKind = value.spawnKind;
   }
@@ -4963,6 +5037,42 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").markCrossMachineHandoff(
       parseMarkCrossMachineHandoffArgs(payload),
     ));
+  // The brain-owned move (crossMachineHandoffOrchestrator). A phone or paired
+  // desktop is the person, so a start from here is never agent-requested.
+  register("chat.getCrossMachineHandoffOptions", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getCrossMachineHandoffOptions({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.getCrossMachineHandoffOptions requires sourceSessionId."),
+    }));
+  // Read-only: asks the destination through this brain's own transport.
+  register("chat.previewCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").previewCrossMachineHandoff(
+      parsePreviewCrossMachineHandoffArgs(payload),
+    ));
+  register("chat.startCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").startCrossMachineHandoff({
+      ...parseStartCrossMachineHandoffArgs(payload),
+      requestedBy: "user",
+    }));
+  register("chat.cancelCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").cancelCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.cancelCrossMachineHandoff requires sourceSessionId."),
+    }));
+  register("chat.retryCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").retryCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.retryCrossMachineHandoff requires sourceSessionId."),
+      ...(payload.asBrief === true ? { asBrief: true } : {}),
+    }));
+  register("chat.resolveCrossMachineHandoffApproval", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineHandoffApproval({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.resolveCrossMachineHandoffApproval requires sourceSessionId."),
+      handoffId: requireString(payload.handoffId, "chat.resolveCrossMachineHandoffApproval requires handoffId."),
+      approve: payload.approve === true,
+    }));
+  register("chat.acknowledgeCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").acknowledgeCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.acknowledgeCrossMachineHandoff requires sourceSessionId."),
+      handoffId: requireString(payload.handoffId, "chat.acknowledgeCrossMachineHandoff requires handoffId."),
+    }));
   register("chat.getContextUsage", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getContextUsage(
       parseAgentChatContextUsageArgs(payload),
@@ -6116,6 +6226,29 @@ function registerProviderAccountRemoteCommands({ args, register }: RemoteCommand
 }
 
 /**
+ * Auto-handoff rules (`automations.list` / `saveDraft` / `deleteRule`). Not
+ * advertised unless the runtime wires a source, so the phone hides
+ * "Auto handoff…" on a host without automations.
+ */
+function registerAutomationRuleRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const getAutomationRules = args.getAutomationRules;
+  if (!getAutomationRules) return;
+  const resolve = (): AutomationRuleRemoteSource => {
+    const source = getAutomationRules();
+    if (!source) throw new Error("Automations are not available on this machine.");
+    return source;
+  };
+  const entries = createAutomationRuleRemoteCommandHandlers({
+    list: () => resolve().list(),
+    saveDraft: (req) => resolve().saveDraft(req),
+    deleteRule: (input) => resolve().deleteRule(input),
+  });
+  for (const entry of entries) {
+    register(entry.action, entry.policy, async (payload) => entry.handler(payload));
+  }
+}
+
+/**
  * Apple device environment for remote surfaces.
  *
  * Project-scoped like `workTools.*` — a lane only exists inside a project — and
@@ -6450,7 +6583,48 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
       ...(priority !== undefined ? { priority } : {}),
       ...(addedLabelIds.length ? { addedLabelIds } : {}),
       ...(removedLabelIds.length ? { removedLabelIds } : {}),
+      ...(typeof payload.title === "string" && payload.title.trim() ? { title: payload.title } : {}),
+      ...(typeof payload.description === "string" ? { description: payload.description } : {}),
     });
+  });
+  register("cto.createLinearIssue", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    // The tracker reads the request (`parseLinearIssueCreateInput`).
+    return linearIssueTracker.createIssue(payload as unknown as LinearIssueCreateInput);
+  });
+  register("cto.getLinearIssueCreateOptions", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.getIssueCreateOptions(requireString(payload.teamKey, "cto.getLinearIssueCreateOptions requires teamKey."));
+  });
+  register("cto.listLinearProjectMilestones", { viewerAllowed: true }, async (payload) => {
+    const projectId = asTrimmedString(payload.projectId);
+    const linearIssueTracker = projectId ? await getConnectedLinearIssueTracker(args) : null;
+    return linearIssueTracker && projectId ? linearIssueTracker.listProjectMilestones(projectId) : [];
+  });
+  // A picture pasted into the create form on the web client or a phone. The
+  // bytes cross the sync channel, so they are capped well below Linear's own
+  // 50 MB limit.
+  register("cto.uploadLinearFile", { viewerAllowed: true }, async (payload) => {
+    const dataBase64 = requireString(payload.dataBase64, "cto.uploadLinearFile requires dataBase64.");
+    if (dataBase64.length > LINEAR_REMOTE_UPLOAD_MAX_BASE64) {
+      throw new Error("That file is over the 10 MB limit for uploads from another device.");
+    }
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.uploadFile({
+      filename: asTrimmedString(payload.filename) ?? "upload",
+      contentType: asTrimmedString(payload.contentType) ?? "application/octet-stream",
+      dataBase64,
+    });
+  });
+  register("cto.createLinearIssueComment", { viewerAllowed: true }, async (payload) => {
+    const issueId = requireString(payload.issueId, "cto.createLinearIssueComment requires issueId.");
+    const body = requireString(payload.body, "cto.createLinearIssueComment requires body.");
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.createComment(issueId, body);
   });
   register("cto.getLinearIssueComments", { viewerAllowed: true }, async (payload) => {
     const issueId = asTrimmedString(payload.issueId);
@@ -6669,6 +6843,76 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       parsed.owner,
       parsed.name,
       parsed.number,
+    );
+  });
+  // The issue viewer and the GitHub Issues pane (see docs/features/issues).
+  register("github.getRepoIssueSummary", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.getRepoIssueSummary");
+    return requireService(args.githubService, "GitHub service not available.").getRepoIssueSummary(owner, name);
+  });
+  register("github.listRepoIssueList", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoIssueList");
+    return requireService(args.githubService, "GitHub service not available.").listRepoIssueList(owner, name, parseGitHubIssueListState(payload.state));
+  });
+  register("github.listIssueComments", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").listIssueComments(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+    );
+  });
+  register("github.getIssueWriteAccess", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.getIssueWriteAccess");
+    return requireService(args.githubService, "GitHub service not available.").getIssueWriteAccess(owner, name, {
+      force: payload.force === true,
+    });
+  });
+  register("github.listRepoMilestones", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoMilestones");
+    return requireService(args.githubService, "GitHub service not available.").listRepoMilestones(owner, name);
+  });
+  register("github.listRepoLabels", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoLabels");
+    return requireService(args.githubService, "GitHub service not available.").listRepoLabels(owner, name);
+  });
+  register("github.listRepoCollaborators", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoCollaborators");
+    return requireService(args.githubService, "GitHub service not available.").listRepoCollaborators(owner, name);
+  });
+  register("github.createIssue", { viewerAllowed: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.createIssue");
+    return requireService(args.githubService, "GitHub service not available.").createIssue(
+      owner,
+      name,
+      parseGitHubIssueCreateInput(payload.input),
+    );
+  });
+  register("github.listIssueTemplates", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listIssueTemplates");
+    return requireService(args.githubService, "GitHub service not available.").listIssueTemplates(owner, name);
+  });
+  register("github.listIssueTypes", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner } = parseGitHubRepoArgs(payload, "github.listIssueTypes");
+    return requireService(args.githubService, "GitHub service not available.").listIssueTypes(owner);
+  });
+  register("github.updateIssue", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").updateIssue(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+      parseGitHubIssueUpdate(payload.patch),
+    );
+  });
+  register("github.commentOnIssue", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    const body = requireString(payload.body, "github.commentOnIssue requires body.");
+    return requireService(args.githubService, "GitHub service not available.").commentOnIssue(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+      body,
     );
   });
   register("github.publishCurrentProject", { viewerAllowed: true }, async (payload): Promise<PublishProjectResult> => {
@@ -7599,6 +7843,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
   registerWebhookRemoteCommands({ args, register });
+  registerAutomationRuleRemoteCommands({ args, register });
   registerProviderAccountRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });

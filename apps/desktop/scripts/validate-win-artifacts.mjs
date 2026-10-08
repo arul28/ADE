@@ -253,6 +253,7 @@ function validatePreflight() {
   requireFile("scripts/windows-install-setup.ps1", "Windows install setup script");
   requireFile("scripts/windows-uninstall-cleanup.ps1", "Windows uninstall cleanup script");
   requireFile("scripts/windows-firewall-rules.ps1", "Windows firewall rule script");
+  requireFile("scripts/windows-update-progress.ps1", "Windows update progress window");
   requireFile("build/installer.nsh", "Windows NSIS customization");
   // The capture helper is compiled on the release box by
   // `scripts/build-capture-helper-win.mjs`, so preflight can only assert the

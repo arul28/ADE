@@ -252,17 +252,18 @@ export function terminateChildProcessTree(
 export function spawnAsync(
   command: string,
   args: string[],
-  opts?: { timeout?: number; maxOutputBytes?: number; cwd?: string },
+  opts?: { timeout?: number; maxOutputBytes?: number; cwd?: string; env?: NodeJS.ProcessEnv },
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     try {
-      const invocation = resolveCliSpawnInvocation(command, args);
+      const invocation = resolveCliSpawnInvocation(command, args, opts?.env);
       const child = spawn(invocation.command, invocation.args, {
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         windowsHide: true,
         ...(opts?.cwd ? { cwd: opts.cwd } : {}),
+        ...(opts?.env ? { env: opts.env } : {}),
       });
       let stdout = "";
       let stderr = "";

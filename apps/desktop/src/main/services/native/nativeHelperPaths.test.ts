@@ -5,41 +5,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   resolveAdeSigningState,
-  resolveAttentionNotchExecutablePath,
   resolveMacDesktopDriverBinary,
 } from "./nativeHelperPaths";
 
-/**
- * Where the two native helpers are, and nothing else.
- *
- * Both binaries land in the same `resources/native` directory, so both
- * resolvers are asserted together: a packaging change that moves one and not
- * the other is exactly the bug this file exists to catch.
- */
+/** Where the native helpers are, and nothing else. */
 describe("native helper paths", () => {
-  it("resolves packaged and development helper paths", () => {
-    expect(resolveAttentionNotchExecutablePath({
-      isPackaged: true,
-      resourcesPath: "/Applications/ADE.app/Contents/Resources",
-      appPath: "/repo/apps/desktop",
-    })).toBe(path.join(
-      "/Applications/ADE.app/Contents/Resources",
-      "native",
-      "ade-attention-notch",
-    ));
-    expect(resolveAttentionNotchExecutablePath({
-      isPackaged: false,
-      resourcesPath: "/unused",
-      appPath: "/repo/apps/desktop",
-    })).toBe(path.join(
-      "/repo/apps/desktop",
-      "resources",
-      "native",
-      "ade-attention-notch",
-    ));
-  });
-
-  it("resolves the Mac Desktop driver beside the notch helper, and nowhere off macOS", () => {
+  it("resolves the Mac Desktop driver in resources/native, and nowhere off macOS", () => {
     expect(resolveMacDesktopDriverBinary({
       isPackaged: true,
       resourcesPath: "/Applications/ADE.app/Contents/Resources",

@@ -99,7 +99,7 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/InputLease.swift` | The lease the driver keeps for itself, and the refusal `RealInput` raises. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/GestureGate.swift` | While a real drag holds the mouse button, the ops that could corrupt it — any `input` except `wait`, and this lane's `display.destroy`/`present`/`window.unpark` — are parked in order and replayed when the button comes up. A `wait` is not parked: it would poll nested inside the drag's own run-loop pump and hold the button down, so it is refused with `gesture_in_flight` and the client retries against its own deadline. `ping`, `observe`, `window.list` and capture keep answering. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion and the offscreen-fallback arithmetic. |
-| `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`, beside the notch helper. |
+| `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`. |
 | `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface every seat backend implements (Mac here, Windows in `windowsDesktop/`). Re-exports the seat wording from `shared/desktopSeat.ts`. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, idle release, the lease, events, and teardown. The window lifecycle, observation/input, streaming and recording halves are their own modules and are handed the service's registries and gates. | 
 | `apps/desktop/src/main/services/macDesktop/macDesktopDriverLifecycle.ts` | The driver process, permission probes, and health reconciliation. `createMacDesktopDriverLifecycle` is the only owner of the helper client. |
@@ -117,7 +117,7 @@ required.
 | `apps/desktop/src/main/services/macDesktop/macDesktopObservations.ts` | Observation storage, the numbered element map image, and the sidecar that binds a frame to a lane. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopLease.ts` | The input-lease state machine: agent grant per chat, user takeover, heartbeat renewal, TTL expiry, and the three refusal codes. Pure, injectable clock. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopOwnership.ts` | Lane→display, window→lane, window origin, the single-instance rule, and `ade_launched` pid bookkeeping. Pure. |
-| `apps/desktop/src/main/services/native/nativeHelperPaths.ts` | Where both native helpers are. `resolveMacDesktopDriverBinary` sits beside the notch resolver because both binaries come from the same `resources/native` directory, and it also answers in the daemon, which has no Electron `app`. `ADE_MAC_DESKTOP_DRIVER_PATH` overrides it, but only when it names a file that can actually be executed. |
+| `apps/desktop/src/main/services/native/nativeHelperPaths.ts` | Where the native helpers are. `resolveMacDesktopDriverBinary` lives here because every helper comes from the same `resources/native` directory, and it also answers in the daemon, which has no Electron `app`. `ADE_MAC_DESKTOP_DRIVER_PATH` overrides it, but only when it names a file that can actually be executed. |
 | `apps/ade-cli/src/bootstrap.ts` | Creates the service next to `iosSimulatorService` and `appControlService`. |
 | `apps/ade-cli/src/cli.ts` | The `ade screen` / `ade mac-desktop` dispatch case and the output switch. |
 | `apps/ade-cli/src/cliMacDesktop.ts` | The `ade screen` / `ade mac-desktop` plan builder. |
@@ -901,8 +901,7 @@ removed — it never reaches the proof drawer.
 
 ## The native helper, as built
 
-The helper is `apps/desktop/native/ADEDesktopDriver`, a SwiftPM package laid out
-like `ADEAttentionNotch`: a pure `ADEDesktopDriverCore` library holding the wire
+The helper is `apps/desktop/native/ADEDesktopDriver`, a SwiftPM package with a pure `ADEDesktopDriverCore` library holding the wire
 types and the rules that must be testable without a window server, and an
 `ade-desktop-driver` executable holding everything that touches AppKit.
 
@@ -922,20 +921,18 @@ Node talking to an older helper is a normal state during an update.
 
 ### Build, sign, bundle
 
-`npm --prefix apps/desktop run build:mac-native` builds both native helpers;
+`npm --prefix apps/desktop run build:mac-native` builds every macOS native helper;
 `build:desktop-driver` builds this one alone. It materializes a universal
 (arm64 + x86_64) binary at `apps/desktop/resources/native/ade-desktop-driver`,
 which `build.mac.extraResources` copies to `Contents/Resources/native/` and
 `validate-mac-artifacts.mjs` then asserts exists, is executable, and carries
-both architectures — the same three assertions the notch helper gets. The
-release workflow picks all of this up because every `dist:mac:*` script now runs
-`build:mac-native` where it used to run `build:notch`.
+both architectures. The release workflow picks all of this up because every
+`dist:mac:*` script runs `build:mac-native`.
 
 The Node side finds it with `resolveMacDesktopDriverBinary` in
-`apps/desktop/src/main/services/native/nativeHelperPaths.ts`, beside the
-notch's resolver: both binaries are produced by one build step into one
-directory, and two resolvers in two files drift the first time that directory
-moves. It returns `null` off macOS rather than throwing, because `getStatus`
+`apps/desktop/src/main/services/native/nativeHelperPaths.ts`: every helper is
+produced into one directory, and resolvers in separate files drift the first
+time that directory moves. It returns `null` off macOS rather than throwing, because `getStatus`
 answers on every platform.
 
 `swift test --package-path apps/desktop/native/ADEDesktopDriver`
@@ -1016,6 +1013,10 @@ later run to sweep. The service's start-up reconciliation is therefore about
 this run's own bookkeeping, not about orphans on disk.
 
 ## Not in scope
+
+On a Linux runtime host there is no lane screen: `ade screen status` (and
+`ade mac-desktop status`) says "Lane screens are not supported on Linux yet."
+and points at `ade browser` and `ade app-control`.
 
 The Linux seat backend, nested macOS virtual machines, replacing the built-in
 Browser, App Control, or the iOS Simulator tool, and any change to how Codex

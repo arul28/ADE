@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE,
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
   MAC_DESKTOP_HANDLE_EXPIRED_CODE,
   MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
@@ -362,6 +363,15 @@ describe("ade mac-desktop text output", () => {
     expect(text).toContain("denied");
     expect(text).toContain("running (idle rate) @ 3fps");
     expect(text).toContain("#91 Preview — shot.png");
+    expect(text).not.toContain(LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE);
+
+    // Linux has no lane screen: the answer leads with that, not a table of empty rows.
+    const linux = formatOutput(
+      { platform: "linux", supported: false, unsupportedReason: null, display: null, windows: [], lanes: [] },
+      { text: true } as never,
+      "mac-desktop-status",
+    );
+    expect(linux.startsWith(LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE)).toBe(true);
   });
 
   it("prints stop's quit apps and left-open sentences in full", () => {

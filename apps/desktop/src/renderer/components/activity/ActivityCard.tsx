@@ -1,5 +1,5 @@
 import React from "react";
-import { DesktopTower, GitPullRequest, Laptop, X } from "@phosphor-icons/react";
+import { Check, DesktopTower, GitPullRequest, Laptop, X } from "@phosphor-icons/react";
 
 import type { AttentionItem } from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
@@ -7,7 +7,7 @@ import { ProviderLogo } from "../shared/ProviderLogos";
 import { SessionStatusLabel } from "../terminals/SessionStatusLabel";
 import { LaneIcon } from "../ui/vcsIcons";
 import { cn } from "../ui/cn";
-import { activityItemPresentation } from "./activityPresentation";
+import { activityRowStatus, activityWaitingReasonLabel } from "./activityPresentation";
 // The row carries its own chrome and the shared tone table, so every surface
 // that can render an `ActivityCard` gets both without importing a stylesheet
 // it does not otherwise use.
@@ -129,10 +129,16 @@ export type ActivityCardProps = {
   onDismiss?: (item: AttentionItem) => void;
   /** Mirrors the account's `hideDetails` preference. */
   hideDetails?: boolean;
-  /** Two-line form for dense mirrors (notch panel, mobile hub strip). */
-  compact?: boolean;
   /** Keeps the hover treatment on the row whose detail is open. */
   selected?: boolean;
+  /**
+   * Multi-select, in the expanded view only. The checkbox shows on hover, on a
+   * checked row, and on every row once anything is checked.
+   */
+  selection?: {
+    checked: boolean;
+    onToggle: (item: AttentionItem) => void;
+  };
 };
 
 /**
@@ -145,11 +151,15 @@ export function ActivityCard({
   onOpen,
   onDismiss,
   hideDetails = false,
-  compact = false,
   selected = false,
+  selection,
 }: ActivityCardProps) {
-  const presentation = activityItemPresentation(item);
+  // The row's state comes from its column, not its phase: a running agent whose
+  // PR waits on CI sits under Waiting and must say so, and a failure sits under
+  // Needs you with its own red mark.
+  const presentation = activityRowStatus(item);
   const tone = presentation?.tone ?? "neutral";
+  const waitingReason = activityWaitingReasonLabel(item);
   const preview = activityCardPreview(item, hideDetails);
   const laneLabel = item.laneName?.trim() || item.project.name;
   const statusLabel = (
@@ -161,7 +171,7 @@ export function ActivityCard({
       // would reset itself every poll.
       elapsedSince={item.statusSince ?? item.occurredAt}
       timestampLabel={relativeWhen(item.updatedAt)}
-      compact={compact}
+      compact={false}
     />
   );
 
@@ -179,91 +189,98 @@ export function ActivityCard({
       onClick={() => onOpen(item)}
       title={`${item.title} — ${item.project.name} · ${item.machine.name}`}
     >
-      {compact ? (
-        <div className="flex h-[2.75rem] flex-col justify-center gap-0.5 px-2 py-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <ActivityAvatar item={item} size={13} />
-            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-fg">
-              {item.title}
+      <div className="h-[4.875rem] px-2 py-2">
+        {/* Line 1 — where this work lives, then the status, hard right. */}
+        <div className="flex h-5 min-w-0 items-center gap-1.5">
+          <span
+            data-activity-lane={laneLabel}
+            className="activity-card-lane inline-flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold"
+          >
+            <LaneIcon size={12} weight="regular" className="shrink-0" />
+            <span className="min-w-0 truncate">{laneLabel}</span>
+          </span>
+          <ActivityMachineChip item={item} size={10} />
+          {statusLabel}
+        </div>
+
+        {/* Line 2 — the item's own title, and nothing competing with it. */}
+        <div className="mt-1 flex min-w-0 items-center gap-2">
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">
+            {item.title}
+          </span>
+          {waitingReason ? (
+            <span className="kit-tag shrink-0" data-activity-waiting-reason>
+              {waitingReason}
             </span>
-            {statusLabel}
-          </div>
-          <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-fg/60">
-            <span className="activity-card-lane min-w-0 shrink truncate font-medium">
-              {laneLabel}
-            </span>
-            <span aria-hidden className="shrink-0 text-muted-fg/25">·</span>
+          ) : null}
+          {item.seenAt ? null : (
+            <span className="activity-card-unseen shrink-0" aria-label="Unseen" />
+          )}
+        </div>
+
+        {/* Line 3 — what it is doing, then the quiet meta. Italic, matching
+            the Work sidebar: the title above is what you scan for and this
+            line is commentary about it. */}
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-muted-fg/65">
+          {preview ? (
             <span className="min-w-0 flex-1 truncate italic">{preview}</span>
-          </div>
-        </div>
-      ) : (
-        <div className="h-[4.875rem] px-2 py-2">
-          {/* Line 1 — where this work lives, then the status, hard right. */}
-          <div className="flex h-5 min-w-0 items-center gap-1.5">
-            <span
-              data-activity-lane={laneLabel}
-              className="activity-card-lane inline-flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold"
-            >
-              <LaneIcon size={12} weight="regular" className="shrink-0" />
-              <span className="min-w-0 truncate">{laneLabel}</span>
+          ) : (
+            <span className="flex-1" />
+          )}
+          {item.model ? (
+            <span className="shrink-0 truncate text-[11px] text-muted-fg/45">
+              {item.model}
             </span>
-            <ActivityMachineChip item={item} size={10} />
-            {statusLabel}
-          </div>
-
-          {/* Line 2 — the item's own title, and nothing competing with it. */}
-          <div className="mt-1 flex min-w-0 items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">
-              {item.title}
-            </span>
-            {item.seenAt ? null : (
-              <span className="activity-card-unseen shrink-0" aria-label="Unseen" />
-            )}
-          </div>
-
-          {/* Line 3 — what it is doing, then the quiet meta. Italic, matching
-              the Work sidebar: the title above is what you scan for and this
-              line is commentary about it. */}
-          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-muted-fg/65">
-            {preview ? (
-              <span className="min-w-0 flex-1 truncate italic">{preview}</span>
-            ) : (
-              <span className="flex-1" />
-            )}
-            {item.model ? (
-              <span className="shrink-0 truncate text-[11px] text-muted-fg/45">
-                {item.model}
-              </span>
-            ) : null}
-            <ActivityAvatar item={item} size={18} />
-          </div>
+          ) : null}
+          <ActivityAvatar item={item} size={18} />
         </div>
-      )}
+      </div>
     </button>
   );
 
-  if (!onDismiss) return row;
+  if (!onDismiss && !selection) return row;
 
-  // The dismiss control is a SIBLING of the row, not a child: a button inside a
-  // button is invalid markup, and the roving-focus lists in both surfaces key
-  // off `[data-activity-row]` being the focusable element. It floats over the
-  // row's right edge behind a scrim so the truncated line underneath does not
-  // read as a collision.
+  // The dismiss control and the checkbox are SIBLINGS of the row, not children:
+  // a button inside a button is invalid markup, and the roving-focus lists key
+  // off `[data-activity-row]` being the focusable element. Dismiss floats over
+  // the row's right edge behind a scrim so the truncated line underneath does
+  // not read as a collision.
   return (
-    <div className="activity-card-shell">
+    <div
+      className="activity-card-shell"
+      data-selectable={selection ? "true" : undefined}
+      data-checked={selection?.checked ? "true" : undefined}
+    >
+      {selection ? (
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={selection.checked}
+          aria-label={`Select ${item.title}`}
+          className="activity-card-check"
+          onClick={(event) => {
+            event.stopPropagation();
+            selection.onToggle(item);
+          }}
+        >
+          {selection.checked ? <Check size={10} weight="bold" /> : null}
+        </button>
+      ) : null}
       {row}
-      <button
-        type="button"
-        className="activity-card-dismiss"
-        aria-label={`Dismiss ${item.title}`}
-        title="Dismiss"
-        onClick={(event) => {
-          event.stopPropagation();
-          onDismiss(item);
-        }}
-      >
-        <X size={11} weight="bold" />
-      </button>
+      {onDismiss ? (
+        <button
+          type="button"
+          className="activity-card-dismiss"
+          aria-label={`Dismiss ${item.title}`}
+          title="Dismiss"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDismiss(item);
+          }}
+        >
+          <X size={11} weight="bold" />
+        </button>
+      ) : null}
     </div>
   );
 }

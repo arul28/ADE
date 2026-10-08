@@ -853,6 +853,26 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "Linear",
   },
+  {
+    id: "integrations.linear-top-bar",
+    label: "Show Linear in the top bar",
+    keywords: ["linear", "issues", "top bar", "header", "hide", "button"],
+    tab: "integrations",
+    anchor: "linear-top-bar",
+    scope: "machine",
+    web: "hidden",
+    group: "Linear",
+  },
+  {
+    id: "integrations.github-issues-top-bar",
+    label: "Show GitHub issues in the top bar",
+    keywords: ["github", "issues", "top bar", "header", "hide", "button", "count"],
+    tab: "integrations",
+    anchor: "github-issues-top-bar",
+    scope: "machine",
+    web: "hidden",
+    group: "GitHub",
+  },
   // ── Notifications ───────────────────────────────────────────────────────
   {
     id: "notifications.events",
@@ -929,50 +949,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
 
   // ── Activity ─────────────────────────────────────────────────────────────
-  {
-    id: "activity.notch-enabled",
-    label: "ADE notch",
-    keywords: ["activity", "notch", "menu bar", "hud", "overlay", "ambient", "attention"],
-    tab: "notifications",
-    anchor: "activity-notch",
-    scope: "account",
-    web: "hidden",
-    group: "Notch",
-  },
-  {
-    id: "activity.notch-reveal",
-    label: "Show the notch strip",
-    keywords: ["notch behavior", "reveal", "hover", "always", "compact", "strip"],
-    tab: "notifications",
-    anchor: "activity-notch-reveal",
-    scope: "account",
-    web: "hidden",
-    group: "Notch",
-  },
-  {
-    id: "activity.notch-expanded",
-    label: "Expanded panel",
-    keywords: ["panel", "expand", "list", "sessions", "tall"],
-    tab: "notifications",
-    anchor: "activity-notch-expanded",
-    scope: "account",
-    web: "hidden",
-    group: "Notch",
-  },
-  // `activity.notch-auto-reveal` and `activity.notch-ticker` are both retired:
-  // the notch always flashes for work that needs you, and the strip has no
-  // ticker to cycle — it is state-group counts, not scrolling text. Neither has
-  // a card left for search to land on.
-  {
-    id: "activity.celebrations",
-    label: "Celebrations",
-    keywords: ["confetti", "flourish", "animation", "success"],
-    tab: "notifications",
-    anchor: "activity-celebrations",
-    scope: "account",
-    web: "hidden",
-    group: "Notch",
-  },
   {
     id: "activity.sounds",
     label: "Activity sounds",
@@ -1153,8 +1129,6 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "product-analytics": "general.analytics",
   storage: "storage.usage",
   // Moved out of Notifications when Activity got its own tab.
-  "attention-notch": "activity.notch-enabled",
-  celebrations: "activity.celebrations",
   "attention-sounds": "activity.sounds",
   "hide-previews": "activity.hide-details",
 };

@@ -6,8 +6,7 @@ import { useCallback, useMemo, useState } from "react";
  * Two surfaces, two keys, on purpose: the popover is a glance and the pane is a
  * work session, and the shape you want each in is rarely the same — collapsing
  * Done in the dropdown should not fold it away in the full list you opened
- * precisely to read it. New settings get new keys; the `ade:attention:notch-*`
- * keys stay frozen wire for anyone who already made a choice on this Mac.
+ * precisely to read it. New settings get new keys.
  */
 export type ActivityCollapseSurface = "popover" | "pane";
 

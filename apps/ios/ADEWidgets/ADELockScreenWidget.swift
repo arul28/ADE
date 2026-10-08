@@ -5,11 +5,11 @@ import WidgetKit
 /// into one priority-ranked status instead of spreading state across separate
 /// external surfaces.
 ///
-/// Six families, two layouts. The accessory families have room for one fact and
-/// exactly one tap target, so they stay single-focus. The home-screen families
-/// render the unified row design — state glyph in the phase's tone, title,
-/// phase word — with a per-row deep link, an "N more" tail, and one events line
-/// for PR/CI traffic. Agent rows stay agent-only; events never become rows.
+/// Six families, one set of numbers: the Work board's four columns (Needs you,
+/// Working, Waiting, Done), the counts the Live Activity shows. The accessory
+/// families have exactly one tap target and show the counts compactly; small
+/// and medium show the four tiles; large adds rows. Without an account feed the
+/// families fall back to the machine-local single-focus status.
 ///
 /// Two layouts, so two files: the accessory families live here, the home-screen
 /// families in `ADEActivityHomeWidget.swift`, and the status both of them read
@@ -26,7 +26,7 @@ struct ADELockScreenWidget: Widget {
                 .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("ADE Activity")
-        .description("Agents that need you, work in flight, and the latest PR signal.")
+        .description("How many agents need you, are working, are waiting, or are done.")
         .supportedFamilies([
             .accessoryRectangular,
             .accessoryCircular,
@@ -146,21 +146,40 @@ struct LockScreenWidgetEntryView: View {
             LockScreenPriorityStatus(attentionSnapshot: $0, hideDetails: entry.hideDetails)
         } ?? LockScreenPriorityStatus(snapshot: entry.snapshot, hideDetails: entry.hideDetails)
 
+        let columns = account.map {
+            ActivityWidgetPresentation.columnCounts(for: $0.items, now: entry.date)
+        }
+
         switch family {
+        // Accessory families get exactly one tap target from WidgetKit: the
+        // Activity drawer, filtered to the column the widget leads with.
         case .accessoryRectangular:
-            // Accessory families get exactly one tap target from WidgetKit, so
-            // the per-row links of the home families are not available here.
-            LockScreenRectangularView(status: status, freshness: entry.freshness)
-                .widgetURL(status.destinationURL)
-                .privacySensitive()
+            if let columns {
+                LockScreenColumnsRectangularView(columns: columns, freshness: entry.freshness)
+                    .widgetURL(Self.destination(columns))
+            } else {
+                LockScreenRectangularView(status: status, freshness: entry.freshness)
+                    .widgetURL(status.destinationURL)
+                    .privacySensitive()
+            }
         case .accessoryCircular:
-            LockScreenCircularView(status: status)
-                .widgetURL(status.destinationURL)
-                .privacySensitive()
+            if let columns {
+                LockScreenColumnsCircularView(columns: columns)
+                    .widgetURL(Self.destination(columns))
+            } else {
+                LockScreenCircularView(status: status)
+                    .widgetURL(status.destinationURL)
+                    .privacySensitive()
+            }
         case .accessoryInline:
-            LockScreenInlineView(status: status)
-                .widgetURL(status.destinationURL)
-                .privacySensitive()
+            if let columns {
+                LockScreenColumnsInlineView(columns: columns)
+                    .widgetURL(Self.destination(columns))
+            } else {
+                LockScreenInlineView(status: status)
+                    .widgetURL(status.destinationURL)
+                    .privacySensitive()
+            }
         default:
             ActivityHomeWidgetView(
                 model: ActivityHomeModel(
@@ -173,6 +192,114 @@ struct LockScreenWidgetEntryView: View {
             )
             .privacySensitive()
         }
+    }
+}
+
+extension LockScreenWidgetEntryView {
+    /// The column an accessory widget leads with: Needs you when anything needs
+    /// you, else Working.
+    static func leadColumn(_ columns: [ActivityBoardColumn: Int]) -> ActivityBoardColumn {
+        columns[.needsYou, default: 0] > 0 ? .needsYou : .working
+    }
+
+    static func destination(_ columns: [ActivityBoardColumn: Int]) -> URL {
+        let lead = leadColumn(columns)
+        return columns[lead, default: 0] > 0
+            ? ActivityWidgetPresentation.activityURL(for: lead)
+            : ActivityWidgetPresentation.activityURL
+    }
+}
+
+// MARK: - Column counts (account feed)
+
+/// Four compact glyph + count pairs, then the age when the snapshot is behind
+/// or the live columns in words.
+private struct LockScreenColumnsRectangularView: View {
+    let columns: [ActivityBoardColumn: Int]
+    var freshness: ActivityWidgetPresentation.Freshness?
+
+    private var caption: String {
+        freshness?.label
+            ?? ActivityWidgetPresentation.columnSummary(columns)
+            ?? "No agents working"
+    }
+
+    var body: some View {
+        ZStack {
+            AccessoryWidgetBackground()
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 0) {
+                    ForEach(ActivityBoardColumn.allCases, id: \.self) { column in
+                        let count = columns[column, default: 0]
+                        HStack(spacing: 2) {
+                            Image(systemName: column.systemImage)
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("\(min(count, 99))")
+                                .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
+                        }
+                        .foregroundStyle(activityToneColor(column.tone))
+                        .opacity(count == 0 ? 0.45 : 1)
+                        .widgetAccentable()
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                Text(caption)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 2)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("ADE status")
+        .accessibilityValue(
+            ActivityBoardColumn.allCases
+                .map { "\(columns[$0, default: 0]) \($0.label.lowercased())" }
+                .joined(separator: ", ")
+                + (freshness?.label.map { ". \($0)" } ?? "")
+        )
+    }
+}
+
+/// The Needs-you count, or the Working count when nothing needs you.
+private struct LockScreenColumnsCircularView: View {
+    let columns: [ActivityBoardColumn: Int]
+
+    var body: some View {
+        let column = LockScreenWidgetEntryView.leadColumn(columns)
+        let count = columns[column, default: 0]
+        ZStack {
+            AccessoryWidgetBackground()
+            VStack(spacing: 0) {
+                Image(systemName: column.systemImage)
+                    .font(.system(size: 11, weight: .semibold))
+                Text("\(min(count, 99))")
+                    .font(.system(size: count >= 10 ? 17 : 20, weight: .bold, design: .rounded).monospacedDigit())
+            }
+            .foregroundStyle(activityToneColor(column.tone))
+            .opacity(count == 0 ? 0.5 : 1)
+        }
+        .widgetAccentable()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("ADE status")
+        .accessibilityValue("\(count) \(column.label.lowercased())")
+    }
+}
+
+/// "2 need you · 5 working".
+private struct LockScreenColumnsInlineView: View {
+    let columns: [ActivityBoardColumn: Int]
+
+    var body: some View {
+        let text = ActivityWidgetPresentation.columnSummary(columns) ?? "No agents working"
+        Label(text, systemImage: LockScreenWidgetEntryView.leadColumn(columns).systemImage)
+            .labelStyle(.titleAndIcon)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .accessibilityLabel("ADE")
+            .accessibilityValue(text)
     }
 }
 

@@ -57,6 +57,7 @@ import type {
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
   LaneGitHubIssue,
+  LaneGitHubIssueLink,
   LaneLinearIssue,
   LinearIssueSnapshotPatch,
   LaneLinearIssueLink,
@@ -508,7 +509,12 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
     tags: [...summary.tags],
     activeBranchProfile: summary.activeBranchProfile ? { ...summary.activeBranchProfile } : null,
     linearIssue: summary.linearIssue ? cloneLaneLinearIssue(summary.linearIssue) : null,
-    linearIssueLinks: (summary.linearIssueLinks ?? []).map(cloneLaneLinearIssueLink)
+    linearIssueLinks: (summary.linearIssueLinks ?? []).map(cloneLaneLinearIssueLink),
+    githubIssueLinks: (summary.githubIssueLinks ?? []).map((link) => ({
+      ...link,
+      issue: cloneLaneGitHubIssue(link.issue),
+      evidence: link.evidence ? { ...link.evidence } : link.evidence,
+    })),
   };
 }
 
@@ -799,6 +805,13 @@ function parseSessionGitHubIssueLink(row: SessionGitHubIssueLinkRow | null | und
   };
 }
 
+/** The lane-shaped view of a GitHub issue link; a lane's own link has no chat in its evidence. */
+function laneGitHubIssueLinkFromSession(link: SessionGitHubIssueLink | null): LaneGitHubIssueLink | null {
+  if (!link?.laneId) return null;
+  const { sessionId: _sessionId, ...rest } = link;
+  return { ...rest, laneId: link.laneId };
+}
+
 function makePrimaryLinearIssueLink(laneId: string, issue: LaneLinearIssue, timestamp: string): LaneLinearIssueLink {
   return {
     id: `primary:${laneId}:${issue.id}`,
@@ -845,6 +858,7 @@ function toLaneSummary(args: {
   activeBranchProfile?: LaneBranchProfile | null;
   linearIssue?: LaneLinearIssue | null;
   linearIssueLinks?: LaneLinearIssueLink[];
+  githubIssueLinks?: LaneGitHubIssueLink[];
 }): LaneSummary {
   const { row, status, parentStatus, childCount, stackDepth, activeBranchProfile, linearIssue } = args;
   const linearIssueLinks = mergePrimaryLinearIssueLink(row.id, linearIssue ?? null, args.linearIssueLinks ?? [], row.created_at);
@@ -878,7 +892,8 @@ function toLaneSummary(args: {
     trackedFileCount: status.trackedFileCount ?? null,
     activeBranchProfile: activeBranchProfile ?? null,
     linearIssue: linearIssue ?? null,
-    linearIssueLinks
+    linearIssueLinks,
+    githubIssueLinks: args.githubIssueLinks ?? [],
   };
 }
 
@@ -1801,6 +1816,29 @@ export function createLaneService({
     return [...touched];
   };
 
+  /**
+   * GitHub issues the lane is linked to: its own link (a lane made for an
+   * issue, stored under the session id `lane:<laneId>`) and every chat in it
+   * that was handed one.
+   */
+  const getLaneGitHubIssueLinks = (laneId: string): LaneGitHubIssueLink[] => {
+    try {
+      return db.all<SessionGitHubIssueLinkRow>(
+        `
+          select *
+          from session_github_issues
+          where project_id = ?
+            and lane_id = ?
+          order by updated_at desc
+        `,
+        [projectId, laneId],
+      ).map((row) => laneGitHubIssueLinkFromSession(parseSessionGitHubIssueLink(row)))
+        .filter((link): link is LaneGitHubIssueLink => Boolean(link));
+    } catch {
+      return [];
+    }
+  };
+
   const getLaneLinearIssueLinks = (laneId: string): LaneLinearIssueLink[] => {
     try {
       return db.all<LaneLinearIssueLinkRow>(
@@ -2111,6 +2149,29 @@ export function createLaneService({
     } catch (err) {
       try { db.run("rollback"); } catch { /* keep original issue-link error */ }
       throw err;
+    }
+  };
+
+  /** A lane made for a GitHub issue: one link row under `lane:<laneId>`, so its PR closes the issue. */
+  const linkGitHubIssueToLane = (laneId: string, value: LaneGitHubIssue | null): void => {
+    const issue = value ? parseLaneGitHubIssueValue(value) : null;
+    if (!issue) return;
+    try {
+      upsertSessionGitHubIssueLink({
+        sessionId: `lane:${laneId}`,
+        laneId,
+        issue,
+        role: "primary",
+        source: "lane_link",
+        includeInPr: true,
+        closeOnMerge: true,
+      });
+    } catch (error) {
+      logger.warn("laneService.github_issue_link_failed", {
+        laneId,
+        issueId: issue.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -3657,6 +3718,29 @@ export function createLaneService({
       // Non-fatal — linked issue metadata is additive.
     }
 
+    const githubIssueLinksByLaneId = new Map<string, LaneGitHubIssueLink[]>();
+    try {
+      const githubRows = db.all<SessionGitHubIssueLinkRow>(
+        `
+          select *
+          from session_github_issues
+          where project_id = ?
+            and lane_id is not null
+          order by updated_at desc
+        `,
+        [projectId],
+      );
+      for (const githubRow of githubRows) {
+        const link = laneGitHubIssueLinkFromSession(parseSessionGitHubIssueLink(githubRow));
+        if (!link) continue;
+        const list = githubIssueLinksByLaneId.get(link.laneId) ?? [];
+        list.push(link);
+        githubIssueLinksByLaneId.set(link.laneId, list);
+      }
+    } catch {
+      // Non-fatal — linked issue metadata is additive.
+    }
+
     for (const row of activeRows) {
       if (!row.parent_lane_id) continue;
       childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
@@ -3745,6 +3829,7 @@ export function createLaneService({
             activeBranchProfile: ensureBranchProfileForRow(row),
             linearIssue: linearIssueByLaneId.get(row.id) ?? null,
             linearIssueLinks: linearIssueLinksByLaneId.get(row.id) ?? [],
+            githubIssueLinks: githubIssueLinksByLaneId.get(row.id) ?? [],
           })
         );
         if (includeStatus) {
@@ -3810,6 +3895,7 @@ export function createLaneService({
     folder?: string;
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
+    githubIssue?: LaneGitHubIssue | null;
   }, runtimeOptions: LaneCreateRuntimeOptions = {}): Promise<LaneSummary> => {
     const laneId = resolvePresetLaneId(runtimeOptions.laneId);
     const now = new Date().toISOString();
@@ -3946,6 +4032,7 @@ export function createLaneService({
         linearIssue = args.linearIssue
           ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
           : null;
+        linkGitHubIssueToLane(laneId, args.githubIssue ?? null);
         invalidateLanePathCaches();
 
       } catch (error) {
@@ -3996,6 +4083,7 @@ export function createLaneService({
       activeBranchProfile: ensureBranchProfileForRow(row),
       linearIssue,
       linearIssueLinks: getLaneLinearIssueLinks(laneId),
+      githubIssueLinks: getLaneGitHubIssueLinks(laneId),
     });
     if (linearIssue) notifyLinearIssueLinked(summary, linearIssue);
 
@@ -5064,6 +5152,7 @@ export function createLaneService({
         activeBranchProfile: ensureBranchProfileForRow(row),
         linearIssue: getLaneLinearIssue(row.id),
         linearIssueLinks: getLaneLinearIssueLinks(row.id),
+        githubIssueLinks: getLaneGitHubIssueLinks(row.id),
       });
     },
 
@@ -5377,6 +5466,8 @@ export function createLaneService({
           evidence,
         }));
       }
+      // The lane summary carries these links ("Linked in ADE", the PR's closes).
+      if (laneId && links.length > 0) invalidateLaneListCache();
       return links;
     },
 
@@ -5396,12 +5487,22 @@ export function createLaneService({
             "delete from session_github_issues where project_id = ? and id = ?",
             [projectId, link.id],
           );
+          // The lane made for this issue carries its own link (`lane:<laneId>`).
+          // Taking the issue off the chat also takes it off the lane, or the
+          // lane's PR would still close an issue the user detached.
+          if (link.laneId && !chatSessionId.startsWith("lane:")) {
+            db.run(
+              "delete from session_github_issues where project_id = ? and session_id = ? and issue_id = ?",
+              [projectId, `lane:${link.laneId}`, link.issue.id],
+            );
+          }
         }
         db.run("commit");
       } catch (err) {
         try { db.run("rollback"); } catch { /* keep original detach error */ }
         throw err;
       }
+      if (target.some((link) => link.laneId)) invalidateLaneListCache();
       return true;
     },
 
@@ -5471,7 +5572,7 @@ export function createLaneService({
     cleanupReservedWorktree,
 
     async create(
-      { name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue }: CreateLaneArgs,
+      { name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue, githubIssue }: CreateLaneArgs,
       runtimeOptions: LaneCreateRuntimeOptions = {},
     ): Promise<LaneSummary> {
       const requestedStartPoint = startPoint?.trim() ?? "";
@@ -5533,6 +5634,7 @@ export function createLaneService({
           parentLaneId: parent.lane_type === "primary" ? null : parent.id,
           branchName,
           linearIssue,
+          githubIssue,
         }, runtimeOptions);
       }
 
@@ -5558,6 +5660,7 @@ export function createLaneService({
         parentLaneId: null,
         branchName,
         linearIssue,
+        githubIssue,
       }, runtimeOptions);
     },
 
@@ -5782,7 +5885,18 @@ export function createLaneService({
     },
 
     async importBranch(
-      args: { branchRef: string; name?: string; description?: string; baseBranch?: string },
+      args: {
+        branchRef: string;
+        name?: string;
+        description?: string;
+        baseBranch?: string;
+        /**
+         * Push the branch to origin when it tracks nothing. Default true. A
+         * cross-machine move carrying unpushed commits passes false: arriving
+         * on another machine must not publish work the person never pushed.
+         */
+        publishUpstream?: boolean;
+      },
       runtimeOptions: { laneId?: string } = {},
     ): Promise<LaneSummary> {
       const rawRef = (args.branchRef ?? "").trim();
@@ -5915,13 +6029,15 @@ export function createLaneService({
         invalidateLanePathCaches();
 
         // Best-effort push to establish upstream if not already tracking a remote
-        try {
-          const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
-          if (upstreamCheck.exitCode !== 0) {
-            await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+        if (args.publishUpstream !== false) {
+          try {
+            const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
+            if (upstreamCheck.exitCode !== 0) {
+              await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+            }
+          } catch {
+            // Non-fatal: lane works locally even without remote tracking
           }
-        } catch {
-          // Non-fatal: lane works locally even without remote tracking
         }
 
         const row = getLaneRow(laneId);

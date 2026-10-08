@@ -363,6 +363,14 @@ export type AutoUpdateSnapshot = {
    * existing snapshot literal keeps compiling.
    */
   updateTransaction?: UpdateTransactionResult | null;
+  /** When the update feed last answered a check (epoch ms). Null until one has. */
+  lastCheckedAt?: number | null;
+  /**
+   * The latest check failed while a downloaded update was kept, so the status
+   * stays `ready` and `latestKnownVersion` may be out of date. Cleared by the
+   * next check the feed answers.
+   */
+  checkFailure?: { kind: AutoUpdateErrorKind; message: string; at: number } | null;
 };
 
 export type RuntimeActivityCounts = {
@@ -532,8 +540,8 @@ export type AppNavigationTarget =
   | {
       /**
        * A settings tab, optionally anchored at a specific setting. Lets
-       * surfaces outside the router tree (the attention popover, the notch)
-       * hand off to Settings without taking a `useNavigate` dependency.
+       * surfaces outside the router tree (the Activity popover) hand off to
+       * Settings without taking a `useNavigate` dependency.
        */
       kind: "settings";
       tab?: string | null;

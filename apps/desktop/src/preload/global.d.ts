@@ -1,6 +1,7 @@
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { MusicBridge } from "../shared/types/music";
 import type { SmartLinkPreview } from "../shared/smartLinks";
+import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
   ChatThreadComment,
@@ -259,6 +260,15 @@ import type {
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
+  AgentChatAcknowledgeCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatRetryCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffResult,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatResolveCrossMachineHandoffApprovalArgs,
+  AgentChatStartCrossMachineHandoffArgs,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
@@ -451,6 +461,11 @@ import type {
   CtoCountLinearIssuesArgs,
   CtoCountLinearIssuesResult,
   CtoGetLinearIssueArgs,
+  CtoCreateLinearIssueCommentArgs,
+  LinearIssueCreateInput,
+  LinearIssueCreateOptions,
+  LinearProjectMilestone,
+  LinearUploadResult,
   CtoLinearCustomView,
   LinearAgentOverview,
   LinearInboxNotification,
@@ -506,6 +521,11 @@ import type {
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
+  GitHubRepoIssueSummary,
+  GitHubIssueWriteAccess,
+  GitHubIssueCreateInput,
+  GitHubIssueCreateResult,
+  GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
@@ -1000,7 +1020,7 @@ import type {
   ApiCredentialStoreArgs,
   ApiCredentialSummary,
 } from "../shared/types/apiCredentials";
-import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
+import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "../shared/laneGitHubIssue";
 import type {
   AgentChatCopyTempAttachmentArgs,
   ChatAttachmentStagingMode,
@@ -1091,6 +1111,12 @@ declare global {
         getInstalledBrowsers?: () => Promise<InstalledBrowser[]>;
         /** Open a URL in one of the browsers `getInstalledBrowsers` returned. */
         openInBrowser?: (args: { url: string; browserId: string }) => Promise<void>;
+        /**
+         * An installed app's icon by its name ("Xcode", "Notes"), as a data
+         * URL, or null. macOS only; elsewhere, and on the hosted-web client,
+         * the method is absent or answers null, and callers draw a glyph.
+         */
+        getAppIcon?: (args: { name: string }) => Promise<string | null>;
         onRuntimeStatusChanged: (
           cb: (status: LocalRuntimeStatus) => void,
         ) => () => void;
@@ -1768,6 +1794,15 @@ declare global {
         listRegistry: () => Promise<AdeActionRegistryEntry[]>;
       };
       attention: {
+        /**
+         * Sends a notification to the phones on the ADE account through the
+         * project's runtime (`attention.sendNotification`). The automation
+         * editor's "Send a test" uses it. Absent where no runtime can send.
+         */
+        sendNotification?: (
+          args: { title: string; body?: string | null; open?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").CustomNotificationResult>;
         getSnapshot: (
           since?: number,
           streamId?: string | null,
@@ -1841,38 +1876,6 @@ declare global {
         onFailure: (
           cb: (
             failure: import("../shared/types/captureGesture").CaptureGestureFailure,
-          ) => void,
-        ) => () => void;
-      };
-      attentionNotch: {
-        publishSnapshot: (
-          snapshot: import("../shared/types").AttentionSnapshot,
-        ) => Promise<void>;
-        // Optional like `onRefreshRequested`: the web adapter has no notch at
-        // all, so every call site must optional-chain through it.
-        publishToast?: (
-          toast: import("../shared/types").AttentionNotchToast,
-        ) => Promise<void>;
-        updateSettings: (
-          settings: import("../shared/types").AttentionNotchSettings,
-        ) => Promise<void>;
-        getHealth: () => Promise<
-          import("../shared/types").AttentionNotchHealth
-        >;
-        retry: () => Promise<
-          import("../shared/types").AttentionNotchHealth
-        >;
-        onAcknowledgeRequested: (
-          cb: (
-            request: import("../shared/types").AttentionNotchAcknowledgeRequest,
-          ) => void,
-        ) => () => void;
-        onRefreshRequested?: (
-          cb: (request?: { force?: boolean }) => void,
-        ) => () => void;
-        onSettingsChanged?: (
-          cb: (
-            settings: import("../shared/types").AttentionNotchSettings,
           ) => void,
         ) => () => void;
       };
@@ -2247,6 +2250,34 @@ declare global {
           args: AgentChatMarkCrossMachineHandoffArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        getCrossMachineHandoffOptions: (
+          args: AgentChatCrossMachineHandoffSessionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffOptionsResult>;
+        previewCrossMachineHandoff: (
+          args: AgentChatPreviewCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatPreviewCrossMachineHandoffResult>;
+        startCrossMachineHandoff: (
+          args: AgentChatStartCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord>;
+        cancelCrossMachineHandoff: (
+          args: AgentChatCrossMachineHandoffSessionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
+        retryCrossMachineHandoff: (
+          args: AgentChatRetryCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord>;
+        resolveCrossMachineHandoffApproval: (
+          args: AgentChatResolveCrossMachineHandoffApprovalArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
+        acknowledgeCrossMachineHandoff: (
+          args: AgentChatAcknowledgeCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         steer: (
           args: AgentChatSteerArgs,
@@ -3344,6 +3375,8 @@ declare global {
           args: BuiltInBrowserTabArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
+        /** "Attach to chat": move a tab's lease to one chat (or drop it). Optional for older preloads. */
+        handTabToChat?: (args: BuiltInBrowserTabArgs) => Promise<BuiltInBrowserStatus>;
         closeTab: (
           args: BuiltInBrowserTabArgs,
           pin?: OpenProjectBinding | null,
@@ -3986,6 +4019,19 @@ declare global {
           name?: string;
           number: number;
         }) => Promise<GitHubIssueLike | null>;
+        /** Issues enabled + open count, one GraphQL point. */
+        getRepoIssueSummary: (args: { owner: string; name: string }) => Promise<GitHubRepoIssueSummary>;
+        listIssueComments: (args: { owner: string; name: string; number: number }) => Promise<GitHubIssueCommentLike[]>;
+        createIssue: (args: { owner: string; name: string; input: GitHubIssueCreateInput }) => Promise<GitHubIssueCreateResult>;
+        listIssueTemplates: (args: { owner: string; name: string }) => Promise<GitHubIssueTemplateSet>;
+        listIssueTypes: (args: { owner: string; name: string }) => Promise<GitHubIssueTypeOption[]>;
+        /** Which credential an issue edit would use, and the App's issues permission. */
+        getIssueWriteAccess: (args: { owner: string; name: string; force?: boolean }) => Promise<GitHubIssueWriteAccess>;
+        updateIssue: (args: { owner: string; name: string; number: number; patch: GitHubIssuePatch }) => Promise<GitHubIssueLike | null>;
+        commentOnIssue: (args: { owner: string; name: string; number: number; body: string }) => Promise<GitHubIssueCommentLike | null>;
+        listRepoMilestones: (args: { owner: string; name: string }) => Promise<Array<{ number: number; title: string }>>;
+        /** Issues only (no pull requests), newest activity first, one GraphQL page. */
+        listRepoIssueList: (args: { owner: string; name: string; state: "open" | "closed" | "all" }) => Promise<GitHubIssueLike[]>;
         listRepoAutolinks: (args?: {
           owner?: string;
           name?: string;
@@ -4443,6 +4489,11 @@ declare global {
         getLinearIssueComments: (
           args: { issueId: string },
         ) => Promise<CtoLinearIssueComment[]>;
+        createLinearIssueComment: (args: CtoCreateLinearIssueCommentArgs) => Promise<{ commentId: string }>;
+        createLinearIssue: (args: LinearIssueCreateInput) => Promise<NormalizedLinearIssue>;
+        getLinearIssueCreateOptions: (args: { teamKey: string }) => Promise<LinearIssueCreateOptions>;
+        listLinearProjectMilestones: (args: { projectId: string }) => Promise<LinearProjectMilestone[]>;
+        uploadLinearFile: (args: { filename: string; contentType: string; dataBase64: string }) => Promise<LinearUploadResult>;
         /** Full detail read (relations, parent, sub-issues). */
         getLinearIssue: (
           args: CtoGetLinearIssueArgs,

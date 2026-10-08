@@ -87,6 +87,7 @@ import {
   userTextLooksLikeMarkdown,
 } from "./chatUserMessageCards";
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
+import { issueCreateRequestFromSelection, requestIssueCreate } from "../../lib/issueCreateRequests";
 import { ThreadCommentLayer } from "./ThreadCommentLayer";
 import { parseThreadReviewBlock, type ChatThreadComment } from "../../../shared/threadComments";
 import {
@@ -103,6 +104,7 @@ import {
 } from "./chatTranscriptChrome";
 import { useAppStore } from "../../state/appStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { ProviderOutdatedNoticeRow } from "./ProviderOutdatedNoticeRow";
 import { transcriptRowGapPx } from "./chatAppearance";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
 import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shared/types";
@@ -129,6 +131,13 @@ import {
   dedupeChatToolActivityEntries,
 } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
+import { ChatComputerUseActionRun } from "./ChatComputerUseActions";
+import {
+  arrangeComputerUseRuns,
+  computerUseSummaryForEntry,
+  estimateComputerUseRunHeight,
+  hasComputerUseEntries,
+} from "./chatComputerUseRows";
 import {
   applyChatTranscriptTurnFolds,
   buildTranscriptEventRowKeys,
@@ -1746,6 +1755,9 @@ function runningToolLabel(entries: readonly ChatWorkLogEntry[]): string | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]!;
     if (entry.status !== "running") continue;
+    // A computer-use action already shows as its own row in the thread
+    // ("Clicking “Checkout”…"); repeating it here would say it twice.
+    if (computerUseSummaryForEntry(entry)) return null;
     if (entry.entryKind === "command" && entry.command?.trim()) return `Running ${oneLineCommand(entry.command)}`;
     if (entry.entryKind !== "tool" || !entry.toolName) continue;
     const args = readRecord(entry.args) ?? {};
@@ -2644,6 +2656,15 @@ function renderEvent(
   if (event.type === "user_message") {
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
     if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
+    const hasPastedTextPromptAttachment = event.attachments?.some(
+      (attachment) => attachment.type === "file" && attachment.intent === "user_prompt",
+    ) === true;
+    const copyText = event.displayText?.trim() || (
+      event.metadata?.hideFullPrompt === true
+      || hasPastedTextPromptAttachment
+        ? ""
+        : event.text
+    );
     const metadataKind = event.metadata?.hideFullPrompt === true && typeof event.metadata?.kind === "string"
       ? event.metadata.kind
       : null;
@@ -2701,7 +2722,9 @@ function renderEvent(
                 <span aria-hidden>↶</span>
               </button>
             ) : null}
-            <MessageCopyButton value={event.displayText?.trim() || (event.metadata?.hideFullPrompt === true ? "" : event.text)} />
+            {copyText.trim() || event.metadata?.hideFullPrompt === true
+              ? <MessageCopyButton value={copyText} />
+              : null}
           </div>
           {(() => {
             const displayText = event.displayText?.trim();
@@ -2714,7 +2737,9 @@ function renderEvent(
             // the user typed (if anything) under it.
             const review = parseThreadReviewBlock(event.text);
             if (review) {
-              const typed = displayText || review.rest.trim();
+              const typed = hasPastedTextPromptAttachment
+                ? displayText
+                : displayText || review.rest.trim();
               return (
                 <div className="flex min-w-0 flex-col gap-2">
                   <ThreadReviewSentCard comments={review.comments} />
@@ -2724,6 +2749,11 @@ function renderEvent(
             }
             // `text` is what the provider received (mention blocks expanded);
             // `displayText` is what the user typed. Show only what they typed.
+            if (hasPastedTextPromptAttachment) {
+              return displayText ? (
+                <UserTypedText text={displayText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+              ) : null;
+            }
             if (displayText && displayText !== event.text.trim()) {
               return userTextLooksLikeMarkdown(displayText) ? (
                 <MarkdownBlock markdown={displayText} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
@@ -3507,6 +3537,23 @@ function renderEvent(
       );
     }
 
+    if (event.status === "acp_provider_outdated") {
+      const providerUpdate = typeof event.detail === "object" && event.detail && !Array.isArray(event.detail)
+        ? event.detail.providerUpdate
+        : undefined;
+      if (providerUpdate) {
+        return (
+          <ProviderOutdatedNoticeRow
+            message={event.message}
+            update={providerUpdate}
+            className={cn(style.border, style.bg, style.text)}
+            icon={<NoticeIcon size={11} weight="bold" />}
+            chipLabel="update"
+          />
+        );
+      }
+    }
+
     // Warnings are one text-sized line, like the thread's other rows; the full
     // message and any detail open on click. Usage and sign-in keep their own
     // treatment, and errors keep their cards.
@@ -4133,7 +4180,7 @@ function TurnSourcesChip({
       <span>{label}</span>
     </>
   );
-  const className = "inline-flex shrink-0 items-center gap-1.5 rounded-[5px] border border-fg/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45";
+  const className = "hidden shrink-0 items-center gap-1.5 rounded-[5px] border border-fg/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 sm:inline-flex";
   return onOpen ? (
     <button
       type="button"
@@ -4957,6 +5004,10 @@ const EventRow = React.memo(function EventRow({
         <NewSinceDivider sinceMs={envelope.event.sinceMs} />
       ) : envelope.event.type === "wake_chain" ? (
         <WakeChainRow event={envelope.event} open={turnFoldOpen} onToggle={onToggleTurnFold} />
+      ) : envelope.event.type === "work_log_group" ? (
+        // Only groups holding computer-use actions reach the timeline; their
+        // other tools stay in the tools toggle.
+        <ChatComputerUseActionRun entries={envelope.event.entries} compactAll={envelope.event.computerUseCompact === true} />
       ) : envelope.event.type === "activity_bundle"
         ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
@@ -5137,9 +5188,10 @@ export function estimateTranscriptRowHeight(
       return 26;
     case "done":
       return 34;
+    case "work_log_group":
+      return estimateComputerUseRunHeight(event.entries, event.computerUseCompact === true) || 30;
     case "reasoning":
     case "activity_bundle":
-    case "work_log_group":
     case "status":
     case "system_notice":
     case "turn_details":
@@ -5641,6 +5693,12 @@ function AgentChatMessageListMain({
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const listRootRef = useRef<HTMLDivElement | null>(null);
+  // The lane is read from the chat's own machine, which a remote chat's tab
+  // does not hold.
+  const scopeLaneName = chatScope.lane?.id === laneId ? chatScope.lane?.name ?? null : null;
+  const createIssueFromSelection = useCallback((text: string) => {
+    requestIssueCreate(issueCreateRequestFromSelection(text, { sessionId: sessionId ?? null, laneId: laneId ?? null, laneName: scopeLaneName }));
+  }, [laneId, scopeLaneName, sessionId]);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const olderHistorySentinelRef = useRef<HTMLDivElement | null>(null);
   const lastHandledScrollToRowRequestIdRef = useRef<number | null>(null);
@@ -6127,14 +6185,15 @@ function AgentChatMessageListMain({
   // `work_log_group` rows no longer render anything in the timeline: tool
   // calls are shown by the working indicator / done divider, and file changes
   // are summarized ONCE per turn at the done divider instead of once per
-  // burst. A checkpoint `turn_diff_summary` folds into that same line when
+  // burst. The exception is a group holding computer-use actions (`ade screen
+  // click …`): it stays, and draws only those actions as readable rows. A checkpoint `turn_diff_summary` folds into that same line when
   // the turn has a done row. Dropping the rows outright (rather than
   // rendering an empty block) keeps them from consuming a `--chat-row-gap`.
   // Then one row per schedule (`foldScheduledWorkRows`), and an ended turn's
   // schedules move onto its turn-end line (`moveScheduledWorkToTurnEnds`).
   const scheduledWorkAtTurnEnd = useMemo(
     () => moveScheduledWorkToTurnEnds(foldScheduledWorkRows(allGroupedRows.filter((row) => {
-      if (row.event.type === "work_log_group") return false;
+      if (row.event.type === "work_log_group") return hasComputerUseEntries(row.event.entries);
       if (
         row.event.type === "turn_diff_summary"
         && row.event.turnId
@@ -6272,6 +6331,7 @@ function AgentChatMessageListMain({
   const previousFoldRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   const previousWakeChainRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   const previousThoughtRunRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
+  const previousComputerUseRunRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   // The reasoning row that draws the live ThinkingPreview: the newest row of
   // the live turn, read from the rows BEFORE work-log groups leave the drawn
   // timeline so a tool starting after the thought collapses it.
@@ -6344,9 +6404,12 @@ function AgentChatMessageListMain({
     }
     previousWakeChainRowsRef.current = chainRows;
     const withUnread = insertNewSinceDivider(folded, unreadSince);
-    const next = mergeAdjacentThoughtRows(withUnread, previousThoughtRunRowsRef.current, rowDrawContext);
-    previousThoughtRunRowsRef.current = next === withUnread ? new Map() : collectMergedThoughtRows(next);
-    return next;
+    const merged = mergeAdjacentThoughtRows(withUnread, previousThoughtRunRowsRef.current, rowDrawContext);
+    previousThoughtRunRowsRef.current = merged === withUnread ? new Map() : collectMergedThoughtRows(merged);
+    // Only a turn's newest computer-use action is drawn in full.
+    const arranged = arrangeComputerUseRuns(merged, previousComputerUseRunRowsRef.current);
+    previousComputerUseRunRowsRef.current = arranged.built;
+    return arranged.rows;
   }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
@@ -8352,9 +8415,10 @@ function AgentChatMessageListMain({
           comments={threadComments.comments}
           layoutVersion={`${groupedRows.length}:${shouldVirtualize ? `${startIndex}-${endIndex}` : "all"}`}
           onAddToChat={onInsertDraft}
+          onCreateIssue={createIssueFromSelection}
         />
       ) : (
-        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />
+        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} onCreateIssue={createIssueFromSelection} />
       )}
     </div>
     </ProofCitationProvider>

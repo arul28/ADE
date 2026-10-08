@@ -1,13 +1,14 @@
 import { ArrowDown, ArrowUp, Trash } from "@phosphor-icons/react";
-import type { TestSuiteDefinition } from "../../../../shared/types";
+import type { OpenProjectBinding, TestSuiteDefinition } from "../../../../shared/types";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { SettingsToggle } from "../../settings/settingsSectionUi";
 import { AdeActionEditor } from "../AdeActionEditor";
 import { inputCls, labelCls, selectCls } from "../designTokens";
-import { stepDef } from "../actionCatalog";
+import { isNotifyAdeAction, NOTIFY_STEP, stepDef } from "../actionCatalog";
 import type { WorkflowStep } from "./draftBridge";
 import { AgentStepEditor } from "./AgentStepEditor";
+import { NotifyStepEditor } from "./NotifyStepEditor";
 import { MinutesInput } from "./MinutesInput";
 import { RUN_COMMAND_DEFAULT_TIMEOUT_MS, RUN_COMMAND_MAX_TIMEOUT_MS } from "../../../../shared/automationLimits";
 
@@ -101,6 +102,7 @@ export function StepCard({
   total,
   triggerType,
   suites,
+  runtimePin = null,
   isCleanup,
   onChange,
   onRemove,
@@ -111,12 +113,15 @@ export function StepCard({
   total: number;
   triggerType: string;
   suites: TestSuiteDefinition[];
+  /** The machine the rule runs on; null is this window's. */
+  runtimePin?: OpenProjectBinding | null;
   isCleanup: boolean;
   onChange: (next: WorkflowStep) => void;
   onRemove: () => void;
   onMove: (direction: -1 | 1) => void;
 }) {
-  const def = stepDef(step.kind);
+  const isNotify = step.kind === "ade-action" && isNotifyAdeAction(step.adeAction);
+  const def = isNotify ? NOTIFY_STEP : stepDef(step.kind);
   const Icon = def.icon;
   const idBase = `step-${index}-${step.kind}`;
   const oddTimeout = describeOddTimeout(step.timeoutMs);
@@ -189,7 +194,16 @@ export function StepCard({
           <AgentStepEditor step={step} triggerType={triggerType} onChange={onChange} />
         ) : null}
 
-        {step.kind === "ade-action" ? (
+        {isNotify && step.adeAction ? (
+          <NotifyStepEditor
+            value={step.adeAction}
+            triggerType={triggerType}
+            runtimePin={runtimePin}
+            onChange={(adeAction) => onChange({ ...step, adeAction })}
+          />
+        ) : null}
+
+        {step.kind === "ade-action" && !isNotify ? (
           <AdeActionEditor
             value={step.adeAction ?? { domain: "", action: "" }}
             onChange={(adeAction) => onChange({ ...step, adeAction })}

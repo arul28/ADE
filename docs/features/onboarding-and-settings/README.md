@@ -541,8 +541,8 @@ Renderer — settings:
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
   entries. The tabs are General, Appearance, Chat, Apple devices, Notifications,
   Agents & Models, Lanes, Integrations, Secrets, Storage, Diagnostics,
-  Archive, and Usage. Notifications and Activity are one page: the event policies, the
-  notch, per-machine mute, privacy, sounds, and scheduled work all read and
+  Archive, and Usage. Notifications and Activity are one page: the event policies,
+  per-machine mute, privacy, sounds, and scheduled work all read and
   write through one `useActivitySettings()` model, so a change on one control
   can no longer be overwritten by a save from another copy. The retired
   `activity` tab id and the `attention` alias resolve to `notifications`.
@@ -986,7 +986,7 @@ Renderer — settings:
   — Pause all scheduled work and the active durable-job list. Naming,
   commit suggestions, idle status lines, and similar background helpers
   pick a cheap model from the ADE provider that owns the session
-  (Haiku 4.5 for Claude, GPT-5.6 Luna for Codex, Composer 2.5 for
+  (Haiku 5.5 at `low` effort for Claude, GPT-5.6 Luna for Codex, Composer 2.5 for
   Cursor; other providers reuse the session model). There is no
   Settings picker for those helpers. The section owns **Pause all scheduled
   work**, persisted as `ai.chat.scheduledWorkPaused`. This pauses Claude
@@ -2079,7 +2079,7 @@ screenshot chord — both ⌘ on macOS, both Ctrl on Windows — described in
 The switch is `scope: "machine"`, `showScopeChip: true`, `web: "hidden"`,
 and it is stored in this renderer's `localStorage` under
 `ade:capture-gesture:enabled` (defaulting **on**) rather than in synced
-settings — for the same reason the activity notch is: what a native
+settings, because what a native
 helper does on *this* computer is not a preference that should travel to
 another machine through the account. A second Mac has its own Screen
 Recording grant and its own opinion about whether a global key gesture is

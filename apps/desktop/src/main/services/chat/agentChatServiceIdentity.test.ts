@@ -16,7 +16,6 @@ import {
   openKvDb,
   path,
   readPersistedChatState,
-  resolveBuiltInBrowserActorCapability,
   runGit,
   spawn,
   storedWakeup,
@@ -446,16 +445,7 @@ describe("createAgentChatService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: tmpRoot,
       }));
-      const actorToken = baseEnv?.ADE_BROWSER_ACTOR_TOKEN;
-      expect(resolveBuiltInBrowserActorCapability(actorToken)).toMatchObject({
-        chatSessionId: session.id,
-        laneId: "lane-1",
-        projectRoot: tmpRoot,
-      });
-
       await service.dispose({ sessionId: session.id });
-
-      expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
     });
 
     it("targets Cursor SDK activity reports at the service runtime and disables them without an exact socket", async () => {

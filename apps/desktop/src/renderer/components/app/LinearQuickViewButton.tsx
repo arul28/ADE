@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Warning } from "@phosphor-icons/react";
 
 import type {
   CtoLinearQuickView,
@@ -8,19 +7,24 @@ import type {
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import {
-  consumePendingLinearIssueQuickViewRequest,
-  subscribeLinearIssueQuickViewRequests,
-  type LinearIssueQuickViewRequest,
+  consumePendingLinearPaneOpenRequest,
+  subscribeLinearPaneOpenRequests,
 } from "../../lib/linearIssueQuickViewNavigation";
+import {
+  clearPendingLinearLaunchRequest,
+  subscribeLinearLaunchRequests,
+  takePendingLinearLaunchRequest,
+} from "../../lib/linearLaunchRequests";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { cn } from "../ui/cn";
-import { Dialog } from "../ui/dialog";
 import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { LinearPaneModal } from "./LinearPaneModal";
+import { requestIssueCreate } from "../../lib/issueCreateRequests";
+import { useIssueTopBarPreferences } from "../issues/issueTopBarPreferences";
 import {
   clearLinearQuickViewSelection,
   LinearIssueBrowser,
@@ -50,7 +54,6 @@ import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
-import { fgTint } from "../lanes/laneDesignTokens";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 // A backstop for a connection made outside this window (the CLI, another
@@ -139,13 +142,11 @@ export function LinearQuickViewButton({
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
-  const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
   const [visible, setVisible] = useState(false);
+  const topBarPreferences = useIssueTopBarPreferences();
   const [open, setOpen] = useState(false);
   const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
-  const [quickViewRequest, setQuickViewRequest] = useState<LinearIssueQuickViewRequest | null>(null);
-  const [connectionPrompt, setConnectionPrompt] = useState<LinearIssueQuickViewRequest | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [batchModalOpen, setBatchModalOpen] = useState(false);
@@ -198,37 +199,35 @@ export function LinearQuickViewButton({
   }, [activeProjectRoot]);
 
   const openLinearSettings = useCallback(() => {
-    setConnectionPrompt(null);
     window.location.hash = `#${settingsRouteFor("integrations.linear")}`;
   }, []);
 
-  const handleQuickViewRequest = useCallback((request: LinearIssueQuickViewRequest) => {
-    setQuickViewRequest(request);
-    setConnectionPrompt(null);
-    void loadVisibility()
+  // "Open the Linear pane" from elsewhere (the Issues tool's empty state, the
+  // issue sheet). Disconnected: the pane would only say so, so go straight to
+  // the place that fixes it.
+  const handlePaneOpenRequest = useCallback(() => {
+    void loadVisibility({ force: true })
       .then((nextVisible) => {
         setVisible(nextVisible);
         if (nextVisible) {
-          setConnectionPrompt(null);
+          if (cachedQuickViewRef.current) setQuickView(cachedQuickViewRef.current);
           setOpen(true);
         } else {
-          setOpen(false);
-          setConnectionPrompt(request);
+          openLinearSettings();
         }
       })
       .catch(() => {
         setVisible(false);
-        setOpen(false);
-        setConnectionPrompt(request);
+        openLinearSettings();
       });
-  }, [loadVisibility]);
+  }, [loadVisibility, openLinearSettings]);
 
   useEffect(() => {
     if (variant !== "icon") return;
-    const pending = consumePendingLinearIssueQuickViewRequest();
-    if (pending) handleQuickViewRequest(pending);
-    return subscribeLinearIssueQuickViewRequests(handleQuickViewRequest);
-  }, [handleQuickViewRequest, variant]);
+    const pending = consumePendingLinearPaneOpenRequest();
+    if (pending) handlePaneOpenRequest();
+    return subscribeLinearPaneOpenRequests(handlePaneOpenRequest);
+  }, [handlePaneOpenRequest, variant]);
 
   useEffect(() => {
     if (!occludesNativeBrowser || typeof window === "undefined") return undefined;
@@ -349,8 +348,12 @@ export function LinearQuickViewButton({
   // the user lands on the Lanes tab immediately rather than watching a progress
   // bar. Both the multi-select dock and the single-issue row route here, so
   // every issue→lane(+chat/CLI) launch shares one path.
+  // Cancelling the launch modal goes back to where it was opened from: the
+  // pane when the pane's dock opened it, nowhere when the issue viewer did.
+  const batchReturnsToPaneRef = useRef(true);
   const handleBatchLaunchOpen = useCallback(
-    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>, options: { laneOnly?: boolean }) => {
+    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>, options: { laneOnly?: boolean; fromPane?: boolean }) => {
+      batchReturnsToPaneRef.current = options.fromPane !== false;
       setBatchIssues(issues.map((i) => ("raw" in i ? linearBrowserIssueToLaneIssue(i) : (i as LaneLinearIssue))));
       setBatchLaunchStates(new Map());
       setBatchLaneOnly(options.laneOnly === true);
@@ -359,6 +362,18 @@ export function LinearQuickViewButton({
     },
     [],
   );
+
+  // Launch asked for by the issue viewer (Work tools pane, issue sheet): the
+  // same launch-config modal and runner as the pane's own dock.
+  useEffect(() => {
+    if (variant !== "icon") return;
+    const pending = takePendingLinearLaunchRequest();
+    if (pending) handleBatchLaunchOpen(pending.issues, { laneOnly: pending.laneOnly, fromPane: false });
+    return subscribeLinearLaunchRequests((request) => {
+      clearPendingLinearLaunchRequest();
+      handleBatchLaunchOpen(request.issues, { laneOnly: request.laneOnly, fromPane: false });
+    });
+  }, [handleBatchLaunchOpen, variant]);
 
   const launchBatch = useCallback(async (entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => {
     if (!entries.length) return;
@@ -516,7 +531,7 @@ export function LinearQuickViewButton({
   // preserved.
   const handleBatchModalOpenChange = useCallback((next: boolean) => {
     setBatchModalOpen(next);
-    if (!next) setOpen(true);
+    if (!next && batchReturnsToPaneRef.current) setOpen(true);
   }, []);
 
   const handleRetryFailed = useCallback(() => {
@@ -588,99 +603,11 @@ export function LinearQuickViewButton({
     return { total: states.length, completed, failed, running };
   }, [batchLaunchStates]);
 
-  // Raised from a Linear deeplink; it sits one layer above the quick view pane.
-  const connectionPromptModal = connectionPrompt ? (
-    <Dialog
-      open
-      onOpenChange={(next) => {
-        if (!next) setConnectionPrompt(null);
-      }}
-      title="Linear deeplink unavailable"
-      hideHeader
-      layer="nestedDialog"
-      width={440}
-      bodyPadding={false}
-      // As before, nothing is focused for the user; the panel holds focus.
-      preventAutoFocus
-      panelStyle={{
-        background: "var(--ade-shell-surface, #121019)",
-        borderRadius: 12,
-        borderColor: fgTint(12),
-      }}
-    >
-      <div className="flex items-start gap-3 border-b border-fg/10 px-4 py-3">
-        <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-yellow-500/12 text-yellow-200">
-          <Warning size={15} weight="fill" />
-        </span>
-        <div className="min-w-0">
-          <div className="text-[13px] font-semibold">
-            {project?.rootPath
-              ? `Connect Linear to open ${connectionPrompt.issueIdentifier}`
-              : `Open the ADE project for ${connectionPrompt.issueIdentifier}`}
-          </div>
-          <div className="mt-1 text-[12px] leading-5 text-muted-fg/75">
-            {project?.rootPath
-              ? "This link opens the Linear pane in ADE, but this project is not connected to Linear yet."
-              : "This link needs the ADE project that owns the issue open before ADE can check Linear."}
-          </div>
-        </div>
-      </div>
-      <div className="grid gap-2 px-4 py-3 text-[12px]">
-        <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
-          <span className="text-muted-fg/50">Issue</span>
-          <span className="min-w-0 truncate font-mono text-muted-fg/80">{connectionPrompt.issueIdentifier}</span>
-        </div>
-        {connectionPrompt.branch ? (
-          <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
-            <span className="text-muted-fg/50">Branch</span>
-            <span className="min-w-0 break-all font-mono text-muted-fg/80">{connectionPrompt.branch}</span>
-          </div>
-        ) : null}
-      </div>
-      <div className="flex justify-end gap-2 border-t border-fg/10 px-4 py-3">
-        <button
-          type="button"
-          className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
-          data-variant="ghost"
-          onClick={() => setConnectionPrompt(null)}
-        >
-          Dismiss
-        </button>
-        {project?.rootPath ? (
-          <button
-            type="button"
-            className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
-            data-variant="primary"
-            onClick={openLinearSettings}
-          >
-            Open Linear settings
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
-            data-variant="primary"
-            onClick={() => {
-              setConnectionPrompt(null);
-              setShowWelcome(true);
-              window.location.hash = "#/work";
-            }}
-          >
-            Open project picker
-          </button>
-        )}
-      </div>
-    </Dialog>
-  ) : null;
-
-  if (!visible) return <>{connectionPromptModal}</>;
-
   const handleToggle = () => {
     if (open) {
       close();
       return;
     }
-    setQuickViewRequest(null);
     openQuickView();
     onMenuActivate?.();
   };
@@ -727,8 +654,7 @@ export function LinearQuickViewButton({
 
   return (
     <>
-      {showTrigger ? trigger : null}
-      {connectionPromptModal}
+      {showTrigger && visible && topBarPreferences.linear ? trigger : null}
 
       <LinearPaneModal
         open={open}
@@ -736,6 +662,8 @@ export function LinearQuickViewButton({
         quickView={quickView}
         loading={browserLoading}
         onRefresh={() => setRefreshKey((key) => key + 1)}
+        onNew={() => requestIssueCreate({ provider: "linear", origin: "pane" })}
+        newTitle="New Linear issue"
         onClose={close}
       >
         <LinearIssueBrowser
@@ -746,8 +674,6 @@ export function LinearQuickViewButton({
           onIssueAction={async () => undefined}
           onConnectionVisibilityChange={setVisible}
           onOpenLinearSettings={openLinearSettings}
-          requestedIssueIdentifier={quickViewRequest?.issueIdentifier ?? null}
-          requestedIssueRequestKey={quickViewRequest?.requestedAt ?? null}
           onQuickViewChange={(data) => {
             cachedQuickViewRef.current = data;
             setQuickView(data);

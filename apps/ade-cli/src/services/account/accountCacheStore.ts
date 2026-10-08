@@ -1,6 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
+import {
+  readAccountChangeMarks,
+  subscribeAccountChangeMarks,
+  type AccountChangeMarkKind,
+} from "./accountChangeMarks";
+
+/** Marks older than this mean the heartbeat stopped carrying them: poll. */
+const CHANGE_MARK_FRESH_MS = 90_000;
+/** Even with fresh marks, pull at least this often as a safety net. */
+const CHANGE_MARK_SAFETY_SYNC_MS = 5 * 60_000;
 
 /**
  * The machine-local half of an account-synced store.
@@ -95,6 +105,12 @@ export type AccountCacheStoreConfig<
   getAccountUserId: () => string | null;
   logger: AccountCacheLogger;
   defaultSyncIntervalMs: number;
+  /**
+   * Which relay change mark covers this store. When set, a periodic tick pulls
+   * only when that mark moved, local writes are queued, the marks have gone
+   * stale, or the safety interval passed; see `shouldPullOnTick`.
+   */
+  changeMarkKind?: AccountChangeMarkKind;
   /** Log event names, so each store keeps the telemetry it already emits. */
   events: {
     writeFailed: string;
@@ -178,6 +194,41 @@ export function createAccountCacheStore<
   let syncInFlight: Promise<AccountCacheSyncStatus> | null = null;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   const syncListeners = new Set<AccountCacheSyncListener>();
+  /**
+   * What the last sync covered: its status, the change mark it pulled up to,
+   * when it finished, and for which account. A tick may skip the network only
+   * when all of these still describe the signed-in account.
+   */
+  let lastSyncedMark: string | null | undefined;
+  let lastReadySyncAtMs = 0;
+  let lastSyncStatus: AccountCacheSyncStatus | null = null;
+  let lastSyncedAccountUserId: string | null = null;
+  let lastSyncedEpoch = -1;
+  /** The mark the most recent sync attempt started from, whatever its outcome. */
+  let lastAttemptedMark: string | null | undefined;
+  let lastAttemptedAccountUserId: string | null = null;
+  const forgetLastSync = (): void => {
+    lastAttemptedMark = undefined;
+    lastAttemptedAccountUserId = null;
+    lastSyncedMark = undefined;
+    lastReadySyncAtMs = 0;
+    lastSyncStatus = null;
+    lastSyncedAccountUserId = null;
+    lastSyncedEpoch = -1;
+  };
+  /**
+   * True when the last sync was a successful pull for this account into the
+   * cache that is loaded now. Reads the cache first: that is what notices an
+   * owner change and bumps the epoch, so an A→B→A switch (which empties A's
+   * cache) never counts as already synced.
+   */
+  const lastSyncWasReadyFor = (accountUserId: string): boolean => {
+    readCache();
+    return lastSyncStatus === "ready"
+      && lastSyncedAccountUserId === accountUserId
+      && lastSyncedEpoch === epoch;
+  };
+  let unsubscribeChangeMarks: (() => void) | null = null;
   /**
    * How many callers asked for the background sync.
    *
@@ -398,9 +449,45 @@ export function createAccountCacheStore<
   const stopPeriodicSync = (): void => {
     if (syncHolders > 0) syncHolders -= 1;
     if (syncHolders > 0) return;
+    unsubscribeChangeMarks?.();
+    unsubscribeChangeMarks = null;
     if (!syncTimer) return;
     clearInterval(syncTimer);
     syncTimer = null;
+  };
+
+  /**
+   * Whether a periodic tick needs the network. Polling stays the default: any
+   * doubt (no mark kind, no account, queued local writes, no fresh mark from
+   * the relay, a mark that moved, or the safety interval elapsed) pulls, so a
+   * relay or publisher that never sends marks behaves exactly as before.
+   */
+  const shouldPullOnTick = (nowMs: number): boolean => {
+    const kind = config.changeMarkKind;
+    if (!kind) return true;
+    const accountUserId = config.getAccountUserId();
+    if (!accountUserId) return true;
+    if (!lastSyncWasReadyFor(accountUserId)) return true;
+    if (readCache().pending.length > 0) return true;
+    if (nowMs - lastReadySyncAtMs >= CHANGE_MARK_SAFETY_SYNC_MS) return true;
+    const entry = readAccountChangeMarks(accountUserId);
+    if (!entry || nowMs - entry.receivedAtMs > CHANGE_MARK_FRESH_MS) return true;
+    return entry.marks[kind] !== lastSyncedMark;
+  };
+
+  /**
+   * Each listener runs behind its own boundary: one that throws must neither
+   * silence the rest nor escape a timer callback, where it would be uncaught.
+   */
+  const notifySyncListeners = (status: AccountCacheSyncStatus): void => {
+    for (const listener of syncListeners) {
+      try {
+        listener(status);
+      } catch {
+        // Contained like the network tick's `.catch`: the listener owns its
+        // own reporting, and the cache has nothing to add.
+      }
+    }
   };
 
   async function runSync(): Promise<AccountCacheSyncStatus> {
@@ -529,9 +616,30 @@ export function createAccountCacheStore<
      */
     async sync(): Promise<AccountCacheSyncStatus> {
       if (syncInFlight) return syncInFlight;
-      syncInFlight = runSync().finally(() => {
-        syncInFlight = null;
-      });
+      // Take the mark before pulling: a change that lands mid-pull moves the
+      // mark past this value, so the next tick pulls again.
+      const accountUserId = config.getAccountUserId();
+      const markAtStart = config.changeMarkKind && accountUserId
+        ? readAccountChangeMarks(accountUserId)?.marks[config.changeMarkKind]
+        : undefined;
+      readCache();
+      const epochAtStart = epoch;
+      lastAttemptedMark = markAtStart;
+      lastAttemptedAccountUserId = accountUserId;
+      syncInFlight = runSync()
+        .then((status) => {
+          lastSyncStatus = status;
+          lastSyncedAccountUserId = accountUserId;
+          lastSyncedEpoch = epochAtStart;
+          if (status === "ready") {
+            lastSyncedMark = markAtStart;
+            lastReadySyncAtMs = Date.now();
+          }
+          return status;
+        })
+        .finally(() => {
+          syncInFlight = null;
+        });
       return syncInFlight;
     },
 
@@ -562,17 +670,40 @@ export function createAccountCacheStore<
         stopPeriodicSync();
       };
       if (syncTimer) return release;
-      syncTimer = setInterval(() => {
+      const syncAndNotify = (): void => {
         void this.sync()
-          .then((status) => {
-            for (const listener of syncListeners) listener(status);
-          })
+          .then(notifySyncListeners)
           .catch(() => {
             // `sync` already logs and already keeps the queue. A rejection here
             // would be an unhandled one on a timer, which takes the brain down
             // for a condition that resolves itself.
           });
+      };
+      syncTimer = setInterval(() => {
+        // A sync already running (sign-in, a user action) is joined, never
+        // pre-empted by a synthetic "ready" that would land before its pull.
+        if (syncInFlight || shouldPullOnTick(Date.now())) {
+          syncAndNotify();
+          return;
+        }
+        // Nothing moved remotely and nothing is queued: the cache is as fresh
+        // as a pull would make it. Listeners still get their tick so local
+        // follow-up work (applying vault secrets, migration) keeps its cadence.
+        notifySyncListeners("ready");
       }, Math.max(1_000, Math.trunc(intervalMs)));
+      // A moved mark pulls at once instead of waiting for the next tick, so a
+      // change on another machine lands as fast as it did with polling.
+      if (config.changeMarkKind && !unsubscribeChangeMarks) {
+        const kind = config.changeMarkKind;
+        unsubscribeChangeMarks = subscribeAccountChangeMarks((accountUserId, marks) => {
+          if (accountUserId !== config.getAccountUserId()) return;
+          // Only a mark that moved since the last attempt pulls early. Retries
+          // after a failed sync stay on the tick's cadence, so failures never
+          // double the traffic.
+          if (marks[kind] === lastAttemptedMark && lastAttemptedAccountUserId === accountUserId) return;
+          syncAndNotify();
+        });
+      }
       // Never hold the process open for a cache refresh.
       syncTimer.unref?.();
       return release;
@@ -580,12 +711,14 @@ export function createAccountCacheStore<
 
     reset(): void {
       epoch += 1;
+      forgetLastSync();
       cache = emptyCache(config.getAccountUserId());
       persist();
     },
 
     resetAndDelete(): void {
       epoch += 1;
+      forgetLastSync();
       cache = emptyCache(config.getAccountUserId());
       try {
         fs.rmSync(cachePath, { force: true });

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { createGithubIssueOps } from "../../desktop/src/main/services/github/githubIssueOps";
+import { issueWriteCandidates } from "../../desktop/src/main/services/github/githubIssueWriteAccess";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -957,7 +959,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: null,
         ghAuthError: null,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     if (appToken) {
@@ -967,7 +969,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: null,
         ghAuthError: null,
-        capabilities: ["read"],
+        capabilities: ["read", "issue-write"],
         userLogin: appStatus.userLogin,
       });
     }
@@ -978,7 +980,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: gh.ghCliPath,
         ghAuthError: gh.ghAuthError,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     if (patToken) {
@@ -988,7 +990,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: gh.ghCliPath,
         ghAuthError: gh.ghAuthError,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     return {
@@ -1345,7 +1347,7 @@ export function createHeadlessGitHubService(
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
     const explicitToken = args.token?.trim() ?? "";
-    const candidates: HeadlessGitHubTokenCandidate[] = explicitToken
+    const candidatePool: HeadlessGitHubTokenCandidate[] = explicitToken
       ? [{
           token: explicitToken,
           source: "environment",
@@ -1358,6 +1360,16 @@ export function createHeadlessGitHubService(
           (await readCredentialInventoryAsync()).candidates,
           capability,
         );
+    // An issue write uses the App only when its installation grants
+    // `Issues: write`; otherwise it would 403 on every edit (see
+    // `githubIssueWriteAccess.ts`).
+    const candidates = capability === "issue-write" && !explicitToken
+      ? await issueWriteCandidates(
+        candidatePool,
+        args.repo?.owner ?? classifyGitHubRepositoryApiPath(args.path)?.owner ?? null,
+        readAppIssueGrant,
+      )
+      : candidatePool;
     if (candidates.length === 0) {
       throw new Error(
         "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
@@ -1688,6 +1700,26 @@ export function createHeadlessGitHubService(
     });
     return Array.isArray(data) ? data : [];
   };
+
+  // Issue reads, edits and creates (see githubIssueOps.ts).
+  const issueOps = createGithubIssueOps({
+    apiRequest,
+    apiRequestAllPages,
+    readCredentialCandidates: async () => (await readCredentialInventoryAsync()).candidates,
+    logger,
+    runGh: async (ghArgs, options) => {
+      const result = await runCommandAsync(await resolveGhCliPathAsync(), ghArgs, {
+        cwd: options.cwd,
+        timeoutMs: options.timeoutMs,
+        maxBuffer: 1024 * 1024,
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr.trim() || `gh ${ghArgs.slice(0, 2).join(" ")} failed (exit ${result.exitCode}).`);
+      }
+      return result.stdout;
+    },
+  });
+  const readAppIssueGrant = issueOps.readAppIssueGrant;
 
   const getIssue: HeadlessGitHubService["getIssue"] = async (
     owner,
@@ -2371,6 +2403,16 @@ export function createHeadlessGitHubService(
     },
     listRepoIssues,
     getIssue,
+    getRepoIssueSummary: issueOps.getRepoIssueSummary,
+    createIssue: issueOps.createIssue,
+    listIssueTemplates: issueOps.listIssueTemplates,
+    listIssueTypes: issueOps.listIssueTypes,
+    linkSubIssue: issueOps.linkSubIssue,
+    getIssueWriteAccess: issueOps.getIssueWriteAccess,
+    updateIssue: issueOps.updateIssue,
+    commentOnIssue: issueOps.commentOnIssue,
+    listRepoMilestones: issueOps.listRepoMilestones,
+    listRepoIssueList: issueOps.listRepoIssueList,
     listIssueComments,
     listRepoPulls,
     listPullRequestReviews,

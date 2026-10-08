@@ -6,7 +6,6 @@ import {
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import type { SessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
 import { sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
-import { useTurnStallClock } from "../../lib/useTurnStallClock";
 import { isChatToolType } from "../../lib/sessions";
 import {
   canonicalInputFromSummary,
@@ -61,6 +60,7 @@ export function SessionStatusSlot({
   compact = false,
   runtimePin = null,
   hideLabelUnlessShout = false,
+  clockMs,
 }: {
   session: TerminalSessionSummary;
   /** Resolved status, or null for a settled row (which shows its timestamp). */
@@ -76,6 +76,12 @@ export function SessionStatusSlot({
   /** Runtime that owns this session when it differs from the active project. */
   runtimePin?: OpenProjectBinding | null;
   hideLabelUnlessShout?: boolean;
+  /**
+   * The owning card's clock (`useTurnStallClock`). The card owns it because
+   * the card computes `presentation`: a stall or an overdue wake has to
+   * re-render the card, not just this slot, or the label keeps a stale word.
+   */
+  clockMs: number;
 }) {
   // While the snooze popover is open the pointer has left the row, so the
   // hover-driven actions would fade out from under the open menu. Pin the slot
@@ -97,11 +103,7 @@ export function SessionStatusSlot({
   const canonicalInput = canonicalInputFromSummary(session);
   const canonicalState = sessionCanonicalUiState(canonicalInput);
   const canonicalPhase = canonicalState.phase;
-  // A live turn can go quiet with no new data at all, so the slot re-renders
-  // itself exactly when this session crosses the stall bar.
-  const stallSessions = React.useMemo(() => [session], [session]);
-  const stallClockMs = useTurnStallClock(stallSessions);
-  const stalled = presentation ? sessionStalledPresentation(canonicalInput, Math.max(stallClockMs, Date.now())) : null;
+  const stalled = presentation ? sessionStalledPresentation(canonicalInput, Math.max(clockMs, Date.now())) : null;
   const shownPresentation = stalled ?? presentation;
   const elapsedSince = stalled?.activityUpdatedAt
     ?? sessionElapsedAnchor(session, canonicalPhase, canonicalState.liveness);

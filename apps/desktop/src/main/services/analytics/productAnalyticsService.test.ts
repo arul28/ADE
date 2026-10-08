@@ -15,6 +15,7 @@ import {
   captureAgentTurnSettledAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
+  captureCrossMachineMoveAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./agentTurnProductAnalytics";
 import {
@@ -419,6 +420,52 @@ describe("productAnalyticsService", () => {
       dedupeKey: `chat_${action}:session-1`,
       minimumIntervalMs: 60 * 60_000,
     })).toEqual({ accepted: false, reason: "duplicate" });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("records how a cross-machine move ended once per move and outcome, with no ids", () => {
+    const harness = makeHarness();
+    const move = (outcome: "continued" | "failed" | "cancelled" | "unknown", handoffId = "handoff-7c1e9a") =>
+      captureCrossMachineMoveAnalytics({
+        analytics: harness.service,
+        projectId: "/Users/ada/secret-repo",
+        event: { handoffId, outcome },
+      });
+
+    for (const outcome of ["continued", "failed", "cancelled", "unknown"] as const) move(outcome);
+    // A retried move that ends `unknown` again within the hour is the same fact.
+    move("unknown");
+    // Another move with the same outcome is a new fact.
+    move("unknown", "handoff-55d0b2");
+
+    const moves = harness.messages
+      .map((message) => (message as { properties: Record<string, unknown> }).properties)
+      .filter((properties) => properties.action === "cross_machine_move");
+    expect(moves.map((properties) => properties.outcome))
+      .toEqual(["continued", "failed", "cancelled", "unknown", "unknown"]);
+    for (const properties of moves) {
+      expect(properties).toMatchObject({ feature: "chat", source: "runtime" });
+      expect(properties).not.toHaveProperty("session_id");
+    }
+    // The handoff id only keys the local dedupe; the project path is hashed.
+    const sent = JSON.stringify(harness.messages);
+    expect(sent).not.toContain("handoff-7c1e9a");
+    expect(sent).not.toContain("handoff-55d0b2");
+    expect(sent).not.toContain("secret-repo");
+
+    // An outcome outside the closed set is dropped, and the machine, the reason
+    // and the chats on either side can't ride along.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action: "cross_machine_move",
+      outcome: "landed",
+      source: "runtime",
+      machine_name: "Mac mini",
+      target_machine: "Mac mini",
+      reason: "ADE lost the answer from Mac mini.",
+      target_session_id: "chat-9f2a",
+      handoff_id: "handoff-7c1e9a",
+    })).toEqual({ feature: "chat", action: "cross_machine_move", source: "runtime" });
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
@@ -1844,7 +1891,18 @@ describe("product analytics producers", () => {
     });
   });
 
-  it("keeps the three Mac Desktop outcomes and drops anything that identifies the screen", () => {
+  it("keeps the Mac Desktop and user-browser outcomes and drops anything that identifies the screen or tab", () => {
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "user_browser",
+      outcome: "started",
+      browser: "chrome",
+      machine: "Arul's Mac Studio",
+      tab_title: "Payments",
+      url: "https://dashboard.stripe.com/payments",
+      chat_session_id: "chat-1",
+    })).toEqual({ feature: "work", action: "user_browser", outcome: "started" });
+
     for (const outcome of ["started", "agent_drove", "recorded"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "work",
@@ -1893,6 +1951,26 @@ describe("product analytics producers", () => {
       waiting_count: 7,
       lane_id: "lane-1",
     })).toEqual({ feature: "work", action: "focus_mode" });
+  });
+
+  it("keeps the issue-created tracker through the sanitizer and nothing about the issue", () => {
+    for (const outcome of ["tracker_linear", "tracker_github"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "issues",
+        action: "issue_created",
+        outcome,
+        source: "renderer_route",
+      })).toEqual({ feature: "issues", action: "issue_created", outcome, source: "renderer_route" });
+    }
+    // Another tracker, the repository, the title, or the issue's number does not cross.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "issues",
+      action: "issue_created",
+      outcome: "tracker_jira",
+      repo: "arul28/ADE",
+      title: "Crash on launch",
+      issue_number: 1520,
+    })).toEqual({ feature: "issues", action: "issue_created" });
   });
 
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {

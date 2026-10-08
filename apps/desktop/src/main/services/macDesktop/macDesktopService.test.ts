@@ -630,12 +630,16 @@ describe("desktop seat summary (the status `seat` every text surface leads with)
 });
 
 describe("macDesktopService capability gate", () => {
-  it("getStatus answers on Windows with supported:false and an unsupported driver", async () => {
-    const { service, driver } = makeService({ platform: "win32" });
+  it.each([
+    ["Windows", "win32", /macOS/],
+    // Linux has no seat at all: it says so instead of "needs macOS".
+    ["Linux", "linux", /not supported on Linux/],
+  ] as const)("getStatus answers on %s with supported:false and an unsupported driver", async (_host, platform, reason) => {
+    const { service, driver } = makeService({ platform });
     const status = await service.getStatus({ laneId: "lane-1" });
     expect(status.supported).toBe(false);
-    expect(status.platform).toBe("win32");
-    expect(status.unsupportedReason).toContain("macOS");
+    expect(status.platform).toBe(platform);
+    expect(status.unsupportedReason).toMatch(reason);
     expect(status.displayMode).toBe("unavailable");
     expect(status.driver.state).toBe("unsupported");
     // Nothing was asked of any helper: a Windows host has none to ask.

@@ -58,7 +58,7 @@ extension SessionBadgeKind {
   /// `CanonicalSessionPhase.stale`, `AccountAttentionPhase.stale`,
   /// `sessionStaleAfterSeconds`. The WORD a reader sees is a separate question
   /// and it is answered by `label` on the group below, which says "Idle" — the
-  /// same word the publisher, the notch and the Activity sheet use. Renaming the
+  /// same word the publisher and the Activity sheet use. Renaming the
   /// case would put a third spelling into the derivation chain; mapping it puts
   /// none.
   ///
@@ -357,8 +357,8 @@ private func workSessionPhasePresentation(
 /// The phase table (`ActivityPhaseVocabulary`) answers RAW WIRE PHASES and is
 /// shared with the widget extension, so it still calls the gone-quiet phase
 /// "Stale" — correct for a publisher that literally sends that word. A Work row
-/// is not answering a wire phase: it is one of the six states the notch, the
-/// Activity sheet and the widget header all count by, where that state is
+/// is not answering a wire phase: it is one of the six states the Activity
+/// sheet and the widget header have counted by, where that state is
 /// `idle` and reads "Idle". Rendering the phase word here is what left a row
 /// saying "Stale" beside a sheet counting the same session under "Idle".
 ///
@@ -438,6 +438,7 @@ struct WorkSessionRowPresentation: Equatable {
 func workSessionRowPresentation(
   session: TerminalSessionSummary,
   summary: AgentChatSessionSummary?,
+  waitingOnSubagent: Bool = false,
   now: Date = Date()
 ) -> WorkSessionRowPresentation {
   let phase = workCanonicalSessionState(session: session, summary: summary, now: now).phase
@@ -466,6 +467,8 @@ func workSessionRowPresentation(
     phase: phase,
     resolved: resolved,
     now: now,
+    scheduledWakePending: workScheduledWakeIsPending(summary?.nextWakeAt, now: now),
+    waitingOnSubagent: waitingOnSubagent,
     usageLimitStatus: usageLimitStatus,
     currentTurnStartedAt: summary?.currentTurnStartedAt
   )
@@ -530,6 +533,8 @@ private func workSessionStatusSlot(
   phase: CanonicalSessionPhase,
   resolved: (kind: SessionBadgeKind?, presentation: ActivityPhasePresentation),
   now: Date,
+  scheduledWakePending: Bool,
+  waitingOnSubagent: Bool,
   usageLimitStatus: WorkUsageLimitRowStatus?,
   currentTurnStartedAt: String?
 ) -> (presentation: WorkSessionStatusPresentation?, ownedByUsageLimit: Bool) {
@@ -563,6 +568,19 @@ private func workSessionStatusSlot(
     }
 
     if phase == .settled { return (nil, false) }
+
+    if (phase == .ready || phase == .idle)
+      && (scheduledWakePending || waitingOnSubagent)
+    {
+      return (WorkSessionStatusPresentation(
+        label: "Waiting",
+        tone: .neutral,
+        glyph: .waiting,
+        showsElapsed: false,
+        prominent: false,
+        kind: nil
+      ), false)
+    }
   }
 
   // Above the phase table on purpose: the turn that hit the limit usually
@@ -812,14 +830,26 @@ func nextSessionSnoozeDeadline(
   return soonest
 }
 
-/// How long the Work list should wait before re-deriving its Snoozed section,
-/// or nil when no row is snoozed — in which case nothing is scheduled at all.
-/// Exactly one wait, at the nearest deadline, clamped at both ends.
+/// How long the Work list should wait before re-deriving snooze filing or
+/// scheduled-wake filing. It targets the nearest future snooze deadline or
+/// wake-grace deadline, clamped at both ends.
 func workSnoozeRegroupDelay(
   sessions: [TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary] = [:],
   now: Date = Date()
 ) -> TimeInterval? {
-  guard let deadline = nextSessionSnoozeDeadline(sessions, now: now) else { return nil }
+  var deadline = nextSessionSnoozeDeadline(sessions, now: now)
+  for session in sessions {
+    guard let wakeAt = workParsedDate(chatSummaries[session.id]?.nextWakeAt) else { continue }
+    let graceDeadline = wakeAt.addingTimeInterval(120)
+    guard graceDeadline > now else { continue }
+    if let currentDeadline = deadline {
+      if graceDeadline < currentDeadline { deadline = graceDeadline }
+    } else {
+      deadline = graceDeadline
+    }
+  }
+  guard let deadline else { return nil }
   let remaining = deadline.timeIntervalSince(now)
   return min(max(remaining, workSnoozeTickMinDelay), workSnoozeTickMaxDelay)
 }
@@ -1043,7 +1073,7 @@ func workSnoozeWakeLabel(
 ///
 /// The glyph is drawn for every state, not just the two whose word is ambiguous.
 /// Shape carries as much of the meaning as hue does, and the six marks are the
-/// notch/dropdown/Activity-sheet language verbatim — a capsule that showed the
+/// desktop Activity and Activity-sheet language verbatim — a capsule that showed the
 /// mark for only `stale` and `planning` meant a reader who had learnt the six
 /// glyphs elsewhere met a different vocabulary here.
 struct WorkSessionStatusCapsule: View {
