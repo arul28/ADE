@@ -6,7 +6,9 @@ import { parseTrustedAccountDirectoryBaseUrl } from "../../../shared/accountDire
 import { MUSIC_IPC, type MusicCommand, type MusicLibraryKind, type MusicSearchScope } from "../../../shared/types/music";
 import { createDeveloperTokenProvider } from "./musicDeveloperToken";
 import { resolveMusicHostExecutable } from "./musicHostProcess";
+import { getNowPlayingService } from "../home/registerHomeWidgetsIpc";
 import { createMusicService, type MusicService } from "./musicService";
+import { createMusicNowPlayingBridge } from "./musicNowPlayingBridge";
 
 /**
  * Wires the Music service to IPC (`window.ade.music`).
@@ -54,7 +56,12 @@ export function registerMusicIpc(args: {
     getAccountToken: args.getAccountToken,
     logger: args.logger,
   });
-  const service = createMusicService({
+  // The home page's Now Playing widget follows ADE's player while it has a track.
+  const onNowPlayingState = createMusicNowPlayingBridge({
+    nowPlaying: getNowPlayingService,
+    command: (command) => service.command(command),
+  });
+  const service: MusicService = createMusicService({
     hostExecutable: resolveMusicHostExecutable({
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
@@ -69,6 +76,7 @@ export function registerMusicIpc(args: {
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send(MUSIC_IPC.stateEvent, state);
       }
+      onNowPlayingState(state);
     },
     logger: args.logger,
   });
