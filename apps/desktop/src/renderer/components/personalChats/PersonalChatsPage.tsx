@@ -241,9 +241,22 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     void runRowAction("rename", () => callPersonal("updateSession", { sessionId, title, manuallyNamed: true }));
   }, [runRowAction]);
 
+  // An older host has no `setPinned` (personal-chat capabilities are not
+  // exposed to this page): its refusal hides Pin for that machine instead of
+  // surfacing as an error.
+  const [pinUnsupportedTarget, setPinUnsupportedTarget] = useState<string | null>(null);
+  const pinSupported = pinUnsupportedTarget !== targetKey;
   const togglePin = useCallback((sessionId: string, pinned: boolean) => {
-    void runRowAction(pinned ? "pin" : "unpin", () => callPersonal("setPinned", { sessionId, pinned }));
-  }, [runRowAction]);
+    void runRowAction(pinned ? "pin" : "unpin", async () => {
+      try {
+        await callPersonal("setPinned", { sessionId, pinned });
+      } catch (reason) {
+        const detail = reason instanceof Error ? reason.message : String(reason);
+        if (!detail.includes("Unsupported personal chat action")) throw reason;
+        setPinUnsupportedTarget(targetKey);
+      }
+    });
+  }, [runRowAction, targetKey]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -373,7 +386,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         onToggleMenu={setMenuId}
         onRemove={(id, action) => void removeSession(id, action)}
         onRename={renameSession}
-        onTogglePin={togglePin}
+        onTogglePin={pinSupported ? togglePin : undefined}
       />
 
       <main className="ade-chat-scene-plane relative flex min-w-0 flex-1 flex-col">
