@@ -644,17 +644,27 @@ describe("TopBar", () => {
     expect(onNavigate).toHaveBeenCalledWith("/chats");
   });
 
-  it("returns to Chats when the projectless New Tab is closed", () => {
+  it.each([
+    // [Chats open, Browser open, Music open, where closing the projectless New Tab lands]
+    [true, true, true, "/chats"],
+    [false, true, true, "/browser"],
+    [false, false, true, "/music"],
+    [false, false, false, null],
+  ])("closing the projectless New Tab with Chats=%s Browser=%s Music=%s lands on %s", (chats, browser, music, route) => {
     const { onNavigate } = renderChatsTopBar({
       personalChatsRouteActive: false,
-      storeOverrides: { isNewTabOpen: true },
+      storeOverrides: {
+        isNewTabOpen: true,
+        personalChatsTabOpen: chats,
+        browserTabOpen: browser,
+        musicTabOpen: music,
+      },
     });
 
     fireEvent.click(screen.getByTitle("Close new tab"));
 
     expect(useAppStore.getState().cancelNewTab).toHaveBeenCalledOnce();
-    expect(onNavigate).toHaveBeenCalledOnce();
-    expect(onNavigate).toHaveBeenCalledWith("/chats");
+    expect(onNavigate.mock.calls).toEqual(route ? [[route]] : []);
   });
 
   it("closes an inactive Chats tab without navigating away from New Tab", () => {

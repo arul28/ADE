@@ -155,6 +155,7 @@ const fakes = vi.hoisted(() => {
     setAudioMuted = (muted: boolean): void => {
       this.audioMutedCalls.push(muted);
     };
+    isAudioMuted = (): boolean => this.audioMutedCalls.at(-1) ?? false;
     setUserAgent = (userAgent: string): void => {
       this.userAgentCalls.push(userAgent);
     };
@@ -866,6 +867,66 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus().tabs).toHaveLength(1);
     expect(win.contentView.children).toHaveLength(0);
     expect(wc?.audioMutedCalls.at(-1)).toBe(true);
+  });
+
+  it("keeps a tab that started playing while heard audible when hidden, until it navigates", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    const show = (visible: boolean) => service.setBounds({ x: 0, y: 0, width: 640, height: 360, visible });
+
+    await service.createTab({ url: "https://music.example.test", activate: true });
+    const player = fakes.webContentsInstances[0]!;
+    await show(true);
+    expect(player.isAudioMuted()).toBe(false);
+    player.emit("media-started-playing");
+
+    // Leaving the Browser tab does not cut the song off.
+    await show(false);
+    expect(player.isAudioMuted()).toBe(false);
+
+    // Going to another page ends that: the hidden tab is quiet again.
+    player.emit("did-navigate", {}, "https://example.test/next");
+    expect(player.isAudioMuted()).toBe(true);
+  });
+
+  it("never lets a tab that started playing while muted keep sound when hidden", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    const show = (visible: boolean) => service.setBounds({ x: 0, y: 0, width: 640, height: 360, visible });
+
+    // A tab an agent drives while nobody watches is parked and muted.
+    await service.createTab({ url: "https://autoplay.example.test", activate: true });
+    const parked = fakes.webContentsInstances[0]!;
+    expect(parked.isAudioMuted()).toBe(true);
+    parked.emit("media-started-playing");
+
+    await show(true);
+    expect(parked.isAudioMuted()).toBe(false);
+    await show(false);
+    expect(parked.isAudioMuted()).toBe(true);
+  });
+
+  it("lets go of a hidden tab's parked view when an agent action on it fails", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const tabId = service.getStatus().activeTabId ?? "";
+    expect(win.contentView.children).toHaveLength(0);
+
+    let parkedDuringAction = -1;
+    fakes.setSendCommand(async (method) => {
+      if (method !== "Input.dispatchMouseEvent") return {};
+      parkedDuringAction = win.contentView.children.length;
+      throw new Error("Target closed");
+    });
+    await expect(service.click({ tabId, x: 10, y: 10, observe: false })).rejects.toThrow(/Target closed/);
+
+    // The action held the view parked while it ran, and gave it back on the throw.
+    expect(parkedDuringAction).toBe(1);
+    expect(win.contentView.children).toHaveLength(0);
   });
 
   it("parks a previewed tab's view instead of detaching it when the panel hides", async () => {
