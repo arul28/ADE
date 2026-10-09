@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain, powerMonitor, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, type WebContents } from "electron";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
@@ -430,7 +430,15 @@ export function registerRuntimeBridge({
   const remoteConnectionService = new RemoteConnectionService(
     remoteTargetRegistry,
     remoteConnectionPool,
-    { appVersion, getAccountRelayProof, getAuthorizedAccountOwnerId },
+    {
+      appVersion,
+      getAccountRelayProof,
+      getAuthorizedAccountOwnerId,
+      // A dev desktop shares this computer's machine pairing with the installed
+      // ADE; reconnecting saved machines on its own would take them away from it.
+      // ADE_DEV_REMOTE_AUTOCONNECT=1 opts a dev app in on purpose.
+      explicitConnectOnly: !app.isPackaged && process.env.ADE_DEV_REMOTE_AUTOCONNECT !== "1",
+    },
     pairedMachineStore,
   );
   // The media server's `/remote/...` route reads a proof video from a paired

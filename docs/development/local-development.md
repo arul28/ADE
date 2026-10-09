@@ -99,6 +99,23 @@ The rules that go with it (`AGENTS.md` and the context skill link here):
 - **`--no-sync` protects the sync lease only.** It does not isolate the
   database: a dev brain still sees every chat and task in every lane, so do not
   restart one casually while other lanes are working.
+- **A dev desktop never connects to your other machines on its own.** A paired
+  machine (a Mac Studio, a Windows box) keeps one connection per device, and
+  every ADE on this computer shares the device pairing in `~/.ade`. A dev app
+  that reconnected saved machines took them from the installed ADE, which then
+  showed "Another ADE on this computer is using the connection" and waited.
+  An unpackaged desktop now connects only when someone presses Connect in it
+  (`explicitConnectOnly` in `RemoteConnectionService`), and the isolation
+  report says so on its `machines` line. Pressing Connect in a dev app still
+  takes that machine from the installed ADE: press Connect in the installed app
+  afterwards. Do not press Disconnect in a dev app either; it saves
+  "don't auto-connect" to the shared machine list, which the installed app
+  reads too. `ADE_DEV_REMOTE_AUTOCONNECT=1` restores auto-connect on purpose.
+- **Stop what you started, brain included.** Stop the dev app's process group
+  (the pid `dev-detached.mjs` printed) and then confirm its brain exited:
+  `pgrep -fl "<your socket>"`. A full desktop typecheck takes an 8 GB heap;
+  do not leave one running in the background, and do not start a second while
+  one is still going.
 
 When these commands are run from an ADE lane worktree under `.ade/worktrees/`,
 they still run code from that lane checkout, but they open the primary checkout's
