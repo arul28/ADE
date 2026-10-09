@@ -136,8 +136,10 @@ The type controls what happens to the parent when the child finishes: a
 `subagent` turn wakes or steers the parent, a `peer` turn only leaves a quiet
 completion note. `--no-parent` creates an unparented top-level session that
 neither nests under you nor wakes you. ADE still records it as launched by
-you, so once it finishes it stays out of Focus while you are working. Use
-`--type peer` for a fire-and-forget helper you want linked.
+you: once it finishes, it stays out of Focus only while you are busy in the
+same lane, and only if it is not asking for anything. A helper that needs
+input, or one in another lane, stays visible, so `--no-parent` never hides
+work. Use `--type peer` for a fire-and-forget helper you want linked.
 
 For persistent Work chats, a subagent turn reports back with its child turn id
 and latest assistant summary whenever the parent still owns the child's
