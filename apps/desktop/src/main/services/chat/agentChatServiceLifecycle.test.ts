@@ -295,6 +295,34 @@ describe("createAgentChatService", () => {
       });
 
   describe("disposeAll", () => {
+    it("cancels the startup handoff sweep before the database closes", async () => {
+      vi.useFakeTimers();
+      let databaseOpen = true;
+      const db = {
+        getJson: vi.fn(() => null),
+        setJson: vi.fn(),
+        all: vi.fn(() => {
+          if (!databaseOpen) throw new Error("database is not open");
+          return [];
+        }),
+      };
+      const transport = {
+        listMachines: vi.fn(async () => []),
+        callAction: vi.fn(async () => ({ machine: { machineKey: "machine", name: "Machine" }, result: null })),
+      };
+      const { service } = createService({
+        db,
+        crossMachineHandoffTransport: () => transport,
+      });
+
+      await service.disposeAll();
+      databaseOpen = false;
+      db.all.mockClear();
+      await vi.advanceTimersByTimeAsync(5_001);
+
+      expect(db.all).not.toHaveBeenCalled();
+    });
+
     it("disposes all active sessions without throwing", async () => {
       const { service } = createService();
 

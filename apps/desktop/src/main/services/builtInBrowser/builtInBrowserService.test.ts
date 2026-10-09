@@ -4294,6 +4294,42 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
   });
 
+  it("keeps a personal tab attached while dispatching input without a source window", async () => {
+    const win = fakeBrowserWindow();
+    const browserWin = win as unknown as ServiceBrowserWindow;
+    const inputSurfaceCounts: number[] = [];
+    fakes.setSendCommand(async (method) => {
+      if (method === "Input.dispatchMouseEvent") inputSurfaceCounts.push(win.contentView.children.length);
+      return {};
+    });
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getFallbackWindowForPersonalCollection: () => browserWin,
+    });
+    try {
+      await service.createTab({
+        tabCollection: "personal",
+        url: "https://personal-input.test",
+        activate: true,
+      });
+      const tabId = service.getStatus({ tabCollection: "personal" }).activeTabId ?? "";
+      expect(win.contentView.children).toHaveLength(0);
+
+      const result = await service.scroll({
+        tabCollection: "personal",
+        tabId,
+        deltaY: 400,
+        observe: false,
+      });
+
+      expect(result.trace).toMatchObject({ action: "scroll", status: "ok" });
+      expect(inputSurfaceCounts).toEqual([1]);
+      expect(win.contentView.children).toHaveLength(0);
+    } finally {
+      service.dispose();
+    }
+  });
+
   it("fills, clears, presses, and waits through a located browser element", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-actionable-"));
     try {

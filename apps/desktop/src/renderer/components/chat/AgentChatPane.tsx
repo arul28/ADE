@@ -12992,7 +12992,12 @@ export function AgentChatPane({
       const text = draft.trim();
       const visualContext = composeVisualContext(iosElementContextItems, appControlContextItems, builtInBrowserContextItems);
       if (!text.length && !visualContext.prefix.length && !attachments.length) return;
-      const composed = applyVisualContext(text, visualContext);
+      const composed = applyVisualContext(
+        text,
+        isProviderSlashCommandInput(text)
+          ? visualContext
+          : { ...visualContext, prefix: `${readAmbientPrefix()}${visualContext.prefix}` },
+      );
       const queuedText = composed.text;
       const queuedDisplayText = composed.displayText ?? text;
       const queuedAttachments = [...attachments];

@@ -1,15 +1,12 @@
 import { CaretDown, Check, CloudArrowUp, DesktopTower } from "@phosphor-icons/react";
-import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { useState } from "react";
 
 import { DevinLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
+import { MENU_ITEM_CLASS, MENU_SCROLL_CLASS, POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import {
-  computeLanePopoverPlacement,
-  type LanePopoverPlacement,
-} from "../terminals/LaneCombobox";
+import { Z_LAYERS } from "../ui/zLayers";
 
 export type DraftMachineOption = {
   id: string;
@@ -26,7 +23,6 @@ export type DraftMachineOption = {
   unavailableReason?: string | null;
 };
 
-const MENU_WIDTH = 220;
 const CLOUD_VIOLET = "#A78BFA";
 
 function machineIcon(option: DraftMachineOption) {
@@ -80,102 +76,6 @@ export function DraftMachinePicker({
   showWhenSingle?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const restoreFocusOnCloseRef = useRef(false);
-  const [placement, setPlacement] = useState<LanePopoverPlacement | null>(null);
-  const updatePosition = useCallback(() => {
-    if (!triggerRef.current) return;
-    const rect = triggerRef.current.getBoundingClientRect();
-    setPlacement(computeLanePopoverPlacement({
-      trigger: { top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width },
-      viewport: { width: window.innerWidth, height: window.innerHeight },
-      width: { min: MENU_WIDTH, max: MENU_WIDTH },
-    }));
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!open && restoreFocusOnCloseRef.current) {
-      restoreFocusOnCloseRef.current = false;
-      triggerRef.current?.focus();
-    }
-    if (!open) return;
-    updatePosition();
-    window.addEventListener("scroll", updatePosition, true);
-    window.addEventListener("resize", updatePosition);
-    return () => {
-      window.removeEventListener("scroll", updatePosition, true);
-      window.removeEventListener("resize", updatePosition);
-    };
-  }, [open, updatePosition]);
-
-  const closeAndRestoreFocus = useCallback(() => {
-    restoreFocusOnCloseRef.current = true;
-    setOpen(false);
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    const handleDown = (event: MouseEvent) => {
-      const target = event.target as Element | null;
-      if (triggerRef.current?.contains(target as Node)) return;
-      if (target?.closest?.("[data-draft-machine-menu]")) return;
-      setOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        closeAndRestoreFocus();
-      }
-    };
-    window.addEventListener("mousedown", handleDown);
-    window.addEventListener("keydown", handleKey);
-    return () => {
-      window.removeEventListener("mousedown", handleDown);
-      window.removeEventListener("keydown", handleKey);
-    };
-  }, [closeAndRestoreFocus, open]);
-
-  useEffect(() => {
-    if (!open || !menuRef.current) return;
-    const preferred = menuRef.current.querySelector<HTMLButtonElement>(
-      '[role="menuitemradio"][aria-checked="true"]:not(:disabled)',
-    );
-    const first = menuRef.current.querySelector<HTMLButtonElement>(
-      '[role="menuitemradio"]:not(:disabled)',
-    );
-    (preferred ?? first)?.focus();
-  }, [open]);
-
-  const handleMenuKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    const items = Array.from(
-      event.currentTarget.querySelectorAll<HTMLButtonElement>(
-        '[role="menuitemradio"]:not(:disabled)',
-      ),
-    );
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      closeAndRestoreFocus();
-      return;
-    }
-    if (items.length === 0) return;
-    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
-    let nextIndex: number | null = null;
-    if (event.key === "ArrowDown") nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
-    if (event.key === "ArrowUp") nextIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
-    if (event.key === "Home") nextIndex = 0;
-    if (event.key === "End") nextIndex = items.length - 1;
-    if (nextIndex != null) {
-      event.preventDefault();
-      items[nextIndex]?.focus();
-      return;
-    }
-    if ((event.key === "Enter" || event.key === " ") && document.activeElement instanceof HTMLButtonElement) {
-      event.preventDefault();
-      document.activeElement.click();
-    }
-  }, [closeAndRestoreFocus]);
-
   const selected = machines.find((machine) => machine.id === selectedMachineId) ?? null;
   const displayed = selected ?? machines[0];
   const selectionUnavailable = selectedMachineId != null && selected == null;
@@ -220,7 +120,14 @@ export function DraftMachinePicker({
     : "Pick this computer or another paired computer. The lane list beside it follows your choice.";
 
   return (
-    <div className="relative inline-flex shrink-0">
+    <DropdownMenu.Root
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (nextOpen) onOpen?.();
+      }}
+      modal={false}
+    >
       <SmartTooltip
         forceEnabled
         content={{
@@ -228,103 +135,128 @@ export function DraftMachinePicker({
           description: tooltipDescription ?? defaultTriggerDescription,
         }}
       >
-        <button
-          ref={triggerRef}
-          type="button"
-          data-draft-machine-picker
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-label={triggerAriaLabel}
-          disabled={disabled}
-          // `onOpen` runs outside the state updater on purpose. React may call
-          // an updater during another component's render and may call it twice,
-          // so a probe fired from inside it warns about updating the parent
-          // mid-render and can run twice per click.
-          onClick={() => {
-            const next = !open;
-            setOpen(next);
-            if (next) onOpen?.();
-          }}
-          className={cn(
-            "inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md border px-2",
-            "font-sans text-[11px] font-medium transition-colors",
-            open
-              ? "border-fg/[0.12] bg-fg/[0.06] text-fg/85"
-              : "border-fg/[0.07] bg-fg/[0.03] text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg/85",
-            disabled && "cursor-not-allowed opacity-45",
-          )}
-        >
-          {machineIcon(displayed)}
-          <span className="min-w-0 truncate">{displayed.name}</span>
-          <CaretDown
-            size={9}
-            weight="bold"
-            className={cn("shrink-0 transition-transform duration-150", open && "rotate-180")}
-            aria-hidden
-          />
-        </button>
+        <DropdownMenu.Trigger asChild>
+          <button
+            type="button"
+            data-draft-machine-picker
+            aria-label={triggerAriaLabel}
+            disabled={disabled}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => {
+              const nextOpen = !open;
+              setOpen(nextOpen);
+              if (nextOpen) onOpen?.();
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " " && event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+              event.preventDefault();
+              const nextOpen = event.key === "ArrowDown" || event.key === "ArrowUp" ? true : !open;
+              setOpen(nextOpen);
+              if (nextOpen) onOpen?.();
+            }}
+            className={cn(
+              "inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md border px-2",
+              "font-sans text-[11px] font-medium transition-colors",
+              open
+                ? "border-fg/[0.12] bg-fg/[0.06] text-fg/85"
+                : "border-fg/[0.07] bg-fg/[0.03] text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg/85",
+              disabled && "cursor-not-allowed opacity-45",
+            )}
+          >
+            {machineIcon(displayed)}
+            <span className="min-w-0 truncate">{displayed.name}</span>
+            <CaretDown
+              size={9}
+              weight="bold"
+              className={cn("shrink-0 transition-transform duration-150", open && "rotate-180")}
+              aria-hidden
+            />
+          </button>
+        </DropdownMenu.Trigger>
       </SmartTooltip>
-      {open && triggerRef.current
-        ? createPortal(
-            (() => {
-              return (
-                <div
-                  ref={menuRef}
-                  data-draft-machine-menu
-                  role="menu"
-                  aria-label="Choose a machine"
-                  onKeyDown={handleMenuKeyDown}
-                  className={cn("fixed z-[100] flex flex-col overflow-hidden", POPOVER_SURFACE_CLASS, "p-1")}
-                  style={{
-                    width: placement?.width ?? MENU_WIDTH,
-                    left: placement?.left ?? 0,
-                    maxHeight: placement?.maxHeight,
-                    top: placement?.top ?? 0,
-                    transform: placement?.transform,
-                  }}
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          aria-label="Choose a machine"
+          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[220px] p-1 font-sans text-[11px] text-fg/82")}
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            const selected = event.currentTarget.querySelector<HTMLElement>(
+              '[role="menuitemradio"][aria-checked="true"]:not([aria-disabled="true"])',
+            );
+            const firstAvailable = event.currentTarget.querySelector<HTMLElement>(
+              '[role="menuitemradio"]:not([aria-disabled="true"])',
+            );
+            (selected ?? firstAvailable)?.focus();
+          }}
+          style={{ zIndex: Z_LAYERS.popover }}
+          side="top"
+          align="start"
+          sideOffset={4}
+          collisionPadding={8}
+        >
+          <DropdownMenu.RadioGroup
+            value={selectedMachineId ?? ""}
+            onValueChange={(machineId) => {
+              if (machineId !== selectedMachineId) onChange(machineId);
+            }}
+          >
+            {machines.map((machine) => {
+              const active = machine.id === selectedMachineId;
+              const reason = machine.unavailableReason?.trim() || null;
+              const row = (
+                <DropdownMenu.RadioItem
+                  asChild
+                  key={machine.id}
+                  value={machine.id}
+                  disabled={Boolean(reason)}
+                  className={cn(MENU_ITEM_CLASS, "text-[11px]", active ? "text-fg/90" : "text-fg/65")}
                 >
-                  {machines.map((machine) => {
-                    const active = machine.id === selectedMachineId;
-                    const reason = machine.unavailableReason?.trim() || null;
-                    const row = (
-                      <button
-                        key={machine.id}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={active}
-                        disabled={Boolean(reason)}
-                        onClick={() => {
-                          closeAndRestoreFocus();
-                          if (!active) onChange(machine.id);
-                        }}
-                        className={cn(
-                          "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[11px] transition-colors",
-                          active ? "text-fg/90" : "text-fg/65 hover:bg-fg/[0.06] hover:text-fg/90",
-                          reason && "cursor-not-allowed opacity-40 hover:bg-transparent",
-                        )}
-                      >
-                        {machineIcon(machine)}
-                        <span className="min-w-0 truncate">{machine.name}</span>
-                        {active ? <Check size={11} weight="bold" className="ml-auto shrink-0" aria-hidden /> : null}
-                      </button>
-                    );
-                    if (!reason) return row;
-                    return (
-                      <SmartTooltip
-                        key={machine.id}
-                        forceEnabled
-                        content={{ label: machine.name, description: reason }}
-                      >
-                        {row}
-                      </SmartTooltip>
-                    );
-                  })}
-                </div>
+                  <button
+                    type="button"
+                    disabled={Boolean(reason)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const items = Array.from(
+                        event.currentTarget.closest('[role="menu"]')?.querySelectorAll<HTMLButtonElement>(
+                          '[role="menuitemradio"]:not(:disabled):not([aria-disabled="true"])',
+                        ) ?? [],
+                      );
+                      if (items.length === 0) return;
+                      const currentIndex = items.indexOf(event.currentTarget);
+                      const nextIndex = event.key === "Home"
+                        ? 0
+                        : event.key === "End"
+                          ? items.length - 1
+                          : event.key === "ArrowDown"
+                            ? (currentIndex + 1) % items.length
+                            : (currentIndex - 1 + items.length) % items.length;
+                      items[nextIndex]?.focus();
+                    }}
+                  >
+                    {machineIcon(machine)}
+                    <span className="min-w-0 flex-1 truncate">{machine.name}</span>
+                    <DropdownMenu.ItemIndicator>
+                      <Check size={11} weight="bold" className="shrink-0" aria-hidden />
+                    </DropdownMenu.ItemIndicator>
+                  </button>
+                </DropdownMenu.RadioItem>
               );
-            })(),
-            document.body,
-          )
-        : null}
-    </div>
+              if (!reason) return row;
+              return (
+                <SmartTooltip
+                  key={machine.id}
+                  forceEnabled
+                  content={{ label: machine.name, description: reason }}
+                >
+                  {row}
+                </SmartTooltip>
+              );
+            })}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }

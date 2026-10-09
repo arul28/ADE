@@ -16,6 +16,7 @@
 import { spawn } from "node:child_process";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import { localDayKey } from "./localDay";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 import type { GithubContributionCalendar } from "../../../shared/types";
 
 /**
@@ -118,6 +119,18 @@ export function runBufferedCommand(
   args: string[],
   options: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number } = {},
 ): Promise<string> {
+  if (offThreadSpawnEnabled()) {
+    return execFileOffThread(command, args, {
+      cwd: options.cwd,
+      env: process.env,
+      timeoutMs: options.timeoutMs ?? GITHUB_STATS_COMMAND_TIMEOUT_MS,
+      maxBuffer: options.maxOutputBytes ?? GITHUB_STATS_MAX_OUTPUT_BYTES,
+    }).then((result) => {
+      if (result.error) throw result.error;
+      if (result.exitCode === 0) return result.stdout;
+      throw new Error(result.stderr.trim() || `${command} exited with code ${result.exitCode ?? "unknown"}`);
+    });
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     let stdout = "";
