@@ -9,9 +9,10 @@
  * The desktop's App Control panel reads `getStatus` and listens on `onEvent`
  * for `frame` and session events. This namespace gives it the same shapes:
  * - `getStatus` answers from `appControl.status`;
- * - while `onEvent` has a listener, it polls status every few seconds so
- *   listeners hear session changes (the host has no session push for sync
- *   clients);
+ * - while `onEvent` has a listener, it polls status so listeners hear session
+ *   changes (the host has no session push for sync clients). The poll backs
+ *   off to every 15 s while the session does not change, pauses while the tab
+ *   is hidden, and reads at once when the tab becomes visible again;
  * - while a view also holds `holdFrames`, it holds one frame subscription on
  *   the lane the last status named. Status-only listeners (the Work page's
  *   tool feed, recording cards) never keep frames flowing over the relay;
@@ -40,9 +41,12 @@ import type {
   SyncAppControlStreamSubscribeResult,
 } from "../../../shared/types/sync";
 import type { AdapterInfra } from "./types";
+import { isPageHidden, observePageVisibility } from "./infra/pageVisibility";
 
 /** How often status is re-read while the panel listens for events. */
 const STATUS_POLL_MS = 3_000;
+/** A status that has not changed for a few reads backs off to this ceiling. */
+const STATUS_POLL_MAX_MS = 15_000;
 /** Wait before re-subscribing after the host ended a subscription. */
 const RESUBSCRIBE_DELAY_MS = 1_500;
 
@@ -143,7 +147,11 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   const lastSessions = new Map<string, AppControlSession | null>();
   let subscription: { id: string; laneId: string } | null = null;
   let subscribing = false;
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let statusPollInFlight = false;
+  /** Consecutive status reads that found no session change. */
+  let statusUnchangedPolls = 0;
+  let stopStatusVisibility: (() => void) | null = null;
   let resubscribeTimer: ReturnType<typeof setTimeout> | null = null;
   let detachTransport: (() => void) | null = null;
   /** Mounted views that show frames. Only they keep the subscription. */
@@ -178,26 +186,27 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
     }
   };
 
-  /** Tells listeners about a session change the poll found. */
-  const noteStatus = (status: AppControlStatus): void => {
+  /** Tells listeners about a session change the poll found. Returns whether the session changed. */
+  const noteStatus = (status: AppControlStatus): boolean => {
     const next = status.activeSession;
     const laneId = status.laneId ?? next?.laneId ?? null;
-    if (!laneId) return;
+    if (!laneId) return false;
     const previous = lastSessions.get(laneId) ?? null;
-    if (sessionKey(next) === sessionKey(previous)) return;
+    if (sessionKey(next) === sessionKey(previous)) return false;
     lastSessions.set(laneId, next);
     // The cached picture belongs to the app that was there before.
     if (latestFrame && latestFrame.laneId === laneId && latestFrame.frame.sessionId !== next?.id) latestFrame = null;
-    if (listeners.size === 0) return;
+    if (listeners.size === 0) return true;
     if (!next) {
       emit({ type: "session-stopped", laneId: laneId ?? null, previousSession: previous } as AppControlEventPayload);
-      return;
+      return true;
     }
     emit({
       type: previous?.id === next.id ? "session-updated" : "session-started",
       laneId: laneId ?? null,
       session: next,
     } as AppControlEventPayload);
+    return true;
   };
 
   const dropSubscription = (): void => {
@@ -281,7 +290,8 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
     return null;
   };
 
-  const getStatus = async (argsOrPin?: unknown): Promise<AppControlStatus> => {
+  /** One status read. `changed` says whether the lane's session moved since the last read. */
+  const refreshStatus = async (argsOrPin?: unknown): Promise<{ status: AppControlStatus; changed: boolean }> => {
     const requestedLane = stringArg(argsOrPin, "laneId");
     const requestedChat = stringArg(argsOrPin, "chatSessionId");
     const status = toAppControlStatus(
@@ -292,8 +302,52 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
       watchedLaneId = laneId;
       void ensureSubscription();
     }
-    noteStatus(status);
-    return status;
+    return { status, changed: noteStatus(status) };
+  };
+
+  const getStatus = async (argsOrPin?: unknown): Promise<AppControlStatus> => {
+    // The panel's own read is a user action, so the poll restarts at its base cadence.
+    statusUnchangedPolls = 0;
+    return (await refreshStatus(argsOrPin)).status;
+  };
+
+  const clearStatusTimer = (): void => {
+    if (pollTimer != null) clearTimeout(pollTimer);
+    pollTimer = null;
+  };
+
+  const scheduleStatusPoll = (): void => {
+    // A hidden tab reads nothing; becoming visible reads at once (kickStatusPoll).
+    if (pollTimer != null || statusPollInFlight || listeners.size === 0 || isPageHidden()) return;
+    const delayMs = statusUnchangedPolls < 3
+      ? STATUS_POLL_MS
+      : Math.min(STATUS_POLL_MAX_MS, STATUS_POLL_MS * 2 ** (statusUnchangedPolls - 2));
+    pollTimer = setTimeout(() => {
+      pollTimer = null;
+      void pollStatus();
+    }, delayMs);
+  };
+
+  const pollStatus = async (): Promise<void> => {
+    if (statusPollInFlight || listeners.size === 0 || isPageHidden()) return;
+    statusPollInFlight = true;
+    try {
+      const { changed } = await refreshStatus(watchedLaneId ? { laneId: watchedLaneId } : undefined);
+      statusUnchangedPolls = changed ? 0 : statusUnchangedPolls + 1;
+    } catch {
+      // A failed read keeps the current cadence; the next tick tries again.
+    } finally {
+      statusPollInFlight = false;
+      scheduleStatusPoll();
+    }
+  };
+
+  /** Reads now, at the base cadence, because the tab just became visible. */
+  const kickStatusPoll = (): void => {
+    statusUnchangedPolls = 0;
+    if (statusPollInFlight) return;
+    clearStatusTimer();
+    void pollStatus();
   };
 
   const handleFrame = (frame: SyncAppControlStreamFramePayload): void => {
@@ -317,11 +371,10 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   };
 
   const startWatching = (): void => {
-    if (pollTimer == null) {
-      pollTimer = setInterval(() => {
-        void getStatus(watchedLaneId ? { laneId: watchedLaneId } : undefined).catch(() => {});
-      }, STATUS_POLL_MS);
+    if (!stopStatusVisibility) {
+      stopStatusVisibility = observePageVisibility({ onHidden: clearStatusTimer, onVisible: kickStatusPoll });
     }
+    scheduleStatusPoll();
     if (!detachTransport) {
       const detachStatus = client.subscribe((status) => {
         const ready = status.state === "connected" && status.readiness === "ready";
@@ -343,8 +396,10 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   };
 
   const stopWatching = (): void => {
-    if (pollTimer != null) clearInterval(pollTimer);
-    pollTimer = null;
+    clearStatusTimer();
+    stopStatusVisibility?.();
+    stopStatusVisibility = null;
+    statusUnchangedPolls = 0;
     if (resubscribeTimer != null) clearTimeout(resubscribeTimer);
     resubscribeTimer = null;
     detachTransport?.();
