@@ -504,6 +504,7 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(session.steeringInput)
     hasher.combine(session.chatSessionId)
     hasher.combine(session.orchestrationParentSessionId)
+    hasher.combine(session.launchedBySessionId)
     hasher.combine(session.spawnKind)
     hasher.combine(session.archivedAt)
     hasher.combine(session.settledAt)
@@ -782,10 +783,11 @@ func workSessionGroups(
         nestedChild: nestedChildIds.contains(session.id)
       ))
     }
-    let focusRowsByLaneId = rosterByLaneId.mapValues { roster in
-      workLaneCountedFocus(
+    var focusRowsByLaneId: [String: [WorkRowFocus?]] = [:]
+    for (laneId, roster) in rosterByLaneId {
+      focusRowsByLaneId[laneId] = workLaneCountedFocus(
         roster,
-        laneWaiting: roster.first.map { laneWaitingReasonByLaneId[$0.session.laneId] != nil } ?? false,
+        laneWaiting: laneWaitingReasonByLaneId[laneId] != nil,
         now: now
       )
     }

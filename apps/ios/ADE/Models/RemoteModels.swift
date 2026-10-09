@@ -1242,6 +1242,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var requestedCwd: String?
   // Spawn lineage
   var orchestrationParentSessionId: String? = nil
+  /// Agent chat that launched this chat when it has no orchestration parent. Passive attribution only.
+  var launchedBySessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
   /// When the takeover banner was dismissed or Take over was chosen. Absent means not shown yet.
   var subagentTakeoverPromptShownAt: String? = nil
@@ -1319,6 +1321,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
+      && lhs.launchedBySessionId == rhs.launchedBySessionId
       && lhs.spawnKind == rhs.spawnKind
       && lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt
       && lhs.crossMachineHandoff == rhs.crossMachineHandoff

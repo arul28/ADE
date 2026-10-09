@@ -596,6 +596,12 @@ export type PtyCreateArgs = {
   /** Session that owns this attached terminal, when launched from chat/CLI UI or App Control. */
   chatSessionId?: string | null;
   /**
+   * Agent chat that launched this tracked agent CLI with no orchestration
+   * parent. Merged into whatever resume metadata the launch resolves (passed or
+   * parsed from the command); see `TerminalResumeMetadata.launchedBySessionId`.
+   */
+  launchedBySessionId?: string | null;
+  /**
    * `"agent"` when an agent started this shell for its chat (App Control). Such
    * a shell is archived once it is dead and nobody typed into it; see
    * `agentShellCleanup`. Omitted means the user started it.

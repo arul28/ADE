@@ -4065,6 +4065,8 @@ export type AgentChatLaunchCliArgs = {
   credentialId?: string | null;
   /** Foreground opens/focuses the session; background leaves focus alone. */
   disposition?: "foreground" | "background";
+  /** Who made the call; see `AgentChatRuntimeActor`. Stamped by the RPC server only. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatLaunchCliResult = {

@@ -152,6 +152,7 @@ function launcherSessionId(session: TerminalSessionSummary): string | null {
 type LaneFocusInputs = {
   filingBuckets: ReadonlyMap<string, SessionFilingBucket>;
   laneWaiting: boolean;
+  nestedSessionIds: ReadonlySet<string>;
   busySubagentParentIds?: ReadonlySet<string>;
   nowMs?: number;
 };
@@ -161,12 +162,7 @@ type LaneFocusInputs = {
  * nested row is null; a resting parent that a busy subagent keeps busy is Waiting.
  * A missed wake is never dropped.
  */
-function laneRowFocus(
-  session: TerminalSessionSummary,
-  nested: boolean,
-  seen: boolean,
-  inputs: LaneFocusInputs,
-): WorkRowFocus | null {
+function laneRowFocus(session: TerminalSessionSummary, seen: boolean, inputs: LaneFocusInputs): WorkRowFocus | null {
   const row = workRowFocus({
     session,
     filingBucket: inputs.filingBuckets.get(session.id),
@@ -175,30 +171,35 @@ function laneRowFocus(
     nowMs: inputs.nowMs,
   });
   if (!row || row.status !== "done" || row.missedWake) return row;
-  if (nested) return null;
+  if (inputs.nestedSessionIds.has(session.id)) return null;
   if (row.resting && inputs.busySubagentParentIds?.has(session.id)) return { status: "waiting", holdsOut: false };
   return row;
 }
 
-/**
- * Pass one of the launcher rule over a lane's roster: the ids of its busy agent
- * rows. Busy is Working or Waiting, not holding out, and an agent chat or CLI.
- * Busy never depends on `seen`, and a busy row is never finished, so this set is
- * the same whether or not the pass-two skip has run.
- */
-function busyAgentSessionIds(
+/** A busy agent row: Working or Waiting, not holding its lane out, and an agent chat or CLI. */
+function isBusyAgentRow(session: TerminalSessionSummary, row: WorkRowFocus): boolean {
+  return !row.holdsOut && (row.status === "working" || row.status === "waiting") && isAgentSession(session);
+}
+
+type LaneFocusRows = {
+  rowBySessionId: ReadonlyMap<string, WorkRowFocus | null>;
+  busyIds: ReadonlySet<string>;
+};
+
+/** Every row of one lane, computed once, and the ids of the lane's busy agent rows. */
+function laneFocusRows(
   sessions: readonly TerminalSessionSummary[],
-  nestedSessionIds: ReadonlySet<string>,
+  seenOf: (session: TerminalSessionSummary) => boolean,
   inputs: LaneFocusInputs,
-): Set<string> {
-  const busy = new Set<string>();
+): LaneFocusRows {
+  const rowBySessionId = new Map<string, WorkRowFocus | null>();
+  const busyIds = new Set<string>();
   for (const session of sessions) {
-    const row = laneRowFocus(session, nestedSessionIds.has(session.id), false, inputs);
-    if (row && !row.holdsOut && (row.status === "working" || row.status === "waiting") && isAgentSession(session)) {
-      busy.add(session.id);
-    }
+    const row = laneRowFocus(session, seenOf(session), inputs);
+    rowBySessionId.set(session.id, row);
+    if (row && isBusyAgentRow(session, row)) busyIds.add(session.id);
   }
-  return busy;
+  return { rowBySessionId, busyIds };
 }
 
 /**
@@ -243,7 +244,7 @@ export const EMPTY_WORK_SEEN_AT: Readonly<Record<string, string>> = {};
  * way while that launcher is a busy agent in this lane. A raised hand, a stale
  * run, or a missed wake from a helper still holds the lane out; a chat the user
  * started has no launcher and is unaffected; a launcher in another lane does not
- * count. The launcher is checked one level up only.
+ * count. Only the direct launcher counts, not its own launcher.
  *
  * `busySubagentParentIds` names the chats a nested subagent still keeps busy
  * (`parentsWithBusySubagents`, the same set the row label reads). Such a
@@ -265,26 +266,24 @@ export function summarizeLaneFocus(args: {
   let status: WorkLaneFocusStatus | null = launching > 0 ? "working" : null;
   let busy = launching;
   let heldOut = false;
-  const inputs: LaneFocusInputs = {
-    filingBuckets: args.filingBuckets,
-    laneWaiting: args.laneWaiting,
-    busySubagentParentIds: args.busySubagentParentIds,
-    nowMs: args.nowMs,
-  };
-  // Pass one finds the busy agents; pass two skips the helpers they launched.
-  const busyIds = busyAgentSessionIds(args.sessions, args.nestedSessionIds, inputs);
+  const lane = laneFocusRows(
+    args.sessions,
+    (session) => isWorkRowSeen(session, args.seenAtBySessionId[session.id]),
+    {
+      filingBuckets: args.filingBuckets,
+      laneWaiting: args.laneWaiting,
+      nestedSessionIds: args.nestedSessionIds,
+      busySubagentParentIds: args.busySubagentParentIds,
+      nowMs: args.nowMs,
+    },
+  );
   for (const session of args.sessions) {
-    const row = laneRowFocus(
-      session,
-      args.nestedSessionIds.has(session.id),
-      isWorkRowSeen(session, args.seenAtBySessionId[session.id]),
-      inputs,
-    );
+    const row = lane.rowBySessionId.get(session.id);
     if (!row) continue;
-    if (deferredToBusyLauncher(session, row, busyIds)) continue;
+    if (deferredToBusyLauncher(session, row, lane.busyIds)) continue;
     if (status === null || STATUS_RANK[row.status] < STATUS_RANK[status]) status = row.status;
     if (row.holdsOut) heldOut = true;
-    else if ((row.status === "working" || row.status === "waiting") && isAgentSession(session)) busy += 1;
+    else if (isBusyAgentRow(session, row)) busy += 1;
   }
   return { status, folds: !heldOut && busy > 0 };
 }
@@ -410,35 +409,29 @@ export function workFocusQueue(args: {
   busySubagentParentIds?: ReadonlySet<string>;
   nowMs?: number;
 }): string[] {
-  const busyIdsByLane = new Map<string, ReadonlySet<string>>();
-  const busyIdsForLane = (laneId: string): ReadonlySet<string> => {
-    let busyIds = busyIdsByLane.get(laneId);
-    if (!busyIds) {
-      busyIds = busyAgentSessionIds(
-        args.sessions.filter((session) => session.laneId === laneId),
-        args.nestedSessionIds,
-        {
-          filingBuckets: args.filingBuckets,
-          laneWaiting: args.laneWaiting(laneId),
-          busySubagentParentIds: args.busySubagentParentIds,
-          nowMs: args.nowMs,
-        },
-      );
-      busyIdsByLane.set(laneId, busyIds);
-    }
-    return busyIds;
-  };
-  const ids: string[] = [];
+  const sessionsByLaneId = new Map<string, TerminalSessionSummary[]>();
   for (const session of args.sessions) {
     if (args.foldedLaneIds.has(session.laneId)) continue;
-    if (!isAgentSession(session)) continue;
-    const nested = args.nestedSessionIds.has(session.id);
-    const row = laneRowFocus(session, nested, false, {
+    const laneSessions = sessionsByLaneId.get(session.laneId);
+    if (laneSessions) laneSessions.push(session);
+    else sessionsByLaneId.set(session.laneId, [session]);
+  }
+  const laneBySessionId = new Map<string, LaneFocusRows>();
+  for (const [laneId, laneSessions] of sessionsByLaneId) {
+    const lane = laneFocusRows(laneSessions, () => false, {
       filingBuckets: args.filingBuckets,
-      laneWaiting: args.laneWaiting(session.laneId),
+      laneWaiting: args.laneWaiting(laneId),
+      nestedSessionIds: args.nestedSessionIds,
       busySubagentParentIds: args.busySubagentParentIds,
       nowMs: args.nowMs,
     });
+    for (const session of laneSessions) laneBySessionId.set(session.id, lane);
+  }
+  const ids: string[] = [];
+  for (const session of args.sessions) {
+    const lane = laneBySessionId.get(session.id);
+    if (!lane || !isAgentSession(session)) continue;
+    const row = lane.rowBySessionId.get(session.id);
     if (!row) continue;
     if (row.status === "needs_you") {
       ids.push(session.id);
@@ -448,8 +441,8 @@ export function workFocusQueue(args: {
       ids.push(session.id);
       continue;
     }
-    if (nested) continue;
-    if (deferredToBusyLauncher(session, row, busyIdsForLane(session.laneId))) continue;
+    if (args.nestedSessionIds.has(session.id)) continue;
+    if (deferredToBusyLauncher(session, row, lane.busyIds)) continue;
     // A stale or stalled run is filed as working but holds its lane out: it
     // may be stuck, so the user is the one who has to look.
     if (row.status === "done" || (row.status === "working" && row.holdsOut)) ids.push(session.id);
