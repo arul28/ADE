@@ -33,7 +33,7 @@ import { factoryConfigHome } from "../shared/providerConfigHomes";
 import { settleWithin } from "../shared/utils";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
-import { materializeWorkerImages } from "./workerAttachmentImages";
+import { materializeWorkerImages, withOmittedImageHints } from "./workerAttachmentImages";
 
 // Must run before the SDK spawns `droid`; see droidSdkWindowsHide.ts.
 ensureDroidSpawnsAreWindowless();
@@ -657,7 +657,11 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
       };
     }
     if (!session) throw new Error("Droid SDK worker is not initialized.");
-    const materialized = await materializeWorkerImages(payload.payload.images, { label: "Droid SDK" });
+    const omittedHints: string[] = [];
+    const materialized = await materializeWorkerImages(payload.payload.images, {
+      label: "Droid SDK",
+      onOmitted: (hint) => omittedHints.push(hint),
+    });
     const images = materialized.map((image) => {
       if (!("data" in image)) {
         throw new Error("Droid SDK image URLs are not supported.");
@@ -685,7 +689,7 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
     };
     const turnSession = session;
     const outcome = await consumeDroidSdkTurnStream({
-      stream: turnSession.stream(payload.payload.promptText, streamOptions),
+      stream: turnSession.stream(withOmittedImageHints(payload.payload.promptText, omittedHints), streamOptions),
       postSdkEvent,
       readContextStats: () => readContextStats(turnSession),
       readWorkerTokenUsage: readDroidWorkerTokenUsage,

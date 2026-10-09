@@ -4452,7 +4452,12 @@ function DoneTurnDivider({
   const [usageDetailsOpen, setUsageDetailsOpen] = useState(false);
   const turnProof = proofArtifacts ?? EMPTY_PROOF_ARTIFACTS;
   const completed = event.status === "completed";
-  const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
+  // Older Claude turns that died on a client-side error recorded the SDK's
+  // placeholder model "<synthetic>"; it names no model, so it shows none.
+  const syntheticModel = event.model === "<synthetic>";
+  const { label: modelLabel } = syntheticModel
+    ? { label: null }
+    : resolveModelMeta(event.modelId, event.model);
   const reasonLabel = completed ? null : terminalReasonLabel(event.terminalReason);
   // Same rule as the fold row's `Worked for …`: any measured duration shows.
   const ranFor = durationMs !== null && durationMs > 0

@@ -381,8 +381,10 @@ import {
 import { createTurnEndQuestionCheck } from "./turnEndQuestionCheck";
 import {
   exceedsProviderInlineLimit,
+  imageNotInlinedHintPart,
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
+import { fitImageForProviderInline } from "./providerInlineImage";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { isRemoteOrDataUri } from "../../../shared/chatImageUrls";
 import {
@@ -1542,6 +1544,7 @@ const CLAUDE_FAILED_TERMINAL_REASONS = new Set([
   "api_error",
   "malformed_tool_use_exhausted",
   "prompt_too_long",
+  "image_error",
 ]);
 
 function classifyClaudeResultStatus(result: Record<string, unknown>): ClaudeTerminalStatus {
@@ -1559,6 +1562,46 @@ function classifyClaudeResultStatus(result: Record<string, unknown>): ClaudeTerm
   const subtype = stringOrNull(result.subtype);
   if (subtype?.startsWith("error_")) return "failed";
   return result.is_error === true ? "failed" : "completed";
+}
+
+/**
+ * The transcript notice for a Claude result that failed the turn when nothing
+ * else in the turn said why.
+ *
+ * Claude Code checks attached images itself; one over its limits ends the turn
+ * with `terminal_reason: "image_error"`, an empty `errors` list, the reason only
+ * in `result`, and a `<synthetic>` model. Without this the user saw a bare
+ * FAILED row and read it as the agent crashing. Other failures that carry their
+ * text only in `result` get that text; usage limits, sign-in failures and
+ * context overflow are left to the flows that already own them.
+ */
+function claudeResultFailureNotice(args: {
+  result: Record<string, unknown>;
+  status: ClaudeTerminalStatus;
+  userFacingErrorsShown: boolean;
+  contextOverflow: boolean;
+  assistantText: string;
+}): Omit<Extract<AgentChatEvent, { type: "error" }>, "type" | "turnId"> | null {
+  if (args.status !== "failed") return null;
+  const resultText = typeof args.result.result === "string" ? args.result.result.trim() : "";
+  if (stringOrNull(args.result.terminal_reason) === "image_error") {
+    const presentation: ChatErrorPresentation = {
+      title: "Claude couldn't read an attached image",
+      body: "An image in this message is over Claude's size limit, so Claude stopped the turn before reading it.",
+      nextAction: "Send it again. If it fails again, attach a smaller image.",
+      ...(resultText ? { technicalDetail: resultText } : {}),
+    };
+    return {
+      message: presentation.body,
+      ...(resultText ? { detail: resultText } : {}),
+      errorInfo: { category: "unknown", provider: "Claude", presentation },
+    };
+  }
+  if (args.userFacingErrorsShown || args.contextOverflow || !resultText) return null;
+  if (args.result.is_error !== true) return null;
+  if (isClaudeUsageLimitResultError(resultText) || isClaudeRuntimeAuthError(resultText)) return null;
+  if (args.assistantText.includes(resultText)) return null;
+  return { message: resultText };
 }
 
 function normalizeClaudeActiveGoalPayload(value: unknown): Omit<ClaudeActiveGoal, "updatedAt"> | null {
@@ -7360,10 +7403,17 @@ function resolveModelIdFromStoredValue(
   return preferred?.id ?? matches[0]?.id;
 }
 
+/**
+ * Claude Code stamps the assistant message it fabricates for a client-side
+ * error (an oversized image, an API error) with this model. It names no model,
+ * so the turn keeps the model that actually ran it.
+ */
+const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
+
 function normalizeReportedModelName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
-  return normalized.length ? normalized : null;
+  return normalized.length && normalized !== CLAUDE_SYNTHETIC_MODEL ? normalized : null;
 }
 
 function extractReportedModelUsageNames(value: unknown): string[] {
@@ -7836,20 +7886,28 @@ async function buildStreamingUserContent(
       const data = await args.readAttachmentBytes(attachment);
       const mediaType = inferAttachmentMediaType(attachment);
 
-      // Every branch below this point inlines `data` into the request body.
-      // The attachment cap is larger than what a provider accepts inline, so
-      // an oversized file degrades to a path hint rather than a rejected turn.
-      if (exceedsProviderInlineLimit(data.byteLength)) {
-        parts.push(inlineAttachmentHintPart(attachment.path, data.byteLength));
-        continue;
-      }
-
       if (attachment.type === "image") {
         if (args.runtimeKind === "claude" || args.modelDescriptor?.capabilities.vision) {
+          // The model behind OpenCode may be Anthropic's, which rejects an
+          // image over 5 MB of base64, so images are fitted the same way the
+          // Claude adapter fits them.
+          const fitted = await fitImageForProviderInline(data, mediaType);
+          if (fitted.kind === "omit") {
+            args.logger?.warn("agent_chat.inline_image_omitted", {
+              provider: args.runtimeKind,
+              bytes: data.byteLength,
+              reason: fitted.reason,
+            });
+            parts.push(imageNotInlinedHintPart(attachment.path, fitted.reason));
+            continue;
+          }
+          if (fitted.resized) {
+            args.logger?.info("agent_chat.inline_image_resized", { provider: args.runtimeKind, ...fitted.resized });
+          }
           parts.push({
             type: "image",
-            image: data,
-            mediaType,
+            image: fitted.data,
+            mediaType: fitted.mediaType,
           });
         } else {
           parts.push({
@@ -7857,6 +7915,14 @@ async function buildStreamingUserContent(
             text: `\nImage attached but the selected model does not advertise vision support: ${attachment.path}`,
           });
         }
+        continue;
+      }
+
+      // Every branch below this point inlines `data` into the request body.
+      // The attachment cap is larger than what a provider accepts inline, so
+      // an oversized file degrades to a path hint rather than a rejected turn.
+      if (exceedsProviderInlineLimit(data.byteLength)) {
+        parts.push(inlineAttachmentHintPart(attachment.path, data.byteLength));
         continue;
       }
 
@@ -27025,6 +27091,16 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, { type: "error", message: error, turnId });
         }
       }
+      const failureNotice = turnId
+        ? claudeResultFailureNotice({
+          result: resultMsg,
+          status: terminalStatus,
+          userFacingErrorsShown: resultIsError && resultErrors.userFacing.length > 0,
+          contextOverflow: isClaudeContextOverflowResult(resultMsg, resultErrors.all),
+          assistantText: state.assistantText,
+        })
+        : null;
+      if (failureNotice && turnId) emitChatEvent(managed, { type: "error", ...failureNotice, turnId });
       observeClaudeCompactionUnavailable(
         managed,
         runtime,
@@ -27618,6 +27694,7 @@ export function createAgentChatService(args: {
         sessionId: runtime.sdkSessionId,
         forceUserMessage: true,
         getDirtyFileTextForPath,
+        logger,
       }) as unknown as SDKUserMessage;
       messageToSend.uuid = userMessageId as NonNullable<SDKUserMessage["uuid"]>;
       messageToSend.timestamp = new Date().toISOString();
@@ -29354,6 +29431,14 @@ export function createAgentChatService(args: {
               });
             }
           }
+          const failureNotice = claudeResultFailureNotice({
+            result: resultMsg,
+            status: resultTerminalStatus,
+            userFacingErrorsShown: resultIsError && resultErrors.userFacing.length > 0,
+            contextOverflow: recoverFromContextOverflow,
+            assistantText,
+          });
+          if (failureNotice) emitChatEvent(managed, { type: "error", ...failureNotice, turnId });
           // A result frame is the provider's definitive acknowledgement of the
           // submitted prompt even when it reports a terminal failure. Keep the
           // turn on the normal result path so terminal_reason and overflow
@@ -47316,41 +47401,36 @@ export function createAgentChatService(args: {
         continue;
       }
       try {
-        let buf: Buffer;
         if (attachment.type === "image") {
           // An image has no path-shaped fallback here — it is inlined or it is
-          // a text hint — so the size check happens before the read, not after.
-          const imageSize = resolvedAttachmentDiskSize(attachment);
-          if (imageSize != null && exceedsProviderInlineLimit(imageSize)) {
-            blocks.push(inlineAttachmentHintPart(attachment.path, imageSize));
+          // a text hint — so it is fitted to the provider limits first.
+          const fitted = await fitImageForProviderInline(
+            await readResolvedAttachmentBytes(attachment),
+            guessImageMimeForPath(attachment._resolvedPath),
+          );
+          blocks.push(fitted.kind === "omit"
+            ? imageNotInlinedHintPart(attachment.path, fitted.reason)
+            : { type: "image", data: fitted.data.toString("base64"), mimeType: fitted.mediaType });
+          continue;
+        }
+        let buf: Buffer;
+        const dirtyBuf = await readDirtyResolvedAttachmentBytes(attachment);
+        if (dirtyBuf) {
+          buf = dirtyBuf;
+        } else {
+          const fileSize = resolvedAttachmentDiskSize(attachment);
+          if (fileSize == null) continue;
+          if (fileSize > MAX_INLINE_BYTES) {
+            blocks.push({
+              type: "text",
+              text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
+            });
             continue;
           }
-          buf = await readResolvedAttachmentBytes(attachment);
-        } else {
-          const dirtyBuf = await readDirtyResolvedAttachmentBytes(attachment);
-          if (dirtyBuf) {
-            buf = dirtyBuf;
-          } else {
-            const fileSize = resolvedAttachmentDiskSize(attachment);
-            if (fileSize == null) continue;
-            if (fileSize > MAX_INLINE_BYTES) {
-              blocks.push({
-                type: "text",
-                text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
-              });
-              continue;
-            }
-            buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
-          }
+          buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
         }
 
-        if (attachment.type === "image") {
-          blocks.push({
-            type: "image",
-            data: buf.toString("base64"),
-            mimeType: guessImageMimeForPath(attachment._resolvedPath),
-          });
-        } else if (buf.length <= MAX_INLINE_BYTES) {
+        if (buf.length <= MAX_INLINE_BYTES) {
           // Non-image file attachment -- include content as text if not binary
           if (hasNullByte(buf)) {
             blocks.push({
@@ -52178,6 +52258,7 @@ export function createAgentChatService(args: {
       sessionId: runtime.sdkSessionId ?? null,
       forceUserMessage: true,
       getDirtyFileTextForPath,
+      logger,
     }) as unknown as SDKUserMessage;
 
     // Match Claude Code's own command queue. "next" is consumed between tool

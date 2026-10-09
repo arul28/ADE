@@ -5,6 +5,7 @@ const TERMINAL_REASON_LABELS: Readonly<Record<string, string>> = {
   budget_exhausted: "budget limit reached",
   max_turns: "max turns reached",
   prompt_too_long: "context window overflow",
+  image_error: "attached image rejected",
   api_error: "API error after retries",
   malformed_tool_use_exhausted: "tool-call retries exhausted",
   structured_output_retry_exhausted: "output retries exhausted",
