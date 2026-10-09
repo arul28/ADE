@@ -188,3 +188,38 @@ inspector's WebSocket URL.
   machine, say so; a different machine is a new column, not a new value.
 - **Ceilings:** do not raise a ceiling to make your change pass. Raising one
   needs the user's approval and a recorded reason.
+
+
+## Hosted web client
+
+Browser measurements from PR #1561, on the same MacBook Pro (Mac15,6, M3 Pro,
+18 GB, macOS 27.0, Node 22.13.1) under heavy concurrent agent and build load.
+These are different scenarios and load conditions from the desktop baseline
+above.
+Cold signed-out runs used the same localhost production build and headless
+60 Hz display, with before/after load averages about 8.8–9.6. The source cold-load
+capture compares `c68bbf0b1` with `5ffa4f3be`; later poller and interleaved
+streaming measurements include the branch's follow-up fixes. They are recorded
+in the branch review evidence (`before-after.md` and the interleaved
+`after.json` capture), not a fresh idle or GPU measurement. Streaming numbers are
+interleaved A/B on this same machine under load; compare like conditions.
+
+| Scenario / metric | Before | Baseline after | Ceiling | How |
+| --- | ---: | ---: | ---: | --- |
+| Cold signed-out requests | 123 | 47 | 60 | `npm run bench:webclient` in `apps/desktop` |
+| Cold signed-out transfer (KB) | 9,703 | 1,552 | 2,000 | `npm run bench:webclient` in `apps/desktop` |
+| Cold signed-out JS (KB) | 8,455 | 736 | 950 | `npm run bench:webclient` in `apps/desktop` |
+| Cold signed-out images (KB) | 376 | 79 | 100 | `npm run bench:webclient` in `apps/desktop` |
+| Cold signed-out heap after GC (MB) | 14.9 | 2.7 | 3.5 | `npm run bench:webclient` in `apps/desktop` |
+| Cold signed-out gate visible (ms) | 305 | 149 | 190 | `npm run bench:webclient` in `apps/desktop` |
+| Cold signed-out long-task total (ms) | 53 | 0 | 10 | `npm run bench:webclient` in `apps/desktop` |
+| Fleet polls / visible minute | 30 | 7 | 9 | `npm run bench:webclient` in `apps/desktop` |
+| Fleet polls / hidden minute | 30 | 0 | 0 | `npm run bench:webclient` in `apps/desktop` |
+| App Control polls / visible minute | 20 | 7 | 9 | `npm run bench:webclient` in `apps/desktop` |
+| App Control polls / hidden minute | 20 | 0 | 0 | `npm run bench:webclient` in `apps/desktop` |
+| OAuth reads / five minutes | 300 | 108 | 140 | `npm run bench:webclient` in `apps/desktop` |
+| Streaming script ms / event | 12.8 | 11.7 | 15.0 | `scripts/perf-chat-stream.mjs` |
+
+The zero-baseline long-task row has a small absolute ceiling rather than a
+percentage margin; hidden-tab reads have a strict zero ceiling. These rows do
+not change any desktop ceiling.

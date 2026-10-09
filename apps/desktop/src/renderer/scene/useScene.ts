@@ -17,6 +17,9 @@ import { extractScenePalette, type ScenePalette } from "./scenePalette";
 import { listUserScenes, subscribeUserScenes, userSceneUrl, type UserSceneSummary } from "./userScenes";
 
 export type ActiveScene =
+  /** The flat theme background (mode `plain`): no mesh is drawn and nothing moves. */
+  | { kind: "plain" }
+  /** The theme's animated mesh (mode `gradient`, or a picture that is gone). */
   | { kind: "gradient" }
   | {
       kind: "image";
@@ -222,7 +225,7 @@ export function useActiveScene(): ActiveScene {
     if (id) load(id);
   }, [id]);
 
-  if (!id) return { kind: "gradient" };
+  if (!id) return prefs.mode === "plain" ? { kind: "plain" } : { kind: "gradient" };
   const entry = entries.get(id);
   // A user picture that no longer exists falls back to the gradient.
   if (entry?.done && !entry.url) return { kind: "gradient" };
@@ -255,7 +258,7 @@ export function useSetScene(): (next: Partial<ScenePreferences>) => void {
   return useCallback(
     (next) => {
       const current = useAppStore.getState().interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES;
-      setInterfacePreferences({ scene: { ...current, ...next } });
+      setInterfacePreferences({ scene: { ...current, ...next, choiceMade: true } });
     },
     [setInterfacePreferences],
   );

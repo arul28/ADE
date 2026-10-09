@@ -208,6 +208,7 @@
 		E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */; };
 		E1000000000000000000003A /* WorkReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003A /* WorkReasoningCard.swift */; };
 		E10000000000000000CC0001 /* WorkComputerUseActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0001 /* WorkComputerUseActions.swift */; };
+		E10000000000000000CC0005 /* WorkCommandRedaction.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0005 /* WorkCommandRedaction.swift */; };
 		E10000000000000000CC0002 /* WorkComputerUseSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0002 /* WorkComputerUseSummary.swift */; };
 		E10000000000000000CC00F1 /* WorkComputerUseOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC00F1 /* WorkComputerUseOutput.swift */; };
 		E10000000000000000CC0003 /* WorkComputerUsePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000CC0003 /* WorkComputerUsePresentation.swift */; };
@@ -610,6 +611,7 @@
 		D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Timeline.swift"; path = "ADE/Views/Work/WorkChatSessionView+Timeline.swift"; sourceTree = "<group>"; };
 		D1000000000000000000003A /* WorkReasoningCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkReasoningCard.swift"; path = "ADE/Views/Work/WorkReasoningCard.swift"; sourceTree = "<group>"; };
 		D10000000000000000CC0001 /* WorkComputerUseActions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUseActions.swift"; path = "ADE/Views/Work/WorkComputerUseActions.swift"; sourceTree = "<group>"; };
+		D10000000000000000CC0005 /* WorkCommandRedaction.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkCommandRedaction.swift"; path = "ADE/Views/Work/WorkCommandRedaction.swift"; sourceTree = "<group>"; };
 		D10000000000000000CC0002 /* WorkComputerUseSummary.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUseSummary.swift"; path = "ADE/Views/Work/WorkComputerUseSummary.swift"; sourceTree = "<group>"; };
 		D10000000000000000CC00F1 /* WorkComputerUseOutput.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUseOutput.swift"; path = "ADE/Views/Work/WorkComputerUseOutput.swift"; sourceTree = "<group>"; };
 		D10000000000000000CC0003 /* WorkComputerUsePresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkComputerUsePresentation.swift"; path = "ADE/Views/Work/WorkComputerUsePresentation.swift"; sourceTree = "<group>"; };
@@ -1141,6 +1143,7 @@
 				D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */,
 				D1000000000000000000003A /* WorkReasoningCard.swift */,
 				D10000000000000000CC0001 /* WorkComputerUseActions.swift */,
+				D10000000000000000CC0005 /* WorkCommandRedaction.swift */,
 				D10000000000000000CC0002 /* WorkComputerUseSummary.swift */,
 				D10000000000000000CC00F1 /* WorkComputerUseOutput.swift */,
 				D10000000000000000CC0003 /* WorkComputerUsePresentation.swift */,
@@ -2050,6 +2053,7 @@
 				E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */,
 				E1000000000000000000003A /* WorkReasoningCard.swift in Sources */,
 				E10000000000000000CC0001 /* WorkComputerUseActions.swift in Sources */,
+				E10000000000000000CC0005 /* WorkCommandRedaction.swift in Sources */,
 				E10000000000000000CC0002 /* WorkComputerUseSummary.swift in Sources */,
 				E10000000000000000CC00F1 /* WorkComputerUseOutput.swift in Sources */,
 				E10000000000000000CC0003 /* WorkComputerUsePresentation.swift in Sources */,

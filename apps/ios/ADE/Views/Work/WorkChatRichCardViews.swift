@@ -406,7 +406,7 @@ struct WorkToolCardView: View, Equatable {
           }
 
           if let argsText = toolCard.argsText, !argsText.isEmpty {
-            WorkStructuredOutputBlock(title: "Arguments", text: argsText)
+            WorkStructuredOutputBlock(title: "Arguments", text: workMaskShellCommandArgsText(tool: toolCard.toolName, argsText: argsText))
           }
           if let resultText = toolCard.resultText, !resultText.isEmpty {
             if let remoteResultBytes = toolCard.remoteResultBytes,
@@ -465,7 +465,7 @@ struct WorkToolCardView: View, Equatable {
   /// otherwise the arguments that produced it.
   private var peekText: String? {
     if let result = toolCard.resultText, !result.isEmpty { return result }
-    if let args = toolCard.argsText, !args.isEmpty { return args }
+    if let args = toolCard.argsText, !args.isEmpty { return workMaskShellCommandArgsText(tool: toolCard.toolName, argsText: args) }
     return nil
   }
 
@@ -800,7 +800,7 @@ struct WorkToolCallsPanelView: View {
         ?? workToolResultPreview(card.resultText)
     case .command(let card):
       guard !card.command.isEmpty else { return nil }
-      return workSummarizeInlineText(card.command, maxChars: 140)
+      return workSummarizeInlineText(workRedactCommandLine(card.command), maxChars: 140)
     case .fileChange(let card):
       return workReferenceLabel(for: card.path)
     }
@@ -819,7 +819,7 @@ struct WorkToolCallsPanelView: View {
       if let preview = workToolArgPreview(toolName: card.toolName, argsText: card.argsText) {
         return preview
       }
-      if let args = card.argsText, !args.isEmpty { return args }
+      if let args = card.argsText, !args.isEmpty { return workMaskShellCommandArgsText(tool: card.toolName, argsText: args) }
       return nil
     case .command(let card):
       let output = card.output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1325,7 +1325,7 @@ struct WorkCommandCardView: View, Equatable {
             Text("Command")
               .font(.subheadline.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
-            Text(card.command)
+            Text(workRedactCommandLine(card.command))
               .font(.caption.monospaced())
               .foregroundStyle(ADEColor.textSecondary)
               .textSelection(.enabled)
@@ -1379,7 +1379,7 @@ struct WorkCommandCardView: View, Equatable {
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Command, \(card.status.rawValue). Tap to \(isExpanded ? "collapse" : "expand") output.")
     .workCollapsedCardPeek(enabled: !isExpanded && !card.output.isEmpty, onExpand: onToggle) {
-      WorkANSIOutputBlock(title: card.command, text: card.output)
+      WorkANSIOutputBlock(title: workRedactCommandLine(card.command), text: card.output)
     }
   }
 
@@ -4012,7 +4012,7 @@ private struct WorkBackgroundWorkRow: View {
           Text("$")
             .font(.caption.monospaced().weight(.bold))
             .foregroundStyle(ADEColor.textMuted)
-          Text(presentation.label.isEmpty ? item.title : presentation.label)
+          Text(workRedactCommandLine(presentation.label.isEmpty ? item.title : presentation.label))
             .font(.caption.monospaced())
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(expanded ? nil : 1)
@@ -4025,7 +4025,7 @@ private struct WorkBackgroundWorkRow: View {
         }
         if expanded {
           VStack(alignment: .leading, spacing: 6) {
-            Text(command)
+            Text(workRedactCommandLine(command))
               .font(.caption2.monospaced())
               .foregroundStyle(ADEColor.textSecondary)
               .frame(maxWidth: .infinity, alignment: .leading)
@@ -4611,7 +4611,7 @@ private struct WorkSubagentBackgroundChipRow: View {
       Image(systemName: glyph)
         .font(.system(size: 11, weight: .bold))
         .foregroundStyle(tint)
-      Text(row.commandLabel ?? "Background command")
+      Text(workRedactCommandLine(row.commandLabel ?? "Background command"))
         .font(.caption.monospaced())
         .foregroundStyle(ADEColor.textSecondary)
         .lineLimit(1)

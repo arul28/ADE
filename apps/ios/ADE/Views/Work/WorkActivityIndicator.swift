@@ -381,7 +381,7 @@ struct WorkActivityIndicator: View {
   }
 
   private static func summarizeCommand(_ command: String) -> String {
-    let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmed = workRedactCommandLine(command).trimmingCharacters(in: .whitespacesAndNewlines)
     let firstLine = trimmed.split(separator: "\n").first.map(String.init) ?? trimmed
     if firstLine.count <= 72 { return firstLine }
     return String(firstLine.prefix(69)) + "…"

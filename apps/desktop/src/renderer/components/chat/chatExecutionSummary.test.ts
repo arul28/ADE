@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 import {
   deriveChatSubagentSnapshots,
+  deriveChatSubagentSnapshotsIncremental,
   deriveScheduledWorkSnapshots,
   subagentTreeDepth,
   type ChatSubagentSnapshot,
@@ -862,5 +863,25 @@ describe("deriveScheduledWorkSnapshots", () => {
       title: "Background work",
       status: "running",
     }));
+  });
+});
+
+
+describe("incremental subagent derivation", () => {
+  it.each(["text", "lifecycle", "replaced", "truncated"] as const)("matches full derivation after %s", (change) => {
+    const envelope = (event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "s", timestamp: "2026-10-09T00:00:00.000Z", event,
+    });
+    const started = envelope({ type: "subagent_started", taskId: "task", description: "Inspect" });
+    const text = envelope({ type: "text", text: "hello" });
+    const result = envelope({ type: "subagent_result", taskId: "task", status: "completed", summary: "Done" });
+    const previous = deriveChatSubagentSnapshotsIncremental(null, [started, text]);
+    const events = change === "text" ? [started, text, text]
+      : change === "lifecycle" ? [started, text, result]
+      : change === "replaced" ? [result, text] : [text];
+    const snapshots = deriveChatSubagentSnapshotsIncremental(previous, events).snapshots;
+    expect(snapshots).toEqual(deriveChatSubagentSnapshots(events));
+    expect(snapshots).toHaveLength(change === "truncated" ? 0 : 1);
+    expect(snapshots[0]?.status).toBe(change === "text" ? "running" : change === "truncated" ? undefined : "completed");
   });
 });

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
 import { GlassSignInCard } from "./GlassSignInCard";
-import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
-import { useAppStore } from "../../state/appStore";
+import { GateBackdrop } from "./GateBackdrop";
+import { WebSignInGate } from "./WebSignInGate";
 import { accountGateMode, accountSessionState, useAccountStatus } from "../../lib/account";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { WelcomeVideoGate } from "./WelcomeVideoGate";
@@ -23,46 +23,11 @@ export function LaunchGate({ children }: LaunchGateProps) {
  * the `recoverable` case the desktop gate handles.
  */
 function WebLaunchGate({ children }: LaunchGateProps) {
-  const { status, loading } = useAccountStatus();
+  const { status } = useAccountStatus();
 
   if (status.signedIn) return children;
 
-  return (
-    <div data-testid="launch-gate" data-mode="web" className="ade-gate">
-      <GateBackdrop />
-      <div className="ade-gate-stack">
-        {loading ? (
-          <div role="status" className="ade-gate-loading">
-            <span className="ade-glass-mark">
-              <img src="./logo.png" alt="ADE" draggable={false} />
-            </span>
-            Checking your ADE account…
-          </div>
-        ) : (
-          <GlassSignInCard
-            configured={status.configured !== false}
-            onSignedIn={() => undefined}
-            sessionState={accountSessionState(status)}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * ADE's mesh, drawn as one window-sized field behind the glass card, with a
- * vignette that keeps the card's edges legible. Follows the theme and any
- * image scene on its own.
- */
-function GateBackdrop() {
-  const theme = useAppStore((s) => s.theme);
-  return (
-    <>
-      <WorkToolPickerBackdrop theme={theme} field="window" />
-      <div className="ade-gate-vignette" aria-hidden="true" />
-    </>
-  );
+  return <WebSignInGate />;
 }
 
 function DesktopLaunchGate({ children }: LaunchGateProps) {

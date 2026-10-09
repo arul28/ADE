@@ -345,6 +345,45 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
   return [...snapshots.values()].sort((left, right) => compareIsoDesc(left.startedAt, right.startedAt));
 }
 
+/** The events a subagent derivation read, and what it returned for them. */
+export type ChatSubagentDerivation = {
+  events: readonly AgentChatEventEnvelope[];
+  snapshots: ChatSubagentSnapshot[];
+};
+
+/**
+ * `deriveChatSubagentSnapshots` for a list that is the previous list plus events
+ * with no subagent lifecycle. The derivation reads only those events, so the
+ * previous snapshots still hold and keep their identity (a streamed text delta
+ * does not re-render every subagent card). The prefix is compared by element
+ * identity, so a trim, a reorder or a rewritten event takes the full path.
+ */
+export function deriveChatSubagentSnapshotsIncremental(
+  previous: ChatSubagentDerivation | null,
+  events: AgentChatEventEnvelope[],
+): ChatSubagentDerivation {
+  if (previous && events.length >= previous.events.length) {
+    let samePrefix = true;
+    for (let index = 0; index < previous.events.length; index += 1) {
+      if (events[index] !== previous.events[index]) {
+        samePrefix = false;
+        break;
+      }
+    }
+    if (samePrefix) {
+      let tailHasSubagent = false;
+      for (let index = previous.events.length; index < events.length; index += 1) {
+        if (normalizeSubagentLifecycleEvent(events[index]!.event)) {
+          tailHasSubagent = true;
+          break;
+        }
+      }
+      if (!tailHasSubagent) return { events, snapshots: previous.snapshots };
+    }
+  }
+  return { events, snapshots: deriveChatSubagentSnapshots(events) };
+}
+
 export function deriveTurnDiffSummaries(events: AgentChatEventEnvelope[]): TurnDiffSummary[] {
   const summaries: TurnDiffSummary[] = [];
   for (const envelope of events) {

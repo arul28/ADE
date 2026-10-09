@@ -36,6 +36,8 @@ import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
+import { createBackoffPoller } from "./infra/backoffPoller";
+import { isPageHidden, observePageVisibility } from "./infra/pageVisibility";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import { createProviderAccountsNamespace } from "./providerAccounts";
@@ -355,6 +357,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   // onOpencodeOAuthStatus/onPiAuthStatus subscriptions become live instead of
   // inert. Scoped to active flows to avoid a perpetual background poll.
   const OAUTH_STATUS_POLL_MS = 1_000;
+  // A flow with no status for a minute is most likely waiting on the user, so
+  // it drains at a slower pace until the next status arrives.
+  const OAUTH_STATUS_QUIET_AFTER_MS = 60_000;
+  const OAUTH_STATUS_QUIET_POLL_MS = 5_000;
   // Must outlive the longest flow it drains. A Pi device-code sign-in is
   // budgeted at ten minutes host-side, so expiring at five stranded the UI on
   // "Waiting for Pi…" while prompts and the completion event were still coming.
@@ -364,11 +370,18 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     piAuthStatus: new Set(["success", "error"]),
     cursorAuthStatus: new Set(["success", "error", "cancelled", "logged-out"]),
   };
-  /** Entries are `${kind}:${providerId}` so both flows can drain at once. */
+  /** One key per flow, so start, terminal status, and cancel name the same entry. */
+  const oauthFlowKey = (kind: string, providerId: string): string => `${kind}:${providerId}`;
+  /** Entries come from `oauthFlowKey`, so both flows can drain at once. */
   const oauthActiveProviders = new Set<string>();
   let oauthDrainCursor: number | null = null;
   let oauthDrainTimer: ReturnType<typeof setTimeout> | null = null;
+  let oauthDrainInFlight = false;
+  /** A cancel landed while a read was in flight: that read's tail reads once more before it stops. */
+  let oauthDrainAgain = false;
   let oauthDrainDeadline = 0;
+  let oauthLastStatusAt = 0;
+  let stopOAuthVisibility: (() => void) | null = null;
 
   const streamRuntimeEvents = (cursor: number, limit: number): Promise<PersonalChatStreamEventsResult> =>
     commands.call<PersonalChatStreamEventsResult>(
@@ -377,33 +390,56 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       { fallback: { events: [], nextCursor: cursor, hasMore: false }, idempotent: true, requireProject: false },
     );
 
+  const clearOAuthTimer = (): void => {
+    if (oauthDrainTimer != null) clearTimeout(oauthDrainTimer);
+    oauthDrainTimer = null;
+  };
+
   const stopOAuthDrain = (): void => {
-    if (oauthDrainTimer != null) {
-      clearTimeout(oauthDrainTimer);
-      oauthDrainTimer = null;
-    }
+    clearOAuthTimer();
+    stopOAuthVisibility?.();
+    stopOAuthVisibility = null;
     oauthDrainCursor = null;
+    oauthDrainAgain = false;
     oauthActiveProviders.clear();
   };
 
   const scheduleOAuthPoll = (): void => {
-    if (oauthDrainTimer != null) return;
+    // A hidden tab reads nothing. Becoming visible resumes from the same cursor,
+    // so statuses that arrived meanwhile still drain in order.
+    if (oauthDrainTimer != null || isPageHidden()) return;
+    const quiet = Date.now() - oauthLastStatusAt > OAUTH_STATUS_QUIET_AFTER_MS;
     oauthDrainTimer = setTimeout(() => {
       void pollOAuthStatus();
-    }, OAUTH_STATUS_POLL_MS);
+    }, quiet ? OAUTH_STATUS_QUIET_POLL_MS : OAUTH_STATUS_POLL_MS);
+  };
+
+  /** Drains now, unless a read is already in flight (it schedules the next one). */
+  const resumeOAuthDrain = (): void => {
+    if (oauthDrainCursor == null || oauthDrainInFlight) return;
+    clearOAuthTimer();
+    void pollOAuthStatus();
+  };
+
+  const observeOAuthVisibility = (): void => {
+    if (stopOAuthVisibility) return;
+    stopOAuthVisibility = observePageVisibility({ onHidden: clearOAuthTimer, onVisible: resumeOAuthDrain });
   };
 
   async function pollOAuthStatus(): Promise<void> {
     oauthDrainTimer = null;
-    if (oauthDrainCursor == null) return;
+    if (oauthDrainCursor == null || oauthDrainInFlight) return;
     let page: PersonalChatStreamEventsResult;
+    oauthDrainInFlight = true;
     try {
       page = await streamRuntimeEvents(oauthDrainCursor, 200);
     } catch {
+      oauthDrainInFlight = false;
       if (oauthActiveProviders.size > 0 && Date.now() <= oauthDrainDeadline) scheduleOAuthPoll();
       else stopOAuthDrain();
       return;
     }
+    oauthDrainInFlight = false;
     if (oauthDrainCursor == null) return; // torn down mid-poll
     oauthDrainCursor = page.nextCursor;
     for (const event of page.events) {
@@ -413,18 +449,45 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       const terminalStates = AUTH_TERMINAL_STATES[kind];
       if (!terminalStates || !payload.event || typeof payload.event !== "object") continue;
       const statusEvent = payload.event as OpenCodeOAuthStatusEvent | PiAuthStatusEvent | CursorSdkAuthEvent;
+      oauthLastStatusAt = Date.now();
       events.emit(kind as never, statusEvent as never);
       if (typeof statusEvent.providerId === "string" && terminalStates.has(statusEvent.state)) {
-        oauthActiveProviders.delete(`${kind}:${statusEvent.providerId}`);
+        oauthActiveProviders.delete(oauthFlowKey(kind, statusEvent.providerId));
       }
+    }
+    // The cancelled status lands after this page was read, so one more read runs before the drain stops.
+    const drainAgain = oauthDrainAgain;
+    oauthDrainAgain = false;
+    if (drainAgain && Date.now() <= oauthDrainDeadline) {
+      void pollOAuthStatus();
+      return;
     }
     if (oauthActiveProviders.size === 0 || Date.now() > oauthDrainDeadline) stopOAuthDrain();
     else scheduleOAuthPoll();
   }
 
+  /**
+   * A cancelled flow drains once more, so its terminal status still reaches
+   * listeners, then stops. Flows without a cancelled terminal state (Pi) would
+   * otherwise drain until the deadline. A failed cancel keeps the flow watched,
+   * because the host may still be running it.
+   */
+  const endOAuthFlowAfterCancel = <T>(kind: string, providerId: string, cancel: Promise<T>): Promise<T> =>
+    cancel.then((result) => {
+      oauthActiveProviders.delete(oauthFlowKey(kind, providerId));
+      if (oauthActiveProviders.size === 0) {
+        // A read in flight owns the drain: its tail reads once more instead of stopping on an empty set.
+        if (oauthDrainInFlight) oauthDrainAgain = true;
+        else resumeOAuthDrain();
+      }
+      return result;
+    });
+
   const startOAuthDrain = async (kind: string, providerId: string): Promise<void> => {
-    if (providerId) oauthActiveProviders.add(`${kind}:${providerId}`);
+    if (providerId) oauthActiveProviders.add(oauthFlowKey(kind, providerId));
     oauthDrainDeadline = Date.now() + OAUTH_STATUS_MAX_MS;
+    oauthLastStatusAt = Date.now();
+    observeOAuthVisibility();
     if (oauthDrainCursor == null && oauthDrainTimer == null) {
       // Advance to the buffer tail before the flow emits, so we skip stale
       // statuses left by a prior flow instead of replaying them.
@@ -446,14 +509,14 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   // same event contract with a small, subscriber-scoped poll. It is dormant
   // until a fleet pane is mounted and emits only when the fleet changes.
   const cursorCloudFleetListeners = new Set<(event: CursorCloudFleetEvent) => void>();
-  let cursorCloudFleetPollTimer: ReturnType<typeof setTimeout> | null = null;
-  let cursorCloudFleetPollInFlight = false;
   let cursorCloudFleetSnapshot = new Map<string, string>();
-  const CURSOR_CLOUD_FLEET_POLL_MS = 2_000;
-  const pollCursorCloudFleet = async (): Promise<void> => {
-    if (cursorCloudFleetPollInFlight || cursorCloudFleetListeners.size === 0) return;
-    cursorCloudFleetPollInFlight = true;
-    try {
+  // Identical snapshots back off: the first three polls stay at 2 s, then the
+  // interval doubles up to this ceiling. A change or a fleet action resets it.
+  const cursorCloudFleetPoller = createBackoffPoller({
+    baseMs: 2_000,
+    maxMs: 15_000,
+    isActive: () => cursorCloudFleetListeners.size > 0,
+    read: async () => {
       const result = await call<CursorCloudFleetResult>(
         "ai.cursorCloudFleet",
         { includeArchived: true, limit: 100 },
@@ -469,6 +532,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
           archived: entry.agent.archived === true,
         }),
       ]));
+      const previousSize = cursorCloudFleetSnapshot.size;
       const changed = [...next.entries()].find(([agentId, value]) => cursorCloudFleetSnapshot.get(agentId) !== value);
       if (cursorCloudFleetSnapshot.size > 0 && changed) {
         const entry = result.items.find((candidate) => candidate.agent.agentId === changed[0]);
@@ -492,22 +556,11 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         }
       }
       cursorCloudFleetSnapshot = next;
-    } catch {
-      // The fleet pane owns the visible error state; event polling is only a
-      // freshness hint and must never create an unhandled rejection.
-    } finally {
-      cursorCloudFleetPollInFlight = false;
-      if (cursorCloudFleetListeners.size > 0) {
-        cursorCloudFleetPollTimer = setTimeout(() => {
-          cursorCloudFleetPollTimer = null;
-          void pollCursorCloudFleet();
-        }, CURSOR_CLOUD_FLEET_POLL_MS);
-      }
-    }
-  };
+      return changed !== undefined || next.size !== previousSize;
+    },
+  });
   const stopCursorCloudFleetPolling = (): void => {
-    if (cursorCloudFleetPollTimer != null) clearTimeout(cursorCloudFleetPollTimer);
-    cursorCloudFleetPollTimer = null;
+    cursorCloudFleetPoller.stop();
     cursorCloudFleetListeners.clear();
     cursorCloudFleetSnapshot = new Map();
   };
@@ -515,13 +568,16 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   const onCursorCloudFleetEvent = (listener: (event: CursorCloudFleetEvent) => void): (() => void) => {
     cursorCloudFleetListeners.add(listener);
     const unsubscribe = events.on("cursorCloudFleetEvent", listener);
-    if (cursorCloudFleetListeners.size === 1) void pollCursorCloudFleet();
+    if (cursorCloudFleetListeners.size === 1) cursorCloudFleetPoller.start({ immediate: true });
     return () => {
       unsubscribe();
       cursorCloudFleetListeners.delete(listener);
       if (cursorCloudFleetListeners.size === 0) stopCursorCloudFleetPolling();
     };
   };
+  /** Runs after a fleet action settles, so the list shows its effect at once. */
+  const afterCursorCloudFleetAction = <T>(action: Promise<T>): Promise<T> =>
+    action.finally(() => cursorCloudFleetPoller.kick());
 
   const ai: Record<string, unknown> = {
     // Pinned in the Electron contract: the AI status describes the machine that
@@ -572,12 +628,17 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
           false,
         );
       } catch (error) {
-        if (providerId) oauthActiveProviders.delete(`opencodeOAuthStatus:${providerId}`);
+        if (providerId) oauthActiveProviders.delete(oauthFlowKey("opencodeOAuthStatus", providerId));
         if (oauthActiveProviders.size === 0) stopOAuthDrain();
         throw error;
       }
     },
-    opencodeOAuthCancel: (args: unknown) => call<void>("ai.opencodeOAuthCancel", args, undefined, false),
+    opencodeOAuthCancel: (args: unknown) =>
+      endOAuthFlowAfterCancel(
+        "opencodeOAuthStatus",
+        oauthProviderId(args),
+        call<void>("ai.opencodeOAuthCancel", args, undefined, false),
+      ),
     setOpencodeProviderKey: (args: unknown) =>
       call<{ ok: boolean; error?: string }>(
         "ai.setOpencodeProviderKey",
@@ -610,7 +671,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
           false,
         );
       } catch (error) {
-        if (providerId) oauthActiveProviders.delete(`piAuthStatus:${providerId}`);
+        if (providerId) oauthActiveProviders.delete(oauthFlowKey("piAuthStatus", providerId));
         if (oauthActiveProviders.size === 0) stopOAuthDrain();
         throw error;
       }
@@ -622,7 +683,12 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         { ok: false, error: "Pi sign-in is unavailable in the web client while offline" },
         false,
       ),
-    piLoginCancel: (args: unknown) => call<void>("ai.piLoginCancel", args, undefined, false),
+    piLoginCancel: (args: unknown) =>
+      endOAuthFlowAfterCancel(
+        "piAuthStatus",
+        oauthProviderId(args),
+        call<void>("ai.piLoginCancel", args, undefined, false),
+      ),
     onPiAuthStatus: (cb: (status: PiAuthStatusEvent) => void) =>
       events.on("piAuthStatus" as never, cb as never),
     cursorAuthStatus: () =>
@@ -641,7 +707,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
           false,
         );
       } catch (error) {
-        oauthActiveProviders.delete("cursorAuthStatus:cursor");
+        oauthActiveProviders.delete(oauthFlowKey("cursorAuthStatus", "cursor"));
         if (oauthActiveProviders.size === 0) stopOAuthDrain();
         throw error;
       }
@@ -653,7 +719,8 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         { ok: false, error: "Cursor sign-out is unavailable in the web client while offline" },
         false,
       ),
-    cursorAuthCancel: () => call<void>("ai.cursorAuthCancel", undefined, undefined, false),
+    cursorAuthCancel: () =>
+      endOAuthFlowAfterCancel("cursorAuthStatus", "cursor", call<void>("ai.cursorAuthCancel", undefined, undefined, false)),
     onCursorAuthStatus: (cb: (status: CursorSdkAuthEvent) => void) =>
       events.on("cursorAuthStatus" as never, cb as never),
     cursorCloudListRepositories: (args?: { refresh?: boolean }) =>
@@ -667,20 +734,20 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     cursorCloudListRuns: (args: { agentId: string; limit?: number; cursor?: string | null }) =>
       call<CursorCloudListRunsResult>("ai.listCursorCloudRuns", args, { items: [] }),
     cursorCloudCreateRun: (args: CursorCloudCreateRunRequest) =>
-      call<CursorCloudCreateRunResult>(
+      afterCursorCloudFleetAction(call<CursorCloudCreateRunResult>(
         "ai.createCursorCloudRun",
         args,
         unavailableOnHost("Cursor Cloud launches are unavailable while the host is offline."),
         false,
-      ),
+      )),
     cursorCloudGetLaneSecretNames: (laneId: string) =>
       call<string[]>("ai.getCursorCloudLaneSecretNames", { laneId }, []),
     cursorCloudArchiveAgent: (agentId: string) =>
-      call<void>("ai.archiveCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud archive is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<void>("ai.archiveCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud archive is unavailable while the host is offline."), false)),
     cursorCloudUnarchiveAgent: (agentId: string) =>
-      call<void>("ai.unarchiveCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud unarchive is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<void>("ai.unarchiveCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud unarchive is unavailable while the host is offline."), false)),
     cursorCloudDeleteAgent: (agentId: string) =>
-      call<void>("ai.deleteCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud delete is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<void>("ai.deleteCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud delete is unavailable while the host is offline."), false)),
     cursorCloudGetAgent: (agentId: string) =>
       call<CursorCloudAgentSummary | null>("ai.getCursorCloudAgent", { agentId }, null),
     cursorCloudGetUsage: (args: { agentId: string; runId?: string | null }) =>
@@ -688,9 +755,9 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     cursorCloudStreamRun: (args: CursorCloudStreamRunRequest) =>
       call<CursorCloudStreamRunResult>("ai.cursorCloudStreamRun", args, unavailableOnHost("Cursor Cloud streaming is unavailable while the host is offline."), false),
     cursorCloudCancelRun: (args: { agentId: string; runId: string }) =>
-      call<void>("ai.cancelCursorCloudRun", args, unavailableOnHost("Cursor Cloud cancellation is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<void>("ai.cancelCursorCloudRun", args, unavailableOnHost("Cursor Cloud cancellation is unavailable while the host is offline."), false)),
     cursorCloudFollowUp: (args: CursorCloudFollowUpRequest) =>
-      call<CursorCloudFollowUpResult>("ai.cursorCloudFollowUp", args, unavailableOnHost("Cursor Cloud follow-up is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<CursorCloudFollowUpResult>("ai.cursorCloudFollowUp", args, unavailableOnHost("Cursor Cloud follow-up is unavailable while the host is offline."), false)),
     cursorCloudListArtifacts: (agentId: string) =>
       call<CursorCloudArtifactSummary[]>("ai.listCursorCloudArtifacts", { agentId }, []),
     cursorCloudDownloadArtifact: (args: { agentId: string; path: string }) =>
@@ -706,7 +773,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     cursorCloudResolveLane: (agentId: string) =>
       call<{ laneId: string; laneName: string; created: boolean }>("ai.cursorCloudResolveLane", { agentId }, unavailableOnHost("Resolving a Cursor Cloud lane requires the host desktop."), false),
     cursorCloudStopRun: (agentId: string) =>
-      call<{ stopped: boolean }>("ai.cursorCloudStopRun", { agentId }, unavailableOnHost("Stopping a Cursor Cloud run is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<{ stopped: boolean }>("ai.cursorCloudStopRun", { agentId }, unavailableOnHost("Stopping a Cursor Cloud run is unavailable while the host is offline."), false)),
     onCursorCloudFleetEvent,
   };
 

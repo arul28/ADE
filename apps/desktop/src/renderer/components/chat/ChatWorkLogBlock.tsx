@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowSquareOut, ArrowUp, CaretDown, CaretRight, Check, GitDiff, Globe, Terminal, Warning, Wrench, XCircle } from "@phosphor-icons/react";
 import type { OperatorNavigationSuggestion } from "../../../shared/types";
+import { redactCommandLine } from "../../../shared/secretRedaction";
 import {
   deriveWebSearchResultDisplay,
   formatStructuredValue,
@@ -17,7 +18,7 @@ import {
 } from "./chatTranscriptRows";
 import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
-import { replaceInternalToolNames } from "./toolPresentation";
+import { maskShellCommandArgs, replaceInternalToolNames } from "./toolPresentation";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { pinKey } from "../../state/projectMachines";
@@ -89,15 +90,20 @@ function isCodeChangeEntry(entry: ChatWorkLogEntry): boolean {
   return false;
 }
 
+/** Redacts before it summarises: a key cut at 140 chars would leak its prefix. */
+function summarizeArgText(value: string, maxChars: number): string {
+  return summarizeInlineText(redactCommandLine(value), maxChars);
+}
+
 function entryArgText(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "command") {
-    return summarizeInlineText(entry.command ?? "", 140);
+    return summarizeArgText(entry.command ?? "", 140);
   }
   if (entry.entryKind === "web_search") {
-    return summarizeInlineText(entry.query ?? "", 140);
+    return summarizeArgText(entry.query ?? "", 140);
   }
   if (entry.entryKind === "hook") {
-    return summarizeInlineText(entry.detail ?? entry.label, 140);
+    return summarizeArgText(entry.detail ?? entry.label, 140);
   }
   if (entry.entryKind === "tool" && entry.toolName) {
     if (entry.mcp) {
@@ -105,16 +111,16 @@ function entryArgText(entry: ChatWorkLogEntry): string {
       for (const key of ["query", "url", "path", "file_path", "name", "id"] as const) {
         const value = args[key];
         if (typeof value === "string" && value.trim().length) {
-          return summarizeInlineText(value, 140);
+          return summarizeArgText(value, 140);
         }
       }
-      return summarizeInlineText(entry.detail ?? entry.mcp.tool, 140);
+      return summarizeArgText(entry.detail ?? entry.mcp.tool, 140);
     }
     const meta = getToolMeta(entry.toolName);
     const args = readRecord(entry.args) ?? {};
     const target = meta.getTarget ? meta.getTarget(args) : null;
-    if (target) return summarizeInlineText(target, 140);
-    if (entry.detail) return summarizeInlineText(entry.detail, 140);
+    if (target) return summarizeArgText(target, 140);
+    if (entry.detail) return summarizeArgText(entry.detail, 140);
   }
   return "";
 }
@@ -218,8 +224,12 @@ function commandForLocalhostUrl(entries: ChatWorkLogEntry[], url: ChatLocalhostU
     (entry.localUrls ?? []).some((candidate) => candidate.href === url.href),
   ) ?? entries[0];
   if (!sourceEntry) return null;
-  const trimmed = (sourceEntry.command ?? entryArgText(sourceEntry)).trim();
-  return trimmed.length ? trimmed : null;
+  const raw = (sourceEntry.command ?? entryArgText(sourceEntry)).trim();
+  if (!raw.length) return null;
+  // The draft is text the agent may run, so a masked command is never offered:
+  // `<redacted>` in `--command` would become a shell redirection. The argument
+  // fallback is already masked, so a marker in it counts too.
+  return redactCommandLine(raw) === raw && !raw.includes("<redacted") ? raw : null;
 }
 
 function terminalizePrompt(args: {
@@ -662,7 +672,7 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
       return toolEntryFailureText(entry) ?? formatStructuredValue(entry.result);
     }
     const args = readRecord(entry.args);
-    if (args && Object.keys(args).length > 0) return formatStructuredValue(args);
+    if (args && Object.keys(args).length > 0) return formatStructuredValue(maskShellCommandArgs(entry.toolName, args));
   }
   if (entry.detail?.trim().length) {
     return replaceInternalToolNames(entry.detail);

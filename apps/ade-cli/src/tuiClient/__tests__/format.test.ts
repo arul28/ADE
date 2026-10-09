@@ -1626,7 +1626,7 @@ describe("renderChatLines", () => {
           sessionId: "s1",
           timestamp: "2026-01-01T12:00:02.000Z",
           sequence: 2,
-          event: { type: "tool_call", tool: "shell", args: { command: "git branch" }, itemId: "tool-1" },
+          event: { type: "tool_call", tool: "shell", args: { command: "API_KEY=fake git branch" }, itemId: "tool-1" },
         },
         {
           sessionId: "s1",
@@ -1637,6 +1637,8 @@ describe("renderChatLines", () => {
       ],
     });
     expect(lines.map((line) => line.tone)).toEqual(["assistant", "tool", "assistant"]);
+    expect(lines[1]?.body).toContain("API_KEY=<redacted> git branch");
+    expect(lines[1]?.body).not.toContain("API_KEY=fake");
     expect(lines[0]?.body).toBe("I'll check the branch.");
     expect(lines[2]?.body).toBe("We're on main.");
     expect(lines[2]?.header).toBeUndefined();

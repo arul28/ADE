@@ -806,7 +806,7 @@ struct WorkBackgroundCommandPresentation: Equatable {
 /// Mirrors desktop `chatScheduledWork.ts` `backgroundCommandLabel`, with cwd
 /// extraction from the same leading `cd <path> &&` prefix for the iOS detail.
 func workBackgroundCommandPresentation(_ command: String) -> WorkBackgroundCommandPresentation {
-  let original = command
+  let original = workRedactCommandLine(command)
     .split(whereSeparator: { $0.isNewline })
     .map(String.init)
     .map(workCollapsedCommandWhitespace)

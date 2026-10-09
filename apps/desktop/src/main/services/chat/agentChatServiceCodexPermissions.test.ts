@@ -562,6 +562,7 @@ describe("createAgentChatService", () => {
           itemId: "cmd-switch-1",
           turnId: "  turn-1  ",
           command: "/bin/zsh -lc 'npm test'",
+          reason: "Need approval for API_KEY=fixture",
         },
       });
       mockState.emitCodexPayload({
@@ -589,6 +590,12 @@ describe("createAgentChatService", () => {
           event.event.type === "approval_request"
           && event.event.itemId === "perm-switch-1"
         )).toBe(true);
+      });
+      expect(events.find((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-switch-1"
+      )?.event).toMatchObject({
+        description: "Need approval for API_KEY=<redacted>",
       });
 
       await service.updateSession({

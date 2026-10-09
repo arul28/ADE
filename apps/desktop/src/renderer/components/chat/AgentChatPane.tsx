@@ -257,7 +257,7 @@ import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
-import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots, sameTurnDiffSummaries } from "./chatExecutionSummary";
+import { deriveChatSubagentSnapshotsIncremental, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots, sameTurnDiffSummaries, type ChatSubagentDerivation } from "./chatExecutionSummary";
 import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
@@ -5365,7 +5365,14 @@ export function AgentChatPane({
       return false;
     }
   }, [selectedSessionId]);
-  const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
+  // Streamed deltas append events that carry no subagent lifecycle; the previous
+  // derivation still holds for them, so the snapshots keep their identity.
+  const subagentDerivationRef = useRef<ChatSubagentDerivation | null>(null);
+  const selectedSubagentSnapshots = useMemo(() => {
+    const derivation = deriveChatSubagentSnapshotsIncremental(subagentDerivationRef.current, selectedEvents);
+    subagentDerivationRef.current = derivation;
+    return derivation.snapshots;
+  }, [selectedEvents]);
   /**
    * Session status of every chat the roster knows, keyed by id, so the actions
    * pane can tell a spawned subagent row whose chat is still active apart from

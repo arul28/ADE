@@ -30,6 +30,7 @@
     "build:ade-media": "node ./scripts/build-ade-media.mjs",
     "test:ade-media": "swift test --package-path ./native/ADEMedia",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
+    "bench:webclient": "node ./scripts/bench-webclient.mjs",
     "dist:win:test": "node ./scripts/run-windows-test-build.mjs",
     "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build:desktop-driver:win && npm run build:music-host:win && npm run build:now-playing:win && npm run build && npm run package:win && npm run validate:win:release",
     "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build:desktop-driver:win && npm run build:music-host:win && npm run build:now-playing:win && npm run build && npm run package:win:signed && npm run validate:win:release:signed",

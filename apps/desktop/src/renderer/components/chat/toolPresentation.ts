@@ -1,3 +1,5 @@
+import { redactCommandLine } from "../../../shared/secretRedaction";
+
 type ToolDisplay = {
   label: string;
   secondaryLabel: string | null;
@@ -194,4 +196,43 @@ export function isShellToolName(toolName: string): boolean {
   if (SHELL_TOOL_NAMES.has(toolName)) return true;
   const candidates = [toolName.split(".").at(-1) ?? "", toolName.split("__").at(-1) ?? ""];
   return candidates.some((candidate) => SHELL_TOOL_NAMES.has(candidate));
+}
+
+/**
+ * Tools that are not shell tools but whose `command` argument is a shell line:
+ * Claude `Monitor` runs one in the background. They are masked like a shell
+ * tool, but stay out of SHELL_TOOL_NAMES, which also drives the computer-use
+ * shell rows and the iOS mirror.
+ */
+const COMMAND_LINE_TOOL_NAMES = new Set(["Monitor"]);
+
+/**
+ * Masks the `command` / `cmd` argument of a shell tool, as a string or as an
+ * argv array, before any surface shows the arguments. Every other argument
+ * (edit content, patch text) is returned as the agent wrote it. An array keeps
+ * its shape: it is masked as one joined line, so a secret flag and its value
+ * that sit in separate argv entries (`--api-key`, `fake123`) are still caught.
+ */
+export function maskShellCommandArgs(
+  toolName: string | null | undefined,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!toolName || !(isShellToolName(toolName) || COMMAND_LINE_TOOL_NAMES.has(toolName))) return args;
+  const masked = { ...args };
+  for (const key of ["command", "cmd"] as const) {
+    const value = masked[key];
+    if (typeof value === "string") {
+      masked[key] = redactCommandLine(value);
+    } else if (Array.isArray(value)) {
+      const parts = value.map((part) => (typeof part === "string" ? part : JSON.stringify(part)));
+      const joined = parts.join("\n");
+      const maskedLine = redactCommandLine(joined);
+      if (maskedLine === joined) continue;
+      const maskedParts = maskedLine.split("\n");
+      // Entries that hold newlines, or a masked PEM block, cannot map back line by
+      // line; mask each entry on its own instead.
+      masked[key] = maskedParts.length === parts.length ? maskedParts : parts.map(redactCommandLine);
+    }
+  }
+  return masked;
 }

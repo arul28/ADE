@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
+import { describeToolIdentifier, maskShellCommandArgs, replaceInternalToolNames } from "./toolPresentation";
 
 describe("describeToolIdentifier", () => {
   it("returns a fallback for empty input", () => {
@@ -88,5 +88,23 @@ describe("replaceInternalToolNames", () => {
     // "Read" by itself in full text is replaced by TOOL_LABEL_OVERRIDES
     // But inline it is not a namespaced pattern, so it stays
     expect(replaceInternalToolNames(input)).toBe(input);
+  });
+});
+
+
+describe("shell argument display", () => {
+  it.each([
+    ["Bash", { command: "API_KEY=fake npm start" }, { command: "API_KEY=<redacted> npm start" }],
+    ["functions.exec_command", { cmd: ["curl", "--api-key", "fake"] }, { cmd: ["curl", "--api-key", "<redacted>"] }],
+    ["Bash", { command: ["echo one\necho two", "--verbose"] }, { command: ["echo one\necho two", "--verbose"] }],
+    ["Edit", { command: "API_KEY=fake", new_string: "TOKEN=fake" }, { command: "API_KEY=fake", new_string: "TOKEN=fake" }],
+    ["Write", { content: "TOKEN=fake" }, { content: "TOKEN=fake" }],
+    ["apply_patch", { patch: "API_KEY=fake" }, { patch: "API_KEY=fake" }],
+    ["Read", { command: "API_KEY=fake" }, { command: "API_KEY=fake" }],
+  ])("preserves the argument contract for %s", (tool, args, expected) => {
+    const original = structuredClone(args);
+    expect(maskShellCommandArgs(tool, args)).toEqual(expected);
+    expect(args).toEqual(original);
+    expect(maskShellCommandArgs(tool, expected)).toEqual(expected);
   });
 });

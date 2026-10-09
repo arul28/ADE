@@ -20,6 +20,7 @@ for its separate RPC, sync, storage, and UI contracts.
 
 | Path | Role |
 |---|---|
+| `apps/ios/ADE/Views/Work/WorkCommandRedaction.swift` | Display-only command masking shared by native Work cards and previews. |
 | `apps/desktop/src/main/services/chat/chatLaunchService.ts`, `apps/desktop/src/shared/types/chatLaunch.ts`, `apps/desktop/src/shared/chatLaunch.ts`, `apps/desktop/src/main/services/lanes/laneEnvironmentSetup.ts` | **New-lane launches.** Brain-owned "start a chat (or CLI session) in a lane that does not exist yet": reserved session and lane ids, the fetch → checkout → environment → start-agent stages, live snapshots on `chat_launch_event`, Cancel / Retry / Start now / queued messages, and the `lane_setup` transcript card. `chatLaunchService` is constructed in `apps/ade-cli/src/bootstrap.ts` only when an agent chat service exists, and exposed as `AdeRuntime.chatLaunchService` to the `chat` action domain and the sync host. `shared/chatLaunch.ts` holds the pure presentation helpers (stage labels, status line, progress, durations, `buildLaneSetupCard`, snapshot merge) every surface uses. See [New-lane launches](#new-lane-launches). |
 | `apps/desktop/src/main/services/chat/chatLaunchArgs.ts`, `chatLaunchRecords.ts`, `chatLaunchDelivery.ts`, `chatLaunchTranscriptCard.ts`, `chatCreateModelResolution.ts`, `apps/desktop/src/shared/uuid.ts` | Launch support modules. `chatLaunchArgs` is the one parser for untrusted launch input (`parseChatLaunchArgs`, `parseChatLaunchIdArgs`, `parseChatLaunchQueueMessageArgs`, `parseChatLaunchCompleteClientArgs`), used by both the action domain and the sync host, and also owns the `chat.create` / `chat.send` field parsers the sync host reuses for its direct chat commands. `chatLaunchRecords` persists launch records under `.ade/cache/chat-launches/` and, on reload, turns a mid-flight launch into an "interrupted" failure and jumps its `sequence` ahead. `chatLaunchDelivery` sends messages queued during setup in order; a failed send keeps the message with `deliveryError` and retries on a 2 s / 10 s / 30 s backoff, and a deleted chat clears the queue with an error. `chatLaunchTranscriptCard` emits and updates the `lane_setup` `ade_card` (first emit waits for the opening `user_message`, with a 4 s fallback). `chatCreateModelResolution.resolveChatCreateModel` fills an empty `model` with the host's first available one (activating OpenCode, Pi, and ACP provider runtimes first), shared by the sync host's `chat.create` / `chat.launch` and every launch. `shared/uuid.ts` normalizes reserved ids (`requireNormalizedUuid`). |
 | `apps/desktop/src/renderer/components/chat/CrossMachineHandoffModal.tsx`, `crossMachineHandoffPresentation.tsx` | Cross-machine move setup (heading **Continue on another computer**), opened from a session card's **Hand off… → Another machine**. The modal only collects choices and shows what the source brain reports: machines and source blockers from `getCrossMachineHandoffOptions` (each blocker with its fix, rendered next to a `BlockedActionButton`), what the destination would say from `previewCrossMachineHandoff` (a read-only preflight through the brain's transport, including a **Fetch & fast-forward there** offer), and then `startCrossMachineHandoff`. The destination model, reasoning effort, fast mode and permission mode use the composer's own pills. Prepare, preflight, validate, accept and mark are run by the chat's brain (`crossMachineHandoffOrchestrator.ts`), not the renderer, and the move's progress, retry, dismissal of an `unknown` move, and approval all read the durable record on the chat summary. Every call the modal makes (options, preview, start, and `git.push` / `git.pull` behind **Publish branch** / **Update branch**) is pinned to the machine the source chat runs on (`runtimePin`), frozen once per operation. No move binds acceptance to a route kind; the modal only states which route the brain uses. `crossMachineHandoffPresentation.tsx` holds the pure half (copy, tone and icon maps, `CheckRow`). Fork mode transports provider-native history for Claude, Codex and OpenCode; Cursor and Droid move as a brief, and a fork that can't complete offers a one-click **send as brief**. See [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md). |
@@ -3294,6 +3295,38 @@ declares no kinds.
 
 ## Fragile and tricky wiring
 
+- **Transcript measurement is in layout pixels.** The hosted web client
+  zooms with `body { zoom }`, so `getBoundingClientRect()` returns screen pixels
+  while `scrollTop`, `offsetHeight`, `clientHeight` and the stored row heights
+  are layout pixels. In `AgentChatMessageList.tsx`, every rect length or rect
+  difference that meets those values goes through `toLayoutPx()`
+  (`lib/webZoom.ts`, which divides by the stored zoom factor and is the
+  identity in Electron). A raw rect read there over-measures every row at
+  110%+: the virtual list grows a blank band above the working indicator and a
+  pinned reader drifts past the stick threshold, so Jump To Latest appears with
+  no scrolling.
+- **Command text is redacted before it is shortened.** Anything that shows a
+  shell command compactly (the working-indicator label, command rows, tool
+  headers, the shell `command`/`cmd` field of an expanded tool body, approval
+  headlines, background-task titles, the `ade code` TUI) goes through
+  `redactCommandLine` / `oneLineRedacted` in `shared/secretRedaction.ts`.
+  Truncating first cuts a key below its pattern and leaks its prefix. The
+  redactor is for command lines only: Edit/Write/patch content, diffs, prompts
+  and memory never pass through it (`main/utils/redaction.ts` keeps its own,
+  narrower rules for those callers).
+  `maskShellCommandArgs` in `toolPresentation.ts` masks only shell tools' string
+  or argv-array `command`/`cmd` fields and preserves the array shape. Literal
+  secret assignments, flags, provider keys, authorization headers, JSON values,
+  URL passwords, and private-key blocks are masked. Secret names use bounded
+  segments: `APIKEY` and `PGPASSWORD` match, `MONKEY`, `MAX_TOKENS`,
+  `--tokenizer`, and `--max-tokens` do not. A following flag is not a value.
+  Placeholders and shell expansions (`$TOKEN`, `$(...)`, backticks) remain
+  visible because approval cards must show code that runs; single-quoted
+  values do not expand and are masked, including single-quoted JSON and
+  authorization headers. Local-server drafts omit a command that masking
+  changes or that already contains a redaction marker. Native iOS uses the
+  display-only `WorkCommandRedaction.swift` mirror before clipping previews
+  and in expanded shell arguments and command/background cards.
 - **A Codex async question is a card, not a waiter.** It lives in
   `managed.asyncQuestions` (mirrored to `PersistedChatState.asyncQuestions` so a
   restart keeps it), never in `localPendingInputs` or `runtime.approvals` —

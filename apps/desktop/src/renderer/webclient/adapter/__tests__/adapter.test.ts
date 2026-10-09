@@ -3301,6 +3301,143 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it.each(["fleet", "app-control"] as const)("backs off %s reads, resets and follows visibility", async (surface) => {
+    vi.useFakeTimers();
+    const visibility = new EventTarget();
+    let hidden = false;
+    vi.stubGlobal("document", {
+      get visibilityState() { return hidden ? "hidden" : "visible"; },
+      addEventListener: visibility.addEventListener.bind(visibility),
+      removeEventListener: visibility.removeEventListener.bind(visibility),
+    });
+    Object.assign(fake, {
+      supportsAppControlStream: () => false,
+      onAppControlStreamFrame: () => () => undefined,
+      onAppControlStreamEnded: () => () => undefined,
+    });
+    const action = surface === "fleet" ? "ai.cursorCloudFleet" : "appControl.status";
+    const baseMs = surface === "fleet" ? 2_000 : 3_000;
+    fake.descriptors = descriptors([action]);
+    const fleet = { items: [], relayState: "unconfigured", lastEventAt: null, fetchedAt: "" };
+    fake.commandResults.set(action, surface === "fleet" ? fleet : { laneId: "lane", session: null });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const stop = surface === "fleet"
+      ? adapter.ade.ai.onCursorCloudFleetEvent(() => undefined)
+      : adapter.ade.appControl.onEvent(() => undefined);
+    const reads = () => fake.commandCalls.filter((call) => call.action === action).length;
+    // Fleet reads immediately, App Control starts at its base delay.
+    await vi.advanceTimersByTimeAsync(0);
+    if (surface === "app-control") await vi.advanceTimersByTimeAsync(baseMs);
+    expect(reads()).toBe(1);
+    for (const delay of [baseMs, baseMs, 2 * baseMs, 4 * baseMs, 15_000]) {
+      const before = reads();
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(reads()).toBe(before);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reads()).toBe(before + 1);
+    }
+    if (surface === "app-control") {
+      await adapter.ade.appControl.getStatus({ laneId: "lane" });
+      const before = reads();
+      await vi.advanceTimersByTimeAsync(baseMs);
+      expect(reads()).toBe(before + 1);
+    }
+    hidden = true;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    const paused = reads();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reads()).toBe(paused);
+    hidden = false;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads()).toBe(paused + 1);
+    // A changed session/fleet restarts the active cadence.
+    fake.commandResults.set(action, surface === "fleet"
+      ? { ...fleet, items: [{ agent: { agentId: "agent", status: "RUNNING" } }] }
+      : { laneId: "lane", session: { id: "session", laneId: "lane", status: "connected" } });
+    await vi.advanceTimersByTimeAsync(baseMs);
+    const changed = reads();
+    await vi.advanceTimersByTimeAsync(baseMs);
+    expect(reads()).toBe(changed + 1);
+    stop();
+    const stopped = reads();
+    hidden = true;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    hidden = false;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reads()).toBe(stopped);
+    adapter.dispose();
+  });
+
+  it("pauses quiet OAuth drains while hidden and resumes immediately", async () => {
+    vi.useFakeTimers();
+    const visibility = new EventTarget();
+    let hidden = false;
+    vi.stubGlobal("document", {
+      get visibilityState() { return hidden ? "hidden" : "visible"; },
+      addEventListener: visibility.addEventListener.bind(visibility),
+      removeEventListener: visibility.removeEventListener.bind(visibility),
+    });
+    fake.descriptors = descriptors(["ai.opencodeOAuthStart", "personalChats.streamEvents"]);
+    fake.commandResults.set("ai.opencodeOAuthStart", { url: "https://example.test/auth", method: "auto", instructions: "" });
+    fake.commandResults.set("personalChats.streamEvents", { events: [], nextCursor: 0, hasMore: false });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    await adapter.ade.ai.opencodeOAuthStart({ providerId: "anthropic", methodIndex: 0 });
+    const reads = () => fake.commandCalls.filter((call) => call.action === "personalChats.streamEvents").length;
+    const initial = reads();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(reads()).toBe(initial + 1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const quiet = reads();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(reads()).toBe(quiet);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reads()).toBe(quiet + 1);
+    hidden = true;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    const paused = reads();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reads()).toBe(paused);
+    hidden = false;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads()).toBe(paused + 1);
+    adapter.dispose();
+    const stopped = reads();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reads()).toBe(stopped);
+  });
+
+  it("delivers cancellation when OAuth is cancelled during an in-flight drain", async () => {
+    vi.useFakeTimers();
+    fake.descriptors = descriptors(["ai.opencodeOAuthStart", "ai.opencodeOAuthCancel", "personalChats.streamEvents"]);
+    fake.commandResults.set("ai.opencodeOAuthStart", { url: "https://example.test/auth", method: "auto", instructions: "" });
+    fake.commandResults.set("personalChats.streamEvents", { events: [], nextCursor: 0, hasMore: false });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    const statuses: unknown[] = [];
+    const stop = adapter.ade.ai.onOpencodeOAuthStatus((status) => statuses.push(status));
+    await adapter.ade.ai.opencodeOAuthStart({ providerId: "anthropic", methodIndex: 0 });
+    let finish!: (value: unknown) => void;
+    fake.commandResults.set("personalChats.streamEvents", new Promise((resolve) => { finish = resolve; }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    await adapter.ade.ai.opencodeOAuthCancel({ providerId: "anthropic" });
+    fake.commandResults.set("personalChats.streamEvents", {
+      events: [{ id: 1, timestamp: "2026-10-09T00:00:00.000Z", category: "runtime",
+        payload: { kind: "opencodeOAuthStatus", event: { providerId: "anthropic", state: "cancelled" } } }],
+      nextCursor: 1, hasMore: false,
+    });
+    finish({ events: [], nextCursor: 0, hasMore: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses).toEqual([{ providerId: "anthropic", state: "cancelled" }]);
+    const count = fake.commandCalls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.commandCalls).toHaveLength(count);
+    stop();
+    adapter.dispose();
+  });
+
   // --- Session lifecycle ----------------------------------------------------
   // ADE Web keeps no local database, so every settle/snooze is a sync
   // round-trip. These cover the three things that behaviour has to get right:

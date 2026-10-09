@@ -95,10 +95,12 @@ A card, end to end:
 
 Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
 
-- **Modes.** `gradient` (the theme's animated mesh), `image` (one picture) or
-  `shuffle` (a picture from the library, changed on launch, wake, hourly or
-  daily). The shipped default is shuffle, a new picture on each wake, every
-  picture included. Bumping `SCENE_DEFAULTS_REVISION` in `scenePreferences.ts`
+- **Modes.** `plain` (the theme's flat background: no picture, no mesh),
+  `gradient` (the theme's animated mesh), `image` (one picture) or `shuffle` (a
+  picture from the library, changed on launch, wake, hourly or daily). The
+  shipped desktop default is shuffle, a new picture on each wake, every picture
+  included. The hosted web client defaults to `plain`, chosen at read time and
+  never persisted; a pick made there (`choiceMade`) stands. Bumping `SCENE_DEFAULTS_REVISION` in `scenePreferences.ts`
   puts every user back on that default once; use it only for a deliberate
   product reset.
 - **Pictures.** Bundled pictures are `public/scenes/*.jpg`, listed in

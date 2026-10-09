@@ -2514,7 +2514,8 @@ export function TopBar({
         </div>
       ) : null}
 
-      {activeCloneTarget && !isProjectBusy ? (
+      {/* Cloning is to this machine, which the web client has no notion of. */}
+      {!webMode && activeCloneTarget && !isProjectBusy ? (
         <HeaderActionPill
           icon={DownloadSimple}
           label="Clone locally"

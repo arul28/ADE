@@ -62,9 +62,11 @@ import type {
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
+import { oneLineRedacted, redactCommandLine } from "../../../shared/secretRedaction";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
+import { toLayoutPx } from "../../lib/webZoom";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
 import { ChipText } from "./ChipText";
 import { normalizePath } from "../../lib/pathUtils";
@@ -91,7 +93,7 @@ import {
   useWorkspacePathOpener,
   type WorkspacePathLocation,
 } from "./chatWorkspacePaths";
-import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
+import { describeToolIdentifier, maskShellCommandArgs, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import {
   CHAT_TRANSCRIPT_GLASS_CARD_CLASS,
@@ -1732,9 +1734,9 @@ export function resolveWorkingIndicatorLabel(
 
 const RUNNING_COMMAND_LABEL_MAX = 72;
 
+/** Secrets are masked before the cut: a key sliced at 72 chars would leak its prefix. */
 function oneLineCommand(command: string): string {
-  const line = command.replace(/\s+/g, " ").trim();
-  return line.length > RUNNING_COMMAND_LABEL_MAX ? `${line.slice(0, RUNNING_COMMAND_LABEL_MAX - 1)}…` : line;
+  return oneLineRedacted(command, RUNNING_COMMAND_LABEL_MAX);
 }
 
 /**
@@ -2258,7 +2260,7 @@ function CommandEventCard({
       </span>
       <Terminal size={11} weight="regular" className="text-fg/34" />
       <span className="font-medium text-fg/62">{timelineVerb}</span>
-      <span className="min-w-0 flex-1 truncate text-fg/76">{event.command}</span>
+      <span className="min-w-0 flex-1 truncate text-fg/76">{redactCommandLine(event.command ?? "")}</span>
       {event.durationMs != null ? <span className="text-[length:calc(var(--chat-font-size)*10/14)] text-fg/28">{Math.max(0, event.durationMs)}ms</span> : null}
       {event.exitCode != null ? (
         <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)]", event.exitCode === 0 ? "text-emerald-300/60" : "text-red-300/65")}>
@@ -2272,7 +2274,7 @@ function CommandEventCard({
     <>
       <div className="rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80">
         <span className="select-none text-amber-500/40">$ </span>
-        {event.command}
+        {redactCommandLine(event.command ?? "")}
       </div>
       {hasOutput ? (
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60">
@@ -3650,9 +3652,10 @@ function renderEvent(
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
     const args = event.args as Record<string, unknown> | null;
-    const safeArgs = args && typeof args === "object" ? args : {};
+    const safeArgs = maskShellCommandArgs(event.tool, args && typeof args === "object" ? args : {});
 
-    const targetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
+    const rawTargetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
+    const targetLine = rawTargetLine ? redactCommandLine(rawTargetLine) : null;
     const label = targetLine
       ? `${meta.label} ${targetLine}`
       : toolDisplay.secondaryLabel
@@ -3664,6 +3667,8 @@ function renderEvent(
     const argsDisplay = kvPairs.length > 0 ? (
       <div className="space-y-1 border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)]">
         {kvPairs.map(([k, v]) => {
+          // Shell commands arrive already masked (maskShellCommandArgs); other arguments
+          // (edit, write and patch content, diffs) are shown as the agent wrote them.
           const val = typeof v === "string" ? v : JSON.stringify(v);
           const isLongStr = typeof v === "string" && v.includes("\n");
           return (
@@ -5100,7 +5105,9 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
     if (!el) return;
     let raf: number | null = null;
     const measureNow = (fallbackHeight = 0) => {
-      const height = Math.max(el.offsetHeight, el.getBoundingClientRect().height, fallbackHeight);
+      // The rect is screen pixels under hosted-web body zoom; the heights the
+      // scroll math stores are layout pixels.
+      const height = Math.max(el.offsetHeight, toLayoutPx(el.getBoundingClientRect().height), fallbackHeight);
       if (height > 0) onMeasure(index, height);
     };
 
@@ -5117,7 +5124,7 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
       const entry = entries[0];
       if (!entry) return;
       const measuredHeight = entry.target instanceof HTMLElement
-        ? Math.max(entry.target.offsetHeight, entry.target.getBoundingClientRect().height, entry.contentRect.height)
+        ? Math.max(entry.target.offsetHeight, toLayoutPx(entry.target.getBoundingClientRect().height), entry.contentRect.height)
         : entry.contentRect.height;
       measureNow(measuredHeight);
     });
@@ -5395,7 +5402,7 @@ export function resetTurnFoldMemoryForTests(): void {
 function readChatRowTop(container: HTMLElement, rowKey: string): number | null {
   const containerTop = container.getBoundingClientRect().top;
   for (const node of container.querySelectorAll<HTMLElement>("[data-chat-row-key]")) {
-    if (node.dataset.chatRowKey === rowKey) return node.getBoundingClientRect().top - containerTop;
+    if (node.dataset.chatRowKey === rowKey) return toLayoutPx(node.getBoundingClientRect().top - containerTop);
   }
   return null;
 }
@@ -5418,7 +5425,7 @@ function readVisibleChatRows(container: HTMLElement, limit: number): { key: stri
     const rect = node.getBoundingClientRect();
     const key = node.dataset.chatRowKey;
     if (!key || rect.bottom <= containerTop + 1) continue;
-    visible.push({ key, top: rect.top - containerTop });
+    visible.push({ key, top: toLayoutPx(rect.top - containerTop) });
     if (visible.length >= limit) break;
   }
   return visible;
@@ -5434,7 +5441,7 @@ function readLaidOutChatRowTop(container: HTMLElement, rowKey: string): number |
   for (const node of container.querySelectorAll<HTMLElement>("[data-chat-row-key]")) {
     if (node.dataset.chatRowKey !== rowKey) continue;
     const rect = node.getBoundingClientRect();
-    return rect.height > 0 ? rect.top - containerTop : null;
+    return rect.height > 0 ? toLayoutPx(rect.top - containerTop) : null;
   }
   return null;
 }
@@ -6891,8 +6898,8 @@ function AgentChatMessageListMain({
     const el = listRootRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    const width = Math.max(el.clientWidth, rect.width);
-    const height = Math.max(el.clientHeight, rect.height);
+    const width = Math.max(el.clientWidth, toLayoutPx(rect.width));
+    const height = Math.max(el.clientHeight, toLayoutPx(rect.height));
     setListRootBoxPx((current) => (
       movedByAPixel(current.width, width)
         || movedByAPixel(current.height, height)
@@ -6905,7 +6912,7 @@ function AgentChatMessageListMain({
   const measureContentColumnWidth = useCallback(() => {
     const el = contentWrapperRef.current;
     if (!el) return;
-    const width = Math.max(el.clientWidth, el.getBoundingClientRect().width);
+    const width = Math.max(el.clientWidth, toLayoutPx(el.getBoundingClientRect().width));
     setColumnWidthPx((current) => (movedByAPixel(current, width) ? width : current));
   }, []);
 
