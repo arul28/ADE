@@ -5463,6 +5463,7 @@ func workTerminalReasonLabel(_ reason: String?) -> String? {
   case "budget_exhausted": return "budget limit reached"
   case "max_turns": return "max turns reached"
   case "prompt_too_long": return "context window overflow"
+  case "image_error": return "attached image rejected"
   case "api_error": return "API error after retries"
   case "malformed_tool_use_exhausted": return "tool-call retries exhausted"
   case "structured_output_retry_exhausted": return "output retries exhausted"
@@ -5577,13 +5578,19 @@ func workTurnModelMetadataByTurn(
   return metadataByTurn
 }
 
+/// Claude Code stamps the messages it fabricates client-side (a refused image,
+/// an API error) with this model; it names no model, so it never labels a turn.
+private let workClaudeSyntheticModel = "<synthetic>"
+
 private func workTurnModelMetadata(
-  model: String?,
-  modelId: String?,
+  model rawReportedModel: String?,
+  modelId rawReportedModelId: String?,
   fallbackProvider: String,
   fallbackModelLabel: String = "Model",
   fallbackModelId: String? = nil
 ) -> WorkTurnModelMetadata {
+  let model = rawReportedModel == workClaudeSyntheticModel ? nil : rawReportedModel
+  let modelId = rawReportedModelId == workClaudeSyntheticModel ? nil : rawReportedModelId
   let rawModel = [model, modelId]
     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
     .first { !$0.isEmpty }

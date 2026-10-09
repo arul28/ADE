@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomFillSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PNG } from "pngjs";
 import type { AgentChatFileRef } from "../../../shared/types/chat";
 import { MAX_PROVIDER_INLINE_IMAGE_BYTES } from "../../../shared/chatAttachmentLimits";
 import {
@@ -182,6 +184,42 @@ describe("buildClaudeV2MessageAsync", () => {
     const msg = result as SDKUserMessagePartial;
     const blocks = msg.message.content as Array<Record<string, unknown>>;
     expect(blocks.some((block) => block.type === "image")).toBe(true);
+  });
+
+  it("downscales an oversized PNG into an image block within the API's base64 limit", async () => {
+    const screenshot = new PNG({ width: 2000, height: 1000 });
+    randomFillSync(screenshot.data);
+    for (let i = 3; i < screenshot.data.length; i += 4) screenshot.data[i] = 255;
+    const bytes = PNG.sync.write(screenshot, { deflateLevel: 1 });
+    expect(bytes.byteLength).toBeGreaterThan(MAX_PROVIDER_INLINE_IMAGE_BYTES);
+    fs.writeFileSync(path.join(tmpDir, "retina.png"), bytes);
+    const attachments: AgentChatFileRef[] = [{ path: "retina.png", type: "image" }];
+
+    const result = await buildClaudeV2MessageAsync("Describe this", attachments, { baseDir: tmpDir });
+    const blocks = (result as SDKUserMessagePartial).message.content as Array<Record<string, unknown>>;
+
+    const image = blocks.find((block) => block.type === "image");
+    expect(image).toBeDefined();
+    const source = image!.source as Record<string, unknown>;
+    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has(source.media_type as string)).toBe(true);
+    expect(String(source.data).length).toBeLessThanOrEqual(5_000_000);
+  });
+
+  it("turns a GIF past the inline limits into a not-inlined path hint, not an image block", async () => {
+    const header = Buffer.alloc(13);
+    header.write("GIF89a", 0, "latin1");
+    header.writeUInt16LE(3000, 6);
+    header.writeUInt16LE(3000, 8);
+    fs.writeFileSync(path.join(tmpDir, "diagram.gif"), header);
+    const attachments: AgentChatFileRef[] = [{ path: "diagram.gif", type: "image" }];
+
+    const result = await buildClaudeV2MessageAsync("Describe this", attachments, { baseDir: tmpDir });
+    const blocks = (result as SDKUserMessagePartial).message.content as Array<Record<string, unknown>>;
+
+    expect(blocks.some((block) => block.type === "image")).toBe(false);
+    const hint = blocks.find((block) => block.type === "text" && String(block.text).includes("diagram.gif"));
+    expect(hint).toBeDefined();
+    expect(String(hint!.text)).toContain("not inlined");
   });
 
   // ─────────────────────────────────────────────────────────────────────────
