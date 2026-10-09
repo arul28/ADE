@@ -422,6 +422,34 @@ describe("fileService", () => {
     }
   });
 
+  it.skipIf(!hasGit)("quick open in a git work tree finds nested repositories' files and skips files deleted from disk", async () => {
+    const rootPath = createTempWorkspace("ade-file-service-git-list-");
+    initGitWorkTree(rootPath);
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "src", "tracked.ts"), "export const a = 1;\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "src", "deletedOnDisk.ts"), "export const b = 2;\n", "utf8");
+      execFileSync("git", ["add", "src"], { cwd: rootPath, stdio: "ignore" });
+      fs.rmSync(path.join(rootPath, "src", "deletedOnDisk.ts"));
+      // An untracked nested repository: git lists it only as `vendor/inner/`.
+      const nested = path.join(rootPath, "vendor", "inner");
+      fs.mkdirSync(path.join(nested, "lib"), { recursive: true });
+      initGitWorkTree(nested);
+      fs.writeFileSync(path.join(nested, "lib", "nestedThing.ts"), "export const c = 3;\n", "utf8");
+
+      const paths = (await service.quickOpen({ workspaceId: "workspace-1", query: "" })).map((item) => item.path);
+
+      expect(paths).toContain("src/tracked.ts");
+      expect(paths).toContain("vendor/inner/lib/nestedThing.ts");
+      expect(paths).not.toContain("src/deletedOnDisk.ts");
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
   it("includes ignored files in quick open and search when requested", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-search-"));
     const { execSync } = await import("node:child_process");

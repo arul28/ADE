@@ -344,6 +344,51 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(commitTimelineMock).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
   });
 
+  function mockBranchChanges(paths: () => string[]) {
+    (window.ade.diff as any).getBranchChanges = vi.fn(async () => {
+      const files = paths().map((path) => ({ path, kind: "modified" as const, additions: 1, deletions: 0 }));
+      return { baseRef: "main", mergeBase: "0123456789abcdef", files, additions: files.length, deletions: 0 };
+    });
+  }
+
+  it("re-reads the Branch diff when a clean lane's pane becomes active again", async () => {
+    let branchFiles = ["src/alpha.ts"];
+    mockBranchChanges(() => branchFiles);
+    const pane = (active: boolean) => (
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-2"
+          active={active}
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommit={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>
+    );
+    const view = render(pane(true));
+    expect(await screen.findByTitle("src/alpha.ts")).toBeTruthy();
+
+    // A commit made elsewhere: the working tree stays clean, the branch grows.
+    view.rerender(pane(false));
+    branchFiles = ["src/alpha.ts", "src/beta.ts"];
+    view.rerender(pane(true));
+
+    expect(await screen.findByTitle("src/beta.ts")).toBeTruthy();
+  });
+
+  it("reads the Branch diff even when the first working-tree read fails", async () => {
+    failDiffRefresh = true;
+    mockBranchChanges(() => ["src/alpha.ts"]);
+    renderPane({ laneId: "lane-2" });
+
+    expect(await screen.findByTitle("src/alpha.ts")).toBeTruthy();
+  });
+
   it("isolates cached Git state for remote bindings with the same root and lane id", async () => {
     const sharedRoot = "/srv/shared";
     const bindingA = {
