@@ -243,19 +243,26 @@ function useHeaderStatusCompactLayout(): boolean {
   return compact;
 }
 
-/** Everything `ResourcePressureIndicator` draws from a sample; nothing when it is hidden. */
-function resourcePressureIndicatorKey(usage: AppResourceUsageSnapshot | null): string {
+/** Everything `ResourcePressureIndicator` draws from a sample; null when it is hidden. */
+function resourcePressureView(usage: AppResourceUsageSnapshot | null) {
   const level = appResourcePressureLevel(usage);
-  if (level === 0) return "0";
-  return [
+  if (level === 0) return null;
+  return {
     level,
-    resourcePressureDescription(usage),
-    usage?.activePtyCount ?? 0,
-    usage?.ptyProcessCount ?? 0,
-    usage?.ptyCpuPercent ?? "",
-    usage?.ptyMemoryMB ?? "",
-    usage?.processSample?.status ?? "",
-  ].join("\u0000");
+    description: resourcePressureDescription(usage),
+    attributes: {
+      "data-ade-resource-pressure-level": level,
+      "data-ade-resource-pressure-active-ptys": usage?.activePtyCount ?? 0,
+      "data-ade-resource-pressure-pty-processes": usage?.ptyProcessCount ?? 0,
+      "data-ade-resource-pressure-pty-cpu": usage?.ptyCpuPercent ?? "",
+      "data-ade-resource-pressure-pty-memory-mb": usage?.ptyMemoryMB ?? "",
+      "data-ade-resource-pressure-sample-status": usage?.processSample?.status ?? "",
+    },
+  };
+}
+
+function resourcePressureIndicatorKey(usage: AppResourceUsageSnapshot | null): string {
+  return JSON.stringify(resourcePressureView(usage));
 }
 
 function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | null {
@@ -303,11 +310,11 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
 }
 
 function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot | null }) {
-  const level = appResourcePressureLevel(usage);
-  if (level === 0) return null;
+  const view = resourcePressureView(usage);
+  if (!view) return null;
+  const { level, description } = view;
   const color =
     level >= 4 ? "#F87171" : level === 3 ? "#FB7185" : level === 2 ? "#FB923C" : "#FBBF24";
-  const description = resourcePressureDescription(usage);
   return (
     <SmartTooltip
       forceEnabled
@@ -323,12 +330,7 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
         role="status"
         aria-label={`ADE resource pressure level ${level}`}
         title={description}
-        data-ade-resource-pressure-level={level}
-        data-ade-resource-pressure-active-ptys={usage?.activePtyCount ?? 0}
-        data-ade-resource-pressure-pty-processes={usage?.ptyProcessCount ?? 0}
-        data-ade-resource-pressure-pty-cpu={usage?.ptyCpuPercent ?? ""}
-        data-ade-resource-pressure-pty-memory-mb={usage?.ptyMemoryMB ?? ""}
-        data-ade-resource-pressure-sample-status={usage?.processSample?.status ?? ""}
+        {...view.attributes}
         className={cn(
           "ade-shell-control inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-md",
           "border transition-[background-color,color,border-color,box-shadow] duration-150",

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { fileIdentity } from "../projects/fileIdentity";
 import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
@@ -271,15 +272,6 @@ function desktopVisibleRosterRows(rows: TerminalSessionRow[], visibleLaneIds: Se
   });
 }
 
-function fileSignature(filePath: string): string {
-  try {
-    const stat = fs.statSync(filePath);
-    return `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-  } catch {
-    return "-";
-  }
-}
-
 /**
  * Last successful disk read per project database, keyed by the database and
  * WAL file identities. Every SQLite write changes one of them (WAL append,
@@ -289,7 +281,15 @@ function fileSignature(filePath: string): string {
  * connection and a full schema parse (~450 tables) each time, blocking the
  * brain's event loop, even when nothing in it had moved.
  */
-const diskProjectCache = new Map<string, { signature: string; data: DiskProjectData }>();
+/** A project with nothing to show; a fresh object each call. */
+const EMPTY_DISK_PROJECT = (): DiskProjectData => ({ lanes: [], chats: [], prWaitingReasonByLaneId: new Map() });
+
+const diskProjectCache = new Map<string, { signature: string; at: number; data: DiskProjectData }>();
+/**
+ * Bounds how long a signature alone is trusted. A WAL rewritten from offset 0
+ * at the same size inside one mtime tick (coarse timestamps) looks unchanged.
+ */
+const DISK_PROJECT_CACHE_MAX_AGE_MS = 30_000;
 
 /**
  * Read a project's lanes + chat sessions straight off disk (read-only). Never
@@ -297,20 +297,20 @@ const diskProjectCache = new Map<string, { signature: string; data: DiskProjectD
  * the project still appears in the roster (just without rows).
  */
 function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> | null): DiskProjectData {
-  const empty: DiskProjectData = { lanes: [], chats: [], prWaitingReasonByLaneId: new Map() };
   const dbPath = resolveAdeLayout(projectRoot).dbPath;
-  const dbSignature = fileSignature(dbPath);
-  if (dbSignature === "-") {
+  const dbIdentity = fileIdentity(dbPath);
+  if (dbIdentity === null) {
     diskProjectCache.delete(dbPath);
-    return empty;
+    return EMPTY_DISK_PROJECT();
   }
-  const signature = `${dbSignature}|${fileSignature(`${dbPath}-wal`)}`;
+  const signature = `${dbIdentity}|${fileIdentity(`${dbPath}-wal`) ?? "-"}`;
+  const now = Date.now();
   const cached = diskProjectCache.get(dbPath);
-  if (cached && cached.signature === signature) return cached.data;
+  if (cached && cached.signature === signature && now - cached.at < DISK_PROJECT_CACHE_MAX_AGE_MS) return cached.data;
   diskProjectCache.delete(dbPath);
   const data = readProjectFromDiskUncached(dbPath, projectRoot, logger);
-  if (data) diskProjectCache.set(dbPath, { signature, data });
-  return data ?? empty;
+  if (data) diskProjectCache.set(dbPath, { signature, at: now, data });
+  return data ?? EMPTY_DISK_PROJECT();
 }
 
 /** Null when the read failed (locked, unreadable) so the caller retries next time. */
@@ -319,7 +319,7 @@ function readProjectFromDiskUncached(
   projectRoot: string,
   logger?: Pick<Logger, "warn"> | null,
 ): DiskProjectData | null {
-  const empty: DiskProjectData = { lanes: [], chats: [], prWaitingReasonByLaneId: new Map() };
+  const empty = EMPTY_DISK_PROJECT();
   let db: DatabaseSyncType | null = null;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });

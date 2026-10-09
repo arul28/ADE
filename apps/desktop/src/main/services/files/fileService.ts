@@ -654,12 +654,17 @@ export function createFileService({
       timeoutMs: 15_000,
       maxOutputBytes: 64 * 1024 * 1024,
     });
-    if (result.exitCode !== 0) return null;
-    return result.stdout
-      .split("\0")
-      .map((entry) => normalizeRelative(entry))
-      .filter((relPath) => relPath && !isVolatileAdeRuntimePath(relPath) && !isAlwaysIgnoredPath(relPath));
+    // A cut-off list would silently drop files; walk instead. The index applies
+    // its own visibility rule to every entry, and skips paths git still tracks
+    // that are gone from disk.
+    return result.exitCode === 0 && !result.stdoutTruncated ? result.stdout.split("\0") : null;
   };
+  /** The ignore inputs every search-index call takes for one workspace root. */
+  const indexIgnoreOptions = (rootPath: string) => ({
+    shouldIgnore: shouldIgnoreForRoot(rootPath),
+    primeIgnoreCache: primeIgnoreCacheForRoot(rootPath),
+    listVisibleFiles: listVisibleFilesForRoot(rootPath),
+  });
   const workspaceRootExists = (rootPath: string): boolean => {
     try {
       return fs.existsSync(rootPath) && fs.statSync(rootPath).isDirectory();
@@ -1447,9 +1452,7 @@ export function createFileService({
         includeIgnored: Boolean(args.includeIgnored),
         allowComposerPrefixFallback: Boolean(args.allowComposerPrefixFallback),
         includeDirectories: Boolean(args.includeDirectories),
-        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
-        primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath),
-        listVisibleFiles: listVisibleFilesForRoot(workspace.rootPath),
+        ...indexIgnoreOptions(workspace.rootPath),
       });
     },
 
@@ -1460,9 +1463,7 @@ export function createFileService({
           workspaceId: args.workspaceId,
           rootPath: workspace.rootPath,
           includeIgnored: Boolean(args.includeIgnored),
-          shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
-          primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath),
-          listVisibleFiles: listVisibleFilesForRoot(workspace.rootPath),
+          ...indexIgnoreOptions(workspace.rootPath),
         });
       } catch {
         // Warming is best-effort; the interactive query path reports real errors.
@@ -1480,9 +1481,7 @@ export function createFileService({
         query,
         limit,
         includeIgnored: Boolean(args.includeIgnored),
-        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
-        primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath),
-        listVisibleFiles: listVisibleFilesForRoot(workspace.rootPath),
+        ...indexIgnoreOptions(workspace.rootPath),
       });
     },
 

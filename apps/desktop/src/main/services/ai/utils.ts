@@ -27,10 +27,10 @@ const commandExistsCache = new Map<string, { available: boolean; checkedAt: numb
  * (~10-20 ms on macOS, where `path_helper` runs), so callers on per-message or
  * per-tool paths must not probe every time: it blocks the brain's event loop.
  */
-export function commandExistsCached(command: string, ttlMs = COMMAND_EXISTS_CACHE_MS): boolean {
+export function commandExistsCached(command: string): boolean {
   const nowMs = Date.now();
   const cached = commandExistsCache.get(command);
-  if (cached && nowMs - cached.checkedAt < ttlMs) return cached.available;
+  if (cached && nowMs - cached.checkedAt < COMMAND_EXISTS_CACHE_MS) return cached.available;
   const available = commandExists(command);
   commandExistsCache.set(command, { available, checkedAt: nowMs });
   return available;

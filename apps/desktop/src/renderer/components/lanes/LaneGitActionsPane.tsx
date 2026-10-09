@@ -623,6 +623,22 @@ function ActionButton({
   );
 }
 
+/** "Showing first N of M files. Show all" under a capped change list. */
+function TruncatedChangesNotice({ total, noun, onShowAll }: { total: number; noun: string; onShowAll: () => void }) {
+  return (
+    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
+      <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {total} {noun} files.</span>
+      <button
+        type="button"
+        onClick={onShowAll}
+        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
+      >
+        Show all
+      </button>
+    </div>
+  );
+}
+
 export function LaneGitActionsPane({
   laneId,
   active = true,
@@ -739,6 +755,10 @@ export function LaneGitActionsPane({
   const [changesReadyForLane, setChangesReadyForLane] = useState<string | null>(
     initialCachedGitState?.changes ? laneId : null,
   );
+  // Bumped whenever the pane (re)loads a lane: becoming active again, or the
+  // lane's branch moving. A commit made elsewhere leaves a clean tree clean, so
+  // the change signature alone would not re-read the branch diff then.
+  const [branchReadNonce, setBranchReadNonce] = useState(0);
   const [commitMessage, setCommitMessage] = useState("");
   const syncMode: GitSyncMode = "merge";
   const [stashes, setStashes] = useState<GitStashSummary[]>(initialCachedGitState?.stashes ?? []);
@@ -854,9 +874,11 @@ export function LaneGitActionsPane({
       patchLaneGitActionsCachedState(projectStateKey, targetLaneId, { changes: next });
       if (isViewingLane(targetLaneId)) {
         setChanges(next);
-        setChangesReadyForLane(targetLaneId);
       }
     } finally {
+      // A failed read still ends the wait: the Branch scope reads on its own
+      // instead of showing "Reading branch changes…" for good.
+      if (isViewingLane(targetLaneId)) setChangesReadyForLane(targetLaneId);
       if (isViewingLane(targetLaneId) && !hasCachedState) {
         setLoading(false);
       }
@@ -965,7 +987,7 @@ export function LaneGitActionsPane({
     return () => {
       cancelled = true;
     };
-  }, [changesReady, changesSignature, commitTimelineKey, gitScope, laneId, pin]);
+  }, [branchReadNonce, changesReady, changesSignature, commitTimelineKey, gitScope, laneId, pin]);
 
   useEffect(() => {
     if (!showAdvanced) return;
@@ -1189,6 +1211,7 @@ export function LaneGitActionsPane({
     setConflictState(cached?.conflictState ?? null);
     setStuckRebase(cached?.stuckRebase ?? null);
     if (!active || !laneId) return;
+    setBranchReadNonce((value) => value + 1);
     Promise.all([refreshChanges(laneId), refreshGitMeta(laneId)]).catch((err) => {
       patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
         notice: null,
@@ -2903,16 +2926,7 @@ export function LaneGitActionsPane({
                   <>
                     {renderChangeTree(visibleBranchChanges, "branch", branchChangeTreeStatsByPath)}
                     {hiddenBranchChangeCount > 0 ? (
-                      <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
-                        <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {branchChanges.files.length} changed files.</span>
-                        <button
-                          type="button"
-                          onClick={() => setShowAllBranchChangesForLane(laneId)}
-                          style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
-                        >
-                          Show all
-                        </button>
-                      </div>
+                      <TruncatedChangesNotice total={branchChanges.files.length} noun="changed" onShowAll={() => setShowAllBranchChangesForLane(laneId)} />
                     ) : null}
                   </>
                 )}
@@ -2929,16 +2943,7 @@ export function LaneGitActionsPane({
                   </div>
                   {renderChangeTree(visibleStagedChanges, "staged", stagedChangeTreeStatsByPath)}
                   {hiddenStagedChangeCount > 0 ? (
-                    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
-                      <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.staged.length} staged files.</span>
-                      <button
-                        type="button"
-                        onClick={() => setShowAllStagedChanges(true)}
-                        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
-                      >
-                        Show all
-                      </button>
-                    </div>
+                    <TruncatedChangesNotice total={changes.staged.length} noun="staged" onShowAll={() => setShowAllStagedChanges(true)} />
                   ) : null}
                 </div>
               ) : null}
@@ -2952,16 +2957,7 @@ export function LaneGitActionsPane({
                   </div>
                   {renderChangeTree(visibleUnstagedChanges, "unstaged", unstagedChangeTreeStatsByPath)}
                   {hiddenUnstagedChangeCount > 0 ? (
-                    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
-                      <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.unstaged.length} unstaged files.</span>
-                      <button
-                        type="button"
-                        onClick={() => setShowAllUnstagedChanges(true)}
-                        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
-                      >
-                        Show all
-                      </button>
-                    </div>
+                    <TruncatedChangesNotice total={changes.unstaged.length} noun="unstaged" onShowAll={() => setShowAllUnstagedChanges(true)} />
                   ) : null}
                 </div>
               ) : null}

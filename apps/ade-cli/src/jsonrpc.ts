@@ -418,24 +418,16 @@ function parseContentLength(headerBlock: string): number | null {
   return null;
 }
 
-/**
- * Total bytes `buffer` must hold before its first framed message is complete,
- * or 0 when that is not known yet (no full header, or a JSONL line).
- */
-function framedBytesNeeded(buffer: Buffer): number {
-  let offset = 0;
-  while (offset < buffer.length && isWhitespaceByte(buffer[offset]!)) offset += 1;
-  if (offset >= buffer.length) return 0;
-  const first = buffer[offset]!;
-  if (first === 0x7b || first === 0x5b) return 0;
-  const boundary = findHeaderBoundary(buffer, offset);
-  if (!boundary) return 0;
-  const contentLength = parseContentLength(buffer.slice(offset, boundary.index).toString("utf8"));
-  if (contentLength == null) return 0;
-  return boundary.index + boundary.delimiterLength + contentLength;
-}
-
 type ParsedPayload =
+  | {
+      /**
+       * Not enough bytes yet. `needBytes` is the buffer length the first
+       * framed message completes at, or 0 when that is not known yet (no full
+       * header, or a JSONL line).
+       */
+      kind: "incomplete";
+      needBytes: number;
+    }
   | {
       kind: "payload";
       payloadText: string;
@@ -449,15 +441,17 @@ type ParsedPayload =
       rest: Buffer;
     };
 
-function takeNextPayload(buffer: Buffer): ParsedPayload | null {
-  if (!buffer.length) return null;
+const INCOMPLETE: ParsedPayload = { kind: "incomplete", needBytes: 0 };
+
+function takeNextPayload(buffer: Buffer): ParsedPayload {
+  if (!buffer.length) return INCOMPLETE;
 
   let offset = 0;
   while (offset < buffer.length && isWhitespaceByte(buffer[offset]!)) {
     offset += 1;
   }
   if (offset >= buffer.length) {
-    return null;
+    return INCOMPLETE;
   }
 
   const first = buffer[offset]!;
@@ -465,7 +459,7 @@ function takeNextPayload(buffer: Buffer): ParsedPayload | null {
   // Compatibility mode for newline-delimited local tests.
   if (first === 0x7b || first === 0x5b) {
     const newline = buffer.indexOf(0x0a, offset);
-    if (newline === -1) return null;
+    if (newline === -1) return INCOMPLETE;
 
     const payloadText = buffer.slice(offset, newline).toString("utf8").trim();
     return {
@@ -477,7 +471,7 @@ function takeNextPayload(buffer: Buffer): ParsedPayload | null {
   }
 
   const boundary = findHeaderBoundary(buffer, offset);
-  if (!boundary) return null;
+  if (!boundary) return INCOMPLETE;
 
   const headerBlock = buffer.slice(offset, boundary.index).toString("utf8");
   const contentLength = parseContentLength(headerBlock);
@@ -500,7 +494,7 @@ function takeNextPayload(buffer: Buffer): ParsedPayload | null {
   }
 
   if (buffer.length < bodyStart + contentLength) {
-    return null;
+    return { kind: "incomplete", needBytes: bodyStart + contentLength };
   }
 
   const payloadText = buffer.slice(bodyStart, bodyStart + contentLength).toString("utf8");
@@ -674,8 +668,8 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
     try {
       while (!stopped) {
         const parsed = takeNextPayload(buffer);
-        if (!parsed) {
-          awaitingBytes = framedBytesNeeded(buffer);
+        if (parsed.kind === "incomplete") {
+          awaitingBytes = parsed.needBytes;
           break;
         }
         awaitingBytes = 0;

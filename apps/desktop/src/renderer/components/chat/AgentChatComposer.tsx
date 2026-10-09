@@ -2922,10 +2922,9 @@ export function AgentChatComposer({
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "0px";
-    const maxH = textareaMaxHeightPx;
-    const next = Math.min(Math.max(el.scrollHeight, 28), maxH);
+    const next = Math.min(Math.max(el.scrollHeight, 28), textareaMaxHeightPx);
     el.style.height = `${next}px`;
-    el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
+    el.style.overflowY = el.scrollHeight > textareaMaxHeightPx ? "auto" : "hidden";
   }, [textareaMaxHeightPx, useRichComposer]);
   useEffect(() => {
     resizeTextarea();
@@ -7616,9 +7615,7 @@ export function AgentChatComposer({
                     dragActive ? "opacity-30" : "",
                     parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
                   )}
-                  style={plainOverlayContent
-                    ? { maxHeight: textareaMaxHeightPx, caretColor: "var(--color-fg)" }
-                    : { maxHeight: textareaMaxHeightPx }}
+                  style={{ maxHeight: textareaMaxHeightPx, ...(plainOverlayContent ? { caretColor: "var(--color-fg)" } : {}) }}
                   data-chat-layout-variant={layoutVariant}
                   data-chat-composer-text=""
                   placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}

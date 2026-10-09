@@ -590,47 +590,17 @@ export function createFileSearchIndexService() {
   const shouldSkipDirectoryName = (name: string): boolean => ALWAYS_SKIPPED_DIRECTORY_NAMES.has(name);
 
   /**
-   * The index from git's own list of non-ignored files: one `git ls-files`
-   * instead of a directory walk that asked `git check-ignore` once per folder
-   * (about 540 spawns and as many blocking `readdirSync`s for this repo).
+   * Walk directories below `roots`, asking `shouldIgnore` per entry. Returns the
+   * running count of indexed files, or null once the index is full.
    */
-  const buildWorkspaceFromFileList = async (index: WorkspaceIndex, relPaths: string[]): Promise<void> => {
-    let visitedFiles = 0;
-    for (const raw of relPaths) {
-      const relPath = normalizeRelative(raw);
-      if (!relPath || shouldSkipPathPrefix(relPath, index.includeIgnored)) continue;
-      const segments = relPath.split("/");
-      if (segments.slice(0, -1).some((segment) => shouldSkipDirectoryName(segment))) continue;
-      for (let depth = 1; depth < segments.length; depth += 1) {
-        const dir = segments.slice(0, depth).join("/");
-        if (!index.directories.has(dir)) index.directories.set(dir, { path: dir, lowerPath: dir.toLowerCase() });
-      }
-      upsertFile(index, relPath);
-      visitedFiles += 1;
-      if (visitedFiles >= MAX_INDEXED_FILES) break;
-      if (visitedFiles % YIELD_EVERY_FILES === 0) {
-        await cooperativeYield();
-      }
-    }
-    index.builtAt = new Date().toISOString();
-    invalidateQuickOpenCache(index);
-  };
-
-  const buildWorkspace = async (index: WorkspaceIndex, opts: IgnoreOptions): Promise<void> => {
-    index.files.clear();
-    index.directories.clear();
-    invalidateQuickOpenCache(index);
-
-    if (!index.includeIgnored && opts.listVisibleFiles) {
-      const listed = await opts.listVisibleFiles().catch(() => null);
-      if (listed) {
-        await buildWorkspaceFromFileList(index, listed);
-        return;
-      }
-    }
-
-    const stack: string[] = [""];
-    let visitedFiles = 0;
+  const walkDirectories = async (
+    index: WorkspaceIndex,
+    opts: IgnoreOptions,
+    roots: string[],
+    visitedSoFar: number,
+  ): Promise<number | null> => {
+    const stack = [...roots];
+    let visitedFiles = visitedSoFar;
 
     while (stack.length > 0) {
       const relDir = stack.pop() ?? "";
@@ -664,16 +634,67 @@ export function createFileSearchIndexService() {
         if (!entry.isFile()) continue;
         upsertFile(index, relPath);
         visitedFiles += 1;
-        if (visitedFiles >= MAX_INDEXED_FILES) {
-          index.builtAt = new Date().toISOString();
-          invalidateQuickOpenCache(index);
-          return;
-        }
+        if (visitedFiles >= MAX_INDEXED_FILES) return null;
         if (visitedFiles % YIELD_EVERY_FILES === 0) {
           await cooperativeYield();
         }
       }
     }
+    return visitedFiles;
+  };
+
+  /**
+   * The index from git's own list of non-ignored files: one `git ls-files`
+   * instead of a directory walk that asked `git check-ignore` once per folder
+   * (about 540 spawns and as many blocking `readdirSync`s for this repo).
+   * git lists an untracked nested repository as one `dir/` entry without its
+   * files; those directories are walked the old way.
+   */
+  const indexFileList = async (
+    index: WorkspaceIndex,
+    opts: IgnoreOptions,
+    relPaths: string[],
+  ): Promise<void> => {
+    let visitedFiles = 0;
+    const nestedRepositories: string[] = [];
+    for (const raw of relPaths) {
+      const isDirectory = raw.endsWith("/");
+      const relPath = normalizeRelative(raw).replace(/\/+$/, "");
+      if (!relPath || !isSearchableRelPath(relPath, index.includeIgnored)) continue;
+      const segments = relPath.split("/");
+      if (isDirectory) {
+        if (shouldSkipDirectoryName(segments[segments.length - 1] ?? "")) continue;
+        nestedRepositories.push(relPath);
+      } else {
+        // `--cached` also lists files deleted from the working tree; upsertFile
+        // indexes only what is on disk.
+        upsertFile(index, relPath);
+        if (!index.files.has(relPath)) continue;
+        visitedFiles += 1;
+      }
+      for (let depth = 1; depth <= segments.length - (isDirectory ? 0 : 1); depth += 1) {
+        const dir = segments.slice(0, depth).join("/");
+        if (!index.directories.has(dir)) index.directories.set(dir, { path: dir, lowerPath: dir.toLowerCase() });
+      }
+      if (isDirectory) continue;
+      if (visitedFiles >= MAX_INDEXED_FILES) return;
+      if (visitedFiles % YIELD_EVERY_FILES === 0) {
+        await cooperativeYield();
+      }
+    }
+    if (nestedRepositories.length > 0) await walkDirectories(index, opts, nestedRepositories, visitedFiles);
+  };
+
+  const buildWorkspace = async (index: WorkspaceIndex, opts: IgnoreOptions): Promise<void> => {
+    index.files.clear();
+    index.directories.clear();
+    invalidateQuickOpenCache(index);
+
+    const listed = !index.includeIgnored && opts.listVisibleFiles
+      ? await opts.listVisibleFiles().catch(() => null)
+      : null;
+    if (listed) await indexFileList(index, opts, listed);
+    else await walkDirectories(index, opts, [""], 0);
 
     index.builtAt = new Date().toISOString();
     // Drop anything cached against the partially-built file map.

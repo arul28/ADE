@@ -1,3 +1,4 @@
+import { reconcileRowsById } from "../../lib/stableIdentity";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { setSessionsPinned as setSessionsPinnedAction } from "./sessionLifecycleActions";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -723,29 +724,6 @@ function captureWorkFocusMode(mode: "focus" | "focus_grid"): void {
     dedupeKey: `work_focus_mode:${mode}`,
     minimumIntervalMs: 24 * 60 * 60_000,
   }).catch(() => undefined);
-}
-
-/**
- * A refreshed list with the previous objects kept wherever a row is unchanged,
- * and the previous array itself when nothing changed. Every refresh is a fresh
- * IPC read, so without this each one (about once a second while agents work)
- * handed every session card, the Work view and the chat pane new objects for
- * the same rows, and all of them re-rendered.
- */
-function reconcileSessionRows(
-  previous: TerminalSessionSummary[],
-  next: TerminalSessionSummary[],
-): TerminalSessionSummary[] {
-  if (previous === next) return previous;
-  const previousById = new Map(previous.map((row) => [row.id, row]));
-  let changed = previous.length !== next.length;
-  const merged = next.map((row, index) => {
-    const prior = previousById.get(row.id);
-    const kept = prior && (prior === row || JSON.stringify(prior) === JSON.stringify(row)) ? prior : row;
-    if (!changed && previous[index] !== kept) changed = true;
-    return kept;
-  });
-  return changed ? merged : previous;
 }
 
 export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) {
@@ -1698,7 +1676,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           }
         }
       }
-      setHostSessions((prev) => reconcileSessionRows(prev, rows));
+      // Every refresh is a fresh IPC read; unchanged rows keep their objects so
+      // session cards, the Work view and the chat pane do not all re-render.
+      setHostSessions((prev) => reconcileRowsById(prev, rows));
       hasLoadedOnceRef.current = true;
       hasAuthoritativeSessionsRef.current = true;
       if (pendingProjectSwitchRef.current === requestedProjectRoot) {

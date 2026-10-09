@@ -7,6 +7,7 @@ import {
   resolveMachineAdeLayout,
   type MachineAdeLayout,
 } from "./machineLayout";
+import { statIdentity } from "./fileIdentity";
 import { normalizeProjectRootPath } from "./projectRoots";
 
 export type ProjectId = string;
@@ -323,7 +324,7 @@ export class ProjectRegistry {
     let identity: string;
     try {
       const stat = fs.statSync(this.layout.projectsPath);
-      identity = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+      identity = statIdentity(stat);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         this.readCache = null;

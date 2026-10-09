@@ -386,7 +386,10 @@ function nameStatusFileChanges(stdout: string): FileChange[] {
 }
 
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
-  const branchChangesInFlight = new Map<string, Promise<BranchDiffChanges>>();
+  /** Asks this close together are the same moment (opening a lane asks twice). */
+  const BRANCH_READ_JOIN_WINDOW_MS = 250;
+  type BranchRead = { startedAt: number; read: Promise<BranchDiffChanges>; followUp: Promise<BranchDiffChanges> | null };
+  const branchReads = new Map<string, BranchRead>();
 
   const readBranchChanges = async (laneId: string): Promise<BranchDiffChanges> => {
     const { baseRef, branchRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
@@ -407,6 +410,15 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
         deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
       };
     });
+  };
+
+  const startBranchRead = (laneId: string): Promise<BranchDiffChanges> => {
+    const entry: BranchRead = { startedAt: Date.now(), read: readBranchChanges(laneId), followUp: null };
+    branchReads.set(laneId, entry);
+    void entry.read.catch(() => undefined).then(() => {
+      if (branchReads.get(laneId) === entry) branchReads.delete(laneId);
+    });
+    return entry.read;
   };
 
   const getLaneDiffStats = async (laneIdArg: string | { laneId?: string } | null | undefined): Promise<DiffLineStats> => {
@@ -445,16 +457,17 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
 
     getBranchChanges(laneId: string): Promise<BranchDiffChanges> {
       // Opening a lane asks twice at once (the Branch support probe and the
-      // pane's own read), and on a lane far from its base each read is a
-      // full temp-index diff of seconds. Concurrent asks share one read; the
-      // next ask after it settles reads fresh.
-      const inFlight = branchChangesInFlight.get(laneId);
-      if (inFlight) return inFlight;
-      const read = readBranchChanges(laneId).finally(() => {
-        if (branchChangesInFlight.get(laneId) === read) branchChangesInFlight.delete(laneId);
-      });
-      branchChangesInFlight.set(laneId, read);
-      return read;
+      // pane's own read), and on a lane far from its base each read is a full
+      // temp-index diff of seconds. Asks at the same moment share one read. A
+      // later ask (an edit landed mid-read) gets one fresh read after it,
+      // shared by everyone else who asks meanwhile.
+      const current = branchReads.get(laneId);
+      if (current) {
+        if (Date.now() - current.startedAt <= BRANCH_READ_JOIN_WINDOW_MS) return current.read;
+        current.followUp ??= current.read.catch(() => undefined).then(() => startBranchRead(laneId));
+        return current.followUp;
+      }
+      return startBranchRead(laneId);
     },
 
     async getChanges(laneId: string): Promise<DiffChanges> {

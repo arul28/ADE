@@ -2,7 +2,7 @@ import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, 
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { compareTextInsensitive } from "../../../shared/formatting";
 import { useNavigate } from "react-router-dom";
-import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
+import { reuseStructurallyEqualArray, sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import { applySteerOrder } from "../../../shared/steerOrder";
@@ -2367,26 +2367,6 @@ function resolveAssistantLabel(
   if (sessionProvider === "cursor") return "Cursor";
   if (sessionProvider === "droid") return "Droid";
   return "Assistant";
-}
-
-/**
- * Same rows in the same order with the same contents. Summaries are small flat
- * records re-read over IPC, so a fresh read is never reference-equal; compare
- * by value.
- */
-function sameSessionSummaryList(
-  previous: readonly AgentChatSessionSummary[],
-  next: readonly AgentChatSessionSummary[],
-): boolean {
-  if (previous === next) return true;
-  if (previous.length !== next.length) return false;
-  for (let index = 0; index < next.length; index += 1) {
-    const a = previous[index]!;
-    const b = next[index]!;
-    if (a === b) continue;
-    if (a.sessionId !== b.sessionId || JSON.stringify(a) !== JSON.stringify(b)) return false;
-  }
-  return true;
 }
 
 function sortSessionSummariesByRecency(
@@ -7507,9 +7487,9 @@ export function AgentChatPane({
     // This list is re-read on every session change anywhere in the lane. An
     // unchanged list must keep its identity: a new array re-renders the whole
     // pane, composer included.
-    setArchivedSessions((prev) => (sameSessionSummaryList(prev, nextArchived) ? prev : nextArchived));
+    setArchivedSessions((prev) => reuseStructurallyEqualArray(nextArchived, prev));
     const nextRows = sortSessionSummariesByRecency(rows, localTouchBySessionRef.current);
-    setSessions((prev) => (sameSessionSummaryList(prev, nextRows) ? prev : nextRows));
+    setSessions((prev) => reuseStructurallyEqualArray(nextRows, prev));
     const retainedSessionIds = buildRetainedChatSessionIds({
       rows: nextRows,
       selectedSessionId: selectedSessionIdRef.current,

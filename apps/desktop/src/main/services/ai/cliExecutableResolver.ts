@@ -122,21 +122,18 @@ function parseNpmPrefix(line: string, homeDir: string): string | null {
 const ENVIRONMENT_PROBE_TTL_MS = 60_000;
 const ENVIRONMENT_PROBE_CACHE_MAX = 32;
 const npmPrefixBinDirsCache = new Map<string, { at: number; value: string[] }>();
-const shellPathCache = new Map<string, { at: number; value: string | null }>();
+const shellPathCache = new Map<string, { at: number; value: string }>();
 
-/** `keep`: whether a result is worth reusing. A failed probe is retried next time. */
-function memoizeProbe<T>(
-  cache: Map<string, { at: number; value: T }>,
-  key: string,
-  read: () => T,
-  keep: (value: T) => boolean = () => true,
-): T {
+function rememberProbe<T>(cache: Map<string, { at: number; value: T }>, key: string, value: T): void {
+  if (cache.size >= ENVIRONMENT_PROBE_CACHE_MAX && !cache.has(key)) cache.clear();
+  cache.set(key, { at: Date.now(), value });
+}
+
+function memoizeProbe<T>(cache: Map<string, { at: number; value: T }>, key: string, read: () => T): T {
   const cached = cache.get(key);
   if (cached && Date.now() - cached.at < ENVIRONMENT_PROBE_TTL_MS) return cached.value;
   const value = read();
-  if (!keep(value)) return value;
-  if (cache.size >= ENVIRONMENT_PROBE_CACHE_MAX && !cache.has(key)) cache.clear();
-  cache.set(key, { at: Date.now(), value });
+  rememberProbe(cache, key, value);
   return value;
 }
 
@@ -450,7 +447,7 @@ function readShellPath(
   // brain's event loop exactly when agents were busy, with up to a second of
   // timeout each.
   const cached = shellPathCache.get(key);
-  if (cached && cached.value !== null) {
+  if (cached) {
     if (Date.now() - cached.at >= ENVIRONMENT_PROBE_TTL_MS) {
       refreshShellPathInBackground(key, shellPath, shellFlag, timeoutMs, env);
     }
@@ -458,12 +455,9 @@ function readShellPath(
   }
   // A null is a timeout or a broken rc file -- most likely under exactly the
   // load this cache is for -- so it is not kept: the next agent env retries.
-  return memoizeProbe(
-    shellPathCache,
-    key,
-    () => readShellPathUncached(shellPath, shellFlag, timeoutMs, env),
-    (resolved) => resolved !== null,
-  );
+  const resolved = readShellPathUncached(shellPath, shellFlag, timeoutMs, env);
+  if (resolved !== null) rememberProbe(shellPathCache, key, resolved);
+  return resolved;
 }
 
 const shellPathRefreshesInFlight = new Set<string>();
@@ -478,9 +472,9 @@ function refreshShellPathInBackground(
   if (shellPathRefreshesInFlight.has(key)) return;
   shellPathRefreshesInFlight.add(key);
   try {
-    execFile(
+    const child = execFile(
       shellPath,
-      [shellFlag, shellPathProbeScript()],
+      shellPathProbeArgs(shellFlag),
       { encoding: "utf-8", env, timeout: timeoutMs, windowsHide: true },
       (error, stdout) => {
         shellPathRefreshesInFlight.delete(key);
@@ -488,17 +482,20 @@ function refreshShellPathInBackground(
         const entry = shellPathCache.get(key);
         // A failed refresh keeps the last answer; it is tried again after
         // another TTL rather than on every call.
-        if (resolved !== null) shellPathCache.set(key, { at: Date.now(), value: resolved });
+        if (resolved !== null) rememberProbe(shellPathCache, key, resolved);
         else if (entry) entry.at = Date.now();
       },
     );
+    // execFile cannot take `stdio`; an rc file that reads stdin must see EOF,
+    // as it does from the synchronous probe, not wait out the timeout.
+    child.stdin?.end();
   } catch {
     shellPathRefreshesInFlight.delete(key);
   }
 }
 
-function shellPathProbeScript(): string {
-  return `printf '${PATH_MARKER_START}%s${PATH_MARKER_END}' "$PATH"`;
+function shellPathProbeArgs(shellFlag: "-lc" | "-ic"): string[] {
+  return [shellFlag, `printf '${PATH_MARKER_START}%s${PATH_MARKER_END}' "$PATH"`];
 }
 
 function parseShellPathProbeOutput(raw: string): string | null {
@@ -518,7 +515,7 @@ function readShellPathUncached(
   try {
     const raw = execFileSync(
       shellPath,
-      [shellFlag, shellPathProbeScript()],
+      shellPathProbeArgs(shellFlag),
       {
         encoding: "utf-8",
         env,

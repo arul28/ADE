@@ -21,6 +21,7 @@ import { buildLanePrsByLaneId } from "../../terminals/useLanePrs";
 import {
   normalizeProvider,
   parseCoAuthorProvider,
+  providerFromCoAuthors,
   selectLaneCommits,
   type LaneHistoryPr,
   type LaneHistorySession,
@@ -208,21 +209,20 @@ export function useLaneCommits(
     }
     let cancelled = false;
     // Unpinned calls keep their exact pre-pin shape (the tab's machine).
-    // `scope` asks for the detailed log, which carries each commit's
-    // Co-authored-by trailers in the same `git log`, so the trailer pass below
-    // needs no per-commit message reads.
+    // The rows carry each commit's Co-authored-by trailers from the same
+    // `git log`, so the trailer pass below reads no message for a commit whose
+    // trailers name an agent.
     void (pin
-      ? window.ade.git.listRecentCommits({ laneId, limit, scope: "lane" }, pin)
-      : window.ade.git.listRecentCommits({ laneId, limit, scope: "lane" }))
+      ? window.ade.git.listRecentCommits({ laneId, limit, includeCoAuthors: true }, pin)
+      : window.ade.git.listRecentCommits({ laneId, limit, includeCoAuthors: true }))
       .then((rows) => {
         if (cancelled) return;
         for (const row of rows) {
-          if (row.coAuthors && !trailerProviderCache.has(row.sha)) {
-            trailerProviderCache.set(
-              row.sha,
-              parseCoAuthorProvider(row.coAuthors.map((value) => `Co-authored-by: ${value}`).join("\n")),
-            );
-          }
+          // Only a hit is final. git reads trailers from the message's last
+          // block only, so a commit without one still gets the full-message
+          // read below, as before.
+          const provider = row.coAuthors ? providerFromCoAuthors(row.coAuthors) : null;
+          if (provider && !trailerProviderCache.has(row.sha)) trailerProviderCache.set(row.sha, provider);
         }
         setCommits(rows);
         setLoaded(true);
@@ -239,9 +239,9 @@ export function useLaneCommits(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchKey]);
 
-  // A runtime that predates trailers in the commit list (another machine on an
-  // older ADE) leaves `coAuthors` unset: read the full message of only the
-  // newest few of those, one at a time. Older commits fall back to other signals.
+  // Commits whose trailers named no agent (or a host that predates trailers in
+  // the commit list): read the full message of only the newest few, one at a
+  // time. Older commits fall back to other signals.
   useEffect(() => {
     if (!laneId || !lane) return;
     const pending = selectLaneCommits(commits, lane)

@@ -159,8 +159,7 @@ function runDetachedLaneSetup(params: DetachedSetupParams): void {
  * - `close-on-create` (Work tab): closes the dialog as soon as the lane record
  *   exists and runs env setup in the background; a failure surfaces a sticky,
  *   retryable toast instead of in-dialog UI.
- */
-/**
+ *
  * Memoized: the chat pane mounts a closed host and re-renders on every streamed
  * event; with stable props a closed dialog must not re-render its whole form.
  */
