@@ -21,6 +21,24 @@ export type DraftDeliveryOutcome =
   | { status: "skipped"; error: string };
 
 /**
+ * Whether every image this draft carries is readable on this machine.
+ *
+ * A runtime that does not own a draft's image bytes is handed the row with the
+ * references stripped, so a short list is not "nothing to attach" — it is "the
+ * images are somewhere else". Comparing the stored count catches that; without
+ * it the send would quietly deliver the text alone.
+ */
+export function draftAttachmentsReady(
+  draft: Pick<DraftEntry, "attachments" | "attachmentCount">,
+  exists: (path: string) => boolean,
+): boolean {
+  if ((draft.attachmentCount ?? 0) > (draft.attachments?.length ?? 0)) return false;
+  return (draft.attachments ?? []).every((attachment) => (
+    attachment.type !== "image" || exists(attachment.path)
+  ));
+}
+
+/**
  * Raised by a host that permanently cannot deliver this shape of send — it has
  * no chat launcher, or the row names no model to start one with. Delivery
  * reports it as `blocked` (the user must act) instead of retrying, because no

@@ -445,7 +445,7 @@ describe("AgentChatComposer", () => {
     });
     const props = renderComposer();
 
-    expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "s", metaKey: true });
 
     await waitFor(() => expect(create).toHaveBeenCalledWith({
@@ -504,7 +504,7 @@ describe("AgentChatComposer", () => {
       attachments: [sourceAttachment],
       composerMachineBinding,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith(
       sourceAttachment.path,

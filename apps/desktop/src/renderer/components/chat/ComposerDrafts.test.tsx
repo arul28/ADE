@@ -44,7 +44,10 @@ const savedEntry: DraftEntry = {
 function installBridge(overrides?: {
   list?: ReturnType<typeof vi.fn>;
   create?: ReturnType<typeof vi.fn>;
+  update?: ReturnType<typeof vi.fn>;
+  claim?: ReturnType<typeof vi.fn>;
   delete?: ReturnType<typeof vi.fn>;
+  sendNow?: ReturnType<typeof vi.fn>;
   getImageDataUrl?: ReturnType<typeof vi.fn>;
   saveTempAttachment?: ReturnType<typeof vi.fn>;
   getWindowSession?: ReturnType<typeof vi.fn>;
@@ -52,7 +55,12 @@ function installBridge(overrides?: {
   const drafts = {
     list: overrides?.list ?? vi.fn().mockResolvedValue([]),
     create: overrides?.create ?? vi.fn().mockResolvedValue(savedEntry),
+    update: overrides?.update ?? vi.fn().mockResolvedValue(savedEntry),
+    // Attaching a draft is a claim, not a delete: the row is consumed and
+    // handed back, and null means another machine got there first.
+    claim: overrides?.claim ?? vi.fn().mockResolvedValue(savedEntry),
     delete: overrides?.delete ?? vi.fn().mockResolvedValue(true),
+    sendNow: overrides?.sendNow ?? vi.fn().mockResolvedValue({ ok: true }),
   };
   (window as unknown as { ade: unknown }).ade = {
     agentChat: {
@@ -176,7 +184,7 @@ describe("ComposerDrafts", () => {
 
     await waitFor(() => expect(bridge.list).toHaveBeenCalled());
     expect(screen.queryByRole("button", { name: /stashed prompt/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
   });
 
   it("honors the appearance toggle even when shared stashes exist", async () => {
@@ -192,7 +200,7 @@ describe("ComposerDrafts", () => {
     );
 
     await waitFor(() => expect(bridge.list).toHaveBeenCalled());
-    expect(screen.queryByRole("button", { name: "Open 1 stashed prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open 1 draft" })).toBeNull();
   });
 
   it("clears only after the runtime durably saves the prompt", async () => {
@@ -211,7 +219,7 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(create).toHaveBeenCalledWith({
       text: "Fix the parser",
@@ -237,17 +245,20 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("Runtime unavailable");
     expect(onDraftChange).not.toHaveBeenCalled();
   });
 
-  it("restores a shared stash as a take operation", async () => {
-    const remove = vi.fn().mockResolvedValue(true);
+  // The claim comes first, so the machine that loses the race never receives
+  // the text. Filling first and deleting after is what let two machines both
+  // hold the same draft.
+  it("claims a shared draft before filling the composer", async () => {
+    const claim = vi.fn().mockResolvedValue(savedEntry);
     installBridge({
       list: vi.fn().mockResolvedValue([savedEntry]),
-      delete: remove,
+      claim,
     });
     const onDraftChange = vi.fn();
     render(
@@ -260,12 +271,37 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
     fireEvent.click(await screen.findByRole("button", { name: /Fix the parser/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Attach to composer" }));
 
-    await waitFor(() => expect(remove).toHaveBeenCalledWith({ id: "stash-1" }, null));
+    await waitFor(() => expect(claim).toHaveBeenCalledWith({ id: "stash-1" }, null));
     expect(onDraftChange).toHaveBeenCalledWith("Fix the parser");
-    expect(screen.queryByText("Stashed prompts")).toBeNull();
+    expect(screen.queryByText("Drafts")).toBeNull();
+  });
+
+  it("explains a draft another machine already took, without filling the composer", async () => {
+    installBridge({
+      list: vi.fn().mockResolvedValue([savedEntry]),
+      claim: vi.fn().mockResolvedValue(null),
+    });
+    const onDraftChange = vi.fn();
+    render(
+      <ComposerDrafts
+        draft=""
+        active
+        buttonVisible
+        shortcutLabel="⌘+S"
+        onDraftChange={onDraftChange}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Fix the parser/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Attach to composer" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("taken on another machine");
+    expect(onDraftChange).not.toHaveBeenCalled();
   });
 
   it("deletes a listed stash through the binding that loaded it", async () => {
@@ -294,8 +330,8 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete stashed prompt" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete draft" }));
 
     await waitFor(() => expect(remove).toHaveBeenCalledWith(
       { id: savedEntry.id },
@@ -353,7 +389,7 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
     await waitFor(() => expect(create).toHaveBeenCalledWith({
       text: "Use this design",
       attachments: [storedImageAttachment],
@@ -373,13 +409,13 @@ describe("ComposerDrafts", () => {
     saveView.unmount();
 
     const onAddAttachment = vi.fn();
-    const remove = vi.fn().mockResolvedValue(true);
+    const claim = vi.fn().mockResolvedValue(imageEntry);
     const getImageDataUrl = vi.fn().mockResolvedValue({
       dataUrl: "data:image/png;base64,cHJldmlldw==",
     });
     installBridge({
       list: vi.fn().mockResolvedValue([imageEntry]),
-      delete: remove,
+      claim,
       getImageDataUrl,
     });
     render(
@@ -394,7 +430,7 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith(
       storedImageAttachment.path,
       composerMachineBinding,
@@ -402,8 +438,11 @@ describe("ComposerDrafts", () => {
     expect(document.querySelector("[data-drafts-menu] img")?.getAttribute("src"))
       .toBe("data:image/png;base64,cHJldmlldw==");
     fireEvent.click(screen.getByRole("button", { name: /Use this design/i }));
-    expect(onAddAttachment).toHaveBeenCalledWith(storedImageAttachment);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith(
+    fireEvent.click(screen.getByRole("button", { name: "Attach to composer" }));
+    // The claim is awaited before the composer is filled, so the text and its
+    // images land a tick later than the click.
+    await waitFor(() => expect(onAddAttachment).toHaveBeenCalledWith(storedImageAttachment));
+    await waitFor(() => expect(claim).toHaveBeenCalledWith(
       { id: imageEntry.id },
       composerMachineBinding,
     ));
@@ -472,7 +511,7 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledTimes(1));
     expect(getImageDataUrl).toHaveBeenNthCalledWith(
@@ -567,7 +606,7 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("source runtime unavailable");
     expect(runtimeRead).toHaveBeenCalledWith(
@@ -616,7 +655,7 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(create).toHaveBeenCalledWith({
       text: "Keep the local image",
@@ -660,7 +699,7 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
     await waitFor(() => expect(view.container.querySelector(".animate-spin")).toBeNull());
     expect(create).toHaveBeenCalledTimes(1);
     expect(bridge.delete).toHaveBeenCalledWith({ id: savedEntry.id }, localBinding);
@@ -687,7 +726,7 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("up to 10 images");
     expect(create).not.toHaveBeenCalled();
@@ -703,10 +742,10 @@ describe("ComposerDrafts", () => {
       attachmentCount: 1,
       attachmentsAvailable: false,
     };
-    const remove = vi.fn().mockResolvedValue(true);
+    const claim = vi.fn().mockResolvedValue(unavailableEntry);
     installBridge({
       list: vi.fn().mockResolvedValue([unavailableEntry]),
-      delete: remove,
+      claim,
     });
     const onDraftChange = vi.fn();
     const onAddAttachment = vi.fn();
@@ -721,18 +760,22 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
-    expect(screen.getByText("1 stashed image")).toBeTruthy();
-    expect(screen.getByText("1 image on another machine")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /1 stashed image/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
+    // The row still says what it is, and that the image is not on this machine.
+    const row = screen.getByRole("button", { name: /1 image elsewhere/i });
+    fireEvent.click(row);
+    fireEvent.click(await screen.findByRole("button", { name: "Attach to composer" }));
 
-    expect((await screen.findByRole("alert")).textContent).toContain("machine where this prompt was stashed");
-    expect(remove).not.toHaveBeenCalled();
+    expect((await screen.findByRole("alert")).textContent).toContain("machine where this draft was made");
+    expect(claim).not.toHaveBeenCalled();
     expect(onDraftChange).not.toHaveBeenCalled();
     expect(onAddAttachment).not.toHaveBeenCalled();
   });
 
-  it("renders the menu in a body portal so composer overflow cannot clip it", async () => {
+  // The contract is "outside the clipping composer", not "a direct child of
+  // body": the menu now renders inside the shared popover layer, which is
+  // still a body portal.
+  it("renders the menu outside the composer so overflow cannot clip it", async () => {
     installBridge({ list: vi.fn().mockResolvedValue([savedEntry]) });
     render(
       <div data-testid="clipping-parent" style={{ overflow: "hidden" }}>
@@ -746,9 +789,10 @@ describe("ComposerDrafts", () => {
       </div>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
-    const menu = screen.getByRole("dialog", { name: "Stashed prompts" });
-    expect(menu.parentElement).toBe(document.body);
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
+    const menu = screen.getByRole("dialog", { name: "Drafts" });
+    expect(screen.getByTestId("clipping-parent").contains(menu)).toBe(false);
+    expect(document.body.contains(menu)).toBe(true);
   });
 
   it("repositions the portal when asynchronous menu content changes its height", async () => {
@@ -794,7 +838,7 @@ describe("ComposerDrafts", () => {
         />,
       );
 
-      const openButton = await screen.findByRole("button", { name: "Open 1 stashed prompt" });
+      const openButton = await screen.findByRole("button", { name: "Open 1 draft" });
       const anchor = view.container.firstElementChild as HTMLElement;
       vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue({
         bottom: 728,
@@ -809,7 +853,7 @@ describe("ComposerDrafts", () => {
       });
       fireEvent.click(openButton);
 
-      const menu = await screen.findByRole("dialog", { name: "Stashed prompts" });
+      const menu = await screen.findByRole("dialog", { name: "Drafts" });
       expect(observedElements).toContain(menu);
       vi.spyOn(menu, "getBoundingClientRect").mockReturnValue({
         bottom: 300,
@@ -861,8 +905,8 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
-    expect(screen.getByRole("dialog", { name: "Stashed prompts" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
+    expect(screen.getByRole("dialog", { name: "Drafts" })).toBeTruthy();
 
     view.rerender(
       <ComposerDrafts
@@ -874,7 +918,7 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Stashed prompts" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Drafts" })).toBeNull());
     expect(remove).not.toHaveBeenCalled();
     expect(onDraftChange).not.toHaveBeenCalled();
   });
@@ -903,7 +947,7 @@ describe("ComposerDrafts", () => {
       modelId: undefined,
     }, null));
     expect(onDraftChange).toHaveBeenCalledWith("");
-    expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
   });
 
   it("coalesces rapid shortcut presses into one durable save", async () => {
@@ -1023,17 +1067,21 @@ describe("ComposerDrafts", () => {
     expect(onRemoveAttachment).not.toHaveBeenCalled();
   });
 
-  it("never overwrites edits made while a restored stash is being consumed remotely", async () => {
-    let resolveDelete: ((deleted: boolean) => void) | undefined;
-    const remove = vi.fn().mockImplementation(() => new Promise<boolean>((resolve) => {
-      resolveDelete = resolve;
+  // Claim-first inverted the old hazard. The composer used to be filled before
+  // the remote consume resolved, so a late acknowledgement could overwrite
+  // newer edits; now nothing is written until the claim comes back, and the
+  // machine that loses the race is never handed the text at all.
+  it("writes nothing into the composer until the claim comes back", async () => {
+    let resolveClaim: ((entry: DraftEntry | null) => void) | undefined;
+    const claim = vi.fn().mockImplementation(() => new Promise<DraftEntry | null>((resolve) => {
+      resolveClaim = resolve;
     }));
     installBridge({
       list: vi.fn().mockResolvedValue([savedEntry]),
-      delete: remove,
+      claim,
     });
     const onDraftChange = vi.fn();
-    const view = render(
+    render(
       <ComposerDrafts
         draft=""
         active
@@ -1043,24 +1091,13 @@ describe("ComposerDrafts", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
     fireEvent.click(await screen.findByRole("button", { name: /Fix the parser/i }));
-    expect(onDraftChange).toHaveBeenCalledTimes(1);
-    expect(onDraftChange).toHaveBeenCalledWith("Fix the parser");
+    fireEvent.click(await screen.findByRole("button", { name: "Attach to composer" }));
+    expect(onDraftChange).not.toHaveBeenCalled();
 
-    view.rerender(
-      <ComposerDrafts
-        draft="Fix the parser with newer edits"
-        active
-        buttonVisible
-        shortcutLabel="⌘+S"
-        onDraftChange={onDraftChange}
-      />,
-    );
-    resolveDelete?.(true);
-
-    await waitFor(() => expect(view.container.querySelector(".animate-spin")).toBeNull());
-    expect(remove).toHaveBeenCalledWith({ id: "stash-1" }, null);
+    resolveClaim?.(savedEntry);
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith("Fix the parser"));
     expect(onDraftChange).toHaveBeenCalledTimes(1);
   });
 });

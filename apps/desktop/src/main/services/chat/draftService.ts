@@ -402,7 +402,10 @@ function normalizeSchedule(value: unknown, nowMs = Date.now()): NormalizedSchedu
   // rather than discovering the gap at fire time when nobody is watching. A
   // client that only knows the model id is accepted: the launch resolves an
   // empty runtime-facing string, and a non-empty one is honoured as given.
-  const newChatModel = optionalString(args.model) ?? optionalString(args.modelId);
+  const newChatModel = draftLaunchModel({
+    model: typeof args.model === "string" ? args.model : null,
+    modelId: typeof args.modelId === "string" ? args.modelId : null,
+  });
   if (targetKind === "new" && !newChatModel) {
     throw new Error("Choose a model for the new chat.");
   }
@@ -436,6 +439,21 @@ function normalizeSchedule(value: unknown, nowMs = Date.now()): NormalizedSchedu
     scheduledBy: asEnum(args.scheduledBy, ["user", "agent"] as const) ?? "user",
     scheduledBySessionId: optionalString(args.scheduledBySessionId),
   };
+}
+
+/**
+ * The model that starts a chat for a "new chat" send.
+ *
+ * One definition, used both when a schedule is armed and when it is delivered.
+ * They disagreed once — arm accepted a model id, delivery demanded the
+ * runtime-facing string — and the result was a row that armed cleanly and then
+ * blocked forever, so this is shared rather than restated.
+ */
+export function draftLaunchModel(input: {
+  model?: string | null;
+  modelId?: string | null;
+}): string | null {
+  return optionalString(input.model) ?? optionalString(input.modelId);
 }
 
 export function createDraft(

@@ -6,6 +6,7 @@ import { openKvDb, type AdeDb } from "../state/kvDb";
 import {
   claimDraft,
   createDraft,
+  draftLaunchModel,
   deleteDraft,
   listDraftAttachmentPaths,
   listDrafts,
@@ -379,6 +380,61 @@ describe("draftService", () => {
       expect(listDueScheduledDrafts(db, "studio", twoHoursOut).map((entry) => entry.id))
         .toEqual([created.id]);
       expect(listDueScheduledDrafts(db, "laptop", twoHoursOut)).toEqual([]);
+    });
+
+    // Two machines hold the same synced row. Without an owner, both would see
+    // it as due and both would flip it to `sending` locally and deliver.
+    it("does not fire a send another runtime armed", () => {
+      const twoHoursOut = Date.now() + 2 * 60 * 60 * 1000;
+      const created = createDraft(db, {
+        text: "armed elsewhere",
+        schedule: schedule({ scheduledAt: new Date(Date.now() + 30 * 60 * 1000).toISOString() }),
+      });
+      db.run(
+        "update prompt_stashes set armed_by_site_id = ? where id = ?",
+        ["a-different-site", created.id],
+      );
+
+      expect(listDueScheduledDrafts(db, "studio", twoHoursOut)).toEqual([]);
+      // The machine that armed it still fires it.
+      db.run(
+        "update prompt_stashes set armed_by_site_id = ? where id = ?",
+        [db.get<{ site: string }>("select lower(hex(crsql_site_id())) as site")!.site, created.id],
+      );
+      expect(listDueScheduledDrafts(db, "studio", twoHoursOut).map((entry) => entry.id))
+        .toEqual([created.id]);
+    });
+
+    // Arming and delivery must agree on how a new chat picks its model: when
+    // they disagreed, a schedule armed cleanly and then blocked forever.
+    it("arms a new-chat send that names only a model id", () => {
+      const created = createDraft(db, {
+        text: "later",
+        schedule: {
+          scheduledAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+          targetKind: "new",
+          targetLaneId: "lane-1",
+          provider: "claude",
+          modelId: "claude-sonnet-5-5",
+        },
+      });
+
+      expect(created).toMatchObject({ kind: "scheduled", targetKind: "new" });
+      expect(draftLaunchModel({ modelId: "claude-sonnet-5-5" })).toBe("claude-sonnet-5-5");
+      expect(draftLaunchModel({ model: "claude-sonnet-5-5", modelId: "other" }))
+        .toBe("claude-sonnet-5-5");
+      expect(draftLaunchModel({})).toBeNull();
+    });
+
+    it("refuses a new-chat send that names no model at all", () => {
+      expect(() => createDraft(db, {
+        text: "nowhere to run",
+        schedule: {
+          scheduledAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+          targetKind: "new",
+          targetLaneId: "lane-1",
+        },
+      })).toThrow("Choose a model");
     });
   });
 });

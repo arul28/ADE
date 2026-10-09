@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DraftEntry } from "../../../shared/types/chat";
-import { deliverDraft, type DraftDeliveryDeps } from "./draftDelivery";
+import {
+  deliverDraft,
+  draftAttachmentsReady,
+  DraftDeliveryUnsupportedError,
+  type DraftDeliveryDeps,
+} from "./draftDelivery";
 
 const NOW = Date.parse("2026-10-09T12:00:00.000Z");
 
@@ -143,5 +148,52 @@ describe("deliverDraft", () => {
       deps(),
     );
     expect(outcome.status).toBe("blocked");
+  });
+
+  // A stricter policy must not be held open by an image that never arrives:
+  // "on time or missed" has to resolve to missed.
+  it("reports a blown strict window even when its images never arrived", async () => {
+    const outcome = await deliverDraft(
+      draft({
+        deliveryPolicy: "strict",
+        scheduledAt: new Date(NOW - 60_000).toISOString(),
+      }),
+      deps({ attachmentsReady: () => false }),
+    );
+
+    expect(outcome.status).toBe("missed");
+  });
+
+  it("blocks rather than retrying when this host cannot create the chat", async () => {
+    const outcome = await deliverDraft(
+      draft({ targetKind: "new", targetSessionId: null, targetLaneId: "lane-1" }),
+      deps({
+        createChatAndSend: async () => {
+          throw new DraftDeliveryUnsupportedError("This computer cannot start a new chat.");
+        },
+      }),
+    );
+
+    expect(outcome.status).toBe("blocked");
+  });
+});
+
+describe("draftAttachmentsReady", () => {
+  const image = { path: "/tmp/design.png", type: "image" as const };
+
+  // The row a foreign machine receives has its image references stripped, so a
+  // short list is not "nothing to attach" — it is "the images are elsewhere".
+  // Reading it as ready is what let a send deliver the text alone.
+  const cases: Array<
+    [string, Pick<DraftEntry, "attachments" | "attachmentCount">, boolean, boolean]
+  > = [
+    ["nothing attached", { attachments: [], attachmentCount: 0 }, true, true],
+    ["every image present", { attachments: [image], attachmentCount: 1 }, true, true],
+    ["an image file is gone", { attachments: [image], attachmentCount: 1 }, false, false],
+    ["references stripped by another machine", { attachments: [], attachmentCount: 1 }, true, false],
+  ];
+
+  it.each(cases)("%s", (_label, entry, fileExists, expected) => {
+    expect(draftAttachmentsReady(entry, () => fileExists)).toBe(expected);
   });
 });

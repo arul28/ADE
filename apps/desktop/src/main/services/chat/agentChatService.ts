@@ -60,6 +60,7 @@ import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import {
   claimScheduledDraft,
+  draftLaunchModel,
   getDraft,
   listDraftAttachmentPaths,
   listDueScheduledDrafts,
@@ -70,6 +71,7 @@ import {
 } from "./draftService";
 import {
   deliverDraft,
+  draftAttachmentsReady,
   DraftDeliveryUnsupportedError,
   type DraftDeliveryOutcome,
 } from "./draftDelivery";
@@ -64292,16 +64294,7 @@ export function createAgentChatService(args: {
       const row = sessionService.get(sessionId);
       return Boolean(row && !row.archivedAt);
     },
-    // A machine that does not own a draft's image bytes is handed the row with
-    // those references stripped, so a short list is not "nothing to attach" —
-    // it is "the images are somewhere else". Sending the text alone would
-    // silently drop them, which this contract forbids; hold instead.
-    attachmentsReady: (draft: DraftEntry) => {
-      if ((draft.attachmentCount ?? 0) > (draft.attachments?.length ?? 0)) return false;
-      return (draft.attachments ?? []).every((attachment) => (
-        attachment.type !== "image" || fs.existsSync(attachment.path)
-      ));
-    },
+    attachmentsReady: (draft: DraftEntry) => draftAttachmentsReady(draft, fs.existsSync),
     sendToChat: async ({ sessionId, text, attachments }: {
       sessionId: string;
       text: string;
@@ -64337,10 +64330,8 @@ export function createAgentChatService(args: {
           "This computer cannot start a new chat for a scheduled send. Pick an existing chat instead.",
         );
       }
-      // Mirror the arm-time rule exactly. A client that knows only the model
-      // id (the phone) is accepted there, so it has to be accepted here too —
-      // otherwise the row arms cleanly and then blocks forever at fire time.
-      const launchModel = model ?? modelId;
+      // The same rule the arm-time check uses, not a restatement of it.
+      const launchModel = draftLaunchModel({ model, modelId });
       if (!provider || !launchModel) {
         throw new DraftDeliveryUnsupportedError(
           "This send has no model to start its new chat with.",
