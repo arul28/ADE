@@ -1218,7 +1218,8 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     themeId: theme,
     customThemes: [],
     themeFollowsSystem: false,
-    interfacePreferences: { ...DEFAULT_INTERFACE_PREFERENCES },
+    // Normalised, not copied: the scene default depends on where this runs (the web client's own default).
+    interfacePreferences: normalizeInterfacePreferences({}),
     terminalPreferences,
     smartTooltipsEnabled,
     launchPromptClipboardEnabled: true,

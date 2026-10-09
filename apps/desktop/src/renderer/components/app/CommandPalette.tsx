@@ -599,14 +599,15 @@ export function CommandPalette({
         closeOnRun: false,
         run: startProjectCreate,
       },
-      {
+      // Clones onto this machine, and the web client has no clone surface for it.
+      ...(isWebClientMode() ? [] : [{
         id: "project-clone",
         title: "Clone from GitHub",
         hint: "Paste a URL or pick a repo",
         group: "Projects",
         closeOnRun: false,
         run: startProjectClone,
-      },
+      }]),
       {
         id: "project-remote",
         title: "Connect to another machine",

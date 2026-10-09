@@ -17,7 +17,8 @@ import { extractScenePalette, type ScenePalette } from "./scenePalette";
 import { listUserScenes, subscribeUserScenes, userSceneUrl, type UserSceneSummary } from "./userScenes";
 
 export type ActiveScene =
-  | { kind: "gradient" }
+  /** `still`: the flat theme background (mode `plain`); no mesh is drawn. */
+  | { kind: "gradient"; still: boolean }
   | {
       kind: "image";
       id: string;
@@ -222,10 +223,10 @@ export function useActiveScene(): ActiveScene {
     if (id) load(id);
   }, [id]);
 
-  if (!id) return { kind: "gradient" };
+  if (!id) return { kind: "gradient", still: prefs.mode === "plain" };
   const entry = entries.get(id);
   // A user picture that no longer exists falls back to the gradient.
-  if (entry?.done && !entry.url) return { kind: "gradient" };
+  if (entry?.done && !entry.url) return { kind: "gradient", still: false };
   return {
     kind: "image",
     id,
@@ -255,7 +256,7 @@ export function useSetScene(): (next: Partial<ScenePreferences>) => void {
   return useCallback(
     (next) => {
       const current = useAppStore.getState().interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES;
-      setInterfacePreferences({ scene: { ...current, ...next } });
+      setInterfacePreferences({ scene: { ...current, ...next, choiceMade: true } });
     },
     [setInterfacePreferences],
   );

@@ -366,11 +366,23 @@ function BackgroundPicker() {
   };
 
   const pickedId = scenePrefs.mode === "image" ? scenePrefs.imageId : null;
-  const usingPicture = scenePrefs.mode !== "gradient";
+  const usingPicture = scenePrefs.mode !== "gradient" && scenePrefs.mode !== "plain";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div className="ade-ap-scenes" role="radiogroup" aria-label="Background">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={scenePrefs.mode === "plain"}
+          className="ade-ap-scene"
+          data-active={scenePrefs.mode === "plain"}
+          onClick={() => setScene({ mode: "plain" })}
+        >
+          <div className="ade-ap-scene-art" style={{ background: palette.bg }} />
+          <SceneLabel name="Plain" sub="Theme colours, still" active={scenePrefs.mode === "plain"} />
+        </button>
+
         <button
           type="button"
           role="radio"
@@ -892,7 +904,7 @@ function AppearancePreview() {
 }
 
 function sceneStatus(scene: ActiveScene): string {
-  if (scene.kind === "gradient") return "Gradient";
+  if (scene.kind === "gradient") return scene.still ? "Plain" : "Gradient";
   return scene.showImage ? scene.name : `${scene.name} colours`;
 }
 
