@@ -32042,9 +32042,12 @@ function findChatRuntimeOwnerRef(value: unknown, depth = 0): { pid: number; sock
  * 2026-10-09 incident, where a shell pointed at a dev brain's socket kept
  * re-sending to workers the installed brain was running.
  */
-function chatOwnerSocketWarning(value: unknown, cliSocketPath: string | null): string | null {
+function chatOwnerSocketWarning(value: unknown, connection: Pick<CliConnection, "mode" | "socketPath">): string | null {
   const owner = findChatRuntimeOwnerRef(value);
   if (!owner) return null;
+  // A headless CLI runs its own in-process runtime; its socketPath is only
+  // the default endpoint, not a brain it reached.
+  const cliSocketPath = connection.mode === "headless" ? null : connection.socketPath;
   if (owner.socketPath && cliSocketPath) {
     const ownerSocket = normalizeRuntimeSocketPath(owner.socketPath);
     const cliSocket = normalizeRuntimeSocketPath(cliSocketPath);
@@ -32197,7 +32200,7 @@ async function executePlan(
         };
       }
     }
-    const ownerWarning = chatOwnerSocketWarning(values, connection.socketPath);
+    const ownerWarning = chatOwnerSocketWarning(values, connection);
     if (ownerWarning) process.stderr.write(`${ownerWarning}\n`);
     return summarizeExecution({ plan, connection, values });
   } catch (error) {
@@ -32368,7 +32371,7 @@ async function runChatWaitCommand(
         return { output: formatOutput(result, options), exitCode: 1 };
       }
       if (!ownerWarned) {
-        const warning = chatOwnerSocketWarning(summary, connection.socketPath);
+        const warning = chatOwnerSocketWarning(summary, connection);
         if (warning) {
           process.stderr.write(`${warning}\n`);
           ownerWarned = true;

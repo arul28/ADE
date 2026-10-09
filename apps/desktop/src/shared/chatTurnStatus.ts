@@ -83,10 +83,11 @@ export function chatTurnStatusExitCode(phase: ChatTurnStatusPhase): number {
 
 export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurnStatusSnapshot {
   const nowMs = input.nowMs ?? Date.now();
-  const awaitingInput = input.awaitingInput === true;
+  const ownedElsewhere = input.ownedElsewhere ?? null;
+  // This brain cannot see another brain's turn, its asks included.
+  const awaitingInput = ownedElsewhere == null && input.awaitingInput === true;
   const turnStartedMs = parseTime(input.currentTurnStartedAt);
   const lastActivityMs = parseTime(input.lastActivityAt);
-  const ownedElsewhere = input.ownedElsewhere ?? null;
   const hasLiveTurn = input.sessionStatus === "active" || turnStartedMs != null || ownedElsewhere != null;
   const phase: ChatTurnStatusPhase = awaitingInput
     ? "blocked"

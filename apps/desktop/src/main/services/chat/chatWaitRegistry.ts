@@ -40,6 +40,12 @@ export type ChatWaitRegistryDeps = {
    * runs the chat to be woken may fire one.
    */
   ownedByAnotherBrain: (sessionId: string) => boolean;
+  /**
+   * Throws when another live brain runs the chat a new waiter would deliver
+   * to. Only that brain can deliver it, and it reads waiters at startup only,
+   * so a waiter armed here would never fire.
+   */
+  assertDeliverableHere: (sessionId: string) => void;
   /** Resolves once the chat service can read summaries (startup finished). */
   whenReady: () => Promise<void>;
 };
@@ -246,6 +252,7 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       const caller = args.callerSessionId?.trim() || null;
       if (sendTo && !text) throw new Error("A prompt is required to send once the wait is over.");
       if (!sendTo && !caller) throw new Error("A wait needs a chat to wake (run it from a chat, or pass the caller).");
+      deps.assertDeliverableHere((sendTo ?? caller)!);
       const minutes = Number.isFinite(args.timeoutMinutes) && (args.timeoutMinutes ?? 0) > 0
         ? Math.floor(args.timeoutMinutes!)
         : CHAT_WAIT_DEFAULT_TIMEOUT_MINUTES;

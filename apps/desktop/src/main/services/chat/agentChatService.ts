@@ -18249,14 +18249,15 @@ export function createAgentChatService(args: {
 
   /**
    * The live sibling brain holding this chat's provider process, or null when
-   * this brain may drive the chat: it holds the runtime itself, nobody has
-   * claimed it, or the claimant is gone (the adoption rules above).
+   * this brain may drive the chat: it holds the claim itself, nobody has
+   * claimed it, or the claimant is gone (the adoption rules above). A runtime
+   * object here is not the claim — a live sibling that stamped after it is
+   * the most recent owner.
    */
   const liveForeignChatRuntimeOwner = (
     sessionId: string,
     persisted?: PersistedChatState | null,
-  ): ChatRuntimeOwner | null =>
-    managedSessions.get(sessionId)?.runtime ? null : siblingBrainOwnerOnDisk(sessionId, persisted);
+  ): ChatRuntimeOwner | null => siblingBrainOwnerOnDisk(sessionId, persisted);
 
   /**
    * Refuse to drive a chat another live brain owns. Every caller here would
@@ -56433,6 +56434,7 @@ export function createAgentChatService(args: {
     sessionExists: (sessionId) => Boolean(sessionService.get(sessionId)),
     messageSession: (args) => messageSession(args),
     ownedByAnotherBrain: (sessionId) => liveForeignChatRuntimeOwner(sessionId) != null,
+    assertDeliverableHere: (sessionId) => assertChatRuntimeOwnedHere(sessionId, "arm a wait that wakes"),
     whenReady: () => scheduledWorkReady,
   });
   chatWaits = chatWaitRegistry;
@@ -63092,6 +63094,7 @@ export function createAgentChatService(args: {
     /** Interrupt the turn after this long with no activity. Absent, null or 0 means no idle watch. */
     idleTimeoutMs?: number | null;
   }): Promise<AgentChatBackgroundTurnResult> => {
+    assertChatRuntimeOwnedHere(sessionId, "run a turn in");
     const managed = ensureManagedSession(sessionId);
     const trimmed = text.trim();
     if (!trimmed.length) {
