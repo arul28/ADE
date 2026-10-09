@@ -79,7 +79,7 @@ export function formatBrowserPaneContextForPrompt(target: BrowserTabMentionTarge
       parsed.hash = "";
       for (const name of [...parsed.searchParams.keys()]) {
         if (!isRedactedBuiltInBrowserQueryParam(name)
-          && !/^(?:key|authorization|password|passwd)$|(?:token|secret|signature|credential|api[_-]?key)$/i.test(name)) continue;
+          && !/^(?:key|authorization|password|passwd|code|auth|session|sid|sig|jwt|otp|bearer)$|(?:token|secret|signature|credential|api[_-]?key)$/i.test(name)) continue;
         parsed.searchParams.set(name, "[redacted by ADE]");
         changed = true;
       }
