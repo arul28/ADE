@@ -536,6 +536,57 @@ describe("createAgentChatService", () => {
       await expect(createService().service.getSessionSummary(child.id)).resolves.toMatchObject({ spawnKind: "subagent" });
     });
 
+    it.each<[string, (launcherId: string) => Record<string, unknown>, boolean]>([
+      ["an agent that starts a chat with no parent is recorded as its launcher",
+        (launcherId) => ({ runtimeActor: { kind: "agent", chatSessionId: launcherId } }), true],
+      ["an agent spawn with an orchestration parent keeps the parent and records no launcher",
+        (launcherId) => ({
+          runtimeActor: { kind: "agent", chatSessionId: launcherId },
+          orchestrationParentSessionId: launcherId,
+          spawnKind: "subagent",
+        }), false],
+    ])("%s", async (_label, extraArgs, expectsLauncher) => {
+      const { service } = createService();
+      const launcher = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        ...extraArgs(launcher.id),
+      } as any);
+
+      const expected = expectsLauncher ? launcher.id : undefined;
+      expect(child.launchedBySessionId).toBe(expected);
+      expect((await service.getSessionSummary(child.id))?.launchedBySessionId).toBe(expected);
+      // A fresh service reads the same lineage back from disk.
+      expect((await createService().service.getSessionSummary(child.id))?.launchedBySessionId).toBe(expected);
+    });
+
+    it("records no launcher for the CTO, a person, or a launcher field the caller sent", async () => {
+      const { service } = createService();
+      const launcher = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const sessions = [
+        await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          runtimeActor: { kind: "cto" },
+        }),
+        await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" }),
+        await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          launchedBySessionId: launcher.id,
+        } as any),
+      ];
+
+      for (const session of sessions) {
+        expect(session.launchedBySessionId).toBeUndefined();
+        expect((await service.getSessionSummary(session.id))?.launchedBySessionId).toBeUndefined();
+      }
+    });
+
     it("wakes the parent with durable turn metadata when a parent-dispatched subagent turn finishes", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {

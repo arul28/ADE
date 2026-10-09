@@ -2843,7 +2843,11 @@ Where it is set:
 - `ade new chat --mode chat|cli --type subagent|peer` (alias `--spawn-type`).
   Both modes default `orchestrationParentSessionId` from `ADE_CHAT_SESSION_ID`;
   `--parent` overrides it and `--no-parent` creates a genuinely independent
-  top-level session. A parent without a type is a hard CLI/RPC/service error.
+  top-level session. When an agent creates it, the brain still records the
+  passive `launchedBySessionId` from the RPC-stamped runtime actor (never from
+  the payload). That record does not nest, wake or cap permissions; it only
+  lets Focus treat the finished helper as the launcher's business (see
+  `terminals-and-sessions/ui-surfaces.md`). A parent without a type is a hard CLI/RPC/service error.
   Chat mode stores the fields on the child chat and uses `spawnKind` for the
   completion policy below. Agent-provider CLI mode sends the same fields to
   `start_cli_session`, which stores them in `TerminalResumeMetadata` for

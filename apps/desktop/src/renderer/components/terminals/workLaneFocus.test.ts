@@ -246,6 +246,51 @@ describe("summarizeLaneFocus — scheduled wakes and busy subagents", () => {
   });
 });
 
+describe("launched helpers — the busy launcher owns their lane", () => {
+  const busyChat = (id: string) => session({ id, toolType: "codex-chat" });
+  const launched = (id: string) => ({ ...finished(id), launchedBySessionId: "launcher" });
+
+  // Every row is checked through both seams: the lane's fold and the Focus grid.
+  // The grid is queried over all lanes, the fold over lane-1 only, as the sidebar does.
+  it.each<[string, TerminalSessionSummary[], { status: string | null; folds: boolean; tiles: string[] }]>([
+    ["a busy launcher folds its lane and its finished helpers get no tile",
+      [busyChat("launcher"), launched("h1"), launched("h2")],
+      { status: "working", folds: true, tiles: [] }],
+    ["a user-started helper with no launcher field holds the lane out and gets a tile",
+      [busyChat("launcher"), finished("h1"), finished("h2")],
+      { status: "working", folds: false, tiles: ["h1", "h2"] }],
+    ["a finished launcher holds the lane out, and its helpers get tiles too",
+      [idleChat("launcher"), launched("h1"), launched("h2")],
+      { status: "done", folds: false, tiles: ["launcher", "h1", "h2"] }],
+    ["a peer that names the launcher as its orchestration parent is deferred the same way",
+      [busyChat("launcher"), { ...finished("h1"), orchestrationParentSessionId: "launcher" }],
+      { status: "working", folds: true, tiles: [] }],
+    ["a helper that needs input still holds the lane out and gets its tile",
+      [busyChat("launcher"), { ...session({ id: "h1", toolType: "codex", pendingInputItemId: "ask-1" }), launchedBySessionId: "launcher" }],
+      { status: "needs_you", folds: false, tiles: ["h1"] }],
+    ["a launcher in another lane does not defer a helper in this lane",
+      [launched("h1"), { ...busyChat("launcher"), laneId: "lane-2", laneName: "lane-2" }],
+      { status: "done", folds: false, tiles: ["h1"] }],
+  ])("%s", (_label, sessions, expected) => {
+    const summary = focus({
+      sessions: sessions.filter((entry) => entry.laneId === "lane-1"),
+      nowMs: NOW_MS,
+    });
+    const tiles = workFocusQueue({
+      sessions,
+      filingBuckets: NO_BUCKETS,
+      foldedLaneIds: new Set(),
+      laneWaiting: () => false,
+      nestedSessionIds: new Set(),
+      busySubagentParentIds: new Set(),
+      nowMs: NOW_MS,
+    });
+    expect(summary.status).toBe(expected.status);
+    expect(summary.folds).toBe(expected.folds);
+    expect([...tiles].sort()).toEqual([...expected.tiles].sort());
+  });
+});
+
 describe("nextWorkLaneReturnState", () => {
   it("takes a baseline, stamps a return, and clears it when the lane folds again or disappears", () => {
     const baseline = nextWorkLaneReturnState(

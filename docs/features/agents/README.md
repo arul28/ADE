@@ -218,7 +218,10 @@ child is a normal agent with the same runtime, permissions, and tools, but the
 type is a coordination contract: `subagent` is required whenever the parent
 will need, join, read, or review the result (including parallel work); `peer`
 is fire-and-forget and leaves quiet turn-completion notes. Missing types and
-the legacy `none` value are rejected for new parented sessions.
+the legacy `none` value are rejected for new parented sessions. A `--no-parent`
+session an agent starts records the agent as `launchedBySessionId`: no
+nesting, wake or permission ceiling, only the Focus rule that keeps a finished
+helper from holding its busy launcher's lane open.
 
 Subagent chat turns return their child turn id and latest bounded assistant
 summary, steering an active parent or waking an idle parent. A subagent always

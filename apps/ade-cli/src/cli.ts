@@ -2303,7 +2303,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --dry-run               Alias for --print-config; does not create a chat.
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
-    --no-parent             Create the chat without a parent link.
+    --no-parent             Create the chat without a parent link. From an agent
+                            it is still recorded as launched by that agent.
     --type <subagent|peer>  Required with a parent. subagent always wakes the
                             parent after every turn; peer leaves quiet notes.
 
@@ -2370,7 +2371,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID when run from a
                             tracked agent shell (the spawning chat).
-    --no-parent             Create the chat without a parent link.
+    --no-parent             Create the chat without a parent link. From an agent
+                            it is still recorded as launched by that agent.
     --type <subagent|peer>  Required with a parent. subagent always wakes the
                             parent after every turn; peer leaves quiet notes.
 
