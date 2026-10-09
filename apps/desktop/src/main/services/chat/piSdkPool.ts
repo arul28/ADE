@@ -1,3 +1,4 @@
+import type { ProviderCompactionSettings } from "../../../shared/compactionSettings";
 import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -125,6 +126,7 @@ export type AcquirePiSdkConnectionArgs = PiSdkPackageLocation & {
   tools?: string[];
   noTools?: PiSdkWorkerInit["noTools"];
   extensions?: boolean;
+  compaction?: ProviderCompactionSettings;
   askUserTool?: boolean;
   approvalTools?: string[];
   /** Usually process.env; never put auth.json or API keys in this payload. */
@@ -304,6 +306,7 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     ...(args.tools ? { tools: args.tools } : {}),
     ...(args.noTools ? { noTools: args.noTools } : {}),
     ...(args.extensions ? { extensions: true } : {}),
+    ...(args.compaction ? { compaction: args.compaction } : {}),
     ...(args.askUserTool ? { askUserTool: true } : {}),
     ...(args.approvalTools?.length ? { approvalTools: args.approvalTools } : {}),
   };

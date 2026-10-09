@@ -1,3 +1,4 @@
+import type { ProviderCompactionSettings } from "../compactionSettings";
 // ---------------------------------------------------------------------------
 // Configuration types
 // ---------------------------------------------------------------------------
@@ -1974,6 +1975,7 @@ export type AiChatConfig = {
   continueAfterRestart?: boolean;
 };
 export type AiConfig = {
+  compaction?: Record<string, ProviderCompactionSettings>;
   mode?: ProviderMode;
   defaultProvider?: string;
   taskRouting?: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>>;

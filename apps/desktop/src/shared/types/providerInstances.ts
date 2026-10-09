@@ -1,3 +1,4 @@
+import type { ProviderCompactionSettings } from "../compactionSettings";
 /**
  * Provider accounts ("instances").
  *
@@ -38,6 +39,7 @@ export const PROVIDER_INSTANCE_ENV_KEY: Record<ProviderInstanceProvider, string>
 
 /** One local account for one provider. */
 export type ProviderInstance = {
+  compaction?: ProviderCompactionSettings;
   /** Stable machine-local id. The default instance's id IS the provider slug. */
   id: string;
   provider: ProviderInstanceProvider;
@@ -94,6 +96,7 @@ export function providerInstanceHasAccount(instance: Pick<ProviderInstance, "sig
 
 /** Per-provider settings that are about the set of accounts, not one account. */
 export type ProviderInstanceSettings = {
+  compaction?: ProviderCompactionSettings;
   /**
    * Spread new chats across signed-in accounts instead of always using the
    * default. Stored here; the scheduler that reads it lands with the UI.
@@ -184,8 +187,10 @@ export type ProviderInstanceGetSettingsArgs = {
 };
 
 export type ProviderInstanceSetSettingsArgs = {
+  /** Account override; null compaction restores provider inheritance. */
+  instanceId?: string;
   provider: ProviderInstanceProvider;
-  settings: Partial<ProviderInstanceSettings>;
+  settings: Omit<Partial<ProviderInstanceSettings>, "compaction"> & { compaction?: ProviderCompactionSettings | null };
 };
 
 export type ProviderInstanceLoginCommandArgs = {

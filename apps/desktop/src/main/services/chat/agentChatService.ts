@@ -1,3 +1,4 @@
+import { claudeCompactionSettings, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -15967,6 +15968,7 @@ export function createAgentChatService(args: {
         }), "utf8").digest("hex").slice(0, 12)
       : "no-activity";
     const toolPolicyKey = [
+      JSON.stringify(compactionSettingsFor(managed)),
       piToolPolicy.tools.join(","),
       piToolPolicy.approvalTools.join(","),
       piExtensionsEnabled ? "ext" : "no-ext",
@@ -16064,6 +16066,7 @@ export function createAgentChatService(args: {
     try {
       acquired = await acquirePiSdkConnection({
         poolKey,
+        compaction: compactionSettingsFor(managed),
         packageRoot: installation.packageRoot,
         packageEntry: installation.packageEntry,
         cwd: managed.laneWorktreePath,
@@ -38143,6 +38146,25 @@ export function createAgentChatService(args: {
       .catch(() => { /* account/rateLimits/read not supported — ignore */ });
   };
 
+  const compactionSettingsFor = (managed: ManagedChatSession) => {
+    const provider = managed.session.provider ?? "";
+    const defaults = normalizeCompactionSettings(projectConfigService.get().effective.ai?.compaction?.[provider]);
+    const account = isProviderInstanceProvider(provider)
+      ? getMachineProviderInstanceStore().get(managed.session.instanceId ?? defaultProviderInstanceId(provider))
+      : null;
+    return { ...defaults, ...account?.compaction };
+  };
+  const runtimeCompactionSettings = new WeakMap<object, string>();
+  const refreshRuntimeCompactionSettings = (managed: ManagedChatSession): void => {
+    const runtime = managed.runtime;
+    if (!runtime) return;
+    const signature = JSON.stringify(compactionSettingsFor(managed));
+    const previous = runtimeCompactionSettings.get(runtime);
+    if (previous !== undefined && previous !== signature && (runtime.kind === "claude" ? !runtime.busy : runtime.kind === "codex" ? !runtime.activeTurnId : false)) {
+      teardownRuntime(managed, "handle_close");
+    } else if (previous === undefined) runtimeCompactionSettings.set(runtime, signature);
+  };
+
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     logger.info("agent_chat.codex_runtime_start", {
       sessionId: managed.session.id,
@@ -38168,7 +38190,9 @@ export function createAgentChatService(args: {
     // Reasoning effort travels with the thread (codexThreadConfigArgs), never on
     // the process: `-c` outranks the user's config.toml and would apply to every
     // thread on this app-server, not just this chat.
-    const appServerArgs = ["app-server"];
+    const compact = compactionSettingsFor(managed);
+    const window = resolveSessionModelDescriptor(managed.session)?.contextWindow;
+    const appServerArgs = ["app-server", ...(compact.atTokens ? ["-c", `model_auto_compact_token_limit=${Math.min(compact.atTokens, window || compact.atTokens)}`] : [])];
     const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
@@ -38516,9 +38540,11 @@ export function createAgentChatService(args: {
   };
 
   const ensureCodexSessionRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
+    refreshRuntimeCompactionSettings(managed);
     if (managed.runtime?.kind === "codex") return managed.runtime;
     runtimeBudget.enforce(managed.session.id);
     const runtime = await startCodexRuntime(managed);
+    runtimeCompactionSettings.set(runtime, JSON.stringify(compactionSettingsFor(managed)));
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
     return runtime;
@@ -39171,6 +39197,7 @@ export function createAgentChatService(args: {
       // is safe to always send because the CLI merges it per plugin key rather
       // than replacing the map.
       settings: {
+        ...claudeCompactionSettings(compactionSettingsFor(managed)),
         ...(outputStyle ? { outputStyle } : {}),
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
         fastMode: sessionEffectiveFastMode(managed.session),
@@ -40704,6 +40731,7 @@ export function createAgentChatService(args: {
   };
 
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
+    refreshRuntimeCompactionSettings(managed);
     if (managed.runtime?.kind === "claude") return managed.runtime;
     runtimeBudget.enforce(managed.session.id);
     const persisted = readPersistedState(managed.session.id);
@@ -40805,6 +40833,7 @@ export function createAgentChatService(args: {
         steer: { ...steer },
       });
     }
+    runtimeCompactionSettings.set(runtime, JSON.stringify(compactionSettingsFor(managed)));
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
 

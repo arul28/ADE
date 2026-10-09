@@ -1,3 +1,4 @@
+import { CompactionSettings } from "../CompactionSettings";
 /**
  * Settings → Agents & Models → Claude Code / Codex CLI → Accounts.
  *
@@ -426,6 +427,7 @@ export function ProviderAccountsPanel({
               <AccountCard
                 key={instance.id}
                 instance={instance}
+                compactionControl={instances.length > 1 ? <CompactionSettings provider={provider} account value={instance.compaction} onChange={async (compaction) => { await window.ade.providerInstances.setSettings({ provider, instanceId: instance.id, settings: { compaction } }, pin); await reload(); }} /> : null}
                 limitRow={accountLimitRow(snapshot, provider, instance, nowMs)}
                 state={state}
                 badge={badge}

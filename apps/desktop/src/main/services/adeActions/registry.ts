@@ -1,3 +1,4 @@
+import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import fs from "node:fs";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
@@ -3841,11 +3842,12 @@ export function buildProviderInstancesDomainService(
       }
       const requestedSettings = isRecord(input.settings) ? input.settings : {};
       const settings = store.setProviderSettings(input.provider, {
+        ...(Object.hasOwn(requestedSettings, "compaction") ? { compaction: requestedSettings.compaction === null ? null : normalizeCompactionSettings(requestedSettings.compaction) } : {}),
         ...(typeof requestedSettings.smartBalance === "boolean" ? { smartBalance: requestedSettings.smartBalance } : {}),
         ...(typeof requestedSettings.autoStartWindows === "boolean"
           ? { autoStartWindows: requestedSettings.autoStartWindows }
           : {}),
-      });
+      }, typeof input.instanceId === "string" ? input.instanceId : undefined);
       if (typeof requestedSettings.smartBalance === "boolean") {
         capture("balance_changed", requestedSettings.smartBalance ? "enabled" : "disabled", input.provider);
       }
