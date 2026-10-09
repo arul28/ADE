@@ -177,9 +177,8 @@ export function DraftMachinePicker({
       <DropdownMenu.Portal>
         <DropdownMenu.Content
           aria-label="Choose a machine"
-          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[220px] p-1 font-sans text-[11px] text-fg/82")}
-          onOpenAutoFocus={(event) => {
-            event.preventDefault();
+          onFocusCapture={(event) => {
+            if (event.target !== event.currentTarget) return;
             const selected = event.currentTarget.querySelector<HTMLElement>(
               '[role="menuitemradio"][aria-checked="true"]:not([aria-disabled="true"])',
             );
@@ -188,6 +187,7 @@ export function DraftMachinePicker({
             );
             (selected ?? firstAvailable)?.focus();
           }}
+          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[220px] p-1 font-sans text-[11px] text-fg/82")}
           style={{ zIndex: Z_LAYERS.popover }}
           side="top"
           align="start"

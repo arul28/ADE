@@ -5,7 +5,7 @@ import { ArrowsOutSimple, CaretDown, ChatCircleDots, Check, NotePencil, SpinnerG
 import type { AgentChatFileRef, AgentChatSession, AgentChatSessionSummary } from "../../../shared/types";
 import type { BuiltInBrowserStatus, BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
 import {
-  formatBrowserPaneContextForPrompt,
+  formatBrowserTabMentionForPrompt,
   formatBrowserTabMentionToken,
   type BrowserTabMentionTarget,
 } from "../../../shared/browserTabMention";
@@ -217,7 +217,7 @@ export function BrowserPage() {
 
   const ambientTurnContext = useCallback((): string | null => {
     const tab = frontTabRef.current;
-    return tab ? formatBrowserPaneContextForPrompt({ tabId: tab.id, title: tab.title?.trim() || null, url: tab.url }) : null;
+    return tab ? formatBrowserTabMentionForPrompt({ tabId: tab.id, title: tab.title?.trim() || null, url: tab.url }) : null;
   }, []);
 
   /** Lease the page in front to the dock's chat (now, when the chat exists) so its agent can drive it. */

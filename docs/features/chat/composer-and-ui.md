@@ -3160,3 +3160,5 @@ is not loaded yet.
 - [Transcript and Turns](transcript-and-turns.md) -- the data the UI
   renders.
 - [Tool System](tool-system.md) -- tool tiers surfaced in the composer.
+
+The Browser dock adds the current tab context to ordinary sends and queued launch messages while displaying only the user’s text. Provider slash commands keep their original input. The dock supplies its page card in place of the default empty-chat logo.
