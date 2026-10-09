@@ -317,8 +317,14 @@ import {
 import {
   getMachineProviderInstanceStore,
   providerInstanceEnvPatch,
+  resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
-import { isProviderInstanceProvider, type ProviderInstance, type ProviderInstanceProvider } from "../../../shared/types/providerInstances";
+import {
+  isProviderInstanceProvider,
+  PROVIDER_INSTANCE_ENV_KEY,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
+} from "../../../shared/types/providerInstances";
 import {
   buildOpenCodeDoneUsage,
   resolveOpenCodeServedModel,
@@ -1818,7 +1824,23 @@ type PersistedRecentConversationEntry = {
   text: string;
   displayText?: string;
   turnId?: string;
+  /** The latest assistant message joined into this entry. */
+  messageId?: string;
 };
+
+/**
+ * Join one streamed assistant chunk onto the text already collected for its
+ * turn. Chunks join raw, because a chunk's leading or trailing space is the
+ * gap between two words; a new message in the same turn starts a paragraph.
+ * Readers trim the result.
+ */
+function joinAssistantChunk(
+  current: { text: string; messageId?: string | null },
+  chunk: { text: string; messageId?: string | null },
+): string {
+  const newMessage = Boolean(chunk.messageId && current.messageId && chunk.messageId !== current.messageId);
+  return newMessage ? `${current.text.trimEnd()}\n\n${chunk.text}` : `${current.text}${chunk.text}`;
+}
 
 type PersistedUnprocessedMessageResolutionReceipt = {
   steerId: string;
@@ -4561,7 +4583,7 @@ type ManagedChatSession = {
     text: string;
     displayText?: string;
     turnId?: string;
-    /** In memory only: the latest assistant message joined into this entry. */
+    /** The latest assistant message joined into this entry. */
     messageId?: string;
   }>;
   /**
@@ -10601,8 +10623,8 @@ export function createAgentChatService(args: {
    */
   const sessionConfigHome = (managed: ManagedChatSession): string | null => {
     const provider = managed.session.provider;
-    const key = provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : null;
-    if (!key) return null;
+    if (!isProviderInstanceProvider(provider)) return null;
+    const key = PROVIDER_INSTANCE_ENV_KEY[provider];
     const instance = resolveSessionInstance(managed);
     const presetHome = resolveSessionLaunchPlan(managed)?.env?.[key]?.trim();
     return presetHome || instance?.configHome || null;
@@ -10618,7 +10640,7 @@ export function createAgentChatService(args: {
   const sessionProviderAccount = (managed: ManagedChatSession): ProviderTaskAccount | undefined => {
     const provider = managed.session.provider;
     if (!isProviderInstanceProvider(provider)) return undefined;
-    const key = provider === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME";
+    const key = PROVIDER_INSTANCE_ENV_KEY[provider];
     const presetHome = resolveSessionLaunchPlan(managed)?.env?.[key]?.trim();
     if (presetHome) return { provider, env: { [key]: presetHome } };
     const instance = resolveSessionInstance(managed);
@@ -10635,7 +10657,9 @@ export function createAgentChatService(args: {
     if (provider !== "claude" && provider !== "codex") return undefined;
     try {
       const pick = getAccountUsage()?.resolveBalancedInstance(provider);
-      const instance = pick?.instanceId ? getMachineProviderInstanceStore().get(pick.instanceId) : null;
+      // The same resolution chat creation uses: a pick that no longer names
+      // an account falls back to the default.
+      const instance = pick?.instanceId ? resolveProviderInstanceForLaunch(provider, pick.instanceId) : null;
       return instance ? { provider, env: providerInstanceEnvPatch(instance) } : undefined;
     } catch {
       return undefined;
@@ -11293,16 +11317,17 @@ export function createAgentChatService(args: {
     imagePaths?: string[];
     jsonSchema?: unknown;
     taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
-    /** The chat this call serves; it then runs as that chat's provider account. */
-    managed?: ManagedChatSession | null;
-    /** For a call with no chat yet: the account to run as. */
+    /**
+     * The provider account to run as: the served chat's (`sessionProviderAccount`)
+     * or, before the chat exists, `newChatProviderAccount`. Omitted means the
+     * provider's default account.
+     */
     providerAccount?: ProviderTaskAccount;
   }) => {
     const reasoningEffort = args.reasoningEffort
       ?? backgroundUtilityReasoningEffort(args.modelId);
-    const providerAccount = args.managed ? sessionProviderAccount(args.managed) : args.providerAccount;
     return await aiIntegrationService.summarizeTerminal({
-      ...(providerAccount ? { providerAccount } : {}),
+      ...(args.providerAccount ? { providerAccount: args.providerAccount } : {}),
       cwd: args.cwd,
       model: args.modelId,
       prompt: args.prompt,
@@ -11365,11 +11390,14 @@ export function createAgentChatService(args: {
       hasPendingInput: hasLivePendingInput(managedSessions.get(sessionId)),
       attentionRequestedAt: sessionService.get(sessionId)?.attentionRequestedAt,
     }),
-    runPrompt: ({ sessionId, ...prompt }) => runSessionIntelligencePrompt({
-      ...prompt,
-      taskType: "session_summary",
-      managed: managedSessions.get(sessionId) ?? null,
-    }),
+    runPrompt: ({ sessionId, ...prompt }) => {
+      const managed = managedSessions.get(sessionId);
+      return runSessionIntelligencePrompt({
+        ...prompt,
+        taskType: "session_summary",
+        providerAccount: managed ? sessionProviderAccount(managed) : undefined,
+      });
+    },
     requestAttention: requestSessionAttention,
   });
   // Declared here rather than next to its only caller further down the file:
@@ -14459,32 +14487,24 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
   ): SessionMetadataConversationEntry[] => {
     // Assistant replies are stored as streamed chunks ("raises a", " Windows
-    // admin"), so one reply is many `text` events. Join a turn's chunks raw —
-    // trimming each one glued words together — and separate its messages
-    // with a blank line, the same shape the live ring keeps.
-    const fromTranscript: SessionMetadataConversationEntry[] = [];
-    let assistantKey: string | null = null;
-    let assistantMessageId: string | null = null;
+    // admin"), so one reply is many `text` events: join each turn's chunks
+    // with `joinAssistantChunk`, the same rule the live ring uses.
+    // `includeBuffered` adds events still on their way to disk, so a refresh
+    // right after a turn ends sees that turn's last words.
+    const fromTranscript: Array<SessionMetadataConversationEntry & { turnId?: string; messageId?: string }> = [];
     try {
-      for (const entry of readTranscriptEnvelopes(managed)) {
-        const event = entry.event;
+      for (const { event } of readTranscriptEnvelopes(managed, { includeBuffered: true })) {
         if (event.type === "user_message") {
-          assistantKey = null;
           const text = event.text.trim();
           if (text) fromTranscript.push({ role: "user", text });
         } else if (event.type === "text") {
-          const key = event.turnId ?? event.messageId ?? null;
           const last = fromTranscript[fromTranscript.length - 1];
-          if (last?.role === "assistant" && key !== null && key === assistantKey) {
-            const newMessage = Boolean(event.messageId && assistantMessageId && event.messageId !== assistantMessageId);
-            last.text += newMessage ? `\n\n${event.text}` : event.text;
+          if (last?.role === "assistant" && last.turnId === event.turnId) {
+            last.text = joinAssistantChunk(last, event);
+            if (event.messageId) last.messageId = event.messageId;
           } else if (event.text.trim()) {
-            fromTranscript.push({ role: "assistant", text: event.text });
-            assistantKey = key;
-          } else {
-            continue;
+            fromTranscript.push({ role: "assistant", text: event.text, turnId: event.turnId, messageId: event.messageId });
           }
-          assistantMessageId = event.messageId ?? assistantMessageId;
         }
       }
     } catch {
@@ -14665,7 +14685,7 @@ export function createAgentChatService(args: {
             modelId: descriptor.id,
             prompt,
             taskType: "continuity_summary",
-            managed,
+            providerAccount: sessionProviderAccount(managed),
           });
           const text = response.text.trim();
           return text.length ? text : null;
@@ -14700,11 +14720,7 @@ export function createAgentChatService(args: {
     const turnId = "turnId" in event ? event.turnId : undefined;
     const lastEntry = managed.recentConversationEntries[managed.recentConversationEntries.length - 1];
     if (event.type === "text" && lastEntry?.role === "assistant" && lastEntry.turnId === turnId) {
-      // Streamed chunks join raw: a chunk's leading or trailing space is the
-      // gap between two words. A new message in the same turn starts a
-      // paragraph. Readers trim the joined text.
-      const newMessage = Boolean(event.messageId && lastEntry.messageId && event.messageId !== lastEntry.messageId);
-      lastEntry.text = newMessage ? `${lastEntry.text.trimEnd()}\n\n${event.text}` : `${lastEntry.text}${event.text}`;
+      lastEntry.text = joinAssistantChunk(lastEntry, event);
       if (event.messageId) lastEntry.messageId = event.messageId;
       return;
     }
@@ -15294,7 +15310,7 @@ export function createAgentChatService(args: {
           modelId: descriptor.id,
           prompt,
           taskType: "handoff_summary",
-          managed: args.managed,
+          providerAccount: sessionProviderAccount(args.managed),
         });
         const brief = response.text.trim();
         return brief.length ? brief : null;
@@ -15659,7 +15675,7 @@ export function createAgentChatService(args: {
                 titleContext.join("\n"),
               ].join("\n\n"),
               taskType: "session_title",
-              managed,
+              providerAccount: sessionProviderAccount(managed),
             });
             // Guard BEFORE the write: setManagedSessionTitle has side effects
             // (session meta, runtime push), so a manual rename that landed while
@@ -15779,7 +15795,7 @@ export function createAgentChatService(args: {
         systemPrompt,
         jsonSchema,
         taskType: "session_title",
-        managed,
+        providerAccount: sessionProviderAccount(managed),
       }),
       normalizeTitle: normalizeSuggestedLaneTitle,
       normalizeStatusLine: normalizeSessionStatusNote,
@@ -17608,6 +17624,7 @@ export function createAgentChatService(args: {
               text: entry.text,
               ...(entry.displayText ? { displayText: entry.displayText } : {}),
               ...(entry.turnId ? { turnId: entry.turnId } : {}),
+              ...(entry.messageId ? { messageId: entry.messageId } : {}),
             })),
           }
         : {}),
@@ -17920,6 +17937,7 @@ export function createAgentChatService(args: {
                 ? { displayText: entry.displayText.trim() }
                 : {}),
               ...(entry.turnId ? { turnId: entry.turnId } : {}),
+              ...(typeof entry.messageId === "string" && entry.messageId ? { messageId: entry.messageId } : {}),
             }))
             .slice(-12)
         : undefined;
@@ -24791,6 +24809,7 @@ export function createAgentChatService(args: {
         text: entry.text,
         ...(entry.displayText ? { displayText: entry.displayText } : {}),
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
+        ...(entry.messageId ? { messageId: entry.messageId } : {}),
       })) ?? [],
       localPendingInputs: new Map(),
       asyncQuestions: new Map(),

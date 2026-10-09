@@ -40,6 +40,7 @@ import {
   createDynamicAcpModelDescriptor,
   LOCAL_PROVIDER_LABELS,
   replaceDynamicOpenCodeModelDescriptors,
+  resolveCliProviderForModel,
   resolveModelAlias,
   resolveProviderGroupForModel,
   type LocalProviderFamily,
@@ -1773,11 +1774,10 @@ export function createAiIntegrationService(args: {
     descriptor: ModelDescriptor,
     account: ProviderTaskAccount | undefined,
   ): Record<string, string> | undefined => {
-    const provider: ProviderInstanceProvider | null = !descriptor.isCliWrapped
-      ? null
-      : descriptor.family === "anthropic"
-        ? "claude"
-        : descriptor.family === "openai" ? "codex" : null;
+    const cliProvider = resolveCliProviderForModel(descriptor);
+    const provider: ProviderInstanceProvider | null = cliProvider === "claude" || cliProvider === "codex"
+      ? cliProvider
+      : null;
     if (!provider) return undefined;
     if (account?.provider === provider) return account.env;
     try {
