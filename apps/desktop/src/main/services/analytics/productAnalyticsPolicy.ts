@@ -200,6 +200,13 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // cancelled, or unknown (the answer was lost). Never the machine, the reason,
   // the branch, or any capsule content.
   "cross_machine_move",
+  // How a context compaction ended (completed or failed), and whether it was
+  // asked for (`mode: manual`) or not (`automatic`, which includes ADE's own
+  // fallback). `compact_first` is the same fact for a compaction the user turned
+  // on with the "Compact first" pill before a send. Never the token counts, the
+  // summary, the failure text, the account, or the model.
+  "compaction",
+  "compact_first",
   // Durable provider/account decisions. These are closed facts emitted by
   // brain/main owners; ids, labels, paths, keys, and model names never enter
   // the event.

@@ -846,7 +846,7 @@ import {
   appendDiffTruncationNotice,
 } from "../diffs/diffService";
 import type { createFileService } from "../files/fileService";
-import { mergeAiConfig, type createProjectConfigService } from "../config/projectConfigService";
+import type { createProjectConfigService } from "../config/projectConfigService";
 import {
   addOpenCodeOAuthStatusListener,
   cancelOAuth as cancelOpenCodeOAuth,
@@ -5561,13 +5561,7 @@ export function registerIpc({
   ipcMain.handle(IPC.aiUpdateConfig, async (_event, partial: Partial<AiConfig>): Promise<void> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectConfigService"] as const);
-    const snapshot = ctx.projectConfigService.get();
-    const currentAi = snapshot.shared?.ai ?? {};
-    const merged = mergeAiConfig(currentAi, partial) ?? {};
-    ctx.projectConfigService.save({
-      shared: { ...snapshot.shared, ai: merged },
-      local: snapshot.local ?? {},
-    });
+    ctx.projectConfigService.updateAiConfig(partial);
     void ctx.agentChatService?.refreshScheduledWork();
   });
 
@@ -6949,7 +6943,9 @@ export function registerIpc({
       ? record.settings as Partial<ProviderInstanceSettings>
       : {};
     const provider = providerInstanceProvider(record.provider);
-    const result = getMachineProviderInstanceStore().setProviderSettings(provider, settings);
+    // An account card's compaction setting targets that account, as the runtime action does.
+    const instanceId = typeof record.instanceId === "string" ? record.instanceId : undefined;
+    const result = getMachineProviderInstanceStore().setProviderSettings(provider, settings, instanceId);
     if (typeof settings.smartBalance === "boolean") {
       captureProviderAccount("balance_changed", settings.smartBalance ? "enabled" : "disabled", provider);
     }

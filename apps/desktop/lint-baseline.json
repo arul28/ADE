@@ -39,10 +39,6 @@
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/chat/DraftMachinePicker.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
-    },
     "apps/desktop/src/renderer/components/files/v2/ContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1

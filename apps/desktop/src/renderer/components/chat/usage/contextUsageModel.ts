@@ -3,6 +3,7 @@ import type {
   AgentChatEventEnvelope,
   CodexThreadTokenUsage,
 } from "../../../../shared/types";
+import { abbreviateTokenCount } from "../../../../shared/contextCompaction";
 
 /**
  * Provider-agnostic context-usage view-model consumed by `ContextUsageDial`.
@@ -17,6 +18,8 @@ import type {
  */
 export type ContextUsageViewModel = {
   provider: string;
+  compactAtTokens?: number | null;
+  compactAtSource?: "setting" | "provider";
   state: AgentChatContextUsageState;
   /** Effective context window for the active model, or null when unknown. */
   contextWindow: number | null;
@@ -45,9 +48,10 @@ export type GenericUsageInput = {
   totalTokens?: number | null;
 };
 
+type CompactionPoint = { compactAtTokens?: number | null; compactAtSource?: "setting" | "provider" };
 export type ContextUsageInput =
-  | { kind: "codex"; provider: string; usage: CodexThreadTokenUsage; state?: AgentChatContextUsageState }
-  | { kind: "generic"; provider: string; usage: GenericUsageInput; contextWindow?: number | null; state?: AgentChatContextUsageState };
+  | CompactionPoint & { kind: "codex"; provider: string; usage: CodexThreadTokenUsage; state?: AgentChatContextUsageState }
+  | CompactionPoint & { kind: "generic"; provider: string; usage: GenericUsageInput; contextWindow?: number | null; state?: AgentChatContextUsageState };
 
 function positive(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
@@ -65,9 +69,7 @@ function clamp01(value: number): number {
 export function formatContextTokens(value: number | null | undefined): string | null {
   const n = nonNegative(value);
   if (n == null) return null;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(Math.round(n));
+  return abbreviateTokenCount(n);
 }
 
 /**
@@ -102,7 +104,7 @@ export function toUsageViewModel(
   if (input.kind === "codex") {
     const last = input.usage.last ?? {};
     const total = input.usage.total ?? {};
-    const exactInputTokens = nonNegative(last.inputTokens) ?? nonNegative(total.inputTokens);
+    const exactInputTokens = nonNegative(last.inputTokens);
     inputTokens = positive(last.inputTokens) ?? positive(total.inputTokens);
     outputTokens = positive(last.outputTokens) ?? positive(total.outputTokens);
     cacheReadTokens = positive(last.cacheReadTokens) ?? positive(total.cacheReadTokens);
@@ -111,10 +113,7 @@ export function toUsageViewModel(
     totalTokens = positive(total.totalTokens);
     runtimeWindow = positive(input.usage.modelContextWindow);
     // Codex inputTokens already includes the cached portion → it is the occupancy.
-    usedTokens =
-      exactInputTokens
-      ?? (positive(last.outputTokens) != null ? (last.inputTokens ?? 0) + (last.outputTokens ?? 0) || null : null)
-      ?? totalTokens;
+    usedTokens = exactInputTokens;
   } else {
     const u = input.usage;
     inputTokens = positive(u.inputTokens);
@@ -145,6 +144,8 @@ export function toUsageViewModel(
 
   return {
     provider: input.provider,
+    compactAtTokens: input.compactAtTokens,
+    compactAtSource: input.compactAtSource,
     state: input.state ?? "measured",
     contextWindow,
     usedTokens,
@@ -210,10 +211,9 @@ export function latestContextUsageInput(
       if (positive(event.usage.modelContextWindow) != null) {
         lastRuntimeWindow = positive(event.usage.modelContextWindow);
       }
-      const hasContextOccupancy = typeof event.usage.last?.inputTokens === "number"
-        || typeof event.usage.total?.inputTokens === "number";
+      const hasContextOccupancy = typeof event.usage.last?.inputTokens === "number";
       if (!hasContextOccupancy) continue;
-      current = { kind: "codex", provider: provider || "codex", usage: event.usage, state: "measured" };
+      current = { kind: "codex", provider: provider || "codex", usage: event.usage, compactAtTokens: event.usage.compactAtTokens, compactAtSource: event.usage.compactAtSource, state: "measured" };
       continue;
     }
     if (event.type === "context_usage") {
@@ -242,6 +242,8 @@ export function latestContextUsageInput(
           totalTokens: event.usage.totalTokens,
         },
         contextWindow: event.usage.maxTokens,
+        compactAtTokens: event.usage.compactAtTokens,
+        compactAtSource: event.usage.compactAtSource,
         state: event.state ?? "measured",
       };
       continue;
@@ -250,6 +252,12 @@ export function latestContextUsageInput(
       || (event.type === "codex_context_compaction" && event.state === "started");
     if (startedCompaction) {
       if (current) current = { ...current, state: "compacting" };
+      continue;
+    }
+    // A failed compaction changed nothing: keep the last reading, and keep
+    // accepting the turn's own usage (no post-compaction protection).
+    if ((event.type === "context_compact" || event.type === "codex_context_compaction") && event.state === "failed") {
+      if (current) current = { ...current, state: "measured" };
       continue;
     }
     const completedCompaction = (event.type === "context_compact" && event.state !== "started")
@@ -263,6 +271,8 @@ export function latestContextUsageInput(
             provider,
             usage: { usedTokens: event.postTokens, inputTokens: event.postTokens },
             contextWindow: lastRuntimeWindow,
+            compactAtTokens: current?.compactAtTokens,
+            compactAtSource: current?.compactAtSource,
             state: "measured",
           }
         : current

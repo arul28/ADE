@@ -402,6 +402,11 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeServ
       "ade-helper": agent("helper", { steps: 1 }),
     },
     // ADE has no share UI, and pins the binary itself.
+    ...(args.projectConfig.ai?.compaction?.opencode ? { compaction: {
+      ...(args.projectConfig.ai.compaction.opencode.enabled !== undefined ? { auto: args.projectConfig.ai.compaction.opencode.enabled } : {}),
+      ...(args.projectConfig.ai.compaction.opencode.reserveTokens ? { buffer: args.projectConfig.ai.compaction.opencode.reserveTokens } : {}),
+      ...(args.projectConfig.ai.compaction.opencode.keepRecentTokens ? { keep: { tokens: args.projectConfig.ai.compaction.opencode.keepRecentTokens } } : {}),
+    } } : {}),
     share: "disabled",
     update: "disable",
   };
@@ -418,6 +423,7 @@ export const SHARED_OPENCODE_PROFILE: OpenCodeServerProfile = { key: "shared", i
 export const PERSONAL_OPENCODE_PROFILE: OpenCodeServerProfile = { key: "shared:personal", isolated: false, shared: true };
 
 type ProjectOpenCodeSettings = {
+  compaction: unknown;
   apiKeys: NonNullable<NonNullable<EffectiveProjectConfig["ai"]>["apiKeys"]>;
   localProviders: NonNullable<NonNullable<EffectiveProjectConfig["ai"]>["localProviders"]>;
   customProviders: NonNullable<NonNullable<EffectiveProjectConfig["ai"]>["customProviders"]>;
@@ -428,6 +434,7 @@ type ProjectOpenCodeSettings = {
 function projectOpenCodeSettings(projectConfig: ProjectConfigFile | EffectiveProjectConfig): ProjectOpenCodeSettings {
   const ai = projectConfig.ai ?? {};
   return {
+    compaction: projectConfig.ai?.compaction?.opencode ?? null,
     apiKeys: ai.apiKeys ?? {},
     localProviders: ai.localProviders ?? {},
     customProviders: ai.customProviders ?? [],
@@ -436,7 +443,7 @@ function projectOpenCodeSettings(projectConfig: ProjectConfigFile | EffectivePro
 }
 
 function hasProjectOpenCodeSettings(settings: ProjectOpenCodeSettings): boolean {
-  return Object.keys(settings.apiKeys).length > 0
+  return Boolean(settings.compaction) || Object.keys(settings.apiKeys).length > 0
     || Object.keys(settings.localProviders).length > 0
     || settings.customProviders.length > 0
     || settings.customModelSlugs.length > 0;

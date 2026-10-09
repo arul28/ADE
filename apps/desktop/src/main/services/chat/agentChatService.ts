@@ -1,3 +1,5 @@
+import { compactFirstOffer } from "../../../shared/compactFirst";
+import { claudeCompactionSettings, claudeCompactWindow, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -2597,6 +2599,7 @@ type ClaudeContextGuardrailState = {
   outputTokens: number;
   totalTokens: number;
   maxTokens: number;
+  compactAtTokens: number;
   occupancyPct: number | null;
   highWaterEpisode: boolean;
   naturalCompactSeen: boolean;
@@ -2640,8 +2643,12 @@ type ClaudeTaskToolInput = {
   model?: string;
 };
 
+/** How far before a turn's start an assistant message may originate and still belong to it. */
+const STALE_ASSISTANT_ORIGIN_TOLERANCE_MS = 2_000;
+
 type ClaudeRuntime = {
   kind: "claude";
+  compactionSummary?: string;
   sdkSessionId: string | null;
   /**
    * `system/init.apiKeySource` from the current query: which credential the CLI
@@ -10200,6 +10207,18 @@ export function createAgentChatService(args: {
     provider: AgentChatProvider;
   }) => void;
   /**
+   * Content-free hook fired when a context compaction ends (completed or
+   * failed), and once per "Compact first" send. Never token counts, the
+   * summary, the failure text, or the account.
+   */
+  onCompactionOutcome?: (event: {
+    sessionId: string;
+    action: "compaction" | "compact_first";
+    outcome: "completed" | "failed";
+    mode: "manual" | "automatic";
+    provider: AgentChatProvider;
+  }) => void;
+  /**
    * Content-free hook fired once per terminal state of a move to another
    * machine (continued, failed, cancelled, unknown). Never the machine, the
    * reason, the branch, or any capsule content.
@@ -10317,6 +10336,7 @@ export function createAgentChatService(args: {
     onClaudePluginsIgnored,
     onChatMentionsExpanded,
     onChatHandoffReplay,
+    onCompactionOutcome,
     onCrossMachineMoveOutcome,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
@@ -15966,6 +15986,7 @@ export function createAgentChatService(args: {
         }), "utf8").digest("hex").slice(0, 12)
       : "no-activity";
     const toolPolicyKey = [
+      compactionSignatureFor(managed),
       piToolPolicy.tools.join(","),
       piToolPolicy.approvalTools.join(","),
       piExtensionsEnabled ? "ext" : "no-ext",
@@ -16063,6 +16084,7 @@ export function createAgentChatService(args: {
     try {
       acquired = await acquirePiSdkConnection({
         poolKey,
+        compaction: compactionSettingsFor(managed),
         packageRoot: installation.packageRoot,
         packageEntry: installation.packageEntry,
         cwd: managed.laneWorktreePath,
@@ -19397,6 +19419,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     alternate: AgentChatUsageLimitAlternateAccount,
   ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    const compactOnly = compactOnlyTurns.has(lastTurnIdBySession.get(managed.session.id) ?? "");
     const movedChat = await moveChatToAccount(managed, alternate.instanceId, { requireThread: true });
     if (!movedChat.ok) return movedChat;
     const { from, to } = movedChat;
@@ -19423,7 +19446,7 @@ export function createAgentChatService(args: {
     if (provider === "claude") dismissClaudeSessionQuota(managed);
     await sendMessage({
       sessionId: managed.session.id,
-      text: `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`,
+      text: compactOnly ? "/compact" : `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`,
     });
     return { ok: true };
   };
@@ -19453,15 +19476,16 @@ export function createAgentChatService(args: {
         instanceId: alternate.instanceId,
         error: moved.message,
       });
+      if (turnId && compactOnlyTurns.has(turnId)) return;
       const handedOff = await handOffUsageLimitChat(managed, alternate);
       if (handedOff.ok || handedOff.reason === "handoff_in_flight") return;
-      publishUsageLimitResumeArm(managed, turnId, alternate);
+      if (!turnId || !compactOnlyTurns.has(turnId)) publishUsageLimitResumeArm(managed, turnId, alternate);
     })().catch((error) => {
       logger.warn("agent_chat.usage_limit_move_failed", {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
-      publishUsageLimitResumeArm(managed, turnId, alternate);
+      if (!turnId || !compactOnlyTurns.has(turnId)) publishUsageLimitResumeArm(managed, turnId, alternate);
     }).finally(() => {
       usageLimitMoveInFlight.delete(sessionId);
     });
@@ -19711,6 +19735,7 @@ export function createAgentChatService(args: {
       if (!turnActive) runPendingUsageLimitMove(managed);
       return;
     }
+    if (turnId && compactOnlyTurns.has(turnId)) return;
     publishUsageLimitResumeArm(managed, turnId, alternateAccount);
   };
 
@@ -20538,7 +20563,10 @@ export function createAgentChatService(args: {
         managed.session.id,
         detected,
         managed.session.currentTurnStartedAt ?? null,
-        { onlyIfEmpty: !changed },
+        { onlyIfEmpty: !changed,
+          ...(event.type === "context_compact" && event.state === "started" ? { contextTokens: event.preTokens ?? (managed.runtime?.kind === "claude" ? managed.runtime.contextGuardrail.totalTokens : undefined) } : {}),
+          ...(event.type === "context_compact" && event.state === "failed" ? { failDetail: event.failDetail } : {}),
+        },
       );
       if (!wrote) throw new Error("Session activity row was not found.");
       managed.activityRowNeedsWrite = false;
@@ -20590,11 +20618,65 @@ export function createAgentChatService(args: {
   // A server an agent's own shell starts lights the Browser on every machine.
   const agentShellOutput = createAgentShellOutputObserver(projectRoot);
 
+  const openNativeCompactions = new Map<string, Map<string, Extract<AgentChatEvent, { type: "context_compact" }>>>();
+  const compactOnlyTurns = new Set<string>();
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
     options: CommitChatEventOptions = {},
   ): void => {
+    if (event.type === "codex_token_usage") {
+      const point = compactionSettingsFor(managed).atTokens;
+      if (point) event = { ...event, usage: { ...event.usage, compactAtTokens: Math.min(point, event.usage.modelContextWindow || point), compactAtSource: "setting" } };
+    }
+    if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
+      rememberBoundedId(compactOnlyTurns, event.turnId, 512);
+    }
+    if (event.type === "context_compact") {
+      if (event.state === "failed") {
+        const provider = managed.session.provider;
+        const account = isProviderInstanceProvider(provider) ? getMachineProviderInstanceStore().get(managed.session.instanceId ?? defaultProviderInstanceId(provider)) : null;
+        event = { ...event, ...(account ? { accountLabel: account.label } : {}) };
+      }
+      if ((event.state === "started" || event.state === "failed") && managed.runtime?.kind === "claude") managed.runtime.compactionSummary = undefined;
+      if (event.state === "completed" && managed.runtime?.kind === "claude" && managed.runtime.compactionSummary) {
+        event = { ...event, summary: managed.runtime.compactionSummary };
+        managed.runtime.compactionSummary = undefined;
+      }
+      if (event.state === "started" && event.turnId && compactOnlyTurns.has(event.turnId)) event = { ...event, trigger: "manual" };
+      const open = openNativeCompactions.get(managed.session.id) ?? new Map();
+      const key = event.compactionId ?? event.turnId ?? "native";
+      // A failure event may not know who asked (OpenCode reports none); the
+      // start event does, so a failed manual compaction still reads "you asked".
+      const started = open.get(key);
+      if (event.state === "failed" && started) event = { ...event, trigger: started.trigger };
+      if (event.state === "started") open.set(key, event);
+      else open.delete(key);
+      if (event.state !== "started") {
+        onCompactionOutcome?.({
+          sessionId: managed.session.id,
+          action: "compaction",
+          outcome: event.state === "failed" ? "failed" : "completed",
+          mode: event.trigger === "manual" ? "manual" : "automatic",
+          provider: managed.session.provider,
+        });
+      }
+      if (open.size) openNativeCompactions.set(managed.session.id, open);
+      else openNativeCompactions.delete(managed.session.id);
+    }
+    if (event.type === "done") {
+      for (const [key, compact] of openNativeCompactions.get(managed.session.id) ?? []) {
+        if (compact.turnId && event.turnId && compact.turnId !== event.turnId) continue;
+        // ADE's own fallback /compact is issued at this very boundary and has
+        // its own failure paths (refused, abandoned on teardown).
+        if (compact.type === "context_compact" && compact.trigger === "ade_fallback") continue;
+        openNativeCompactions.get(managed.session.id)?.delete(key);
+        const detail = (event.status !== "completed" ? managed.liveTurnErrorText : null)
+          ?? "The turn ended before compaction completed.";
+        emitChatEvent(managed, { ...compact, state: "failed", failReason: event.status === "interrupted" ? "interrupted" : /quota|weekly limit|usage limit/i.test(detail) ? "quota" : "provider_error", failDetail: detail });
+      }
+    }
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") settleClaudeGoalOnTurnEnd(managed, event.status);
@@ -21083,7 +21165,9 @@ export function createAgentChatService(args: {
       ].filter((entry) => entry.tokens > 0),
       totalTokens: Math.max(0, guardrail.totalTokens),
       maxTokens: Math.max(0, maxTokens),
-      rawMaxTokens: Math.max(0, maxTokens),
+      rawMaxTokens: Math.max(0, guardrail.compactAtTokens || maxTokens),
+      compactAtTokens: Math.max(0, guardrail.compactAtTokens || claudeSettingCompactAt(managed) || maxTokens),
+      compactAtSource: claudeSettingCompactAt(managed) ? "setting" : "provider",
       percentage: maxTokens > 0
         ? Math.max(0, Math.min(100, (guardrail.totalTokens / maxTokens) * 100))
         : 0,
@@ -21142,9 +21226,13 @@ export function createAgentChatService(args: {
       }
       const guardrail = runtime.contextGuardrail;
       guardrail.totalTokens = usage.totalTokens;
-      guardrail.maxTokens = usage.maxTokens;
-      guardrail.occupancyPct = usage.percentage;
-      updateClaudeContextEpisode(guardrail, usage.percentage);
+      guardrail.maxTokens ||= resolveSessionModelDescriptor(managed.session)?.contextWindow ?? usage.maxTokens;
+      guardrail.compactAtTokens = Math.min(usage.rawMaxTokens ?? usage.maxTokens, guardrail.maxTokens);
+      usage.maxTokens = guardrail.maxTokens;
+      usage.compactAtTokens = guardrail.compactAtTokens;
+      usage.compactAtSource = claudeSettingCompactAt(managed) ? "setting" : "provider";
+      usage.percentage = usage.maxTokens > 0 ? usage.totalTokens / usage.maxTokens * 100 : 0;
+      updateClaudeContextEpisode(guardrail, guardrail.compactAtTokens > 0 ? usage.totalTokens / guardrail.compactAtTokens * 100 : 0);
       emitClaudeContextUsageState(managed, runtime, "measured", origin, turnId, usage);
       logger.debug("agent_chat.claude_context_snapshot", {
         ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
@@ -21197,12 +21285,12 @@ export function createAgentChatService(args: {
     }
     const maxTokens = resolveSessionModelDescriptor(managed.session)?.contextWindow ?? 0;
     if (!Number.isFinite(maxTokens) || maxTokens <= 0) return;
-    guardrail.maxTokens = maxTokens;
+    guardrail.maxTokens ||= maxTokens;
     guardrail.totalTokens = guardrail.inputTokens
       + guardrail.cacheReadTokens
-      + guardrail.cacheCreationTokens
-      + guardrail.outputTokens;
-    const occupancyPct = Math.max(0, Math.min(100, (guardrail.totalTokens / maxTokens) * 100));
+      + guardrail.cacheCreationTokens;
+    guardrail.compactAtTokens ||= Math.min(claudeSettingCompactAt(managed) || guardrail.maxTokens, guardrail.maxTokens);
+    const occupancyPct = Math.max(0, Math.min(100, (guardrail.totalTokens / guardrail.compactAtTokens) * 100));
     updateClaudeContextEpisode(guardrail, occupancyPct);
 
     const now = Date.now();
@@ -21232,10 +21320,14 @@ export function createAgentChatService(args: {
       guardrail.totalTokens = Math.max(0, options.postTokens);
       updateClaudeContextEpisode(
         guardrail,
-        Math.max(0, Math.min(100, (guardrail.totalTokens / guardrail.maxTokens) * 100)),
+        Math.max(0, Math.min(100, (guardrail.totalTokens / (guardrail.compactAtTokens || guardrail.maxTokens)) * 100)),
       );
     }
     if (!options.completed) return;
+    if (managed.session.identityKey) {
+      void maybeRefreshIdentityContinuitySummary(managed, "compaction");
+      refreshReconstructionContext(managed);
+    }
     if (!internalTrigger) {
       logger.info("agent_chat.claude_context_compaction_observed", {
         sessionId: managed.session.id,
@@ -25649,9 +25741,14 @@ export function createAgentChatService(args: {
 
     if (/^\/compact(?:\s|$)/i.test(slashText)) {
       try {
+        if (slashText.replace(/^\/compact(?:\s+|$)/i, "").trim()) {
+          emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Codex compaction ignores custom instructions." });
+        }
         await runtime.request("thread/compact/start", {
           threadId: managed.session.threadId,
         });
+        // Only after Codex accepts it: a compaction item that arrives earlier
+        // belongs to an automatic compaction already under way.
         runtime.manualCompactionPending = true;
         completeInlineCodexSlash("Codex context compaction started.");
       } catch (error) {
@@ -26961,6 +27058,13 @@ export function createAgentChatService(args: {
       const resumedFromIncompleteThinking = assistantMsg.resumed_from_incomplete_thinking === true;
       const snapshotMatchesCurrentStream = assistantMessageId != null
         && assistantMessageId === state.currentStreamMessageId;
+      // A resumed thread can replay an earlier turn's message (seen: an old
+      // "Error during compaction" under a later, successful /compact). Its
+      // origin time sits well before this turn began. The tolerance covers an
+      // idle-started turn, whose start is stamped when its first block arrives.
+      // Text resumed after incomplete thinking keeps its original time on purpose.
+      if (!snapshotMatchesCurrentStream && !resumedFromIncompleteThinking && originTimestamp && managed.session.currentTurnStartedAt
+        && Date.parse(originTimestamp) < Date.parse(managed.session.currentTurnStartedAt) - STALE_ASSISTANT_ORIGIN_TOLERANCE_MS) return;
       const turnId = startClaudeIdleTurn(managed, runtime, state);
       // The turn stays open here; the result frame settles it and shows the notice.
       if (isClaudeSyntheticImageErrorMessage(assistantMsg)) return;
@@ -28238,12 +28342,6 @@ export function createAgentChatService(args: {
             turnId,
           });
           void refreshClaudeContextUsageSnapshot(managed, runtime, "compact", turnId);
-          // Re-inject identity context after compaction so identity-backed
-          // sessions keep their role and current operating instructions.
-          if (managed.session.identityKey) {
-            void maybeRefreshIdentityContinuitySummary(managed, "compaction");
-            refreshReconstructionContext(managed);
-          }
           continue;
         }
 
@@ -29133,6 +29231,9 @@ export function createAgentChatService(args: {
           const assistantProviderMessageId = assistantMessageId ?? assistantWireUuid ?? null;
           const assistantOriginTimestamp = compactString(assistantMsg.timestamp);
           const resumedFromIncompleteThinking = assistantMsg.resumed_from_incomplete_thinking === true;
+          // Same stale-replay guard as the streaming path; resumed text keeps its original time.
+          if (!resumedFromIncompleteThinking && assistantOriginTimestamp
+            && Date.parse(assistantOriginTimestamp) < turnStartedAt - STALE_ASSISTANT_ORIGIN_TOLERANCE_MS) continue;
           emitClaudeTranscriptRetraction(
             managed,
             assistantMsg.supersedes,
@@ -29604,6 +29705,7 @@ export function createAgentChatService(args: {
           if (metadata.costBasis) resultCostBasis = metadata.costBasis;
           resultServedModelCandidate = metadata.servedModelCandidate;
           resultContextWindow = metadata.contextWindow;
+          if (metadata.contextWindow) runtime.contextGuardrail.maxTokens = metadata.contextWindow;
           if (resultMsg.usage) {
             usage = {
               inputTokens: resultMsg.usage.input_tokens ?? null,
@@ -38108,6 +38210,46 @@ export function createAgentChatService(args: {
       .catch(() => { /* account/rateLimits/read not supported — ignore */ });
   };
 
+  // `projectConfigService.get()` resolves and validates the whole config, and this
+  // runs per usage event, so the compaction block is read at most once a second.
+  let compactionConfigCache: { at: number; value: Record<string, unknown> | undefined } | null = null;
+  const readCompactionConfig = (): Record<string, unknown> | undefined => {
+    const now = Date.now();
+    if (!compactionConfigCache || now - compactionConfigCache.at > 1_000) {
+      compactionConfigCache = { at: now, value: projectConfigService.get().effective.ai?.compaction };
+    }
+    return compactionConfigCache.value;
+  };
+  const compactionSettingsForSession = (session: { provider?: string; instanceId?: string | null }) => {
+    const provider = session.provider ?? "";
+    const defaults = normalizeCompactionSettings(readCompactionConfig()?.[provider]);
+    const account = isProviderInstanceProvider(provider)
+      ? getMachineProviderInstanceStore().get(session.instanceId ?? defaultProviderInstanceId(provider))
+      : null;
+    return { ...defaults, ...account?.compaction };
+  };
+  const compactionSettingsFor = (managed: ManagedChatSession) => compactionSettingsForSession(managed.session);
+  const compactionSignatureFor = (managed: ManagedChatSession) =>
+    compactionRuntimeSignature(managed.session.provider ?? "", compactionSettingsFor(managed));
+  /** Claude's compaction point from the ADE setting, clamped like the SDK clamps it. */
+  const claudeSettingCompactAt = (managed: ManagedChatSession) => claudeCompactWindow(compactionSettingsFor(managed).atTokens);
+  const runtimeCompactionSettings = new WeakMap<object, string>();
+  const refreshRuntimeCompactionSettings = (managed: ManagedChatSession): void => {
+    const runtime = managed.runtime;
+    if (!runtime) return;
+    const signature = compactionSignatureFor(managed);
+    const previous = runtimeCompactionSettings.get(runtime);
+    // A changed setting needs a fresh process. "restart" keeps the provider
+    // thread; a runtime still running a turn or background work keeps its old
+    // settings until it is next idle.
+    const idle = runtime.kind === "claude"
+      ? !runtime.busy && runtime.liveBackgroundTaskIds.size === 0
+      : runtime.kind === "codex" ? !runtime.activeTurnId : false;
+    if (previous !== undefined && previous !== signature && idle) {
+      teardownRuntime(managed, "restart");
+    } else if (previous === undefined) runtimeCompactionSettings.set(runtime, signature);
+  };
+
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     logger.info("agent_chat.codex_runtime_start", {
       sessionId: managed.session.id,
@@ -38133,7 +38275,9 @@ export function createAgentChatService(args: {
     // Reasoning effort travels with the thread (codexThreadConfigArgs), never on
     // the process: `-c` outranks the user's config.toml and would apply to every
     // thread on this app-server, not just this chat.
-    const appServerArgs = ["app-server"];
+    const compact = compactionSettingsFor(managed);
+    const window = resolveSessionModelDescriptor(managed.session)?.contextWindow;
+    const appServerArgs = ["app-server", ...(compact.atTokens ? ["-c", `model_auto_compact_token_limit=${Math.min(compact.atTokens, window || compact.atTokens)}`] : [])];
     const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
@@ -38481,9 +38625,11 @@ export function createAgentChatService(args: {
   };
 
   const ensureCodexSessionRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
+    refreshRuntimeCompactionSettings(managed);
     if (managed.runtime?.kind === "codex") return managed.runtime;
     runtimeBudget.enforce(managed.session.id);
     const runtime = await startCodexRuntime(managed);
+    runtimeCompactionSettings.set(runtime, compactionSignatureFor(managed));
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
     return runtime;
@@ -38676,6 +38822,10 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
   ): NonNullable<ClaudeSDKOptions["hooks"]> => ({
+    PostCompact: [{ hooks: [async (input: HookInput) => {
+      if (input.hook_event_name === "PostCompact") runtime.compactionSummary = input.compact_summary;
+      return { continue: true };
+    }] }],
     SubagentStart: [
       {
         hooks: [
@@ -39136,6 +39286,7 @@ export function createAgentChatService(args: {
       // is safe to always send because the CLI merges it per plugin key rather
       // than replacing the map.
       settings: {
+        ...claudeCompactionSettings(compactionSettingsFor(managed)),
         ...(outputStyle ? { outputStyle } : {}),
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
         fastMode: sessionEffectiveFastMode(managed.session),
@@ -40669,6 +40820,7 @@ export function createAgentChatService(args: {
   };
 
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
+    refreshRuntimeCompactionSettings(managed);
     if (managed.runtime?.kind === "claude") return managed.runtime;
     runtimeBudget.enforce(managed.session.id);
     const persisted = readPersistedState(managed.session.id);
@@ -40738,6 +40890,7 @@ export function createAgentChatService(args: {
         outputTokens: 0,
         totalTokens: 0,
         maxTokens: 0,
+        compactAtTokens: 0,
         occupancyPct: null,
         highWaterEpisode: false,
         naturalCompactSeen: false,
@@ -40769,6 +40922,7 @@ export function createAgentChatService(args: {
         steer: { ...steer },
       });
     }
+    runtimeCompactionSettings.set(runtime, compactionSignatureFor(managed));
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
 
@@ -48068,6 +48222,10 @@ export function createAgentChatService(args: {
         state: runtime.eventMapperState,
       });
       for (const ev of events) {
+        if (ev.type === "context_usage" && ev.usage.maxTokens > 0) {
+          runtime.eventMapperState.contextWindow = ev.usage.maxTokens;
+          runtime.eventMapperState.lastContextTokens = ev.usage.totalTokens;
+        }
         if (!isCloud && turnId) noteCursorSdkVisibleOutput(runtime, turnId, meta?.runId ?? null, ev.type);
         emitCursorSdkMappedEvent(managed, runtime, ev);
       }
@@ -49264,6 +49422,9 @@ export function createAgentChatService(args: {
         model: turnModel,
         ...(turnModelId ? { modelId: turnModelId } : {}),
       });
+      if (runtime.eventMapperState.lastContextTokens != null) {
+        doneEvent = { ...doneEvent, usage: { ...doneEvent.usage, contextTokens: runtime.eventMapperState.lastContextTokens, contextWindow: runtime.eventMapperState.contextWindow } };
+      }
       const localAgentId = runtime.sdkAgentId;
       if (localAgentId) {
         doneEvent = await fetchAndApplyCursorUsage({
@@ -51833,11 +51994,6 @@ export function createAgentChatService(args: {
             ...(compactMatch[1]?.trim() ? { customInstructions: compactMatch[1].trim() } : {}),
           });
           onBackendDispatched?.();
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "info",
-            message: "Pi context compaction completed.",
-          });
           persistChatState(managed);
         } finally {
           if (managed.runtime === runtime) runtime.busy = false;
@@ -52269,6 +52425,35 @@ export function createAgentChatService(args: {
     args: AgentChatSendArgs,
     options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
+    assertChatRuntimeOwnedHere(args.sessionId, "send to");
+    const managed = ensureManagedSession(args.sessionId);
+    await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
+    // Only an explicit `compactFirst: true` compacts first. The pill sends it,
+    // already on in "always" mode; automation and CLI sends never carry it. A
+    // chat that became busy meanwhile skips it and steers as usual.
+    if (args.compactFirst === true && managed.session.provider === "claude" && !isManualCompactCommand(args.text)
+      && !runtimeMidTurn(managed) && managed.session.status !== "active") {
+      // Native resume_return owns its send; never combine it with ADE's pill.
+      if (!collectPendingInputRequests(managed).length) {
+        const history = (await getChatEventHistory(args.sessionId, { maxEvents: 512 })).events;
+        const offer = compactFirstOffer({ provider: "claude", events: history, mode: compactionSettingsFor(managed).idleMode ?? "ask" });
+        if (offer) {
+          const before = managed.compactionEmitterState.sessionCompactionCount;
+          const result = await runSessionTurn({ sessionId: args.sessionId, text: "/compact", timeoutMs: 90_000 });
+          const compacted = result.status === "completed" && managed.compactionEmitterState.sessionCompactionCount > before;
+          onCompactionOutcome?.({
+            sessionId: args.sessionId,
+            action: "compact_first",
+            outcome: compacted ? "completed" : "failed",
+            mode: "manual",
+            provider: managed.session.provider,
+          });
+          if (!compacted) {
+            throw new Error("Compaction did not finish. Your message was not sent. Retry compaction or turn off Compact first.");
+          }
+        }
+      }
+    }
     const reviewed = takeThreadReviewForSend(args);
     try {
       const result = await sendMessageWithoutReview(reviewed.args, options);
@@ -56290,6 +56475,8 @@ export function createAgentChatService(args: {
       laneId: row.laneId,
       provider,
       model,
+      ...(provider === "opencode" ? { manualCompactAvailable: getSlashCommands({ sessionId: row.id, provider }).some((command) => command.name.replace(/^\//, "") === "compact") } : {}),
+      ...(provider === "claude" ? { compactionIdleMode: compactionSettingsForSession({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }).idleMode ?? "ask" } : {}),
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
       ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
       ...(crossMachineMove ? { crossMachineHandoff: crossMachineMove } : {}),

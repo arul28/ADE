@@ -23,7 +23,8 @@ extension WorkSessionDestinationView {
   func sendMessage(
     _ text: String,
     attachments inputAttachments: [WorkChatInputAttachment] = [],
-    deliveryMode: WorkActiveSendMode = .queue
+    deliveryMode: WorkActiveSendMode = .queue,
+    compactFirst: Bool? = nil
   ) async -> Bool {
     let useSteer = shouldSteerActiveTurn
     guard !sending || useSteer else { return false }
@@ -151,7 +152,8 @@ extension WorkSessionDestinationView {
             sessionId: sessionId,
             text: text,
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-            includeThreadComments: includeThreadComments
+            includeThreadComments: includeThreadComments,
+            compactFirst: compactFirst
           )
         } catch where workChatErrorIndicatesActiveTurn(error) {
           if workChatIsManualCompactCommand(text) {

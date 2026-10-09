@@ -30,6 +30,7 @@ import {
 } from "./providerUi";
 import { providerStatusFor } from "./descriptors";
 import { ProviderAccountsPanel } from "./accounts/ProviderAccountsPanel";
+import { CompactionSettings } from "./CompactionSettings";
 import { ProviderApiKeysPanel } from "./keys/ProviderApiKeysPanel";
 import { extraKeyProviders } from "./keys/providerKeySpecs";
 import { persistOpenCodeProviderBlock } from "./keys/openCodeCustomProviders";
@@ -268,6 +269,11 @@ export function ProviderDetailPage({
 
         {/* ── Right: this provider's extras (scrolls on its own) ── */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0, overflowY: "auto" }}>
+          <CompactionSettings provider={descriptor.id} value={ctx.projectConfigSnapshot?.effective.ai?.compaction?.[descriptor.id]}
+            onChange={async (value) => {
+              await window.ade.ai.updateConfig({ compaction: { [descriptor.id]: value ?? {} } }, pin);
+              await ctx.actions.refreshStatus();
+            }} />
           {/* Above keys/models elsewhere: which account a chat runs as decides
               what quota it spends, which matters more than which model it picks. */}
           {multiAccountProvider ? (

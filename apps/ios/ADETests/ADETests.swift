@@ -24464,7 +24464,7 @@ final class ADETests: XCTestCase {
   func testWorkContextCompactSummaryParsesAutoAndTokens() {
     let parsed = WorkContextCompactSummary.parse("auto compact freed ~12,400 tokens")
     XCTAssertEqual(parsed.triggerLabel, "AUTO")
-    XCTAssertEqual(parsed.tokensLabel, "~12k tokens freed")
+    XCTAssertEqual(parsed.tokensLabel, "~12.4k tokens freed")
   }
 
   func testWorkContextCompactSummaryParsesManualTriggerWithoutTokens() {

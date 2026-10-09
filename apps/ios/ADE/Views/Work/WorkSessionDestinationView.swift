@@ -1595,6 +1595,9 @@ struct WorkSessionDestinationView: View {
       onSend: { text, attachments, mode in
         await sendMessage(text, attachments: attachments, deliveryMode: mode)
       },
+      onSendWithCompaction: { text, attachments, mode, enabled in
+        await sendMessage(text, attachments: attachments, deliveryMode: mode, compactFirst: enabled)
+      },
       onInterrupt: interruptSession,
       onRestoreCancelledQueue: restoreCancelledQueueAction,
       onSetUsageLimitAutoContinue: setUsageLimitAutoContinue,

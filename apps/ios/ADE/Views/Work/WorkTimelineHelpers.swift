@@ -599,6 +599,8 @@ private func combineUsageSummary(_ usage: WorkUsageSummary?, into hasher: inout 
   hasher.combine(usage.cacheCreationTokens)
   hasher.combine(usage.reasoningTokens)
   hasher.combine(usage.totalTokens)
+  combineOptional(usage.compactAtTokens, into: &hasher)
+  combineOptional(usage.compactAtSource, into: &hasher)
   combineOptional(usage.contextWindow, into: &hasher)
   hasher.combine(usage.costUsd)
   hasher.combine(usage.isContextSnapshot)
@@ -5673,7 +5675,9 @@ func makeWorkUsageSummary(
   contextWindow: Int? = nil,
   contextTokens: Int? = nil,
   costUsd: Double?,
-  isContextSnapshot: Bool = false
+  isContextSnapshot: Bool = false,
+  compactAtTokens: Int? = nil,
+  compactAtSource: String? = nil
 ) -> WorkUsageSummary? {
   guard inputTokens != nil
     || outputTokens != nil
@@ -5689,6 +5693,8 @@ func makeWorkUsageSummary(
   }
 
   return WorkUsageSummary(
+    compactAtTokens: compactAtTokens,
+    compactAtSource: compactAtSource,
     turnCount: 1,
     inputTokens: inputTokens ?? 0,
     outputTokens: outputTokens ?? 0,
@@ -5761,7 +5767,13 @@ func workContextUsageViewModel(
 
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
-    case .contextCompact(_, let isInProgress, let postTokens, let turnId, _):
+    case .contextCompact(let summary, let isInProgress, let postTokens, let turnId, _):
+      if workCompactSummaryHeader(summary).contains("state:failed") {
+        compactionProtected = true
+        protectedCompactionTurnId = turnId
+        usageState = .measured
+        continue
+      }
       if isInProgress {
         compactionProtected = true
         protectedCompactionTurnId = turnId
@@ -5772,6 +5784,8 @@ func workContextUsageViewModel(
       protectedCompactionTurnId = turnId
       if let postTokens {
         latestUsage = WorkUsageSummary(
+          compactAtTokens: latestUsage?.compactAtTokens,
+          compactAtSource: latestUsage?.compactAtSource,
           turnCount: 1,
           inputTokens: postTokens,
           outputTokens: 0,
@@ -5810,6 +5824,8 @@ func workContextUsageViewModel(
           // fields sum every request in the turn and would overstate it.
           if !doneTurnId.isEmpty { snapshotTurnIds.insert(doneTurnId) }
           latestUsage = WorkUsageSummary(
+            compactAtTokens: latestUsage?.compactAtTokens,
+            compactAtSource: latestUsage?.compactAtSource,
             turnCount: 1,
             inputTokens: contextTokens,
             outputTokens: 0,
@@ -5908,7 +5924,7 @@ private func makeWorkContextUsageViewModel(
       return max(0, usage.inputTokens)
     }
     if workProviderUsesCodexTokenOccupancy(provider) {
-      return inputTokens ?? positiveWorkTokenCount(usage.inputTokens + usage.outputTokens) ?? totalTokens
+      return inputTokens
     }
     let occupancy = (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
     return occupancy > 0 ? occupancy : positiveWorkTokenCount(usage.inputTokens + usage.outputTokens) ?? totalTokens
@@ -5922,6 +5938,8 @@ private func makeWorkContextUsageViewModel(
   }
 
   return WorkContextUsageViewModel(
+    compactAtTokens: usage.compactAtTokens,
+    compactAtSource: usage.compactAtSource,
     provider: provider,
     state: state,
     contextWindow: contextWindow,

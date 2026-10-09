@@ -1067,11 +1067,17 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
 /// One wire envelope as a `WorkChatEnvelope`, with no filtering. Shared by the
 /// whole-window builder above and the thread engine's incremental fold.
 func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelope {
-  WorkChatEnvelope(
+  var event = makeWorkChatEvent(from: entry.event)
+  if case .contextCompact(let summary, let running, let post, let turn, let id) = event {
+    // Same flattening as workContextCompactSummary(from:): a failure message must not start a fake structured line.
+    let details = [entry.compactionAccountLabel.map { "account:\($0)" }, entry.compactionFailDetail.map { "failure:" + $0.components(separatedBy: .newlines).joined(separator: " ") }, entry.compactionSummary.map { "summary:\($0)" }].compactMap { $0 }
+    event = .contextCompact(summary: ([summary].compactMap { $0 } + details).joined(separator: "\n"), isInProgress: running, postTokens: post, turnId: turn, compactionId: id)
+  }
+  return WorkChatEnvelope(
     sessionId: entry.sessionId,
     timestamp: entry.timestamp,
     sequence: entry.sequence,
-    event: makeWorkChatEvent(from: entry.event),
+    event: event,
     textPhase: agentChatEventTextPhase(entry.event),
     subagentTaskType: entry.subagentTaskType,
     subagentProvider: entry.subagentProvider,

@@ -35,6 +35,7 @@ import { useAccountSignInSheet } from "./AddProviderAccountSheet";
 import { pinnedProviderInstances, useProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { providerActionMessage } from "../providerErrorMessage";
+import { CompactionSettings } from "../CompactionSettings";
 
 const SMART_BALANCE_HINT =
   "On: each new chat goes to the account whose weekly room resets soonest, so no account's room expires unused. A chat that hits a usage limit moves to another account that still has room. Off: new chats use the account marked New chats. Click an account to use it.";
@@ -426,6 +427,7 @@ export function ProviderAccountsPanel({
               <AccountCard
                 key={instance.id}
                 instance={instance}
+                compactionControl={instances.length > 1 ? <CompactionSettings provider={provider} account value={instance.compaction} onChange={async (compaction) => { await window.ade.providerInstances.setSettings({ provider, instanceId: instance.id, settings: { compaction } }, pin); await reload(); }} /> : null}
                 limitRow={accountLimitRow(snapshot, provider, instance, nowMs)}
                 state={state}
                 badge={badge}

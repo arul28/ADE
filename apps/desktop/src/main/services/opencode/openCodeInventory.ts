@@ -680,7 +680,7 @@ function buildInventory(args: {
         openCodeModelId: normalizedModel.modelId,
         ...(normalizedModel.displayName ? { displayName: normalizedModel.displayName } : {}),
         ...(normalizedModel.contextWindow
-          ? { contextWindow: normalizedModel.contextWindow }
+          ? { contextWindow: typeof ctx === "number" && ctx > 0 ? Math.min(ctx, normalizedModel.contextWindow) : normalizedModel.contextWindow }
           : typeof ctx === "number" && ctx > 0 ? { contextWindow: ctx } : {}),
         ...(normalizedModel.maxOutputTokens
           ? { maxOutputTokens: normalizedModel.maxOutputTokens }

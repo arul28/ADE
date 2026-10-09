@@ -298,11 +298,11 @@ export function createOpenCodeTurnMapper(args: {
       case "session.compaction.ended": {
         const data = event.data;
         if (data.tokens) recordOpenCodeStepFinish(usage, `compaction:${stepNumber}`, data, { describesContext: false });
-        return [{ event: { type: "context_compact", trigger: data.reason, state: "completed", turnId } }];
+        return [{ event: { type: "context_compact", trigger: data.reason, state: "completed", summary: data.text, turnId } }];
       }
       case "session.compaction.failed": {
         const data = event.data;
-        return [{
+        return [{ event: { type: "context_compact", trigger: "auto", state: "failed", failReason: "provider_error", failDetail: data.error?.message, turnId } }, {
           event: {
             type: "system_notice",
             noticeKind: "provider_health",

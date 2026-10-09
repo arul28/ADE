@@ -332,22 +332,17 @@ private func workTranscriptToolName(from eventDict: [String: Any]) -> String {
   return "\(source):\(action)"
 }
 
-private func formatWorkCompactTokenCount(_ value: Int) -> String {
-  if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000.0) }
-  if value >= 10_000 { return "\(Int((Double(value) / 1_000.0).rounded()))k" }
-  if value >= 1_000 { return String(format: "%.1fk", Double(value) / 1_000.0) }
-  return "\(value)"
-}
-
 func workContextCompactSummary(
   trigger: String,
   preTokens: Int? = nil,
   postTokens: Int? = nil,
   durationMs: Int? = nil,
   provider: String? = nil,
-  sessionCompactionCount: Int? = nil
+  sessionCompactionCount: Int? = nil,
+  state: String? = nil
 ) -> String {
   var lines: [String] = []
+  if state == "failed" { lines.append("state:failed") }
   if let provider {
     lines.append("provider:\(provider)")
   }
@@ -357,7 +352,7 @@ func workContextCompactSummary(
   let triggerLabel = trigger.replacingOccurrences(of: "_", with: " ").capitalized
   lines.append(triggerLabel)
   if let pre = preTokens, let post = postTokens {
-    lines.append("\(formatWorkCompactTokenCount(pre)) → \(formatWorkCompactTokenCount(post))")
+    lines.append("\(workAbbreviateCount(pre)) → \(workAbbreviateCount(post))")
   } else if let pre = preTokens {
     lines.append("Pre-compact tokens: \(pre)")
   }
@@ -368,14 +363,34 @@ func workContextCompactSummary(
 }
 
 func workContextCompactSummary(from eventDict: [String: Any]) -> String {
-  workContextCompactSummary(
+  let header = workContextCompactSummary(
     trigger: stringValue(eventDict["trigger"]),
     preTokens: optionalWorkInt(eventDict["preTokens"]),
     postTokens: optionalWorkInt(eventDict["postTokens"]),
     durationMs: optionalWorkInt(eventDict["durationMs"]),
     provider: optionalString(eventDict["provider"]),
-    sessionCompactionCount: optionalWorkInt(eventDict["sessionCompactionCount"])
+    sessionCompactionCount: optionalWorkInt(eventDict["sessionCompactionCount"]),
+    state: optionalString(eventDict["state"])
   )
+  // The reader matches each field as a line prefix. A failure message is
+  // flattened to one line so it cannot start a fake line, and `summary:` stays
+  // last because the provider text after it can run to many lines.
+  let trailer: [String?] = [
+    optionalString(eventDict["accountLabel"]).map { "account:\($0)" },
+    optionalString(eventDict["failReason"]).map { "failReason:\($0)" },
+    optionalString(eventDict["failDetail"]).map { "failure:" + $0.components(separatedBy: .newlines).joined(separator: " ") },
+    optionalString(eventDict["summary"]).map { "summary:\($0)" },
+  ]
+  return header + trailer.compactMap { $0 }.map { "\n" + $0 }.joined()
+}
+
+/// The structured fields of a compaction summary: the text before the
+/// provider's own summary, which follows a line-anchored `summary:` header.
+/// Field checks read only this part, so provider text cannot spoof them.
+func workCompactSummaryHeader(_ summary: String) -> String {
+  let lines = summary.components(separatedBy: "\n")
+  let end = lines.firstIndex(where: { $0.hasPrefix("summary:") }) ?? lines.count
+  return lines[..<end].joined(separator: "\n")
 }
 
 func workContextCompactMergeId(from eventDict: [String: Any], turnId: String?) -> String? {
@@ -845,10 +860,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         let totalUsage = usageDict["total"] as? [String: Any]
         let contextWindow = optionalWorkInt(usageDict["modelContextWindow"])
         let hasContextOccupancy = optionalWorkInt(lastUsage?["inputTokens"]) != nil
-          || optionalWorkInt(totalUsage?["inputTokens"]) != nil
         event = .tokens(
           usage: makeWorkUsageSummary(
-            inputTokens: optionalWorkInt(lastUsage?["inputTokens"]) ?? optionalWorkInt(totalUsage?["inputTokens"]),
+            inputTokens: optionalWorkInt(lastUsage?["inputTokens"]),
             outputTokens: optionalWorkInt(lastUsage?["outputTokens"]) ?? optionalWorkInt(totalUsage?["outputTokens"]),
             cacheReadTokens: optionalWorkInt(lastUsage?["cacheReadTokens"]) ?? optionalWorkInt(totalUsage?["cacheReadTokens"]),
             cacheCreationTokens: optionalWorkInt(lastUsage?["cacheWriteTokens"]) ?? optionalWorkInt(totalUsage?["cacheWriteTokens"]),
@@ -856,7 +870,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             totalTokens: optionalWorkInt(totalUsage?["totalTokens"]) ?? optionalWorkInt(lastUsage?["totalTokens"]),
             contextWindow: contextWindow,
             costUsd: nil,
-            isContextSnapshot: hasContextOccupancy
+            isContextSnapshot: hasContextOccupancy,
+            compactAtTokens: optionalWorkInt(usageDict["compactAtTokens"]),
+            compactAtSource: optionalString(usageDict["compactAtSource"])
           ) ?? WorkUsageSummary(
             turnCount: 1,
             inputTokens: 0,
@@ -878,6 +894,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           .flatMap(WorkContextUsageState.init(rawValue:)) ?? .measured
         event = .tokens(
           usage: WorkUsageSummary(
+            compactAtTokens: optionalWorkInt(usageDict["compactAtTokens"]),
+            compactAtSource: optionalString(usageDict["compactAtSource"]),
             turnCount: 1,
             inputTokens: totalTokens,
             outputTokens: 0,

@@ -468,6 +468,31 @@ operational lines (`agent_chat.claude_replay_overflow_retry`,
 `agent_chat.claude_replay_overflow_gave_up`), which carry session and turn ids
 and turn counts, are not PostHog events.
 
+How a context compaction ended records one coarse fact on the same
+`ade_feature_used` event with `feature: "chat"` and `action: "compaction"`, at
+the durable owner: the chat service's event commit, once per compaction that
+ends (`completed` or `failed`), for every provider. `mode` is `manual` when the
+user asked (`/compact`, **Compact now**, or Retry) and `automatic` otherwise,
+including ADE's own 97% fallback. A send made with the **Compact first** pill
+records `action: "compact_first"` with the same two outcomes and
+`mode: "manual"`. `provider` is the existing coarse slug and `source` is
+`runtime`. The product questions are whether compaction works and how often
+people ask for it, so nothing finer crosses the boundary: no token counts, no
+summary, no failure text, no account, and no model. The compaction-point
+setting itself is not instrumented: it is a rare choice saved through the
+generic `ai.updateConfig` write, which has no per-key owner, and no dashboard
+needs it yet.
+
+Volume is bounded by a `chat_<action>:<session>:<outcome>:<mode>` deduplication
+key (hashed locally, never sent) with a ten-minute minimum interval, so a chat
+reports each combination at most six times an hour; realistic volume is a few
+compactions per installation per day, inside the existing `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling. No ceiling
+was raised and no PostHog definition changed. The local operational lines
+(`agent_chat.claude_context_compaction_observed`,
+`agent_chat.claude_context_compaction_fallback_gate`) keep their session ids and
+token counts locally and are not PostHog events.
+
 How a move of a chat to another machine ended records one coarse fact on the
 same `ade_feature_used` event with `feature: "chat"` and
 `action: "cross_machine_move"`, at the durable owner: the source brain's move

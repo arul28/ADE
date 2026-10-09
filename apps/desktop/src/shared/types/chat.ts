@@ -937,6 +937,8 @@ export type CodexTokenUsageBreakdown = {
 };
 
 export type CodexThreadTokenUsage = {
+  compactAtTokens?: number;
+  compactAtSource?: "setting" | "provider";
   threadId?: string | null;
   turnId?: string | null;
   total?: CodexTokenUsageBreakdown;
@@ -1293,6 +1295,9 @@ export type AgentChatUserMessageDeliveryState =
   | "delivered"
   | "inline"
   | "failed";
+
+/** Why a `context_compact` event ended in `state: "failed"`. */
+export type ContextCompactFailReason = "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
 
 export type AgentChatEvent =
   | {
@@ -1862,6 +1867,7 @@ export type AgentChatEvent =
       origin?: AgentChatScheduledWorkOrigin;
       title?: string;
       summary?: string;
+      accountLabel?: string;
       prompt?: string;
       reason?: string;
       cron?: string;
@@ -1914,7 +1920,10 @@ export type AgentChatEvent =
       // legacy/completion-only sources (treated as "completed"). "failed" covers
       // interrupt, teardown, and a wall-clock stall so the divider cannot spin forever.
       state?: "started" | "completed" | "failed";
-      failReason?: "interrupted" | "timed_out" | "teardown";
+      failReason?: ContextCompactFailReason;
+      failDetail?: string;
+      summary?: string;
+      accountLabel?: string;
       turnId?: string;
     }
   | {
@@ -1923,7 +1932,10 @@ export type AgentChatEvent =
       state: "started" | "completed" | "failed";
       trigger: "manual" | "auto";
       compactionId?: string;
-      failReason?: "interrupted" | "timed_out" | "teardown";
+      failReason?: ContextCompactFailReason;
+      failDetail?: string;
+      summary?: string;
+      accountLabel?: string;
     }
   | {
       type: "codex_safety_buffering";
@@ -2979,6 +2991,8 @@ export type AgentChatRuntimeOwnerRef = {
 };
 
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
+  compactionIdleMode?: "ask" | "always" | "never";
+  manualCompactAvailable?: boolean;
   sessionId: string;
   laneId: string;
   provider: AgentChatProvider;
@@ -3329,8 +3343,15 @@ export type AgentChatContextUsageCategory = {
 export type AgentChatContextUsage = {
   categories: AgentChatContextUsageCategory[];
   totalTokens: number;
+  /** The model's maximum context window. The meter fills against this. */
   maxTokens: number;
+  /**
+   * Claude SDK `raw_max_tokens`: the resolved auto-compact window (a setting,
+   * or the provider's policy window), not the model maximum.
+   */
   rawMaxTokens?: number;
+  compactAtTokens?: number;
+  compactAtSource?: "setting" | "provider";
   percentage: number;
   model?: string;
   // Typed per-turn breakdown for the composer meter's hover. The `categories`
@@ -4683,6 +4704,8 @@ export type AgentChatCloudOverrides = {
 };
 
 export type AgentChatSendArgs = {
+  /** Compact as a separate turn before this message; false overrides Always for this send. */
+  compactFirst?: boolean;
   sessionId: string;
   text: string;
   displayText?: string;

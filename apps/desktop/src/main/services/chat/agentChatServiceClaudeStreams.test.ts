@@ -498,51 +498,36 @@ describe("createAgentChatService", () => {
     it("throttles live Claude context usage by both time and percentage movement", async () => {
       let now = 0;
       const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
-      const messages = [
-        {
-          type: "stream_event",
-          event: {
-            type: "message_start",
-            message: {
-              id: "usage-message",
-              usage: {
-                input_tokens: 100_000,
-                cache_read_input_tokens: 20_000,
-                cache_creation_input_tokens: 30_000,
-                output_tokens: 0,
-              },
+      // Live occupancy is input + cache read + cache creation. Output tokens are
+      // not part of it, so the huge output delta must never move the ring.
+      const messageStart = (input: number, cacheRead: number, cacheCreation: number) => ({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: {
+            id: "usage-message",
+            usage: {
+              input_tokens: input,
+              cache_read_input_tokens: cacheRead,
+              cache_creation_input_tokens: cacheCreation,
+              output_tokens: 0,
             },
           },
         },
-        {
-          type: "stream_event",
-          event: { type: "message_delta", usage: { output_tokens: 20_000 } },
-        },
-        {
-          type: "stream_event",
-          event: { type: "message_delta", usage: { output_tokens: 5_000 } },
-        },
-        {
-          type: "stream_event",
-          event: { type: "message_delta", usage: { output_tokens: 20_000 } },
-        },
-        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      });
+      const timeline: Array<{ at: number; message: Record<string, unknown> }> = [
+        // 100k + 20k + 30k = 150k of a 1M window -> 15%. First reading always emits.
+        { at: 0, message: messageStart(100_000, 20_000, 30_000) },
+        // 20% but only 1s after the last emit -> held back by the 5s floor.
+        { at: 1_000, message: messageStart(150_000, 20_000, 30_000) },
+        // 5s have passed but 15.5% is under one point from 15% -> held back.
+        { at: 6_000, message: messageStart(105_000, 20_000, 30_000) },
+        // Output tokens are not occupancy.
+        { at: 6_500, message: { type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 500_000 } } } },
+        // 17% and 7s since the last emit -> emits.
+        { at: 7_000, message: messageStart(120_000, 20_000, 30_000) },
+        { at: 7_000, message: { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } } },
       ];
-      const timedMessages = (async function* () {
-        now = 0;
-        yield messages[0]!;
-        now = 1_000;
-        yield messages[1]!;
-        now = 6_000;
-        yield messages[2]!;
-        now = 7_000;
-        yield messages[3]!;
-        yield messages[4]!;
-      })();
-      const materialized: Array<Record<string, unknown>> = [];
-      for await (const message of timedMessages) materialized.push(message);
-      // Re-apply the intended times from inside the SDK stream rather than while
-      // materializing the fixtures.
       let streamCall = 0;
       const send = vi.fn().mockResolvedValue(undefined);
       const stream = vi.fn(() => (async function* () {
@@ -551,15 +536,10 @@ describe("createAgentChatService", () => {
           yield { type: "system", subtype: "init", session_id: "sdk-live-usage", slash_commands: [] };
           return;
         }
-        now = 0;
-        yield materialized[0]!;
-        now = 1_000;
-        yield materialized[1]!;
-        now = 6_000;
-        yield materialized[2]!;
-        now = 7_000;
-        yield materialized[3]!;
-        yield materialized[4]!;
+        for (const step of timeline) {
+          now = step.at;
+          yield step.message;
+        }
       })());
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send,
@@ -596,7 +576,7 @@ describe("createAgentChatService", () => {
           ],
           totalTokens: 50_000,
           maxTokens: 200_000,
-          rawMaxTokens: 200_000,
+          rawMaxTokens: 150_000,
           percentage: 25,
           gridRows: [],
           model: "claude-sonnet-5",
@@ -647,7 +627,9 @@ describe("createAgentChatService", () => {
                 type: "context_usage",
                 origin: "snapshot",
                 state: "measured",
-                usage: expect.objectContaining({ percentage: 25 }),
+                // The ring measures against the model's 1M window (50k -> 5%), not the
+                // SDK's 200k; the SDK's raw max becomes the compaction threshold.
+                usage: expect.objectContaining({ totalTokens: 50_000, maxTokens: 1_000_000, percentage: 5, compactAtTokens: 150_000 }),
               }),
             ]));
         });

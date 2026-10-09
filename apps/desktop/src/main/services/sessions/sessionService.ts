@@ -2457,12 +2457,24 @@ export function createSessionService({
       sessionId: string,
       value: SessionActivityValue,
       turnStartedAt: string | null,
-      options: { onlyIfEmpty?: boolean } = {},
+      options: { onlyIfEmpty?: boolean; contextTokens?: number; failDetail?: string } = {},
     ): boolean {
       return writeSessionActivityRow(sessionId, (current, nowIso) => (
         options.onlyIfEmpty && current
           ? undefined
-          : nextDetectedActivityReport(current, value, { turnStartedAt, nowIso })
+          : (() => {
+              const details = {
+                ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}),
+                ...(options.failDetail ? { failDetail: options.failDetail } : {}),
+              };
+              const next = nextDetectedActivityReport(current, value, { turnStartedAt, nowIso });
+              if (next) return { ...next, ...details };
+              // Same activity, newer details (a token count for "compacting", a
+              // reason for "compaction_failed"): keep the report, update them.
+              const changed = current?.value === value && Object.entries(details)
+                .some(([key, detail]) => (current as Record<string, unknown>)[key] !== detail);
+              return changed && current ? { ...current, ...details } : undefined;
+            })()
       ));
     },
 

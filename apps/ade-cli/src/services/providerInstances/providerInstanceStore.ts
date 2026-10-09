@@ -1,3 +1,4 @@
+import { normalizeCompactionSettings, type ProviderCompactionSettings } from "../../../../desktop/src/shared/compactionSettings";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -64,6 +65,7 @@ const MAX_LABEL_LENGTH = 60;
 const DEFAULT_INSTANCE_CREATED_AT = new Date(0).toISOString();
 
 type StoredInstance = {
+  compaction?: ProviderCompactionSettings;
   id: string;
   provider: ProviderInstanceProvider;
   label: string;
@@ -194,6 +196,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     provider,
     label,
     ...(accentColor ? { accentColor } : {}),
+    ...(isRecord(value.compaction) ? { compaction: normalizeCompactionSettings(value.compaction) } : {}),
     configHome,
     createdAt: createdAt ?? DEFAULT_INSTANCE_CREATED_AT,
     ...(account && (account.email || account.plan) ? { account } : {}),
@@ -362,6 +365,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       : undefined;
     return {
       id: stored.id,
+      ...(stored.compaction ? { compaction: stored.compaction } : {}),
       provider: stored.provider,
       label: stored.label,
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
@@ -613,9 +617,21 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
 
   function setProviderSettings(
     provider: ProviderInstanceProvider,
-    settings: Partial<ProviderInstanceSettings>,
+    settings: Omit<Partial<ProviderInstanceSettings>, "compaction"> & { compaction?: ProviderCompactionSettings | null },
+    instanceId?: string,
   ): ProviderInstanceSettings {
     const resolved = requireProvider(provider);
+    if (instanceId) {
+      const account = get(instanceId);
+      if (!account || account.provider !== resolved) throw new Error("Provider account does not match this setting.");
+      const updated = mutateRecord(instanceId, "setSettings", (record) => {
+        const next = { ...record };
+        if (settings.compaction == null) delete next.compaction;
+        else next.compaction = normalizeCompactionSettings(settings.compaction);
+        return next;
+      });
+      return { ...getProviderSettings(resolved), compaction: updated.compaction };
+    }
     const file = readFile();
     const current = { ...DEFAULT_PROVIDER_INSTANCE_SETTINGS, ...(file.settings[resolved] ?? {}) };
     const next: ProviderInstanceSettings = {

@@ -22,11 +22,12 @@ func workResolveContextCompactControl(
   usageState: WorkContextUsageState?,
   canSend: Bool,
   pendingInput: Bool,
-  turnBusy: Bool
+  turnBusy: Bool,
+  openCodeCompactAvailable: Bool = false
 ) -> WorkContextCompactControl {
   guard canSend,
         usageState == .measured,
-        workProviderSupportsManualCompact(provider)
+        (workProviderSupportsManualCompact(provider) || (provider == "opencode" && openCodeCompactAvailable))
   else {
     return .hidden
   }
@@ -94,6 +95,12 @@ struct WorkContextUsageMeter: View {
               .rotationEffect(.degrees(-90))
               .frame(width: 22, height: 22)
 
+            if let point = usage.compactAtTokens, let window = usage.contextWindow, window > 0 {
+              let fraction = min(1, max(0, Double(point) / Double(window)))
+              Rectangle().fill(ADEColor.warning).frame(width: 1.5, height: 5)
+                .offset(y: -11).rotationEffect(.degrees(fraction * 360))
+            }
+
             Text("\(percent)")
               .font(.system(size: percent >= 100 ? 7 : 8, weight: .semibold, design: .rounded))
               .monospacedDigit()
@@ -130,6 +137,7 @@ struct WorkComposerContextMeterModel: Equatable {
   let usage: WorkContextUsageViewModel
   let modelLabel: String?
   let compact: WorkContextCompactControl
+  var sessionId: String? = nil
 }
 
 /// The composer's context meter: the ring, and the usage popover it opens.
@@ -150,6 +158,7 @@ struct WorkComposerContextMeter: View {
           usage: model.usage,
           modelLabel: model.modelLabel,
           compact: model.compact,
+          sessionId: model.sessionId,
           onCompact: {
             presented = false
             onCompact?()
@@ -165,6 +174,8 @@ struct WorkContextUsagePopover: View {
   let usage: WorkContextUsageViewModel
   let modelLabel: String?
   var compact: WorkContextCompactControl = .hidden
+  var sessionId: String? = nil
+  @State private var settingsPresented = false
   var onCompact: (() -> Void)? = nil
 
   private var percent: Int? {
@@ -239,6 +250,14 @@ struct WorkContextUsagePopover: View {
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
 
+      Text("\(usedLabel ?? "Unknown") of \(windowLabel ?? "unknown") used" + (usage.compactAtTokens.map { " · compacts at \(workAbbreviateCount($0))" } ?? ""))
+        .font(.caption)
+        .foregroundStyle(ADEColor.textPrimary)
+      if usage.compactAtTokens != nil {
+        Text(usage.compactAtSource == "setting" ? "Your setting" : "\(usage.provider.capitalized) default")
+          .font(.caption2).foregroundStyle(ADEColor.textMuted)
+      }
+
       Text(description)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
@@ -277,6 +296,13 @@ struct WorkContextUsagePopover: View {
           .fixedSize(horizontal: false, vertical: true)
       }
 
+      if let sessionId {
+        Button("Provider compaction setting") { settingsPresented = true }
+          .font(.caption).foregroundStyle(ADEColor.accent)
+          .sheet(isPresented: $settingsPresented) {
+            WorkProviderCompactionSettings(provider: usage.provider, sessionId: sessionId)
+          }
+      }
       if compactAvailable {
         if let compactDisabledReason {
           Text(compactDisabledReason)
@@ -288,7 +314,7 @@ struct WorkContextUsagePopover: View {
         Button {
           onCompact?()
         } label: {
-          Text("Compact context")
+          Text("Compact now")
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(compactDisabledReason == nil ? ADEColor.accent : ADEColor.textMuted)
             .frame(maxWidth: .infinity, minHeight: 44)
@@ -328,5 +354,118 @@ struct WorkContextUsagePopover: View {
     .frame(minWidth: 240, idealWidth: 300, maxWidth: 320, alignment: .leading)
     .fixedSize(horizontal: false, vertical: true)
     .accessibilityIdentifier("Work.Chat.Composer.ContextUsagePopover")
+  }
+}
+
+
+struct WorkCompactFirstOffer: Equatable {
+  let endedAt: Date
+  let contextTokens: Int
+  let estimatedPostTokens: Int
+  let mode: String
+  func isEligible(at now: Date) -> Bool { now.timeIntervalSince(endedAt) >= 3600 }
+}
+
+struct WorkCompactFirstPill: View {
+  let offer: WorkCompactFirstOffer
+  @Binding var choice: Bool?
+  var body: some View {
+    TimelineView(.periodic(from: offer.endedAt.addingTimeInterval(3600), by: 60)) { context in
+      if offer.isEligible(at: context.date) {
+        let enabled = choice ?? (offer.mode == "always")
+        Button { choice = !enabled } label: {
+          Text("Compact first · \(workAbbreviateCount(offer.contextTokens))")
+            .font(.caption2).padding(.horizontal, 8).padding(.vertical, 4)
+            .foregroundStyle(enabled ? ADEColor.accent : ADEColor.textSecondary)
+            .background((enabled ? ADEColor.accent : ADEColor.textMuted).opacity(0.08), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(enabled ? "On" : "Off")
+        .help("The cache expired after an hour. Compacting first re-sends about \(workAbbreviateCount(offer.estimatedPostTokens)) tokens instead of \(workAbbreviateCount(offer.contextTokens)).")
+      }
+    }
+    .onChange(of: offer.endedAt) { _, _ in choice = nil }
+  }
+}
+
+
+/// Provider defaults are the same project config the desktop and web settings edit.
+struct WorkProviderCompactionSettings: View {
+  let provider: String
+  let sessionId: String
+  @EnvironmentObject private var syncService: SyncService
+  @Environment(\.dismiss) private var dismiss
+  @State private var settings: [String: Any] = [:]
+  @State private var tokens = ""
+  @State private var idleMode = "ask"
+  @State private var enabled = true
+  @State private var loading = true
+  @State private var errorMessage: String?
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        if provider == "claude" {
+          Toggle("Auto-compact", isOn: $enabled)
+          Picker("Auto-compact at", selection: $tokens) {
+            Text("Auto (recommended)").tag("")
+            ForEach(1...10, id: \.self) { step in Text(workAbbreviateCount(step * 100_000)).tag(String(step * 100_000)) }
+          }
+          Picker("After an hour idle", selection: $idleMode) {
+            Text("Ask (pill)").tag("ask")
+            Text("Always compact first").tag("always")
+            Text("Never").tag("never")
+          }
+        } else if provider == "codex" {
+          TextField("Auto-compact at (default if empty)", text: $tokens).keyboardType(.numberPad)
+        } else if provider == "opencode" || provider == "pi" {
+          Toggle("Auto-compact", isOn: $enabled)
+        } else {
+          Text("This provider compacts by itself. ADE cannot change when.")
+        }
+        Text("Provider default. Account overrides still apply. Changes apply at the next query start.").font(.caption).foregroundStyle(ADEColor.textSecondary)
+        if let errorMessage { Text(errorMessage).foregroundStyle(ADEColor.warning) }
+      }
+      .disabled(loading)
+      .navigationTitle("\(provider.capitalized) compaction")
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+        ToolbarItem(placement: .confirmationAction) { Button("Save") { Task { await save() } }.disabled(loading) }
+      }
+      .task { await load() }
+    }
+  }
+  @MainActor private func load() async {
+    defer { loading = false }
+    do {
+      let scope = syncService.chatCommandScope(for: sessionId)
+      let result = try await syncService.sendCommand(action: "projectConfig.get", args: [:], targetProjectId: scope.projectId, targetProjectRootPath: scope.rootPath) as? [String: Any]
+      let effective = result?["effective"] as? [String: Any]
+      let ai = effective?["ai"] as? [String: Any]
+      let compaction = ai?["compaction"] as? [String: Any]
+      settings = compaction?[provider] as? [String: Any] ?? [:]
+      tokens = (settings["atTokens"] as? Int).map(String.init) ?? ""
+      idleMode = settings["idleMode"] as? String ?? "ask"
+      enabled = settings["enabled"] as? Bool ?? true
+    } catch { errorMessage = error.localizedDescription }
+  }
+  @MainActor private func save() async {
+    loading = true
+    defer { loading = false }
+    var value = settings
+    // Codex has no auto-compact toggle (desktop hides it too), so leave its stored value alone.
+    if provider != "codex" { value["enabled"] = enabled }
+    if provider == "claude" || provider == "codex" {
+      if !tokens.isEmpty {
+        guard let number = Int(tokens), number > 0 else { errorMessage = "Enter a positive token count."; return }
+        value["atTokens"] = number
+      } else { value["atTokens"] = NSNull() }
+    }
+    if provider == "claude" { value["idleMode"] = idleMode }
+    do {
+      let scope = syncService.chatCommandScope(for: sessionId)
+      _ = try await syncService.sendCommand(action: "ai.updateConfig", args: ["compaction": [provider: value]], targetProjectId: scope.projectId, targetProjectRootPath: scope.rootPath)
+      dismiss()
+    } catch { errorMessage = error.localizedDescription }
   }
 }

@@ -1,3 +1,4 @@
+import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import fs from "node:fs";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
@@ -186,7 +187,6 @@ import {
   parseChatLaunchQueueMessageArgs,
 } from "../chat/chatLaunchArgs";
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
-import { mergeAiConfig } from "../config/projectConfigService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
 import { isPathInside } from "../shared/pathCompare";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -2493,13 +2493,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     updateConfig: (partial?: Partial<AiConfig>) => {
       const projectConfigService = requireService(runtime.projectConfigService, "Project config service not available.");
-      const snapshot = projectConfigService.get();
-      const currentAi = snapshot.shared?.ai ?? {};
-      const merged = mergeAiConfig(currentAi, partial ?? {}) ?? {};
-      projectConfigService.save({
-        shared: { ...snapshot.shared, ai: merged },
-        local: snapshot.local ?? {},
-      });
+      projectConfigService.updateAiConfig(partial ?? {});
       void runtime.agentChatService?.refreshScheduledWork();
     },
     listCursorCloudRepositories: (args?: { refresh?: boolean }) =>
@@ -3841,11 +3835,12 @@ export function buildProviderInstancesDomainService(
       }
       const requestedSettings = isRecord(input.settings) ? input.settings : {};
       const settings = store.setProviderSettings(input.provider, {
+        ...(Object.hasOwn(requestedSettings, "compaction") ? { compaction: requestedSettings.compaction === null ? null : normalizeCompactionSettings(requestedSettings.compaction) } : {}),
         ...(typeof requestedSettings.smartBalance === "boolean" ? { smartBalance: requestedSettings.smartBalance } : {}),
         ...(typeof requestedSettings.autoStartWindows === "boolean"
           ? { autoStartWindows: requestedSettings.autoStartWindows }
           : {}),
-      });
+      }, typeof input.instanceId === "string" ? input.instanceId : undefined);
       if (typeof requestedSettings.smartBalance === "boolean") {
         capture("balance_changed", requestedSettings.smartBalance ? "enabled" : "disabled", input.provider);
       }

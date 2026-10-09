@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  abbreviateTokenCount,
   buildContextCompactMetadataChips,
   compactionFailLabel,
   contextCompactMergeKey,
@@ -71,6 +72,19 @@ describe("contextCompaction", () => {
     });
   });
 
+  it.each([
+    [999, "999"],
+    [999.6, "1k"],
+    [6279, "6.3k"],
+    [12_400, "12.4k"],
+    [400_000, "400k"],
+    [999_949, "999.9k"],
+    [999_960, "1M"],
+    [1_250_000, "1.3M"],
+  ])("abbreviates %s tokens as %s", (value, expected) => {
+    expect(abbreviateTokenCount(value)).toBe(expected);
+  });
+
   it("formats token counts and durations", () => {
     expect(formatCompactTokenCount(142_000)).toBe("142k");
     expect(formatCompactDuration(12_000)).toBe("12s");
@@ -106,11 +120,11 @@ describe("contextCompaction", () => {
     expect(isManualCompactCommand(null)).toBe(false);
   });
 
-  it("limits manual compact to Claude, Codex, and Pi", () => {
+  it("limits manual compact to Claude, Codex, Pi, and OpenCode", () => {
     expect(providerSupportsManualCompact("claude")).toBe(true);
     expect(providerSupportsManualCompact("codex")).toBe(true);
     expect(providerSupportsManualCompact("pi")).toBe(true);
-    expect(providerSupportsManualCompact("opencode")).toBe(false);
+    expect(providerSupportsManualCompact("opencode")).toBe(true);
     expect(providerSupportsManualCompact("cursor")).toBe(false);
     expect(providerSupportsManualCompact("droid")).toBe(false);
     expect(providerSupportsManualCompact(null)).toBe(false);
@@ -128,6 +142,14 @@ describe("contextCompaction", () => {
       state: "measured",
       enabled: true,
     })).toEqual({ status: "hidden" });
+  });
+
+  it("gates OpenCode compact on the server listing the compact command", () => {
+    const base = { provider: "opencode", state: "measured" as const, enabled: true };
+    expect(resolveContextCompactControl(base)).toEqual({ status: "hidden" });
+    expect(resolveContextCompactControl({ ...base, openCodeCompactAvailable: false })).toEqual({ status: "hidden" });
+    expect(resolveContextCompactControl({ ...base, openCodeCompactAvailable: true })).toEqual({ status: "ready" });
+    expect(resolveContextCompactControl({ ...base, openCodeCompactAvailable: true, turnActive: true })).toMatchObject({ status: "disabled" });
   });
 
   it("disables compact during a turn or pending input, and is ready when idle", () => {

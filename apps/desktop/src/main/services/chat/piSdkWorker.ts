@@ -662,6 +662,17 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
   // user's global defaults, and an ADE chat must not change what the Pi CLI
   // starts on.
   const settingsManager = createPiSettingsManager(pi.SettingsManager, init.cwd, init.agentDir);
+  if (init.compaction && settingsManager) {
+    const manager = record(settingsManager);
+    const compact = init.compaction;
+    if (typeof manager?.applyOverrides === "function") {
+      manager.applyOverrides({ compaction: {
+        ...(compact.enabled !== undefined ? { enabled: compact.enabled } : {}),
+        ...(compact.reserveTokens !== undefined ? { reserveTokens: compact.reserveTokens } : {}),
+        ...(compact.keepRecentTokens !== undefined ? { keepRecentTokens: compact.keepRecentTokens } : {}),
+      } });
+    }
+  }
   defaultThinkingLevel = piDefaultThinkingLevel(settingsManager);
   // Without a settings manager ADE cannot pin `projectTrusted`, and Pi's own
   // default would trust the checkout — so extensions stay off rather than

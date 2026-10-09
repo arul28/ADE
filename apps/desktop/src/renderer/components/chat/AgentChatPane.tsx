@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { compactFirstOffer } from "../../../shared/compactFirst";
+import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { compareTextInsensitive } from "../../../shared/formatting";
 import { useNavigate } from "react-router-dom";
@@ -5162,6 +5164,9 @@ export function AgentChatPane({
     : EMPTY_CHAT_EVENTS;
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
+  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId);
+  const latestCompactionKey = useMemo(() => latestCompactionKeyOf(selectedEvents), [selectedEvents]);
+
   const selectedSyncPending = renderedSessionId ? syncPendingBySession[renderedSessionId] === true : false;
   /**
    * Genuinely cold: a real session with neither a committed event list nor a
@@ -13646,6 +13651,7 @@ export function AgentChatPane({
           await agentChatApiRef.current.send({
             sessionId,
             text: finalText,
+            ...(compactFirst.sendRef.current?.sessionId === sessionId ? { compactFirst: compactFirst.sendRef.current.value } : {}),
             displayText: hasPastedPrompt
               ? finalDisplayText
               : finalDisplayText || (includeThreadComments ? "" : "Selected visual app context"),
@@ -13812,6 +13818,7 @@ export function AgentChatPane({
       provider: liveProvider,
       state: selectedUsageViewModel?.state ?? "unknown",
       enabled: Boolean(selectedUsageViewModel),
+      openCodeCompactAvailable: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy: busy || parallelLaunchBusy || projectTransitionBlocksChat || submitInFlightRef.current,
       pendingInput: Boolean(pendingInput),
@@ -13838,6 +13845,7 @@ export function AgentChatPane({
     }
   }, [
     busy,
+    sdkSlashCommands,
     composerSessionId,
     parallelLaunchBusy,
     pendingInput,
@@ -13848,6 +13856,7 @@ export function AgentChatPane({
     subagentView,
     turnActive,
   ]);
+  const retryCompaction = useCallback(() => { void compactContext(); }, [compactContext]);
 
   // Staged-row dispatch/edit remain fire-and-forget IPC. New active-turn sends
   // are atomic through steer({ dispatchMode }) and never enter the staged queue.
@@ -15986,6 +15995,17 @@ export function AgentChatPane({
   const composerAvailableModelIds = cursorCloudSessionActive ? cursorCloudModelIds : effectiveAvailableModelIds;
   const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive;
 
+  const compactionIdleMode = selectedSession?.compactionIdleMode;
+  const selectedProvider = selectedSession?.provider ?? "";
+  const measuredContextTokens = selectedUsageViewModel?.state === "measured" ? selectedUsageViewModel.usedTokens : null;
+  // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
+  // it only runs once a chat has sat an hour, when no deltas stream.
+  const idleCompactOffer = compactionIdleMode != null && compactFirst.idleWindowOpen && !turnActive && !pendingInput && measuredContextTokens != null
+    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, mode: compactionIdleMode, now: compactFirst.now })
+    : null;
+  const compactFirstEnabled = compactFirst.choice?.sessionId === selectedSessionId
+    ? compactFirst.choice.value : selectedSession?.compactionIdleMode === "always";
+  compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
   const composerElement = (
       <AgentChatComposer
             caretToEndRequest={composerCaretToEndRequest}
@@ -16031,6 +16051,9 @@ export function AgentChatPane({
             cursorCloudServiceTier={cursorCloudServiceTier}
             onCursorCloudServiceTierChange={handleCursorCloudServiceTierChange}
             usageViewModel={selectedUsageViewModel}
+            compactFirstOffer={idleCompactOffer}
+            compactFirstEnabled={compactFirstEnabled}
+            onCompactFirstChange={(value) => { if (selectedSessionId) compactFirst.setChoice({ sessionId: selectedSessionId, value }); }}
             compactionPulse={contextCompactionPulse}
             onCompactContext={compactContext}
             compactSessionProvider={selectedSession?.provider ?? null}
@@ -17113,6 +17136,8 @@ export function AgentChatPane({
                         onEditUnprocessedMessage={listEditUnprocessedMessage}
                         onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
                         onRetryProviderFailure={handleListRetryProviderFailure}
+                        onRetryCompaction={retryCompaction}
+                        latestCompactionKey={latestCompactionKey}
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
                         onStopSubagent={listStopSubagent}
                         mosaic={subagentView ? undefined : mosaicContext}

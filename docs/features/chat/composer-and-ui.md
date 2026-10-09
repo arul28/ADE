@@ -1289,10 +1289,33 @@ chat pane mount, which happens either way.
   count it stays `recalculating`; a failed authoritative read shows `?` /
   `unknown`. Streamed usage can move the dial during a turn, but the
   control-channel snapshot after settle/compaction is the authoritative value.
-  On Claude, Codex, and Pi, an idle measured dial is a compact control: click
-  sends `/compact` without replacing the unsent draft. Cursor, Droid, and
-  OpenCode stay read-only. Compacting while a turn or pending input is live is
-  disabled; ADE already auto-compacts Claude at 97% at a turn boundary.
+  The ring fills against the model's maximum window. A short warning-coloured
+  tick on the ring marks `compactAtTokens`, the point where the provider
+  compacts. Clicking the dial opens a "Context usage" popover: `312k of 1M used
+  · compacts at 400k`, the source of that point ("Your setting" or "Claude
+  default"), a **Compact now** button, and a "Provider compaction setting" link.
+  Compact now sends `/compact` without replacing the unsent draft. It appears for
+  Claude, Codex, Pi, and OpenCode when the OpenCode server lists `compact`
+  (`manualCompactAvailable` on the session summary for web and iOS). Cursor,
+  Droid, and ACP agents stay read-only. It is disabled while a turn or pending
+  input is live; ADE already compacts Claude at 97% of `compactAtTokens` at a
+  turn boundary.
+- **Compact first after an hour idle.** For a Claude chat whose last turn ended
+  60 minutes ago or more (the prompt cache has expired) and whose last measured
+  context is 100,000 tokens or more, a pill left of the meter reads `Compact
+  first · 412k`. The tooltip gives the trade: "Compacting first re-sends about 8k
+  tokens instead of 412k" (the last `postTokens` for the chat, else 2% of the
+  context). The pill is off by default; a click turns it on for the next send
+  only. With it on, `chat.send` carries `compactFirst: true` and the brain runs
+  `/compact` as its own turn (90 s limit) before the message. If that compaction
+  does not complete, the message stays unsent and the user sees "Compaction did
+  not finish. Your message was not sent." The Claude provider setting "After an
+  hour idle" chooses `ask` (the pill), `always` (the pill starts on), or
+  `never` (no pill). Only a send that carries `compactFirst: true` compacts
+  first, so CLI, automation, and queued sends never do. When Claude's own
+  `resume_return` question is pending, ADE does not also compact. Thresholds:
+  `shared/compactFirst.ts` (`COMPACT_FIRST_IDLE_MS`, 100k). Desktop, web, and
+  iOS share the rule.
 - **Question answering.** When a question-type pending input is active, the
   question card *replaces* the composer textarea (`AskQuestionComposer`) and
   the model / permission / effort footer is hidden until it resolves. Selecting

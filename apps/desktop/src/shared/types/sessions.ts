@@ -43,7 +43,7 @@ export const SESSION_ACTIVITY_VALUES = [
  * the detected one comes back when it stops. `ade chat activity` does not
  * accept these.
  */
-export const SESSION_SYSTEM_ACTIVITY_VALUES = ["recording"] as const;
+export const SESSION_SYSTEM_ACTIVITY_VALUES = ["recording", "compacting", "compaction_failed"] as const;
 
 export type SessionActivityValue =
   | (typeof SESSION_ACTIVITY_VALUES)[number]
@@ -58,6 +58,8 @@ export type SessionActivitySource = "agent" | "detected";
  * confirmed, so the row's elapsed reads "Testing 3m" for three minutes of tests.
  */
 export type SessionActivityReport = {
+  contextTokens?: number;
+  failDetail?: string;
   value: SessionActivityValue;
   source: SessionActivitySource;
   updatedAt: string;

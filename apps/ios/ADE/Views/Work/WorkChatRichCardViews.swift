@@ -1612,6 +1612,7 @@ struct WorkEventCardView: View, Equatable {
   let card: WorkEventCardModel
   var onOpenFile: ((String) -> Void)? = nil
   var onOpenPr: ((Int) -> Void)? = nil
+  var onCompact: (() -> Void)? = nil
 
   var navigationTargets: WorkNavigationTargets? {
     guard card.kind == "completionReport" else { return nil }
@@ -1625,7 +1626,7 @@ struct WorkEventCardView: View, Equatable {
 
   var body: some View {
     if card.kind == "contextCompact" {
-      WorkContextCompactDivider(summary: card.body, isInProgress: card.isInProgress)
+      WorkContextCompactDivider(summary: card.body, isInProgress: card.isInProgress, startedAt: card.timestamp, onRetry: onCompact)
     } else if card.kind == "conversationReset" {
       WorkConversationResetDivider()
     } else if card.kind == "status" {

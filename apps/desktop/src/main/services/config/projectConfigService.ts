@@ -1,3 +1,4 @@
+import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -1531,6 +1532,9 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   }
 
   const chatRaw = isRecord(value.chat) ? value.chat : null;
+  if (isRecord(value.compaction)) {
+    out.compaction = Object.fromEntries(Object.entries(value.compaction).map(([id, settings]) => [id, normalizeCompactionSettings(settings)]));
+  }
   const chat = coerceAiChatConfig(value.chat);
   if (chat) out.chat = chat;
 
@@ -1943,6 +1947,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
   const out: AiConfig = {
     mode: localAi?.mode ?? sharedAi?.mode,
     defaultProvider: localAi?.defaultProvider ?? sharedAi?.defaultProvider,
+    ...((sharedAi?.compaction || localAi?.compaction) ? { compaction: { ...sharedAi?.compaction, ...localAi?.compaction } } : {}),
     ...(Object.keys(taskRouting).length ? { taskRouting } : {}),
     ...(Object.keys(features).length ? { features } : {}),
     ...(Object.keys(budgets).length ? { budgets } : {}),
@@ -3323,6 +3328,19 @@ export function createProjectConfigService({
 
     save(candidate: ProjectConfigCandidate): ProjectConfigSnapshot {
       return saveCandidate(candidate);
+    },
+
+    /**
+     * Merge a partial AI config into `.ade/local.yaml`. The shared layer is no
+     * longer written (see `saveCandidate`), so a merge into it would drop the
+     * change without an error.
+     */
+    updateAiConfig(partial: Partial<AiConfig>): ProjectConfigSnapshot {
+      const snapshot = readSnapshotFromDisk();
+      return saveCandidate({
+        shared: snapshot.shared,
+        local: { ...snapshot.local, ai: mergeAiConfig(snapshot.local.ai ?? {}, partial) ?? {} },
+      });
     },
 
     setPrTranscriptGists(args: { enabled?: boolean }): ProjectConfigSnapshot {

@@ -160,7 +160,7 @@ Two helpers summarise a parsed stream:
 | `turn_diff_summary` | Git-level before/after SHA + per-file stats for a completed turn. |
 | `delegation_state` | Delegated worker state updates. |
 | `context_usage` | Provider-neutral context occupancy. Automatic Claude samples use `origin: "live" \| "snapshot" \| "compact"` and are filtered out of the transcript; `live` is the responsive stream estimate, while `snapshot`/`compact` come from the SDK control channel after initialization, settled turns, and compact completion. `state` is `measured`, `compacting`, `recalculating`, or `unknown`; non-measured states deliberately hide the old percentage. Monotonic `sampleId` plus `capturedAt` support stale-response rejection and diagnostics. The user-invoked `/context` command carries `origin: "command"` (historical undefined-origin snapshots are treated the same) and still renders its inline breakdown card, classified by each category's `kind` (`used` / `free` / `buffer` / `deferred`) — never by the display name `"free"`. Optional typed fields (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`) carry the breakdown the meter's hover shows without reparsing the display `categories`. |
-| `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary and `state: "completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, and per-session count. `trigger: "ade_fallback"` identifies ADE's guarded fallback. A completed boundary invalidates older context-meter usage on desktop, ADE Code, and iOS; exact post-compaction snapshots may refill the meter immediately, while stale same-turn aggregate counters are ignored. |
+| `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary, `"completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, per-session count, and `summary` (Claude's `PostCompact` hook, OpenCode's summary text), and `"failed"` carries `failReason` (`interrupted`, `timed_out`, `teardown`, `provider_error`, `quota`), the provider's `failDetail`, and the account's `accountLabel`. `trigger` is `manual` (the turn was a typed or clicked `/compact`), `auto`, or `ade_fallback` (ADE's guarded fallback). When a turn ends, ADE closes every compaction still open for it as `failed`, so no divider spins after its turn. A completed boundary invalidates older context-meter usage on desktop, ADE Code, and iOS; a failed one leaves the last measured value. |
 | `web_search` | Provider-neutral web-search/fetch lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. Actions can carry `query`, `queries`, `title`, `url`, and `snippet`; desktop and iOS render URL actions as in-app-browser result chips, while the TUI keeps a concise one-line action summary. Codex 0.145 additionally emits structured `results` (an array of `{ url, title, snippet }` capped at 8 by the adapter) plus `resultsTotal` (the pre-cap hit count). Renderers thread these onto the same grouped row — desktop/iOS surface them as `Sources` chips (deduped against the action URLs) and the Sources tab, and the TUI shows up to three `title — domain` preview lines with a `+N more` tail. Codex emits native web-search items; `claudeStructuredActivity.ts` maps Claude server-tool blocks into the same event. Every surface that lists sources reads these results and URL actions through `shared/chatSources.ts`; the queries are metadata on the sources they produced, never items of their own. The desktop row header shows the result count (`resultsTotal`, else the results, else the URL actions) without being expanded. |
 | `sources` | Data-only citations for an assistant message: `sources: ChatSourceRef[]` plus optional `itemId`/`turnId`. Claude text-block citations, Codex `agentMessage.memoryCitation`, and ACP `resource_link` message blocks emit it. It draws no row on any surface (desktop hides it with the token events; iOS decodes it as `.unknown`; the TUI prints nothing for it) and does not break the streaming assistant message (`shouldFlushBufferedAssistantTextForEvent` returns false). Sources, the turn chip, and the fold count read it. |
 | `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. OpenCode's two origins are split by where the `file` part lives: an assistant-owned part is model output (`codex_image_generation`), while a tool attachment is what the tool returned (`codex_image_view`) — except attachments from a recognized image-generation tool, which keep the generation card. The view line renders an inline preview for data URIs only (the renderer CSP pins `img-src` to an allowlist plus data:/blob:, so a remote preview would paint an empty box unless it is read through the chat's machine as a data URL — `CodexImageViewLine` loads a local one via `readAttachmentImageDataUrl` with the runtime pin) and never prints a data URI as its name; remote and local sources keep the `open` affordance. A local path is offered as **Open** only when the chat runs on this computer; a foreign chat's path names a file on that machine, which this computer cannot open, so the button is withheld while the thumbnail still loads through the chat's pin. Consecutive views in one turn fold into a single `Viewed N images` strip (`imageViewSiblings`, carried through `ChatTranscriptRenderEnvelope` / `ChatTranscriptGroupedEnvelope`): a later view joins the strip when only folded work — tool calls, commands, narration — sits between them, and a row the reader keeps seeing starts a new strip. Large stored data URIs are removed with original/omitted byte metadata. |
@@ -193,10 +193,34 @@ resolves the child's own provider from the session list and the card wears
 that; an unresolved child falls back to the parent runtime's mark rather than
 rendering nothing or a guess.
 
+## Compaction divider and activity
+
+Every surface draws one quiet divider row per `compactionId`, the same height as other dividers:
+
+| State | Copy |
+|---|---|
+| Running | `Compacting context · 481k tokens`, plus `· 12 s` after five seconds. The rule lines pulse. |
+| Done | `Context compacted · 481k → 6k · 28 s`, then the trigger: `you asked`, `automatic`, or `ADE (near limit)`, and `· 2nd this chat` from the second compaction on. |
+| Failed | `Compaction failed` (or `Compaction timed out`), plus `· weekly limit on <account>` or `· usage limit on <account>` when the provider said so, and a **Retry** action that sends `/compact`. Hover shows the provider's text. |
+
+A done row with a `summary` expands to show it. Desktop is `ContextCompactDivider.tsx`; iOS is
+`WorkContextCompactDivider.swift`. The copy matches.
+
+`sessionActivityDetector` sets the system activity `compacting` while a compaction runs ("Compacting… · 481k" on
+the Work row and sidebar), restores the prior activity when it completes, and sets `compaction_failed`
+("Compaction failed", amber) when it fails. The next turn clears `compaction_failed`.
+
+A compaction-only turn that hits a usage limit does not move accounts or schedule a resume "continue". Assistant
+text whose origin timestamp is older than the turn's start is dropped, so a resumed thread cannot replay an older
+turn's error under a new turn.
+
 ## Claude context guardrails
 
-Live Claude occupancy emits at most once every five seconds and only after a
-one-point percentage change. ADE never preempts the SDK's natural compaction.
+Live Claude occupancy is the last request's input + cache read + cache creation tokens (output tokens are not
+counted), measured against the model's maximum window (`modelUsage[].contextWindow`, else the registry). The SDK's
+`getContextUsage().raw_max_tokens` is the auto-compact window, not the model maximum, so ADE keeps it separately as
+`compactAtTokens`; the 80/90/97% guardrail gates measure against `compactAtTokens`. It emits at most once every
+five seconds and only after a one-point percentage change. ADE never preempts the SDK's natural compaction.
 The streamed reading is refreshed from authoritative SDK `getContextUsage()`
 snapshots after runtime initialization, every settled turn, and compact
 completion. A compact start emits `compacting`; completion emits
