@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import {
   attachmentIsReferenceOnly,
@@ -8,7 +7,6 @@ import {
 } from "../../../shared/types/chat";
 import {
   readAgentAccessibleFileBytes,
-  readFileWithinRootSecure,
   type DirtyFileTextLookup,
 } from "../shared/utils";
 import { imageNotInlinedHintPart } from "./attachmentInlineGuard";
@@ -148,18 +146,13 @@ export async function buildClaudeV2MessageAsync(
       // an image over 5 MB of base64 or past the pixel limits, so every image
       // is fitted first. One that cannot be fitted becomes a path hint and the
       // turn still runs. Normal sends and mid-turn steers both land here.
-      const fitted = await fitImageForProviderInline(data, mediaType);
+      const fitted = await fitImageForProviderInline(data, mediaType, {
+        provider: "claude",
+        logger: options.logger,
+      });
       if (fitted.kind === "omit") {
-        options.logger?.warn("agent_chat.inline_image_omitted", {
-          provider: "claude",
-          bytes: data.byteLength,
-          reason: fitted.reason,
-        });
         content.push(imageNotInlinedHintPart(attachment.path, fitted.reason));
         continue;
-      }
-      if (fitted.resized) {
-        options.logger?.info("agent_chat.inline_image_resized", { provider: "claude", ...fitted.resized });
       }
       content.push({
         type: "image",
@@ -173,89 +166,6 @@ export async function buildClaudeV2MessageAsync(
     }
   }
 
-  return {
-    type: "user",
-    session_id: options.sessionId?.trim() ?? "",
-    parent_tool_use_id: null,
-    message: { role: "user", content },
-  };
-}
-
-/**
- * Build the message payload for a Claude SDK session turn.
- * When image attachments are present, returns a streaming-input-format
- * SDKUserMessage with image content blocks (per Agent SDK docs).
- * Otherwise returns a plain string.
- */
-export function buildClaudeV2Message(
-  promptText: string,
-  attachments: ResolvedAgentChatFileRef[],
-  options: { baseDir?: string; sessionId?: string | null; forceUserMessage: true },
-): SDKUserMessagePartial;
-export function buildClaudeV2Message(
-  promptText: string,
-  attachments: ResolvedAgentChatFileRef[],
-  options?: BuildClaudeV2MessageOptions,
-): string | SDKUserMessagePartial;
-export function buildClaudeV2Message(
-  promptText: string,
-  attachments: ResolvedAgentChatFileRef[],
-  options: BuildClaudeV2MessageOptions = {},
-): string | SDKUserMessagePartial {
-  const wrapAsUserMessage = (text: string): SDKUserMessagePartial => ({
-    type: "user",
-    session_id: options.sessionId?.trim() ?? "",
-    parent_tool_use_id: null,
-    message: { role: "user", content: [{ type: "text", text }] },
-  });
-
-  const imageAttachments = attachments.filter(sendsImageBytes);
-  if (!imageAttachments.length) {
-    // No images -- include file paths as text hints, return plain string
-    const text = attachments.length
-      ? `${promptText}\n\n${attachments.map(attachmentPathHint).join("\n")}`
-      : promptText;
-    return options.forceUserMessage ? wrapAsUserMessage(text) : text;
-  }
-
-  // Build content blocks following the Agent SDK streaming input format:
-  // https://platform.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
-  const content: Array<Record<string, unknown>> = [
-    { type: "text", text: promptText },
-  ];
-
-  for (const attachment of attachments) {
-    if (!sendsImageBytes(attachment)) {
-      content.push({ type: "text", text: `\n${attachmentPathHint(attachment)}` });
-      continue;
-    }
-
-    try {
-      const mediaType = inferAttachmentMediaType(attachment);
-      if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
-        content.push({ type: "text", text: `\n[Image attached (${mediaType}): ${attachment.path}]` });
-        continue;
-      }
-      const secureRoot = attachment._rootPath ?? options.baseDir;
-      const resolvedPath = attachment._resolvedPath ?? attachment.path;
-      const data = secureRoot
-        ? readFileWithinRootSecure(secureRoot, resolvedPath)
-        : fs.readFileSync(resolvedPath);
-      content.push({
-        type: "image",
-        source: { type: "base64", media_type: mediaType, data: data.toString("base64") },
-      });
-    } catch (error) {
-      content.push({
-        type: "text",
-        text: `\n[Image unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}]`,
-      });
-    }
-  }
-
-  // Match the SDKUserMessage shape that session.send() accepts in V2.
-  // An empty session_id mirrors the SDK's own string-to-message conversion
-  // before the first init event establishes the concrete session ID.
   return {
     type: "user",
     session_id: options.sessionId?.trim() ?? "",

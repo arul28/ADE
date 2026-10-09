@@ -6,7 +6,8 @@ import {
   PROVIDER_INLINE_IMAGE_TARGET_EDGE_PX,
   formatAttachmentSize,
 } from "../../../shared/chatAttachmentLimits";
-import { imageDimensions } from "../shared/imageDimensions";
+import { imageDimensions, type ImageDimensions } from "../shared/imageDimensions";
+import type { Logger } from "../logging/logger";
 
 /**
  * Fits an image to what a model provider accepts inline, so an attachment can
@@ -37,19 +38,47 @@ export type ProviderInlineImageFit =
   }
   | { kind: "omit"; reason: string };
 
-/** Largest image ADE will decode to downscale: 40 MP is a 160 MB RGBA buffer. */
-const MAX_DECODE_PIXELS = 40_000_000;
+/**
+ * Largest image ADE will decode to downscale: 25 MP is about 100 MB of RGBA. A
+ * 6K display capture is ~20 MP, so those still fit; anything bigger is omitted.
+ */
+const MAX_DECODE_PIXELS = 25_000_000;
 /** Smallest long edge worth sending; below this the hint is more useful. */
 const MIN_FITTED_EDGE_PX = 512;
 const JPEG_QUALITIES = [85, 70] as const;
 
 type Rgba = { width: number; height: number; data: Uint8Array; hasAlpha: boolean };
 
+export type FitImageOptions = {
+  /** Names the provider in the log line, e.g. `claude` or `opencode`. */
+  provider?: string;
+  logger?: Pick<Logger, "info" | "warn">;
+};
+
+/**
+ * Fits one image and logs what happened: a resize at info, an omission at warn.
+ * Every inlining caller reports the same way, so none of them logs on its own.
+ */
 export async function fitImageForProviderInline(
   bytes: Buffer,
   mediaType: string,
+  options?: FitImageOptions,
 ): Promise<ProviderInlineImageFit> {
-  const dims = imageDimensions(bytes);
+  const fit = await fitImage(bytes, mediaType);
+  if (fit.kind === "omit") {
+    options?.logger?.warn("agent_chat.inline_image_omitted", {
+      provider: options?.provider,
+      bytes: bytes.byteLength,
+      reason: fit.reason,
+    });
+  } else if (fit.resized) {
+    options?.logger?.info("agent_chat.inline_image_resized", { provider: options?.provider, ...fit.resized });
+  }
+  return fit;
+}
+
+async function fitImage(bytes: Buffer, mediaType: string): Promise<ProviderInlineImageFit> {
+  const dims = imageDimensions(bytes) ?? gifOrWebpDimensions(bytes);
   const longEdge = dims ? Math.max(dims.width, dims.height) : 0;
   if (bytes.byteLength <= MAX_PROVIDER_INLINE_IMAGE_BYTES && longEdge <= MAX_PROVIDER_INLINE_IMAGE_EDGE_PX) {
     return { kind: "inline", data: bytes, mediaType };
@@ -59,8 +88,11 @@ export async function fitImageForProviderInline(
     const size = formatAttachmentSize(bytes.byteLength);
     return dims ? `${size}, ${dims.width}×${dims.height} px` : size;
   };
-  const isPng = mediaType === "image/png";
-  const isJpeg = mediaType === "image/jpeg";
+  // The bytes pick the codec, not the declared type: a PNG labelled image/jpeg
+  // must not reach the JPEG decoder. The declared type is only a fallback.
+  const actualMediaType = sniffImageMediaType(bytes) ?? mediaType;
+  const isPng = actualMediaType === "image/png";
+  const isJpeg = actualMediaType === "image/jpeg";
   if (!dims || (!isPng && !isJpeg)) {
     return {
       kind: "omit",
@@ -70,16 +102,26 @@ export async function fitImageForProviderInline(
   if (dims.width * dims.height > MAX_DECODE_PIXELS) {
     return { kind: "omit", reason: `${describe()}, too large to resize` };
   }
+  // pngjs inflates an interlaced image whole, with no size cap, so it is not
+  // decoded. IHDR's interlace method is the byte at offset 28.
+  if (isPng && bytes[28] === 1) {
+    return { kind: "omit", reason: `${describe()}, an interlaced PNG ADE does not resize` };
+  }
 
   try {
-    // Yield once before the CPU-bound decode so queued I/O gets a turn.
+    // Yield once before the synchronous decode so queued I/O gets a turn.
     await yieldToEventLoop();
     const decoded = isPng ? decodePng(bytes) : decodeJpegRgba(bytes);
     let edge = Math.min(PROVIDER_INLINE_IMAGE_TARGET_EDGE_PX, Math.max(decoded.width, decoded.height));
-    while (edge >= MIN_FITTED_EDGE_PX) {
-      await yieldToEventLoop();
-      const scaled = resizeToLongEdge(decoded, edge);
+    // The starting edge is always tried, even below MIN_FITTED_EDGE_PX, so a
+    // small PNG bloated by metadata is re-encoded instead of omitted. Only the
+    // further shrinking stops at the floor.
+    for (;;) {
+      const scaled = await resizeToLongEdge(decoded, edge);
       for (const candidate of encodeCandidates(scaled, isPng)) {
+        // Each encode is synchronous and can run for tens of milliseconds on a
+        // large image, so the loop yields before each one.
+        await yieldToEventLoop();
         const encoded = candidate();
         if (encoded.data.byteLength <= MAX_PROVIDER_INLINE_IMAGE_BYTES) {
           return {
@@ -94,6 +136,7 @@ export async function fitImageForProviderInline(
         }
       }
       edge = Math.floor(edge * 0.75);
+      if (edge < MIN_FITTED_EDGE_PX) break;
     }
     return { kind: "omit", reason: `${describe()}, could not be resized under the ${formatAttachmentSize(MAX_PROVIDER_INLINE_IMAGE_BYTES)} inline limit` };
   } catch (error) {
@@ -104,6 +147,50 @@ export async function fitImageForProviderInline(
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** The codec the bytes actually are, from their magic number; null for anything else. */
+function sniffImageMediaType(bytes: Buffer): string | null {
+  if (bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return "image/png";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  return null;
+}
+
+/**
+ * Dimensions from a GIF or WebP header. The shared `imageDimensions` reads only
+ * PNG and JPEG; these two are read here so their size limits still apply.
+ */
+function gifOrWebpDimensions(bytes: Buffer): ImageDimensions | null {
+  return gifDimensions(bytes) ?? webpDimensions(bytes);
+}
+
+/** Logical screen size, little-endian at bytes 6 and 8. */
+function gifDimensions(bytes: Buffer): ImageDimensions | null {
+  if (bytes.length < 10) return null;
+  const signature = bytes.toString("latin1", 0, 6);
+  if (signature !== "GIF87a" && signature !== "GIF89a") return null;
+  return { width: bytes.readUInt16LE(6), height: bytes.readUInt16LE(8) };
+}
+
+/** Canvas size from the first chunk: VP8 (lossy), VP8L (lossless) or VP8X. */
+function webpDimensions(bytes: Buffer): ImageDimensions | null {
+  if (bytes.length < 25) return null;
+  if (bytes.toString("latin1", 0, 4) !== "RIFF" || bytes.toString("latin1", 8, 12) !== "WEBP") return null;
+  const chunk = bytes.toString("latin1", 12, 16);
+  if (chunk === "VP8L") {
+    const bits = bytes.readUInt32LE(21);
+    return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
+  }
+  if (bytes.length < 30) return null;
+  if (chunk === "VP8 ") {
+    return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff };
+  }
+  if (chunk === "VP8X") {
+    return { width: bytes.readUIntLE(24, 3) + 1, height: bytes.readUIntLE(27, 3) + 1 };
+  }
+  return null;
 }
 
 function decodePng(bytes: Buffer): Rgba {
@@ -204,8 +291,9 @@ function axisWeights(srcSize: number, dstSize: number): AxisWeights[] {
 /**
  * Box-filter downscale with premultiplied alpha. Never upscales. Works one
  * output row at a time, so memory beyond the output stays at two float rows.
+ * Yields every 64 rows so one large resize does not hold the event loop.
  */
-function resizeToLongEdge(image: Rgba, longEdge: number): Rgba {
+async function resizeToLongEdge(image: Rgba, longEdge: number): Promise<Rgba> {
   const scale = longEdge / Math.max(image.width, image.height);
   if (scale >= 1) return image;
   const width = Math.max(1, Math.round(image.width * scale));
@@ -217,6 +305,7 @@ function resizeToLongEdge(image: Rgba, longEdge: number): Rgba {
   const row = new Float64Array(width * 4);
   const acc = new Float64Array(width * 4);
   for (let y = 0; y < height; y += 1) {
+    if (y % 64 === 0) await yieldToEventLoop();
     acc.fill(0);
     const { start: sy0, weights: wy } = yw[y]!;
     for (let k = 0; k < wy.length; k += 1) {

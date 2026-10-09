@@ -15,12 +15,14 @@ import {
  * content (`buildStreamingUserContent`), ACP prompt blocks
  * (`buildAcpPromptBlocks`), and the Cursor/Pi/Droid workers
  * (`materializeWorkerImages`). Images there go through
- * `fitImageForProviderInline`, which downscales them to the provider limits;
- * non-image files are checked against {@link MAX_PROVIDER_INLINE_FILE_BYTES}.
- * Whatever does not fit falls back to a text hint naming the path, which every
- * provider can still act on.
+ * `fitImageForProviderInline`, which downscales them to the provider limits.
+ * Non-image files are checked against {@link MAX_PROVIDER_INLINE_FILE_BYTES} in
+ * `buildStreamingUserContent`; ACP and the worker prompt text
+ * (`buildAgentPromptTextBlocks`) inline non-image text only up to a 512 KB
+ * limit of their own. Whatever does not fit falls back to a text hint naming
+ * the path, which every provider can still act on.
  */
-export function exceedsProviderInlineLimit(byteLength: number): boolean {
+export function exceedsInlineFileLimit(byteLength: number): boolean {
   return byteLength > MAX_PROVIDER_INLINE_FILE_BYTES;
 }
 
@@ -29,20 +31,23 @@ export function exceedsProviderInlineLimit(byteLength: number): boolean {
  * agent can read the file itself with its own tools, and says why — an
  * unexplained omission reads as a bug to the model and to the user.
  */
-function attachmentTooLargeToInlineText(displayPath: string, byteLength: number): string {
-  return `[Attachment not inlined: ${displayPath} is ${formatAttachmentSize(byteLength)}, over the ${formatAttachmentSize(MAX_PROVIDER_INLINE_FILE_BYTES)} inline limit. Read it from that path if you need its contents.]`;
+function attachmentTooLargeToInlineText(displayPath: string, byteLength: number, limitBytes: number): string {
+  return `[Attachment not inlined: ${displayPath} is ${formatAttachmentSize(byteLength)}, over the ${formatAttachmentSize(limitBytes)} inline limit. Read it from that path if you need its contents.]`;
 }
 
 /**
- * The hint as a content part, ready to push. Every inlining call site builds
- * the same `text` part with the same leading newline, so they take the whole
- * part from here rather than each re-deriving the wording and spacing.
+ * The hint as a content part, ready to push. The content-part call sites take
+ * the whole part from here so the wording and spacing live in one place. The
+ * worker sites join their hints into the prompt with `withOmittedImageHints`
+ * instead. The `limitBytes` is the limit that call site actually enforced, so
+ * the hint never names a different number from the one that rejected the file.
  */
 export function inlineAttachmentHintPart(
   displayPath: string,
   byteLength: number,
+  limitBytes: number,
 ): { type: "text"; text: string } {
-  return { type: "text", text: `\n${attachmentTooLargeToInlineText(displayPath, byteLength)}` };
+  return { type: "text", text: `\n${attachmentTooLargeToInlineText(displayPath, byteLength, limitBytes)}` };
 }
 
 /** The stand-in for an image `fitImageForProviderInline` could not fit. */

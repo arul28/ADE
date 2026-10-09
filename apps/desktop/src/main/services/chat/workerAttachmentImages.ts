@@ -5,13 +5,6 @@ import { readFileWithinRootSecure } from "../shared/utils";
 import { imageNotInlinedText } from "./attachmentInlineGuard";
 import { fitImageForProviderInline } from "./providerInlineImage";
 
-/**
- * Ceiling for an image file the worker reads. Anything that size may be
- * attached, and `fitImageForProviderInline` shrinks it to what the provider
- * accepts inline before it is base64'd into the request.
- */
-const WORKER_MAX_IMAGE_FILE_BYTES = MAX_CHAT_ATTACHMENT_BYTES;
-
 export type WorkerPathImageSource = {
   path: string;
   resolvedPath?: string;
@@ -50,35 +43,36 @@ export function workerPathImagesFromAttachments(
   return images;
 }
 
+/**
+ * Materializes worker images for the provider. An image that cannot be fitted
+ * to the provider limits is left out and returned as a prompt-ready hint in
+ * `omittedHints`, so the send does not fail and the caller can append the hint
+ * (see `withOmittedImageHints`) for the agent to read the file itself.
+ *
+ * `maxBytes` caps the file read; it defaults to the attachment cap, because
+ * `fitImageForProviderInline` shrinks whatever is read to the provider limits.
+ */
 export async function materializeWorkerImages(
   images: readonly WorkerIpcImage[] | undefined,
   options?: {
     maxBytes?: number;
     label?: string;
-    /**
-     * Called with a prompt-ready hint for each path image that cannot be fitted
-     * to the provider limits. The image is left out instead of failing the
-     * send; the caller appends the hint so the agent can read the file itself.
-     */
-    onOmitted?: (hint: string) => void;
   },
-): Promise<WorkerMaterializedImage[]> {
-  if (!images?.length) return [];
-  const maxBytes = options?.maxBytes ?? WORKER_MAX_IMAGE_FILE_BYTES;
+): Promise<{ images: WorkerMaterializedImage[]; omittedHints: string[] }> {
+  if (!images?.length) return { images: [], omittedHints: [] };
+  const maxBytes = options?.maxBytes ?? MAX_CHAT_ATTACHMENT_BYTES;
   const label = options?.label ?? "Chat worker";
   const out: WorkerMaterializedImage[] = [];
+  const omittedHints: string[] = [];
   for (const image of images) {
     const materialized = await materializeOneWorkerImage(image, maxBytes, label);
     if ("omitted" in materialized) {
-      if (!options?.onOmitted) {
-        throw new Error(`${label} image could not be inlined: ${materialized.omitted}`);
-      }
-      options.onOmitted(materialized.omitted);
+      omittedHints.push(materialized.omitted);
       continue;
     }
     out.push(materialized);
   }
-  return out;
+  return { images: out, omittedHints };
 }
 
 /** Appends omitted-image hints to a worker prompt. */

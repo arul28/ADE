@@ -60,7 +60,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import { WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
+import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -1070,13 +1070,14 @@ function parseLeadingIosContextChips(text: string): { chips: string[]; rest: str
 }
 
 /**
- * Whether a user message's attachments reached the agent. Queued, unprocessed
- * and failed sends did not; a message with no delivery state predates the
- * field and was delivered.
+ * Whether a user message's attachments reached the agent. Only a state that
+ * proves delivery counts: `processed`, `delivered` or `inline`. A message with
+ * no delivery state predates the field and was delivered. `accepted` ("Steering…",
+ * not read yet), `queued`, `unprocessed` and `failed` do not get the check.
  */
 function userMessageAttachmentsAccepted(event: Extract<AgentChatEvent, { type: "user_message" }>): boolean {
   const state = event.deliveryState;
-  return state !== "queued" && state !== "unprocessed" && state !== "failed";
+  return state === undefined || state === "processed" || state === "delivered" || state === "inline";
 }
 
 function UserMessageSendConfirmations({
@@ -2098,7 +2099,13 @@ function isKnownModelRefForDescriptor(desc: ModelDescriptor, value?: string): bo
     || (desc.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalized);
 }
 
-function resolveModelLabel(modelId?: string, model?: string): string | null {
+/** The Claude placeholder names no model, so it is treated as no model at all. */
+function realModelName(model?: string): string | undefined {
+  return model === CLAUDE_SYNTHETIC_MODEL ? undefined : model;
+}
+
+function resolveModelLabel(modelId?: string, rawModel?: string): string | null {
+  const model = realModelName(rawModel);
   if (modelId) {
     const desc = getModelById(modelId);
     if (desc) {
@@ -2122,13 +2129,14 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
   return null;
 }
 
-function resolveModelMeta(modelId?: string, model?: string): {
+function resolveModelMeta(modelId?: string, rawModel?: string): {
   label: string | null;
   family: string | null;
   cliCommand: string | null;
   modelId: string | null;
   providerModelId: string | null;
 } {
+  const model = realModelName(rawModel);
   const key = modelId ?? model;
   const descriptor = key ? (getModelById(key) ?? resolveModelDescriptor(key)) : undefined;
   const idHint = String(modelId ?? model ?? "").trim();
@@ -4438,12 +4446,7 @@ function DoneTurnDivider({
   const [usageDetailsOpen, setUsageDetailsOpen] = useState(false);
   const turnProof = proofArtifacts ?? EMPTY_PROOF_ARTIFACTS;
   const completed = event.status === "completed";
-  // Older Claude turns that died on a client-side error recorded the SDK's
-  // placeholder model "<synthetic>"; it names no model, so it shows none.
-  const syntheticModel = event.model === "<synthetic>";
-  const { label: modelLabel } = syntheticModel
-    ? { label: null }
-    : resolveModelMeta(event.modelId, event.model);
+  const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
   const reasonLabel = completed ? null : terminalReasonLabel(event.terminalReason);
   // Same rule as the fold row's `Worked for …`: any measured duration shows.
   const ranFor = durationMs !== null && durationMs > 0
@@ -4479,7 +4482,7 @@ function DoneTurnDivider({
     >
         {!completed && modelLabel ? (
           <span className="inline-flex items-center gap-1.5 font-sans">
-            <ModelGlyph modelId={event.modelId} model={event.model} size={12} className="shrink-0" />
+            <ModelGlyph modelId={event.modelId} model={realModelName(event.model)} size={12} className="shrink-0" />
             <span className="font-medium">{modelLabel}</span>
           </span>
         ) : null}

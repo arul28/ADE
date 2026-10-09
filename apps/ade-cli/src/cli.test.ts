@@ -1958,11 +1958,12 @@ describe("ADE CLI", () => {
   });
 
   it("only disables machine runtime build checks for explicit socket overrides", () => {
+    const machineSocket = resolveMachineAdeLayout().socketPath;
     expect(
-      shouldEnforceMachineRuntimeBuildCompatibility(null),
+      shouldEnforceMachineRuntimeBuildCompatibility(null, machineSocket),
     ).toBe(true);
     expect(
-      shouldEnforceMachineRuntimeBuildCompatibility("/tmp/ade.sock"),
+      shouldEnforceMachineRuntimeBuildCompatibility("/tmp/ade.sock", machineSocket),
     ).toBe(false);
   });
 

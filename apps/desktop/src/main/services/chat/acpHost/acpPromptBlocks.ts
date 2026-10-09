@@ -105,7 +105,7 @@ export async function buildAcpPromptBlocks(
         } else {
           // ACP agents may route to an Anthropic model, which rejects an image
           // over 5 MB of base64, so images are fitted before they are inlined.
-          const fitted = await fitImageForProviderInline(bytes, imageMimeType(attachmentAgentPath(attachment)));
+          const fitted = await fitImageForProviderInline(bytes, imageMimeType(attachmentAgentPath(attachment)), { provider: "acp" });
           blocks.push(fitted.kind === "omit"
             ? imageNotInlinedHintPart(attachment.path, fitted.reason)
             : args.imagePrompt({
@@ -117,7 +117,7 @@ export async function buildAcpPromptBlocks(
       }
 
       if (bytes.byteLength > MAX_INLINE_TEXT_BYTES) {
-        blocks.push(inlineAttachmentHintPart(attachment.path, bytes.byteLength));
+        blocks.push(inlineAttachmentHintPart(attachment.path, bytes.byteLength, MAX_INLINE_TEXT_BYTES));
       } else if (hasNullByte(bytes)) {
         blocks.push(textBlock(`\nAttachment omitted: ${attachment.path} (binary or unsupported file).`));
       } else {

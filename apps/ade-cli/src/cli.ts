@@ -21748,11 +21748,13 @@ function machineRuntimeMismatchReason(
  * its chats lost their turns (2026-10-09).
  */
 export function shouldEnforceMachineRuntimeBuildCompatibility(
-  socketPathOverride?: string | null,
-  socketPath?: string | null,
+  socketPathOverride: string | null | undefined,
+  socketPath: string,
 ): boolean {
   if (socketPathOverride?.trim()) return false;
-  return !socketPath || isMachineDefaultRuntimeSocket(socketPath);
+  // A TCP brain is never replaced, but its build and version checks still run.
+  if (socketPath.startsWith("tcp://")) return true;
+  return isMachineDefaultRuntimeSocket(socketPath);
 }
 
 /** A live brain on a socket this CLI does not manage did not match it; it stays up. */
@@ -22112,7 +22114,8 @@ async function connectMachineRuntimeDaemon(
   const expectedBuildHash = isTcpSocket || !enforceBuildCompatibility
     ? null
     : await resolveExpectedMachineRuntimeBuildHash();
-  const preferServiceRepair = shouldRepairMachineRuntimeServiceBeforeSpawn(
+  // Service install and uninstall only ever act for the machine's own socket.
+  const preferServiceRepair = enforceBuildCompatibility && shouldRepairMachineRuntimeServiceBeforeSpawn(
     socketPath,
     socketPathOverride,
   );
@@ -22148,9 +22151,11 @@ async function connectMachineRuntimeDaemon(
           `ADE runtime ${mismatch}.`,
         );
       }
-      // A live brain on a socket this CLI does not manage is never replaced;
-      // see shouldEnforceMachineRuntimeBuildCompatibility.
-      if (!enforceBuildCompatibility) {
+      // Off the machine socket the build and version checks are skipped, so a
+      // mismatch that reaches here is a role mismatch. The brain is left running:
+      // this CLI does not manage it (see shouldEnforceMachineRuntimeBuildCompatibility).
+      // An explicit override that names the machine socket keeps the replace path.
+      if (!enforceBuildCompatibility && !isMachineDefaultRuntimeSocket(socketPath)) {
         client.close();
         throw new UnmanagedRuntimeMismatchError(socketPath, mismatch);
       }

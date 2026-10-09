@@ -657,10 +657,8 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
       };
     }
     if (!session) throw new Error("Droid SDK worker is not initialized.");
-    const omittedHints: string[] = [];
-    const materialized = await materializeWorkerImages(payload.payload.images, {
+    const { images: materialized, omittedHints } = await materializeWorkerImages(payload.payload.images, {
       label: "Droid SDK",
-      onOmitted: (hint) => omittedHints.push(hint),
     });
     const images = materialized.map((image) => {
       if (!("data" in image)) {

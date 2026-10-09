@@ -747,20 +747,21 @@ function requireSession(): PiSession {
 
 async function imageContents(
   images: PiSdkImage[] | undefined,
-  omittedHints: string[],
-): Promise<unknown[] | undefined> {
+): Promise<{ contents: unknown[] | undefined; omittedHints: string[] }> {
   const materialized = await materializeWorkerImages(images, {
     label: "Pi SDK",
-    onOmitted: (hint) => omittedHints.push(hint),
   });
   const contents: Array<{ type: "image"; data: string; mimeType: string }> = [];
-  for (const image of materialized) {
+  for (const image of materialized.images) {
     if (!("data" in image)) {
       throw new Error("Pi SDK image URLs are not supported.");
     }
     contents.push({ type: "image", data: image.data, mimeType: image.mimeType });
   }
-  return contents.length ? contents : undefined;
+  return {
+    contents: contents.length ? contents : undefined,
+    omittedHints: materialized.omittedHints,
+  };
 }
 
 async function sendPrompt(request: Extract<PiSdkWorkerRequest, { type: "send" }>): Promise<JsonValue> {
@@ -769,8 +770,7 @@ async function sendPrompt(request: Extract<PiSdkWorkerRequest, { type: "send" }>
   post({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "lifecycle", event: "prompt_started", requestId: request.requestId });
   try {
     const promptOptions: Record<string, unknown> = {};
-    const omittedHints: string[] = [];
-    const images = await imageContents(request.payload.images, omittedHints);
+    const { contents: images, omittedHints } = await imageContents(request.payload.images);
     if (images) promptOptions.images = images;
     if (request.payload.streamingBehavior) promptOptions.streamingBehavior = request.payload.streamingBehavior;
     await method(active, "prompt").call(active, withOmittedImageHints(request.payload.prompt, omittedHints), promptOptions);
@@ -964,15 +964,13 @@ async function dispatch(request: PiSdkWorkerRequest): Promise<JsonValue | undefi
     case "send": return await sendPrompt(request);
     case "steer": {
       const active = requireSession();
-      const omittedHints: string[] = [];
-      const images = await imageContents(request.payload.images, omittedHints);
+      const { contents: images, omittedHints } = await imageContents(request.payload.images);
       await method(active, "steer").call(active, withOmittedImageHints(request.payload.prompt, omittedHints), images);
       return null;
     }
     case "follow_up": {
       const active = requireSession();
-      const omittedHints: string[] = [];
-      const images = await imageContents(request.payload.images, omittedHints);
+      const { contents: images, omittedHints } = await imageContents(request.payload.images);
       await method(active, "followUp").call(active, withOmittedImageHints(request.payload.prompt, omittedHints), images);
       return null;
     }

@@ -44,6 +44,9 @@ export const CHAT_STOP_REASON_PROVIDER_ENDED_TURN = "the provider ended the turn
 export const CHAT_STOP_REASON_WORKFLOW_ENDED = "the workflow ended";
 export const CHAT_STOP_REASON_CHAT_HANDED_OFF = "this chat was handed off to another model";
 
+/** The model Claude Code stamps on the messages it fabricates client-side (errors, refused images). Not a real model. */
+export const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
+
 /**
  * Who ended an agent's work, for the one card that has to say it out loud.
  *

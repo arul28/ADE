@@ -26,8 +26,10 @@ export const MAX_CHAT_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 export const LEGACY_MAX_CHAT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 /**
- * Ceiling for non-image file bytes a provider adapter inlines into a model
- * request (OpenCode file parts). Images have their own, smaller limits below.
+ * Ceiling for non-image file bytes inlined into a model request by the
+ * streaming content builder (OpenCode and AI-SDK file parts, `buildStreamingUserContent`).
+ * ACP and the worker prompt text inline text under their own 512 KB limit instead.
+ * Images have their own, smaller limits below.
  *
  * Independent of the attachment cap on purpose. Staging a 50 MB file for
  * Codex or handing its path to Droid is fine; base64-inlining it into a model

@@ -380,10 +380,11 @@ import {
 } from "../../../shared/backgroundUtilityModel";
 import { createTurnEndQuestionCheck } from "./turnEndQuestionCheck";
 import {
-  exceedsProviderInlineLimit,
+  exceedsInlineFileLimit,
   imageNotInlinedHintPart,
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
+import { MAX_PROVIDER_INLINE_FILE_BYTES } from "../../../shared/chatAttachmentLimits";
 import { fitImageForProviderInline } from "./providerInlineImage";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { isRemoteOrDataUri } from "../../../shared/chatImageUrls";
@@ -652,6 +653,7 @@ import {
   type AgentChatResourceLink,
   type AgentChatWorkflowProgress,
   attachmentIsReferenceOnly,
+  CLAUDE_SYNTHETIC_MODEL,
   DEFAULT_ATTACHMENT_ONLY_PROMPT,
   hasPastedTextPromptAttachment,
   normalizeInboundFileRef,
@@ -1565,13 +1567,6 @@ function classifyClaudeResultStatus(result: Record<string, unknown>): ClaudeTerm
 }
 
 /**
- * Claude Code stamps the assistant message it fabricates for a client-side
- * error (an oversized image, an API error) with this model. It names no model,
- * so the turn keeps the model that actually ran it.
- */
-const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
-
-/**
  * The assistant message Claude Code fabricates when it refuses an attached
  * image ("Image base64 size (8.3MB) exceeds API limit (5MB)…"). Its text is the
  * SDK's, not the agent's, and the turn's `image_error` notice already carries
@@ -1590,6 +1585,11 @@ function isClaudeSyntheticImageErrorMessage(assistantMsg: Record<string, unknown
   return /\bimages?\b/i.test(text) && /exceed|resize|dimension|too large/i.test(text);
 }
 
+/** Claude Code refused an attached image and ended the turn. */
+function isClaudeImageErrorResult(result: Record<string, unknown>): boolean {
+  return stringOrNull(result.terminal_reason) === "image_error";
+}
+
 /**
  * The transcript notice for a Claude result that failed the turn when nothing
  * else in the turn said why.
@@ -1604,22 +1604,26 @@ function isClaudeSyntheticImageErrorMessage(assistantMsg: Record<string, unknown
 function claudeResultFailureNotice(args: {
   result: Record<string, unknown>;
   status: ClaudeTerminalStatus;
+  userFacingErrors: string[];
   userFacingErrorsShown: boolean;
   contextOverflow: boolean;
   assistantText: string;
 }): Omit<Extract<AgentChatEvent, { type: "error" }>, "type" | "turnId"> | null {
   if (args.status !== "failed") return null;
   const resultText = typeof args.result.result === "string" ? args.result.result.trim() : "";
-  if (stringOrNull(args.result.terminal_reason) === "image_error") {
+  if (isClaudeImageErrorResult(args.result)) {
+    // The raw SDK error strings are not emitted separately for this turn, so
+    // this notice carries them as its detail.
+    const detail = resultText || args.userFacingErrors.join("\n").trim();
     const presentation: ChatErrorPresentation = {
       title: "Claude couldn't read an attached image",
       body: "An image in this message is over Claude's size limit, so Claude stopped the turn before reading it.",
-      nextAction: "Send it again. If it fails again, attach a smaller image.",
-      ...(resultText ? { technicalDetail: resultText } : {}),
+      nextAction: "Attach a smaller image, or ask the agent to read it from its path.",
+      ...(detail ? { technicalDetail: detail } : {}),
     };
     return {
       message: presentation.body,
-      ...(resultText ? { detail: resultText } : {}),
+      ...(detail ? { detail } : {}),
       errorInfo: { category: "unknown", provider: "Claude", presentation },
     };
   }
@@ -7910,18 +7914,13 @@ async function buildStreamingUserContent(
           // The model behind OpenCode may be Anthropic's, which rejects an
           // image over 5 MB of base64, so images are fitted the same way the
           // Claude adapter fits them.
-          const fitted = await fitImageForProviderInline(data, mediaType);
+          const fitted = await fitImageForProviderInline(data, mediaType, {
+            provider: args.runtimeKind,
+            logger: args.logger,
+          });
           if (fitted.kind === "omit") {
-            args.logger?.warn("agent_chat.inline_image_omitted", {
-              provider: args.runtimeKind,
-              bytes: data.byteLength,
-              reason: fitted.reason,
-            });
             parts.push(imageNotInlinedHintPart(attachment.path, fitted.reason));
             continue;
-          }
-          if (fitted.resized) {
-            args.logger?.info("agent_chat.inline_image_resized", { provider: args.runtimeKind, ...fitted.resized });
           }
           parts.push({
             type: "image",
@@ -7940,8 +7939,8 @@ async function buildStreamingUserContent(
       // Every branch below this point inlines `data` into the request body.
       // The attachment cap is larger than what a provider accepts inline, so
       // an oversized file degrades to a path hint rather than a rejected turn.
-      if (exceedsProviderInlineLimit(data.byteLength)) {
-        parts.push(inlineAttachmentHintPart(attachment.path, data.byteLength));
+      if (exceedsInlineFileLimit(data.byteLength)) {
+        parts.push(inlineAttachmentHintPart(attachment.path, data.byteLength, MAX_PROVIDER_INLINE_FILE_BYTES));
         continue;
       }
 
@@ -26774,6 +26773,7 @@ export function createAgentChatService(args: {
       const snapshotMatchesCurrentStream = assistantMessageId != null
         && assistantMessageId === state.currentStreamMessageId;
       const turnId = startClaudeIdleTurn(managed, runtime, state);
+      // The turn stays open here; the result frame settles it and shows the notice.
       if (isClaudeSyntheticImageErrorMessage(assistantMsg)) return;
       emitClaudeTranscriptRetraction(managed, assistantMsg.supersedes, "assistant_supersedes", turnId, providerMessageId);
       const content = Array.isArray(betaMessage?.content) ? betaMessage.content : [];
@@ -27106,7 +27106,9 @@ export function createAgentChatService(args: {
       if (usage && metadata.cacheWrite1hTokens != null) {
         state.usage = { ...state.usage, cacheWrite1hTokens: metadata.cacheWrite1hTokens };
       }
-      if (resultIsError && turnId) {
+      // An image_error turn is explained by its failure notice alone; emitting
+      // the raw SDK error strings too would show the same failure twice.
+      if (resultIsError && turnId && !isClaudeImageErrorResult(resultMsg)) {
         for (const error of resultErrors.userFacing) {
           emitChatEvent(managed, { type: "error", message: error, turnId });
         }
@@ -27115,6 +27117,7 @@ export function createAgentChatService(args: {
         ? claudeResultFailureNotice({
           result: resultMsg,
           status: terminalStatus,
+          userFacingErrors: resultErrors.userFacing,
           userFacingErrorsShown: resultIsError && resultErrors.userFacing.length > 0,
           contextOverflow: isClaudeContextOverflowResult(resultMsg, resultErrors.all),
           assistantText: state.assistantText,
@@ -28930,11 +28933,11 @@ export function createAgentChatService(args: {
           if (assistantMsg.error === "authentication_failed") {
             failClaudeTurnUnauthenticated();
           }
+          if (isClaudeSyntheticImageErrorMessage(assistantMsg)) continue;
           if (assistantMsg.error && onBackendDispatched) {
             throw new Error(`Claude rejected the prompt before starting the turn (${assistantMsg.error}).`);
           }
           markBackendDispatched();
-          if (isClaudeSyntheticImageErrorMessage(assistantMsg)) continue;
           const betaMessage = assistantMsg.message;
           const assistantMessageId = typeof betaMessage?.id === "string" ? betaMessage.id : null;
           const assistantWireUuid = compactString(assistantMsg.uuid);
@@ -29444,7 +29447,8 @@ export function createAgentChatService(args: {
               );
             }
             for (const err of resultErrors.userFacing) {
-              if (isClaudeUsageLimitResultError(err)) continue;
+              // An image_error turn is explained by its failure notice alone.
+              if (isClaudeUsageLimitResultError(err) || isClaudeImageErrorResult(resultMsg)) continue;
               emitChatEvent(managed, {
                 type: "error",
                 message: err,
@@ -29455,6 +29459,7 @@ export function createAgentChatService(args: {
           const failureNotice = claudeResultFailureNotice({
             result: resultMsg,
             status: resultTerminalStatus,
+            userFacingErrors: resultErrors.userFacing,
             userFacingErrorsShown: resultIsError && resultErrors.userFacing.length > 0,
             contextOverflow: recoverFromContextOverflow,
             assistantText,
@@ -47398,42 +47403,25 @@ export function createAgentChatService(args: {
     }
   };
 
-  const guessImageMimeForPath = (p: string): string => {
-    const lower = p.toLowerCase();
-    if (lower.endsWith(".png")) return "image/png";
-    if (lower.endsWith(".webp")) return "image/webp";
-    if (lower.endsWith(".gif")) return "image/gif";
-    return "image/jpeg";
-  };
-
   /** Maximum bytes to inline for a non-image chat attachment. */
   const MAX_INLINE_BYTES = 512 * 1024; // 512 KB
 
-  const buildAgentPromptBlocks = async (
+  /**
+   * Text blocks for a worker prompt. Images that send bytes never come here:
+   * the workers receive them as paths and fit them themselves
+   * (`materializeWorkerImages`), so the caller filters them out first.
+   */
+  const buildAgentPromptTextBlocks = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
-  ): Promise<Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>> => {
-    const blocks: Array<
-      { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
-    > = [{ type: "text", text: promptText }];
+  ): Promise<Array<{ type: "text"; text: string }>> => {
+    const blocks: Array<{ type: "text"; text: string }> = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
       if (attachmentIsReferenceOnly(attachment)) {
         blocks.push({ type: "text", text: attachmentPathHint(attachment) });
         continue;
       }
       try {
-        if (attachment.type === "image") {
-          // An image has no path-shaped fallback here — it is inlined or it is
-          // a text hint — so it is fitted to the provider limits first.
-          const fitted = await fitImageForProviderInline(
-            await readResolvedAttachmentBytes(attachment),
-            guessImageMimeForPath(attachment._resolvedPath),
-          );
-          blocks.push(fitted.kind === "omit"
-            ? imageNotInlinedHintPart(attachment.path, fitted.reason)
-            : { type: "image", data: fitted.data.toString("base64"), mimeType: fitted.mediaType });
-          continue;
-        }
         let buf: Buffer;
         const dirtyBuf = await readDirtyResolvedAttachmentBytes(attachment);
         if (dirtyBuf) {
@@ -47483,7 +47471,7 @@ export function createAgentChatService(args: {
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
   ): Promise<string> => {
-    const promptBlocks = await buildAgentPromptBlocks(
+    const promptBlocks = await buildAgentPromptTextBlocks(
       promptText,
       // A reference-only image stays in: it is sent as a path hint, not bytes.
       resolvedAttachments.filter((attachment) => (
@@ -47491,10 +47479,7 @@ export function createAgentChatService(args: {
         && (attachment.type !== "image" || attachmentIsReferenceOnly(attachment))
       )),
     );
-    return promptBlocks
-      .filter((block): block is { type: "text"; text: string } => block.type === "text")
-      .map((block) => block.text)
-      .join("\n\n");
+    return promptBlocks.map((block) => block.text).join("\n\n");
   };
 
   const pathImagesFromResolved = (

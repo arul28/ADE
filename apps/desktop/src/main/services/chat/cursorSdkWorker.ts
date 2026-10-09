@@ -681,10 +681,8 @@ async function cursorSdkSendMessage(
   promptText: string,
   images: CursorSdkUserImage[] | undefined,
 ) {
-  const omittedHints: string[] = [];
-  const materialized = await materializeWorkerImages(images, {
+  const { images: materialized, omittedHints } = await materializeWorkerImages(images, {
     label: "Cursor SDK",
-    onOmitted: (hint) => omittedHints.push(hint),
   });
   const text = withOmittedImageHints(promptText, omittedHints);
   return materialized.length ? { text, images: materialized } : text;
