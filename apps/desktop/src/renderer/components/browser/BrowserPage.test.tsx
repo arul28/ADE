@@ -141,6 +141,7 @@ function handOffs(): unknown[] {
 
 describe("BrowserPage dock", () => {
   beforeEach(() => {
+    TAB.url = "https://flights.example.test/";
     cleanup();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
     resetModelPickerRuntimeCatalogForTests();
@@ -157,7 +158,11 @@ describe("BrowserPage dock", () => {
     vi.restoreAllMocks();
   });
 
-  it("hands the page to the docked chat and includes hidden turn context without activating or claiming it", async () => {
+  it.each([
+    ["https://flights.example.test/", "https://flights.example.test/"],
+    ["https://user:password-proof@flights.example.test/?token=secret-proof&reset_token=reset-proof&X-Amz-Signature=signed-proof&search=Paris#access_token=fragment-proof", "https://flights.example.test/?token=%5Bredacted+by+ADE%5D&reset_token=%5Bredacted+by+ADE%5D&X-Amz-Signature=%5Bredacted+by+ADE%5D&search=Paris"],
+  ])("hands the page to the docked chat with safe hidden context for %s", async (url, safeUrl) => {
+    TAB.url = url;
     const { container } = await renderPage();
     const call = vi.mocked(window.ade.personalChats.call);
     const askAgent = () => within(container.querySelector("main")!).getByRole("button", { name: /Ask agent/ });
@@ -168,10 +173,11 @@ describe("BrowserPage dock", () => {
     fireEvent.change(field, { target: { value: "Summarize this page" } });
     fireEvent.click(within(container).getByRole("button", { name: /^Send$/i }));
     await waitFor(() => expect(call).toHaveBeenCalledWith(expect.objectContaining({
-      action: "send", args: expect.objectContaining({ sessionId: "s1", text: expect.stringContaining(TAB.url) }),
+      action: "send", args: expect.objectContaining({ sessionId: "s1", text: expect.stringContaining(safeUrl) }),
     })));
     const send = call.mock.calls.find(([request]) => request.action === "send")?.[0];
     const sentText = (send?.args as { text?: string } | undefined)?.text;
+    expect(sentText).not.toMatch(/password-proof|secret-proof|reset-proof|signed-proof|fragment-proof/);
     expect(sentText).toContain(TAB.id);
     expect(sentText).toContain("Summarize this page");
 
