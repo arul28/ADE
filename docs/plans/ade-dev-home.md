@@ -359,13 +359,19 @@ want it).**
   keep the shipped width; 4+ are wider) and its height up to M rows.
   `homeGridPack.ts` packs in order, tries a widget's smaller classes before
   hiding it ("N hidden"), then hands empty cells to a neighbour (widgets that
-  grow well first) only while the card stays within its maximum. The last
-  row's room past its last card stays wallpaper (no card stretches sideways
-  into it), so Compact, Regular and Large stay visibly different. It tries
+  grow well first) only while the card stays within its maximum. On the last
+  row, a Compact card keeps its one column and the room past it stays
+  wallpaper; a wider card stretches across that room, so the page ends on a
+  full row instead of a ragged one. It tries
   every column count from N down to 3 and keeps the one with the fewest
   hidden, shrunk, gaps, stretched cells (grown, or spanning extra rows), the
   fullest last row, then rows, so a few widgets on a
-  wide window stay at the shipped width, centred. Every row shares one
+  wide window stay at the shipped width, centred. The grid renders the column
+  count and width the packer chose (not the page's maximum), and the hero's
+  actions are held to that width, so they end where the cards end. A cell
+  holding a widget and the cards stacked under it, one row per card, splits on
+  the grid's row lines when every card fits the drawn row height, so a stack
+  lines up with the cards beside it. Every row shares one
   height: the tallest ideal of its cards, held under the smallest maximum
   and the page, never under a card's minimum. The grid is top-aligned and
   only as tall as its rows; the rest of the page is wallpaper. More room
