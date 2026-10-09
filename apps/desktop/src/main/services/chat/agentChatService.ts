@@ -17233,11 +17233,7 @@ export function createAgentChatService(args: {
     const runtimeOwner: ChatRuntimeOwner | null = managed.runtime
       ? selfChatRuntimeOwner()
       : managed.runtimeInvalidated
-        ? (() => {
-            let onDisk: ChatRuntimeOwner | null = null;
-            try { onDisk = readPersistedState(managed.session.id)?.runtimeOwner ?? null; } catch { /* ignore */ }
-            return onDisk && chatRuntimeOwnershipDecision(onDisk).verdict === "live-foreign-brain" ? onDisk : null;
-          })()
+        ? siblingBrainOwnerOnDisk(managed.session.id)
         : prevPersisted?.runtimeOwner ?? null;
     const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
     const claudeResultCostTotalUsd = managed.runtime?.kind === "claude"
@@ -18236,6 +18232,21 @@ export function createAgentChatService(args: {
     return decision.adoptable;
   };
 
+  /** The persisted owner stamp when it names another live brain process. */
+  const siblingBrainOwnerOnDisk = (
+    sessionId: string,
+    persisted?: PersistedChatState | null,
+  ): ChatRuntimeOwner | null => {
+    let owner: ChatRuntimeOwner | null = null;
+    try {
+      owner = persisted === undefined
+        ? readPersistedState(sessionId)?.runtimeOwner ?? null
+        : persisted?.runtimeOwner ?? null;
+    } catch { /* unreadable state is unowned */ }
+    if (!owner) return null;
+    return chatRuntimeOwnershipDecision(owner).verdict === "live-foreign-brain" ? owner : null;
+  };
+
   /**
    * The live sibling brain holding this chat's provider process, or null when
    * this brain may drive the chat: it holds the runtime itself, nobody has
@@ -18244,13 +18255,8 @@ export function createAgentChatService(args: {
   const liveForeignChatRuntimeOwner = (
     sessionId: string,
     persisted?: PersistedChatState | null,
-  ): ChatRuntimeOwner | null => {
-    if (managedSessions.get(sessionId)?.runtime) return null;
-    const owner = persisted === undefined
-      ? readPersistedState(sessionId)?.runtimeOwner ?? null
-      : persisted?.runtimeOwner ?? null;
-    return chatRuntimeOwnershipDecision(owner).verdict === "live-foreign-brain" ? owner : null;
-  };
+  ): ChatRuntimeOwner | null =>
+    managedSessions.get(sessionId)?.runtime ? null : siblingBrainOwnerOnDisk(sessionId, persisted);
 
   /**
    * Refuse to drive a chat another live brain owns. Every caller here would
@@ -29934,12 +29940,7 @@ export function createAgentChatService(args: {
               signal: stopSignal,
               provider: "claude",
               message: errorMessage,
-              otherBrain: ((): { pid: number; socketPath?: string | null } | null => {
-                const owner = readPersistedState(managed.session.id)?.runtimeOwner ?? null;
-                return owner && chatRuntimeOwnershipDecision(owner).verdict === "live-foreign-brain"
-                  ? { pid: owner.pid, socketPath: owner.socketPath ?? null }
-                  : null;
-              })(),
+              otherBrain: siblingBrainOwnerOnDisk(managed.session.id),
             })
           : null;
         emitChatEvent(managed, {
@@ -55983,6 +55984,7 @@ export function createAgentChatService(args: {
     }
     const liveManaged = managedSessions.get(row.id) ?? liveManagedInitial;
     const liveSession = liveManaged?.session ?? null;
+    const foreignRuntimeOwner = liveForeignChatRuntimeOwner(row.id, persisted);
     const persistedProvider = liveSession?.provider ?? persisted?.provider ?? null;
     const provider = persistedProvider ?? providerFromToolType(row.toolType);
     if (persistedProvider && isChatToolType(row.toolType)) {
@@ -56314,17 +56316,18 @@ export function createAgentChatService(args: {
       // other live brain holds the chat, because this brain having no runtime
       // says nothing about a sibling that does. Neither → omitted, which the
       // type documents as "this host cannot say".
+      // A chat a live sibling brain runs is neither alive nor dead here — this
+      // brain cannot see it — so it names the owner instead.
       ...(liveManaged?.runtime
         ? { runtimeAlive: true }
-        : chatRuntimeAdoptable(row.id, persisted, { quiet: true })
-          ? { runtimeAlive: false }
-          : {}),
-      ...((): Pick<AgentChatSessionSummary, "runtimeOwnedElsewhere"> => {
-        const owner = liveForeignChatRuntimeOwner(row.id, persisted);
-        return owner
-          ? { runtimeOwnedElsewhere: { pid: owner.pid, ...(owner.socketPath ? { socketPath: owner.socketPath } : {}) } }
-          : {};
-      })(),
+        : foreignRuntimeOwner
+          ? {
+              runtimeOwnedElsewhere: {
+                pid: foreignRuntimeOwner.pid,
+                ...(foreignRuntimeOwner.socketPath ? { socketPath: foreignRuntimeOwner.socketPath } : {}),
+              },
+            }
+          : { runtimeAlive: false }),
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),

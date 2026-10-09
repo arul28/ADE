@@ -126,6 +126,15 @@ export function decideChatRuntimeOwnership(args: {
   // before this field existed has to stay recoverable.
   if (!owner) return { adoptable: true, verdict: "legacy" };
   if (owner.brainId === args.self.brainId) return { adoptable: true, verdict: "self" };
+  // Same process, earlier chat service (a project reopened inside one brain):
+  // a new brainId, but no other brain can be running the chat.
+  if (
+    owner.pid === args.self.pid
+    && (owner.startedAt == null || args.self.startedAt == null || owner.startedAt === args.self.startedAt)
+    && (!owner.adeHome || !args.self.adeHome || pathsEqual(owner.adeHome, args.self.adeHome, args.platform))
+  ) {
+    return { adoptable: true, verdict: "self" };
+  }
   // A stamp from another ADE home describes a process in another install's
   // registry; its pid is meaningless against ours, so it cannot hold a lock.
   if (owner.adeHome && args.self.adeHome && !pathsEqual(owner.adeHome, args.self.adeHome, args.platform)) {

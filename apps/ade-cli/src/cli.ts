@@ -32042,7 +32042,7 @@ function findChatRuntimeOwnerRef(value: unknown, depth = 0): { pid: number; sock
  * 2026-10-09 incident, where a shell pointed at a dev brain's socket kept
  * re-sending to workers the installed brain was running.
  */
-export function chatOwnerSocketWarning(value: unknown, cliSocketPath: string | null): string | null {
+function chatOwnerSocketWarning(value: unknown, cliSocketPath: string | null): string | null {
   const owner = findChatRuntimeOwnerRef(value);
   if (!owner) return null;
   if (owner.socketPath && cliSocketPath) {
