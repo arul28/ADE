@@ -157,7 +157,7 @@ describe("accountSettingsSync (renderer)", () => {
       "smartTooltipsEnabled",
       "launchPromptClipboardEnabled",
       "launchPromptClipboardNoticeEnabled",
-      "promptStashButtonEnabled",
+      "draftsButtonEnabled",
       "voiceInputEnabled",
       "codexVoice",
       "codeBlockCopyButtonPosition",

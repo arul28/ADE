@@ -338,9 +338,11 @@ import type {
   AgentChatFileSearchResult,
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
-  PromptStashCreateArgs,
-  PromptStashDeleteArgs,
-  PromptStashEntry,
+  DraftClaimArgs,
+  DraftCreateArgs,
+  DraftDeleteArgs,
+  DraftEntry,
+  DraftUpdateArgs,
   AgentChatGetTurnFileDiffArgs,
   AgentChatSession,
   AgentChatSessionCapabilities,
@@ -2493,16 +2495,24 @@ declare global {
           args: ChatMentionSuggestArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ChatMentionSuggestResult>;
-        promptStashes: {
+        drafts: {
           list: (
             pin?: OpenProjectBinding | null,
-          ) => Promise<PromptStashEntry[]>;
+          ) => Promise<DraftEntry[]>;
           create: (
-            args: PromptStashCreateArgs,
+            args: DraftCreateArgs,
             pin?: OpenProjectBinding | null,
-          ) => Promise<PromptStashEntry>;
+          ) => Promise<DraftEntry>;
+          update: (
+            args: DraftUpdateArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<DraftEntry | null>;
+          claim: (
+            args: DraftClaimArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<DraftEntry | null>;
           delete: (
-            args: PromptStashDeleteArgs,
+            args: DraftDeleteArgs,
             pin?: OpenProjectBinding | null,
           ) => Promise<boolean>;
         };

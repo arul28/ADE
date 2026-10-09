@@ -164,16 +164,22 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       "undoBoardMove",
     ],
   },
-  // Stashes are unsent user-authored drafts. Desktop runtime clients connect
-  // without a chat binding at CTO role; session-bound agents must never read
-  // or mutate this private composer state through `ade actions`. Voice is the
-  // user's microphone and a session billed to their ChatGPT plan: an agent
-  // must not start, stop, or watch it.
+  // DELIBERATE BOUNDARY CHANGE (2026-10-09): drafts used to be CTO-only here.
+  // Session-bound agents were denied `listDrafts`/`createDraft`/`deleteDraft`
+  // because a draft was private unsent composer state. Drafts are now the
+  // backing store for scheduled send, and the product decision is that an
+  // agent may arm and manage them on the user's behalf: an agent that schedules
+  // a send produces a message the user would otherwise have typed, and the user
+  // asked for that. Consequences accepted with the decision:
+  //   • an agent can read the user's unsent drafts, so never paste secrets into
+  //     a draft you have not sent;
+  //   • an agent-armed send is indistinguishable from one the user armed.
+  // `armUpdateResume` stays CTO-only: it is machine-wide and spends a real turn
+  // on every chat the desktop names. Voice is the user's microphone and a
+  // session billed to their ChatGPT plan: an agent must not start, stop, or
+  // watch it.
   chat: {
     only: [
-      "listPromptStashes",
-      "createPromptStash",
-      "deletePromptStash",
       // The desktop's post-update resume arm: machine-wide, and each row it
       // creates spends a real turn. A session-bound agent must not drive it.
       "armUpdateResume",
@@ -694,9 +700,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // merges them so an agent can find and poll its CLI children.
     "listCliChildSessions",
     "listSubagents",
-    "listPromptStashes",
-    "createPromptStash",
-    "deletePromptStash",
+    "listDrafts",
+    "createDraft",
+    "updateDraft",
+    "deleteDraft",
+    "claimDraft",
+    "sendDraftNow",
     ...THREAD_COMMENT_ACTION_NAMES,
     "messageSession",
     "modelCatalog",

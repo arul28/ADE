@@ -1070,7 +1070,7 @@ type PersistedUserPreferences = {
   smartTooltipsEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
-  promptStashButtonEnabled: boolean;
+  draftsButtonEnabled: boolean;
   voiceInputEnabled: boolean;
   codexVoice: CodexVoicePreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
@@ -1171,7 +1171,10 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       smartTooltipsEnabled: parsed.smartTooltipsEnabled ?? !isWebClientMode(),
       launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
-      promptStashButtonEnabled: parsed.promptStashButtonEnabled !== false,
+      // The setting was `promptStashButtonEnabled` before drafts replaced
+      // stashes; keep honoring a value persisted under the old key so an
+      // upgrade does not silently flip a hidden button back on.
+      draftsButtonEnabled: (parsed.draftsButtonEnabled ?? (parsed as { promptStashButtonEnabled?: boolean }).promptStashButtonEnabled) !== false,
       voiceInputEnabled: parsed.voiceInputEnabled !== false,
       codexVoice: normalizeCodexVoicePreferences(parsed.codexVoice),
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
@@ -1226,7 +1229,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     smartTooltipsEnabled,
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
-    promptStashButtonEnabled: true,
+    draftsButtonEnabled: true,
     voiceInputEnabled: true,
     codexVoice: { ...DEFAULT_CODEX_VOICE_PREFERENCES },
     codeBlockCopyButtonPosition: "top",
@@ -1267,7 +1270,7 @@ function persistUserPreferencesFrom(state: {
   smartTooltipsEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
-  promptStashButtonEnabled: boolean;
+  draftsButtonEnabled: boolean;
   voiceInputEnabled: boolean;
   codexVoice: CodexVoicePreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
@@ -1293,7 +1296,7 @@ function persistUserPreferencesFrom(state: {
     smartTooltipsEnabled: state.smartTooltipsEnabled,
     launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: state.launchPromptClipboardNoticeEnabled,
-    promptStashButtonEnabled: state.promptStashButtonEnabled,
+    draftsButtonEnabled: state.draftsButtonEnabled,
     voiceInputEnabled: state.voiceInputEnabled,
     codexVoice: state.codexVoice,
     codeBlockCopyButtonPosition: state.codeBlockCopyButtonPosition,
@@ -1557,7 +1560,7 @@ export type AppState = {
   smartTooltipsEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
-  promptStashButtonEnabled: boolean;
+  draftsButtonEnabled: boolean;
   voiceInputEnabled: boolean;
   codexVoice: CodexVoicePreferences;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
@@ -1724,7 +1727,7 @@ export type AppState = {
   setSmartTooltipsEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
-  setPromptStashButtonEnabled: (enabled: boolean) => void;
+  setDraftsButtonEnabled: (enabled: boolean) => void;
   setVoiceInputEnabled: (enabled: boolean) => void;
   setCodexVoicePreferences: (patch: Partial<CodexVoicePreferences>) => void;
   // ── Voice-dictation session setters (ephemeral; never persisted) ──
@@ -2187,7 +2190,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
   launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
-  promptStashButtonEnabled: initialUserPreferences.promptStashButtonEnabled,
+  draftsButtonEnabled: initialUserPreferences.draftsButtonEnabled,
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
   codexVoice: initialUserPreferences.codexVoice,
   dictationPhase: "idle",
@@ -2786,10 +2789,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, launchPromptClipboardNoticeEnabled: enabled });
       return { launchPromptClipboardNoticeEnabled: enabled };
     }),
-  setPromptStashButtonEnabled: (enabled) =>
+  setDraftsButtonEnabled: (enabled) =>
     set((prev) => {
-      persistUserPreferencesFrom({ ...prev, promptStashButtonEnabled: enabled });
-      return { promptStashButtonEnabled: enabled };
+      persistUserPreferencesFrom({ ...prev, draftsButtonEnabled: enabled });
+      return { draftsButtonEnabled: enabled };
     }),
   setVoiceInputEnabled: (enabled) =>
     set((prev) => {
@@ -3690,7 +3693,7 @@ export function createProjectAppStore(
     smartTooltipsEnabled: rootState.smartTooltipsEnabled,
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
-    promptStashButtonEnabled: rootState.promptStashButtonEnabled,
+    draftsButtonEnabled: rootState.draftsButtonEnabled,
     voiceInputEnabled: rootState.voiceInputEnabled,
     codexVoice: rootState.codexVoice,
     setTheme: rootState.setTheme,
@@ -3714,7 +3717,7 @@ export function createProjectAppStore(
     setSmartTooltipsEnabled: rootState.setSmartTooltipsEnabled,
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
-    setPromptStashButtonEnabled: rootState.setPromptStashButtonEnabled,
+    setDraftsButtonEnabled: rootState.setDraftsButtonEnabled,
     setVoiceInputEnabled: rootState.setVoiceInputEnabled,
     setCodexVoicePreferences: rootState.setCodexVoicePreferences,
     workViewByProject: hydratedWorkViewByProject,

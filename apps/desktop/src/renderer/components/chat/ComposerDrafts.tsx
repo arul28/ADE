@@ -19,10 +19,10 @@ import React, {
 import { createPortal } from "react-dom";
 import {
   type AgentChatFileRef,
-  MAX_PROMPT_STASH_ATTACHMENTS,
-  MAX_PROMPT_STASHES,
+  MAX_DRAFT_ATTACHMENTS,
+  MAX_DRAFTS,
   type OpenProjectBinding,
-  type PromptStashEntry,
+  type DraftEntry,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
@@ -35,12 +35,12 @@ const STASH_MENU_GAP = 10;
 const LOCAL_RUNTIME_PROJECT_UNAVAILABLE_MESSAGE =
   "Local runtime project is not available for this window.";
 
-export type ComposerPromptStashHandle = {
+export type ComposerDraftsHandle = {
   activate: () => void;
   /** Save without clearing the active draft; used by keyboard history recall. */
-  activatePreservingDraft: () => Promise<PromptStashEntry | null>;
+  activatePreservingDraft: () => Promise<DraftEntry | null>;
   /** Consume the auto-saved entry when keyboard history restores its draft. */
-  consume: (entry: PromptStashEntry) => Promise<boolean>;
+  consume: (entry: DraftEntry) => Promise<boolean>;
   handleMenuKeyDown: (event: {
     key: string;
     metaKey: boolean;
@@ -67,7 +67,7 @@ function relativeTime(iso: string): string {
   return `${days}d`;
 }
 
-function providerLabel(entry: PromptStashEntry): string | null {
+function providerLabel(entry: DraftEntry): string | null {
   const provider = entry.provider?.trim();
   if (!provider) return null;
   return provider.charAt(0).toUpperCase() + provider.slice(1);
@@ -83,7 +83,7 @@ function sameAttachment(left: AgentChatFileRef, right: AgentChatFileRef): boolea
     && (left.type !== "image-url" || right.type !== "image-url" || left.url === right.url);
 }
 
-function stashAttachments(entry: PromptStashEntry): AgentChatFileRef[] {
+function stashAttachments(entry: DraftEntry): AgentChatFileRef[] {
   return entry.attachments ?? [];
 }
 
@@ -101,7 +101,7 @@ function base64FromDataUrl(dataUrl: string): string {
   return base64;
 }
 
-function stashEntryLabel(entry: PromptStashEntry, attachments: AgentChatFileRef[]): string {
+function stashEntryLabel(entry: DraftEntry, attachments: AgentChatFileRef[]): string {
   const snippet = promptSnippet(entry.text);
   if (snippet) return snippet;
   if (attachments.length === 1) return attachmentName(attachments[0]!.path);
@@ -109,11 +109,11 @@ function stashEntryLabel(entry: PromptStashEntry, attachments: AgentChatFileRef[
   return attachmentCount === 1 ? "1 stashed image" : `${attachmentCount} stashed images`;
 }
 
-function stashAttachmentCount(entry: PromptStashEntry): number {
+function stashAttachmentCount(entry: DraftEntry): number {
   return entry.attachmentCount ?? stashAttachments(entry).length;
 }
 
-function stashAttachmentsUnavailable(entry: PromptStashEntry): boolean {
+function stashAttachmentsUnavailable(entry: DraftEntry): boolean {
   return entry.attachmentsAvailable === false && stashAttachmentCount(entry) > 0;
 }
 
@@ -136,7 +136,7 @@ function hasLocalProjectRoot(
   );
 }
 
-async function isStaleLocalPromptStashRequest(
+async function isStaleLocalDraftsRequest(
   error: unknown,
   binding: OpenProjectBinding | null,
 ): Promise<boolean> {
@@ -156,10 +156,10 @@ async function isStaleLocalPromptStashRequest(
   }
 }
 
-function promptStashErrorMessage(error: unknown, fallback: string): string {
+function draftErrorMessage(error: unknown, fallback: string): string {
   const raw = error instanceof Error ? error.message.trim() : "";
   if (!raw) return fallback;
-  if (/requires elevated role|(?:list|create|delete)PromptStash/i.test(raw)) {
+  if (/requires elevated role|(?:list|create|delete)Drafts/i.test(raw)) {
     return "Stashed prompts are temporarily unavailable on this computer.";
   }
   return raw
@@ -212,7 +212,7 @@ function StashImageThumbnail({
   );
 }
 
-export type ComposerPromptStashProps = {
+export type ComposerDraftsProps = {
   draft: string;
   attachments?: AgentChatFileRef[];
   composerMachineBinding?: OpenProjectBinding | null;
@@ -227,7 +227,7 @@ export type ComposerPromptStashProps = {
   onRemoveAttachment: (path: string) => void;
 };
 
-export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, ComposerPromptStashProps>(function ComposerPromptStash({
+export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsProps>(function ComposerDrafts({
   draft,
   attachments = [],
   composerMachineBinding = null,
@@ -252,7 +252,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
   const latestComposerMachineBindingRef = useRef(composerMachineBinding);
   latestComposerMachineBindingRef.current = composerMachineBinding;
   const [stashSnapshot, setStashSnapshot] = useState<{
-    entries: PromptStashEntry[];
+    entries: DraftEntry[];
     ownerBinding: OpenProjectBinding | null;
   }>({
     entries: [],
@@ -292,7 +292,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       : bindingOverride;
     const sequence = ++refreshSequenceRef.current;
     try {
-      const next = await window.ade.agentChat.promptStashes.list(capturedBinding);
+      const next = await window.ade.agentChat.drafts.list(capturedBinding);
       if (sequence !== refreshSequenceRef.current) return;
       setStashSnapshot({
         entries: next,
@@ -306,11 +306,11 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       setError(null);
     } catch (refreshError) {
       if (sequence !== refreshSequenceRef.current) return;
-      if (await isStaleLocalPromptStashRequest(refreshError, capturedBinding)) {
+      if (await isStaleLocalDraftsRequest(refreshError, capturedBinding)) {
         return;
       }
       if (sequence !== refreshSequenceRef.current) return;
-      setError(promptStashErrorMessage(refreshError, "Could not load stashed prompts."));
+      setError(draftErrorMessage(refreshError, "Could not load stashed prompts."));
     }
   }, [composerMachineBinding]);
 
@@ -401,14 +401,14 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     };
   }, [active, menuOpen, refresh]);
 
-  const save = useCallback(async (preserveDraft = false): Promise<PromptStashEntry | null> => {
+  const save = useCallback(async (preserveDraft = false): Promise<DraftEntry | null> => {
     if (disabled || operationInFlightRef.current) return null;
     const operationBinding = composerMachineBinding;
     const savedText = latestDraftRef.current;
     const savedComposerAttachments = [...latestAttachmentsRef.current];
     const savedAttachments = savedComposerAttachments.filter(isStashableAttachment);
-    if (savedAttachments.length > MAX_PROMPT_STASH_ATTACHMENTS) {
-      setError(`You can stash up to ${MAX_PROMPT_STASH_ATTACHMENTS} images at a time.`);
+    if (savedAttachments.length > MAX_DRAFT_ATTACHMENTS) {
+      setError(`You can stash up to ${MAX_DRAFT_ATTACHMENTS} images at a time.`);
       setMenuOpen(true);
       return null;
     }
@@ -437,7 +437,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         }, operationBinding);
         storedAttachments.push({ path: saved.path, type: "image" });
       }
-      const created = await window.ade.agentChat.promptStashes.create({
+      const created = await window.ade.agentChat.drafts.create({
         text: savedText,
         ...(storedAttachments.length ? { attachments: storedAttachments } : {}),
         provider,
@@ -450,7 +450,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         ));
         if (!runtimeConfirmedImages) {
           try {
-            await window.ade.agentChat.promptStashes.delete({ id: created.id }, operationBinding);
+            await window.ade.agentChat.drafts.delete({ id: created.id }, operationBinding);
           } catch {
             // The composer remains intact even if an older runtime cannot
             // roll back the text-only compatibility write.
@@ -466,7 +466,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
             ...((current.ownerBinding?.key ?? null) === operationBindingKey
               ? current.entries.filter((entry) => entry.id !== created.id)
               : []),
-          ].slice(0, MAX_PROMPT_STASHES),
+          ].slice(0, MAX_DRAFTS),
           ownerBinding: operationBinding,
         }));
       }
@@ -491,7 +491,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       }
       return created;
     } catch (saveError) {
-      setError(promptStashErrorMessage(saveError, "Could not stash this prompt."));
+      setError(draftErrorMessage(saveError, "Could not stash this prompt."));
       setMenuOpen(true);
       return null;
     } finally {
@@ -500,7 +500,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     }
   }, [composerMachineBinding, disabled, entries.length, modelId, onDraftChange, onRemoveAttachment, provider, refresh]);
 
-  const restore = useCallback(async (entry: PromptStashEntry) => {
+  const restore = useCallback(async (entry: DraftEntry) => {
     if (operationInFlightRef.current) return;
     const operationBinding = entriesOwnerBinding;
     if (stashAttachmentsUnavailable(entry)) {
@@ -535,7 +535,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       onAddAttachment(attachment);
     }
     try {
-      const deleted = await window.ade.agentChat.promptStashes.delete({ id: entry.id }, operationBinding);
+      const deleted = await window.ade.agentChat.drafts.delete({ id: entry.id }, operationBinding);
       if (!deleted) {
         if ((latestComposerMachineBindingRef.current?.key ?? null) === operationBindingKey) {
           await refresh(operationBinding);
@@ -544,14 +544,14 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         return;
       }
     } catch (restoreError) {
-      setError(promptStashErrorMessage(restoreError, "Could not restore this prompt."));
+      setError(draftErrorMessage(restoreError, "Could not restore this prompt."));
     } finally {
       operationInFlightRef.current = false;
       setBusy(false);
     }
   }, [entriesOwnerBinding, onAddAttachment, onDraftChange, refresh]);
 
-  const remove = useCallback(async (entry: PromptStashEntry): Promise<boolean> => {
+  const remove = useCallback(async (entry: DraftEntry): Promise<boolean> => {
     if (operationInFlightRef.current) return false;
     const operationBinding = entriesOwnerBinding;
     const operationBindingKey = operationBinding?.key ?? null;
@@ -560,7 +560,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     setBusy(true);
     setError(null);
     try {
-      const deleted = await window.ade.agentChat.promptStashes.delete({ id: entry.id }, operationBinding);
+      const deleted = await window.ade.agentChat.drafts.delete({ id: entry.id }, operationBinding);
       if (!deleted) {
         if ((latestComposerMachineBindingRef.current?.key ?? null) === operationBindingKey) {
           await refresh(operationBinding);
@@ -578,7 +578,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       setHighlightedId((current) => current === entry.id ? null : current);
       return true;
     } catch (deleteError) {
-      setError(promptStashErrorMessage(deleteError, "Could not delete this prompt."));
+      setError(draftErrorMessage(deleteError, "Could not delete this prompt."));
       return false;
     } finally {
       operationInFlightRef.current = false;
@@ -674,7 +674,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       {menuOpen ? createPortal((
         <div
           ref={menuRef}
-          data-prompt-stash-menu=""
+          data-drafts-menu=""
           role="dialog"
           aria-label="Stashed prompts"
           className="fixed z-[120] flex max-h-[calc(100vh-32px)] w-[min(380px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl border border-fg/[0.09] bg-(color:--work-popover-bg) shadow-[0_24px_72px_-28px_rgba(0,0,0,0.95)] backdrop-blur-2xl"
@@ -777,4 +777,4 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
   );
 });
 
-ComposerPromptStash.displayName = "ComposerPromptStash";
+ComposerDrafts.displayName = "ComposerDrafts";

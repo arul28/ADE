@@ -3673,9 +3673,14 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_computer_use_artifact_links_owner on computer_use_artifact_links(project_id, owner_kind, owner_id, created_at)");
   db.run("create index if not exists idx_computer_use_artifact_links_artifact on computer_use_artifact_links(artifact_id)");
 
-  // Deliberate composer saves shared by every desktop connected to this
-  // project's runtime. The table is PK-only so cr-sqlite can replicate it
-  // across independent synced machines as well.
+  // Deliberate composer drafts shared by every desktop connected to this
+  // project's runtime, plus the scheduled sends armed from them. The table is
+  // PK-only so cr-sqlite can replicate it across independent synced machines.
+  //
+  // The name stays `prompt_stashes` even though the feature is "Drafts":
+  // cr-sqlite will not rename a CRR wholesale (the migration path only wraps
+  // added columns in crsql_begin_alter), and every paired machine holds this
+  // table, so a rename would strand peers on the old schema.
   db.run(`
     create table if not exists prompt_stashes (
       id text primary key,
@@ -3689,7 +3694,27 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   safeAddColumn(db, "alter table prompt_stashes add column attachments_json text not null default '[]'");
   safeAddColumn(db, "alter table prompt_stashes add column attachment_origin_site_id text");
+  // Scheduled-send columns. All nullable so an older peer's rows stay valid and
+  // a newer peer's values still sync into this build.
+  safeAddColumn(db, "alter table prompt_stashes add column updated_at text");
+  safeAddColumn(db, "alter table prompt_stashes add column kind text");
+  safeAddColumn(db, "alter table prompt_stashes add column status text");
+  safeAddColumn(db, "alter table prompt_stashes add column scheduled_at text");
+  safeAddColumn(db, "alter table prompt_stashes add column delivery_policy text");
+  safeAddColumn(db, "alter table prompt_stashes add column grace_seconds integer");
+  safeAddColumn(db, "alter table prompt_stashes add column target_kind text");
+  safeAddColumn(db, "alter table prompt_stashes add column target_session_id text");
+  safeAddColumn(db, "alter table prompt_stashes add column target_lane_id text");
+  safeAddColumn(db, "alter table prompt_stashes add column target_machine_key text");
+  safeAddColumn(db, "alter table prompt_stashes add column origin_session_id text");
+  safeAddColumn(db, "alter table prompt_stashes add column permission_mode text");
+  safeAddColumn(db, "alter table prompt_stashes add column thinking text");
+  safeAddColumn(db, "alter table prompt_stashes add column scheduled_by text");
+  safeAddColumn(db, "alter table prompt_stashes add column scheduled_by_session_id text");
+  safeAddColumn(db, "alter table prompt_stashes add column fired_at text");
+  safeAddColumn(db, "alter table prompt_stashes add column last_error text");
   db.run("create index if not exists idx_prompt_stashes_created on prompt_stashes(created_at)");
+  db.run("create index if not exists idx_prompt_stashes_scheduled on prompt_stashes(scheduled_at)");
 
 
   // CTO persistent identity/core-continuity/session-log state.

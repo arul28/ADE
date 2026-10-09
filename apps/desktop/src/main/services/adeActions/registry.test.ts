@@ -226,14 +226,14 @@ describe("runtime domain services behind the allowlist", () => {
       },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const chat = getAdeActionDomainServices(runtime).chat as {
-      createPromptStash?: (args: unknown) => Promise<unknown> | unknown;
+      createDraft?: (args: unknown) => Promise<unknown> | unknown;
     };
     const attachment = {
       path: "/project/.ade/attachments/design.png",
       type: "image",
     };
 
-    await expect(Promise.resolve(chat.createPromptStash?.({
+    await expect(Promise.resolve(chat.createDraft?.({
       text: "",
       attachments: [attachment],
     }))).resolves.toMatchObject({

@@ -227,8 +227,8 @@ describe("isAllowedAdeAction", () => {
     const CALLED_BY_STRING = [
       // src/preload/preload.ts
       "approveToolUse", "archiveSession", "cancelDispatchedSteer", "cancelScheduledWork",
-      "cancelSteer", "clearCodexGoal", "copyTempAttachment", "createPromptStash",
-      "createScheduledWork", "createSession", "deletePromptStash", "deleteSession",
+      "cancelSteer", "clearCodexGoal", "copyTempAttachment", "createDraft",
+      "createScheduledWork", "createSession", "deleteDraft", "deleteSession",
       "dispatchSteer", "editSteer", "ensureCtoSession", "fileSearch",
       "generateAutoLaneIdentity", "getAvailableModels", "getChatEventHistory",
       "getChatEventHistoryPage", "getClaudeSessionInfo", "getClaudeSessionMessages",
@@ -237,7 +237,7 @@ describe("isAllowedAdeAction", () => {
       "getSlashCommands", "getSubagentTranscript", "getTurnFileDiff", "handoffSession",
       "interrupt", "killDroidWorker", "launchCli", "launchHeadless",
       "listClaudeOutputStyles", "listClaudePlugins", "listCodexPlugins", "listClaudeSessions",
-      "listMentionSuggestions", "listPromptStashes", "listScheduledWork", "listSessions",
+      "listMentionSuggestions", "listDrafts", "listScheduledWork", "listSessions",
       "listSubagents", "markCrossMachineHandoff", "modelCatalog", "resumeUsageLimitNow",
       "continueUsageLimitOnAlternate",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
@@ -541,13 +541,13 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
   it("exposes prompt stashes through the project runtime for connected desktops", () => {
     const actions = ADE_ACTION_ALLOWLIST.chat ?? [];
     expect(actions).toEqual(expect.arrayContaining([
-      "listPromptStashes",
-      "createPromptStash",
-      "deletePromptStash",
+      "listDrafts",
+      "createDraft",
+      "deleteDraft",
     ]));
-    expect(isCtoOnlyAdeAction("chat", "listPromptStashes")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "createPromptStash")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "deletePromptStash")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "listDrafts")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "createDraft")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "deleteDraft")).toBe(true);
   });
 });
 

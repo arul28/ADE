@@ -96,8 +96,10 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatTurnFileDiff,
-  PromptStashCreateArgs,
-  PromptStashDeleteArgs,
+  DraftClaimArgs,
+  DraftCreateArgs,
+  DraftDeleteArgs,
+  DraftUpdateArgs,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
 import { isAcpChatProvider } from "../../../shared/types/chat";
@@ -122,10 +124,12 @@ import {
   isTrackedAgentCliToolType,
 } from "../../../shared/types";
 import {
-  createPromptStash,
-  deletePromptStash,
-  listPromptStashes,
-} from "../chat/promptStashService";
+  claimDraft,
+  createDraft,
+  deleteDraft,
+  listDrafts,
+  updateDraft,
+} from "../chat/draftService";
 import type {
   AiConfig,
   ApplyLaneTemplateArgs,
@@ -972,17 +976,25 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);
       runtime.db.setJson(key, normalizeAgentChatParallelLaunchState(args?.state ?? null, parentLaneId));
     },
-    listPromptStashes: () => listPromptStashes(runtime.db),
-    createPromptStash: (args?: PromptStashCreateArgs) => {
-      const record = readObjectActionArg(args, "chat.createPromptStash");
+    listDrafts: () => listDrafts(runtime.db),
+    createDraft: (args?: DraftCreateArgs) => {
+      const record = readObjectActionArg(args, "chat.createDraft");
       // The service owns validation for both text and attachment-only stashes.
       // Keeping the full object intact is essential on the daemon path: this is
       // the path every runtime-backed desktop uses.
-      return createPromptStash(runtime.db, record);
+      return createDraft(runtime.db, record);
     },
-    deletePromptStash: (args?: PromptStashDeleteArgs) => {
-      const record = readObjectActionArg(args, "chat.deletePromptStash");
-      return deletePromptStash(runtime.db, requireNonEmptyString(record.id, "id"));
+    deleteDraft: (args?: DraftDeleteArgs) => {
+      const record = readObjectActionArg(args, "chat.deleteDraft");
+      return deleteDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+    },
+    updateDraft: (args?: DraftUpdateArgs) => {
+      const record = readObjectActionArg(args, "chat.updateDraft");
+      return updateDraft(runtime.db, record);
+    },
+    claimDraft: (args?: DraftClaimArgs) => {
+      const record = readObjectActionArg(args, "chat.claimDraft");
+      return claimDraft(runtime.db, requireNonEmptyString(record.id, "id"));
     },
     fileSearch: async (args?: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
       const sessionId = requireNonEmptyString(args?.sessionId, "sessionId");

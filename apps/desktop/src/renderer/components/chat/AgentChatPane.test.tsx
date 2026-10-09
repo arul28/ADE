@@ -798,7 +798,7 @@ function installAdeMocks(options?: {
       },
       fileSearch: vi.fn().mockResolvedValue([]),
       saveTempAttachment,
-      promptStashes: {
+      drafts: {
         list: vi.fn().mockResolvedValue([]),
         create: vi.fn().mockResolvedValue({
           id: "stash-1",
@@ -13048,7 +13048,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     renderPane(session);
 
-    await waitFor(() => expect(window.ade.agentChat.promptStashes.list).toHaveBeenCalledWith(
+    await waitFor(() => expect(window.ade.agentChat.drafts.list).toHaveBeenCalledWith(
       machineB,
     ));
     expect(useAppStore.getState().projectBinding).toEqual(machineB);

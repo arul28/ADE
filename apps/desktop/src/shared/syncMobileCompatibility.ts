@@ -161,9 +161,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "ai.launchCloudAgent",
   // Per-project prompt stash. iOS gates the overflow-menu items on these
   // descriptors so an older brain simply omits stash instead of going limited.
-  "chat.listPromptStashes",
-  "chat.createPromptStash",
-  "chat.deletePromptStash",
+  "chat.listDrafts",
+  "chat.createDraft",
+  "chat.deleteDraft",
   // Thread comments. An older brain omits them, and the phone hides the chip.
   ...THREAD_COMMENT_ACTION_NAMES.map((action) => `chat.${action}` as const),
   // Sources favicons improve the compact phone Sources list; older hosts keep

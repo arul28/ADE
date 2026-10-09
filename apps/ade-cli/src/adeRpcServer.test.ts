@@ -1742,12 +1742,12 @@ describe("adeRpcServer", () => {
       const chatActionInventory = await callTool(handler, "list_ade_actions", { domain: "chat" });
       const chatActionNames = (chatActionInventory.structuredContent?.actions ?? [])
         .map((action: { name?: string }) => action.name);
-      expect(chatActionNames).not.toContain("chat.listPromptStashes");
-      expect(chatActionNames).not.toContain("chat.createPromptStash");
-      expect(chatActionNames).not.toContain("chat.deletePromptStash");
+      expect(chatActionNames).not.toContain("chat.listDrafts");
+      expect(chatActionNames).not.toContain("chat.createDraft");
+      expect(chatActionNames).not.toContain("chat.deleteDraft");
       const stashReadAttempt = await callTool(handler, "run_ade_action", {
         domain: "chat",
-        action: "listPromptStashes",
+        action: "listDrafts",
         args: {},
       });
       expect(stashReadAttempt.isError).toBe(true);

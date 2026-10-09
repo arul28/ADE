@@ -99,9 +99,9 @@ import {
   type AgentChatSteerArgs,
   type AgentChatCancelSteerArgs,
   type AgentChatMoveSteerArgs,
-  MAX_PROMPT_STASHES,
-  type PromptStashCreateArgs,
-  type PromptStashEntry,
+  MAX_DRAFTS,
+  type DraftCreateArgs,
+  type DraftEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
@@ -4481,7 +4481,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   };
 
   const browserMockPersonalChats: any[] = [];
-  const browserMockPromptStashes: PromptStashEntry[] = [];
+  const browserMockDrafts: DraftEntry[] = [];
   const browserMockPersonalChatEvents = new Map<string, any[]>();
   let browserMockPersonalChatSequence = 0;
   /** Every personal event in order, so `streamEvents` can replay them like the runtime buffer. */
@@ -6564,14 +6564,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           return { deleted: current.some((comment) => comment.id === args.commentId) };
         },
       },
-      promptStashes: {
-        list: async (_pin?: OpenProjectBinding | null) => browserMockPromptStashes.map((entry) => ({
+      drafts: {
+        list: async (_pin?: OpenProjectBinding | null) => browserMockDrafts.map((entry) => ({
           ...entry,
           attachments: entry.attachments?.map((attachment) => ({ ...attachment })),
         })),
-        create: async (args: PromptStashCreateArgs, _pin?: OpenProjectBinding | null) => {
+        create: async (args: DraftCreateArgs, _pin?: OpenProjectBinding | null) => {
           const attachments = (args.attachments ?? []).map((attachment) => ({ ...attachment }));
-          const entry: PromptStashEntry = {
+          const entry: DraftEntry = {
             id: globalThis.crypto.randomUUID(),
             text: args.text,
             attachments,
@@ -6581,14 +6581,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             modelId: args.modelId ?? null,
             createdAt: new Date().toISOString(),
           };
-          browserMockPromptStashes.unshift(entry);
-          browserMockPromptStashes.splice(MAX_PROMPT_STASHES);
+          browserMockDrafts.unshift(entry);
+          browserMockDrafts.splice(MAX_DRAFTS);
           return entry;
         },
         delete: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
-          const index = browserMockPromptStashes.findIndex((entry) => entry.id === id);
+          const index = browserMockDrafts.findIndex((entry) => entry.id === id);
           if (index < 0) return false;
-          browserMockPromptStashes.splice(index, 1);
+          browserMockDrafts.splice(index, 1);
           return true;
         },
       },

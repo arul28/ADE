@@ -58,7 +58,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
-import { listPromptStashAttachmentPaths } from "./promptStashService";
+import { listDraftAttachmentPaths } from "./draftService";
 import { ClaudeInputPump } from "./claudeInputPump";
 import { createSessionActivityDetector, type SessionActivityDetector } from "./sessionActivityDetector";
 import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
@@ -64573,13 +64573,13 @@ export function createAgentChatService(args: {
       try {
         const projectRoot = args.projectRoot;
         if (!projectRoot) return;
-        const promptStashDb = args.db;
-        const protectedAttachmentPaths = promptStashDb
-          && typeof promptStashDb.get === "function"
-          && typeof promptStashDb.all === "function"
-          && typeof promptStashDb.run === "function"
-          ? new Set(Array.from(listPromptStashAttachmentPaths(
-            promptStashDb as Pick<AdeDb, "get" | "all" | "run"> & Partial<Pick<AdeDb, "sync">>,
+        const draftDb = args.db;
+        const protectedAttachmentPaths = draftDb
+          && typeof draftDb.get === "function"
+          && typeof draftDb.all === "function"
+          && typeof draftDb.run === "function"
+          ? new Set(Array.from(listDraftAttachmentPaths(
+            draftDb as Pick<AdeDb, "get" | "all" | "run"> & Partial<Pick<AdeDb, "sync">>,
           ), (filePath) => path.resolve(filePath)))
           : new Set<string>();
         const cleanupDir = (dirPath: string) => {

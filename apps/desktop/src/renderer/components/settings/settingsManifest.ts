@@ -440,11 +440,11 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Details",
   },
   {
-    id: "appearance.prompt-stash",
+    id: "appearance.drafts",
     label: "Prompt stash button",
     keywords: ["bookmark", "stash", "composer", "save prompt"],
     tab: "chat",
-    anchor: "prompt-stash-button",
+    anchor: "drafts-button",
     scope: "account",
     web: "browser",
     group: "Details",

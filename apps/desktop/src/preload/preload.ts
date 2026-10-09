@@ -631,9 +631,11 @@ import type {
   AgentChatFileSearchResult,
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
-  PromptStashCreateArgs,
-  PromptStashDeleteArgs,
-  PromptStashEntry,
+  DraftClaimArgs,
+  DraftCreateArgs,
+  DraftDeleteArgs,
+  DraftEntry,
+  DraftUpdateArgs,
   AgentChatGetTurnFileDiffArgs,
   AgentChatSession,
   AgentChatSessionCapabilities,
@@ -1970,9 +1972,9 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "terminateCodexBackgroundTerminal",
   // Private draft state must never fall through to the process-global IPC
   // database while the owning project binding is changing.
-  "listPromptStashes",
-  "createPromptStash",
-  "deletePromptStash",
+  "listDrafts",
+  "createDraft",
+  "deleteDraft",
   // Thread comments live on the chat's host; a write that fell through to this
   // window's process during a project switch would land on the wrong machine.
   ...THREAD_COMMENT_ACTION_NAMES,
@@ -8402,38 +8404,60 @@ const adeBridge = {
         { args },
         async () => ({ suggestions: [] }),
       ),
-    promptStashes: {
+    drafts: {
       list: async (
         pin?: OpenProjectBinding | null,
-      ): Promise<PromptStashEntry[]> =>
+      ): Promise<DraftEntry[]> =>
         callPinnedOrBoundRuntimeActionOr(
           pin,
           "chat",
-          "listPromptStashes",
+          "listDrafts",
           {},
-          () => ipcRenderer.invoke(IPC.agentChatPromptStashesList),
+          () => ipcRenderer.invoke(IPC.agentChatDraftsList),
         ),
       create: async (
-        args: PromptStashCreateArgs,
+        args: DraftCreateArgs,
         pin?: OpenProjectBinding | null,
-      ): Promise<PromptStashEntry> =>
+      ): Promise<DraftEntry> =>
         callPinnedOrBoundRuntimeActionOr(
           pin,
           "chat",
-          "createPromptStash",
+          "createDraft",
           { args },
-          () => ipcRenderer.invoke(IPC.agentChatPromptStashesCreate, args),
+          () => ipcRenderer.invoke(IPC.agentChatDraftsCreate, args),
         ),
       delete: async (
-        args: PromptStashDeleteArgs,
+        args: DraftDeleteArgs,
         pin?: OpenProjectBinding | null,
       ): Promise<boolean> =>
         callPinnedOrBoundRuntimeActionOr(
           pin,
           "chat",
-          "deletePromptStash",
+          "deleteDraft",
           { args },
-          () => ipcRenderer.invoke(IPC.agentChatPromptStashesDelete, args),
+          () => ipcRenderer.invoke(IPC.agentChatDraftsDelete, args),
+        ),
+      update: async (
+        args: DraftUpdateArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<DraftEntry | null> =>
+        callPinnedOrBoundRuntimeActionOr(
+          pin,
+          "chat",
+          "updateDraft",
+          { args },
+          () => ipcRenderer.invoke(IPC.agentChatDraftsUpdate, args),
+        ),
+      claim: async (
+        args: DraftClaimArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<DraftEntry | null> =>
+        callPinnedOrBoundRuntimeActionOr(
+          pin,
+          "chat",
+          "claimDraft",
+          { args },
+          () => ipcRenderer.invoke(IPC.agentChatDraftsClaim, args),
         ),
     },
     threadComments: {

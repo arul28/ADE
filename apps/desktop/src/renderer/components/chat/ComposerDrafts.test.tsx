@@ -3,27 +3,27 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, forwardRef, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OpenProjectBinding, PromptStashEntry } from "../../../shared/types";
+import type { OpenProjectBinding, DraftEntry } from "../../../shared/types";
 import {
-  ComposerPromptStash as ProductionComposerPromptStash,
-  type ComposerPromptStashHandle,
-} from "./ComposerPromptStash";
+  ComposerDrafts as ProductionComposerDrafts,
+  type ComposerDraftsHandle,
+} from "./ComposerDrafts";
 
 const noopAddAttachment = () => {};
 const noopRemoveAttachment = () => {};
-type ProductionPromptStashProps = ComponentProps<typeof ProductionComposerPromptStash>;
-type TestPromptStashProps = Omit<ProductionPromptStashProps, "onAddAttachment" | "onRemoveAttachment"> & {
-  onAddAttachment?: ProductionPromptStashProps["onAddAttachment"];
-  onRemoveAttachment?: ProductionPromptStashProps["onRemoveAttachment"];
+type ProductionDraftsProps = ComponentProps<typeof ProductionComposerDrafts>;
+type TestDraftsProps = Omit<ProductionDraftsProps, "onAddAttachment" | "onRemoveAttachment"> & {
+  onAddAttachment?: ProductionDraftsProps["onAddAttachment"];
+  onRemoveAttachment?: ProductionDraftsProps["onRemoveAttachment"];
 };
-const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, TestPromptStashProps>(
-  function TestComposerPromptStash({
+const ComposerDrafts = forwardRef<ComposerDraftsHandle, TestDraftsProps>(
+  function TestComposerDrafts({
     onAddAttachment = noopAddAttachment,
     onRemoveAttachment = noopRemoveAttachment,
     ...props
   }, ref) {
     return (
-      <ProductionComposerPromptStash
+      <ProductionComposerDrafts
         ref={ref}
         {...props}
         onAddAttachment={onAddAttachment}
@@ -33,7 +33,7 @@ const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, TestPromptStas
   },
 );
 
-const savedEntry: PromptStashEntry = {
+const savedEntry: DraftEntry = {
   id: "stash-1",
   text: "Fix the parser",
   provider: "codex",
@@ -49,14 +49,14 @@ function installBridge(overrides?: {
   saveTempAttachment?: ReturnType<typeof vi.fn>;
   getWindowSession?: ReturnType<typeof vi.fn>;
 }) {
-  const promptStashes = {
+  const drafts = {
     list: overrides?.list ?? vi.fn().mockResolvedValue([]),
     create: overrides?.create ?? vi.fn().mockResolvedValue(savedEntry),
     delete: overrides?.delete ?? vi.fn().mockResolvedValue(true),
   };
   (window as unknown as { ade: unknown }).ade = {
     agentChat: {
-      promptStashes,
+      drafts,
       getImageDataUrl: overrides?.getImageDataUrl ?? vi.fn().mockResolvedValue({
         dataUrl: "data:image/png;base64,cHJldmlldw==",
       }),
@@ -73,7 +73,7 @@ function installBridge(overrides?: {
       }),
     },
   };
-  return promptStashes;
+  return drafts;
 }
 
 beforeEach(() => {
@@ -88,8 +88,8 @@ afterEach(() => {
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
-describe("ComposerPromptStash", () => {
-  it("ignores a prompt-stash refresh that lost its local project binding", async () => {
+describe("ComposerDrafts", () => {
+  it("ignores a drafts refresh that lost its local project binding", async () => {
     const staleBinding: OpenProjectBinding = {
       kind: "local",
       key: "local:/stale-project",
@@ -114,7 +114,7 @@ describe("ComposerPromptStash", () => {
     installBridge({ list, getWindowSession });
 
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         composerMachineBinding={staleBinding}
         active
@@ -129,7 +129,7 @@ describe("ComposerPromptStash", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("shows a prompt-stash error when the local project binding is still current", async () => {
+  it("shows a drafts error when the local project binding is still current", async () => {
     const currentBinding: OpenProjectBinding = {
       kind: "local",
       key: "local:/current-project",
@@ -149,7 +149,7 @@ describe("ComposerPromptStash", () => {
     });
 
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         composerMachineBinding={currentBinding}
         active
@@ -165,7 +165,7 @@ describe("ComposerPromptStash", () => {
   it("stays out of the toolbar when the composer and stash list are both empty", async () => {
     const bridge = installBridge();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible
@@ -182,7 +182,7 @@ describe("ComposerPromptStash", () => {
   it("honors the appearance toggle even when shared stashes exist", async () => {
     const bridge = installBridge({ list: vi.fn().mockResolvedValue([savedEntry]) });
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible={false}
@@ -200,7 +200,7 @@ describe("ComposerPromptStash", () => {
     const bridge = installBridge({ create });
     const onDraftChange = vi.fn();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Fix the parser"
         provider="codex"
         modelId="openai/gpt-5.4"
@@ -228,7 +228,7 @@ describe("ComposerPromptStash", () => {
     });
     const onDraftChange = vi.fn();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Do not lose this"
         active
         buttonVisible
@@ -251,7 +251,7 @@ describe("ComposerPromptStash", () => {
     });
     const onDraftChange = vi.fn();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible
@@ -284,7 +284,7 @@ describe("ComposerPromptStash", () => {
       delete: remove,
     });
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         composerMachineBinding={ownerBinding}
         active
@@ -321,7 +321,7 @@ describe("ComposerPromptStash", () => {
       path: "/project/.ade/attachments/stashed-design.png",
       type: "image" as const,
     };
-    const imageEntry: PromptStashEntry = {
+    const imageEntry: DraftEntry = {
       ...savedEntry,
       text: "Use this design",
       attachments: [storedImageAttachment],
@@ -341,7 +341,7 @@ describe("ComposerPromptStash", () => {
     const onDraftChange = vi.fn();
     const onRemoveAttachment = vi.fn();
     const saveView = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Use this design"
         attachments={[imageAttachment]}
         composerMachineBinding={composerMachineBinding}
@@ -383,7 +383,7 @@ describe("ComposerPromptStash", () => {
       getImageDataUrl,
     });
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         composerMachineBinding={composerMachineBinding}
         active
@@ -399,7 +399,7 @@ describe("ComposerPromptStash", () => {
       storedImageAttachment.path,
       composerMachineBinding,
     ));
-    expect(document.querySelector("[data-prompt-stash-menu] img")?.getAttribute("src"))
+    expect(document.querySelector("[data-drafts-menu] img")?.getAttribute("src"))
       .toBe("data:image/png;base64,cHJldmlldw==");
     fireEvent.click(screen.getByRole("button", { name: /Use this design/i }));
     expect(onAddAttachment).toHaveBeenCalledWith(storedImageAttachment);
@@ -461,7 +461,7 @@ describe("ComposerPromptStash", () => {
     installBridge({ create, getImageDataUrl, saveTempAttachment });
     const onDraftChange = vi.fn();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Keep these images ordered"
         attachments={sourceAttachments}
         composerMachineBinding={originalBinding}
@@ -483,7 +483,7 @@ describe("ComposerPromptStash", () => {
     expect(saveTempAttachment).not.toHaveBeenCalled();
 
     view.rerender(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Keep these images ordered"
         attachments={sourceAttachments}
         composerMachineBinding={switchedBinding}
@@ -553,7 +553,7 @@ describe("ComposerPromptStash", () => {
     (window as any).ade.app = { getImageDataUrl: localRead };
 
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Keep the remote image"
         attachments={[{
           path: "/remote/source-project/design-remote-owner.png",
@@ -605,7 +605,7 @@ describe("ComposerPromptStash", () => {
     (window as any).ade.app = { getImageDataUrl: localRead };
 
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Keep the local image"
         attachments={[sourceAttachment]}
         composerMachineBinding={localBinding}
@@ -648,7 +648,7 @@ describe("ComposerPromptStash", () => {
     const onDraftChange = vi.fn();
     const onRemoveAttachment = vi.fn();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Keep this safe"
         attachments={[imageAttachment]}
         composerMachineBinding={localBinding}
@@ -674,7 +674,7 @@ describe("ComposerPromptStash", () => {
     const saveTempAttachment = vi.fn();
     installBridge({ create, getImageDataUrl, saveTempAttachment });
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Too many references"
         attachments={Array.from({ length: 11 }, (_, index) => ({
           path: `/Users/me/Desktop/image-${index}.png`,
@@ -696,7 +696,7 @@ describe("ComposerPromptStash", () => {
   });
 
   it("keeps a machine-bound image stash intact when viewed from another synced runtime", async () => {
-    const unavailableEntry: PromptStashEntry = {
+    const unavailableEntry: DraftEntry = {
       ...savedEntry,
       text: "",
       attachments: [],
@@ -711,7 +711,7 @@ describe("ComposerPromptStash", () => {
     const onDraftChange = vi.fn();
     const onAddAttachment = vi.fn();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible
@@ -736,7 +736,7 @@ describe("ComposerPromptStash", () => {
     installBridge({ list: vi.fn().mockResolvedValue([savedEntry]) });
     render(
       <div data-testid="clipping-parent" style={{ overflow: "hidden" }}>
-        <ComposerPromptStash
+        <ComposerDrafts
           draft=""
           active
           buttonVisible
@@ -785,7 +785,7 @@ describe("ComposerPromptStash", () => {
     try {
       installBridge({ list: vi.fn().mockResolvedValue([savedEntry]) });
       const view = render(
-        <ComposerPromptStash
+        <ComposerDrafts
           draft=""
           active
           buttonVisible
@@ -852,7 +852,7 @@ describe("ComposerPromptStash", () => {
     });
     const onDraftChange = vi.fn();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible
@@ -865,7 +865,7 @@ describe("ComposerPromptStash", () => {
     expect(screen.getByRole("dialog", { name: "Stashed prompts" })).toBeTruthy();
 
     view.rerender(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="A new prompt"
         active
         buttonVisible
@@ -883,9 +883,9 @@ describe("ComposerPromptStash", () => {
     const create = vi.fn().mockResolvedValue(savedEntry);
     installBridge({ create });
     const onDraftChange = vi.fn();
-    const ref = createRef<ComposerPromptStashHandle>();
+    const ref = createRef<ComposerDraftsHandle>();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Hidden button prompt"
         active
@@ -907,15 +907,15 @@ describe("ComposerPromptStash", () => {
   });
 
   it("coalesces rapid shortcut presses into one durable save", async () => {
-    let resolveCreate: ((entry: PromptStashEntry) => void) | undefined;
-    const create = vi.fn().mockImplementation(() => new Promise<PromptStashEntry>((resolve) => {
+    let resolveCreate: ((entry: DraftEntry) => void) | undefined;
+    const create = vi.fn().mockImplementation(() => new Promise<DraftEntry>((resolve) => {
       resolveCreate = resolve;
     }));
     installBridge({ create });
     const onDraftChange = vi.fn();
-    const ref = createRef<ComposerPromptStashHandle>();
+    const ref = createRef<ComposerDraftsHandle>();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Save exactly once"
         active
@@ -934,15 +934,15 @@ describe("ComposerPromptStash", () => {
   });
 
   it("does not clear newer text typed while a remote save is in flight", async () => {
-    let resolveCreate: ((entry: PromptStashEntry) => void) | undefined;
-    const create = vi.fn().mockImplementation(() => new Promise<PromptStashEntry>((resolve) => {
+    let resolveCreate: ((entry: DraftEntry) => void) | undefined;
+    const create = vi.fn().mockImplementation(() => new Promise<DraftEntry>((resolve) => {
       resolveCreate = resolve;
     }));
     installBridge({ create });
     const onDraftChange = vi.fn();
-    const ref = createRef<ComposerPromptStashHandle>();
+    const ref = createRef<ComposerDraftsHandle>();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Save this version"
         active
@@ -954,7 +954,7 @@ describe("ComposerPromptStash", () => {
 
     ref.current?.activate();
     view.rerender(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Newer typing"
         active
@@ -978,8 +978,8 @@ describe("ComposerPromptStash", () => {
     const originalImage = { path: "/Users/me/Desktop/original.png", type: "image" as const };
     const newerImage = { path: "/Users/me/Desktop/newer.png", type: "image" as const };
     const storedImage = { path: "/project/.ade/attachments/original.png", type: "image" as const };
-    let resolveCreate: ((entry: PromptStashEntry) => void) | undefined;
-    const create = vi.fn().mockImplementation(() => new Promise<PromptStashEntry>((resolve) => {
+    let resolveCreate: ((entry: DraftEntry) => void) | undefined;
+    const create = vi.fn().mockImplementation(() => new Promise<DraftEntry>((resolve) => {
       resolveCreate = resolve;
     }));
     installBridge({
@@ -988,9 +988,9 @@ describe("ComposerPromptStash", () => {
     });
     const onDraftChange = vi.fn();
     const onRemoveAttachment = vi.fn();
-    const ref = createRef<ComposerPromptStashHandle>();
+    const ref = createRef<ComposerDraftsHandle>();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Keep the newer composer intact"
         attachments={[originalImage]}
@@ -1005,7 +1005,7 @@ describe("ComposerPromptStash", () => {
     ref.current?.activate();
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     view.rerender(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Keep the newer composer intact"
         attachments={[originalImage, newerImage]}
@@ -1034,7 +1034,7 @@ describe("ComposerPromptStash", () => {
     });
     const onDraftChange = vi.fn();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible
@@ -1049,7 +1049,7 @@ describe("ComposerPromptStash", () => {
     expect(onDraftChange).toHaveBeenCalledWith("Fix the parser");
 
     view.rerender(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Fix the parser with newer edits"
         active
         buttonVisible

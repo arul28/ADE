@@ -37,7 +37,7 @@ import {
   type OpenProjectBinding,
   type PendingInputRequest,
   type AgentChatModelCatalogRefreshProvider,
-  type PromptStashEntry,
+  type DraftEntry,
 } from "../../../shared/types";
 import {
   AGENT_CHAT_STOP_MODES,
@@ -208,9 +208,9 @@ import { harnessBodyLabel, type HarnessPresetBody } from "../../../shared/harnes
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
 import {
-  ComposerPromptStash,
-  type ComposerPromptStashHandle,
-} from "./ComposerPromptStash";
+  ComposerDrafts,
+  type ComposerDraftsHandle,
+} from "./ComposerDrafts";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { PENDING_STEER_DND_MIME, usePendingSteerReorder, type PendingSteerReorder } from "./usePendingSteerReorder";
@@ -2377,7 +2377,7 @@ export function AgentChatComposer({
   const planningAllowed = projectChatPane;
   // Prompt stashes and Codex voice live in the project runtime; a scoped
   // (personal) pane has neither, so their controls and shortcuts are hidden.
-  const promptStashAvailable = projectChatPane;
+  const draftsAvailable = projectChatPane;
   const withoutPlanning = <T extends { icon?: string }>(options: T[]): T[] => (
     planningAllowed ? options : options.filter((option) => option.icon !== "plan")
   );
@@ -2390,8 +2390,8 @@ export function AgentChatComposer({
   // Cursor-only controls (the service-tier picker) key off this, so a Devin
   // cloud chat must not turn it on.
   const cursorCloudSessionActive = (cloudModeActive || cursorRuntime === "cloud") && cloudLaunch?.provider !== "devin";
-  const promptStashRef = useRef<ComposerPromptStashHandle>(null);
-  const promptStashButtonEnabled = useRootAppStore((state) => state.promptStashButtonEnabled);
+  const draftsRef = useRef<ComposerDraftsHandle>(null);
+  const draftsButtonEnabled = useRootAppStore((state) => state.draftsButtonEnabled);
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState(false);
@@ -2729,8 +2729,8 @@ export function AgentChatComposer({
   const promptHistoryIndexRef = useRef<number | null>(null);
   const promptHistorySelectedKeyRef = useRef<string | null>(null);
   const promptHistoryStashRef = useRef<{
-    promise: Promise<PromptStashEntry | null>;
-    consume: ComposerPromptStashHandle["consume"];
+    promise: Promise<DraftEntry | null>;
+    consume: ComposerDraftsHandle["consume"];
   } | null>(null);
   const promptHistoryDraftBeforeRef = useRef<string | null>(null);
   const promptHistoryAppliedDraftRef = useRef<string | null>(null);
@@ -5175,8 +5175,8 @@ export function AgentChatComposer({
   const stashDraftBeforeHistory = useCallback((currentText: string) => {
     if (!currentText.trim() && attachments.length === 0) return;
     promptHistoryDraftBeforeRef.current = currentText;
-    if (typeof agentChatApiRef.current?.promptStashes?.create === "function") {
-      const stashHandle = promptStashRef.current;
+    if (typeof agentChatApiRef.current?.drafts?.create === "function") {
+      const stashHandle = draftsRef.current;
       if (stashHandle) {
         promptHistoryStashRef.current = {
           promise: stashHandle.activatePreservingDraft(),
@@ -5293,13 +5293,13 @@ export function AgentChatComposer({
       && commandModified
       && !event.altKey
       && !event.shiftKey
-      && promptStashAvailable
+      && draftsAvailable
     ) {
       event.preventDefault();
-      promptStashRef.current?.activate();
+      draftsRef.current?.activate();
       return;
     }
-    if (promptStashRef.current?.handleMenuKeyDown(event)) {
+    if (draftsRef.current?.handleMenuKeyDown(event)) {
       cancelPromptHistorySequence();
       event.preventDefault();
       return;
@@ -7027,15 +7027,15 @@ export function AgentChatComposer({
             ) : null}
           </div>
 
-          {promptStashAvailable ? <ComposerPromptStash
-            ref={promptStashRef}
+          {draftsAvailable ? <ComposerDrafts
+            ref={draftsRef}
             draft={draft}
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
             provider={sessionProvider}
             modelId={modelId}
             active={isActive}
-            buttonVisible={promptStashButtonEnabled && !parallelChatMode}
+            buttonVisible={draftsButtonEnabled && !parallelChatMode}
             shortcutLabel={`${modifierKeyLabel}+S`}
             disabled={pendingImageAttachments.length > 0}
             onDraftChange={onDraftChange}

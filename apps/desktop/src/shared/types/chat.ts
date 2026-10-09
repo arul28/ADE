@@ -5645,32 +5645,138 @@ export type AgentChatFileSearchResult = {
   score?: number;
 };
 
-export type PromptStashEntry = {
+/**
+ * Drafts replaced the old "prompt stash". A draft is unsent composer state that
+ * survives across machines; a *scheduled* draft additionally carries a fire
+ * time and is delivered as a real user turn by whichever machine owns the
+ * target chat. `prompt_stashes` remains the physical table name on purpose:
+ * cr-sqlite forbids renaming a CRR wholesale (kvDb's `crsql_begin_alter`
+ * path only supports added columns), and the table replicates to every paired
+ * machine, so a rename would strand peers on the old schema.
+ */
+export type DraftKind = "draft" | "scheduled";
+
+export type DraftStatus =
+  /** A plain draft; nothing is armed. */
+  | "draft"
+  /** Armed and waiting for its fire time. */
+  | "scheduled"
+  /** Claimed by the owning machine; the send is in flight. */
+  | "sending"
+  /** Delivered. */
+  | "sent"
+  /** The fire time passed and the policy refused to deliver late. */
+  | "missed"
+  /** Delivery cannot proceed until the user acts (target chat gone, images not yet on the target). */
+  | "blocked"
+  /** Cancelled by the user or an agent. */
+  | "cancelled";
+
+/** What happens when the fire time arrives and the send cannot go out. */
+export type DraftDeliveryPolicy = "wait" | "strict" | "grace";
+
+export type DraftTargetKind = "existing" | "new";
+
+/** Who armed the send. Agents are first-class here (see actionPolicy). */
+export type DraftScheduledBy = "user" | "agent";
+
+export type DraftEntry = {
   id: string;
   text: string;
   /** Absent when talking to a pre-attachment ADE runtime. */
   attachments?: AgentChatFileRef[];
   /** Includes images that exist only on the originating ADE runtime. */
   attachmentCount?: number;
-  /** False when this synced runtime does not own the stash's image files. */
+  /** False when this synced runtime does not own the draft's image files. */
   attachmentsAvailable?: boolean;
   provider: string | null;
   modelId: string | null;
   createdAt: string;
+  updatedAt?: string;
+  /** Absent on a pre-scheduling ADE runtime — treat as "draft". */
+  kind?: DraftKind;
+  status?: DraftStatus;
+  /** ISO fire time, meaning the *target machine's* local time. */
+  scheduledAt?: string | null;
+  deliveryPolicy?: DraftDeliveryPolicy;
+  /** Only meaningful with `deliveryPolicy: "grace"`. */
+  graceSeconds?: number;
+  targetKind?: DraftTargetKind;
+  /** Existing-chat target. */
+  targetSessionId?: string | null;
+  /** New-chat target. */
+  targetLaneId?: string | null;
+  /** The machine/runtime whose local time and chat the send belongs to. */
+  targetMachineKey?: string | null;
+  /** The chat this draft was written in, used as a default target hint. */
+  originSessionId?: string | null;
+  permissionMode?: string | null;
+  thinking?: string | null;
+  scheduledBy?: DraftScheduledBy;
+  /** Set only when `scheduledBy` is "agent". */
+  scheduledBySessionId?: string | null;
+  firedAt?: string | null;
+  /** Why a scheduled draft is blocked or missed, for the Needs-you row. */
+  lastError?: string | null;
 };
 
-export const MAX_PROMPT_STASHES = 20;
-export const MAX_PROMPT_STASH_ATTACHMENTS = 10;
+/** Plain drafts keep the original 20-row ceiling. */
+export const MAX_DRAFTS = 20;
+/** Scheduled drafts are exempt from the draft prune and capped separately. */
+export const MAX_SCHEDULED_DRAFTS = 50;
+export const MAX_DRAFT_ATTACHMENTS = 10;
+/** A schedule may be armed at most a year ahead. */
+export const MAX_DRAFT_SCHEDULE_LEAD_MS = 365 * 24 * 60 * 60 * 1000;
+/** A "grace" policy may not hold a send longer than a day. */
+export const MAX_DRAFT_GRACE_SECONDS = 24 * 60 * 60;
 
-export type PromptStashCreateArgs = {
+export type DraftCreateArgs = {
   text: string;
   attachments?: AgentChatFileRef[];
   provider?: string | null;
   modelId?: string | null;
+  originSessionId?: string | null;
+  /** Supply to arm a schedule in the same call. */
+  schedule?: DraftScheduleInput;
 };
 
-export type PromptStashDeleteArgs = {
+export type DraftScheduleInput = {
+  /** ISO-8601 with an explicit offset or Z. Must be in the future. */
+  scheduledAt: string;
+  targetKind: DraftTargetKind;
+  targetSessionId?: string | null;
+  targetLaneId?: string | null;
+  targetMachineKey?: string | null;
+  deliveryPolicy?: DraftDeliveryPolicy;
+  graceSeconds?: number;
+  provider?: string | null;
+  modelId?: string | null;
+  permissionMode?: string | null;
+  thinking?: string | null;
+  scheduledBy?: DraftScheduledBy;
+  scheduledBySessionId?: string | null;
+};
+
+export type DraftDeleteArgs = {
   id: string;
+};
+
+/**
+ * Claim a draft before putting it in a composer. The runtime deletes the row
+ * and only the caller that wins the claim is allowed to fill its composer, so
+ * two machines can never both hold the same text.
+ */
+export type DraftClaimArgs = {
+  id: string;
+};
+
+/** Update a draft in place: edit its text, or retime/reconfigure a schedule. */
+export type DraftUpdateArgs = {
+  id: string;
+  text?: string;
+  schedule?: DraftScheduleInput | null;
+  /** Drop an armed schedule, returning the row to a plain draft. */
+  unschedule?: boolean;
 };
 
 export type TurnDiffFile = {

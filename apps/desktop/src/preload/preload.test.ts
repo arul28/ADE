@@ -2811,7 +2811,7 @@ describe("preload Apple device input routing", () => {
     };
     const delta = { sessionId: "session-1", filesChanged: 2 };
     const preview = "data:image/png;base64,AAAA";
-    const promptStashes = [{
+    const drafts = [{
       id: "stash-1",
       text: "Fix the parser",
       provider: "codex",
@@ -2836,29 +2836,29 @@ describe("preload Apple device input routing", () => {
             statusHints: {},
           };
         }
-        if (request?.domain === "chat" && request.action === "listPromptStashes") {
+        if (request?.domain === "chat" && request.action === "listDrafts") {
           return {
             ok: true,
             domain: "chat",
-            action: "listPromptStashes",
-            result: promptStashes,
+            action: "listDrafts",
+            result: drafts,
             statusHints: {},
           };
         }
-        if (request?.domain === "chat" && request.action === "createPromptStash") {
+        if (request?.domain === "chat" && request.action === "createDraft") {
           return {
             ok: true,
             domain: "chat",
-            action: "createPromptStash",
-            result: promptStashes[0],
+            action: "createDraft",
+            result: drafts[0],
             statusHints: {},
           };
         }
-        if (request?.domain === "chat" && request.action === "deletePromptStash") {
+        if (request?.domain === "chat" && request.action === "deleteDraft") {
           return {
             ok: true,
             domain: "chat",
-            action: "deletePromptStash",
+            action: "deleteDraft",
             result: true,
             statusHints: {},
           };
@@ -2888,11 +2888,11 @@ describe("preload Apple device input routing", () => {
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.sessions.getDelta("session-1")).resolves.toEqual(delta);
     await expect(bridge.computerUse.readArtifactPreview({ uri: ".ade/artifacts/proof.png" })).resolves.toBe(preview);
-    await expect(bridge.agentChat.promptStashes.list()).resolves.toEqual(promptStashes);
-    await expect(bridge.agentChat.promptStashes.create({
+    await expect(bridge.agentChat.drafts.list()).resolves.toEqual(drafts);
+    await expect(bridge.agentChat.drafts.create({
       text: "Fix the parser",
-    })).resolves.toEqual(promptStashes[0]);
-    await expect(bridge.agentChat.promptStashes.delete({
+    })).resolves.toEqual(drafts[0]);
+    await expect(bridge.agentChat.drafts.delete({
       id: "stash-1",
     })).resolves.toBe(true);
 
@@ -2910,7 +2910,7 @@ describe("preload Apple device input routing", () => {
       projectId: "project-1",
       request: {
         domain: "chat",
-        action: "listPromptStashes",
+        action: "listDrafts",
       },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
@@ -2918,7 +2918,7 @@ describe("preload Apple device input routing", () => {
       projectId: "project-1",
       request: {
         domain: "chat",
-        action: "createPromptStash",
+        action: "createDraft",
         args: { text: "Fix the parser" },
       },
     });
@@ -2927,7 +2927,7 @@ describe("preload Apple device input routing", () => {
       projectId: "project-1",
       request: {
         domain: "chat",
-        action: "deletePromptStash",
+        action: "deleteDraft",
         args: { id: "stash-1" },
       },
     });
@@ -2942,12 +2942,12 @@ describe("preload Apple device input routing", () => {
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.sessionsGetDelta, { sessionId: "session-1" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.computerUseReadArtifactPreview, { uri: ".ade/artifacts/proof.png" });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesCreate, expect.anything());
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesDelete, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsCreate, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsDelete, expect.anything());
   });
 
-  it("routes prompt-stash list, create, and delete through their explicit captured binding", async () => {
+  it("routes drafts list, create, and delete through their explicit captured binding", async () => {
     const activeBinding = {
       kind: "local",
       key: "local:/active",
@@ -2978,9 +2978,9 @@ describe("preload Apple device input routing", () => {
         const request = (payload as {
           request?: { domain?: string; action?: string };
         } | undefined)?.request;
-        if (request?.action === "listPromptStashes") return { result: [created] };
-        if (request?.action === "createPromptStash") return { result: created };
-        if (request?.action === "deletePromptStash") return { result: true };
+        if (request?.action === "listDrafts") return { result: [created] };
+        if (request?.action === "createDraft") return { result: created };
+        if (request?.action === "deleteDraft") return { result: true };
       }
       throw new Error(`unexpected IPC: ${channel}`);
     });
@@ -3006,12 +3006,12 @@ describe("preload Apple device input routing", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.agentChat.promptStashes.list(capturedBinding)).resolves.toEqual([created]);
-    await expect(bridge.agentChat.promptStashes.create(
+    await expect(bridge.agentChat.drafts.list(capturedBinding)).resolves.toEqual([created]);
+    await expect(bridge.agentChat.drafts.create(
       { text: "Keep this owner" },
       capturedBinding,
     )).resolves.toEqual(created);
-    await expect(bridge.agentChat.promptStashes.delete(
+    await expect(bridge.agentChat.drafts.delete(
       { id: created.id },
       capturedBinding,
     )).resolves.toBe(true);
@@ -3021,7 +3021,7 @@ describe("preload Apple device input routing", () => {
       projectId: capturedBinding.projectId,
       request: {
         domain: "chat",
-        action: "listPromptStashes",
+        action: "listDrafts",
       },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
@@ -3029,7 +3029,7 @@ describe("preload Apple device input routing", () => {
       projectId: capturedBinding.projectId,
       request: {
         domain: "chat",
-        action: "createPromptStash",
+        action: "createDraft",
         args: { text: "Keep this owner" },
       },
     });
@@ -3038,13 +3038,13 @@ describe("preload Apple device input routing", () => {
       projectId: capturedBinding.projectId,
       request: {
         domain: "chat",
-        action: "deletePromptStash",
+        action: "deleteDraft",
         args: { id: created.id },
       },
     });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesCreate, expect.anything());
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesDelete, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsCreate, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsDelete, expect.anything());
   });
 
   // The action registry answers lifecycle mutations with an `{ ok, sessionId,
@@ -6416,7 +6416,7 @@ describe("preload Apple device input routing", () => {
     await pendingSwitch;
   });
 
-  it("blocks private prompt-stash reads and mutations while a project switch is in flight", async () => {
+  it("blocks private drafts reads and mutations while a project switch is in flight", async () => {
     let resolveSwitch!: (project: unknown) => void;
     const switchPromise = new Promise((resolve) => {
       resolveSwitch = resolve;
@@ -6447,12 +6447,12 @@ describe("preload Apple device input routing", () => {
     const bridge = (globalThis as any).__adeBridge;
     const pendingSwitch = bridge.project.switchToPath("/next");
 
-    await expect(bridge.agentChat.promptStashes.list()).rejects.toThrow(/Project is switching/i);
-    await expect(bridge.agentChat.promptStashes.create({ text: "Keep this private" })).rejects.toThrow(/Project is switching/i);
-    await expect(bridge.agentChat.promptStashes.delete({ id: "stash-1" })).rejects.toThrow(/Project is switching/i);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesCreate, expect.anything());
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesDelete, expect.anything());
+    await expect(bridge.agentChat.drafts.list()).rejects.toThrow(/Project is switching/i);
+    await expect(bridge.agentChat.drafts.create({ text: "Keep this private" })).rejects.toThrow(/Project is switching/i);
+    await expect(bridge.agentChat.drafts.delete({ id: "stash-1" })).rejects.toThrow(/Project is switching/i);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsCreate, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsDelete, expect.anything());
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;
@@ -7162,15 +7162,15 @@ describe("per-chat runtime routing", () => {
       if (channel === IPC.externalSessionsGetDetail) {
         return { provider: "codex", id: "session-1", messages: [], watchable: false };
       }
-      if (channel === IPC.agentChatPromptStashesList) return [];
-      if (channel === IPC.agentChatPromptStashesCreate) {
+      if (channel === IPC.agentChatDraftsList) return [];
+      if (channel === IPC.agentChatDraftsCreate) {
         return {
           id: "stash-1",
           text: (arg as { text?: string } | undefined)?.text ?? "",
           createdAt: "2026-08-17T12:00:00.000Z",
         };
       }
-      if (channel === IPC.agentChatPromptStashesDelete) return true;
+      if (channel === IPC.agentChatDraftsDelete) return true;
       throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
     });
     const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
@@ -7395,25 +7395,25 @@ describe("per-chat runtime routing", () => {
     });
   });
 
-  it("routes prompt-stash operations through the selected project runtime", async () => {
+  it("routes drafts operations through the selected project runtime", async () => {
     const { bridge, invoke } = await mountBridge(machineB);
-    await bridge.agentChat.promptStashes.list(machineA);
-    await bridge.agentChat.promptStashes.create({ text: "Keep this local" }, machineA);
-    await bridge.agentChat.promptStashes.delete({ id: "stash-1" }, machineA);
+    await bridge.agentChat.drafts.list(machineA);
+    await bridge.agentChat.drafts.create({ text: "Keep this local" }, machineA);
+    await bridge.agentChat.drafts.delete({ id: "stash-1" }, machineA);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: machineA.rootPath,
-      request: { domain: "chat", action: "listPromptStashes" },
+      request: { domain: "chat", action: "listDrafts" },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: machineA.rootPath,
-      request: { domain: "chat", action: "createPromptStash", args: { text: "Keep this local" } },
+      request: { domain: "chat", action: "createDraft", args: { text: "Keep this local" } },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: machineA.rootPath,
-      request: { domain: "chat", action: "deletePromptStash", args: { id: "stash-1" } },
+      request: { domain: "chat", action: "deleteDraft", args: { id: "stash-1" } },
     });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
   });
 
   it("routes pinned session-card mutations to the owning machine", async () => {
