@@ -300,7 +300,7 @@ struct WorkDraftScheduleSheet: View {
       if policy == .grace {
         Picker("Grace window", selection: $graceMinutes) {
           ForEach([5, 15, 30, 60, 120], id: \.self) { minutes in
-            Text(minutes >= 60 ? "\(minutes / 60) hour\(minutes >= 120 ? "s" : "")" : "\(minutes) minutes")
+            Text(Self.graceWindowLabel(minutes: minutes))
               .tag(minutes)
           }
         }
@@ -311,6 +311,14 @@ struct WorkDraftScheduleSheet: View {
     } footer: {
       Text(policy.detail)
     }
+  }
+
+  /// "15 minutes" / "1 hour" / "2 hours", as one expression the type checker
+  /// can solve without help.
+  static func graceWindowLabel(minutes: Int) -> String {
+    if minutes < 60 { return "\(minutes) minutes" }
+    let hours = minutes / 60
+    return hours == 1 ? "1 hour" : "\(hours) hours"
   }
 
   /// Built as one plain `String` before it reaches `Text`. A four-way
