@@ -16,7 +16,7 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 /** The anchor `secrets.secrets` in `settingsManifest.ts` points at. */
 const ANCHOR = "secrets";
 
-/** Waits between re-reads while a row still says "Uploading"; then it stays. */
+/** Waits between re-reads while a row still says "Uploading"; the last repeats. */
 const UPLOAD_RECHECK_DELAYS_MS = [1_000, 3_000, 10_000, 30_000];
 
 function storageLabel(secret: ProjectSecretSummary): string {
@@ -111,8 +111,9 @@ export function SecretsSection() {
 
   // A saved account secret uploads within a second; look again a few times,
   // further apart each time, so "Uploading" turns into "Account" without a
-  // reload — and stays visible when the upload is genuinely stuck. Each
-  // `load()` sets a new snapshot, which re-runs this effect for the next delay.
+  // reload — and stays visible, re-checked every 30 s, while the upload is
+  // genuinely stuck. Each `load()` sets a new snapshot, which re-runs this
+  // effect for the next delay.
   const uploadPending = Boolean(snapshot?.secrets.some((secret) => secret.uploadPending));
   const uploadRecheckRef = React.useRef(0);
   React.useEffect(() => {
@@ -120,8 +121,9 @@ export function SecretsSection() {
       uploadRecheckRef.current = 0;
       return;
     }
-    const delay = UPLOAD_RECHECK_DELAYS_MS[uploadRecheckRef.current];
-    if (delay === undefined) return;
+    const delay = UPLOAD_RECHECK_DELAYS_MS[
+      Math.min(uploadRecheckRef.current, UPLOAD_RECHECK_DELAYS_MS.length - 1)
+    ]!;
     const timer = window.setTimeout(() => {
       uploadRecheckRef.current += 1;
       void load();
