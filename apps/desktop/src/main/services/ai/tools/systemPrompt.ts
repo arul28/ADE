@@ -23,6 +23,14 @@ const adeScheduledWorkGuidance = "**Wake-up semantics:** Autonomous wake is avai
 
 const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `background: true` and background subagents are fine here: ADE shows each job in the chat, keeps the session open while it runs, and you are woken when it ends. They stop if ADE closes this chat's connection to OpenCode (for example on an ADE restart), so for a wait that must survive that, use `ade chat scheduled-work create` instead.";
 
+/**
+ * The rule that keeps an agent from reaching for its own cron when the user
+ * asked for a message, and for ADE's send when the user asked for work. The
+ * two mechanisms look similar and do different things, which is exactly the
+ * confusion this text exists to prevent.
+ */
+const adeDraftSendGuidance = "**Sending a message later, versus waking yourself later:** these are different mechanisms, so pick deliberately. Use ADE's `ade drafts` when the user wants *a message to arrive at a time* — it delivers their prompt as a real user turn in the target chat, it shows up in their Drafts list where they can read, edit, retime or cancel it, and it survives on whichever machine owns that chat. `ade drafts schedule <id> --in 2h --target <chatId>` (or `--new-chat --lane <laneId> --provider <p> --model <m>`), `ade drafts list`, `ade drafts show <id>`, `ade drafts create --prompt \"…\"`, `ade drafts now <id>`. The target is always explicit and a one-shot time should be expressed with `--in`, which avoids timezone arithmetic. Use your own `ScheduleWakeup` / `CronCreate` / `ade chat scheduled-work create` when *you* need to do work later — it wakes your own session at a turn boundary; it is not a message from the user and does not appear in their drafts. A draft’s send names a machine and only that machine delivers it. An agent may read and manage drafts; do not paste secrets into an unsent draft, and remember a send you arm is indistinguishable from one the user armed.";
+
 const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat when the work needs an independent durable transcript, scheduling, cross-provider execution, or separately tracked lifecycle.";
 
 type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
@@ -65,6 +73,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         describeSubagentRouting(runtime),
         "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically mirrored into ADE's durable scheduler. `durable: true` also persists Claude's provider copy, while ADE's delivery guarantee does not depend on that flag. Jobs survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire seven days after creation. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
         "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
       ];
     case "claude-code-cli":
@@ -72,42 +81,49 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         "**Runtime:** ADE Work chat wrapping Claude Code CLI as a background subprocess. ADE owns the lane, transcript, lifecycle, and follow-up delivery.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
       ];
     case "codex-cli":
       return [
         "**Runtime:** ADE Work chat wrapping the Codex CLI as a subprocess. Your turns are driven through the Codex agent loop, but the host is ADE — slash commands, attachments, and lane scoping come from ADE.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
       ];
     case "codex-app-server":
       return [
         "**Runtime:** ADE Work chat hosted on the Codex app-server protocol. Your turns are driven through Codex app-server JSON-RPC, while the host is ADE — slash commands, attachments, and lane scoping come from ADE.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
       ];
     case "cursor-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the Cursor SDK (`@cursor/sdk`).",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
       ];
     case "droid-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the Factory Droid SDK (`@factory/droid-sdk`) and backed by the local Droid CLI.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
       ];
     case "pi-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the user's Pi SDK installation. ADE owns the chat transcript and lane boundary; Pi owns its native session file and provider credentials.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
       ];
     case "opencode":
       return [
         "**Runtime:** ADE Work chat wrapping an OpenCode session.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
         openCodeBackgroundWorkGuidance,
       ];
   }

@@ -5988,11 +5988,16 @@ export function AgentChatComposer({
     sessionId: sessionId ?? null,
     laneId: scheduledSendContext?.laneId ?? null,
     laneName: scheduledSendContext?.laneName ?? null,
-    // The binding key is this machine's identity for the composer's project;
-    // the draft row stores it so only that machine delivers the send.
-    machineKey: composerMachineBinding?.key ?? null,
+    // Deliberately no machine key. A project binding's key is
+    // `local:<rootPath>` (or a remote target id), which is a different
+    // namespace from the account machine key the host matches against — so
+    // sending one here would name a machine that never matches and strand the
+    // send forever. Untargeted means "whichever runtime is up delivers it",
+    // which is right for the machine the composer is already bound to. Only a
+    // surface that knows a real account machine key (the phone) targets one.
+    machineKey: null,
     machineName: scheduledSendContext?.machineName ?? composerMachineBinding?.displayName ?? null,
-  }), [composerMachineBinding, scheduledSendContext, sessionId]);
+  }), [composerMachineBinding?.displayName, scheduledSendContext, sessionId]);
 
   const scheduleConfig = useMemo((): DraftScheduleConfig => ({
     provider: sp ?? null,

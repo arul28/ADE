@@ -506,6 +506,10 @@ ade shell start-cli codex --lane <lane> --model <m> --prompt "Fix"             #
 `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`; confirm
 model-specific support with `ade actions run chat.modelCatalog --json`.
 
+Composer drafts and their scheduled sends are a separate surface: `ade drafts
+list | create | schedule | update | delete | now | show` (actions `chat.*Draft`)
+saves unsent text, arms a send for a fire time, or manages an armed one.
+
 ## Other machines on the account
 
 Chats, lanes and devices on the user's other machines are reachable with
