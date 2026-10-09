@@ -946,7 +946,10 @@ extension WorkRootListScreen {
   func generateSessionNames(_ session: TerminalSessionSummary, fields: [String]) {
     Task {
       do {
-        try await syncService.regenerateChatSessionMetadata(sessionId: session.id, fields: fields)
+        if let reason = try await syncService.regenerateChatSessionMetadata(sessionId: session.id, fields: fields) {
+          ADEHaptics.error()
+          actionErrorMessage = "Generate name failed: \(reason)"
+        }
       } catch {
         ADEHaptics.error()
         actionErrorMessage = error.localizedDescription

@@ -408,6 +408,59 @@ describe("runProviderTask", () => {
     expect(launchArgvContains(argv, "--json-schema")).toBe(!backgroundUtility);
   });
 
+  it.each([
+    { family: "anthropic", providerModelId: "claude-haiku-5-5", key: "CLAUDE_CONFIG_DIR" },
+    { family: "openai", providerModelId: "gpt-6-luna", key: "CODEX_HOME" },
+  ])("runs the $family CLI in the caller's account config home", async ({ family, providerModelId, key }) => {
+    spawnMock.mockReturnValueOnce(createMockProcess({ stdout: '{"result":"ok"}' }));
+
+    await runProviderTask({
+      cwd: process.cwd(),
+      descriptor: { family, isCliWrapped: true, providerModelId } as any,
+      prompt: "Name this chat.",
+      feature: "unit-test",
+      backgroundUtility: true,
+      accountEnv: { [key]: "/accounts/second" },
+      projectConfig: {} as any,
+    });
+
+    const options = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+    expect(options?.env?.[key]).toBe("/accounts/second");
+  });
+
+  it.each([
+    {
+      label: "a JSON usage-limit error on a failed exit",
+      stdout: `{"type":"result","is_error":true,"result":"You've hit your weekly limit · resets 6am","api_error_status":429}`,
+      exitCode: 1,
+      message: /weekly limit · resets 6am \(HTTP 429\)/,
+    },
+    {
+      label: "a JSON error on a clean exit",
+      stdout: `{"type":"result","is_error":true,"result":"Invalid API key"}`,
+      exitCode: 0,
+      message: /Invalid API key/,
+    },
+    {
+      label: "a plain-text error with an empty stderr",
+      stdout: "You've hit your weekly limit · resets 6am",
+      exitCode: 1,
+      message: /weekly limit · resets 6am/,
+    },
+  ])("reports Claude's own reason for $label", async ({ stdout, exitCode, message }) => {
+    spawnMock.mockReturnValueOnce(createMockProcess({ stdout, exitCode }));
+
+    await expect(runProviderTask({
+      cwd: process.cwd(),
+      descriptor: { family: "anthropic", isCliWrapped: true, providerModelId: "claude-haiku-5-5" } as any,
+      prompt: "Name this chat.",
+      feature: "unit-test",
+      jsonSchema: { type: "object", properties: { title: { type: "string" } } },
+      backgroundUtility: true,
+      projectConfig: {} as any,
+    })).rejects.toThrow(message);
+  });
+
   it.each([true, false])("pins Codex to standard speed only for a background utility call (%s)", async (backgroundUtility) => {
     spawnMock.mockReturnValueOnce(createMockProcess());
 
