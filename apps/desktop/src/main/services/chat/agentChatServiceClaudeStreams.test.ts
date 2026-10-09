@@ -1543,6 +1543,54 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
+    it("says a Claude process killed by a signal ADE did not send was stopped from outside", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-session-sigterm", slash_commands: [] };
+            return;
+          }
+          yield { type: "assistant", message: { id: "m1", content: [{ type: "text", text: "Working" }], usage: { input_tokens: 1, output_tokens: 1 } } };
+          // What the SDK throws when its process dies of an outside `kill -TERM`.
+          throw new Error("Claude Code process exited with code 143");
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-session-sigterm",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      await service.runSessionTurn({ sessionId: session.id, text: "Do the work." }).catch(() => undefined);
+      await waitForCondition(
+        () => events.some((entry) => entry.event.type === "done" && entry.event.status === "failed"),
+        "the killed turn to settle",
+      );
+
+      const errors = events.map((entry) => entry.event).filter((event) => event.type === "error");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({
+        detail: "Claude Code process exited with code 143",
+        errorInfo: {
+          provider: "Claude",
+          presentation: { technicalDetail: "Claude Code process exited with code 143" },
+        },
+      });
+      // The card names the signal instead of forwarding the bare exit code.
+      const presentation = (errors[0] as { errorInfo: { presentation: { body: string } } }).errorInfo.presentation;
+      expect(presentation.body).toContain("SIGTERM");
+      expect(presentation.body).not.toContain("exited with code");
+      service.forceDisposeAll();
+    });
+
     it("does not duplicate Claude thinking when the final assistant message repeats streamed content", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);

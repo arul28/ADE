@@ -154,6 +154,7 @@ import {
   type ChatTurnStatusPhase,
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
+import { chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
 import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
 import {
@@ -4811,24 +4812,6 @@ function normalizeChatWaitTarget(value: string | null): ChatWaitTarget {
   throw new CliUsageError(
     "chat wait --for must be idle, active, awaiting-input, or terminal.",
   );
-}
-
-function chatWaitTargetMatches(summary: JsonObject, waitFor: ChatWaitTarget): boolean {
-  const status = asString(summary.status);
-  const phase = asString(summary.phase);
-  const awaitingInput = summary.awaitingInput === true || phase === "blocked";
-  const cliSession = isRecord(summary.cliSession) ? summary.cliSession : null;
-  const cliStatus = asString(cliSession?.status);
-  if (waitFor === "idle") return status === "idle" || phase === "idle";
-  if (waitFor === "active") {
-    return (status === "active" || phase === "running") && !awaitingInput;
-  }
-  if (waitFor === "awaiting-input") return awaitingInput;
-  return status === "failed"
-    || status === "interrupted"
-    || status === "completed"
-    || summary.endedAt != null
-    || (cliStatus !== null && cliStatus !== "running");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -32036,6 +32019,50 @@ function createLinkEnvelopeResolver(
   };
 }
 
+/** The first `runtimeOwnedElsewhere` / `ownedElsewhere` record in a result, two levels deep. */
+function findChatRuntimeOwnerRef(value: unknown, depth = 0): { pid: number; socketPath: string | null } | null {
+  if (!isRecord(value) || depth > 2) return null;
+  for (const key of ["runtimeOwnedElsewhere", "ownedElsewhere"]) {
+    const owner = value[key];
+    if (isRecord(owner) && typeof owner.pid === "number") {
+      return { pid: owner.pid, socketPath: asString(owner.socketPath) ?? null };
+    }
+  }
+  for (const nested of Object.values(value)) {
+    const found = findChatRuntimeOwnerRef(nested, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * The stderr line for a chat that runs under a different brain than the one
+ * this CLI reached. That brain cannot see the chat's turn and refuses to send
+ * to it, so without this a caller reads its stale "idle" as the truth — the
+ * 2026-10-09 incident, where a shell pointed at a dev brain's socket kept
+ * re-sending to workers the installed brain was running.
+ */
+function chatOwnerSocketWarning(value: unknown, connection: Pick<CliConnection, "mode" | "socketPath">): string | null {
+  const owner = findChatRuntimeOwnerRef(value);
+  if (!owner) return null;
+  // A headless CLI runs its own in-process runtime; its socketPath is only
+  // the default endpoint, not a brain it reached.
+  const cliSocketPath = connection.mode === "headless" ? null : connection.socketPath;
+  if (owner.socketPath && cliSocketPath) {
+    const ownerSocket = normalizeRuntimeSocketPath(owner.socketPath);
+    const cliSocket = normalizeRuntimeSocketPath(cliSocketPath);
+    const same = process.platform === "win32"
+      ? ownerSocket.toLowerCase() === cliSocket.toLowerCase()
+      : ownerSocket === cliSocket;
+    if (same) return null;
+  }
+  return [
+    `ADE: this chat runs under another ADE brain (pid ${owner.pid}${owner.socketPath ? `, socket ${owner.socketPath}` : ""}),`,
+    `not the one this CLI reached${cliSocketPath ? ` (${cliSocketPath})` : ""}. Its status here is not live and sends are refused.`,
+    owner.socketPath ? `Use: ade --socket "${owner.socketPath}" …` : "Use the ade CLI of the brain that owns it.",
+  ].join(" ");
+}
+
 async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
@@ -32173,6 +32200,8 @@ async function executePlan(
         };
       }
     }
+    const ownerWarning = chatOwnerSocketWarning(values, connection);
+    if (ownerWarning) process.stderr.write(`${ownerWarning}\n`);
     return summarizeExecution({ plan, connection, values });
   } catch (error) {
     if (
@@ -32293,6 +32322,7 @@ async function runChatWaitCommand(
   // The brain waits on the chat's own events (`chat.waitFor`, one ≤25 s
   // long-poll per call); an older brain without it is polled as before.
   let serverWaitSupported = true;
+  let ownerWarned = false;
   const serverWait = async (budgetMs: number): Promise<JsonObject | null | "unsupported"> => {
     try {
       const raw = await connection.request("ade/actions/call", {
@@ -32339,6 +32369,13 @@ async function runChatWaitCommand(
           elapsedMs,
         };
         return { output: formatOutput(result, options), exitCode: 1 };
+      }
+      if (!ownerWarned) {
+        const warning = chatOwnerSocketWarning(summary, connection);
+        if (warning) {
+          process.stderr.write(`${warning}\n`);
+          ownerWarned = true;
+        }
       }
       if (chatWaitTargetMatches(summary, plan.waitFor)) {
         const result = {

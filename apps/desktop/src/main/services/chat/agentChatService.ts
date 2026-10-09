@@ -89,6 +89,7 @@ import {
 } from "./claudeOutputStyles";
 import { createClaudeSubprocessReaper, type ClaudeSubprocessReaper } from "./claudeSubprocessReaper";
 import {
+  ChatRuntimeOwnedElsewhereError,
   decideChatRuntimeOwnership,
   nextBrainInstanceId,
   normalizeChatRuntimeOwner,
@@ -1284,7 +1285,12 @@ import {
   type CursorSdkSteerOutcome,
 } from "./cursorSdkProtocol";
 import { workerPathImagesFromAttachments, type WorkerIpcImage } from "./workerAttachmentImages";
-import { presentChatFailure, isSandboxUnsupportedFailureText } from "../../../shared/chatErrorPresentation";
+import {
+  externalStopSignal,
+  isSandboxUnsupportedFailureText,
+  presentChatFailure,
+  presentExternalProcessStop,
+} from "../../../shared/chatErrorPresentation";
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import type {
@@ -17219,9 +17225,16 @@ export function createAgentChatService(args: {
     // `prevPersisted`) releases it. A chat with no provider process is
     // genuinely adoptable; a chat whose process belongs to a live sibling brain
     // is not, and this is the field that says which.
+    //
+    // A brain with no runtime never claims, and never releases a live
+    // sibling's claim: its teardown releases only its own or a dead brain's
+    // stamp. Otherwise a persist on a brain that does not run the chat erased
+    // the owner's stamp and left its live chat looking adoptable.
     const runtimeOwner: ChatRuntimeOwner | null = managed.runtime
       ? selfChatRuntimeOwner()
-      : prevPersisted?.runtimeOwner ?? null;
+      : managed.runtimeInvalidated
+        ? siblingBrainOwnerOnDisk(managed.session.id)
+        : prevPersisted?.runtimeOwner ?? null;
     const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
     const claudeResultCostTotalUsd = managed.runtime?.kind === "claude"
       ? managed.runtime.resultCostBaseline
@@ -18217,6 +18230,53 @@ export function createAgentChatService(args: {
       });
     }
     return decision.adoptable;
+  };
+
+  /** The persisted owner stamp when it names another live brain process. */
+  const siblingBrainOwnerOnDisk = (
+    sessionId: string,
+    persisted?: PersistedChatState | null,
+  ): ChatRuntimeOwner | null => {
+    let owner: ChatRuntimeOwner | null = null;
+    try {
+      owner = persisted === undefined
+        ? readPersistedState(sessionId)?.runtimeOwner ?? null
+        : persisted?.runtimeOwner ?? null;
+    } catch { /* unreadable state is unowned */ }
+    if (!owner) return null;
+    return chatRuntimeOwnershipDecision(owner).verdict === "live-foreign-brain" ? owner : null;
+  };
+
+  /**
+   * The live sibling brain holding this chat's provider process, or null when
+   * this brain may drive the chat: it holds the claim itself, nobody has
+   * claimed it, or the claimant is gone (the adoption rules above). A runtime
+   * object here is not the claim — a live sibling that stamped after it is
+   * the most recent owner.
+   */
+  const liveForeignChatRuntimeOwner = (
+    sessionId: string,
+    persisted?: PersistedChatState | null,
+  ): ChatRuntimeOwner | null => siblingBrainOwnerOnDisk(sessionId, persisted);
+
+  /**
+   * Refuse to drive a chat another live brain owns. Every caller here would
+   * otherwise start, or act on, a provider process of this brain's own: a
+   * second runtime writing into the owner's transcript.
+   */
+  const assertChatRuntimeOwnedHere = (sessionId: string, action: string): void => {
+    const owner = liveForeignChatRuntimeOwner(sessionId);
+    if (!owner) return;
+    const self = selfChatRuntimeOwner();
+    logger.warn("agent_chat.foreign_owned_chat_refused", {
+      sessionId,
+      action,
+      ownerPid: owner.pid,
+      ownerBrainId: owner.brainId,
+      ownerSocketPath: owner.socketPath ?? null,
+      selfSocketPath: self.socketPath ?? null,
+    });
+    throw new ChatRuntimeOwnedElsewhereError({ sessionId, owner, self, action });
   };
 
   type ReconciledPointerCandidate = {
@@ -19591,6 +19651,7 @@ export function createAgentChatService(args: {
     const targetId = instanceId.trim();
     if (!normalizedSessionId) throw new Error("Chat session id is required.");
     if (!targetId) throw new Error("Account id is required.");
+    assertChatRuntimeOwnedHere(normalizedSessionId, "switch the account of");
     const managed = ensureManagedSession(normalizedSessionId);
     if (resolveHandoffBlockedReason(managed)
       || accountSwitchesInFlight.has(normalizedSessionId)
@@ -29741,6 +29802,9 @@ export function createAgentChatService(args: {
       }
     } catch (error) {
       const failedBeforeBackendDispatch = Boolean(onBackendDispatched);
+      // Read before this branch reaps the session below: a signal ADE sends
+      // from here on is its own cleanup, not the cause of the failure.
+      const adeSignalledProcess = claudeSubprocessReaper.terminatedByAdeSince(managed.session.id, turnStartedAt);
       onBackendDispatched = undefined;
       clearClaudeTurnTimers();
       runtime.pauseIdleWatchdog = null;
@@ -29869,9 +29933,26 @@ export function createAgentChatService(args: {
           }
         }
 
+        // A SIGTERM/SIGKILL ADE did not send: say the process was stopped from
+        // outside rather than forwarding the SDK's bare "exited with code 143".
+        const stopSignal = !isAuthFailure && !adeSignalledProcess ? externalStopSignal(errorMessage) : null;
+        const externalStop = stopSignal
+          ? presentExternalProcessStop({
+              signal: stopSignal,
+              provider: "claude",
+              message: errorMessage,
+              otherBrain: siblingBrainOwnerOnDisk(managed.session.id),
+            })
+          : null;
         emitChatEvent(managed, {
           type: "error",
-          message: errorMessage,
+          message: externalStop?.body ?? errorMessage,
+          ...(externalStop
+            ? {
+                detail: errorMessage,
+                errorInfo: { category: "unknown" as const, provider: "Claude", presentation: externalStop },
+              }
+            : {}),
           turnId,
         });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
@@ -42627,6 +42708,7 @@ export function createAgentChatService(args: {
     if (!targetId.length) {
       throw new Error("Select a target model before handing off this chat.");
     }
+    assertChatRuntimeOwnedHere(sourceId, "hand off");
 
     const managed = ensureManagedSession(sourceId);
     const sourceSession = await getSessionSummary(sourceId);
@@ -52075,6 +52157,7 @@ export function createAgentChatService(args: {
     rawArgs: AgentChatSendArgs,
     options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
+    assertChatRuntimeOwnedHere(rawArgs.sessionId, "send to");
     // Composer @-mention chips expand here, before any routing decision, so a
     // fresh turn, a steer, and every provider all receive the same pointer
     // blocks. Skipped when the caller already prepared the message (the
@@ -52366,6 +52449,7 @@ export function createAgentChatService(args: {
     // of them shipping raw chips. Idempotent via the expansion marker.
     // A steer can be queued without starting a turn, so it is refused here as
     // well as in `prepareSendMessage`.
+    assertChatRuntimeOwnedHere(steerArgs.sessionId, "steer");
     assertNoRerunInFlight(managedSessions.get(steerArgs.sessionId));
     const expandedArgs = await materializePastedTextPrompt(await applyChatMentionExpansion(steerArgs));
     const {
@@ -53289,6 +53373,7 @@ export function createAgentChatService(args: {
     }: AgentChatMessageSessionArgs,
     options?: { trustedSpawnCompletion?: boolean },
   ): Promise<AgentChatMessageSessionResult> => {
+    assertChatRuntimeOwnedHere(sessionId, "message");
     const managed = ensureManagedSession(sessionId);
     const normalizedKind = normalizeMessageSessionKind(kind);
     const statusBefore = managed.session.status;
@@ -53560,6 +53645,7 @@ export function createAgentChatService(args: {
   };
 
   const cancelSteer = async (args: AgentChatCancelSteerArgs): Promise<void> => {
+    assertChatRuntimeOwnedHere(args.sessionId, "cancel a queued message in");
     const removed = await cancelSteerWithoutReview(args);
     const review = queuedSteerReviews.get(args.steerId);
     queuedSteerReviews.delete(args.steerId);
@@ -53662,6 +53748,7 @@ export function createAgentChatService(args: {
   };
 
   const editSteer = async (args: AgentChatEditSteerArgs): Promise<void> => {
+    assertChatRuntimeOwnedHere(args.sessionId, "edit a queued message in");
     // The editor holds only what the user typed; keep the review block the
     // steer carries in front of the new text.
     const review = queuedSteerReviews.get(args.steerId);
@@ -54288,6 +54375,7 @@ export function createAgentChatService(args: {
     visited: Set<string>,
   ): Promise<AgentChatInterruptResult> => {
     const mode = parseAgentChatStopMode(args.mode ?? DEFAULT_AGENT_CHAT_STOP_MODE);
+    assertChatRuntimeOwnedHere(args.sessionId, "interrupt");
     visited.add(args.sessionId);
     const result = await interruptProviderTurn(
       { sessionId: args.sessionId, mode: stopModeProviderMode(mode) },
@@ -54838,9 +54926,7 @@ export function createAgentChatService(args: {
     // a different brain legitimately takes a dormant chat over. The runtime
     // owner stamp is the live one, and it is what stops a resume from starting
     // a SECOND provider process for a chat that already has one.
-    if (!chatRuntimeAdoptable(sessionId)) {
-      throw new Error("Chat session is owned by another ADE process; cannot resume from here.");
-    }
+    assertChatRuntimeOwnedHere(sessionId, "resume");
 
     let managed = ensureManagedSession(sessionId);
 
@@ -55899,6 +55985,7 @@ export function createAgentChatService(args: {
     }
     const liveManaged = managedSessions.get(row.id) ?? liveManagedInitial;
     const liveSession = liveManaged?.session ?? null;
+    const foreignRuntimeOwner = liveForeignChatRuntimeOwner(row.id, persisted);
     const persistedProvider = liveSession?.provider ?? persisted?.provider ?? null;
     const provider = persistedProvider ?? providerFromToolType(row.toolType);
     if (persistedProvider && isChatToolType(row.toolType)) {
@@ -56230,11 +56317,18 @@ export function createAgentChatService(args: {
       // other live brain holds the chat, because this brain having no runtime
       // says nothing about a sibling that does. Neither → omitted, which the
       // type documents as "this host cannot say".
+      // A chat a live sibling brain runs is neither alive nor dead here — this
+      // brain cannot see it — so it names the owner instead.
       ...(liveManaged?.runtime
         ? { runtimeAlive: true }
-        : chatRuntimeAdoptable(row.id, persisted, { quiet: true })
-          ? { runtimeAlive: false }
-          : {}),
+        : foreignRuntimeOwner
+          ? {
+              runtimeOwnedElsewhere: {
+                pid: foreignRuntimeOwner.pid,
+                ...(foreignRuntimeOwner.socketPath ? { socketPath: foreignRuntimeOwner.socketPath } : {}),
+              },
+            }
+          : { runtimeAlive: false }),
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
@@ -56339,6 +56433,8 @@ export function createAgentChatService(args: {
     },
     sessionExists: (sessionId) => Boolean(sessionService.get(sessionId)),
     messageSession: (args) => messageSession(args),
+    ownedByAnotherBrain: (sessionId) => liveForeignChatRuntimeOwner(sessionId) != null,
+    assertDeliverableHere: (sessionId) => assertChatRuntimeOwnedHere(sessionId, "arm a wait that wakes"),
     whenReady: () => scheduledWorkReady,
   });
   chatWaits = chatWaitRegistry;
@@ -56370,6 +56466,7 @@ export function createAgentChatService(args: {
       sessionId: summary.sessionId,
       provider: summary.provider,
       sessionStatus: summary.status,
+      ownedElsewhere: summary.runtimeOwnedElsewhere ?? null,
       currentTurnStartedAt: summary.currentTurnStartedAt ?? null,
       lastActivityAt: summary.lastActivityAt ?? null,
       awaitingInput: summary.awaitingInput === true,
@@ -58342,6 +58439,7 @@ export function createAgentChatService(args: {
    * stores and their `pending_input_resolved` receipts.
    */
   const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<void> => {
+    assertChatRuntimeOwnedHere(args.sessionId, "answer input for");
     await deliverInputResponse(args);
     sessionService.clearTurnStartMarkers(args.sessionId);
     resetSessionActivity(args.sessionId);
@@ -62806,6 +62904,7 @@ export function createAgentChatService(args: {
   const rerunLastTurn = async (
     args: AgentChatRerunLastTurnArgs,
   ): Promise<AgentChatRerunLastTurnResult> => {
+    assertChatRuntimeOwnedHere(args.sessionId, "rerun the last turn of");
     const managed = ensureManagedSession(args.sessionId);
     const provider = managed.session.provider;
     if (provider !== "claude" && provider !== "codex") {
@@ -62995,6 +63094,7 @@ export function createAgentChatService(args: {
     /** Interrupt the turn after this long with no activity. Absent, null or 0 means no idle watch. */
     idleTimeoutMs?: number | null;
   }): Promise<AgentChatBackgroundTurnResult> => {
+    assertChatRuntimeOwnedHere(sessionId, "run a turn in");
     const managed = ensureManagedSession(sessionId);
     const trimmed = text.trim();
     if (!trimmed.length) {
@@ -63666,6 +63766,9 @@ export function createAgentChatService(args: {
         // provider-specific visible composer markers plus a short quiet window.
         return ptyService?.canAcceptScheduledTurn(schedule.sessionId) !== true;
       }
+      // Another live brain runs this chat and fires the row at its own turn
+      // boundary; firing it here would start a second provider process.
+      if (liveForeignChatRuntimeOwner(schedule.sessionId)) return true;
       const liveManaged = managedSessions.get(schedule.sessionId);
       const liveRuntime = liveManaged?.runtime?.kind === "claude" ? liveManaged.runtime : null;
       // Never enqueue a scheduler-owned wake behind a foreground turn. Queued

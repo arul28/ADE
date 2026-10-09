@@ -34,6 +34,18 @@ export type ChatWaitRegistryDeps = {
   describeTarget: (sessionId: string) => Promise<string>;
   sessionExists: (sessionId: string) => boolean;
   messageSession: (args: AgentChatMessageSessionArgs) => Promise<unknown>;
+  /**
+   * Whether another live brain runs this chat. Waiters live in the shared
+   * project database, so every brain on it loads them; only the brain that
+   * runs the chat to be woken may fire one.
+   */
+  ownedByAnotherBrain: (sessionId: string) => boolean;
+  /**
+   * Throws when another live brain runs the chat a new waiter would deliver
+   * to. Only that brain can deliver it, and it reads waiters at startup only,
+   * so a waiter armed here would never fire.
+   */
+  assertDeliverableHere: (sessionId: string) => void;
   /** Resolves once the chat service can read summaries (startup finished). */
   whenReady: () => Promise<void>;
 };
@@ -123,6 +135,8 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
     const nowMs = Date.now();
     const due: Array<{ waiter: ChatWaiter; outcome: "matched" | "expired" }> = [];
     for (const waiter of [...waiters]) {
+      const deliverTo = waiter.action.kind === "send" ? waiter.action.sessionId : waiter.callerSessionId;
+      if (deliverTo && deps.ownedByAnotherBrain(deliverTo)) continue;
       const results = await Promise.all(waiter.targetSessionIds.map((target) => targetMatches(target, waiter)));
       const matched = waiter.mode === "all" ? results.every(Boolean) : results.some(Boolean);
       if (matched) due.push({ waiter, outcome: "matched" });
@@ -238,6 +252,7 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       const caller = args.callerSessionId?.trim() || null;
       if (sendTo && !text) throw new Error("A prompt is required to send once the wait is over.");
       if (!sendTo && !caller) throw new Error("A wait needs a chat to wake (run it from a chat, or pass the caller).");
+      deps.assertDeliverableHere((sendTo ?? caller)!);
       const minutes = Number.isFinite(args.timeoutMinutes) && (args.timeoutMinutes ?? 0) > 0
         ? Math.floor(args.timeoutMinutes!)
         : CHAT_WAIT_DEFAULT_TIMEOUT_MINUTES;

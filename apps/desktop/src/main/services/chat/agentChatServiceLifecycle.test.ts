@@ -12,6 +12,7 @@ import {
   mockState,
   path,
   query,
+  readPersistedChatState,
   spawn,
   storedWakeup,
   streamText,
@@ -20,8 +21,10 @@ import {
   waitFor,
   waitForEvent,
   waitForFakeTimers,
+  writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { ChatRuntimeOwnedElsewhereError, resolveAdeHomeForOwnership } from "./chatRuntimeOwnership";
 
 describe("createAgentChatService", () => {
   describe("hasRetainableSessions", () => {
@@ -1000,6 +1003,86 @@ describe("createAgentChatService", () => {
       const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(textInput).toContain("Attached issue context");
       expect(textInput).toContain("Use the attached issue context.");
+    });
+  });
+
+  describe("a chat another live brain runs", () => {
+    // Two brains on one ADE home share the project database and each chat's
+    // persisted state. The owner stamp is the only thing that tells the second
+    // brain the chat already has a provider process; the OS process table (the
+    // registry's liveness probe) is the boundary faked here.
+    const OWNER = {
+      brainId: "brain-other",
+      pid: 4242,
+      startedAt: "2026-10-09T03:00:00.000Z",
+      socketPath: "/tmp/owner-brain.sock",
+      claimedAt: "2026-10-09T03:00:00.000Z",
+    };
+
+    const secondBrainOnChat = async (ownerAlive: boolean) => {
+      const first = createService();
+      const session = await first.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      first.service.forceDisposeAll();
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        runtimeOwner: { ...OWNER, adeHome: resolveAdeHomeForOwnership() },
+      });
+      const processRegistry = {
+        pid: process.pid,
+        startedAt: "2026-10-09T03:30:00.000Z",
+        isProcessIdentityLive: (pid: number) => ownerAlive && pid === OWNER.pid,
+      };
+      const second = createService({ processRegistry, runtimeSocketPath: "/tmp/second-brain.sock" });
+      return { service: second.service, sessionId: session.id };
+    };
+
+    it.each([
+      ["send", (service: any, sessionId: string) => service.sendMessage({ sessionId, text: "continue" })],
+      ["steer", (service: any, sessionId: string) => service.steer({ sessionId, text: "continue" })],
+      ["message", (service: any, sessionId: string) => service.messageSession({ sessionId, text: "continue", kind: "auto" })],
+      ["interrupt", (service: any, sessionId: string) => service.interrupt({ sessionId })],
+      ["resume", (service: any, sessionId: string) => service.resumeSession({ sessionId })],
+    ])("refuses to %s it, starts no provider process, and keeps the owner's stamp", async (_label, act) => {
+      const { service, sessionId } = await secondBrainOnChat(true);
+      const threadsBefore = mockState.codexThreadCounter;
+      const turnsBefore = mockState.codexTurnCounter;
+
+      const error = await act(service, sessionId).then(() => null, (caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ChatRuntimeOwnedElsewhereError);
+      expect((error as ChatRuntimeOwnedElsewhereError).owner).toMatchObject({ pid: OWNER.pid, socketPath: OWNER.socketPath });
+      expect(mockState.codexThreadCounter).toBe(threadsBefore);
+      expect(mockState.codexTurnCounter).toBe(turnsBefore);
+      expect(readPersistedChatState(sessionId).runtimeOwner).toMatchObject({ brainId: OWNER.brainId, pid: OWNER.pid });
+      service.forceDisposeAll();
+    });
+
+    it("reports the chat busy under its owner instead of idle", async () => {
+      const { service, sessionId } = await secondBrainOnChat(true);
+
+      const summary = await service.getSessionSummary(sessionId);
+      const status = await service.getTurnStatus(sessionId);
+
+      expect(summary?.runtimeOwnedElsewhere).toEqual({ pid: OWNER.pid, socketPath: OWNER.socketPath });
+      expect(summary?.runtimeAlive).toBeUndefined();
+      expect(status?.phase).toBe("running");
+      expect(status?.ownedElsewhere).toEqual({ pid: OWNER.pid, socketPath: OWNER.socketPath });
+      service.forceDisposeAll();
+    });
+
+    it("adopts the chat once its owner is gone", async () => {
+      const { service, sessionId } = await secondBrainOnChat(false);
+
+      await service.sendMessage({ sessionId, text: "continue" }, { awaitDispatch: true });
+
+      const summary = await service.getSessionSummary(sessionId);
+      expect(summary?.runtimeOwnedElsewhere).toBeUndefined();
+      await vi.waitFor(() => {
+        const owner = readPersistedChatState(sessionId).runtimeOwner;
+        expect(owner?.brainId).not.toBe(OWNER.brainId);
+        expect(owner?.socketPath).toBe("/tmp/second-brain.sock");
+      });
+      service.forceDisposeAll();
     });
   });
 });

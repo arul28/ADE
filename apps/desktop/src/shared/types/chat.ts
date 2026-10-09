@@ -2971,6 +2971,13 @@ export type AgentChatUsageLimitResume = {
   alternateAccount?: AgentChatUsageLimitAlternateAccount | null;
 };
 
+/** The brain that holds a chat's provider process, as a client can reach it. */
+export type AgentChatRuntimeOwnerRef = {
+  pid: number;
+  /** Its control socket (a named pipe on Windows), when it has one. */
+  socketPath?: string;
+};
+
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   sessionId: string;
   laneId: string;
@@ -3159,6 +3166,12 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
    * unknown rather than as dead.
    */
   runtimeAlive?: boolean;
+  /**
+   * Set when another live ADE brain on the same ADE home holds this chat's
+   * provider process. This host cannot see that brain's turn, so its own
+   * `status` for the chat is not the truth: ask the owner (`socketPath`).
+   */
+  runtimeOwnedElsewhere?: AgentChatRuntimeOwnerRef;
   /** True when this chat's durable schedules are paused. */
   scheduledWorkPaused?: boolean;
   /** KV-backed durable schedules. This is the management source of truth. */
