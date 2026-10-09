@@ -69,6 +69,23 @@ export type ProjectSecretServiceOptions = {
 
 const UNAVAILABLE_PULL: ProjectSecretPullResult = { state: "unavailable" };
 
+/**
+ * How old the brain's last account pull may be before a read by name or a list
+ * asks the account again. Reads inside this window are answered from the
+ * cache, so an agent reading several secrets costs one request, not several.
+ */
+const FRESH_READ_MAX_AGE_MS = 10_000;
+
+/**
+ * How long a read waits for that account check before answering from this
+ * machine's copy. A slow relay must not turn opening the Secrets page or an
+ * agent's `ade secrets get` into a 15-second hang; the sync keeps running and
+ * the next read sees what it brought in.
+ */
+const FRESH_READ_WAIT_MS = 3_000;
+
+type AccountRefresh = "fresh" | "unreachable" | "not_linked";
+
 function normalizeSecretName(name: string | undefined | null): string {
   const normalized = typeof name === "string" ? name.trim() : "";
   if (!normalized) throw new Error("Secret name is required.");
@@ -349,7 +366,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
     return removed;
   };
 
-  const pullFromAccount = async (): Promise<ProjectSecretPullResult> => {
+  const hydrateFromLocalVault = async (): Promise<ProjectSecretPullResult> => {
     const accountScope = getAccountScope();
     const accountUserId = getAccountUserId();
     if (!accountUserId) return UNAVAILABLE_PULL;
@@ -415,6 +432,10 @@ export function createProjectSecretService(projectRoot: string, options: Project
         continue;
       }
 
+      // Already holding the vault's stamp: nothing to fetch. Checked before
+      // the value read, which is a brain round trip per name from desktop.
+      if (known?.updatedAt === item.updatedAt) continue;
+
       const value = await readVaultValue(name, item.value);
       if (!value?.length) continue;
       // The account changed under this pull; stop rather than write one
@@ -467,44 +488,146 @@ export function createProjectSecretService(projectRoot: string, options: Project
   };
 
   /**
-   * The migration lifecycle's name for the same pull.
+   * Ask the account for what changed, then take this repository's secrets.
    *
-   * It only needs completion — every caller awaits and ignores the value — so
-   * an unavailable vault is simply a pull that moved nothing. `pullFromAccount`
-   * keeps the distinction for the callers that report it to a person.
+   * The brain's vault cache is refreshed in the background, but "background"
+   * means a heartbeat away, and a person who just added a secret on their
+   * laptop and told an agent here to use it should not lose that race. So a
+   * read by name, a list and an explicit pull first ask the account — unless
+   * the brain already did within `maxAgeMs`, which keeps a burst of reads to
+   * one request.
+   */
+  const refreshFromAccount = async (
+    /** `null` forces a request; a person pressing Pull asked for exactly that. */
+    maxAgeMs: number | null,
+  ): Promise<{ refresh: AccountRefresh; pulled: ProjectSecretPullResult }> => {
+    if (!getAccountScope() || !getAccountUserId()) {
+      return { refresh: "not_linked", pulled: UNAVAILABLE_PULL };
+    }
+    const vault = resolveAccountVault("sync", "*");
+    if (!vault) return { refresh: "not_linked", pulled: UNAVAILABLE_PULL };
+    let refresh: AccountRefresh = "unreachable";
+    try {
+      const syncing = vault.sync(maxAgeMs === null ? undefined : { maxAgeMs });
+      let waitTimer: ReturnType<typeof setTimeout> | null = null;
+      const synced = maxAgeMs === null
+        ? await syncing
+        : await Promise.race([
+          syncing,
+          new Promise<null>((resolve) => {
+            waitTimer = setTimeout(() => resolve(null), FRESH_READ_WAIT_MS);
+            waitTimer.unref?.();
+          }),
+        ]).finally(() => {
+          if (waitTimer) clearTimeout(waitTimer);
+        });
+      if (synced === null) {
+        // Still running; it will land for the next read.
+        syncing.catch((error: unknown) => logVaultFailure("sync", "*", error));
+      } else if (synced.ok && synced.value === "ready") {
+        refresh = "fresh";
+      } else {
+        logVaultFailure("sync", "*", synced.ok ? `sync status ${synced.value ?? "unknown"}` : synced);
+      }
+    } catch (error) {
+      logVaultFailure("sync", "*", error);
+    }
+    // Hydrate even when the account could not be asked: the cache may still
+    // hold rows the last good pull brought in.
+    return { refresh, pulled: await hydrateFromLocalVault() };
+  };
+
+  /** What a person or agent gets from "pull": always asks the account. */
+  const pullFromAccount = async (): Promise<ProjectSecretPullResult> =>
+    (await refreshFromAccount(null)).pulled;
+
+  /**
+   * The background lifecycle's pull: runs right after the brain's own vault
+   * sync, so it takes what that sync brought in without asking again. It only
+   * needs completion, so an unavailable vault is simply a pull that moved
+   * nothing.
    */
   const hydrateFromVault = async (): Promise<void> => {
-    await pullFromAccount();
+    await hydrateFromLocalVault();
+  };
+
+  /** Mark account rows whose upload from this machine has not landed yet. */
+  const withUploadState = async (secrets: ProjectSecretSummary[]): Promise<ProjectSecretSummary[]> => {
+    const accountScope = getAccountScope();
+    if (!accountScope || !secrets.some((secret) => secret.storage === "account")) return secrets;
+    const vault = resolveAccountVault("pendingKeys", "*");
+    if (!vault || typeof vault.pendingKeys !== "function") return secrets;
+    let pending: Set<string>;
+    try {
+      const result = await vault.pendingKeys(accountScope, "project_secret");
+      if (!result.ok || result.value.length === 0) return secrets;
+      pending = new Set(result.value);
+    } catch {
+      return secrets;
+    }
+    return secrets.map((secret) =>
+      secret.storage === "account" && pending.has(secret.name) ? { ...secret, uploadPending: true } : secret);
+  };
+
+  const listLocal = (): ProjectSecretsListResult => {
+    const accountScope = getAccountScope();
+    return {
+      secrets: sortSummaries(readIndex().entries, (entry) => resolveStorage(entry, accountScope)),
+      storage: {
+        path: credentialsPath,
+        encrypted: true,
+        scope: "project",
+      },
+    };
+  };
+
+  const getLocal = (args: ProjectSecretGetArgs, refresh: AccountRefresh = "not_linked"): ProjectSecretValueResult => {
+    const name = normalizeSecretName(args?.name);
+    const notFound = (): Error => new Error(
+      refresh === "fresh"
+        ? `ADE secret '${name}' was not found on this machine or in your account for this repository.`
+        : refresh === "unreachable"
+          ? `ADE secret '${name}' was not found on this machine, and ADE could not reach your account just now to check for a copy saved on another machine.`
+          : `ADE secret '${name}' was not found.`,
+    );
+    const index = readIndex();
+    const entry = index.entries[name];
+    if (!entry) throw notFound();
+    const value = store.getSync(valueKey(name));
+    if (value == null) throw notFound();
+    return {
+      ...toSummary(name, entry, resolveStorage(entry)),
+      value,
+    };
   };
 
   return {
     list(): ProjectSecretsListResult {
-      const accountScope = getAccountScope();
-      return {
-        secrets: sortSummaries(readIndex().entries, (entry) => resolveStorage(entry, accountScope)),
-        storage: {
-          path: credentialsPath,
-          encrypted: true,
-          scope: "project",
-        },
-      };
+      return listLocal();
     },
 
+    /** This machine's copy only, synchronously. Process env injection uses it. */
     get(args: ProjectSecretGetArgs): ProjectSecretValueResult {
-      const name = normalizeSecretName(args?.name);
-      const index = readIndex();
-      const entry = index.entries[name];
-      if (!entry) {
-        throw new Error(`ADE secret '${name}' was not found.`);
-      }
-      const value = store.getSync(valueKey(name));
-      if (value == null) {
-        throw new Error(`ADE secret '${name}' was not found.`);
-      }
-      return {
-        ...toSummary(name, entry, resolveStorage(entry)),
-        value,
-      };
+      return getLocal(args);
+    },
+
+    /**
+     * What `ade secrets get` and the app answer: the account is asked first
+     * (at most once per `FRESH_READ_MAX_AGE_MS`), so a secret saved on another
+     * machine a moment ago is found, and a value changed there is current.
+     */
+    async getFresh(args: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> {
+      // Reject a malformed name before asking the account anything.
+      normalizeSecretName(args?.name);
+      const { refresh } = await refreshFromAccount(FRESH_READ_MAX_AGE_MS);
+      return getLocal(args, refresh);
+    },
+
+    /** The list after the same freshness check, with rows still uploading marked. */
+    async listFresh(): Promise<ProjectSecretsListResult> {
+      await refreshFromAccount(FRESH_READ_MAX_AGE_MS);
+      const listed = listLocal();
+      return { ...listed, secrets: await withUploadState(listed.secrets) };
     },
 
     set(args: ProjectSecretSetArgs): ProjectSecretSummary {

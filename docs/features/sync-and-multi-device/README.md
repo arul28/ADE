@@ -1162,8 +1162,17 @@ Runtime support files outside `services/sync/`:
   or every 5 min as a safety net. A skipped tick still notifies listeners
   `ready`, so the vault's follow-up work keeps its cadence. "Already synced" is
   bound to the account and the cache epoch, so a reset, purge, or
-  account switch always pulls again before reporting `ready`, and a failing
-  sync retries once per tick rather than on every heartbeat as well. A mark is
+  account switch always pulls again before reporting `ready`. A failing sync
+  backs off instead of retrying every tick: 30 s, doubling to 10 min, and never
+  sooner than 60 s after a relay 429 (rate limit or the relay's daily request
+  budget). The backoff belongs to the account that earned it, holds the tick,
+  the change-mark listener, read-path syncs and post-write uploads, and does
+  not report `ready` while it lasts; an explicit `sync()` still makes one
+  attempt. The vault store (not settings) uploads a local write about 250 ms
+  after it lands instead of on the next tick, so another machine sees it on
+  its next heartbeat. `sync({ maxAgeMs })` answers from the cache when the last
+  successful pull is that recent and nothing is queued, which is how a read by
+  name asks for freshness without a request per call. A mark is
   `<newest updated_at>#<rows at that instant>`, so a second write in the same
   millisecond still moves it.
 - `apps/ade-cli/src/services/account/accountVaultStore.ts` — the machine's
@@ -1192,9 +1201,18 @@ Runtime support files outside `services/sync/`:
   the initial sync, deliberately outside the migration latch. A secret another
   machine adds tomorrow still has to arrive, and the one-shot migration can
   never see it. `project_secret.pullFromAccount` (`ade secrets pull`, Settings >
-  Secrets > Pull from account) runs the same pull on demand.
+  Secrets > Pull from account) forces a vault sync with the relay and then runs
+  the same pull. `project_secret.get` / `list` (agents, `ade secrets get|list`,
+  the Secrets page) refresh from the account first — at most one request per
+  10 s, and waiting at most 3 s before answering from this machine's copy — so
+  a secret added on another machine moments ago is found. A miss says whether
+  the account was checked or could not be reached. Rows this machine saved
+  that have not uploaded yet carry `uploadPending` (Settings shows
+  "Uploading", the CLI `account (uploading)`), read from the vault's
+  `pendingKeys(scope, kind)`.
 - `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) and
-  `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`) — how
+  `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`,
+  `pendingKeys`) — how
   desktop, `ade code`, the CLI, and iOS reach the stores through the brain.
   The domains remain separate: settings are non-secret account preferences,
   while vault reads/writes are host/CTO policy-gated credential operations.

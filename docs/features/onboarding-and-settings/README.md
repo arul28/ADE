@@ -1127,10 +1127,13 @@ Renderer — settings:
   account scope or this device only; an account choice falls back to this
   device when the repository has no Git remote, when nobody is signed in, or
   when no account vault is wired, and the save message says which of those
-  happened. A "Pull from account" control in the section header takes every
-  account secret the repository has in the vault onto this machine without
-  touching a device-only row. The list shows the effective destination for
-  every secret. When the active project is remote, only the
+  happened. A "Pull from account" control in the section header asks the
+  account and takes every account secret the repository has in the vault onto
+  this machine without touching a device-only row. Opening the list and
+  revealing a value also check the account first (bounded to a few seconds), so
+  a secret added on another machine shows up without a manual pull. The list
+  shows the effective destination for every secret; an account secret this
+  machine has not finished uploading shows "Uploading" until it lands. When the active project is remote, only the
   Finder read happens on the controller Mac:
   the bounded file content is parsed/imported by the active runtime and export
   writes to Downloads on the remote project host.

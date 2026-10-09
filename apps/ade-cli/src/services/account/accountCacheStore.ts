@@ -11,6 +11,16 @@ import {
 const CHANGE_MARK_FRESH_MS = 90_000;
 /** Even with fresh marks, pull at least this often as a safety net. */
 const CHANGE_MARK_SAFETY_SYNC_MS = 5 * 60_000;
+/**
+ * A local write uploads this long after it lands instead of on the next tick.
+ * Long enough to fold a burst (an .env import, a settings drag) into one PUT.
+ */
+const LOCAL_WRITE_FLUSH_DELAY_MS = 250;
+/** First wait after a failed sync; doubles per consecutive failure. */
+const FAILURE_BACKOFF_BASE_MS = 30_000;
+const FAILURE_BACKOFF_MAX_MS = 10 * 60_000;
+/** A relay that answered 429 asked to be left alone for at least this long. */
+const RATE_LIMITED_BACKOFF_MIN_MS = 60_000;
 
 /**
  * The machine-local half of an account-synced store.
@@ -111,6 +121,12 @@ export type AccountCacheStoreConfig<
    * stale, or the safety interval passed; see `shouldPullOnTick`.
    */
   changeMarkKind?: AccountChangeMarkKind;
+  /**
+   * Upload a local write right away instead of on the next tick. The vault
+   * sets it: a secret saved on one machine is wanted on the next one now.
+   * Settings keep the tick (see accountSettingsFlush.ts).
+   */
+  flushOnWrite?: boolean;
   /** Log event names, so each store keeps the telemetry it already emits. */
   events: {
     writeFailed: string;
@@ -174,6 +190,15 @@ export type AccountCacheStore<
     options?: { expectedAccountUserId?: string },
   ): boolean;
   sync(): Promise<AccountCacheSyncStatus>;
+  /**
+   * Sync only when the last successful pull for this account is older than
+   * `maxAgeMs` or local writes are still queued; otherwise answer `ready` from
+   * the cache without the network. For reads that must not miss a change made
+   * on another machine moments ago (an agent asking for a secret by name).
+   */
+  syncIfStale(maxAgeMs: number): Promise<AccountCacheSyncStatus>;
+  /** Cache keys of local writes that have not reached the Worker yet. */
+  pendingKeys(): string[];
   startPeriodicSync(intervalMs?: number, onSync?: AccountCacheSyncListener): () => void;
   /** Empty the cache and write the empty file. */
   reset(): void;
@@ -207,7 +232,24 @@ export function createAccountCacheStore<
   /** The mark the most recent sync attempt started from, whatever its outcome. */
   let lastAttemptedMark: string | null | undefined;
   let lastAttemptedAccountUserId: string | null = null;
+  let consecutiveFailures = 0;
+  /**
+   * Background syncs wait until this time after failures. Without it a relay
+   * that is down or rate-limiting gets the same request every 30 seconds from
+   * every machine, which is exactly the traffic that keeps it rate-limiting.
+   */
+  let backoffUntilMs = 0;
+  /** The account the backoff was earned by; another account is not held by it. */
+  let backoffAccountUserId: string | null = null;
+  /** Whether the current sync attempt failed with a 429 (sets a longer backoff). */
+  let lastErrorRateLimited = false;
+  /** The pending post-write upload, and whether one is owed after the sync in flight. */
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let flushAfterInFlight = false;
   const forgetLastSync = (): void => {
+    consecutiveFailures = 0;
+    backoffUntilMs = 0;
+    backoffAccountUserId = null;
     lastAttemptedMark = undefined;
     lastAttemptedAccountUserId = null;
     lastSyncedMark = undefined;
@@ -443,7 +485,65 @@ export function createAccountCacheStore<
       cache = before;
       return false;
     }
+    if (config.flushOnWrite && current.pending.length > 0) scheduleFlush();
     return true;
+  }
+
+  /**
+   * Upload a local write now rather than on the next tick, so another machine
+   * can see it within one of its own heartbeats instead of two. A write that
+   * lands while a sync is in flight runs one more pass after it: the in-flight
+   * pass took its queue snapshot before this write existed.
+   */
+  function scheduleFlush(): void {
+    if (!config.hasRelay()) return;
+    if (syncInFlight) {
+      flushAfterInFlight = true;
+      return;
+    }
+    if (flushTimer) return;
+    // Inside a backoff the write waits it out; the tick would retry it then
+    // anyway, and a burst of writes must not become a burst of refused PUTs.
+    const delayMs = Math.max(LOCAL_WRITE_FLUSH_DELAY_MS, backoffRemainingMs());
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      syncAndNotify();
+    }, delayMs);
+    flushTimer.unref?.();
+  }
+
+  function syncAndNotify(): void {
+    void store.sync()
+      .then(notifySyncListeners)
+      .catch(() => {
+        // `sync` already logs and already keeps the queue. A rejection here
+        // would be an unhandled one on a timer, which takes the brain down
+        // for a condition that resolves itself.
+      });
+  }
+
+  function backoffRemainingMs(): number {
+    if (backoffAccountUserId !== config.getAccountUserId()) return 0;
+    return Math.max(0, backoffUntilMs - Date.now());
+  }
+
+  function recordSyncOutcome(status: AccountCacheSyncStatus, rateLimited: boolean): void {
+    if (status === "ready") {
+      consecutiveFailures = 0;
+      backoffUntilMs = 0;
+      return;
+    }
+    if (status !== "failed") return;
+    const accountUserId = config.getAccountUserId();
+    if (backoffAccountUserId !== accountUserId) consecutiveFailures = 0;
+    backoffAccountUserId = accountUserId;
+    consecutiveFailures += 1;
+    let waitMs = Math.min(
+      FAILURE_BACKOFF_MAX_MS,
+      FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(consecutiveFailures - 1, 10),
+    );
+    if (rateLimited) waitMs = Math.max(waitMs, RATE_LIMITED_BACKOFF_MIN_MS);
+    backoffUntilMs = Date.now() + waitMs;
   }
 
   const stopPeriodicSync = (): void => {
@@ -451,6 +551,11 @@ export function createAccountCacheStore<
     if (syncHolders > 0) return;
     unsubscribeChangeMarks?.();
     unsubscribeChangeMarks = null;
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    flushAfterInFlight = false;
     if (!syncTimer) return;
     clearInterval(syncTimer);
     syncTimer = null;
@@ -490,7 +595,12 @@ export function createAccountCacheStore<
     }
   };
 
+  const noteError = (error: unknown): void => {
+    lastErrorRateLimited = isRecord(error) && error.status === 429;
+  };
+
   async function runSync(): Promise<AccountCacheSyncStatus> {
+    lastErrorRateLimited = false;
     if (!config.hasRelay()) return "unavailable";
     const entryAccountUserId = config.getAccountUserId();
     if (!entryAccountUserId) return "unavailable";
@@ -521,6 +631,7 @@ export function createAccountCacheStore<
       } catch (error) {
         // Keep the queue. An upload that failed is work still to do, and
         // dropping it would silently lose a change the user believes is saved.
+        noteError(error);
         logger.warn(config.events.uploadFailed, {
           pending: pending.length,
           error: error instanceof Error ? error.message : String(error ?? ""),
@@ -596,6 +707,7 @@ export function createAccountCacheStore<
       }
       return "unavailable";
     } catch (error) {
+      noteError(error);
       logger.warn(config.events.pullFailed, {
         error: error instanceof Error ? error.message : String(error ?? ""),
       });
@@ -603,7 +715,7 @@ export function createAccountCacheStore<
     }
   }
 
-  return {
+  const store: AccountCacheStore<TRow, TPending> = {
     readCache,
     mutate,
     cachePath,
@@ -635,12 +747,41 @@ export function createAccountCacheStore<
             lastSyncedMark = markAtStart;
             lastReadySyncAtMs = Date.now();
           }
+          // A reset during the pass (sign-out, account switch) owns the state
+          // now; this pass's failure must not hold the next owner back.
+          if (epoch === epochAtStart) recordSyncOutcome(status, lastErrorRateLimited);
           return status;
         })
         .finally(() => {
           syncInFlight = null;
+          if (flushAfterInFlight) {
+            flushAfterInFlight = false;
+            if (readCache().pending.length > 0) scheduleFlush();
+          }
         });
       return syncInFlight;
+    },
+
+    async syncIfStale(maxAgeMs: number): Promise<AccountCacheSyncStatus> {
+      if (syncInFlight) return await syncInFlight;
+      // Inside a failure backoff a read answers from the cache: every agent
+      // read retrying a relay that just refused would be the flood the
+      // backoff exists to stop. An explicit `sync()` still goes through.
+      if (backoffRemainingMs() > 0) return "failed";
+      const accountUserId = config.getAccountUserId();
+      if (
+        accountUserId
+        && lastSyncWasReadyFor(accountUserId)
+        && readCache().pending.length === 0
+        && Date.now() - lastReadySyncAtMs <= Math.max(0, maxAgeMs)
+      ) {
+        return "ready";
+      }
+      return await store.sync();
+    },
+
+    pendingKeys(): string[] {
+      return readCache().pending.map((entry) => config.pendingKey(entry));
     },
 
     /**
@@ -670,16 +811,10 @@ export function createAccountCacheStore<
         stopPeriodicSync();
       };
       if (syncTimer) return release;
-      const syncAndNotify = (): void => {
-        void this.sync()
-          .then(notifySyncListeners)
-          .catch(() => {
-            // `sync` already logs and already keeps the queue. A rejection here
-            // would be an unhandled one on a timer, which takes the brain down
-            // for a condition that resolves itself.
-          });
-      };
       syncTimer = setInterval(() => {
+        // Failing or rate-limited: stay quiet until the backoff passes, and do
+        // not tell listeners "ready" about a cache that could not be refreshed.
+        if (!syncInFlight && backoffRemainingMs() > 0) return;
         // A sync already running (sign-in, a user action) is joined, never
         // pre-empted by a synthetic "ready" that would land before its pull.
         if (syncInFlight || shouldPullOnTick(Date.now())) {
@@ -701,6 +836,7 @@ export function createAccountCacheStore<
           // after a failed sync stay on the tick's cadence, so failures never
           // double the traffic.
           if (marks[kind] === lastAttemptedMark && lastAttemptedAccountUserId === accountUserId) return;
+          if (backoffRemainingMs() > 0) return;
           syncAndNotify();
         });
       }
@@ -729,6 +865,7 @@ export function createAccountCacheStore<
       }
     },
   };
+  return store;
 }
 
 /**

@@ -443,3 +443,86 @@ describe("pullFromAccount", () => {
     expect(service.get({ name: "FROM_ACCOUNT" }).value).toBe("account-value");
   });
 });
+
+/**
+ * Reads by name, lists, and Pull ask the account before answering, so a secret
+ * saved on another machine moments ago is found instead of "not found".
+ */
+describe("fresh reads", () => {
+  const VAULT_SCOPE = "repo:github.com/acme/project";
+
+  function linkedService() {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock() as ReturnType<typeof makeVaultMock> & {
+      sync: ReturnType<typeof vi.fn>;
+      pendingKeys?: ReturnType<typeof vi.fn>;
+    };
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+    return { vault, service };
+  }
+
+  it("finds a secret another machine saved once the account answers, and Pull always asks", async () => {
+    const { vault, service } = linkedService();
+    // The brain's cache only holds the row after the sync it was asked for.
+    vault.sync.mockImplementation(async () => {
+      vault.list.mockResolvedValue({
+        ok: true,
+        value: [{ scope: VAULT_SCOPE, kind: "project_secret", key: "NEW_KEY", value: "from-laptop", updatedAt: "2026-10-09T00:00:22.618Z" }],
+      });
+      return { ok: true, value: "ready" };
+    });
+
+    expect(() => service.get({ name: "NEW_KEY" })).toThrow();
+    const found = await service.getFresh({ name: "NEW_KEY" });
+
+    expect(found).toMatchObject({ name: "NEW_KEY", value: "from-laptop", storage: "account" });
+    expect(vault.sync).toHaveBeenLastCalledWith({ maxAgeMs: expect.any(Number) });
+    await service.pullFromAccount();
+    expect(vault.sync).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it.each([
+    { label: "the account was checked", sync: async () => ({ ok: true, value: "ready" }), says: /in your account/ },
+    { label: "the account refused", sync: async () => ({ ok: true, value: "failed" }), says: /could not reach your account/ },
+    { label: "the account is slow", sync: () => new Promise(() => {}), says: /could not reach your account/ },
+  ])("says why a name is missing when $label", async ({ sync, says }) => {
+    vi.useFakeTimers();
+    try {
+      const { vault, service } = linkedService();
+      vault.sync.mockImplementation(sync);
+      const outcome = service.getFresh({ name: "MISSING" }).then(
+        () => null,
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+      // A hung relay must not hold the read past the wait cap.
+      await vi.advanceTimersByTimeAsync(5_000);
+      const message = await outcome;
+      expect(message).toMatch(/MISSING/);
+      expect(message).toMatch(says);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("marks account secrets still waiting to upload, and only those", async () => {
+    const { vault, service } = linkedService();
+    vault.sync.mockResolvedValue({ ok: true, value: "ready" });
+    vault.pendingKeys = vi.fn(async () => ({ ok: true as const, value: ["QUEUED", "LOCAL_ONLY"] }));
+    service.set({ name: "QUEUED", value: "a", storage: "account" });
+    service.set({ name: "UPLOADED", value: "b", storage: "account" });
+    service.set({ name: "LOCAL_ONLY", value: "c", storage: "device" });
+
+    const listed = await service.listFresh();
+
+    expect(listed.secrets.map((secret) => [secret.name, secret.storage, secret.uploadPending === true])).toEqual([
+      ["LOCAL_ONLY", "device", false],
+      ["QUEUED", "account", true],
+      ["UPLOADED", "account", false],
+    ]);
+    expect(vault.pendingKeys).toHaveBeenCalledWith(VAULT_SCOPE, "project_secret");
+  });
+});

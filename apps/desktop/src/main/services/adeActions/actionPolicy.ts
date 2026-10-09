@@ -881,7 +881,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // `list` reports names and readability, never values, which is why it sits
   // beside the harmless actions. `get` returns a credential and is gated below
   // for the same reason `project_secret.exportEnv` is.
-  account_vault: ["list", "get", "set", "remove", "sync"],
+  account_vault: ["list", "get", "set", "remove", "sync", "pendingKeys"],
   linear_credentials: [
     "clearOAuthClientCredentials",
     "clearToken",

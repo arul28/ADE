@@ -5129,7 +5129,15 @@ function parseCliArgs(argv: string[]): ParsedCli {
       command.push(token, ...rest);
       break;
     }
-    const valueFlag = inGlobalPrefix ? readGlobalValueFlag(argv, index) : null;
+    // `ade secrets list --project-root <dir>` reads naturally, and silently
+    // ignoring the flag there answered with another project's secrets. Only
+    // the secrets family takes root flags after the command: elsewhere
+    // (app-control, the iOS simulator) the command reads them as its own.
+    const valueFlag = inGlobalPrefix
+      ? readGlobalValueFlag(argv, index)
+      : (command[0] === "secrets" || command[0] === "secret") && !SECRETS_VALUE_FLAGS.has(argv[index - 1] ?? "")
+        ? readRootValueFlag(argv, index)
+        : null;
     if (valueFlag) {
       GLOBAL_VALUE_FLAG_HANDLERS[valueFlag.flag](options, requireValue(valueFlag.value, valueFlag.flag));
       index += valueFlag.consumed;
@@ -5179,6 +5187,23 @@ function parseCliArgs(argv: string[]): ParsedCli {
   }
 
   return { options, command };
+}
+
+/**
+ * `ade secrets` flags whose next token is a value. A secret or reason that
+ * happens to read `--project-root` stays the value, not a root flag.
+ */
+const SECRETS_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--name", "--value", "--value-file", "--secret", "--secret-file", "--reason", "--session", "--timeout",
+]);
+
+/** `--project-root` / `--workspace-root` at `argv[index]`, else null. */
+function readRootValueFlag(
+  argv: string[],
+  index: number,
+): { flag: CliGlobalValueFlag; value: string | null; consumed: number } | null {
+  const valueFlag = readGlobalValueFlag(argv, index);
+  return valueFlag?.flag === "--project-root" || valueFlag?.flag === "--workspace-root" ? valueFlag : null;
 }
 
 /**
@@ -29878,7 +29903,7 @@ function formatProjectSecrets(value: unknown): string {
   const rows = secrets.map((secret) => [
     secret.name,
     secret.valueLength,
-    secret.storage,
+    secret.uploadPending === true ? `${secret.storage} (uploading)` : secret.storage,
     secret.updatedAt,
   ]);
   const storage = isRecord(record.storage) ? record.storage : {};

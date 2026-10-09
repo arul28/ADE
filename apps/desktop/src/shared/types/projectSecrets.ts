@@ -6,6 +6,12 @@ export type ProjectSecretSummary = {
   updatedAt: string;
   valueLength: number;
   storage: ProjectSecretStorage;
+  /**
+   * An account secret this machine saved that has not reached the account
+   * yet, so the other machines cannot see it. Absent when it has (or when the
+   * runtime could not say).
+   */
+  uploadPending?: boolean;
 };
 
 export type ProjectSecretsStorageInfo = {

@@ -858,6 +858,27 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  // `ade secrets list --project-root <dir>` used to drop the flag silently and
+  // answer with the session's project. Other commands read the flag as their own.
+  it.each([
+    { argv: ["secrets", "list", "--project-root", "/tmp/crumb"], root: "/tmp/crumb", command: ["secrets", "list"] },
+    { argv: ["secret", "get", "API_KEY", "--project-root=/tmp/crumb"], root: "/tmp/crumb", command: ["secret", "get", "API_KEY"] },
+    {
+      argv: ["secrets", "set", "WEIRD", "--value", "--project-root"],
+      root: null,
+      command: ["secrets", "set", "WEIRD", "--value", "--project-root"],
+    },
+    {
+      argv: ["app-control", "launch", "--project-root", "/tmp/app"],
+      root: null,
+      command: ["app-control", "launch", "--project-root", "/tmp/app"],
+    },
+  ])("routes a trailing --project-root for $argv.0 $argv.1", ({ argv, root, command }) => {
+    const parsed = parseCliArgs(argv);
+    expect(parsed.options.projectRoot).toBe(root === null ? null : path.resolve(root));
+    expect(parsed.command).toEqual(command);
+  });
+
   it("defaults ordinary CLI calls to the agent runtime role", () => {
     const previousRole = process.env.ADE_DEFAULT_ROLE;
     delete process.env.ADE_DEFAULT_ROLE;

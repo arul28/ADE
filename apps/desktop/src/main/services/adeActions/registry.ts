@@ -3876,6 +3876,10 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
   const agentChatService = runtime.agentChatService;
   return {
     ...(projectSecretService as unknown as OpaqueService),
+    // Callers by name (agents, `ade secrets`, the Secrets page) get the copy
+    // the account holds now, not whatever the last heartbeat brought in.
+    get: (args?: unknown) => projectSecretService.getFresh(args as Parameters<typeof projectSecretService.getFresh>[0]),
+    list: () => projectSecretService.listFresh(),
     ...(agentChatService
       ? {
           request: async (args?: unknown) => {

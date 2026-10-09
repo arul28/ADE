@@ -24,6 +24,9 @@ export const ACCOUNT_VAULT_REJECTED_MESSAGE =
 
 export type AccountVaultActionPool = AccountActionPool;
 
+/** Mirrors the brain's `AccountCacheSyncStatus` (apps/ade-cli). */
+export type AccountVaultSyncStatus = "ready" | "unavailable" | "failed";
+
 export type AccountVaultBridgeOptions = {
   /** The local runtime pool, or null when desktop runs with no brain. */
   getPool: () => AccountVaultActionPool | null | undefined;
@@ -117,11 +120,35 @@ export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {
       });
     },
 
-    /** Flush this machine's queue and take what changed. */
-    async sync(): Promise<AccountVaultResult<null>> {
-      return await bridge.call("sync", [], () => null);
+    /**
+     * Flush this machine's queue and take what changed. With `maxAgeMs`, the
+     * brain skips the network when its last successful pull is that recent.
+     * The value is the sync status (`ready` / `unavailable` / `failed`).
+     */
+    async sync(options?: { maxAgeMs?: number }): Promise<AccountVaultResult<AccountVaultSyncStatus | null>> {
+      return await bridge.call(
+        "sync",
+        options ? [options] : [],
+        (raw) => (raw === "ready" || raw === "unavailable" || raw === "failed" ? raw : null),
+      );
+    },
+
+    /** Keys in one scope and kind whose write from this machine is still waiting to upload. */
+    async pendingKeys(scope: string, kind: string): Promise<AccountVaultResult<string[]>> {
+      return await bridge.call(
+        "pendingKeys",
+        [scope, kind],
+        (raw) => (Array.isArray(raw) ? raw.filter((key): key is string => typeof key === "string") : []),
+      );
     },
   };
 }
 
-export type AccountVaultBridge = ReturnType<typeof createAccountVaultBridge>;
+type FullAccountVaultBridge = ReturnType<typeof createAccountVaultBridge>;
+/**
+ * `pendingKeys` is optional so other vault implementations (the headless
+ * bridges, test doubles) need not provide it; callers treat its absence as
+ * "nothing pending". An older brain answers it through `call` as unavailable.
+ */
+export type AccountVaultBridge = Omit<FullAccountVaultBridge, "pendingKeys">
+  & Partial<Pick<FullAccountVaultBridge, "pendingKeys">>;
