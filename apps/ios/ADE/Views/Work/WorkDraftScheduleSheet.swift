@@ -313,10 +313,20 @@ struct WorkDraftScheduleSheet: View {
     }
   }
 
+  /// Built as one plain `String` before it reaches `Text`. A four-way
+  /// concatenation with optionals inside the view body is more than the type
+  /// checker will take in reasonable time.
+  private var summaryConfigLabel: String {
+    let provider = normalizedProvider?.capitalized ?? "Default"
+    let model = summaryModelLabel
+    let permission = summaryPermissionLabel
+    return "\(provider) · \(model) · \(permission)"
+  }
+
   private var summarySection: some View {
     Section("Runs as") {
       HStack(spacing: 8) {
-        Text((normalizedProvider?.capitalized ?? "Default") + " · " + summaryModelLabel + " · " + summaryPermissionLabel)
+        Text(summaryConfigLabel)
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(2)

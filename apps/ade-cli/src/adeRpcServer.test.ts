@@ -1742,18 +1742,22 @@ describe("adeRpcServer", () => {
       const chatActionInventory = await callTool(handler, "list_ade_actions", { domain: "chat" });
       const chatActionNames = (chatActionInventory.structuredContent?.actions ?? [])
         .map((action: { name?: string }) => action.name);
-      expect(chatActionNames).not.toContain("chat.listDrafts");
-      expect(chatActionNames).not.toContain("chat.createDraft");
-      expect(chatActionNames).not.toContain("chat.deleteDraft");
-      const stashReadAttempt = await callTool(handler, "run_ade_action", {
+      // Drafts left the CTO-only list when they became the store behind
+      // scheduled send: an agent arming a send on the user's behalf is the
+      // point of the feature. The consequence — an agent can read unsent
+      // drafts — is recorded in actionPolicy.ts.
+      expect(chatActionNames).toContain("chat.listDrafts");
+      expect(chatActionNames).toContain("chat.createDraft");
+      expect(chatActionNames).toContain("chat.deleteDraft");
+      // The post-update resume arm is still the user's: machine-wide, and it
+      // spends a real turn on every chat the desktop names.
+      expect(chatActionNames).not.toContain("chat.armUpdateResume");
+      const draftReadAttempt = await callTool(handler, "run_ade_action", {
         domain: "chat",
         action: "listDrafts",
         args: {},
       });
-      expect(stashReadAttempt.isError).toBe(true);
-      expect(stashReadAttempt.error).toMatchObject({
-        message: expect.stringContaining("requires elevated role"),
-      });
+      expect(draftReadAttempt.isError).not.toBe(true);
       runtime.sessionService.get.mockReturnValue({
         id: "chat-1",
         toolType: "codex-chat",
