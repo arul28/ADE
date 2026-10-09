@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.98] - 2026-10-09
+
+### Desktop and web
+
+- Reliable Home and personal Browser flows (#1565).
+- Large screenshot, chat ownership, Focus helper, and account secret sync fixes (#1556, #1557, #1558, #1559).
+- Lower idle renders, brain stalls, and Lanes, Files, chat-switch, and web startup overhead (#1560, #1561).
+
+### iOS
+
+- Updated Work activity, transcript rendering, command redaction, and session grouping.
+
 ## [1.2.97] - 2026-10-08
 
 ### Desktop
@@ -2409,6 +2421,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.97...HEAD
+[1.2.98]: https://github.com/arul28/ADE/compare/v1.2.97...v1.2.98
 [1.2.97]: https://github.com/arul28/ADE/compare/v1.2.96...v1.2.97
 [1.2.96]: https://github.com/arul28/ADE/compare/v1.2.95...v1.2.96
 [1.2.95]: https://github.com/arul28/ADE/compare/v1.2.94...v1.2.95
