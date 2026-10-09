@@ -20545,7 +20545,10 @@ export function createAgentChatService(args: {
         managed.session.id,
         detected,
         managed.session.currentTurnStartedAt ?? null,
-        { onlyIfEmpty: !changed },
+        { onlyIfEmpty: !changed,
+          ...(event.type === "context_compact" && event.state === "started" ? { contextTokens: event.preTokens ?? (managed.runtime?.kind === "claude" ? managed.runtime.contextGuardrail.totalTokens : undefined) } : {}),
+          ...(event.type === "context_compact" && event.state === "failed" ? { failDetail: event.failDetail } : {}),
+        },
       );
       if (!wrote) throw new Error("Session activity row was not found.");
       managed.activityRowNeedsWrite = false;
@@ -20605,6 +20608,10 @@ export function createAgentChatService(args: {
     event: AgentChatEvent,
     options: CommitChatEventOptions = {},
   ): void => {
+    if (event.type === "codex_token_usage") {
+      const point = compactionSettingsFor(managed).atTokens;
+      if (point) event = { ...event, usage: { ...event.usage, compactAtTokens: Math.min(point, event.usage.modelContextWindow || point), compactAtSource: "setting" } };
+    }
     if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
       rememberBoundedId(compactOnlyTurns, event.turnId, 512);
     }
@@ -21114,7 +21121,8 @@ export function createAgentChatService(args: {
       totalTokens: Math.max(0, guardrail.totalTokens),
       maxTokens: Math.max(0, maxTokens),
       rawMaxTokens: Math.max(0, guardrail.compactAtTokens || maxTokens),
-      compactAtTokens: Math.max(0, guardrail.compactAtTokens || maxTokens),
+      compactAtTokens: Math.max(0, guardrail.compactAtTokens || compactionSettingsFor(managed).atTokens || maxTokens),
+      compactAtSource: compactionSettingsFor(managed).atTokens ? "setting" : "provider",
       percentage: maxTokens > 0
         ? Math.max(0, Math.min(100, (guardrail.totalTokens / maxTokens) * 100))
         : 0,
@@ -21177,6 +21185,7 @@ export function createAgentChatService(args: {
       guardrail.compactAtTokens = Math.min(usage.rawMaxTokens ?? usage.maxTokens, guardrail.maxTokens);
       usage.maxTokens = guardrail.maxTokens;
       usage.compactAtTokens = guardrail.compactAtTokens;
+      usage.compactAtSource = compactionSettingsFor(managed).atTokens ? "setting" : "provider";
       usage.percentage = usage.maxTokens > 0 ? usage.totalTokens / usage.maxTokens * 100 : 0;
       updateClaudeContextEpisode(guardrail, guardrail.compactAtTokens > 0 ? usage.totalTokens / guardrail.compactAtTokens * 100 : 0);
       emitClaudeContextUsageState(managed, runtime, "measured", origin, turnId, usage);
@@ -21235,7 +21244,8 @@ export function createAgentChatService(args: {
     guardrail.totalTokens = guardrail.inputTokens
       + guardrail.cacheReadTokens
       + guardrail.cacheCreationTokens;
-    const occupancyPct = Math.max(0, Math.min(100, (guardrail.totalTokens / (guardrail.compactAtTokens || guardrail.maxTokens)) * 100));
+    guardrail.compactAtTokens ||= Math.min(compactionSettingsFor(managed).atTokens || guardrail.maxTokens, guardrail.maxTokens);
+    const occupancyPct = Math.max(0, Math.min(100, (guardrail.totalTokens / guardrail.compactAtTokens) * 100));
     updateClaudeContextEpisode(guardrail, occupancyPct);
 
     const now = Date.now();

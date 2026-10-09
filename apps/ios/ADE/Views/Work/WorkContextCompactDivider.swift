@@ -1,181 +1,72 @@
 import SwiftUI
 
-/// Inline divider that marks a point in the transcript where the host
-/// compacted context (auto or manual). Renders as a horizontal hairline
-/// with a centered chip so users know context was trimmed without losing
-/// their scroll position to a full card.
-///
-/// Port of the desktop `context_compact` divider
-/// (apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx:1627).
+/// A quiet boundary in the visible transcript; compaction only changes model context.
 struct WorkContextCompactDivider: View {
   let summary: String?
-  /// True while the host is mid-compaction (`state: "started"`). Renders a live
-  /// "Compacting context…" chip with a spinner; flips to the static
-  /// "Context compacted" chip once the completed event merges into this card.
   var isInProgress: Bool = false
   var sessionCompactionCount: Int? = nil
   var provider: String? = nil
+  var startedAt: String? = nil
+  var onRetry: (() -> Void)? = nil
+  @State private var expanded = false
 
-  private var parsed: WorkContextCompactSummary {
-    WorkContextCompactSummary.parse(summary)
+  private func field(_ key: String) -> String? {
+    summary?.components(separatedBy: "\n").first(where: { $0.hasPrefix(key + ":") }).map { String($0.dropFirst(key.count + 1)) }
   }
-
-  private var providerFromSummary: String? {
-    guard let summary else { return provider }
-    for line in summary.split(separator: "\n") {
-      let text = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      if text.hasPrefix("provider:") {
-        return String(text.dropFirst("provider:".count))
-      }
+  private var failed: Bool { field("state") == "failed" }
+  private var providerSummary: String? {
+    guard let summary, let range = summary.range(of: "summary:") else { return nil }
+    return String(summary[range.upperBound...])
+  }
+  private func title(at now: Date) -> String {
+    if failed {
+      let detail = field("failure") ?? ""
+      return "Compaction failed" + (detail.localizedCaseInsensitiveContains("weekly limit") ? " · weekly limit" : detail.localizedCaseInsensitiveContains("usage limit") ? " · usage limit" : "")
     }
-    return provider
-  }
-
-  private var sessionCountFromSummary: Int? {
-    guard let summary else { return sessionCompactionCount }
-    for line in summary.split(separator: "\n") {
-      let text = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      if text.hasPrefix("sessioncount:") {
-        return Int(text.dropFirst("sessioncount:".count))
-      }
+    if isInProgress {
+      let tokens = field("Pre-compact tokens").flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }.map { " · \(workAbbreviateCount($0)) tokens" } ?? ""
+      let elapsed = startedAt.flatMap(workParsedDate).map { max(0, Int(now.timeIntervalSince($0))) } ?? 0
+      return "Compacting context" + tokens + (elapsed >= 5 ? " · \(elapsed) s" : "")
     }
-    return sessionCompactionCount
+    let parsed = WorkContextCompactSummary.parse(summary)
+    return "Context compacted" + (parsed.tokensLabel.map { " · " + $0 } ?? "") + (parsed.durationLabel.map { " · " + $0 } ?? "")
   }
-
-  private var completedTitle: String {
-    if let count = sessionCountFromSummary, count >= 2 {
-      return "Context compacted (\(count)×)"
-    }
-    return "Context compacted"
+  private var trigger: String {
+    let lines = summary?.components(separatedBy: "\n") ?? []
+    if lines.contains("Manual") { return "you asked" }
+    if lines.contains("Ade Fallback") { return "ADE (near limit)" }
+    return "automatic"
   }
-
-  private var providerTint: Color {
-    switch providerFromSummary?.lowercased() {
-    case "cursor": return ADEColor.accent
-    case "codex": return .white.opacity(0.85)
-    case "opencode": return .cyan
-    case "droid": return .orange
-    case "pi": return .orange
-    case "qwen": return .purple
-    case "kimi": return .primary
-    case "grok": return .red
-    case "copilot": return .cyan
-    default: return ADEColor.warning
-    }
+  private var countLabel: String {
+    guard let count = field("sessionCount").flatMap(Int.init) ?? sessionCompactionCount, count >= 2 else { return "" }
+    let suffix = (11...13).contains(count % 100) ? "th" : count % 10 == 1 ? "st" : count % 10 == 2 ? "nd" : count % 10 == 3 ? "rd" : "th"
+    return " · \(count)\(suffix) this chat"
   }
-
   var body: some View {
-    HStack(spacing: 8) {
-      dividerLine(startPoint: .leading, endPoint: .trailing)
-
-      chip
-
-      dividerLine(startPoint: .trailing, endPoint: .leading)
+    VStack(spacing: 4) {
+      TimelineView(.animation(minimumInterval: 1, paused: !isInProgress)) { context in
+        HStack(spacing: 6) {
+          hairline
+          Image(systemName: failed ? "exclamationmark.circle" : "rectangle.compress.vertical")
+          Button { expanded.toggle() } label: { Text(title(at: context.date)) }
+            .buttonStyle(.plain)
+            .disabled(providerSummary == nil)
+          if !isInProgress && !failed { Text(trigger + countLabel).foregroundStyle(ADEColor.textMuted) }
+          if failed, let onRetry { Button("Retry", action: onRetry).buttonStyle(.plain) }
+          hairline
+        }
+        .font(.caption2)
+        .foregroundStyle(failed ? ADEColor.warning : ADEColor.textSecondary)
+        .frame(minHeight: 28)
+      }
+      if expanded, let providerSummary {
+        Text(providerSummary).font(.caption).foregroundStyle(ADEColor.textSecondary).frame(maxWidth: .infinity, alignment: .leading)
+      }
     }
     .padding(.vertical, 4)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(isInProgress ? "Compacting context" : parsed.accessibilityLabel(for: completedTitle))
   }
-
-  @ViewBuilder
-  private var chip: some View {
-    ViewThatFits(in: .horizontal) {
-      chipContainer {
-        chipContent(
-          title: isInProgress ? "Compacting context..." : completedTitle,
-          showsTokenCount: !isInProgress,
-          showsTrigger: !isInProgress
-        )
-      }
-      chipContainer {
-        chipContent(
-          title: isInProgress ? "Compacting..." : "Compacted",
-          showsTokenCount: false,
-          showsTrigger: true
-        )
-      }
-      chipContainer {
-        chipContent(
-          title: isInProgress ? "Compacting..." : "Compacted",
-          showsTokenCount: false,
-          showsTrigger: false
-        )
-      }
-    }
-    .layoutPriority(1)
-  }
-
-  private func dividerLine(startPoint: UnitPoint, endPoint: UnitPoint) -> some View {
-    Rectangle()
-      .fill(
-        LinearGradient(
-          colors: [.clear, ADEColor.warning.opacity(0.22), .clear],
-          startPoint: startPoint,
-          endPoint: endPoint
-        )
-      )
-      .frame(minWidth: 8, maxWidth: .infinity)
-      .frame(height: 0.6)
-      .layoutPriority(-1)
-  }
-
-  private func chipContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-    content()
-      .foregroundStyle(providerTint)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 5)
-      .background(providerTint.opacity(0.08), in: Capsule())
-      .overlay(
-        Capsule().stroke(providerTint.opacity(0.2), lineWidth: 0.5)
-      )
-  }
-
-  @ViewBuilder
-  private func chipContent(title: String, showsTokenCount: Bool, showsTrigger: Bool) -> some View {
-    HStack(spacing: 6) {
-      if isInProgress {
-        ProgressView()
-          .controlSize(.mini)
-          .tint(providerTint)
-        Text(title)
-          .font(.caption2.weight(.semibold))
-          .tracking(0.3)
-      } else {
-        Image(systemName: "rectangle.compress.vertical")
-          .font(.caption2.weight(.bold))
-        Text(title)
-          .font(.caption2.weight(.semibold))
-          .tracking(0.3)
-      }
-
-      if showsTokenCount, let tokensLabel = parsed.tokensLabel {
-        Group {
-          Text("·").foregroundStyle(providerTint.opacity(0.4))
-          Text(tokensLabel)
-            .font(.caption2.monospaced())
-            .foregroundStyle(providerTint.opacity(0.7))
-        }
-      }
-
-      if showsTrigger, let durationLabel = parsed.durationLabel {
-        Text(durationLabel)
-          .font(.caption2.monospaced())
-          .foregroundStyle(providerTint.opacity(0.7))
-      }
-
-      if showsTrigger, let triggerLabel = parsed.triggerLabel {
-        Text(triggerLabel)
-          .font(.caption2.weight(.bold))
-          .tracking(0.3)
-          .lineLimit(1)
-          .fixedSize(horizontal: true, vertical: false)
-          .padding(.horizontal, 5)
-          .padding(.vertical, 1)
-          .background(providerTint.opacity(0.14), in: Capsule())
-      }
-    }
-    .lineLimit(1)
-    .fixedSize(horizontal: true, vertical: false)
+  private var hairline: some View {
+    Rectangle().fill(ADEColor.glassBorder).frame(minWidth: 8, maxWidth: .infinity).frame(height: 0.6)
   }
 }
 
@@ -271,7 +162,7 @@ struct WorkContextCompactSummary: Equatable {
       if let value = Int(fragment.replacingOccurrences(of: "duration:", with: "").replacingOccurrences(of: "ms", with: "").trimmingCharacters(in: .whitespaces)) {
         if value < 1000 { return "\(max(1, value))ms" }
         let seconds = Double(value) / 1000.0
-        return seconds < 60 ? String(format: "%.1fs", seconds) : "\(Int(seconds.rounded()))s"
+        return seconds < 60 ? "\(Int(seconds.rounded())) s" : "\(Int(seconds.rounded())) s"
       }
     }
     return nil

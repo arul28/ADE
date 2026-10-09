@@ -13812,6 +13812,7 @@ export function AgentChatPane({
       provider: liveProvider,
       state: selectedUsageViewModel?.state ?? "unknown",
       enabled: Boolean(selectedUsageViewModel),
+      openCodeCompactAvailable: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy: busy || parallelLaunchBusy || projectTransitionBlocksChat || submitInFlightRef.current,
       pendingInput: Boolean(pendingInput),
@@ -13838,6 +13839,7 @@ export function AgentChatPane({
     }
   }, [
     busy,
+    sdkSlashCommands,
     composerSessionId,
     parallelLaunchBusy,
     pendingInput,

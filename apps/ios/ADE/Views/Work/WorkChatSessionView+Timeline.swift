@@ -395,7 +395,12 @@ extension WorkChatSessionView {
       WorkEventCardView(
         card: card,
         onOpenFile: { path in Task { await onOpenFile(path) } },
-        onOpenPr: { number in Task { await onOpenPr(number) } }
+        onOpenPr: { number in Task { await onOpenPr(number) } },
+        onCompact: { Task {
+          if await !onSend("/compact", [], .queue), errorMessage == nil {
+            errorMessage = "Couldn’t start compacting. Try again."
+          }
+        } }
       )
       .equatable()
     }

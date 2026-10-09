@@ -2585,6 +2585,7 @@ struct AgentChatClaudeGoal: Codable, Equatable {
 enum AgentChatContextCompactState: String, Codable, Equatable {
   case started
   case completed
+  case failed
   /// A value from a newer host. Decoding falls back here rather than
   /// failing the payload that carries it.
   case unknown
@@ -2680,6 +2681,8 @@ struct AgentChatCodexTokenUsageBreakdown: Codable, Equatable {
 }
 
 struct AgentChatCodexThreadTokenUsage: Codable, Equatable {
+  var compactAtTokens: Int? = nil
+  var compactAtSource: String? = nil
   var threadId: String?
   var turnId: String?
   var total: AgentChatCodexTokenUsageBreakdown?
@@ -2702,6 +2705,8 @@ struct AgentChatContextUsage: Codable, Equatable {
   var totalTokens: Int
   var maxTokens: Int
   var rawMaxTokens: Int?
+  var compactAtTokens: Int? = nil
+  var compactAtSource: String? = nil
   var percentage: Double
   var model: String?
 
@@ -2710,6 +2715,8 @@ struct AgentChatContextUsage: Codable, Equatable {
     case totalTokens
     case maxTokens
     case rawMaxTokens
+    case compactAtTokens
+    case compactAtSource
     case percentage
     case model
   }
@@ -2720,6 +2727,8 @@ struct AgentChatContextUsage: Codable, Equatable {
     maxTokens = try container.decode(Int.self, forKey: .maxTokens)
     categories = try container.decodeIfPresent([AgentChatContextUsageCategory].self, forKey: .categories) ?? []
     rawMaxTokens = try container.decodeIfPresent(Int.self, forKey: .rawMaxTokens)
+    compactAtTokens = try container.decodeIfPresent(Int.self, forKey: .compactAtTokens)
+    compactAtSource = try container.decodeIfPresent(String.self, forKey: .compactAtSource)
     percentage = try container.decodeIfPresent(Double.self, forKey: .percentage)
       ?? (maxTokens > 0 ? Double(totalTokens) / Double(maxTokens) * 100 : 0)
     model = try container.decodeIfPresent(String.self, forKey: .model)
@@ -2892,6 +2901,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// unlimited, so a past usage-limit turn loses its quiet footer once the
   /// resume row clears.
   var apiErrorStatus: Int?
+  var compactionFailDetail: String? = nil
+  var compactionSummary: String? = nil
   /// True when the wire type was the legacy `subagent.completed` twin rather
   /// than the canonical `subagent_result`.
   ///
@@ -2987,6 +2998,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var resultTruncatedForMobile: Bool?
     var resultOriginalBytes: Int?
     var resumed: Bool?
+    var failDetail: String?
+    var summary: String?
 
     private enum CodingKeys: String, CodingKey {
       case type
@@ -2997,6 +3010,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case resultTruncatedForMobile
       case resultOriginalBytes
       case resumed
+      case failDetail
+      case summary
     }
 
     /// Each field is decoded on its own tolerant path, never a shared throwing
@@ -3016,6 +3031,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       resultTruncatedForMobile = try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)
       resultOriginalBytes = try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)
       resumed = try? container.decodeIfPresent(Bool.self, forKey: .resumed)
+      failDetail = try? container.decodeIfPresent(String.self, forKey: .failDetail)
+      summary = try? container.decodeIfPresent(String.self, forKey: .summary)
     }
   }
 
@@ -3074,6 +3091,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     let rawEvent = try? container.decode(EventRawFields.self, forKey: .event)
     subagentResumed = rawEvent?.resumed
     apiErrorStatus = rawEvent?.apiErrorStatus
+    compactionFailDetail = rawEvent?.failDetail
+    compactionSummary = rawEvent?.summary
     isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
     stopSource = rawEvent?.stopSource
     stopReason = rawEvent?.stopReason
@@ -5186,6 +5205,8 @@ struct FilesSearchTextMatch: Codable, Identifiable, Equatable {
 /// newer host values forward-compatible; presentation only displays the values
 /// in `workSessionActivityValues` and the `detected` / `agent` sources.
 struct SessionActivityReport: Codable, Equatable {
+  var contextTokens: Int? = nil
+  var failDetail: String? = nil
   var value: String
   var source: String
   var updatedAt: String

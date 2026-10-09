@@ -6,7 +6,7 @@ import type {
 } from "./types";
 
 /** Providers whose `/compact` slash is a real compact action, not a normal prompt. */
-export type ManualCompactProvider = "claude" | "codex" | "pi";
+export type ManualCompactProvider = "claude" | "codex" | "pi" | "opencode";
 
 /** Matches the host `/compact` slash, including optional trailing instructions. */
 export function isManualCompactCommand(text: string | null | undefined): boolean {
@@ -21,6 +21,7 @@ export function providerSupportsManualCompact(
     case "claude":
     case "codex":
     case "pi":
+    case "opencode":
       return true;
     default:
       return false;
@@ -43,12 +44,13 @@ export function resolveContextCompactControl(args: {
   provider?: string | null;
   state: AgentChatContextUsageState;
   enabled: boolean;
+  openCodeCompactAvailable?: boolean;
   turnActive?: boolean;
   busy?: boolean;
   pendingInput?: boolean;
   inputLocked?: boolean;
 }): ContextCompactControl {
-  if (!args.enabled || args.inputLocked || !providerSupportsManualCompact(args.provider)) {
+  if ((args.provider === "opencode" && !args.openCodeCompactAvailable) || !args.enabled || args.inputLocked || !providerSupportsManualCompact(args.provider)) {
     return HIDDEN_CONTEXT_COMPACT;
   }
   switch (args.state) {
@@ -81,6 +83,7 @@ export type NormalizedContextCompact = {
   state: "started" | "completed" | "failed";
   failReason?: ContextCompactFailReason;
   failDetail?: string;
+      summary?: string;
   turnId?: string;
   compactionId?: string;
   preTokens?: number;
@@ -119,6 +122,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       state: event.state ?? "completed",
       failReason: event.failReason,
       failDetail: event.failDetail,
+      summary: event.summary,
       turnId: event.turnId,
       compactionId: event.compactionId,
       preTokens: event.preTokens,
@@ -136,6 +140,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       state: event.state,
       failReason: event.failReason,
       failDetail: event.failDetail,
+      summary: event.summary,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
     };

@@ -22,11 +22,12 @@ func workResolveContextCompactControl(
   usageState: WorkContextUsageState?,
   canSend: Bool,
   pendingInput: Bool,
-  turnBusy: Bool
+  turnBusy: Bool,
+  openCodeCompactAvailable: Bool = false
 ) -> WorkContextCompactControl {
   guard canSend,
         usageState == .measured,
-        workProviderSupportsManualCompact(provider)
+        (workProviderSupportsManualCompact(provider) || (provider == "opencode" && openCodeCompactAvailable))
   else {
     return .hidden
   }
@@ -93,6 +94,12 @@ struct WorkContextUsageMeter: View {
               .stroke(ringColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
               .rotationEffect(.degrees(-90))
               .frame(width: 22, height: 22)
+
+            if let point = usage.compactAtTokens, let window = usage.contextWindow, window > 0 {
+              let fraction = min(1, max(0, Double(point) / Double(window)))
+              Rectangle().fill(ADEColor.warning).frame(width: 1.5, height: 5)
+                .offset(y: -11).rotationEffect(.degrees(fraction * 360))
+            }
 
             Text("\(percent)")
               .font(.system(size: percent >= 100 ? 7 : 8, weight: .semibold, design: .rounded))
@@ -239,6 +246,14 @@ struct WorkContextUsagePopover: View {
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
 
+      Text("\(usedLabel ?? "Unknown") of \(windowLabel ?? "unknown") used" + (usage.compactAtTokens.map { " · compacts at \(workAbbreviateCount($0))" } ?? ""))
+        .font(.caption)
+        .foregroundStyle(ADEColor.textPrimary)
+      if usage.compactAtTokens != nil {
+        Text(usage.compactAtSource == "setting" ? "Your setting" : "\(usage.provider.capitalized) default")
+          .font(.caption2).foregroundStyle(ADEColor.textMuted)
+      }
+
       Text(description)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
@@ -288,7 +303,7 @@ struct WorkContextUsagePopover: View {
         Button {
           onCompact?()
         } label: {
-          Text("Compact context")
+          Text("Compact now")
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(compactDisabledReason == nil ? ADEColor.accent : ADEColor.textMuted)
             .frame(maxWidth: .infinity, minHeight: 44)

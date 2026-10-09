@@ -3111,7 +3111,7 @@ function renderEvent(
           turnId: event.turnId,
           compactionId: event.compactionId ?? event.turnId,
         };
-    return <ContextCompactDivider event={compactEvent} />;
+    return <ContextCompactDivider event={compactEvent} startedAt={envelope.timestamp} onRetry={options?.sessionId ? () => { void window.ade.agentChat.send({ sessionId: options.sessionId!, text: "/compact" }, options.runtimePin); } : undefined} />;
   }
 
   if (event.type === "codex_safety_buffering") {
@@ -4918,6 +4918,7 @@ const EventRow = React.memo(function EventRow({
   laneId,
   sessionId,
   runtimeName,
+  runtimePin,
   mosaic,
   anchored,
   onScrollToRowKey,
@@ -5030,6 +5031,7 @@ const EventRow = React.memo(function EventRow({
             laneId,
             sessionId,
             runtimeName,
+            runtimePin,
             onRevealChatTerminal,
             chatInfoHostAvailable,
             onRewindFiles,
@@ -8134,6 +8136,7 @@ function AgentChatMessageListMain({
           laneId={laneId}
           sessionId={sessionId}
           runtimeName={runtimeName}
+          runtimePin={runtimePin}
           mosaic={mosaic}
           anchored={anchored}
           onScrollToRowKey={rowScrollToRowKey}
@@ -8206,6 +8209,7 @@ function AgentChatMessageListMain({
         laneId={laneId}
         sessionId={sessionId}
         runtimeName={runtimeName}
+          runtimePin={runtimePin}
         mosaic={mosaic}
         anchored={anchored}
         onScrollToRowKey={rowScrollToRowKey}
@@ -8223,7 +8227,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

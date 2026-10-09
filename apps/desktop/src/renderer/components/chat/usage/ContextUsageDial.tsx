@@ -1,4 +1,7 @@
-import { useMemo } from "react";
+import { HeaderSheet } from "../../app/HeaderSheet";
+import { Link, useInRouterContext } from "react-router-dom";
+import { settingsRouteFor } from "../../settings/settingsManifest";
+import { useMemo, useRef, useState } from "react";
 import {
   HIDDEN_CONTEXT_COMPACT,
   type ContextCompactControl,
@@ -105,7 +108,7 @@ export function buildContent(
       ? `Using ${percent}% of ${modelLabel ? `${modelLabel}'s ` : "the "}${windowLabel}-token context window${estimated ? " (estimated)" : ""}.`
       : `${usedLabel ?? "—"} tokens used so far${modelLabel ? ` by ${modelLabel}` : ""} — context window unknown.`);
   if (compact.status === "ready") {
-    description = `${description} Click to compact. ${COMPACT_STAYS_VISIBLE}`;
+    description = `${description} Click for context details. ${COMPACT_STAYS_VISIBLE}`;
   }
 
   // Per-turn breakdown line (mono), including the cached + reasoning tokens the
@@ -138,7 +141,7 @@ export function buildContent(
     content.warning = compact.reason;
   } else if (usage.state === "measured" && percent != null && percent >= 80) {
     content.warning = compact.status === "ready"
-      ? `Nearing the limit — click to compact. ${COMPACT_STAYS_VISIBLE}`
+      ? `Nearing the limit — open details to compact. ${COMPACT_STAYS_VISIBLE}`
       : "Nearing the limit — older context may be auto-trimmed or compacted.";
   }
   return content;
@@ -161,6 +164,10 @@ export function ContextUsageDial({
   compactControl?: ContextCompactControl;
   onCompact?: () => void;
 }) {
+  const inRouter = useInRouterContext();
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ left: 0, bottom: 0 });
+  const panelRef = useRef<HTMLDivElement>(null);
   const compact = compactControl ?? HIDDEN_CONTEXT_COMPACT;
   const content = useMemo(
     () => buildContent(usage, modelLabel, compact),
@@ -200,6 +207,7 @@ export function ContextUsageDial({
             strokeDashoffset={dashOffset}
             style={{ transition: "stroke-dashoffset 320ms ease, stroke 320ms ease" }}
           />
+          {usage.compactAtTokens && usage.contextWindow ? <line x1="17" y1="10" x2="20" y2="10" stroke="var(--color-warning)" strokeWidth="1.5" transform={`rotate(${Math.min(1, usage.compactAtTokens / usage.contextWindow) * 360} 10 10)`} /> : null}
         </svg>
         </span>
         <span
@@ -231,28 +239,24 @@ export function ContextUsageDial({
     className,
   );
 
-  return (
+  return <>
     <SmartTooltip forceEnabled side="top" content={content}>
-      {showAction ? (
-        <button
-          type="button"
-          className={triggerClassName}
-          aria-label={ariaLabel}
-          disabled={compactDisabled}
-          onClick={() => {
-            if (compact.status !== "ready") return;
-            onCompact?.();
-          }}
-        >
-          {inner}
-        </button>
-      ) : (
-        <span className={triggerClassName} aria-label={ariaLabel}>
-          {inner}
-        </span>
-      )}
+      <button type="button" className={triggerClassName} aria-label={ariaLabel} aria-expanded={open} onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        setPosition({ left: Math.max(8, Math.min(rect.right - 320, window.innerWidth - 328)), bottom: window.innerHeight - rect.top + 8 });
+        setOpen(true);
+      }}>{inner}</button>
     </SmartTooltip>
-  );
+    <HeaderSheet open={open} panelRef={panelRef} title="Context usage" onClose={() => setOpen(false)} width="w-80" panelStyle={{ top: "auto", right: "auto", ...position }}>
+      <div className="flex flex-col gap-3 p-4 text-xs text-fg/65">
+        <p>{formatContextTokens(usage.usedTokens) ?? "Unknown"} of {formatContextTokens(usage.contextWindow) ?? "unknown"} used{usage.compactAtTokens ? ` · compacts at ${formatContextTokens(usage.compactAtTokens)}` : ""}</p>
+        {usage.compactAtTokens ? <p className="text-fg/45">{usage.compactAtSource === "setting" ? "Your setting" : `${usage.provider === "claude" ? "Claude" : usage.provider} default`}</p> : null}
+        {content.gitCommand ? <p className="font-mono">{content.gitCommand}</p> : null}
+        {compact.status !== "hidden" ? <button type="button" disabled={compactDisabled} title={compact.status === "disabled" ? compact.reason : undefined} className="kit-btn kit-btn-primary" onClick={() => { if (compact.status === "ready") { setOpen(false); onCompact?.(); } }}>Compact now</button> : null}
+        {inRouter ? <Link to={settingsRouteFor(`agents.provider.${usage.provider}`)} onClick={() => setOpen(false)}>Provider compaction setting</Link> : <a href={settingsRouteFor(`agents.provider.${usage.provider}`)}>Provider compaction setting</a>}
+      </div>
+    </HeaderSheet>
+  </>;
 }
 
 export default ContextUsageDial;

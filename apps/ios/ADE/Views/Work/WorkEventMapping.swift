@@ -421,10 +421,10 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .codexTokenUsage(let usage, let turnId):
     let last = usage.last
     let total = usage.total
-    let hasContextOccupancy = last?.inputTokens != nil || total?.inputTokens != nil
+    let hasContextOccupancy = last?.inputTokens != nil
     return .tokens(
       usage: makeWorkUsageSummary(
-        inputTokens: last?.inputTokens ?? total?.inputTokens,
+        inputTokens: last?.inputTokens,
         outputTokens: last?.outputTokens ?? total?.outputTokens,
         cacheReadTokens: last?.cacheReadTokens ?? total?.cacheReadTokens,
         cacheCreationTokens: last?.cacheWriteTokens ?? total?.cacheWriteTokens,
@@ -432,7 +432,9 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
         totalTokens: total?.totalTokens ?? last?.totalTokens,
         contextWindow: usage.modelContextWindow,
         costUsd: nil,
-        isContextSnapshot: hasContextOccupancy
+        isContextSnapshot: hasContextOccupancy,
+        compactAtTokens: usage.compactAtTokens,
+        compactAtSource: usage.compactAtSource
       ) ?? WorkUsageSummary(
         turnCount: 1,
         inputTokens: 0,
@@ -450,6 +452,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .contextUsage(let usage, let turnId, _, let state, let sampleId):
     return .tokens(
       usage: WorkUsageSummary(
+        compactAtTokens: usage.compactAtTokens,
+        compactAtSource: usage.compactAtSource,
         turnCount: 1,
         inputTokens: usage.totalTokens,
         outputTokens: 0,
@@ -529,7 +533,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       postTokens: postTokens,
       durationMs: durationMs,
       provider: provider,
-      sessionCompactionCount: sessionCompactionCount
+      sessionCompactionCount: sessionCompactionCount,
+      state: state?.rawValue
     )
     return .contextCompact(
       summary: summary,
@@ -539,7 +544,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       compactionId: compactionId ?? turnId
     )
   case .codexContextCompaction(let state, let trigger, let turnId, let compactionId):
-    let summary = workContextCompactSummary(trigger: trigger.rawValue)
+    let summary = workContextCompactSummary(trigger: trigger.rawValue, state: state.rawValue)
     return .contextCompact(
       summary: summary,
       isInProgress: state == .started,

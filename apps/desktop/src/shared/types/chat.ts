@@ -937,6 +937,8 @@ export type CodexTokenUsageBreakdown = {
 };
 
 export type CodexThreadTokenUsage = {
+  compactAtTokens?: number;
+  compactAtSource?: "setting" | "provider";
   threadId?: string | null;
   turnId?: string | null;
   total?: CodexTokenUsageBreakdown;
@@ -1916,6 +1918,7 @@ export type AgentChatEvent =
       state?: "started" | "completed" | "failed";
       failReason?: "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
       failDetail?: string;
+      summary?: string;
       turnId?: string;
     }
   | {
@@ -1926,6 +1929,7 @@ export type AgentChatEvent =
       compactionId?: string;
       failReason?: "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
       failDetail?: string;
+      summary?: string;
     }
   | {
       type: "codex_safety_buffering";
@@ -3334,6 +3338,7 @@ export type AgentChatContextUsage = {
   maxTokens: number;
   rawMaxTokens?: number;
   compactAtTokens?: number;
+  compactAtSource?: "setting" | "provider";
   percentage: number;
   model?: string;
   // Typed per-turn breakdown for the composer meter's hover. The `categories`

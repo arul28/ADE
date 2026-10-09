@@ -17,6 +17,8 @@ import type {
  */
 export type ContextUsageViewModel = {
   provider: string;
+  compactAtTokens?: number | null;
+  compactAtSource?: "setting" | "provider";
   state: AgentChatContextUsageState;
   /** Effective context window for the active model, or null when unknown. */
   contextWindow: number | null;
@@ -45,9 +47,10 @@ export type GenericUsageInput = {
   totalTokens?: number | null;
 };
 
+type CompactionPoint = { compactAtTokens?: number | null; compactAtSource?: "setting" | "provider" };
 export type ContextUsageInput =
-  | { kind: "codex"; provider: string; usage: CodexThreadTokenUsage; state?: AgentChatContextUsageState }
-  | { kind: "generic"; provider: string; usage: GenericUsageInput; contextWindow?: number | null; state?: AgentChatContextUsageState };
+  | CompactionPoint & { kind: "codex"; provider: string; usage: CodexThreadTokenUsage; state?: AgentChatContextUsageState }
+  | CompactionPoint & { kind: "generic"; provider: string; usage: GenericUsageInput; contextWindow?: number | null; state?: AgentChatContextUsageState };
 
 function positive(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
@@ -142,6 +145,8 @@ export function toUsageViewModel(
 
   return {
     provider: input.provider,
+    compactAtTokens: input.compactAtTokens,
+    compactAtSource: input.compactAtSource,
     state: input.state ?? "measured",
     contextWindow,
     usedTokens,
@@ -209,7 +214,7 @@ export function latestContextUsageInput(
       }
       const hasContextOccupancy = typeof event.usage.last?.inputTokens === "number";
       if (!hasContextOccupancy) continue;
-      current = { kind: "codex", provider: provider || "codex", usage: event.usage, state: "measured" };
+      current = { kind: "codex", provider: provider || "codex", usage: event.usage, compactAtTokens: event.usage.compactAtTokens, compactAtSource: event.usage.compactAtSource, state: "measured" };
       continue;
     }
     if (event.type === "context_usage") {
@@ -238,6 +243,8 @@ export function latestContextUsageInput(
           totalTokens: event.usage.totalTokens,
         },
         contextWindow: event.usage.maxTokens,
+        compactAtTokens: event.usage.compactAtTokens,
+        compactAtSource: event.usage.compactAtSource,
         state: event.state ?? "measured",
       };
       continue;
@@ -263,6 +270,8 @@ export function latestContextUsageInput(
             provider,
             usage: { usedTokens: event.postTokens, inputTokens: event.postTokens },
             contextWindow: lastRuntimeWindow,
+            compactAtTokens: current?.compactAtTokens,
+            compactAtSource: current?.compactAtSource,
             state: "measured",
           }
         : current

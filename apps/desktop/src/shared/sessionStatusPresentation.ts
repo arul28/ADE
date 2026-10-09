@@ -201,6 +201,8 @@ const REPORTED_ACTIVITY_PRESENTATION: Record<SessionActivityReport["value"], Ses
   debugging: { label: "Debugging", tone: "blue", glyph: "debugging", showsElapsed: true, prominent: false, activityDetail: true },
   shipping: { label: "Shipping", tone: "blue", glyph: "shipping", showsElapsed: true, prominent: false, activityDetail: true },
   monitoring: { label: "Monitoring", tone: "blue", glyph: "monitoring", showsElapsed: true, prominent: false, activityDetail: true },
+  compacting: { label: "Compacting…", tone: "blue", glyph: "working", showsElapsed: true, prominent: false, activityDetail: true },
+  compaction_failed: { label: "Compaction failed", tone: "amber", glyph: "failed", showsElapsed: false, prominent: false, activityDetail: true },
   recording: { label: "Recording", tone: "red", glyph: "recording", showsElapsed: true, prominent: false, activityDetail: true },
 };
 
@@ -252,7 +254,7 @@ export function sessionStatusPresentation(
   // becomes the more current status and must not be hidden by the last one.
   // It never changes the phase; Needs you, snooze, and woke remain
   // higher-priority signals.
-  const reportedActivity = phase === "running" && liveness === "turn"
+  const reportedActivity = (phase === "running" && liveness === "turn") || activity.activityStatus?.value === "compaction_failed"
     ? currentActivityReport(activity.activityStatus, activity.currentTurnStartedAt)
     : null;
   const nativePlanning = phase === "running" && liveness === "turn" && activity.chatActivityMode === "planning";
@@ -262,6 +264,7 @@ export function sessionStatusPresentation(
   if (reportedActivity && !detectedExplorationDuringPlanning) {
     return {
       ...REPORTED_ACTIVITY_PRESENTATION[reportedActivity.value],
+      ...(reportedActivity.value === "compacting" && reportedActivity.contextTokens ? { label: `Compacting… · ${Math.round(reportedActivity.contextTokens / 1000)}k` } : {}),
       activitySource: reportedActivity.source,
       activityUpdatedAt: reportedActivity.updatedAt,
     };

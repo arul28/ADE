@@ -345,9 +345,11 @@ func workContextCompactSummary(
   postTokens: Int? = nil,
   durationMs: Int? = nil,
   provider: String? = nil,
-  sessionCompactionCount: Int? = nil
+  sessionCompactionCount: Int? = nil,
+  state: String? = nil
 ) -> String {
   var lines: [String] = []
+  if state == "failed" { lines.append("state:failed") }
   if let provider {
     lines.append("provider:\(provider)")
   }
@@ -374,8 +376,9 @@ func workContextCompactSummary(from eventDict: [String: Any]) -> String {
     postTokens: optionalWorkInt(eventDict["postTokens"]),
     durationMs: optionalWorkInt(eventDict["durationMs"]),
     provider: optionalString(eventDict["provider"]),
-    sessionCompactionCount: optionalWorkInt(eventDict["sessionCompactionCount"])
-  )
+    sessionCompactionCount: optionalWorkInt(eventDict["sessionCompactionCount"]),
+    state: optionalString(eventDict["state"])
+  ) + [optionalString(eventDict["failDetail"]).map { "failure:\($0)" }, optionalString(eventDict["summary"]).map { "summary:\($0)" }].compactMap { $0 }.map { "\n" + $0 }.joined()
 }
 
 func workContextCompactMergeId(from eventDict: [String: Any], turnId: String?) -> String? {
@@ -878,6 +881,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           .flatMap(WorkContextUsageState.init(rawValue:)) ?? .measured
         event = .tokens(
           usage: WorkUsageSummary(
+            compactAtTokens: optionalWorkInt(usageDict["compactAtTokens"]),
+            compactAtSource: optionalString(usageDict["compactAtSource"]),
             turnCount: 1,
             inputTokens: totalTokens,
             outputTokens: 0,

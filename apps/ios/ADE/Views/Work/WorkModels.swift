@@ -537,6 +537,8 @@ struct WorkPendingModelSelectionModel: Identifiable, Hashable {
 }
 
 struct WorkUsageSummary: Hashable {
+  var compactAtTokens: Int? = nil
+  var compactAtSource: String? = nil
   var turnCount: Int
   var inputTokens: Int
   var outputTokens: Int
@@ -558,6 +560,8 @@ struct WorkUsageSummary: Hashable {
 }
 
 struct WorkContextUsageViewModel: Equatable {
+  var compactAtTokens: Int? = nil
+  var compactAtSource: String? = nil
   var provider: String
   var state: WorkContextUsageState = .measured
   var contextWindow: Int?
