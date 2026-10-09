@@ -2597,6 +2597,7 @@ type ClaudeContextGuardrailState = {
   outputTokens: number;
   totalTokens: number;
   maxTokens: number;
+  compactAtTokens: number;
   occupancyPct: number | null;
   highWaterEpisode: boolean;
   naturalCompactSeen: boolean;
@@ -19397,6 +19398,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     alternate: AgentChatUsageLimitAlternateAccount,
   ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    const compactOnly = compactOnlyTurns.has(lastTurnIdBySession.get(managed.session.id) ?? "");
     const movedChat = await moveChatToAccount(managed, alternate.instanceId, { requireThread: true });
     if (!movedChat.ok) return movedChat;
     const { from, to } = movedChat;
@@ -19423,7 +19425,7 @@ export function createAgentChatService(args: {
     if (provider === "claude") dismissClaudeSessionQuota(managed);
     await sendMessage({
       sessionId: managed.session.id,
-      text: `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`,
+      text: compactOnly ? "/compact" : `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`,
     });
     return { ok: true };
   };
@@ -19453,15 +19455,16 @@ export function createAgentChatService(args: {
         instanceId: alternate.instanceId,
         error: moved.message,
       });
+      if (turnId && compactOnlyTurns.has(turnId)) return;
       const handedOff = await handOffUsageLimitChat(managed, alternate);
       if (handedOff.ok || handedOff.reason === "handoff_in_flight") return;
-      publishUsageLimitResumeArm(managed, turnId, alternate);
+      if (!turnId || !compactOnlyTurns.has(turnId)) publishUsageLimitResumeArm(managed, turnId, alternate);
     })().catch((error) => {
       logger.warn("agent_chat.usage_limit_move_failed", {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
-      publishUsageLimitResumeArm(managed, turnId, alternate);
+      if (!turnId || !compactOnlyTurns.has(turnId)) publishUsageLimitResumeArm(managed, turnId, alternate);
     }).finally(() => {
       usageLimitMoveInFlight.delete(sessionId);
     });
@@ -19711,6 +19714,7 @@ export function createAgentChatService(args: {
       if (!turnActive) runPendingUsageLimitMove(managed);
       return;
     }
+    if (turnId && compactOnlyTurns.has(turnId)) return;
     publishUsageLimitResumeArm(managed, turnId, alternateAccount);
   };
 
@@ -20590,11 +20594,34 @@ export function createAgentChatService(args: {
   // A server an agent's own shell starts lights the Browser on every machine.
   const agentShellOutput = createAgentShellOutputObserver(projectRoot);
 
+  const openNativeCompactions = new Map<string, Map<string, Extract<AgentChatEvent, { type: "context_compact" }>>>();
+  const compactOnlyTurns = new Set<string>();
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
     options: CommitChatEventOptions = {},
   ): void => {
+    if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
+      rememberBoundedId(compactOnlyTurns, event.turnId, 512);
+    }
+    if (event.type === "context_compact") {
+      if (event.state === "started" && event.turnId && compactOnlyTurns.has(event.turnId)) event = { ...event, trigger: "manual" };
+      const open = openNativeCompactions.get(managed.session.id) ?? new Map();
+      const key = event.compactionId ?? event.turnId ?? "native";
+      if (event.state === "started") open.set(key, event);
+      else open.delete(key);
+      if (open.size) openNativeCompactions.set(managed.session.id, open);
+      else openNativeCompactions.delete(managed.session.id);
+    }
+    if (event.type === "done") {
+      for (const [key, compact] of openNativeCompactions.get(managed.session.id) ?? []) {
+        if (compact.turnId && event.turnId && compact.turnId !== event.turnId) continue;
+        openNativeCompactions.get(managed.session.id)?.delete(key);
+        const detail = managed.liveTurnErrorText ?? "The turn ended before compaction completed.";
+        emitChatEvent(managed, { ...compact, state: "failed", failReason: event.status === "interrupted" ? "interrupted" : /quota|weekly limit|usage limit/i.test(detail) ? "quota" : "provider_error", failDetail: detail });
+      }
+    }
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") settleClaudeGoalOnTurnEnd(managed, event.status);
@@ -21083,7 +21110,8 @@ export function createAgentChatService(args: {
       ].filter((entry) => entry.tokens > 0),
       totalTokens: Math.max(0, guardrail.totalTokens),
       maxTokens: Math.max(0, maxTokens),
-      rawMaxTokens: Math.max(0, maxTokens),
+      rawMaxTokens: Math.max(0, guardrail.compactAtTokens || maxTokens),
+      compactAtTokens: Math.max(0, guardrail.compactAtTokens || maxTokens),
       percentage: maxTokens > 0
         ? Math.max(0, Math.min(100, (guardrail.totalTokens / maxTokens) * 100))
         : 0,
@@ -21142,9 +21170,12 @@ export function createAgentChatService(args: {
       }
       const guardrail = runtime.contextGuardrail;
       guardrail.totalTokens = usage.totalTokens;
-      guardrail.maxTokens = usage.maxTokens;
-      guardrail.occupancyPct = usage.percentage;
-      updateClaudeContextEpisode(guardrail, usage.percentage);
+      guardrail.maxTokens ||= resolveSessionModelDescriptor(managed.session)?.contextWindow ?? usage.maxTokens;
+      guardrail.compactAtTokens = Math.min(usage.rawMaxTokens ?? usage.maxTokens, guardrail.maxTokens);
+      usage.maxTokens = guardrail.maxTokens;
+      usage.compactAtTokens = guardrail.compactAtTokens;
+      usage.percentage = usage.maxTokens > 0 ? usage.totalTokens / usage.maxTokens * 100 : 0;
+      updateClaudeContextEpisode(guardrail, guardrail.compactAtTokens > 0 ? usage.totalTokens / guardrail.compactAtTokens * 100 : 0);
       emitClaudeContextUsageState(managed, runtime, "measured", origin, turnId, usage);
       logger.debug("agent_chat.claude_context_snapshot", {
         ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
@@ -21197,12 +21228,11 @@ export function createAgentChatService(args: {
     }
     const maxTokens = resolveSessionModelDescriptor(managed.session)?.contextWindow ?? 0;
     if (!Number.isFinite(maxTokens) || maxTokens <= 0) return;
-    guardrail.maxTokens = maxTokens;
+    guardrail.maxTokens ||= maxTokens;
     guardrail.totalTokens = guardrail.inputTokens
       + guardrail.cacheReadTokens
-      + guardrail.cacheCreationTokens
-      + guardrail.outputTokens;
-    const occupancyPct = Math.max(0, Math.min(100, (guardrail.totalTokens / maxTokens) * 100));
+      + guardrail.cacheCreationTokens;
+    const occupancyPct = Math.max(0, Math.min(100, (guardrail.totalTokens / (guardrail.compactAtTokens || guardrail.maxTokens)) * 100));
     updateClaudeContextEpisode(guardrail, occupancyPct);
 
     const now = Date.now();
@@ -21232,10 +21262,14 @@ export function createAgentChatService(args: {
       guardrail.totalTokens = Math.max(0, options.postTokens);
       updateClaudeContextEpisode(
         guardrail,
-        Math.max(0, Math.min(100, (guardrail.totalTokens / guardrail.maxTokens) * 100)),
+        Math.max(0, Math.min(100, (guardrail.totalTokens / (guardrail.compactAtTokens || guardrail.maxTokens)) * 100)),
       );
     }
     if (!options.completed) return;
+    if (managed.session.identityKey) {
+      void maybeRefreshIdentityContinuitySummary(managed, "compaction");
+      refreshReconstructionContext(managed);
+    }
     if (!internalTrigger) {
       logger.info("agent_chat.claude_context_compaction_observed", {
         sessionId: managed.session.id,
@@ -25649,10 +25683,13 @@ export function createAgentChatService(args: {
 
     if (/^\/compact(?:\s|$)/i.test(slashText)) {
       try {
+        runtime.manualCompactionPending = true;
+        if (slashText.replace(/^\/compact(?:\s+|$)/i, "").trim()) {
+          emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Codex compaction ignores custom instructions." });
+        }
         await runtime.request("thread/compact/start", {
           threadId: managed.session.threadId,
         });
-        runtime.manualCompactionPending = true;
         completeInlineCodexSlash("Codex context compaction started.");
       } catch (error) {
         runtime.manualCompactionPending = false;
@@ -26958,6 +26995,8 @@ export function createAgentChatService(args: {
       const assistantMessageId = compactString(betaMessage?.id);
       const providerMessageId = assistantMessageId ?? assistantWireUuid ?? null;
       const originTimestamp = compactString(assistantMsg.timestamp);
+      if (originTimestamp && managed.session.currentTurnStartedAt
+        && Date.parse(originTimestamp) < Date.parse(managed.session.currentTurnStartedAt)) return;
       const resumedFromIncompleteThinking = assistantMsg.resumed_from_incomplete_thinking === true;
       const snapshotMatchesCurrentStream = assistantMessageId != null
         && assistantMessageId === state.currentStreamMessageId;
@@ -28238,12 +28277,6 @@ export function createAgentChatService(args: {
             turnId,
           });
           void refreshClaudeContextUsageSnapshot(managed, runtime, "compact", turnId);
-          // Re-inject identity context after compaction so identity-backed
-          // sessions keep their role and current operating instructions.
-          if (managed.session.identityKey) {
-            void maybeRefreshIdentityContinuitySummary(managed, "compaction");
-            refreshReconstructionContext(managed);
-          }
           continue;
         }
 
@@ -29132,6 +29165,7 @@ export function createAgentChatService(args: {
           const assistantWireUuid = compactString(assistantMsg.uuid);
           const assistantProviderMessageId = assistantMessageId ?? assistantWireUuid ?? null;
           const assistantOriginTimestamp = compactString(assistantMsg.timestamp);
+          if (assistantOriginTimestamp && Date.parse(assistantOriginTimestamp) < turnStartedAt) continue;
           const resumedFromIncompleteThinking = assistantMsg.resumed_from_incomplete_thinking === true;
           emitClaudeTranscriptRetraction(
             managed,
@@ -29604,6 +29638,7 @@ export function createAgentChatService(args: {
           if (metadata.costBasis) resultCostBasis = metadata.costBasis;
           resultServedModelCandidate = metadata.servedModelCandidate;
           resultContextWindow = metadata.contextWindow;
+          if (metadata.contextWindow) runtime.contextGuardrail.maxTokens = metadata.contextWindow;
           if (resultMsg.usage) {
             usage = {
               inputTokens: resultMsg.usage.input_tokens ?? null,
@@ -40738,6 +40773,7 @@ export function createAgentChatService(args: {
         outputTokens: 0,
         totalTokens: 0,
         maxTokens: 0,
+        compactAtTokens: 0,
         occupancyPct: null,
         highWaterEpisode: false,
         naturalCompactSeen: false,
@@ -48068,6 +48104,12 @@ export function createAgentChatService(args: {
         state: runtime.eventMapperState,
       });
       for (const ev of events) {
+        if (ev.type === "context_usage" && ev.usage.maxTokens > 0) {
+          runtime.eventMapperState.contextWindow = ev.usage.maxTokens;
+          runtime.eventMapperState.lastContextTokens = ev.usage.totalTokens;
+          const model = resolveSessionModelDescriptor(managed.session);
+          if (model) model.contextWindow = ev.usage.maxTokens;
+        }
         if (!isCloud && turnId) noteCursorSdkVisibleOutput(runtime, turnId, meta?.runId ?? null, ev.type);
         emitCursorSdkMappedEvent(managed, runtime, ev);
       }
@@ -49264,6 +49306,9 @@ export function createAgentChatService(args: {
         model: turnModel,
         ...(turnModelId ? { modelId: turnModelId } : {}),
       });
+      if (runtime.eventMapperState.lastContextTokens != null) {
+        doneEvent = { ...doneEvent, usage: { ...doneEvent.usage, contextTokens: runtime.eventMapperState.lastContextTokens, contextWindow: runtime.eventMapperState.contextWindow } };
+      }
       const localAgentId = runtime.sdkAgentId;
       if (localAgentId) {
         doneEvent = await fetchAndApplyCursorUsage({
@@ -51833,11 +51878,6 @@ export function createAgentChatService(args: {
             ...(compactMatch[1]?.trim() ? { customInstructions: compactMatch[1].trim() } : {}),
           });
           onBackendDispatched?.();
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "info",
-            message: "Pi context compaction completed.",
-          });
           persistChatState(managed);
         } finally {
           if (managed.runtime === runtime) runtime.busy = false;

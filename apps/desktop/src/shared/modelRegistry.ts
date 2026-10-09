@@ -2545,6 +2545,7 @@ export function createDynamicCursorCliModelDescriptor(
   providerModelId: string,
   cliDisplayName?: string | null,
   options?: {
+    contextWindow?: number;
     reasoningTiers?: string[];
     serviceTiers?: string[];
     aliases?: string[];
@@ -2564,7 +2565,7 @@ export function createDynamicCursorCliModelDescriptor(
     displayName: display,
     family: "cursor",
     authTypes: ["api-key"],
-    contextWindow: 200_000,
+    contextWindow: options?.contextWindow ?? 0,
     maxOutputTokens: 32_000,
     capabilities: {
       ...ALL_CAPS,

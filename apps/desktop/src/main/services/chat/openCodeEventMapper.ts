@@ -302,7 +302,7 @@ export function createOpenCodeTurnMapper(args: {
       }
       case "session.compaction.failed": {
         const data = event.data;
-        return [{
+        return [{ event: { type: "context_compact", trigger: "auto", state: "failed", failReason: "provider_error", failDetail: data.error?.message, turnId } }, {
           event: {
             type: "system_notice",
             noticeKind: "provider_health",

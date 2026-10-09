@@ -102,7 +102,7 @@ export function toUsageViewModel(
   if (input.kind === "codex") {
     const last = input.usage.last ?? {};
     const total = input.usage.total ?? {};
-    const exactInputTokens = nonNegative(last.inputTokens) ?? nonNegative(total.inputTokens);
+    const exactInputTokens = nonNegative(last.inputTokens);
     inputTokens = positive(last.inputTokens) ?? positive(total.inputTokens);
     outputTokens = positive(last.outputTokens) ?? positive(total.outputTokens);
     cacheReadTokens = positive(last.cacheReadTokens) ?? positive(total.cacheReadTokens);
@@ -111,10 +111,7 @@ export function toUsageViewModel(
     totalTokens = positive(total.totalTokens);
     runtimeWindow = positive(input.usage.modelContextWindow);
     // Codex inputTokens already includes the cached portion → it is the occupancy.
-    usedTokens =
-      exactInputTokens
-      ?? (positive(last.outputTokens) != null ? (last.inputTokens ?? 0) + (last.outputTokens ?? 0) || null : null)
-      ?? totalTokens;
+    usedTokens = exactInputTokens;
   } else {
     const u = input.usage;
     inputTokens = positive(u.inputTokens);
@@ -210,8 +207,7 @@ export function latestContextUsageInput(
       if (positive(event.usage.modelContextWindow) != null) {
         lastRuntimeWindow = positive(event.usage.modelContextWindow);
       }
-      const hasContextOccupancy = typeof event.usage.last?.inputTokens === "number"
-        || typeof event.usage.total?.inputTokens === "number";
+      const hasContextOccupancy = typeof event.usage.last?.inputTokens === "number";
       if (!hasContextOccupancy) continue;
       current = { kind: "codex", provider: provider || "codex", usage: event.usage, state: "measured" };
       continue;
@@ -250,6 +246,10 @@ export function latestContextUsageInput(
       || (event.type === "codex_context_compaction" && event.state === "started");
     if (startedCompaction) {
       if (current) current = { ...current, state: "compacting" };
+      continue;
+    }
+    if ((event.type === "context_compact" || event.type === "codex_context_compaction") && event.state === "failed") {
+      if (current) current = { ...current, state: "measured" };
       continue;
     }
     const completedCompaction = (event.type === "context_compact" && event.state !== "started")

@@ -74,12 +74,13 @@ export function resolveContextCompactControl(args: {
 
 export type ContextCompactEvent = Extract<AgentChatEvent, { type: "context_compact" }>;
 
-export type ContextCompactFailReason = "interrupted" | "timed_out" | "teardown";
+export type ContextCompactFailReason = "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
 
 export type NormalizedContextCompact = {
   trigger: "manual" | "auto" | "ade_fallback";
   state: "started" | "completed" | "failed";
   failReason?: ContextCompactFailReason;
+  failDetail?: string;
   turnId?: string;
   compactionId?: string;
   preTokens?: number;
@@ -117,6 +118,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       trigger: event.trigger,
       state: event.state ?? "completed",
       failReason: event.failReason,
+      failDetail: event.failDetail,
       turnId: event.turnId,
       compactionId: event.compactionId,
       preTokens: event.preTokens,
@@ -133,6 +135,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       trigger: event.trigger,
       state: event.state,
       failReason: event.failReason,
+      failDetail: event.failDetail,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
     };
@@ -258,6 +261,8 @@ export function compactionFailLabel(reason?: ContextCompactFailReason): string {
       return "Compaction timed out";
     case "interrupted":
     case "teardown":
+    case "provider_error":
+    case "quota":
     case undefined:
       return "Compaction failed";
     default: {

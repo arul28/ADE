@@ -1914,7 +1914,8 @@ export type AgentChatEvent =
       // legacy/completion-only sources (treated as "completed"). "failed" covers
       // interrupt, teardown, and a wall-clock stall so the divider cannot spin forever.
       state?: "started" | "completed" | "failed";
-      failReason?: "interrupted" | "timed_out" | "teardown";
+      failReason?: "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
+      failDetail?: string;
       turnId?: string;
     }
   | {
@@ -1923,7 +1924,8 @@ export type AgentChatEvent =
       state: "started" | "completed" | "failed";
       trigger: "manual" | "auto";
       compactionId?: string;
-      failReason?: "interrupted" | "timed_out" | "teardown";
+      failReason?: "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
+      failDetail?: string;
     }
   | {
       type: "codex_safety_buffering";
@@ -3331,6 +3333,7 @@ export type AgentChatContextUsage = {
   totalTokens: number;
   maxTokens: number;
   rawMaxTokens?: number;
+  compactAtTokens?: number;
   percentage: number;
   model?: string;
   // Typed per-turn breakdown for the composer meter's hover. The `categories`
