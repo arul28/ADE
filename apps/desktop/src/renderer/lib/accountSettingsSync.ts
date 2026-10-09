@@ -130,7 +130,11 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   pref("smartTooltipsEnabled", (state) => state.smartTooltipsEnabled, (state, value) => state.setSmartTooltipsEnabled(value)),
   pref("launchPromptClipboardEnabled", (state) => state.launchPromptClipboardEnabled, (state, value) => state.setLaunchPromptClipboardEnabled(value)),
   pref("launchPromptClipboardNoticeEnabled", (state) => state.launchPromptClipboardNoticeEnabled, (state, value) => state.setLaunchPromptClipboardNoticeEnabled(value)),
-  pref("draftsButtonEnabled", (state) => state.draftsButtonEnabled, (state, value) => state.setDraftsButtonEnabled(value)),
+  // The account field keeps its original name on purpose. It is an opaque key
+  // in the account store, not a label, and renaming it would orphan the value
+  // already saved there — so a device where the button was hidden would show it
+  // again. The local preference and every user-facing string are "drafts".
+  pref("promptStashButtonEnabled", (state) => state.draftsButtonEnabled, (state, value) => state.setDraftsButtonEnabled(value)),
   pref("voiceInputEnabled", (state) => state.voiceInputEnabled, (state, value) => state.setVoiceInputEnabled(value)),
   pref("codexVoice", (state) => state.codexVoice, (state, value) => state.setCodexVoicePreferences(value)),
   pref("codeBlockCopyButtonPosition", (state) => state.codeBlockCopyButtonPosition, (state, value) => state.setCodeBlockCopyButtonPosition(value)),

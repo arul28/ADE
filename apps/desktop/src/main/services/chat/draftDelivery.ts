@@ -20,6 +20,14 @@ export type DraftDeliveryOutcome =
    */
   | { status: "skipped"; error: string };
 
+/**
+ * Raised by a host that permanently cannot deliver this shape of send — it has
+ * no chat launcher, or the row names no model to start one with. Delivery
+ * reports it as `blocked` (the user must act) instead of retrying, because no
+ * amount of retrying gives that host the capability.
+ */
+export class DraftDeliveryUnsupportedError extends Error {}
+
 export type DraftDeliveryDeps = {
   now: () => number;
   /** Whether the chat a schedule points at still exists and can receive a turn. */
@@ -69,11 +77,12 @@ function isLate(latenessMs: number, draft: DraftEntry): DraftDeliveryOutcome | n
 /**
  * Attempt one scheduled send.
  *
- * Ordering matters. Images are checked first because the user's choice is to
- * hold rather than send a prompt with a missing attachment. The lateness policy
- * is checked before the target so a strict schedule that blew its window is
- * reported as missed even if the chat is also gone. The target check runs last,
- * immediately before the send, so a deleted chat blocks rather than throwing.
+ * Ordering matters. The lateness policy is checked first: a `strict` or expired
+ * `grace` window has to resolve to `missed`, and an image that never arrives
+ * must not hold such a send open forever. Images come next — the user's choice
+ * is to hold rather than send a prompt missing an attachment — and only then
+ * the target, so a strict schedule that blew its window is reported as missed
+ * even if the chat is also gone, and a deleted chat blocks rather than throws.
  */
 export async function deliverDraft(
   draft: DraftEntry,
@@ -83,15 +92,15 @@ export async function deliverDraft(
   const fireAt = draft.scheduledAt ? Date.parse(draft.scheduledAt) : Number.NaN;
   const latenessMs = Number.isFinite(fireAt) ? nowMs - fireAt : 0;
 
+  const late = isLate(latenessMs, draft);
+  if (late) return late;
+
   if (!deps.attachmentsReady(draft)) {
     return {
       status: "retry",
       error: "Waiting for this send's images to reach this machine.",
     };
   }
-
-  const late = isLate(latenessMs, draft);
-  if (late) return late;
 
   const attachments = draft.attachments ?? [];
   try {
@@ -123,6 +132,10 @@ export async function deliverDraft(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     deps.logger.warn("draft.deliver_failed", { draftId: draft.id, message });
+    if (error instanceof DraftDeliveryUnsupportedError) {
+      // Retrying cannot help; surface it so the row says why.
+      return { status: "blocked", error: message };
+    }
     // A throw is a transport/session problem, not a decision — keep the send
     // armed and try again rather than losing the message.
     return { status: "retry", error: message };

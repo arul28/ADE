@@ -5745,9 +5745,7 @@ export type DraftCreateArgs = {
 };
 
 /** Read one draft by id, without the list's retention window. */
-export type DraftGetArgs = {
-  id: string;
-};
+export type DraftGetArgs = DraftIdArgs;
 
 export type DraftScheduleInput = {
   /** ISO-8601 with an explicit offset or Z. Must be in the future. */
@@ -5768,18 +5766,22 @@ export type DraftScheduleInput = {
   scheduledBySessionId?: string | null;
 };
 
-export type DraftDeleteArgs = {
+/**
+ * Every draft operation that names exactly one row — get, claim, delete, send
+ * now — takes this shape, so a send is not typed as a delete.
+ */
+export type DraftIdArgs = {
   id: string;
 };
+
+export type DraftDeleteArgs = DraftIdArgs;
 
 /**
  * Claim a draft before putting it in a composer. The runtime deletes the row
  * and only the caller that wins the claim is allowed to fill its composer, so
  * two machines can never both hold the same text.
  */
-export type DraftClaimArgs = {
-  id: string;
-};
+export type DraftClaimArgs = DraftIdArgs;
 
 /** Update a draft in place: edit its text, or retime/reconfigure a schedule. */
 export type DraftUpdateArgs = {

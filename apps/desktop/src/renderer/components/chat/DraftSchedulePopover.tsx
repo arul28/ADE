@@ -8,6 +8,7 @@ import {
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
+import { Banner } from "../ui/notice/Banner";
 
 export type DraftScheduleConfig = {
   provider: string | null;
@@ -279,9 +280,11 @@ export function DraftSchedulePopover({
       </div>
 
       {shown ? (
-        <div className="mt-2 rounded-lg border border-red-300/[0.08] bg-red-500/[0.05] px-2 py-1.5 font-sans text-[10px] leading-4 text-red-200/75" role="alert">
-          {shown}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ marginTop: 8 }}
+          model={{ id: "draft-schedule-error", tone: "error", title: shown }}
+        />
       ) : null}
 
       <div className="mt-3 flex items-center justify-end gap-1.5">

@@ -3714,6 +3714,10 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table prompt_stashes add column scheduled_by_session_id text");
   safeAddColumn(db, "alter table prompt_stashes add column fired_at text");
   safeAddColumn(db, "alter table prompt_stashes add column last_error text");
+  // The CRR site id of the runtime that armed a send. Only that runtime
+  // delivers a send that names no machine, so two synced machines holding the
+  // same row cannot both fire it.
+  safeAddColumn(db, "alter table prompt_stashes add column armed_by_site_id text");
   db.run("create index if not exists idx_prompt_stashes_created on prompt_stashes(created_at)");
   db.run("create index if not exists idx_prompt_stashes_scheduled on prompt_stashes(scheduled_at)");
 

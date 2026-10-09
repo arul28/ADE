@@ -149,11 +149,11 @@ export function ChatSection() {
                 />
                 <ModernRow
                   anchor="drafts-button"
-                  title="Prompt stash button"
+                  title="Drafts button"
                   hint="The bookmark beside the context meter. ⌘S works either way."
                   control={(
                     <SettingsToggle
-                      label="Prompt stash button"
+                      label="Drafts button"
                       checked={draftsButtonEnabled}
                       onChange={setDraftsButtonEnabled}
                     />

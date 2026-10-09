@@ -5176,6 +5176,14 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     if (!id) throw new Error("Missing draft id.");
     return claimDraft(requireService(args.db, "Database not available."), id);
   });
+  // Delivering takes the same exactly-once claim the scheduler does, so it
+  // belongs to the chat service rather than the draft store.
+  register("chat.sendDraftNow", { viewerAllowed: true }, async (payload) => {
+    const id = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!id) throw new Error("Missing draft id.");
+    return await requireService(args.agentChatService, "Agent chat service not available.")
+      .sendDraftNow(id);
+  });
   // Thread comments: the user's pending notes on parts of an agent reply. The
   // host's chat service validates every field; these only route.
   register("chat.listThreadComments", { viewerAllowed: true }, async (payload) =>

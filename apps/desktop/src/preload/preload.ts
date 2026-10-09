@@ -1973,8 +1973,13 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   // Private draft state must never fall through to the process-global IPC
   // database while the owning project binding is changing.
   "listDrafts",
+  "getDraft",
   "createDraft",
+  "updateDraft",
+  "claimDraft",
   "deleteDraft",
+  // Delivering a send writes the row's status; it is a draft write like the rest.
+  "sendDraftNow",
   // Thread comments live on the chat's host; a write that fell through to this
   // window's process during a project switch would land on the wrong machine.
   ...THREAD_COMMENT_ACTION_NAMES,

@@ -42,16 +42,6 @@ export const PENDING_DRAFT_STATUSES: readonly DraftStatus[] = [
   "blocked",
 ];
 
-/**
- * How long a row must look stale to this machine before the retention prune
- * may remove it. Kept at zero by default: the locked product decision is a
- * strict 20-row ceiling for plain drafts, so the cap is enforced on count.
- * Skew is handled at the stamp instead — `nextCreatedAt` never issues a
- * timestamp older than the newest row this machine has already seen — and a
- * draft armed on another machine is exempt entirely.
- */
-const DRAFT_PRUNE_MIN_AGE_MS = 0;
-
 type DraftRow = {
   id: string;
   text: string;
@@ -78,13 +68,14 @@ type DraftRow = {
   scheduled_by_session_id: string | null;
   fired_at: string | null;
   last_error: string | null;
+  armed_by_site_id: string | null;
 };
 
 const DRAFT_COLUMNS = `
   id, text, attachments_json, attachment_origin_site_id, provider, model_id, model, created_at,
   updated_at, kind, status, scheduled_at, delivery_policy, grace_seconds, target_kind,
   target_session_id, target_lane_id, target_machine_key, origin_session_id, permission_mode,
-  thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error
+  thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error, armed_by_site_id
 `;
 
 function optionalString(value: unknown): string | null {
@@ -255,12 +246,11 @@ function pruneStatusList(): string {
  * first. The single DELETE stays safe on partially converged replicas: adding
  * rows cannot promote an entry that was already outside the top N.
  *
- * `DRAFT_PRUNE_MIN_AGE_MS` is the one knob that would relax the count cap into
- * an age window; it stays 0 so the locked 20-row rule is exact.
+ * The cap is a count, never an age. Skew is handled at the stamp instead —
+ * `nextCreatedAt` never issues a timestamp older than the newest row this
+ * machine has already seen — and a send armed on another machine is exempt.
  */
-function pruneDraftRetention(db: DraftRetentionDb, nowMs = Date.now()): void {
-  const cutoff = new Date(nowMs - DRAFT_PRUNE_MIN_AGE_MS).toISOString();
-  const agePredicate = DRAFT_PRUNE_MIN_AGE_MS > 0 ? "and created_at < ?" : "";
+function pruneDraftRetention(db: DraftRetentionDb): void {
   const pending = pruneStatusList();
 
   db.run(
@@ -270,12 +260,11 @@ function pruneDraftRetention(db: DraftRetentionDb, nowMs = Date.now()): void {
         select id
         from prompt_stashes
         where coalesce(kind, 'draft') = 'draft'
-          ${agePredicate}
         order by created_at desc, id desc
         limit -1 offset ?
       )
     `,
-    DRAFT_PRUNE_MIN_AGE_MS > 0 ? [cutoff, MAX_DRAFTS] : [MAX_DRAFTS],
+    [MAX_DRAFTS],
   );
 
   db.run(
@@ -286,12 +275,11 @@ function pruneDraftRetention(db: DraftRetentionDb, nowMs = Date.now()): void {
         from prompt_stashes
         where kind = 'scheduled'
           and coalesce(status, 'draft') not in (${pending})
-          ${agePredicate}
         order by created_at desc, id desc
         limit -1 offset ?
       )
     `,
-    DRAFT_PRUNE_MIN_AGE_MS > 0 ? [cutoff, MAX_SCHEDULED_DRAFTS] : [MAX_SCHEDULED_DRAFTS],
+    [MAX_SCHEDULED_DRAFTS],
   );
 }
 
@@ -410,10 +398,11 @@ function normalizeSchedule(value: unknown, nowMs = Date.now()): NormalizedSchedu
   if (targetKind === "new" && !targetLaneId) {
     throw new Error("Choose the lane a new chat should start in.");
   }
-  // A brand-new chat has to be created with a real model, and the scheduled
-  // send captures the composer's, so require it here rather than discovering
-  // the gap at fire time when nobody is watching.
-  const newChatModel = optionalString(args.model);
+  // A brand-new chat has to be created with a real model, so require one here
+  // rather than discovering the gap at fire time when nobody is watching. A
+  // client that only knows the model id is accepted: the launch resolves an
+  // empty runtime-facing string, and a non-empty one is honoured as given.
+  const newChatModel = optionalString(args.model) ?? optionalString(args.modelId);
   if (targetKind === "new" && !newChatModel) {
     throw new Error("Choose a model for the new chat.");
   }
@@ -510,9 +499,9 @@ export function createDraft(
         id, text, attachments_json, attachment_origin_site_id, provider, model_id, model, created_at,
         updated_at, kind, status, scheduled_at, delivery_policy, grace_seconds, target_kind,
         target_session_id, target_lane_id, target_machine_key, origin_session_id, permission_mode,
-        thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error
+        thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error, armed_by_site_id
       )
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       entry.id,
@@ -540,6 +529,8 @@ export function createDraft(
       entry.scheduledBySessionId ?? null,
       null,
       null,
+      // The runtime that arms a send owns its delivery when it names no machine.
+      schedule ? currentSiteId(db) : null,
     ],
   );
 
@@ -589,6 +580,30 @@ export function claimDraft(db: DraftDb, id: string): DraftEntry | null {
 }
 
 /**
+ * The columns `updateDraft` is allowed to write. Naming them as a union keeps
+ * the patch object honest: a key that is not a real column is a compile error
+ * rather than a silently ignored assignment.
+ */
+type DraftPatchColumn =
+  | "text"
+  | "kind"
+  | "status"
+  | "scheduled_at"
+  | "delivery_policy"
+  | "grace_seconds"
+  | "target_kind"
+  | "target_session_id"
+  | "target_lane_id"
+  | "target_machine_key"
+  | "permission_mode"
+  | "thinking"
+  | "scheduled_by"
+  | "scheduled_by_session_id"
+  | "armed_by_site_id"
+  | "model"
+  | "last_error";
+
+/**
  * Edit a draft's text, or arm/retime/clear its schedule. Returns the updated
  * row, or null when the draft is gone (taken on another machine).
  */
@@ -602,7 +617,7 @@ export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
   );
   if (!existing) return null;
 
-  const patch: Record<string, unknown> = {};
+  const patch: Partial<Record<DraftPatchColumn, SqlValue>> = {};
   if (typeof args.text === "string") {
     if (args.text.length > MAX_DRAFT_TEXT_CHARS) {
       throw new Error("This prompt is too large to save.");
@@ -647,16 +662,17 @@ export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
     patch.thinking = schedule.thinking;
     patch.scheduled_by = schedule.scheduledBy;
     patch.scheduled_by_session_id = schedule.scheduledBySessionId;
+    patch.armed_by_site_id = currentSiteId(db);
     patch.last_error = null;
   }
 
-  const keys = Object.keys(patch);
+  const keys = Object.keys(patch) as DraftPatchColumn[];
   if (keys.length === 0) {
     return fromRow(existing, currentSiteId(db));
   }
   const updatedAt = new Date().toISOString();
   const assignments = [...keys, "updated_at"].map((key) => `${key} = ?`).join(", ");
-  const values = keys.map((key) => patch[key] as SqlValue);
+  const values = keys.map((key) => patch[key as DraftPatchColumn] as SqlValue);
   db.run(`update prompt_stashes set ${assignments} where id = ?`, [...values, updatedAt, id]);
   return getDraft(db, id);
 }
@@ -757,13 +773,18 @@ export function listDueScheduledDrafts(
       order by scheduled_at asc, created_at asc
     `,
     [nowIso],
-  ).map((row) => fromRow(row, localSiteId));
+  );
+  const localSite = normalizeSiteId(localSiteId);
 
-  return rows.filter((entry) => {
-    const target = entry.targetMachineKey?.trim() || null;
-    if (!target) return true;
-    return sameMachineKey(target, machineKey);
-  });
+  return rows.filter((row) => {
+    const target = row.target_machine_key?.trim() || null;
+    // An explicitly named machine owns the send.
+    if (target) return sameMachineKey(target, machineKey);
+    // Otherwise the runtime that armed it does. A row from a build that did
+    // not stamp one is left unowned so an already-armed send still fires.
+    const armedBy = normalizeSiteId(row.armed_by_site_id);
+    return armedBy == null || (localSite != null && armedBy === localSite);
+  }).map((row) => fromRow(row, localSiteId));
 }
 
 /**
@@ -805,9 +826,9 @@ export function nextScheduledDraftFireAt(
   db: DraftDb,
   machineKey: string | null,
 ): number | null {
-  const rows = db.all<Pick<DraftRow, "scheduled_at" | "target_machine_key">>(
+  const rows = db.all<Pick<DraftRow, "scheduled_at" | "target_machine_key" | "armed_by_site_id">>(
     `
-      select scheduled_at, target_machine_key
+      select scheduled_at, target_machine_key, armed_by_site_id
       from prompt_stashes
       where kind = 'scheduled'
         and status = 'scheduled'
@@ -815,13 +836,17 @@ export function nextScheduledDraftFireAt(
       order by scheduled_at asc
     `,
   );
+  const localSite = normalizeSiteId(currentSiteId(db));
   for (const row of rows) {
     const target = row.target_machine_key?.trim() || null;
     if (target && !sameMachineKey(target, machineKey)) continue;
+    if (!target) {
+      const armedBy = normalizeSiteId(row.armed_by_site_id);
+      if (armedBy != null && armedBy !== localSite) continue;
+    }
     const fireAt = row.scheduled_at ? Date.parse(row.scheduled_at) : Number.NaN;
     if (Number.isFinite(fireAt)) return fireAt;
   }
   return null;
 }
 
-export type DraftScheduleInputType = DraftScheduleInput;

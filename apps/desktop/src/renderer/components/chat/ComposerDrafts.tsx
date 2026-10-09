@@ -1,13 +1,9 @@
 import {
-  ArrowUUpLeft,
   BookmarkSimple,
   CalendarBlank,
   Check,
-  CopySimple,
   File,
   Image,
-  PaperPlaneTilt,
-  PencilSimple,
   SpinnerGap,
   Trash,
   WarningCircle,
@@ -22,12 +18,10 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { createPortal } from "react-dom";
 import {
   type AgentChatFileRef,
   type DraftEntry,
   type DraftScheduleInput,
-  type DraftStatus,
   MAX_DRAFT_ATTACHMENTS,
   MAX_DRAFTS,
   MAX_SCHEDULED_DRAFTS,
@@ -36,8 +30,25 @@ import {
 import { cn } from "../ui/cn";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
+import { Banner } from "../ui/notice/Banner";
+import { DraftDetailPanel } from "./DraftDetailPanel";
+import {
+  attachmentName,
+  base64FromDataUrl,
+  draftAttachmentCount,
+  draftAttachments,
+  draftAttachmentsUnavailable,
+  draftEntryLabel,
+  draftMetaLine,
+  isDraftableAttachment,
+  isPendingSchedule,
+  isScheduledEntry,
+  needsAttention,
+  providerLabel,
+  sameAttachment,
+} from "./draftsFormat";
 
-const DRAFT_SNIPPET_MAX_CHARS = 110;
 const DRAFTS_MENU_MAX_WIDTH = 380;
 const DRAFTS_MENU_VIEWPORT_MARGIN = 16;
 const DRAFTS_MENU_GAP = 10;
@@ -62,117 +73,6 @@ export type ComposerDraftsHandle = {
 };
 
 export type DraftFilter = "all" | "scheduled" | "needs-you";
-
-function promptSnippet(text: string): string {
-  const normalized = text.trim().replace(/\s+/g, " ");
-  if (normalized.length <= DRAFT_SNIPPET_MAX_CHARS) return normalized;
-  return `${normalized.slice(0, DRAFT_SNIPPET_MAX_CHARS)}…`;
-}
-
-function relativeTime(iso: string): string {
-  const timestamp = Date.parse(iso);
-  if (!Number.isFinite(timestamp)) return "";
-  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (seconds < 45) return "now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.round(hours / 24);
-  return `${days}d`;
-}
-
-/** "9:00 AM", "9:00 AM tomorrow", or a date once it is further out. */
-function fireTimeLabel(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const fireAt = Date.parse(iso);
-  if (!Number.isFinite(fireAt)) return "";
-  const when = new Date(fireAt);
-  const clock = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(when);
-  const dayKey = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
-  const today = new Date();
-  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
-  if (dayKey(when) === dayKey(today)) return clock;
-  if (dayKey(when) === dayKey(tomorrow)) return `${clock} tomorrow`;
-  const date = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(when);
-  return `${date}, ${clock}`;
-}
-
-function providerLabel(entry: DraftEntry): string | null {
-  const provider = entry.provider?.trim();
-  if (!provider) return null;
-  return provider.charAt(0).toUpperCase() + provider.slice(1);
-}
-
-function attachmentName(path: string): string {
-  return path.split(/[/\\]/).pop() || path;
-}
-
-function sameAttachment(left: AgentChatFileRef, right: AgentChatFileRef): boolean {
-  return left.path === right.path
-    && left.type === right.type
-    && (left.type !== "image-url" || right.type !== "image-url" || left.url === right.url);
-}
-
-function draftAttachments(entry: DraftEntry): AgentChatFileRef[] {
-  return entry.attachments ?? [];
-}
-
-function isDraftableAttachment(attachment: AgentChatFileRef): boolean {
-  return attachment.type === "image" || attachment.type === "image-url";
-}
-
-function base64FromDataUrl(dataUrl: string): string {
-  const separator = dataUrl.indexOf(",");
-  if (separator < 0 || !/;base64$/i.test(dataUrl.slice(0, separator))) {
-    throw new Error("The attached image could not be prepared for saving.");
-  }
-  const base64 = dataUrl.slice(separator + 1);
-  if (!base64) throw new Error("The attached image is empty.");
-  return base64;
-}
-
-function draftEntryLabel(entry: DraftEntry, attachments: AgentChatFileRef[]): string {
-  const snippet = promptSnippet(entry.text);
-  if (snippet) return snippet;
-  if (attachments.length === 1) return attachmentName(attachments[0]!.path);
-  const attachmentCount = draftAttachmentCount(entry);
-  return attachmentCount === 1 ? "1 image" : `${attachmentCount} images`;
-}
-
-function draftAttachmentCount(entry: DraftEntry): number {
-  return entry.attachmentCount ?? draftAttachments(entry).length;
-}
-
-function draftAttachmentsUnavailable(entry: DraftEntry): boolean {
-  return entry.attachmentsAvailable === false && draftAttachmentCount(entry) > 0;
-}
-
-function isScheduledEntry(entry: DraftEntry): boolean {
-  return entry.kind === "scheduled";
-}
-
-/** A send the user has to act on: it could not go out, or it never happened. */
-function needsAttention(entry: DraftEntry): boolean {
-  return entry.status === "blocked" || entry.status === "missed";
-}
-
-function isPendingSchedule(entry: DraftEntry): boolean {
-  return entry.status === "scheduled" || entry.status === "sending" || entry.status === "blocked";
-}
-
-/** What a row says on its second line. Never blank: it is the row's status. */
-function draftMetaLine(entry: DraftEntry): string {
-  if (needsAttention(entry)) return entry.lastError?.trim() || "Could not be sent.";
-  if (isScheduledEntry(entry)) {
-    const status: DraftStatus = entry.status ?? "scheduled";
-    if (status === "sent") return `Sent ${relativeTime(entry.firedAt ?? entry.scheduledAt ?? entry.createdAt)}`;
-    if (status === "cancelled") return "Cancelled";
-    if (status === "sending") return "Sending now…";
-    return fireTimeLabel(entry.scheduledAt) || "Scheduled";
-  }
-  return relativeTime(entry.updatedAt ?? entry.createdAt);
-}
 
 function normalizedProjectRoot(rootPath: string): string {
   return rootPath.trim().replace(/[\\/]+$/, "");
@@ -585,6 +485,30 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   );
 
   /**
+   * One shape for every draft mutation: refuse while another is in flight,
+   * mark busy, clear the error, and turn any throw into the row's message.
+   * Five operations had copied this block, which is how one of them ends up
+   * forgetting the `finally`.
+   */
+  const runDraftOperation = useCallback(async (
+    fallback: string,
+    operation: () => Promise<void>,
+  ): Promise<void> => {
+    if (operationInFlightRef.current) return;
+    operationInFlightRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await operation();
+    } catch (operationError) {
+      setError(draftErrorMessage(operationError, fallback));
+    } finally {
+      operationInFlightRef.current = false;
+      setBusy(false);
+    }
+  }, []);
+
+  /**
    * Claim a draft and put it in the composer.
    *
    * The claim — a delete on the runtime — happens BEFORE the composer is
@@ -593,17 +517,13 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
    * composers and could send it twice.
    */
   const attach = useCallback(async (entry: DraftEntry) => {
-    if (operationInFlightRef.current) return;
     const operationBinding = entriesOwnerBinding;
     if (draftAttachmentsUnavailable(entry)) {
       setError("These images live on the machine where this draft was made. Connect to that machine to use it.");
       return;
     }
-    operationInFlightRef.current = true;
-    refreshSequenceRef.current += 1;
-    setBusy(true);
-    setError(null);
-    try {
+    await runDraftOperation("Could not attach this draft.", async () => {
+      refreshSequenceRef.current += 1;
       const claimed = await window.ade.agentChat.drafts.claim({ id: entry.id }, operationBinding);
       if (!claimed) {
         if ((latestComposerMachineBindingRef.current?.key ?? null) === (operationBinding?.key ?? null)) {
@@ -625,13 +545,8 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       for (const attachment of draftAttachments(claimed)) {
         onAddAttachment(attachment);
       }
-    } catch (claimError) {
-      setError(draftErrorMessage(claimError, "Could not attach this draft."));
-    } finally {
-      operationInFlightRef.current = false;
-      setBusy(false);
-    }
-  }, [entriesOwnerBinding, onAddAttachment, onDraftChange, refresh]);
+    });
+  }, [entriesOwnerBinding, onAddAttachment, onDraftChange, refresh, runDraftOperation]);
 
   const remove = useCallback(async (entry: DraftEntry): Promise<boolean> => {
     if (operationInFlightRef.current) return false;
@@ -667,12 +582,8 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   }, [entriesOwnerBinding, refresh]);
 
   const saveEdit = useCallback(async (entry: DraftEntry, text: string) => {
-    if (operationInFlightRef.current) return;
     const operationBinding = entriesOwnerBinding;
-    operationInFlightRef.current = true;
-    setBusy(true);
-    setError(null);
-    try {
+    await runDraftOperation("Could not save this draft.", async () => {
       const updated = await window.ade.agentChat.drafts.update({ id: entry.id, text }, operationBinding);
       if (!updated) {
         setError("That draft was taken on another machine.");
@@ -688,13 +599,8 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
           : current
       ));
       setOpenEntry(updated);
-    } catch (updateError) {
-      setError(draftErrorMessage(updateError, "Could not save this draft."));
-    } finally {
-      operationInFlightRef.current = false;
-      setBusy(false);
-    }
-  }, [entriesOwnerBinding, refresh]);
+    });
+  }, [entriesOwnerBinding, refresh, runDraftOperation]);
 
   /**
    * Deliver a draft immediately. The row keeps whatever schedule it had, so a
@@ -702,34 +608,21 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
    * it as a side effect.
    */
   const sendNow = useCallback(async (entry: DraftEntry) => {
-    if (operationInFlightRef.current) return;
     const operationBinding = entriesOwnerBinding;
-    operationInFlightRef.current = true;
-    setBusy(true);
-    setError(null);
-    try {
+    await runDraftOperation("Could not send this draft.", async () => {
       const result = await window.ade.agentChat.drafts.sendNow({ id: entry.id }, operationBinding);
       if (!result.ok) {
         throw new Error(result.error?.trim() || "Could not send this draft.");
       }
       await refresh(operationBinding);
       setOpenEntry(null);
-    } catch (sendError) {
-      setError(draftErrorMessage(sendError, "Could not send this draft."));
-    } finally {
-      operationInFlightRef.current = false;
-      setBusy(false);
-    }
-  }, [entriesOwnerBinding, refresh]);
+    });
+  }, [entriesOwnerBinding, refresh, runDraftOperation]);
 
   /** Copy a draft to the top of the list; the copy is a plain draft. */
   const duplicate = useCallback(async (entry: DraftEntry) => {
-    if (operationInFlightRef.current) return;
     const operationBinding = entriesOwnerBinding;
-    operationInFlightRef.current = true;
-    setBusy(true);
-    setError(null);
-    try {
+    await runDraftOperation("Could not duplicate this draft.", async () => {
       const attachments = draftAttachments(entry);
       const created = await window.ade.agentChat.drafts.create({
         text: entry.text,
@@ -740,13 +633,8 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       }, operationBinding);
       await refresh(operationBinding);
       setOpenEntry(created);
-    } catch (duplicateError) {
-      setError(draftErrorMessage(duplicateError, "Could not duplicate this draft."));
-    } finally {
-      operationInFlightRef.current = false;
-      setBusy(false);
-    }
-  }, [entriesOwnerBinding, refresh]);
+    });
+  }, [entriesOwnerBinding, refresh, runDraftOperation]);
 
   const handleMenuKeyDown = useCallback((event: {
     key: string;
@@ -850,136 +738,38 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
         </SmartTooltip>
       ) : null}
 
-      {menuOpen ? createPortal((
+      {menuOpen ? (
+        // The composer's other menus anchor inside the named popover layer
+        // rather than carrying their own fixed positioning and stacking
+        // number; matching that keeps one idiom for the pane instead of two.
+        <ViewportOverlayPortal layer="popover">
         <div
           ref={menuRef}
           data-drafts-menu=""
           role="dialog"
           aria-label="Drafts"
-          className="fixed z-[120] flex max-h-[calc(100vh-32px)] w-[min(380px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl border border-fg/[0.09] bg-(color:--work-popover-bg) shadow-[0_24px_72px_-28px_rgba(0,0,0,0.95)] backdrop-blur-2xl"
+          className="pointer-events-auto absolute flex max-h-[calc(100vh-32px)] w-[min(380px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl border border-fg/[0.09] bg-(color:--work-popover-bg) shadow-[0_24px_72px_-28px_rgba(0,0,0,0.95)] backdrop-blur-2xl"
           style={{ left: menuPosition.left, top: menuPosition.top }}
         >
           {openEntry ? (
-            <div className="flex min-h-0 flex-1 flex-col" data-draft-detail="">
-              <div className="flex items-center justify-between gap-3 border-b border-fg/[0.06] px-3.5 py-2.5">
-                <button
-                  type="button"
-                  className="flex items-center gap-1.5 rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/50 transition-colors hover:bg-fg/[0.05] hover:text-fg/75"
-                  onClick={() => setOpenEntry(null)}
-                >
-                  <ArrowUUpLeft size={11} aria-hidden />
-                  All drafts
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/45 transition-colors hover:bg-fg/[0.05] hover:text-fg/70"
-                  onClick={() => { setOpenEntry(null); setMenuOpen(false); }}
-                >
-                  Close
-                </button>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                <div className="font-sans text-[9.5px] font-semibold uppercase tracking-wide text-muted-fg/40">
-                  {needsAttention(openEntry) ? "Needs you" : isScheduledEntry(openEntry) ? "Scheduled" : "Draft"}
-                </div>
-                <textarea
-                  value={editText}
-                  onChange={(event) => setEditText(event.target.value)}
-                  rows={Math.min(12, Math.max(4, editText.split("\n").length + 1))}
-                  className="mt-1.5 w-full resize-none rounded-xl border border-fg/[0.09] bg-black/25 px-2.5 py-2 font-sans text-[11.5px] leading-5 text-fg/85 outline-none focus:border-violet-400/40"
-                />
-                {draftAttachmentCount(openEntry) > 0 ? (
-                  <div className="mt-2 flex items-center gap-1.5 font-mono text-[9.5px] text-muted-fg/45">
-                    <Image size={11} aria-hidden />
-                    {draftAttachmentCount(openEntry)} image{draftAttachmentCount(openEntry) === 1 ? "" : "s"}
-                    {draftAttachmentsUnavailable(openEntry) ? " on another machine" : ""}
-                  </div>
-                ) : null}
-                <div className="mt-2 flex flex-wrap items-center gap-1.5 font-mono text-[9.5px] text-muted-fg/45">
-                  {providerLabel(openEntry) ? <span>{providerLabel(openEntry)}</span> : null}
-                  {openEntry.modelId ?? openEntry.model ? (
-                    <span className="truncate">{openEntry.modelId ?? openEntry.model}</span>
-                  ) : null}
-                  {openEntry.permissionMode ? (
-                    <span className="rounded bg-fg/[0.06] px-1 py-px">{openEntry.permissionMode}</span>
-                  ) : null}
-                </div>
-                {isScheduledEntry(openEntry) ? (
-                  <div className="mt-2 flex items-center gap-1.5 font-sans text-[10.5px] text-fg/65">
-                    <CalendarBlank size={12} className="text-muted-fg/45" aria-hidden />
-                    {draftMetaLine(openEntry)}
-                    {openEntry.deliveryPolicy ? (
-                      <span className="text-muted-fg/42">
-                        · {openEntry.deliveryPolicy === "wait" ? "wait for me" : openEntry.deliveryPolicy}
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
-                {needsAttention(openEntry) ? (
-                  <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-300/[0.10] bg-amber-500/[0.05] px-2 py-1.5 font-sans text-[10px] leading-4 text-amber-100/75">
-                    <WarningCircle size={12} className="mt-0.5 shrink-0" aria-hidden />
-                    <span>{openEntry.lastError?.trim() || "This send could not go out."}</span>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-1.5 border-t border-fg/[0.06] px-3 py-2.5">
-                <button
-                  type="button"
-                  disabled={busy || editText === openEntry.text}
-                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-sans text-[11px] text-fg/70 transition-colors hover:bg-fg/[0.05] disabled:cursor-not-allowed disabled:opacity-35"
-                  onClick={() => void saveEdit(openEntry, editText)}
-                >
-                  <PencilSimple size={12} aria-hidden />
-                  Save
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-sans text-[11px] text-fg/60 transition-colors hover:bg-fg/[0.05] hover:text-fg/80 disabled:cursor-not-allowed disabled:opacity-35"
-                  onClick={() => void duplicate(openEntry)}
-                >
-                  <CopySimple size={12} aria-hidden />
-                  Duplicate
-                </button>
-                {onRequestSchedule ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-sans text-[11px] text-fg/70 transition-colors hover:bg-violet-500/[0.10] hover:text-violet-100/85 disabled:cursor-not-allowed disabled:opacity-35"
-                    onClick={() => {
-                      onRequestSchedule(openEntry);
-                      setOpenEntry(null);
-                      setMenuOpen(false);
-                    }}
-                  >
-                    <CalendarBlank size={12} aria-hidden />
-                    {isScheduledEntry(openEntry) ? "Reschedule" : "Schedule send"}
-                  </button>
-                ) : null}
-                {isScheduledEntry(openEntry) && isPendingSchedule(openEntry) ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-sans text-[11px] text-fg/70 transition-colors hover:bg-emerald-500/[0.10] hover:text-emerald-100/85 disabled:cursor-not-allowed disabled:opacity-35"
-                    onClick={() => void sendNow(openEntry)}
-                  >
-                    <PaperPlaneTilt size={12} aria-hidden />
-                    Send now
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  disabled={busy}
-                  className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-violet-500/85 px-2.5 py-1.5 font-sans text-[11px] font-semibold text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
-                  onClick={() => void attach(openEntry)}
-                >
-                  <ArrowUUpLeft size={12} aria-hidden />
-                  Attach to composer
-                </button>
-              </div>
-            </div>
+            <DraftDetailPanel
+              entry={openEntry}
+              text={editText}
+              onTextChange={setEditText}
+              busy={busy}
+              composerMachineBinding={entriesOwnerBinding}
+              onBack={() => setOpenEntry(null)}
+              onClose={() => { setOpenEntry(null); setMenuOpen(false); }}
+              onSaveEdit={(entry, text) => { void saveEdit(entry, text); }}
+              onAttach={(entry) => { void attach(entry); }}
+              onSendNow={(entry) => { void sendNow(entry); }}
+              onDuplicate={(entry) => { void duplicate(entry); }}
+              onSchedule={onRequestSchedule ? (entry) => {
+                onRequestSchedule(entry);
+                setOpenEntry(null);
+                setMenuOpen(false);
+              } : undefined}
+            />
           ) : (
             <>
               <div className="border-b border-fg/[0.06] px-3.5 pt-2.5">
@@ -1122,12 +912,15 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
           )}
 
           {error ? (
-            <div className="border-t border-red-300/[0.08] bg-red-500/[0.04] px-3.5 py-2 font-sans text-[10px] leading-4 text-red-200/72" role="alert">
-              {error}
-            </div>
+            <Banner
+              layout="inline"
+              style={{ margin: 6 }}
+              model={{ id: "draft-error", tone: "error", title: error }}
+            />
           ) : null}
         </div>
-      ), document.body) : null}
+        </ViewportOverlayPortal>
+      ) : null}
     </div>
   );
 });

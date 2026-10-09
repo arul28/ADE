@@ -441,7 +441,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "appearance.drafts",
-    label: "Prompt stash button",
+    label: "Drafts button",
     keywords: ["bookmark", "stash", "composer", "save prompt"],
     tab: "chat",
     anchor: "drafts-button",

@@ -68,7 +68,11 @@ import {
   setDraftStatus,
   type DraftDb,
 } from "./draftService";
-import { deliverDraft, type DraftDeliveryOutcome } from "./draftDelivery";
+import {
+  deliverDraft,
+  DraftDeliveryUnsupportedError,
+  type DraftDeliveryOutcome,
+} from "./draftDelivery";
 import { createDraftScheduler } from "./draftScheduler";
 import { ClaudeInputPump } from "./claudeInputPump";
 import { createSessionActivityDetector, type SessionActivityDetector } from "./sessionActivityDetector";
@@ -64288,12 +64292,16 @@ export function createAgentChatService(args: {
       const row = sessionService.get(sessionId);
       return Boolean(row && !row.archivedAt);
     },
-    // Replicated images are the norm, so a missing file means the copy has
-    // not landed here yet — hold the send rather than deliver without it.
-    attachmentsReady: (draft: { attachments?: { type: string; path: string }[] }) =>
-      (draft.attachments ?? []).every((attachment) => (
+    // A machine that does not own a draft's image bytes is handed the row with
+    // those references stripped, so a short list is not "nothing to attach" —
+    // it is "the images are somewhere else". Sending the text alone would
+    // silently drop them, which this contract forbids; hold instead.
+    attachmentsReady: (draft: DraftEntry) => {
+      if ((draft.attachmentCount ?? 0) > (draft.attachments?.length ?? 0)) return false;
+      return (draft.attachments ?? []).every((attachment) => (
         attachment.type !== "image" || fs.existsSync(attachment.path)
-      )),
+      ));
+    },
     sendToChat: async ({ sessionId, text, attachments }: {
       sessionId: string;
       text: string;
@@ -64325,12 +64333,16 @@ export function createAgentChatService(args: {
     }) => {
       const launches = args.getChatLaunchService?.() ?? null;
       if (!launches) {
-        throw new Error("This host cannot start a new chat for a scheduled send.");
+        throw new DraftDeliveryUnsupportedError(
+          "This computer cannot start a new chat for a scheduled send. Pick an existing chat instead.",
+        );
       }
       if (!provider || !model) {
         // The service refuses to arm a new-chat schedule without these, so this
         // is a row from an older build rather than something the user can fix.
-        throw new Error("This send has no model to start its new chat with.");
+        throw new DraftDeliveryUnsupportedError(
+          "This send has no model to start its new chat with.",
+        );
       }
       await launches.start({
         kind: "chat",
@@ -64428,6 +64440,14 @@ export function createAgentChatService(args: {
     if (!store) return { ok: false, error: "Chat storage is not available." };
     const entry = getDraft(store, draftId);
     if (!entry) return { ok: false, error: "That draft is gone." };
+    // An armed send takes the same claim the scheduler takes. Without it, a
+    // manual send racing a scheduler tick — or an overdue row the scheduler is
+    // already retrying — would be delivered twice.
+    const armed = entry.kind === "scheduled"
+      && (entry.status === "scheduled" || entry.status === "sending");
+    if (armed && !claimScheduledDraft(store, entry.id)) {
+      return { ok: false, error: "This send is already going out." };
+    }
     const outcome = await deliverDraft(
       { ...entry, scheduledAt: new Date().toISOString() },
       draftDeliveryDeps,
