@@ -84,6 +84,7 @@ export type NormalizedContextCompact = {
   failReason?: ContextCompactFailReason;
   failDetail?: string;
       summary?: string;
+  accountLabel?: string;
   turnId?: string;
   compactionId?: string;
   preTokens?: number;
@@ -123,6 +124,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       failReason: event.failReason,
       failDetail: event.failDetail,
       summary: event.summary,
+      accountLabel: event.accountLabel,
       turnId: event.turnId,
       compactionId: event.compactionId,
       preTokens: event.preTokens,
@@ -141,6 +143,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       failReason: event.failReason,
       failDetail: event.failDetail,
       summary: event.summary,
+      accountLabel: event.accountLabel,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
     };
@@ -226,6 +229,9 @@ export function mergeNormalizedContextCompact(
     turnId: incoming.turnId ?? previous.turnId,
     compactionId: incoming.compactionId ?? previous.compactionId,
     failReason: incoming.failReason ?? previous.failReason,
+    failDetail: incoming.failDetail ?? previous.failDetail,
+    summary: incoming.summary ?? previous.summary,
+    accountLabel: incoming.accountLabel ?? previous.accountLabel,
     preTokens: incoming.preTokens ?? previous.preTokens,
     postTokens: incoming.postTokens ?? previous.postTokens,
     tokensRemoved: incoming.tokensRemoved ?? previous.tokensRemoved,
@@ -245,6 +251,9 @@ export function toContextCompactChatEvent(
     ...(compact.turnId ? { turnId: compact.turnId } : {}),
     ...(compact.compactionId ? { compactionId: compact.compactionId } : {}),
     ...(compact.failReason ? { failReason: compact.failReason } : {}),
+    ...(compact.failDetail ? { failDetail: compact.failDetail } : {}),
+    ...(compact.summary ? { summary: compact.summary } : {}),
+    ...(compact.accountLabel ? { accountLabel: compact.accountLabel } : {}),
     ...(compact.preTokens != null ? { preTokens: compact.preTokens } : {}),
     ...(compact.postTokens != null ? { postTokens: compact.postTokens } : {}),
     ...(compact.tokensRemoved != null ? { tokensRemoved: compact.tokensRemoved } : {}),

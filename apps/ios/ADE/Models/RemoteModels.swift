@@ -1114,6 +1114,8 @@ struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
 }
 
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
+  var compactionIdleMode: String? = nil
+  var manualCompactAvailable: Bool? = nil
   var id: String { sessionId }
   /// Built on the phone from a roster row (`RemoteRosterChat.rosterChatSummary`)
   /// rather than read from the host: provider and model are real, the access
@@ -1253,6 +1255,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
 
   static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
     lhs.sessionId == rhs.sessionId
+      && lhs.compactionIdleMode == rhs.compactionIdleMode
+      && lhs.manualCompactAvailable == rhs.manualCompactAvailable
       && lhs.laneId == rhs.laneId
       && lhs.provider == rhs.provider
       && lhs.model == rhs.model
@@ -2903,6 +2907,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   var apiErrorStatus: Int?
   var compactionFailDetail: String? = nil
   var compactionSummary: String? = nil
+  var compactionAccountLabel: String? = nil
   /// True when the wire type was the legacy `subagent.completed` twin rather
   /// than the canonical `subagent_result`.
   ///
@@ -2998,6 +3003,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var resultTruncatedForMobile: Bool?
     var resultOriginalBytes: Int?
     var resumed: Bool?
+    var accountLabel: String?
     var failDetail: String?
     var summary: String?
 
@@ -3011,6 +3017,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case resultOriginalBytes
       case resumed
       case failDetail
+      case accountLabel
       case summary
     }
 
@@ -3031,6 +3038,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       resultTruncatedForMobile = try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)
       resultOriginalBytes = try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)
       resumed = try? container.decodeIfPresent(Bool.self, forKey: .resumed)
+      accountLabel = try? container.decodeIfPresent(String.self, forKey: .accountLabel)
       failDetail = try? container.decodeIfPresent(String.self, forKey: .failDetail)
       summary = try? container.decodeIfPresent(String.self, forKey: .summary)
     }
@@ -3091,6 +3099,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     let rawEvent = try? container.decode(EventRawFields.self, forKey: .event)
     subagentResumed = rawEvent?.resumed
     apiErrorStatus = rawEvent?.apiErrorStatus
+    compactionAccountLabel = rawEvent?.accountLabel
     compactionFailDetail = rawEvent?.failDetail
     compactionSummary = rawEvent?.summary
     isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"

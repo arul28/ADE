@@ -229,6 +229,9 @@ func workChatShouldContinueAutomaticOlderHistory(
 }
 
 struct WorkChatSummaryRenderContext: Equatable {
+  let compactionIdleMode: String
+  let compactFirstSupported: Bool
+  let manualCompactAvailable: Bool
   let isAvailable: Bool
   let provider: String
   let model: String
@@ -271,6 +274,9 @@ struct WorkChatSummaryRenderContext: Equatable {
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
+      self.compactionIdleMode = "ask"
+      self.compactFirstSupported = false
+      self.manualCompactAvailable = false
       self.isAvailable = false
       self.provider = ""
       self.model = ""
@@ -301,6 +307,9 @@ struct WorkChatSummaryRenderContext: Equatable {
       return
     }
 
+    self.compactionIdleMode = summary.compactionIdleMode ?? "ask"
+    self.compactFirstSupported = summary.compactionIdleMode != nil
+    self.manualCompactAvailable = summary.manualCompactAvailable == true
     self.isAvailable = true
     self.provider = summary.provider
     self.model = summary.model
@@ -571,6 +580,7 @@ struct WorkChatSessionView: View {
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
+  var onSendWithCompaction: (@MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode, Bool) async -> Bool)? = nil
   let onInterrupt: @MainActor (AgentChatStopMode) async -> Void
   let onRestoreCancelledQueue: (@MainActor (String) async -> Void)?
   /// `chat.updateSession { autoContinueAtUsageLimit: }` — false for Don't
@@ -1473,13 +1483,30 @@ struct WorkChatSessionView: View {
       usageState: usage.state,
       canSend: canSendMessages,
       pendingInput: hasPendingInputGate,
-      turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active"
+      turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active",
+      openCodeCompactAvailable: chatSummaryContext.manualCompactAvailable
     )
     return WorkComposerContextMeterModel(
       usage: usage,
       modelLabel: chatSummaryContext.modelLabel,
-      compact: compact
+      compact: compact,
+      sessionId: session.id
     )
+  }
+
+  var composerCompactFirstOffer: WorkCompactFirstOffer? {
+    guard chatSummaryContext.compactFirstSupported, chatSummaryContext.provider == "claude", chatSummaryContext.compactionIdleMode != "never",
+          !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",
+          let usage = composerContextMeter?.usage, usage.state == .measured,
+          let context = usage.usedTokens, context >= 100_000,
+          let lastDone = transcript.last(where: { if case .done = $0.event { return true }; return false }),
+          let ended = workParsedDate(lastDone.timestamp) else { return nil }
+    let post = transcript.reversed().compactMap { entry -> Int? in
+      guard case .contextCompact(let summary, false, let tokens, _, _) = entry.event,
+            summary?.contains("state:failed") != true else { return nil }
+      return tokens
+    }.first
+    return WorkCompactFirstOffer(endedAt: ended, contextTokens: context, estimatedPostTokens: post ?? Int(Double(context) * 0.02), mode: chatSummaryContext.compactionIdleMode)
   }
 
   /// The chat's goal for the composer chip: the transcript's live Claude goal
@@ -1701,6 +1728,7 @@ struct WorkChatSessionView: View {
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
         contextMeter: composerContextMeter,
+        compactFirstOffer: composerCompactFirstOffer,
         onCompactContext: { [onSend, $errorMessage] in
           Task { @MainActor in
             // Most send failures set their own message; the rest (a send
@@ -1755,6 +1783,7 @@ struct WorkChatSessionView: View {
           }
         },
         onSend: onSend,
+        onSendWithCompaction: onSendWithCompaction,
         onSent: {
           transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
         },
@@ -2545,6 +2574,7 @@ private struct WorkChatComposerCard: View {
   let chatSummary: WorkChatSummaryRenderContext
   /// The context meter rides the composer, as on desktop.
   let contextMeter: WorkComposerContextMeterModel?
+  var compactFirstOffer: WorkCompactFirstOffer? = nil
   let onCompactContext: () -> Void
   let sessionId: String
   let isPersonalChat: Bool
@@ -2578,6 +2608,7 @@ private struct WorkChatComposerCard: View {
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
+  var onSendWithCompaction: (@MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode, Bool) async -> Bool)? = nil
   let onSent: () -> Void
   /// Pending thread comments will ride the next send, so an empty field may
   /// still send.
@@ -2591,6 +2622,7 @@ private struct WorkChatComposerCard: View {
     WorkChatComposerDraftInput(
       chatSummary: chatSummary,
       contextMeter: contextMeter,
+      compactFirstOffer: compactFirstOffer,
       onCompactContext: onCompactContext,
       sessionId: sessionId,
       isPersonalChat: isPersonalChat,
@@ -2618,6 +2650,7 @@ private struct WorkChatComposerCard: View {
       onOpenModelPicker: onOpenModelPicker,
       onSelectRuntimeMode: onSelectRuntimeMode,
       onSend: onSend,
+      onSendWithCompaction: onSendWithCompaction,
       onSent: onSent,
       hasSendableThreadComments: hasSendableThreadComments,
       sendGate: sendGate
@@ -2628,6 +2661,7 @@ private struct WorkChatComposerCard: View {
 private struct WorkChatComposerDraftInput: View {
   let chatSummary: WorkChatSummaryRenderContext
   let contextMeter: WorkComposerContextMeterModel?
+  var compactFirstOffer: WorkCompactFirstOffer? = nil
   let onCompactContext: () -> Void
   let sessionId: String
   let isPersonalChat: Bool
@@ -2661,6 +2695,7 @@ private struct WorkChatComposerDraftInput: View {
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
+  var onSendWithCompaction: (@MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode, Bool) async -> Bool)? = nil
   let onSent: () -> Void
   /// Pending thread comments will ride the next send, so an empty field may
   /// still send.
@@ -2674,6 +2709,7 @@ private struct WorkChatComposerDraftInput: View {
   @StateObject private var draftState = WorkChatComposerDraftState()
   @StateObject private var suggestionController = WorkComposerSuggestionController()
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
+  @State private var compactFirstChoice: Bool? = nil
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
   @State private var presentedPicker: WorkComposerPicker?
@@ -2868,7 +2904,14 @@ private struct WorkChatComposerDraftInput: View {
     sendFailureNotice = nil
     lastSendMode = mode
     Task { @MainActor in
-      let sent = await onSend(text, outgoingAttachments, mode)
+      let sent: Bool
+      if let offer = compactFirstOffer, offer.isEligible(at: Date()), let onSendWithCompaction {
+        let enabled = compactFirstChoice ?? (offer.mode == "always")
+        compactFirstChoice = nil
+        sent = await onSendWithCompaction(text, outgoingAttachments, mode, enabled)
+      } else {
+        sent = await onSend(text, outgoingAttachments, mode)
+      }
       // Drops the stored draft only on a confirmed send; a failure keeps it, so
       // the composer copy below and the stored copy stay the same message.
       draftState.finishPendingSend(pendingSend, sent: sent)
@@ -2984,6 +3027,9 @@ private struct WorkChatComposerDraftInput: View {
         DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
       },
       trailing: {
+        if !isDictating, let compactFirstOffer, onSendWithCompaction != nil {
+          WorkCompactFirstPill(offer: compactFirstOffer, choice: $compactFirstChoice)
+        }
         if !isDictating, let contextMeter {
           WorkComposerContextMeter(
             model: contextMeter,

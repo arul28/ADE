@@ -21,7 +21,8 @@ struct WorkContextCompactDivider: View {
   private func title(at now: Date) -> String {
     if failed {
       let detail = field("failure") ?? ""
-      return "Compaction failed" + (detail.localizedCaseInsensitiveContains("weekly limit") ? " · weekly limit" : detail.localizedCaseInsensitiveContains("usage limit") ? " · usage limit" : "")
+      let reason = detail.localizedCaseInsensitiveContains("weekly limit") ? "weekly limit" : detail.localizedCaseInsensitiveContains("usage limit") ? "usage limit" : nil
+      return "Compaction failed" + (reason.map { " · " + $0 + (field("account").map { " on " + $0 } ?? "") } ?? "")
     }
     if isInProgress {
       let tokens = field("Pre-compact tokens").flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }.map { " · \(workAbbreviateCount($0)) tokens" } ?? ""

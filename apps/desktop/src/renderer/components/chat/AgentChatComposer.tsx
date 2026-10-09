@@ -1,3 +1,4 @@
+import { formatContextTokens } from "./usage/contextUsageModel";
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
@@ -1936,6 +1937,9 @@ export function AgentChatComposer({
   cursorCloudServiceTier = null,
   usageViewModel = null,
   compactionPulse = false,
+  compactFirstOffer = null,
+  compactFirstEnabled = false,
+  onCompactFirstChange,
   onCompactContext,
   compactSessionProvider,
   draft,
@@ -2129,6 +2133,9 @@ export function AgentChatComposer({
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
+  compactFirstOffer?: import("../../../shared/compactFirst").CompactFirstOffer | null;
+  compactFirstEnabled?: boolean;
+  onCompactFirstChange?: (value: boolean) => void;
   /** Sends `/compact` without replacing the unsent draft. Claude/Codex/Pi only. */
   onCompactContext?: () => void;
   /**
@@ -7035,6 +7042,11 @@ export function AgentChatComposer({
             onRemoveAttachment={handleRemoveAttachment}
           /> : null}
 
+          {!parallelChatMode && compactFirstOffer ? <SmartTooltip forceEnabled side="top" content={{ label: "Compact first", description: `The cache expired after an hour. Compacting first re-sends about ${formatContextTokens(compactFirstOffer.estimatedPostTokens)} tokens instead of ${formatContextTokens(compactFirstOffer.contextTokens)}.` }}>
+            <button type="button" aria-pressed={compactFirstEnabled} onClick={() => onCompactFirstChange?.(!compactFirstEnabled)} className={cn("rounded-full px-2 py-1 text-[10px] transition-colors", compactFirstEnabled ? "bg-accent/10 text-accent" : "bg-fg/5 text-fg/50 hover:bg-fg/10")}>
+              Compact first · {formatContextTokens(compactFirstOffer.contextTokens)}
+            </button>
+          </SmartTooltip> : null}
           {!parallelChatMode && usageViewModel ? (
             <ContextUsageDial
               usage={usageViewModel}

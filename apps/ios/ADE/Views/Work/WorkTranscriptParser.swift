@@ -378,7 +378,7 @@ func workContextCompactSummary(from eventDict: [String: Any]) -> String {
     provider: optionalString(eventDict["provider"]),
     sessionCompactionCount: optionalWorkInt(eventDict["sessionCompactionCount"]),
     state: optionalString(eventDict["state"])
-  ) + [optionalString(eventDict["failDetail"]).map { "failure:\($0)" }, optionalString(eventDict["summary"]).map { "summary:\($0)" }].compactMap { $0 }.map { "\n" + $0 }.joined()
+  ) + [optionalString(eventDict["accountLabel"]).map { "account:\($0)" }, optionalString(eventDict["failDetail"]).map { "failure:\($0)" }, optionalString(eventDict["summary"]).map { "summary:\($0)" }].compactMap { $0 }.map { "\n" + $0 }.joined()
 }
 
 func workContextCompactMergeId(from eventDict: [String: Any], turnId: String?) -> String? {
@@ -848,10 +848,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         let totalUsage = usageDict["total"] as? [String: Any]
         let contextWindow = optionalWorkInt(usageDict["modelContextWindow"])
         let hasContextOccupancy = optionalWorkInt(lastUsage?["inputTokens"]) != nil
-          || optionalWorkInt(totalUsage?["inputTokens"]) != nil
         event = .tokens(
           usage: makeWorkUsageSummary(
-            inputTokens: optionalWorkInt(lastUsage?["inputTokens"]) ?? optionalWorkInt(totalUsage?["inputTokens"]),
+            inputTokens: optionalWorkInt(lastUsage?["inputTokens"]),
             outputTokens: optionalWorkInt(lastUsage?["outputTokens"]) ?? optionalWorkInt(totalUsage?["outputTokens"]),
             cacheReadTokens: optionalWorkInt(lastUsage?["cacheReadTokens"]) ?? optionalWorkInt(totalUsage?["cacheReadTokens"]),
             cacheCreationTokens: optionalWorkInt(lastUsage?["cacheWriteTokens"]) ?? optionalWorkInt(totalUsage?["cacheWriteTokens"]),
@@ -859,7 +858,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             totalTokens: optionalWorkInt(totalUsage?["totalTokens"]) ?? optionalWorkInt(lastUsage?["totalTokens"]),
             contextWindow: contextWindow,
             costUsd: nil,
-            isContextSnapshot: hasContextOccupancy
+            isContextSnapshot: hasContextOccupancy,
+            compactAtTokens: optionalWorkInt(usageDict["compactAtTokens"]),
+            compactAtSource: optionalString(usageDict["compactAtSource"])
           ) ?? WorkUsageSummary(
             turnCount: 1,
             inputTokens: 0,

@@ -156,6 +156,7 @@ export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentCha
     sessionId: requireString(value.sessionId, "chat.send requires sessionId."),
     text,
     ...messageFields,
+    ...(typeof value.compactFirst === "boolean" ? { compactFirst: value.compactFirst } : {}),
     ...(includeThreadComments ? { includeThreadComments: true } : {}),
   };
 }

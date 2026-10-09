@@ -1,3 +1,4 @@
+import { compactFirstOffer } from "../../../shared/compactFirst";
 import { claudeCompactionSettings, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
@@ -2644,6 +2645,7 @@ type ClaudeTaskToolInput = {
 
 type ClaudeRuntime = {
   kind: "claude";
+  compactionSummary?: string;
   sdkSessionId: string | null;
   /**
    * `system/init.apiKeySource` from the current query: which credential the CLI
@@ -20616,6 +20618,16 @@ export function createAgentChatService(args: {
       rememberBoundedId(compactOnlyTurns, event.turnId, 512);
     }
     if (event.type === "context_compact") {
+      if (event.state === "failed") {
+        const provider = managed.session.provider;
+        const account = isProviderInstanceProvider(provider) ? getMachineProviderInstanceStore().get(managed.session.instanceId ?? defaultProviderInstanceId(provider)) : null;
+        event = { ...event, ...(account ? { accountLabel: account.label } : {}) };
+      }
+      if ((event.state === "started" || event.state === "failed") && managed.runtime?.kind === "claude") managed.runtime.compactionSummary = undefined;
+      if (event.state === "completed" && managed.runtime?.kind === "claude" && managed.runtime.compactionSummary) {
+        event = { ...event, summary: managed.runtime.compactionSummary };
+        managed.runtime.compactionSummary = undefined;
+      }
       if (event.state === "started" && event.turnId && compactOnlyTurns.has(event.turnId)) event = { ...event, trigger: "manual" };
       const open = openNativeCompactions.get(managed.session.id) ?? new Map();
       const key = event.compactionId ?? event.turnId ?? "native";
@@ -38156,14 +38168,15 @@ export function createAgentChatService(args: {
       .catch(() => { /* account/rateLimits/read not supported — ignore */ });
   };
 
-  const compactionSettingsFor = (managed: ManagedChatSession) => {
-    const provider = managed.session.provider ?? "";
+  const compactionSettingsForSession = (session: { provider?: string; instanceId?: string | null }) => {
+    const provider = session.provider ?? "";
     const defaults = normalizeCompactionSettings(projectConfigService.get().effective.ai?.compaction?.[provider]);
     const account = isProviderInstanceProvider(provider)
-      ? getMachineProviderInstanceStore().get(managed.session.instanceId ?? defaultProviderInstanceId(provider))
+      ? getMachineProviderInstanceStore().get(session.instanceId ?? defaultProviderInstanceId(provider))
       : null;
     return { ...defaults, ...account?.compaction };
   };
+  const compactionSettingsFor = (managed: ManagedChatSession) => compactionSettingsForSession(managed.session);
   const runtimeCompactionSettings = new WeakMap<object, string>();
   const refreshRuntimeCompactionSettings = (managed: ManagedChatSession): void => {
     const runtime = managed.runtime;
@@ -38747,6 +38760,10 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
   ): NonNullable<ClaudeSDKOptions["hooks"]> => ({
+    PostCompact: [{ hooks: [async (input: HookInput) => {
+      if (input.hook_event_name === "PostCompact") runtime.compactionSummary = input.compact_summary;
+      return { continue: true };
+    }] }],
     SubagentStart: [
       {
         hooks: [
@@ -52348,6 +52365,26 @@ export function createAgentChatService(args: {
     args: AgentChatSendArgs,
     options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
+    assertChatRuntimeOwnedHere(args.sessionId, "send to");
+    const managed = ensureManagedSession(args.sessionId);
+    await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
+    const mode = compactionSettingsFor(managed).idleMode ?? "ask";
+    if (managed.session.provider === "claude" && !isManualCompactCommand(args.text)
+      && (args.compactFirst === true || (args.compactFirst === undefined && mode === "always" && !runtimeMidTurn(managed) && managed.session.status !== "active"))) {
+      if (runtimeMidTurn(managed) || managed.session.status === "active") throw turnInFlightError("A turn is already active.");
+      // Native resume_return owns its send; never combine it with ADE's pill.
+      if (!collectPendingInputRequests(managed).length) {
+        const history = (await getChatEventHistory(args.sessionId, { maxEvents: 512 })).events;
+        const offer = compactFirstOffer({ provider: "claude", events: history, mode });
+        if (offer) {
+          const before = managed.compactionEmitterState.sessionCompactionCount;
+          const result = await runSessionTurn({ sessionId: args.sessionId, text: "/compact", timeoutMs: 90_000 });
+          if (result.status !== "completed" || managed.compactionEmitterState.sessionCompactionCount <= before) {
+            throw new Error("Compaction did not finish. Your message was not sent. Retry compaction or turn off Compact first.");
+          }
+        }
+      }
+    }
     const reviewed = takeThreadReviewForSend(args);
     try {
       const result = await sendMessageWithoutReview(reviewed.args, options);
@@ -56369,6 +56406,8 @@ export function createAgentChatService(args: {
       laneId: row.laneId,
       provider,
       model,
+      ...(provider === "opencode" ? { manualCompactAvailable: getSlashCommands({ sessionId: row.id, provider }).some((command) => command.name.replace(/^\//, "") === "compact") } : {}),
+      ...(provider === "claude" ? { compactionIdleMode: compactionSettingsForSession({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }).idleMode ?? "ask" } : {}),
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
       ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
       ...(crossMachineMove ? { crossMachineHandoff: crossMachineMove } : {}),

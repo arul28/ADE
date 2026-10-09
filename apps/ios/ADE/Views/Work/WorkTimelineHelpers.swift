@@ -599,6 +599,8 @@ private func combineUsageSummary(_ usage: WorkUsageSummary?, into hasher: inout 
   hasher.combine(usage.cacheCreationTokens)
   hasher.combine(usage.reasoningTokens)
   hasher.combine(usage.totalTokens)
+  combineOptional(usage.compactAtTokens, into: &hasher)
+  combineOptional(usage.compactAtSource, into: &hasher)
   combineOptional(usage.contextWindow, into: &hasher)
   hasher.combine(usage.costUsd)
   hasher.combine(usage.isContextSnapshot)
@@ -5767,8 +5769,8 @@ func workContextUsageViewModel(
     switch envelope.event {
     case .contextCompact(let summary, let isInProgress, let postTokens, let turnId, _):
       if summary?.contains("state:failed") == true {
-        compactionProtected = false
-        protectedCompactionTurnId = nil
+        compactionProtected = true
+        protectedCompactionTurnId = turnId
         usageState = .measured
         continue
       }

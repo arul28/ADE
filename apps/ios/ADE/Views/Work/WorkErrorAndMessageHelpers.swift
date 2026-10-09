@@ -1069,7 +1069,7 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
 func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelope {
   var event = makeWorkChatEvent(from: entry.event)
   if case .contextCompact(let summary, let running, let post, let turn, let id) = event {
-    let details = [entry.compactionFailDetail.map { "failure:\($0)" }, entry.compactionSummary.map { "summary:\($0)" }].compactMap { $0 }
+    let details = [entry.compactionAccountLabel.map { "account:\($0)" }, entry.compactionFailDetail.map { "failure:\($0)" }, entry.compactionSummary.map { "summary:\($0)" }].compactMap { $0 }
     event = .contextCompact(summary: ([summary].compactMap { $0 } + details).joined(separator: "\n"), isInProgress: running, postTokens: post, turnId: turn, compactionId: id)
   }
   return WorkChatEnvelope(

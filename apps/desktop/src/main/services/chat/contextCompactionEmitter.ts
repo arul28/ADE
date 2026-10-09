@@ -44,6 +44,7 @@ export function buildContextCompactEvent(
     failReason?: "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
     failDetail?: string;
     summary?: string;
+    accountLabel?: string;
     turnId?: string;
     compactionId?: string;
     preTokens?: number;
@@ -90,6 +91,7 @@ export function buildContextCompactEvent(
     ...(input.failReason ? { failReason: input.failReason } : {}),
     ...(input.failDetail ? { failDetail: input.failDetail } : {}),
     ...(input.summary ? { summary: input.summary } : {}),
+    ...(input.accountLabel ? { accountLabel: input.accountLabel } : {}),
     ...(input.turnId ? { turnId: input.turnId } : {}),
     ...(compactionId ? { compactionId } : {}),
     ...(input.preTokens != null ? { preTokens: input.preTokens } : {}),
@@ -118,6 +120,7 @@ export function mapLegacyCompactionEvent(
       failReason: event.failReason,
       failDetail: event.failDetail,
       summary: event.summary,
+      accountLabel: event.accountLabel,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
       preTokens: event.preTokens,
@@ -134,6 +137,7 @@ export function mapLegacyCompactionEvent(
       failReason: event.failReason,
       failDetail: event.failDetail,
       summary: event.summary,
+      accountLabel: event.accountLabel,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
     });

@@ -256,6 +256,8 @@ export function latestContextUsageInput(
       continue;
     }
     if ((event.type === "context_compact" || event.type === "codex_context_compaction") && event.state === "failed") {
+      compactionProtected = true;
+      protectedCompactionTurnId = event.turnId ?? null;
       if (current) current = { ...current, state: "measured" };
       continue;
     }

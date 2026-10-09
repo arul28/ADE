@@ -14706,7 +14706,8 @@ final class SyncService: ObservableObject {
     attachments: [AgentChatFileRef]? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
-    includeThreadComments: Bool = false
+    includeThreadComments: Bool = false,
+    compactFirst: Bool? = nil
   ) async throws -> SyncChatMessageDelivery {
     // Auto-route to the session's foreign project (cross-project "quick look")
     // unless the caller already named a target explicitly (e.g. the hub
@@ -14724,6 +14725,7 @@ final class SyncService: ObservableObject {
     }
     // Only a composer send that shows pending comments sets this; the key is
     // left out otherwise so older hosts see the payload they always did.
+    if let compactFirst { args["compactFirst"] = compactFirst }
     if includeThreadComments {
       args["includeThreadComments"] = true
     }

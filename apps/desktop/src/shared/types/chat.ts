@@ -1864,6 +1864,7 @@ export type AgentChatEvent =
       origin?: AgentChatScheduledWorkOrigin;
       title?: string;
       summary?: string;
+      accountLabel?: string;
       prompt?: string;
       reason?: string;
       cron?: string;
@@ -1919,6 +1920,7 @@ export type AgentChatEvent =
       failReason?: "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
       failDetail?: string;
       summary?: string;
+      accountLabel?: string;
       turnId?: string;
     }
   | {
@@ -1930,6 +1932,7 @@ export type AgentChatEvent =
       failReason?: "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
       failDetail?: string;
       summary?: string;
+      accountLabel?: string;
     }
   | {
       type: "codex_safety_buffering";
@@ -2985,6 +2988,8 @@ export type AgentChatRuntimeOwnerRef = {
 };
 
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
+  compactionIdleMode?: "ask" | "always" | "never";
+  manualCompactAvailable?: boolean;
   sessionId: string;
   laneId: string;
   provider: AgentChatProvider;
@@ -4691,6 +4696,8 @@ export type AgentChatCloudOverrides = {
 };
 
 export type AgentChatSendArgs = {
+  /** Compact as a separate turn before this message; false overrides Always for this send. */
+  compactFirst?: boolean;
   sessionId: string;
   text: string;
   displayText?: string;
