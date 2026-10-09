@@ -80,6 +80,34 @@ function AskAgentButton({ active, onClick }: { active: boolean; onClick: () => v
   );
 }
 
+/** The dock's new-chat state: the page this chat will be about, small and quiet. */
+function DockPageCard({ tab }: { tab: BuiltInBrowserTab | null }) {
+  let host: string | null = null;
+  try {
+    host = tab?.url ? new URL(tab.url).host.replace(/^www\./, "") : null;
+  } catch {
+    host = null;
+  }
+  return (
+    <div className="flex w-full max-w-[360px] flex-col items-center gap-2 px-2 pb-1" data-testid="browser-dock-page">
+      {tab ? (
+        <div className="flex w-full min-w-0 items-center gap-2.5 rounded-lg border border-fg/[0.07] bg-fg/[0.03] px-3 py-2 text-left">
+          {tab.faviconUrl ? (
+            <img src={tab.faviconUrl} alt="" className="size-4 shrink-0 rounded-[3px]" />
+          ) : (
+            <ChatCircleDots size={16} className="shrink-0 text-muted-fg/60" />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[12.5px] font-medium text-fg/90">{tab.title?.trim() || host || tab.url}</div>
+            {host ? <div className="truncate text-[11px] text-muted-fg/60">{host}</div> : null}
+          </div>
+        </div>
+      ) : null}
+      {tab ? null : <p className="m-0 text-[12px] text-muted-fg/70">Open a page, then ask about it here.</p>}
+    </div>
+  );
+}
+
 /**
  * The Browser top tab: ADE's browser as a page of its own, with no project.
  *
