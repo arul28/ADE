@@ -193,6 +193,7 @@ function baseResolveOpts(): Omit<
     socketPath: null,
     pretty: false,
     text: false,
+    json: false,
     timeoutMs: 15_000,
   };
 }
@@ -8677,6 +8678,298 @@ describe("ADE CLI", () => {
     );
   });
 
+  it("builds typed ade drafts commands", () => {
+    const textOptions = {
+      projectRoot: null,
+      workspaceRoot: null,
+      role: "agent" as const,
+      headless: false,
+      requireSocket: false,
+      socketPath: null,
+      pretty: false,
+      text: true,
+      json: false,
+      timeoutMs: 1000,
+    };
+    const entries = [
+      {
+        id: "draft-1",
+        text: "Standup digest",
+        status: "scheduled",
+        kind: "scheduled",
+        scheduledAt: "2026-07-23T13:00:00.000Z",
+        targetKind: "existing",
+        targetSessionId: "chat-9",
+        deliveryPolicy: "wait",
+      },
+      {
+        id: "draft-2",
+        text: "tonight's migration",
+        status: "blocked",
+        kind: "scheduled",
+        targetKind: "existing",
+        targetSessionId: "chat-gone",
+        lastError: "target chat deleted",
+      },
+      {
+        id: "draft-3",
+        text: "refactor the sync layer",
+        status: "draft",
+        kind: "draft",
+        createdAt: new Date(Date.now() - 120_000).toISOString(),
+      },
+    ];
+
+    const list = expectExecutePlan(buildCliPlan(["drafts", "list"]));
+    expect(list.label).toBe("drafts list");
+    expect(list.formatter).toBe("drafts-list");
+    expect(list.steps[0]?.params).toMatchObject({
+      arguments: { domain: "chat", action: "listDrafts", args: {} },
+    });
+    expect(list.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: entries } }))
+      .toEqual(entries);
+    expect(list.tableText?.(entries)).toMatch(/status[\s\S]*scheduled[\s\S]*needs you[\s\S]*draft/);
+    expect(formatOutput(entries, textOptions, list.formatter)).toMatch(
+      /scheduled[\s\S]*→ chat chat-9[\s\S]*"Standup digest"[\s\S]*needs you[\s\S]*target chat deleted[\s\S]*"tonight's migration"[\s\S]*draft[\s\S]*"refactor the sync layer"/,
+    );
+
+    const scheduled = expectExecutePlan(buildCliPlan(["drafts", "list", "--scheduled"]));
+    expect(scheduled.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: entries } }))
+      .toEqual([entries[0]]);
+    expect(() => buildCliPlan(["drafts", "list", "--scheduled", "--needs-you"])).toThrow(
+      /not both/,
+    );
+    const needsYou = expectExecutePlan(buildCliPlan(["drafts", "list", "--needs-you"]));
+    expect(needsYou.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: entries } }))
+      .toEqual([entries[1]]);
+    const byMachine = expectExecutePlan(buildCliPlan(["drafts", "list", "--machine", "studio"]));
+    expect(byMachine.shapeResult?.({
+      result: {
+        domain: "chat",
+        action: "listDrafts",
+        result: [{ ...entries[0], targetMachineKey: "studio" }, entries[1]],
+      },
+    })).toEqual([{ ...entries[0], targetMachineKey: "studio" }]);
+
+    const create = expectExecutePlan(buildCliPlan([
+      "drafts",
+      "create",
+      "--prompt",
+      "Ship it",
+      "--image",
+      "./shot.png",
+      "--provider",
+      "codex",
+    ]));
+    expect(create.label).toBe("drafts create");
+    expect(create.formatter).toBe("drafts-entry");
+    expect(create.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "createDraft",
+        args: {
+          text: "Ship it",
+          attachments: [{ path: path.resolve("./shot.png"), type: "image" }],
+          provider: "codex",
+        },
+      },
+    });
+
+    const createScheduled = expectExecutePlan(buildCliPlan([
+      "drafts",
+      "create",
+      "--prompt",
+      "Ship it",
+      "--at",
+      "2999-07-23T01:05:00-04:00",
+      "--target",
+      "chat-9",
+    ]));
+    const createScheduleArgs = (createScheduled.steps[0]?.params as any).arguments.args.schedule;
+    expect(createScheduleArgs).toMatchObject({
+      scheduledAt: "2999-07-23T01:05:00-04:00",
+      targetKind: "existing",
+      targetSessionId: "chat-9",
+      deliveryPolicy: "wait",
+    });
+
+    expect(() => buildCliPlan([
+      "drafts",
+      "create",
+      "--prompt",
+      "Ship it",
+      "--at",
+      "2999-07-23T01:05:00-04:00",
+    ])).toThrow(/explicit target/);
+
+    const schedule = expectExecutePlan(buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--in",
+      "90m",
+      "--target",
+      "chat-9",
+    ]));
+    expect(schedule.label).toBe("drafts schedule");
+    const scheduleArgs = (schedule.steps[0]?.params as any).arguments.args;
+    expect(scheduleArgs.id).toBe("draft-1");
+    const fireAt = Date.parse(scheduleArgs.schedule.scheduledAt as string);
+    expect((scheduleArgs.schedule.scheduledAt as string).endsWith("Z")).toBe(true);
+    expect(fireAt).toBeGreaterThan(Date.now() + 89 * 60_000);
+    expect(fireAt).toBeLessThan(Date.now() + 91 * 60_000);
+    expect(scheduleArgs.schedule).toMatchObject({
+      targetKind: "existing",
+      targetSessionId: "chat-9",
+      deliveryPolicy: "wait",
+    });
+
+    const scheduleNewChat = expectExecutePlan(buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--in",
+      "2h",
+      "--new-chat",
+      "--lane",
+      "lane-7",
+      "--provider",
+      "codex",
+      "--model",
+      "openai/gpt-5.6-sol",
+    ]));
+    expect((scheduleNewChat.steps[0]?.params as any).arguments.args.schedule).toMatchObject({
+      targetKind: "new",
+      targetLaneId: "lane-7",
+      provider: "codex",
+      model: "openai/gpt-5.6-sol",
+    });
+
+    expect(() => buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--at",
+      "2999-07-23T01:05:00Z",
+      "--new-chat",
+      "--lane",
+      "lane-7",
+      "--provider",
+      "codex",
+    ])).toThrow(/needs --model/);
+    expect(() => buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--in",
+      "90m",
+      "--target",
+      "chat-9",
+      "--new-chat",
+      "--lane",
+      "lane-7",
+    ])).toThrow(/Choose one target/);
+    expect(() => buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--in",
+      "90m",
+      "--target",
+      "chat-9",
+      "--at",
+      "2999-07-23T01:05:00Z",
+    ])).toThrow(/not both/);
+    expect(() => buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--at",
+      "2999-07-23 01:05",
+      "--target",
+      "chat-9",
+    ])).toThrow(/explicit offset or Z/);
+    expect(() => buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--in",
+      "90m",
+      "--if-late",
+      "grace",
+      "--target",
+      "chat-9",
+    ])).toThrow(/needs --grace/);
+
+    const updateText = expectExecutePlan(buildCliPlan(["drafts", "update", "draft-1", "--prompt", "better text"]));
+    expect(updateText.steps[0]?.params).toMatchObject({
+      arguments: { action: "updateDraft", args: { id: "draft-1", text: "better text" } },
+    });
+    const unschedule = expectExecutePlan(buildCliPlan(["drafts", "update", "draft-1", "--unschedule"]));
+    expect(unschedule.steps[0]?.params).toMatchObject({
+      arguments: { action: "updateDraft", args: { id: "draft-1", unschedule: true } },
+    });
+    expect(() => buildCliPlan(["drafts", "update", "draft-1"])).toThrow(/needs --prompt/);
+    expect(() => buildCliPlan(["drafts", "update", "draft-1", "--unschedule", "--in", "30m"])).toThrow(
+      /not both/,
+    );
+
+    // Retiming reads the existing row first, then carries its target into the update.
+    const retime = expectExecutePlan(buildCliPlan(["drafts", "update", "draft-1", "--in", "30m"]));
+    expect(retime.steps[0]?.params).toMatchObject({
+      arguments: { action: "listDrafts" },
+    });
+    const retimeStep = retime.steps[1]?.params;
+    expect(typeof retimeStep).toBe("function");
+    const retimeParams = (retimeStep as (values: any) => any)({
+      existing: { domain: "chat", action: "listDrafts", result: [entries[0]] },
+    });
+    expect(retimeParams.arguments.args).toMatchObject({
+      id: "draft-1",
+      schedule: { targetKind: "existing", targetSessionId: "chat-9", deliveryPolicy: "wait" },
+    });
+    expect(() => (retimeStep as (values: any) => any)({
+      existing: { domain: "chat", action: "listDrafts", result: [] },
+    })).toThrow(/No draft draft-1/);
+
+    const del = expectExecutePlan(buildCliPlan(["drafts", "delete", "draft-1"]));
+    expect(del.label).toBe("drafts delete");
+    expect(del.steps[0]?.params).toMatchObject({
+      arguments: { action: "deleteDraft", args: { id: "draft-1" } },
+    });
+    expect(del.shapeResult?.({ result: true })).toEqual({ id: "draft-1", deleted: true });
+    expect(del.shapeResult?.({ result: false })).toEqual({ id: "draft-1", deleted: false });
+    expect(formatOutput({ id: "draft-1", deleted: true }, textOptions, del.formatter)).toMatch(
+      /Deleted draft draft-1/,
+    );
+
+    const now = expectExecutePlan(buildCliPlan(["drafts", "now", "draft-1"]));
+    expect(now.label).toBe("drafts now");
+    expect(now.steps[0]?.params).toMatchObject({
+      arguments: { action: "sendDraftNow", args: { id: "draft-1" } },
+    });
+    expect(now.shapeResult?.({ result: { ok: true } })).toEqual({ id: "draft-1", ok: true });
+    expect(now.shapeResult?.({ result: { ok: false, error: "no such chat" } })).toEqual({
+      id: "draft-1",
+      ok: false,
+      error: "no such chat",
+    });
+    expect(formatOutput({ id: "draft-1", ok: false, error: "no such chat" }, textOptions, now.formatter))
+      .toMatch(/Could not deliver draft draft-1 — no such chat/);
+
+    const show = expectExecutePlan(buildCliPlan(["drafts", "show", "draft-2"]));
+    expect(show.label).toBe("drafts show");
+    expect(show.formatter).toBe("drafts-show");
+    expect(show.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: entries } }))
+      .toEqual(entries[1]);
+    expect(() => show.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: [] } }))
+      .toThrow(/No draft draft-2/);
+    expect(formatOutput(entries[0], textOptions, show.formatter)).toMatch(/ADE draft draft-1[\s\S]*Standup digest/);
+
+    expect(() => buildCliPlan(["drafts", "frobnicate"])).toThrow(/Unknown drafts subcommand/);
+    expect(() => buildCliPlan(["drafts", "delete"])).toThrow(/a draft id is required/);
+  });
+
   it("rejects prototype-sensitive generic ADE action arg paths", () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
 
@@ -8950,6 +9243,7 @@ describe("ADE CLI", () => {
         socketPath: null,
         pretty: true,
         text: true,
+        json: false,
         timeoutMs: 1000,
       },
       "doctor",
@@ -9151,6 +9445,7 @@ describe("ADE CLI", () => {
         socketPath: null,
         pretty: false,
         text: true,
+        json: false,
         timeoutMs: 1000,
       },
       "lane-detail",

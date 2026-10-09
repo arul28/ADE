@@ -467,6 +467,15 @@ export type GlobalOptions = {
   socketPath: string | null;
   pretty: boolean;
   text: boolean;
+  /**
+   * `--json` was asked for explicitly.
+   *
+   * `text` alone cannot tell `--json` from the no-flag default: both leave it
+   * false. A row-oriented command that renders a readable table when nothing is
+   * asked (see `CliPlan.tableText`) needs the difference, so the two output
+   * flags are tracked separately.
+   */
+  json: boolean;
   timeoutMs: number;
   /**
    * Run the command on another machine on the account (`--machine <name>`).
@@ -555,6 +564,10 @@ export type FormatterId =
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
+  | "drafts-list"
+  | "drafts-entry"
+  | "drafts-show"
+  | "drafts-confirm"
   | "tests-runs"
   | "proof-list"
   | "scene-preview"
@@ -737,6 +750,17 @@ export type CliPlan =
       shapeResult?: (values: JsonObject) => unknown;
       /** The `--text` rendering of the result, when no shared formatter fits. */
       formatText?: (result: unknown) => string;
+      /**
+       * The readable rendering used when NEITHER `--json` nor `--text` is given.
+       *
+       * The CLI's global default is JSON, which is right for the machine-facing
+       * commands. A row-oriented command (`ade drafts`) reads better as a table
+       * when a person asks for nothing, keeps `--text` as its compact
+       * one-line-per-row formatter, and stays JSON under `--json`. Only plans
+       * that set this field change their default; every other command is
+       * untouched.
+       */
+      tableText?: (result: unknown) => string;
       /**
        * Marks a plan that files a proof record, so its result is summarized
        * into an explicit confirmation line and its failures are prefixed with
@@ -1120,6 +1144,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade drafts list | create | schedule | update | delete | now | show
+                                                    Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
@@ -2426,6 +2452,49 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Actions:
     run-next  Send the accepted message as the next turn.
     dismiss   Mark the message handled without sending it.
+`,
+  drafts: `${ADE_BANNER}
+  Drafts and scheduled sends
+
+  A draft is unsent composer text; a scheduled draft is one the runtime delivers
+  at a fire time. \`ade drafts\` is the CLI over the chat.*Draft actions.
+
+    $ ade drafts list --text                        Drafts and armed sends, newest first
+    $ ade drafts list --scheduled --text            Only armed sends
+    $ ade drafts list --needs-you --text            Sends that need you (blocked or missed)
+    $ ade drafts list --machine <key> --text        Only sends delivered by that machine
+    $ ade drafts create --prompt "<text>"           Save a plain draft
+    $ cat prompt.md | ade drafts create             Read the prompt from stdin
+    $ ade drafts create --prompt "Ship it" --image ./shot.png
+                                                    --image is repeatable
+    $ ade drafts schedule <id> --in 90m --target <session>
+                                                    Arm an existing chat; --in avoids time-zone math
+    $ ade drafts schedule <id> --at "2026-07-23T01:05:00-04:00" --target <session>
+                                                    Absolute fire time; offset or Z is required
+    $ ade drafts schedule <id> --in 2h --new-chat --lane <lane> --provider codex --model openai/gpt-5.6-sol
+                                                    Start a chat in that lane at the fire time
+    $ ade drafts update <id> --prompt "better text" Edit the draft's text
+    $ ade drafts update <id> --in 30m               Retime an armed send (its target carries over)
+    $ ade drafts update <id> --unschedule           Return it to a plain draft
+    $ ade drafts show <id> --text                   Full prompt and state
+    $ ade drafts now <id>                           Deliver it immediately, whatever the fire time
+    $ ade drafts delete <id>                        Remove it
+
+  Schedule flags (for schedule and create):
+    --at <iso>              Absolute ISO-8601 with an explicit offset or Z.
+    --in <duration>         One-shot relative time: 45s, 90m, 2h, 3d, 1w.
+    --target <session>      Send into an existing chat.
+    --new-chat --lane <lane>  Create a chat in that lane at the fire time; also needs --provider and --model.
+    --provider <id> --model <runtime-facing model string> --model-id <id>
+                            Captured for a new chat; --model is required with --new-chat.
+    --permission <mode>     Captured permission mode.
+    --thinking <effort>     Captured reasoning effort.
+    --machine <key>         Which machine delivers it. Omitted: whichever runtime is up.
+    --if-late <wait|strict|grace>  What happens when the fire time cannot send (default wait).
+    --grace <duration>      How long \`grace\` holds the send (max 24h).
+
+  The target is always explicit: name --target or --new-chat --lane, or the command fails.
+  Output is a readable table by default; --text is one line per row; --json is structured.
 `,
   agent: `${ADE_BANNER}
   Agent sessions
@@ -5094,6 +5163,7 @@ function parseCliArgs(argv: string[]): ParsedCli {
     socketPath: null,
     pretty: true,
     text: false,
+    json: false,
     timeoutMs: 10 * 60 * 1000,
   };
 
@@ -5111,7 +5181,10 @@ function parseCliArgs(argv: string[]): ParsedCli {
         while (rest.length && (rest[rest.length - 1] === "--text" || rest[rest.length - 1] === "--json")) {
           const flag = rest.pop();
           // The rightmost one wins, as it does before `--`.
-          if (!decided) options.text = flag === "--text";
+          if (!decided) {
+            options.text = flag === "--text";
+            options.json = flag === "--json";
+          }
           decided = true;
         }
       }
@@ -5166,10 +5239,12 @@ function parseCliArgs(argv: string[]): ParsedCli {
     }
     if (token === "--text") {
       options.text = true;
+      options.json = false;
       continue;
     }
     if (token === "--json") {
       options.text = false;
+      options.json = true;
       continue;
     }
     command.push(token);
@@ -10635,6 +10710,612 @@ function buildChatPlan(args: string[]): CliPlan {
     label: `chat ${sub}`,
     steps: [actionStep("result", "chat", sub, withSession())],
   };
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   DRAFTS + SCHEDULED SEND — `ade drafts`.
+
+   The desktop renamed its "prompt stash" feature to Drafts and taught it to
+   send at a time. These commands are the human/agent CLI over the existing
+   `chat.*Draft` actions; they own no state. There is one noun on purpose — no
+   `ade sends` — see docs/features/chat/drafts-and-scheduled-send.md.
+
+   Output is three-way on purpose: rows read best as a table when nobody asked
+   (`CliPlan.tableText`), `--text` is the compact form other formatters already
+   use, and `--json` is the structured payload. That is why `options.json`
+   exists — `text` alone cannot tell `--json` from the no-flag default.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** The absolute-time grammar the draft scheduler requires: offset or Z, never a bare local time. */
+const DRAFT_ABSOLUTE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const DRAFT_DELIVERY_POLICIES: readonly string[] = ["wait", "strict", "grace"];
+/** Mirrors MAX_DRAFT_GRACE_SECONDS in the desktop's chat types. */
+const DRAFT_MAX_GRACE_SECONDS = 24 * 60 * 60;
+/** Schedule-only flags: meaningless without a fire time, and a mistake to drop silently. */
+const DRAFT_SCHEDULE_ONLY_FLAGS: readonly string[] = [
+  "--target",
+  "--target-session",
+  "--new-chat",
+  "--lane",
+  "--lane-id",
+  "--machine",
+  "--if-late",
+  "--grace",
+];
+
+function draftsActionStep(action: string, args: JsonObject = {}): InvocationStep {
+  return actionStep("result", "chat", action, args);
+}
+
+/** True when the caller named a fire time, in either the `--flag value` or `--flag=value` spelling. */
+function hasDraftTimeFlag(args: readonly string[]): boolean {
+  return args.some((token) => (
+    token === "--at" || token.startsWith("--at=") || token === "--in" || token.startsWith("--in=")
+  ));
+}
+
+function hasAnyDraftFlag(args: readonly string[], names: readonly string[]): boolean {
+  return args.some((token) => names.includes(token === "--" ? token : token.split("=")[0]!));
+}
+
+/**
+ * `--prompt`, or STDIN when the flag is omitted (create) or is `-`.
+ *
+ * Reading stdin only when it is not a TTY keeps `ade drafts create` from
+ * hanging on a terminal that will never send EOF; the `-` sentinel is how an
+ * agent asks for stdin explicitly on any command.
+ */
+function readDraftPrompt(args: string[], opts: { fromStdinWhenOmitted: boolean }): string | null {
+  const inline = readValue(args, ["--prompt"]);
+  if (inline === "-") return readAllStdinSync();
+  if (inline != null) return inline;
+  if (opts.fromStdinWhenOmitted && !process.stdin.isTTY) return readAllStdinSync();
+  return null;
+}
+
+/** Repeatable `--image <path>`, as the local image refs the draft store keeps. */
+function readDraftImages(args: string[]): JsonObject[] {
+  return readRepeatedValues(args, ["--image"]).map((value) => ({
+    path: path.resolve(value),
+    type: "image",
+  }));
+}
+
+function requireAbsoluteDraftTime(value: string, flag: string): string {
+  const trimmed = value.trim();
+  if (!DRAFT_ABSOLUTE_TIME.test(trimmed) || !Number.isFinite(Date.parse(trimmed))) {
+    throw new CliUsageError(
+      `${flag} needs an ISO-8601 timestamp with an explicit offset or Z, e.g. 2026-07-23T01:05:00-04:00.`,
+    );
+  }
+  return trimmed;
+}
+
+/**
+ * `--in 90m` as an absolute instant.
+ *
+ * The point of `--in` is that the caller never does time-zone arithmetic: the
+ * duration is added to "now" and serialized with an explicit `Z`, so the fire
+ * time means the same thing on every machine that reads it.
+ */
+function draftFireTimeFromDuration(value: string, nowMs = Date.now()): string {
+  return new Date(nowMs + parseScheduledWorkDelaySeconds(value) * 1000).toISOString();
+}
+
+function parseDraftGraceSeconds(value: string): number {
+  const seconds = parseScheduledWorkDelaySeconds(value);
+  if (seconds > DRAFT_MAX_GRACE_SECONDS) {
+    throw new CliUsageError("--grace cannot be longer than 24h.");
+  }
+  return seconds;
+}
+
+/**
+ * Assemble a `DraftScheduleInput` from the command's flags.
+ *
+ * `existing` is the row being retimed (`ade drafts update`) or null when a
+ * schedule is armed fresh (`ade drafts schedule` / `create --at`). An explicit
+ * flag always wins; an absent one carries the existing row's value forward, so
+ * `update <id> --in 30m` retimes an armed send without restating its target.
+ * That is carrying a decision forward, not guessing one — with no existing row
+ * the target must be named, and its absence is a usage error.
+ */
+function buildDraftScheduleInput(args: string[], existing: JsonObject | null): JsonObject {
+  const at = readValue(args, ["--at"]);
+  const inValue = readValue(args, ["--in"]);
+  if (at != null && inValue != null) {
+    throw new CliUsageError("Use --at or --in, not both.");
+  }
+  const scheduledAt = at != null
+    ? requireAbsoluteDraftTime(at, "--at")
+    : inValue != null
+      ? draftFireTimeFromDuration(inValue)
+      : asString(existing?.scheduledAt);
+  if (!scheduledAt) {
+    throw new CliUsageError("A scheduled send needs a fire time: pass --at <iso> or --in <duration>.");
+  }
+
+  const target = readValue(args, ["--target", "--target-session"]);
+  const newChat = readFlag(args, ["--new-chat"]);
+  const laneId = readValue(args, ["--lane", "--lane-id"]);
+  if (target != null && (newChat || laneId != null)) {
+    throw new CliUsageError("Choose one target: --target <session> or --new-chat --lane <lane>.");
+  }
+  let targetKind: "existing" | "new" | null = null;
+  let targetSessionId: string | null = null;
+  let targetLaneId: string | null = null;
+  if (target != null) {
+    targetKind = "existing";
+    targetSessionId = target;
+  } else if (newChat || laneId != null) {
+    targetKind = "new";
+    targetLaneId = requireValue(laneId, "--lane");
+  } else {
+    // Carry the existing row's target forward (update/retime only).
+    const carriedKind = asString(existing?.targetKind);
+    const carriedSession = asString(existing?.targetSessionId);
+    const carriedLane = asString(existing?.targetLaneId);
+    if (carriedKind === "existing" && carriedSession) {
+      targetKind = "existing";
+      targetSessionId = carriedSession;
+    } else if (carriedKind === "new" && carriedLane) {
+      targetKind = "new";
+      targetLaneId = carriedLane;
+    }
+  }
+  if (!targetKind) {
+    throw new CliUsageError("A scheduled send needs an explicit target: --target <session> or --new-chat --lane <lane>.");
+  }
+  if (targetKind === "existing" && !targetSessionId) {
+    throw new CliUsageError("--target needs the chat session id the send goes into.");
+  }
+  if (targetKind === "new" && !targetLaneId) {
+    throw new CliUsageError("--new-chat needs --lane <lane> for the chat it should start.");
+  }
+
+  const provider = readValue(args, ["--provider"]) ?? asString(existing?.provider);
+  const modelId = readValue(args, ["--model-id"]) ?? asString(existing?.modelId);
+  const model = readValue(args, ["--model"]) ?? asString(existing?.model);
+  const permissionMode = readValue(args, ["--permission", "--permission-mode"])
+    ?? asString(existing?.permissionMode);
+  const thinking = readValue(args, ["--thinking", "--reasoning-effort", "--effort"])
+    ?? asString(existing?.thinking);
+  const machine = readValue(args, ["--machine"]) ?? asString(existing?.targetMachineKey);
+  // A new chat is created by the fire-time delivery, so it must carry its model
+  // and provider up front — nobody is there to pick one when it fires.
+  if (targetKind === "new" && !model) {
+    throw new CliUsageError("--new-chat needs --model <runtime-facing model string> (with --provider <id>).");
+  }
+  if (targetKind === "new" && !provider) {
+    throw new CliUsageError("--new-chat needs --provider <id> (with --model).");
+  }
+
+  const policyRaw = readValue(args, ["--if-late"]) ?? asString(existing?.deliveryPolicy) ?? "wait";
+  if (!DRAFT_DELIVERY_POLICIES.includes(policyRaw)) {
+    throw new CliUsageError("--if-late must be wait, strict, or grace.");
+  }
+  const graceValue = readValue(args, ["--grace"]);
+  let graceSeconds: number | null = null;
+  if (policyRaw === "grace") {
+    graceSeconds = graceValue != null
+      ? parseDraftGraceSeconds(graceValue)
+      : (typeof existing?.graceSeconds === "number" ? existing.graceSeconds : null);
+    if (graceSeconds == null) {
+      throw new CliUsageError("--if-late grace needs --grace <duration>, e.g. --grace 10m.");
+    }
+  } else if (graceValue != null) {
+    throw new CliUsageError("--grace only applies with --if-late grace.");
+  }
+
+  return {
+    scheduledAt,
+    targetKind,
+    targetSessionId,
+    targetLaneId,
+    // Left unset when no machine is named: the send then fires on whichever
+    // runtime is up, which is the default the product wants.
+    ...(machine ? { targetMachineKey: machine } : {}),
+    deliveryPolicy: policyRaw,
+    ...(graceSeconds != null ? { graceSeconds } : {}),
+    ...(provider ? { provider } : {}),
+    ...(modelId ? { modelId } : {}),
+    ...(model ? { model } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+    ...(thinking ? { thinking } : {}),
+  };
+}
+
+/** A draft row list from an action result, however the envelope is shaped. */
+function draftEntriesFromResult(value: unknown): JsonObject[] {
+  const raw = unwrapActionEnvelope(value);
+  if (Array.isArray(raw)) return raw.filter(isRecord);
+  return firstArray(raw, ["drafts", "items", "entries"]);
+}
+
+function findDraftById(rows: JsonObject[], id: string): JsonObject | null {
+  return rows.find((row) => asString(row.id) === id) ?? null;
+}
+
+function isDraftPending(status: string | null): boolean {
+  return status === "scheduled" || status === "sending";
+}
+
+function selectDraftRows(
+  value: unknown,
+  opts: { filter: "all" | "scheduled" | "needs-you"; machine: string | null },
+): JsonObject[] {
+  let rows = draftEntriesFromResult(value);
+  if (opts.filter === "scheduled") {
+    rows = rows.filter((row) => isDraftPending(asString(row.status)));
+  } else if (opts.filter === "needs-you") {
+    // A blocked send waits on the user; a missed one already refused to go out.
+    // Both are the "you have to act" bucket.
+    rows = rows.filter((row) => row.status === "blocked" || row.status === "missed");
+  }
+  if (opts.machine) {
+    const want = opts.machine.trim().toLowerCase();
+    rows = rows.filter((row) => (asString(row.targetMachineKey) ?? "").toLowerCase() === want);
+  }
+  return rows;
+}
+
+/** Status first, and specific: "needs you" is what a blocked or missed send means to a person. */
+function draftStatusLabel(entry: JsonObject): string {
+  const status = (asString(entry.status) ?? asString(entry.kind) ?? "draft").toLowerCase();
+  if (status === "blocked") return "needs you";
+  return status;
+}
+
+/** `9:00 AM tomorrow` / `Oct 12, 9:00 AM` in the caller's own zone. */
+function formatDraftLocalTime(iso: string, nowMs: number): string | null {
+  const fireMs = Date.parse(iso);
+  if (!Number.isFinite(fireMs)) return null;
+  const fire = new Date(fireMs);
+  const time = fire.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const startOfDay = (ms: number): number => {
+    const day = new Date(ms);
+    day.setHours(0, 0, 0, 0);
+    return day.getTime();
+  };
+  const dayDiff = Math.round((startOfDay(fireMs) - startOfDay(nowMs)) / 86_400_000);
+  if (dayDiff === 0) return time;
+  if (dayDiff === 1) return `${time} tomorrow`;
+  if (dayDiff === -1) return `${time} yesterday`;
+  return `${fire.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
+}
+
+function formatDraftRelativeTime(iso: string, nowMs: number): string | null {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  return formatRelativeDelta({ deltaMs: ms - nowMs, compact: true, nowLabel: "just now" });
+}
+
+/** The when column: a scheduled send's fire time, else a plain draft's age. */
+function draftWhenText(entry: JsonObject, nowMs: number): string | null {
+  const scheduledAt = asString(entry.scheduledAt);
+  if (scheduledAt) return formatDraftLocalTime(scheduledAt, nowMs);
+  const createdAt = asString(entry.createdAt);
+  return createdAt ? formatDraftRelativeTime(createdAt, nowMs) : null;
+}
+
+/**
+ * The where column: a blocked/missed send shows why it needs you; otherwise the
+ * explicit target. A lane name is not on the draft row (only its id), so the
+ * target reads as the id the caller can act on rather than a label we do not have.
+ */
+function draftWhereText(entry: JsonObject): string | null {
+  const status = asString(entry.status);
+  if (status === "blocked" || status === "missed") {
+    return asString(entry.lastError) ?? (status === "missed" ? "fire time passed" : "needs attention");
+  }
+  const kind = asString(entry.targetKind);
+  const session = asString(entry.targetSessionId);
+  const lane = asString(entry.targetLaneId);
+  if (kind === "existing" || session) return session ? `→ chat ${session}` : "→ chat";
+  if (kind === "new" || lane) return lane ? `→ new chat in ${lane}` : "→ new chat";
+  return null;
+}
+
+function draftPromptText(entry: JsonObject): string {
+  const text = (asString(entry.text) ?? "").replace(/\s+/g, " ").trim();
+  return text ? `"${truncateCell(text, 48)}"` : "(no text)";
+}
+
+/** One draft as the status-first row summary an agent greps. */
+function formatDraftRow(entry: JsonObject, nowMs = Date.now()): string {
+  return [
+    draftStatusLabel(entry),
+    draftWhenText(entry, nowMs),
+    draftWhereText(entry),
+    draftPromptText(entry),
+  ].filter((part): part is string => Boolean(part)).join("  ");
+}
+
+function renderDraftsTable(rows: JsonObject[], nowMs = Date.now()): string {
+  return renderTable(
+    ["status", "when", "target", "prompt"],
+    rows.map((entry) => [
+      draftStatusLabel(entry),
+      draftWhenText(entry, nowMs) ?? "",
+      draftWhereText(entry) ?? "",
+      draftPromptText(entry),
+    ]),
+    "ADE drafts\n(no drafts)",
+    // The status is short but must never clip ("scheduled" vs "needs you" is the
+    // whole point of the column); ids and times are what an agent copies.
+    { fullColumns: ["status", "when"] },
+  );
+}
+
+function draftEntriesLines(value: unknown, nowMs = Date.now()): string {
+  const rows = draftEntriesFromResult(value);
+  if (rows.length === 0) return "ADE drafts\n(no drafts)";
+  return rows.map((entry) => formatDraftRow(entry, nowMs)).join("\n");
+}
+
+function formatDraftDetail(value: unknown, opts: { fullPrompt: boolean }): string {
+  const entry: JsonObject = isRecord(value) ? value : {};
+  const images = typeof entry.attachmentCount === "number" && entry.attachmentCount > 0
+    ? `${entry.attachmentCount}${entry.attachmentsAvailable === false ? " (on the originating machine)" : ""}`
+    : null;
+  return renderKeyValues(
+    `ADE draft ${asString(entry.id) ?? ""}`.trim(),
+    [
+      ["status", draftStatusLabel(entry)],
+      ["when", draftWhenText(entry, Date.now())],
+      ["target", draftWhereText(entry)],
+      ["policy", asString(entry.deliveryPolicy)],
+      ["grace (s)", typeof entry.graceSeconds === "number" ? entry.graceSeconds : null],
+      ["provider", asString(entry.provider)],
+      ["model", asString(entry.model) ?? asString(entry.modelId)],
+      ["permission", asString(entry.permissionMode)],
+      ["thinking", asString(entry.thinking)],
+      ["machine", asString(entry.targetMachineKey)],
+      ["images", images],
+      ["created", asString(entry.createdAt)],
+      ["updated", asString(entry.updatedAt)],
+      ["error", asString(entry.lastError)],
+      ["prompt", opts.fullPrompt ? asString(entry.text) : draftPromptText(entry)],
+    ],
+    ["prompt"],
+  );
+}
+
+/** delete/now confirmation: one line that says what happened, or the JSON shape under --json. */
+function formatDraftConfirmation(value: unknown): string {
+  const record: JsonObject = isRecord(value) ? value : {};
+  const id = asString(record.id) ?? "the draft";
+  if (typeof record.deleted === "boolean") {
+    return record.deleted
+      ? `Deleted draft ${id}.`
+      : `No draft ${id} on this machine; nothing was deleted.`;
+  }
+  if (typeof record.ok === "boolean") {
+    const error = asString(record.error);
+    return record.ok
+      ? `Delivered draft ${id} now.`
+      : `Could not deliver draft ${id}${error ? ` — ${error}` : "."}`;
+  }
+  return `Draft ${id}.`;
+}
+
+function buildDraftsListPlan(args: string[]): CliPlan {
+  const scheduled = readFlag(args, ["--scheduled"]);
+  const needsYou = readFlag(args, ["--needs-you", "--needs_you"]);
+  if (scheduled && needsYou) {
+    throw new CliUsageError("Use --scheduled or --needs-you, not both.");
+  }
+  const machine = readValue(args, ["--machine"]);
+  const filter: "all" | "scheduled" | "needs-you" = scheduled ? "scheduled" : needsYou ? "needs-you" : "all";
+  return {
+    kind: "execute",
+    label: "drafts list",
+    steps: [draftsActionStep("listDrafts")],
+    shapeResult: (values) => selectDraftRows(values.result, { filter, machine }),
+    formatter: "drafts-list",
+    tableText: (result) => renderDraftsTable(result as JsonObject[]),
+  };
+}
+
+function buildDraftsCreatePlan(args: string[]): CliPlan {
+  const prompt = readDraftPrompt(args, { fromStdinWhenOmitted: true });
+  const images = readDraftImages(args);
+  const provider = readValue(args, ["--provider"]);
+  const modelId = readValue(args, ["--model-id"]);
+  const model = readValue(args, ["--model"]);
+  // The chat this command ran inside, when there is one. It is a target *hint*
+  // for the composer, never the send's target — the target stays explicit.
+  const originSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  if ((prompt ?? "").trim() === "" && images.length === 0) {
+    throw new CliUsageError("ade drafts create needs --prompt \"<text>\" (or a prompt piped on stdin), or at least one --image.");
+  }
+
+  const wantsSchedule = hasDraftTimeFlag(args);
+  if (!wantsSchedule) {
+    // A schedule-only flag without a fire time would be dropped silently, which
+    // reads as the flag having worked. Say so instead.
+    if (hasAnyDraftFlag(args, DRAFT_SCHEDULE_ONLY_FLAGS)) {
+      throw new CliUsageError(
+        "--target/--new-chat/--machine/--if-late describe a scheduled send; add --at <iso> or --in <duration>, or drop them for a plain draft.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "drafts create",
+      steps: [draftsActionStep("createDraft", {
+        text: prompt ?? "",
+        ...(images.length ? { attachments: images } : {}),
+        ...(provider ? { provider } : {}),
+        ...(modelId ? { modelId } : {}),
+        ...(model ? { model } : {}),
+        ...(originSessionId ? { originSessionId } : {}),
+      })],
+      shapeResult: (values) => unwrapActionEnvelope(values.result),
+      formatter: "drafts-entry",
+      tableText: (result) => formatDraftDetail(result, { fullPrompt: false }),
+    };
+  }
+
+  const schedule = buildDraftScheduleInput(args, null);
+  return {
+    kind: "execute",
+    label: "drafts create",
+    steps: [draftsActionStep("createDraft", {
+      text: prompt ?? "",
+      ...(images.length ? { attachments: images } : {}),
+      ...(originSessionId ? { originSessionId } : {}),
+      schedule,
+    })],
+    shapeResult: (values) => unwrapActionEnvelope(values.result),
+    formatter: "drafts-entry",
+    tableText: (result) => formatDraftDetail(result, { fullPrompt: false }),
+  };
+}
+
+function buildDraftsSchedulePlan(args: string[]): CliPlan {
+  const id = requireValue(firstStandalonePositional(args), "a draft id");
+  const schedule = buildDraftScheduleInput(args, null);
+  return {
+    kind: "execute",
+    label: "drafts schedule",
+    steps: [draftsActionStep("updateDraft", { id, schedule })],
+    shapeResult: (values) => unwrapActionEnvelope(values.result),
+    formatter: "drafts-entry",
+    tableText: (result) => formatDraftDetail(result, { fullPrompt: false }),
+  };
+}
+
+function buildDraftsUpdatePlan(args: string[]): CliPlan {
+  const id = requireValue(firstStandalonePositional(args), "a draft id");
+  const prompt = readDraftPrompt(args, { fromStdinWhenOmitted: false });
+  const unschedule = readFlag(args, ["--unschedule", "--clear-schedule"]);
+  const hasTime = hasDraftTimeFlag(args);
+  if (unschedule && hasTime) {
+    throw new CliUsageError("Use --unschedule or --at/--in, not both.");
+  }
+
+  if (!hasTime) {
+    const patch: JsonObject = {
+      id,
+      ...(prompt !== null ? { text: prompt } : {}),
+      ...(unschedule ? { unschedule: true } : {}),
+    };
+    if (Object.keys(patch).length === 1) {
+      throw new CliUsageError("ade drafts update needs --prompt, --at/--in, or --unschedule.");
+    }
+    return {
+      kind: "execute",
+      label: "drafts update",
+      steps: [draftsActionStep("updateDraft", patch)],
+      shapeResult: (values) => unwrapActionEnvelope(values.result),
+      formatter: "drafts-entry",
+      tableText: (result) => formatDraftDetail(result, { fullPrompt: false }),
+    };
+  }
+
+  // Retiming goes through two steps: read the row, then send it back with the
+  // new fire time. The stored target carries forward (see buildDraftScheduleInput),
+  // so the caller does not restate it just to move a send by an hour.
+  return {
+    kind: "execute",
+    label: "drafts update",
+    steps: [
+      draftsActionStep("listDrafts", {}),
+      {
+        key: "result",
+        method: "ade/actions/call",
+        params: (values) => {
+          const existing = findDraftById(draftEntriesFromResult(values.existing), id);
+          if (!existing) {
+            throw new CliUsageError(`No draft ${id} on this machine; it may have been sent or taken.`);
+          }
+          const schedule = buildDraftScheduleInput(args, existing);
+          return {
+            name: "run_ade_action",
+            arguments: {
+              domain: "chat",
+              action: "updateDraft",
+              args: { id, schedule, ...(prompt !== null ? { text: prompt } : {}) },
+            },
+          };
+        },
+        unwrapToolResult: true,
+      },
+    ],
+    shapeResult: (values) => unwrapActionEnvelope(values.result),
+    formatter: "drafts-entry",
+    tableText: (result) => formatDraftDetail(result, { fullPrompt: false }),
+  };
+}
+
+function buildDraftsDeletePlan(args: string[]): CliPlan {
+  const id = requireValue(firstStandalonePositional(args), "a draft id");
+  return {
+    kind: "execute",
+    label: "drafts delete",
+    steps: [draftsActionStep("deleteDraft", { id })],
+    shapeResult: (values) => ({ id, deleted: unwrapActionEnvelope(values.result) === true }),
+    formatter: "drafts-confirm",
+    tableText: formatDraftConfirmation,
+  };
+}
+
+function buildDraftsNowPlan(args: string[]): CliPlan {
+  const id = requireValue(firstStandalonePositional(args), "a draft id");
+  return {
+    kind: "execute",
+    label: "drafts now",
+    steps: [draftsActionStep("sendDraftNow", { id })],
+    shapeResult: (values) => {
+      const raw = unwrapActionEnvelope(values.result);
+      const record: JsonObject = isRecord(raw) ? raw : {};
+      const error = asString(record.error);
+      return { id, ok: record.ok === true, ...(error ? { error } : {}) };
+    },
+    formatter: "drafts-confirm",
+    tableText: formatDraftConfirmation,
+  };
+}
+
+function buildDraftsShowPlan(args: string[]): CliPlan {
+  const id = requireValue(firstStandalonePositional(args), "a draft id");
+  return {
+    kind: "execute",
+    label: "drafts show",
+    steps: [draftsActionStep("listDrafts", {})],
+    shapeResult: (values) => {
+      const entry = findDraftById(draftEntriesFromResult(values.result), id);
+      if (!entry) {
+        throw new CliUsageError(`No draft ${id} on this machine; it may have been sent or taken.`);
+      }
+      return entry;
+    },
+    formatter: "drafts-show",
+    tableText: (result) => formatDraftDetail(result, { fullPrompt: true }),
+  };
+}
+
+function buildDraftsPlan(args: string[]): CliPlan {
+  const sub = firstStandalonePositional(args) ?? "list";
+  switch (sub) {
+    case "list":
+      return buildDraftsListPlan(args);
+    case "create":
+      return buildDraftsCreatePlan(args);
+    case "schedule":
+      return buildDraftsSchedulePlan(args);
+    case "update":
+      return buildDraftsUpdatePlan(args);
+    case "delete":
+    case "rm":
+      return buildDraftsDeletePlan(args);
+    case "now":
+      return buildDraftsNowPlan(args);
+    case "show":
+      return buildDraftsShowPlan(args);
+    default:
+      throw new CliUsageError(`Unknown drafts subcommand '${sub}'. Run 'ade help drafts'.`);
+  }
 }
 
 function personalChatStep(action: string, args: JsonObject = {}): InvocationStep {
@@ -18338,6 +19019,12 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--image",
   "--image-url",
   "--in",
+  // `ade drafts schedule|create` value flags. Listed here so a positional
+  // draft id written after one of them is still found by the shared readers.
+  "--if-late",
+  "--grace",
+  "--permission",
+  "--thinking",
   "--index",
   "--initial-input",
   "--input",
@@ -18944,6 +19631,10 @@ function buildCliPlan(
     return buildSessionPlan(args);
   if (primary === "chat" || primary === "chats" || primary === "work")
     return buildChatPlan(args);
+  // Drafts (formerly "prompt stash") and their scheduled sends. One noun: there
+  // is deliberately no `ade sends`.
+  if (primary === "drafts")
+    return buildDraftsPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
   if (primary === "automations" || primary === "automation") {
@@ -30681,6 +31372,14 @@ function formatTextOutput(
       return formatSessionLifecycle(value);
     case "lane-drift":
       return formatLaneDrift(value);
+    case "drafts-list":
+      return draftEntriesLines(value);
+    case "drafts-entry":
+      return formatDraftDetail(value, { fullPrompt: false });
+    case "drafts-show":
+      return formatDraftDetail(value, { fullPrompt: true });
+    case "drafts-confirm":
+      return formatDraftConfirmation(value);
     case "scheduled-work-create": {
       const result = isRecord(value) && isRecord(value.result) ? value.result : value;
       const item = isRecord(result) && isRecord(result.item) ? result.item : {};
@@ -33072,10 +33771,15 @@ async function runParsedCli(
     }
     const formatter = inferFormatter(plan);
     const flagEffects = applySyncWebPairingFlags(plan, parsed.options, result);
+    // A plan that carries a readable rendering (`ade drafts`) shows it when the
+    // caller asked for neither `--json` nor `--text`. `--json` is the explicit
+    // machine mode, so it must keep printing JSON even without `--text`.
     const output =
-      parsed.options.text && plan.formatText && !isMachineFanOutResult(result)
-        ? `${plan.formatText(result)}\n`
-        : formatOutput(result, parsed.options, formatter);
+      plan.tableText && !parsed.options.text && !parsed.options.json && !isMachineFanOutResult(result)
+        ? `${plan.tableText(result)}\n`
+        : parsed.options.text && plan.formatText && !isMachineFanOutResult(result)
+          ? `${plan.formatText(result)}\n`
+          : formatOutput(result, parsed.options, formatter);
     return {
       output: appendOutputSuffix(
         output,
