@@ -21785,10 +21785,19 @@ export function createAgentChatService(args: {
         || isBackgroundTask(taskMsg)
         || patch?.is_backgrounded === true,
     );
-    const taskType = localBashIsBackground
+    const messageAgentType = compactString(taskMsg.subagent_type);
+    // A later message for a background shell ADE already tracks (a bare
+    // `task_updated` arriving between turns, often for a shell a subagent
+    // started) carries no task_type. It is still that shell: classified as a
+    // subagent it became a "Background task" row stuck at running, because the
+    // shell's end only ever reaches its background row.
+    const knownBackgroundShell = !rawTaskType
+      && !messageAgentType
+      && !existing?.agentType
+      && Boolean(taskId && (runtime.liveBackgroundTaskIds.has(taskId) || runtime.backgroundTaskTitleById.has(taskId)));
+    const taskType = localBashIsBackground || knownBackgroundShell
       ? "background"
       : normalizeClaudeTaskType(taskMsg.task_type) ?? existing?.taskType;
-    const messageAgentType = compactString(taskMsg.subagent_type);
     const classificationAgentType = stashed?.subagentType ?? messageAgentType ?? existing?.agentType;
     // `name` is the spawn's display label, never its agent type — it rides the
     // wire as `label` (see rememberClaudeSubagentLabel) so the UI can show the
