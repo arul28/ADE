@@ -1973,7 +1973,6 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   // Private draft state must never fall through to the process-global IPC
   // database while the owning project binding is changing.
   "listDrafts",
-  "getDraft",
   "createDraft",
   "updateDraft",
   "claimDraft",

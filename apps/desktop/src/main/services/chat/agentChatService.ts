@@ -64274,10 +64274,10 @@ export function createAgentChatService(args: {
    * state, so a restart, a sync from another machine, or an edit in the
    * composer all take effect on the next arm with nothing to keep in step.
    *
-   * Only the machine a send names delivers it. A row with no machine is
-   * machine-agnostic, but a row naming a machine is delivered from here only
-   * when this host's machine key matches — otherwise two brains holding the
-   * same synced row would both send it.
+   * Only one machine delivers a send. A row that names a machine is delivered
+   * here only when this host's machine key matches; a row that names none
+   * belongs to the runtime that armed it (`armed_by_site_id`). Either way two
+   * brains holding the same synced row cannot both send it.
    */
   const localDraftMachineKey = (): string | null => {
     try {
@@ -64337,9 +64337,11 @@ export function createAgentChatService(args: {
           "This computer cannot start a new chat for a scheduled send. Pick an existing chat instead.",
         );
       }
-      if (!provider || !model) {
-        // The service refuses to arm a new-chat schedule without these, so this
-        // is a row from an older build rather than something the user can fix.
+      // Mirror the arm-time rule exactly. A client that knows only the model
+      // id (the phone) is accepted there, so it has to be accepted here too —
+      // otherwise the row arms cleanly and then blocks forever at fire time.
+      const launchModel = model ?? modelId;
+      if (!provider || !launchModel) {
         throw new DraftDeliveryUnsupportedError(
           "This send has no model to start its new chat with.",
         );
@@ -64357,7 +64359,7 @@ export function createAgentChatService(args: {
         chat: {
           create: {
             provider: provider as AgentChatProvider,
-            model,
+            model: launchModel,
             ...(modelId ? { modelId } : {}),
             ...(permissionMode ? { permissionMode: permissionMode as AgentChatPermissionMode } : {}),
             ...(thinking ? { reasoningEffort: thinking } : {}),
@@ -64448,14 +64450,27 @@ export function createAgentChatService(args: {
     if (armed && !claimScheduledDraft(store, entry.id)) {
       return { ok: false, error: "This send is already going out." };
     }
-    const outcome = await deliverDraft(
-      { ...entry, scheduledAt: new Date().toISOString() },
-      draftDeliveryDeps,
-    );
-    recordDraftOutcome(entry, outcome);
-    return outcome.status === "sent"
-      ? { ok: true }
-      : { ok: false, error: outcome.error };
+    try {
+      const outcome = await deliverDraft(
+        { ...entry, scheduledAt: new Date().toISOString() },
+        draftDeliveryDeps,
+      );
+      recordDraftOutcome(entry, outcome);
+      return outcome.status === "sent"
+        ? { ok: true }
+        : { ok: false, error: outcome.error };
+    } catch (deliveryError) {
+      // deliverDraft reports failures rather than throwing, so reaching here
+      // means something outside it broke. Hand the claim back instead of
+      // leaving the row `sending` until the stale sweep notices.
+      if (armed) {
+        setDraftStatus(store, entry.id, {
+          status: "scheduled",
+          lastError: deliveryError instanceof Error ? deliveryError.message : String(deliveryError),
+        });
+      }
+      throw deliveryError;
+    }
   };
 
   const isTranscriptPathActive = (filePath: string): boolean => {
