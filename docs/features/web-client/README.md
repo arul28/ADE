@@ -6,8 +6,8 @@ in to ADE, loads the account machine directory, and adopts the chosen machine ov
 ADE Relay. Localhost pages retain direct `ws://` for development.
 
 Sign-in is mandatory, not optional. Relay routing requires the account, so a
-signed-out hosted client has nothing it can show: `LaunchGate` renders the
-sign-in card with no skip until the account is signed in. Desktop keeps its
+signed-out hosted client has nothing it can show: the boot path renders
+`WebSignInScreen` with no skip until the account is signed in. Desktop keeps its
 **Continue to your work** path only when a prior desktop account session is
 recoverable; a fresh desktop launch has no account-less pass-through either.
 
@@ -292,6 +292,22 @@ Browser `window.ade` adapter:
   matched `lane_worktree_locks`, so a lock heartbeat wiped the Files read cache
   every few seconds. An unrecognized table still falls back to the
   `UNCLASSIFIED_TABLE_DOMAINS` set rather than going silently stale.
+  `runtime_processes` is mapped to `sessions`, but it is local-only: it is in
+  `LOCAL_ONLY_CRR_EXCLUDED_TABLES` (`state/kvDb.ts`), has no change-tracking
+  clock or triggers, and writes nothing to `crsql_changes`. The 5-second
+  process heartbeat therefore never produces an `invalidation_batch`, and
+  `sessions` refetches come only from real session-table writes.
+- `apps/desktop/src/renderer/webclient/adapter/appControl.ts` - the App Control
+  namespace on web, watch only. `getStatus` and `onEvent` read the lane's session
+  from `appControl.status`; `holdFrames` and `streamSubscribe` deliver the
+  lane's JPEG screencast frames. Every call that would drive the app (click,
+  type, observe, launch, connect, stop, and the rest) rejects with "App Control
+  runs on the desktop. From here you can only watch it." Status is polled while
+  a listener exists: every 3 s, backing off to 15 s while the session is
+  unchanged, paused while hidden, read at once when visible.
+- `apps/desktop/src/renderer/webclient/adapter/infra/pageVisibility.ts` - the
+  `document.visibilityState` helper the relay pollers use. Without a `document`
+  (Node tests) the page counts as visible.
 - `apps/desktop/src/renderer/webclient/adapter/runtimePinGuard.ts` - the
   adapter-wide boundary guard for the desktop's per-session runtime pins. A web
   adapter instance speaks to exactly one machine and one bound project, and
@@ -471,8 +487,17 @@ Browser `window.ade` adapter:
   `${kind}:${providerId}` so both flows can run at once, and each kind declares
   its own terminal states (`connected`/`failed`/`cancelled`/`timeout` for
   OpenCode, `success`/`error` for Pi) — so there is no perpetual background
-  poll. Pi sign-in has no honest offline fallback shape, so it reports
-  unavailable rather than fabricating a result. The same adapter also routes
+  poll. The drain reads every 1 s, and every 5 s once a minute passes without a
+  status. It pauses while the tab is hidden and drains at once when the tab is
+  visible again, from the same cursor. A cancel removes that flow; when it was
+  the last active flow, the drain runs once more so its final status still
+  arrives. A flow that never reports or is never cancelled stops at its
+  21-minute deadline. Pi sign-in has no honest offline fallback shape, so it
+  reports unavailable rather than fabricating a result. The fleet poll
+  (`ai.cursorCloudFleet`, every 2 s while a listener exists) backs off to 15 s
+  after three identical snapshots, pauses while hidden, and resets to 2 s on a
+  change, on a visible tab, and after any fleet-changing action. The same
+  adapter also routes
   Cursor Cloud fleet reads, chat mirroring, follow-ups, and lane actions through
   the host's advertised `ai.cursorCloud*` commands. Those commands expose the
   account-wide, paged fleet and use the host-owned Cursor API key; the web
@@ -551,6 +576,19 @@ Browser shell and routes:
   and the account directory usable and is surfaced as a non-fatal notice.
   Session-lifecycle chrome follows the client currently assigned to the active
   machine rather than the bootstrap client.
+
+  Signed-out boot loads no workspace code. After account bootstrap and privacy
+  pruning, a visitor with no account session gets only `window.ade.account`
+  and a lazy `WebSignInScreen` chunk (`components/onboarding/WebSignInGate.tsx`).
+  The federated adapter and `App` stay unloaded (`appStore` is still in that
+  graph: the gate's theme, scene and tooltip code read preferences from it). When
+  `hasPersistedSession()` reports a stored session, `preloadWorkspaceModules()`
+  starts those imports alongside bootstrap, so a signed-in reload does not wait
+  for them afterwards. Cold signed-out load measured 123 → 47 requests and
+  9,703 → 1,552 KB transferred (`npm run bench:webclient`, interleaved, 5 runs
+  per side). The
+  `@phosphor-icons/react` namespace import that kept 4.9 MB of icons on that
+  path is gone too (`components/history/eventIcons.ts`).
 - `apps/desktop/src/renderer/webclient/workspace/WebMachineSessionManager.ts` -
   browser machine-session owner. It merges saved environments with live
   clients, serializes admission, deduplicates same-target connects, retains
@@ -661,9 +699,11 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx` - the launch
   gate, split into a web variant and a desktop variant so neither constrains the
   other. The web variant gates on account state alone and offers no way past it:
-  signed in renders the app, loading renders an animated mark, signed out
-  renders `SignInCard` with no skip button. Sign-in is a full-page OAuth
-  redirect, so there is no polling phase to survive.
+  signed in renders the app, signed out renders `WebSignInGate` (the
+  `GlassSignInCard`) with no skip button. The hosted shell's own boot path
+  renders the same card through `WebSignInScreen` before `LaunchGate` exists
+  (see `WebClientRoot.tsx` above). Sign-in is a full-page OAuth redirect, so
+  there is no polling phase to survive.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx` - the
   shared welcome surface, adapted for web rather than replaced by a parallel UI.
   It renders the same home dashboard the desktop does (`ProjectWelcomeHome.tsx`:
@@ -934,8 +974,10 @@ Tests:
   calls `assertWebRuntimePinRoutable` first.
 - **Native-only surfaces must stay unavailable in the web adapter.** OS
   notifications, external editor open, reveal in Finder, local directory
-  picking, native shells, app control, computer use, built-in browser, iOS
-  Simulator, updater, and transcription are not browser capabilities.
+  picking, native shells, computer use, built-in browser, iOS Simulator,
+  updater, and transcription are not browser capabilities. App Control is the
+  exception that is watch-only: its status and frames are served, and driving
+  calls reject (see `adapter/appControl.ts`).
 - **Build output shape matters.** Cloudflare Pages serves from the output root;
   `_headers`, `_redirects`, and `index.html` must sit directly inside
   `apps/desktop/dist/web-client`.
@@ -1003,8 +1045,9 @@ agent/chat mutations.
 
 ## Account connection and auth flow
 
-1. The operator opens `https://app.ade-app.dev`. `LaunchGate` renders the
-   sign-in card and nothing else - there is no skip, because every byte this
+1. The operator opens `https://app.ade-app.dev`. The boot path renders the
+   sign-in card (`WebSignInScreen`) and nothing else - there is no skip,
+   because every byte this
    client can show arrives over account-authorized Relay. Desktop's
    **Connections > Web** surface points to this account flow; it exposes no QR,
    link, PIN, or manual endpoint entry.
@@ -1403,9 +1446,10 @@ Ops checks after deploy:
 - No native directory picker.
 - No local shell process. Terminal creation and IO go through the paired
   machine runtime.
-- No ADE Browser, app control, computer use, or iOS Simulator surface.
-  Projectless Chats therefore shows its runtime-backed Terminal control but not
-  the desktop-only Browser button/profile.
+- No ADE Browser, computer use, or iOS Simulator surface. App Control is
+  watch-only: the Work tool shows the lane's live frames and session state, and
+  no driving action runs from the web. Projectless Chats therefore shows its
+  runtime-backed Terminal control but not the desktop-only Browser button/profile.
 - No local file watcher. File-change events are synthesized from
   sync-driven invalidation and are coarser than desktop chokidar events.
 - Some progress/live updates are invalidation-triggered snapshots rather than

@@ -3257,6 +3257,25 @@ declares no kinds.
 
 ## Fragile and tricky wiring
 
+- **Transcript measurement is in layout pixels.** The hosted web client
+  zooms with `body { zoom }`, so `getBoundingClientRect()` returns screen pixels
+  while `scrollTop`, `offsetHeight`, `clientHeight` and the stored row heights
+  are layout pixels. In `AgentChatMessageList.tsx`, every rect length or rect
+  difference that meets those values goes through `toLayoutPx()`
+  (`lib/webZoom.ts`, which divides by the stored zoom factor and is the
+  identity in Electron). A raw rect read there over-measures every row at
+  110%+: the virtual list grows a blank band above the working indicator and a
+  pinned reader drifts past the stick threshold, so Jump To Latest appears with
+  no scrolling.
+- **Command text is redacted before it is shortened.** Anything that shows a
+  shell command compactly (the working-indicator label, command rows, tool
+  headers, the shell `command`/`cmd` field of an expanded tool body, approval
+  headlines, background-task titles, the `ade code` TUI) goes through
+  `redactCommandLine` / `oneLineRedacted` in `shared/secretRedaction.ts`.
+  Truncating first cuts a key below its pattern and leaks its prefix. The
+  redactor is for command lines only: Edit/Write/patch content, diffs, prompts
+  and memory never pass through it (`main/utils/redaction.ts` keeps its own,
+  narrower rules for those callers).
 - **A Codex async question is a card, not a waiter.** It lives in
   `managed.asyncQuestions` (mirrored to `PersistedChatState.asyncQuestions` so a
   restart keeps it), never in `localPendingInputs` or `runtime.approvals` —
