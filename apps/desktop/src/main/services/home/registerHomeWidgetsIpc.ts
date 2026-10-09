@@ -10,6 +10,7 @@ import {
   isBuiltInBrowserWebContents,
   onBuiltInBrowserWebContents,
 } from "../builtInBrowser/builtInBrowserMediaHooks";
+import { macAppIconDataUrl } from "../apps/macAppIconFile";
 import { createBrowserMediaSessions } from "./browserMediaSessions";
 import { createNowPlayingService, type NowPlayingService } from "./nowPlayingService";
 
@@ -152,6 +153,9 @@ export function registerHomeWidgetsIpc(args: {
   handle(HOME_WIDGETS_IPC.weatherGet, (input: { latitude: number; longitude: number }) => service.weather.get(input));
 
   // Now Playing: a source runs only while some window's widget is subscribed.
+  // The Music app's icon is read once per path (the source asks on every
+  // start); a failed read is not kept, so the next start tries again.
+  const nowPlayingAppIcons = new Map<string, string>();
   const playing = createNowPlayingService({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
@@ -160,9 +164,13 @@ export function registerHomeWidgetsIpc(args: {
     // ADE's own media sessions (its windows' browser tabs and the Music tab's
     // player host) come in directly; the OS copies of them are skipped.
     isOwnApp: (appId) => OWN_MEDIA_APP_PATTERN.test(appId),
+    // Read from the bundle's .icns; see macAppIconDataUrl for why not app.getFileIcon.
     getAppIcon: async (appPath) => {
-      const icon = await app.getFileIcon(appPath, { size: "large" });
-      return icon.isEmpty() ? null : icon.toDataURL();
+      const cached = nowPlayingAppIcons.get(appPath);
+      if (cached) return cached;
+      const icon = macAppIconDataUrl(appPath, 256);
+      if (icon) nowPlayingAppIcons.set(appPath, icon);
+      return icon;
     },
     broadcast: (state) => {
       for (const win of BrowserWindow.getAllWindows()) {

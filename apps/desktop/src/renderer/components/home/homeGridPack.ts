@@ -15,10 +15,10 @@ import type { HomeLayoutCell, HomeLayoutItem, HomeWidgetSize, HomeWidgetType } f
  * smaller classes before it is hidden. Then every empty cell is handed to a
  * neighbour: widgets that use more room well (lists, charts) grow first, one
  * cell edge at a time and in turn, then any widget may. The last row's room
- * past its last card is the exception: it stays wallpaper, so a card keeps
- * the class the user picked (a Compact card is one column, not the rest of
- * the row). The result with the fewest hidden widgets, then the fewest shrunk
- * ones, then no empty cells, then the least stretching, then the fullest last
+ * past its last card is the exception: a Compact card keeps its one column and
+ * the rest of that row stays wallpaper, while a wider card on the last row
+ * stretches across the room instead. The result with the fewest hidden
+ * widgets, then the fewest shrunk ones, then no empty cells, then the least stretching, then the fullest last
  * row, then the fewest rows wins. Every cell of a row shares the row's height, so
  * rows are always even. Packing depends only on its inputs: the same layout
  * and window always give the same page.
@@ -259,10 +259,10 @@ function packInto(cells: readonly HomeLayoutCell[], columns: number, rows: numbe
   // A card takes a row below or above only while it stays within its own
   // maximum at the height the rows are settling at.
   const settlingPx = settleRowPx(placed, px, shapeOf);
-  // The last row's room past its last card is wallpaper, like the height
-  // under the grid: no card stretches sideways into it, so a card shows at
-  // the class the user picked (Compact stays a column) instead of filling
-  // the row. Only a card above may reach down into it, within its maximum.
+  // The last row's room past its last card is wallpaper for a Compact card,
+  // which stays the column the user picked; a wider card on that row
+  // stretches across it, so the page ends on a full row rather than a ragged
+  // one. A card above may also reach down into it, within its maximum.
   const lastRow = placed.reduce((max, p) => Math.max(max, p.y + p.h), 0) - 1;
   let trailFrom = tracks;
   if (lastRow >= 0) {
@@ -281,7 +281,7 @@ function packInto(cells: readonly HomeLayoutCell[], columns: number, rows: numbe
     }
     const x = dir === "right" ? p.x + p.w : p.x - 1;
     if (x < 0 || x >= tracks) return false;
-    for (let y = p.y; y < p.y + p.h; y += 1) if (owner[y]![x]! >= 0 || trailing(x, y)) return false;
+    for (let y = p.y; y < p.y + p.h; y += 1) if (owner[y]![x]! >= 0 || (trailing(x, y) && p.cls === "compact")) return false;
     return true;
   };
   let grown = tall;

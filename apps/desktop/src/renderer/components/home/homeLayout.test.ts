@@ -201,4 +201,44 @@ describe("packing the home grid", () => {
     expect(tight.placed.find((placement) => placement.cell.host.id === "big")?.cls).toBe("regular");
     expect(tight.shrunk).toBe(1);
   });
+
+  const LAST_ROW_CASES: Array<[string, HomeLayoutItem[], number, number, string, { x: number; y: number; w: number }, number]> = [
+    // A wider card on the last row stretches across the room past its last card.
+    [
+      "a wide card on the last row fills it",
+      [
+        { id: "projects", type: "projects", size: "m" },
+        { id: "running", type: "running", size: "s", stacked: true },
+        { id: "activity", type: "activity", size: "w" },
+        { id: "limits", type: "limits", size: "s" },
+        { id: "nowPlaying", type: "nowPlaying", size: "m" },
+      ],
+      1_300,
+      740,
+      "nowPlaying",
+      { x: 0, y: 2, w: 3 },
+      0,
+    ],
+    // A Compact card on the last row keeps its one column; the rest of the row is wallpaper.
+    [
+      "a Compact card on the last row keeps its column",
+      [
+        { id: "activity", type: "activity", size: "w" },
+        { id: "limits", type: "limits", size: "s" },
+      ],
+      1_000,
+      740,
+      "limits",
+      { x: 0, y: 1, w: 1 },
+      1,
+    ],
+  ];
+
+  it.each(LAST_ROW_CASES)("%s", (_label, layoutItems, width, height, id, expected, trailing) => {
+    const result = packLayout(layoutCells(layoutItems), gridMetrics(width, height), widgetShape);
+    const placement = result.placed.find((item) => item.cell.host.id === id);
+    expect(placement, "the widget is placed").toBeTruthy();
+    expect({ x: placement!.x, y: placement!.y, w: placement!.w }).toEqual(expected);
+    expect(result.trailing).toBe(trailing);
+  });
 });
