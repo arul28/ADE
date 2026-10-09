@@ -640,6 +640,8 @@ export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
     patch.thinking = null;
     patch.scheduled_by = null;
     patch.scheduled_by_session_id = null;
+    // Nothing to deliver any more, so nothing owns it either.
+    patch.armed_by_site_id = null;
     patch.last_error = null;
   } else if (args.schedule !== undefined && args.schedule !== null) {
     const existingStatus = asEnum(existing.status, DRAFT_STATUSES) ?? "draft";
