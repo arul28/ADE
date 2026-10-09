@@ -20,6 +20,7 @@ import {
   type NormalizedSubagentLifecycleEvent,
 } from "../../../shared/chatSubagents";
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
+import { redactCommandLine } from "../../../shared/secretRedaction";
 import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
 import {
@@ -2029,9 +2030,12 @@ function backgroundExitCode(event: NormalizedSubagentLifecycleEvent): number | n
  * command and description are the fallbacks, in that order.
  */
 function backgroundJobLabel(state: SubagentAnchorState): string {
-  return backgroundCommandLabel(state.command ?? state.description ?? "")
-    || state.command
-    || state.description
+  // Masked before the shell noise is stripped and the label is cut, so no secret is split.
+  const command = state.command ? redactCommandLine(state.command) : state.command;
+  const description = state.description ? redactCommandLine(state.description) : state.description;
+  return backgroundCommandLabel(command ?? description ?? "")
+    || command
+    || description
     || "Background command";
 }
 

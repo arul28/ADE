@@ -116,6 +116,7 @@ import {
   useRootAppStore,
 } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { Z_LAYERS } from "../ui/zLayers";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { writeStoredProjectRoute } from "./projectRouteStorage";
@@ -1940,7 +1941,8 @@ export function CommandPalette({
                 // the import browser): dim, then a light blur. `blur-2xl` over
                 // the whole window read as a different app taking over — and it
                 // is a full-window backdrop filter per frame of the fade.
-                className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm"
+                className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+                style={{ zIndex: Z_LAYERS.sheet }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}

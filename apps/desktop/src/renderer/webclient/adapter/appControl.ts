@@ -41,7 +41,7 @@ import type {
   SyncAppControlStreamSubscribeResult,
 } from "../../../shared/types/sync";
 import type { AdapterInfra } from "./types";
-import { isPageHidden, observePageVisibility } from "./infra/pageVisibility";
+import { createBackoffPoller } from "./infra/backoffPoller";
 
 /** How often status is re-read while the panel listens for events. */
 const STATUS_POLL_MS = 3_000;
@@ -147,11 +147,6 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   const lastSessions = new Map<string, AppControlSession | null>();
   let subscription: { id: string; laneId: string } | null = null;
   let subscribing = false;
-  let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let statusPollInFlight = false;
-  /** Consecutive status reads that found no session change. */
-  let statusUnchangedPolls = 0;
-  let stopStatusVisibility: (() => void) | null = null;
   let resubscribeTimer: ReturnType<typeof setTimeout> | null = null;
   let detachTransport: (() => void) | null = null;
   /** Mounted views that show frames. Only they keep the subscription. */
@@ -305,49 +300,17 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
     return { status, changed: noteStatus(status) };
   };
 
+  const statusPoller = createBackoffPoller({
+    baseMs: STATUS_POLL_MS,
+    maxMs: STATUS_POLL_MAX_MS,
+    isActive: () => listeners.size > 0,
+    read: async () => (await refreshStatus(watchedLaneId ? { laneId: watchedLaneId } : undefined)).changed,
+  });
+
   const getStatus = async (argsOrPin?: unknown): Promise<AppControlStatus> => {
-    // The panel's own read is a user action, so the poll restarts at its base cadence.
-    statusUnchangedPolls = 0;
+    // The panel's own read is a user action: the poll restarts at its base cadence, and a pending timer moves with it.
+    statusPoller.resetBackoff();
     return (await refreshStatus(argsOrPin)).status;
-  };
-
-  const clearStatusTimer = (): void => {
-    if (pollTimer != null) clearTimeout(pollTimer);
-    pollTimer = null;
-  };
-
-  const scheduleStatusPoll = (): void => {
-    // A hidden tab reads nothing; becoming visible reads at once (kickStatusPoll).
-    if (pollTimer != null || statusPollInFlight || listeners.size === 0 || isPageHidden()) return;
-    const delayMs = statusUnchangedPolls < 3
-      ? STATUS_POLL_MS
-      : Math.min(STATUS_POLL_MAX_MS, STATUS_POLL_MS * 2 ** (statusUnchangedPolls - 2));
-    pollTimer = setTimeout(() => {
-      pollTimer = null;
-      void pollStatus();
-    }, delayMs);
-  };
-
-  const pollStatus = async (): Promise<void> => {
-    if (statusPollInFlight || listeners.size === 0 || isPageHidden()) return;
-    statusPollInFlight = true;
-    try {
-      const { changed } = await refreshStatus(watchedLaneId ? { laneId: watchedLaneId } : undefined);
-      statusUnchangedPolls = changed ? 0 : statusUnchangedPolls + 1;
-    } catch {
-      // A failed read keeps the current cadence; the next tick tries again.
-    } finally {
-      statusPollInFlight = false;
-      scheduleStatusPoll();
-    }
-  };
-
-  /** Reads now, at the base cadence, because the tab just became visible. */
-  const kickStatusPoll = (): void => {
-    statusUnchangedPolls = 0;
-    if (statusPollInFlight) return;
-    clearStatusTimer();
-    void pollStatus();
   };
 
   const handleFrame = (frame: SyncAppControlStreamFramePayload): void => {
@@ -371,10 +334,7 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   };
 
   const startWatching = (): void => {
-    if (!stopStatusVisibility) {
-      stopStatusVisibility = observePageVisibility({ onHidden: clearStatusTimer, onVisible: kickStatusPoll });
-    }
-    scheduleStatusPoll();
+    statusPoller.start();
     if (!detachTransport) {
       const detachStatus = client.subscribe((status) => {
         const ready = status.state === "connected" && status.readiness === "ready";
@@ -396,10 +356,7 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   };
 
   const stopWatching = (): void => {
-    clearStatusTimer();
-    stopStatusVisibility?.();
-    stopStatusVisibility = null;
-    statusUnchangedPolls = 0;
+    statusPoller.stop();
     if (resubscribeTimer != null) clearTimeout(resubscribeTimer);
     resubscribeTimer = null;
     detachTransport?.();

@@ -93,7 +93,7 @@ import {
   useWorkspacePathOpener,
   type WorkspacePathLocation,
 } from "./chatWorkspacePaths";
-import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
+import { describeToolIdentifier, maskShellCommandArgs, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import {
   CHAT_TRANSCRIPT_GLASS_CARD_CLASS,
@@ -3652,7 +3652,7 @@ function renderEvent(
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
     const args = event.args as Record<string, unknown> | null;
-    const safeArgs = args && typeof args === "object" ? args : {};
+    const safeArgs = maskShellCommandArgs(event.tool, args && typeof args === "object" ? args : {});
 
     const rawTargetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
     const targetLine = rawTargetLine ? redactCommandLine(rawTargetLine) : null;
@@ -3667,11 +3667,9 @@ function renderEvent(
     const argsDisplay = kvPairs.length > 0 ? (
       <div className="space-y-1 border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)]">
         {kvPairs.map(([k, v]) => {
-          // Only a shell command is masked here. Edit, Write and patch content, and
-          // diffs, are shown exactly as the agent wrote them.
-          const isShellCommand = (meta.category === "exec" || meta.category === "codex") && (k === "command" || k === "cmd");
-          const rawVal = typeof v === "string" ? v : JSON.stringify(v);
-          const val = isShellCommand ? redactCommandLine(rawVal) : rawVal;
+          // Shell commands arrive already masked (maskShellCommandArgs); other arguments
+          // (edit, write and patch content, diffs) are shown as the agent wrote them.
+          const val = typeof v === "string" ? v : JSON.stringify(v);
           const isLongStr = typeof v === "string" && v.includes("\n");
           return (
             <div key={k} className={isLongStr ? "flex flex-col gap-0.5" : "flex items-start gap-2"}>

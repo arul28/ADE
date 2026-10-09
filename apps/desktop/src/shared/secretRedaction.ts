@@ -33,36 +33,80 @@ const TOKEN_PATTERNS: readonly RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
 ];
 
-/** `Authorization: Bearer x`, `Proxy-Authorization=Basic x`. Keeps the header and scheme. */
+/**
+ * `Authorization: Bearer x`, `Proxy-Authorization=Basic x`. Keeps the header,
+ * quote and scheme; the value is the fourth group.
+ */
 const AUTHORIZATION_PATTERN =
-  /(\b(?:proxy-)?authorization["']?\s*[:=]\s*(?:["']?)(?:(?:bearer|basic|token)\s+)?)[^\s"',;]+/gi;
+  /(\b(?:proxy-)?authorization["']?\s*[:=]\s*)(["']?)((?:(?:bearer|basic|token)\s+)?)([^\s"',;]+)/gi;
 
 /** A bare `Bearer <token>` anywhere in the command. */
 const BEARER_PATTERN = /(\bbearer\s+)[A-Za-z0-9\-._~+/]{12,}=*/gi;
 
-/** `https://user:password@host`: keeps the user, masks the password. */
-const URL_CREDENTIAL_PATTERN = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@"']+:)[^\s@/"']+@/gi;
+/**
+ * `https://user:password@host`: keeps the user, masks the password. The scheme
+ * is bounded so a long run of `a-a-a…` cannot cost a quadratic scan.
+ */
+const URL_CREDENTIAL_PATTERN = /(\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/@"']+:)[^\s@/"']+@/gi;
 
 /**
  * Shell environment assignments whose NAME is an env-style secret: upper-case
- * and ending in KEY, TOKEN, SECRET, PASSWORD, PASSWD or CREDENTIAL(S). Matches
- * `ANTHROPIC_API_KEY=…`, `export GITHUB_TOKEN=…`, `DB_PASSWORD='…'`. Lower-case
- * code identifiers and names like `MAX_TOKENS` are left alone.
+ * and ending in KEY, TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL(S), or an
+ * auth blob (`AUTH_CONFIG`, `AUTH_HEADER`, `AUTHORIZATION`). The secret word
+ * must be a whole `_`-separated segment: `MY_API_KEY` and `DOCKER_AUTH_CONFIG`
+ * match, `MONKEY` and `MAX_TOKENS` do not. Segment count and length are bounded.
  */
-const ENV_SECRET_NAME = String.raw`[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)`;
-// A value that is a shell or printf placeholder (`$VAR`, `%s`, `<x>`, `{x}`) is not a secret.
-// A bare value needs six characters, so a short literal stays readable.
-const COMMAND_VALUE = String.raw`(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|(?![$%<{])(?:\\.|[^\s"'&;|)<>\\]){6,})`;
-const ENV_ASSIGNMENT_PATTERN = new RegExp(String.raw`(\b${ENV_SECRET_NAME}=)${COMMAND_VALUE}`, "g");
+const ENV_SECRET_NAME = String.raw`(?:[A-Z][A-Z0-9]{0,31}_){0,8}(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH_CONFIG|AUTH_HEADER|AUTHORIZATION)`;
+// A value is a non-empty quoted run or a non-empty bare word. A bare value cannot
+// start with a shell or printf placeholder (`$VAR`, `%s`, `<x>`, `{x}`).
+const COMMAND_VALUE = String.raw`(?:"(?:\\.|[^"\\\n])+"|'(?:\\.|[^'\\\n])+'|(?![$%<{])(?:\\.|[^\s"'&;|)<>\\])+)`;
+// PowerShell writes `$env:NAME = "value"` with spaces around `=`.
+const ENV_ASSIGNMENT_PATTERN = new RegExp(String.raw`(\b${ENV_SECRET_NAME}[ \t]*=[ \t]*)(${COMMAND_VALUE})`, "g");
 
-/** A quoted JSON-style key in a command body: `-d '{"api_key": "…"}'`. */
-const JSON_SECRET_PATTERN = /(["'][A-Za-z0-9_.-]*(?:key|token|secret|password|passwd)["']\s*:\s*)(["'])[^"'\n]{4,}\2/gi;
+/**
+ * A quoted JSON-style key in a command body: `-d '{"api_key": "…"}'`, or the
+ * same shape escaped for a double-quoted shell argument: `-d "{\"api_key\":\"…\"}"`.
+ */
+const JSON_SECRET_PATTERN = /(\\?["'][A-Za-z0-9_.-]*(?:key|token|secret|password|passwd)\\?["']\s*:\s*)(\\?["'])([^"'\\\n]+)\2/gi;
 
-/** Lower-case secret flags: `--api-key value`, `--token=value`, `--password value`. */
+/**
+ * Lower-case secret flags: `--api-key value`, `--token=value`, `--client_secret value`.
+ * The secret word must be a whole segment of the flag name, so `--monkey` is not
+ * a secret flag. A space-separated value that starts with `-` is the next flag
+ * (`--token --verbose`), not a value. Segment count and length are bounded.
+ */
 const FLAG_PATTERN = new RegExp(
-  String.raw`(--[a-z0-9-]*(?:key|token|secret|passw(?:or)?d|passwd|credentials?)(?:=|\s+))${COMMAND_VALUE}`,
+  String.raw`(--(?:[a-z0-9]{1,32}[-_]){0,8}(?:key|token|secret|passw(?:or)?d|passwd|credentials?)(?:=|\s+(?!-)))(${COMMAND_VALUE})`,
   "g",
 );
+
+/**
+ * True when a matched secret-named value must stay visible: a placeholder
+ * (`<your-key>`, `%s`, `{name}`), or text the shell expands (`$VAR`, `$(…)`,
+ * backticks), which is code that runs and not a literal secret. A single-quoted
+ * value never expands, so it stays masked, and a quoted JSON blob (`'{"auths":…}'`)
+ * is not a `{name}` placeholder. An escaped `\$` is a literal dollar.
+ */
+function staysVisible(value: string): boolean {
+  if (/^["']?(?:[<%]|\{\w+\})/.test(value)) return true;
+  if (value.startsWith("'")) return false;
+  return /[$`]/.test(value.replace(/\\[\s\S]/g, ""));
+}
+
+/** Replacer for an assignment or flag: keeps the head, masks the value unless it must stay visible. */
+function maskAssignment(_match: string, head: string, value: string): string {
+  return staysVisible(value) ? head + value : `${head}<redacted>`;
+}
+
+/** Replacer for a JSON key/value pair; the value's quote (`"` or `\"`) is group 2. */
+function maskJsonSecret(match: string, head: string, quote: string, value: string): string {
+  return staysVisible(quote.replace("\\", "") + value) ? match : `${head}${quote}<redacted>${quote}`;
+}
+
+/** Replacer for an `Authorization` header: keeps the header, quote and scheme, masks the credential. */
+function maskAuthorization(match: string, head: string, quote: string, scheme: string, value: string): string {
+  return staysVisible(quote + value) ? match : `${head}${quote}${scheme}<redacted>`;
+}
 
 /** Masks secrets in one command line. Multi-line safe (PEM blocks), never truncates. */
 export function redactCommandLine(command: string): string {
@@ -70,11 +114,11 @@ export function redactCommandLine(command: string): string {
   let out = command.replace(PRIVATE_KEY_BLOCK, "<redacted-private-key>");
   out = out.replace(URL_CREDENTIAL_PATTERN, "$1<redacted>@");
   for (const pattern of TOKEN_PATTERNS) out = out.replace(pattern, "<redacted-token>");
-  out = out.replace(AUTHORIZATION_PATTERN, "$1<redacted>");
+  out = out.replace(AUTHORIZATION_PATTERN, maskAuthorization);
   out = out.replace(BEARER_PATTERN, "$1<redacted>");
-  out = out.replace(ENV_ASSIGNMENT_PATTERN, "$1<redacted>");
-  out = out.replace(JSON_SECRET_PATTERN, "$1$2<redacted>$2");
-  out = out.replace(FLAG_PATTERN, "$1<redacted>");
+  out = out.replace(ENV_ASSIGNMENT_PATTERN, maskAssignment);
+  out = out.replace(JSON_SECRET_PATTERN, maskJsonSecret);
+  out = out.replace(FLAG_PATTERN, maskAssignment);
   return out;
 }
 

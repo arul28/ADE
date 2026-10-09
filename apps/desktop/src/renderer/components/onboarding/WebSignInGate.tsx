@@ -1,9 +1,5 @@
-import { useEffect } from "react";
-import { MotionConfig } from "motion/react";
 import { accountSessionState, useAccountStatus } from "../../lib/account";
-import { applyInterfacePreferences } from "../../theme/applyInterface";
-import { useAppStore } from "../../state/appStore";
-import { ThemeDocumentSync } from "../app/ThemeDocumentSync";
+import { AppearanceRoot } from "../app/AppearanceRoot";
 import { GlassSignInCard } from "./GlassSignInCard";
 import { GateBackdrop } from "./GateBackdrop";
 import "./launchGateGlass.css";
@@ -37,19 +33,13 @@ export function WebSignInGate() {
 
 /**
  * The sign-in card for the shell's own boot path, which renders it before the
- * app shell exists. It applies the theme, interface, and motion preferences the
- * shell would, so a signed-out visitor sees the same screen.
+ * app shell exists. It mounts the same appearance root as the app shell, so a
+ * signed-out visitor sees the same theme, motion, and system colour scheme.
  */
 export function WebSignInScreen() {
-  const interfacePreferences = useAppStore((s) => s.interfacePreferences);
-  useEffect(() => {
-    applyInterfacePreferences(interfacePreferences);
-  }, [interfacePreferences]);
-
   return (
-    <MotionConfig reducedMotion={interfacePreferences.reduceMotion ? "always" : "user"}>
-      <ThemeDocumentSync />
+    <AppearanceRoot>
       <WebSignInGate />
-    </MotionConfig>
+    </AppearanceRoot>
   );
 }

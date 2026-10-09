@@ -17,8 +17,10 @@ import { extractScenePalette, type ScenePalette } from "./scenePalette";
 import { listUserScenes, subscribeUserScenes, userSceneUrl, type UserSceneSummary } from "./userScenes";
 
 export type ActiveScene =
-  /** `still`: the flat theme background (mode `plain`); no mesh is drawn. */
-  | { kind: "gradient"; still: boolean }
+  /** The flat theme background (mode `plain`): no mesh is drawn and nothing moves. */
+  | { kind: "plain" }
+  /** The theme's animated mesh (mode `gradient`, or a picture that is gone). */
+  | { kind: "gradient" }
   | {
       kind: "image";
       id: string;
@@ -223,10 +225,10 @@ export function useActiveScene(): ActiveScene {
     if (id) load(id);
   }, [id]);
 
-  if (!id) return { kind: "gradient", still: prefs.mode === "plain" };
+  if (!id) return prefs.mode === "plain" ? { kind: "plain" } : { kind: "gradient" };
   const entry = entries.get(id);
   // A user picture that no longer exists falls back to the gradient.
-  if (entry?.done && !entry.url) return { kind: "gradient", still: false };
+  if (entry?.done && !entry.url) return { kind: "gradient" };
   return {
     kind: "image",
     id,

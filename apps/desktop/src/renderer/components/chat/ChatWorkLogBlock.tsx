@@ -18,7 +18,7 @@ import {
 } from "./chatTranscriptRows";
 import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
-import { replaceInternalToolNames } from "./toolPresentation";
+import { maskShellCommandArgs, replaceInternalToolNames } from "./toolPresentation";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { pinKey } from "../../state/projectMachines";
@@ -88,21 +88,6 @@ function isCodeChangeEntry(entry: ChatWorkLogEntry): boolean {
     return getToolMeta(entry.toolName).category === "write";
   }
   return false;
-}
-
-/**
- * The expanded argument dump of a shell tool masks its command text. Other
- * arguments (file edits, patch content) are shown as the agent wrote them.
- */
-function maskShellCommandArgs(toolName: string | null | undefined, args: Record<string, unknown>): Record<string, unknown> {
-  if (!toolName) return args;
-  const category = getToolMeta(toolName).category;
-  if (category !== "exec" && category !== "codex") return args;
-  const masked = { ...args };
-  for (const key of ["command", "cmd"] as const) {
-    if (typeof masked[key] === "string") masked[key] = redactCommandLine(masked[key] as string);
-  }
-  return masked;
 }
 
 /** Redacts before it summarises: a key cut at 140 chars would leak its prefix. */
@@ -239,9 +224,11 @@ function commandForLocalhostUrl(entries: ChatWorkLogEntry[], url: ChatLocalhostU
     (entry.localUrls ?? []).some((candidate) => candidate.href === url.href),
   ) ?? entries[0];
   if (!sourceEntry) return null;
-  // The command lands in the composer draft the user reads, so it is masked too.
-  const trimmed = redactCommandLine(sourceEntry.command ?? entryArgText(sourceEntry)).trim();
-  return trimmed.length ? trimmed : null;
+  const raw = (sourceEntry.command ?? entryArgText(sourceEntry)).trim();
+  if (!raw.length) return null;
+  // The draft is text the agent may run, so a masked command is never offered:
+  // `<redacted>` in `--command` would become a shell redirection.
+  return redactCommandLine(raw) === raw ? raw : null;
 }
 
 function terminalizePrompt(args: {

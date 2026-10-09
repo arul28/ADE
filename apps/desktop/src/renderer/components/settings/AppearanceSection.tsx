@@ -143,7 +143,12 @@ export function AppearanceSection() {
 
   const resetAll = () => {
     resetThemeAndChatFontDefaults();
-    setInterfacePreferences({ sansFont: "geist", monoFont: "jetbrains", scene: DEFAULT_SCENE_PREFERENCES });
+    // Resetting to the shuffle default is a choice, so the web client keeps Shuffle on reload instead of its Plain default.
+    setInterfacePreferences({
+      sansFont: "geist",
+      monoFont: "jetbrains",
+      scene: { ...DEFAULT_SCENE_PREFERENCES, choiceMade: true },
+    });
   };
 
   return (
@@ -366,7 +371,7 @@ function BackgroundPicker() {
   };
 
   const pickedId = scenePrefs.mode === "image" ? scenePrefs.imageId : null;
-  const usingPicture = scenePrefs.mode !== "gradient" && scenePrefs.mode !== "plain";
+  const usingPicture = scenePrefs.mode === "image" || scenePrefs.mode === "shuffle";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -904,12 +909,15 @@ function AppearancePreview() {
 }
 
 function sceneStatus(scene: ActiveScene): string {
-  if (scene.kind === "gradient") return scene.still ? "Plain" : "Gradient";
+  if (scene.kind === "plain") return "Plain";
+  if (scene.kind === "gradient") return "Gradient";
   return scene.showImage ? scene.name : `${scene.name} colours`;
 }
 
 function PreviewBackdrop({ scene, palette }: { scene: ActiveScene; palette: ResolvedAdeThemePalette }) {
   const mode = useAppStore((s) => s.theme);
+  // Plain is the theme's flat background: no mesh, so no radial gradients.
+  if (scene.kind === "plain") return <div className="ade-ap-preview-bg" style={{ background: palette.bg }} />;
   if (scene.kind === "image" && scene.showImage && scene.url) {
     return (
       <div className="ade-ap-preview-bg">

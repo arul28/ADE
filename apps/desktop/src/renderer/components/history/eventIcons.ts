@@ -148,14 +148,7 @@ export const EVENT_ICONS = {
 /** A name the taxonomy can put on an event. */
 export type EventIconName = keyof typeof EVENT_ICONS;
 
-/**
- * The icon for a taxonomy name. A name outside the map (stale or hand-written
- * data) gets the taxonomy's own fallback icon rather than an empty slot. The
- * own-property check keeps names such as `constructor` from resolving to
- * `Object.prototype`.
- */
-export function eventIcon(name: string): Icon {
-  return Object.prototype.hasOwnProperty.call(EVENT_ICONS, name)
-    ? EVENT_ICONS[name as EventIconName]
-    : EVENT_ICONS.CircleDashed;
+/** The icon for a taxonomy name. Callers type it as `EventIconName`, so every name resolves. */
+export function eventIcon(name: EventIconName): Icon {
+  return EVENT_ICONS[name];
 }

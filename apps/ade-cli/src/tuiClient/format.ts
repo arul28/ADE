@@ -11,6 +11,7 @@ import {
 } from "../../../desktop/src/shared/chatTaskList";
 import { deriveChatSources } from "../../../desktop/src/shared/chatSources";
 import { redactCommandLine } from "../../../desktop/src/shared/secretRedaction";
+import { maskShellCommandArgs } from "../../../desktop/src/renderer/components/chat/toolPresentation";
 import { deriveSubagentCardName, subagentSummaryPlainText } from "../../../desktop/src/shared/chatSubagents";
 import { describeUserMessageStatus } from "../../../desktop/src/shared/chatUserMessageStatus";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
@@ -1016,10 +1017,13 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "tool_call") {
+      // The TUI prints the arguments on screen: a shell command is masked as the desktop masks it.
+      const isArgsRecord = event.args !== null && typeof event.args === "object" && !Array.isArray(event.args);
+      const shownArgs = isArgsRecord ? maskShellCommandArgs(event.tool, event.args as Record<string, unknown>) : event.args;
       lines.push({
         id,
         tone: "tool",
-        body: `> ${event.tool}  ${singleLine(event.args, 96)}`,
+        body: `> ${event.tool}  ${singleLine(shownArgs, 96)}`,
       });
       continue;
     }

@@ -88,7 +88,7 @@ export function WorkToolPickerBackdrop({
   const scene = useActiveScene();
   const showPicture = field === "window" && scene.kind === "image" && scene.showImage;
   // The `plain` scene: the flat CSS background below, with no mesh and no loop.
-  const still = scene.kind === "gradient" && scene.still;
+  const still = scene.kind === "plain";
   const scenePalette = scene.kind === "image" ? scene.palette : null;
   const override = useMemo(
     () => (scenePalette ? backdropThemeFromScene(scenePalette, theme) : undefined),

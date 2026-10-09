@@ -27,10 +27,10 @@ function localOutputPath(reference, outputDir) {
 /**
  * Walks the first-load graph of a built web client: the generated index.html
  * plus every local script, modulepreload, and stylesheet it references.
- * Throws on forbidden heavy chunks and external entry scripts. Also used by
- * scripts/bench-webclient.mjs so both measure the same graph.
+ * Throws on forbidden heavy chunks, external entry scripts, and any local
+ * reference that resolves outside the output directory.
  */
-export function readWebclientEntryGraph(outputDir = defaultOutputDir) {
+function readWebclientEntryGraph(outputDir = defaultOutputDir) {
   const indexPath = path.join(outputDir, "index.html");
   if (!fs.existsSync(indexPath)) {
     throw new Error(`Webclient entry check could not find ${indexPath}`);
@@ -76,7 +76,7 @@ export function readWebclientEntryGraph(outputDir = defaultOutputDir) {
   };
 }
 
-export function checkWebclientEntry(outputDir = defaultOutputDir) {
+function checkWebclientEntry(outputDir = defaultOutputDir) {
   const { html, checkedReferences, javaScriptPaths } = readWebclientEntryGraph(outputDir);
 
   if (javaScriptPaths.length === 0) {
@@ -108,6 +108,4 @@ export function checkWebclientEntry(outputDir = defaultOutputDir) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  checkWebclientEntry();
-}
+checkWebclientEntry();

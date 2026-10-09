@@ -361,7 +361,7 @@ export type ChatSubagentDerivation = {
 export function deriveChatSubagentSnapshotsIncremental(
   previous: ChatSubagentDerivation | null,
   events: AgentChatEventEnvelope[],
-): ChatSubagentSnapshot[] {
+): ChatSubagentDerivation {
   if (previous && events.length >= previous.events.length) {
     let samePrefix = true;
     for (let index = 0; index < previous.events.length; index += 1) {
@@ -378,10 +378,10 @@ export function deriveChatSubagentSnapshotsIncremental(
           break;
         }
       }
-      if (!tailHasSubagent) return previous.snapshots;
+      if (!tailHasSubagent) return { events, snapshots: previous.snapshots };
     }
   }
-  return deriveChatSubagentSnapshots(events);
+  return { events, snapshots: deriveChatSubagentSnapshots(events) };
 }
 
 export function deriveTurnDiffSummaries(events: AgentChatEventEnvelope[]): TurnDiffSummary[] {

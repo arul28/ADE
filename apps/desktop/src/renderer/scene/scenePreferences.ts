@@ -1,3 +1,5 @@
+import { isWebClientMode } from "../lib/webClientMode";
+
 /**
  * What fills the window behind the top bar, the welcome screen and the new
  * chat page.
@@ -8,8 +10,6 @@
  *    (the default: a new one each time the computer wakes).
  * With `showImage` off a picture only lends its colours to the mesh.
  */
-import { isWebClientMode } from "../lib/webClientMode";
-
 export type SceneMode = "gradient" | "plain" | "image" | "shuffle";
 export type SceneTexture = "none" | "dots" | "grain";
 /** When shuffle picks a new picture. `wake` also covers launch. */
@@ -67,7 +67,6 @@ export const DEFAULT_SCENE_PREFERENCES: ScenePreferences = {
 export const WEB_DEFAULT_SCENE_PREFERENCES: ScenePreferences = {
   ...DEFAULT_SCENE_PREFERENCES,
   mode: "plain",
-  showImage: false,
 };
 
 const MAX_EXCLUDED = 200;
@@ -75,14 +74,20 @@ const MAX_EXCLUDED = 200;
 /**
  * The shipped shuffle default, untouched. The web client persisted it on its
  * first load, so it is not a choice and reads as the web default. Any pick the
- * user made (`choiceMade`) stands, even when it is Shuffle again.
+ * user made (`choiceMade`) stands, even when it is Shuffle again. So does any
+ * tuned look (texture, dim, matchTheme, showImage) on top of that shuffle.
  */
 function isUntouchedShuffleDefault(raw: Record<string, unknown>): boolean {
+  const defaults = DEFAULT_SCENE_PREFERENCES;
   return raw.choiceMade !== true
     && raw.mode === "shuffle"
     && !(typeof raw.imageId === "string" && raw.imageId.trim())
     && raw.shuffleEvery !== "launch" && raw.shuffleEvery !== "hour" && raw.shuffleEvery !== "day"
-    && !(Array.isArray(raw.shuffleExclude) && raw.shuffleExclude.length > 0);
+    && !(Array.isArray(raw.shuffleExclude) && raw.shuffleExclude.length > 0)
+    && raw.texture !== "none" && raw.texture !== "grain"
+    && (raw.dim === undefined || raw.dim === defaults.dim)
+    && raw.matchTheme !== false
+    && raw.showImage !== false;
 }
 
 export function normalizeScenePreferences(value: unknown): ScenePreferences {

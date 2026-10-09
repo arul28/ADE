@@ -158,7 +158,13 @@ function readEntryGraph(outputDir) {
 
 function measureBundle(side) {
   if (!flag("--skip-build")) {
-    const build = spawnSync("npm", ["run", "build:webclient"], { cwd: side.desktopDir, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    // npm is npm.cmd on Windows, which only spawns through a shell.
+    const build = spawnSync("npm", ["run", "build:webclient"], {
+      cwd: side.desktopDir,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      shell: process.platform === "win32",
+    });
     if (build.status !== 0) throw new Error(`build:webclient failed in ${side.label} (exit ${build.status}): ${(build.stderr || build.stdout).slice(-2000)}`);
   }
   const graph = readEntryGraph(side.distDir);
@@ -196,11 +202,19 @@ function measureBundle(side) {
 // ---------- Chrome + CDP ----------
 
 function chromeBinary() {
+  // Windows installs land under %LOCALAPPDATA% (per-user) or either Program Files root.
+  const windowsRoots = [process.env.LOCALAPPDATA, process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"]].filter(Boolean);
   const candidates = [
     process.env.CHROME_PATH,
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ...windowsRoots.flatMap((root) => [
+      path.join(root, "Google", "Chrome", "Application", "chrome.exe"),
+      path.join(root, "Chromium", "Application", "chrome.exe"),
+    ]),
     "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
   ].filter(Boolean);
   const found = candidates.find((p) => fs.existsSync(p));
   if (!found) throw new Error("No Chrome found; set CHROME_PATH");
@@ -526,6 +540,11 @@ async function startDevServer(side) {
 }
 
 function stopDevServer(server) {
+  if (process.platform === "win32") {
+    // Windows has no process groups to signal; taskkill /T ends Vite and what it spawned.
+    spawnSync("taskkill", ["/pid", String(server.child.pid), "/T", "/F"], { stdio: "ignore" });
+    return;
+  }
   try {
     process.kill(-server.child.pid, "SIGTERM");
   } catch {
@@ -536,10 +555,14 @@ function stopDevServer(server) {
 // Other worktrees' Vite and Electron processes share this machine; record them
 // at start and end so a noisy run is visible in the numbers' context.
 function contention() {
-  const lines = spawnSync("ps", ["-axo", "command="], { encoding: "utf8" }).stdout.split("\n");
+  const loadavg1m = round1(os.loadavg()[0]);
+  // `ps` does not exist on Windows: the process counts are then unknown (null), not zero.
+  const ps = spawnSync("ps", ["-axo", "command="], { encoding: "utf8" });
+  if (typeof ps.stdout !== "string") return { loadavg1m, viteServers: null, chromeOrElectron: null };
+  const lines = ps.stdout.split("\n");
   const count = (re) => lines.filter((line) => re.test(line) && !/bench-webclient/.test(line)).length;
   return {
-    loadavg1m: round1(os.loadavg()[0]),
+    loadavg1m,
     viteServers: count(/vite(\.js)?\s.*--port/),
     chromeOrElectron: count(/Google Chrome|Chromium|Electron/),
   };
@@ -725,7 +748,7 @@ function loadAverage() {
 }
 
 async function measureSides() {
-  const transcript = pickTranscript();
+  const transcript = flag("--skip-chat") ? null : pickTranscript();
   fs.mkdirSync(workDir, { recursive: true });
 
   for (const side of sides) {

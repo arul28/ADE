@@ -21884,12 +21884,19 @@ export function createAgentChatService(args: {
     return candidate.finalSummary;
   };
 
+  /**
+   * Display text for a background task (its title or summary) may carry the
+   * command it runs. It is masked here, and only here: the raw command stays in
+   * the runtime records that run, resume, or stop the task.
+   */
+  const redactShownText = (text: string | undefined): string | undefined => (text ? redactCommandLine(text) : text);
+
   const backgroundTaskSummary = (
     summary: string | undefined,
     command: string | undefined,
     durationMs: unknown,
   ): string | undefined => {
-    const parts = [summary ?? (command ? `command: ${redactCommandLine(command)}` : undefined)];
+    const parts = [redactShownText(summary ?? (command ? `command: ${command}` : undefined))];
     if (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0) {
       parts.push(`duration: ${Math.round(durationMs)}ms`);
     }
@@ -21910,7 +21917,8 @@ export function createAgentChatService(args: {
     },
   ): void => {
     const terminal = isTerminalClaudeScheduledStatus(args.status);
-    const explicitTitle = compactString(args.title) ?? compactString(args.command);
+    // Masked before it is stored: the first title sticks, so a raw command here would stay on the row.
+    const explicitTitle = compactString(redactShownText(args.title)) ?? compactString(redactShownText(args.command));
     const storedTitle = runtime.backgroundTaskTitleById.get(args.taskId);
     // First meaningful title (the spawn description) wins and sticks: record it
     // on the first non-terminal update so terminal/stopped rows never fall back
@@ -32789,7 +32797,9 @@ export function createAgentChatService(args: {
         return;
       }
       const itemId = String(params.itemId ?? randomUUID());
-      const description = params.reason?.trim() || `Run command: ${params.command ?? "command"}`;
+      // Display text only: the approval headline is masked, the stored command below is not.
+      const shownCommand = typeof params.command === "string" ? redactCommandLine(params.command) : "command";
+      const description = params.reason?.trim() || `Run command: ${shownCommand}`;
       const request: PendingInputRequest = {
         requestId: String(id),
         itemId,

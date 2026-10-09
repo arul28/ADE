@@ -5369,9 +5369,9 @@ export function AgentChatPane({
   // derivation still holds for them, so the snapshots keep their identity.
   const subagentDerivationRef = useRef<ChatSubagentDerivation | null>(null);
   const selectedSubagentSnapshots = useMemo(() => {
-    const snapshots = deriveChatSubagentSnapshotsIncremental(subagentDerivationRef.current, selectedEvents);
-    subagentDerivationRef.current = { events: selectedEvents, snapshots };
-    return snapshots;
+    const derivation = deriveChatSubagentSnapshotsIncremental(subagentDerivationRef.current, selectedEvents);
+    subagentDerivationRef.current = derivation;
+    return derivation.snapshots;
   }, [selectedEvents]);
   /**
    * Session status of every chat the roster knows, keyed by id, so the actions

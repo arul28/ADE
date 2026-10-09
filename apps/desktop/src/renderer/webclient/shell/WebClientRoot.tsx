@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeeplinkTarget } from "../../../shared/deeplinks";
 import type { WebClientEnvironmentRecord, WebRelayAccess, AdeSyncClient } from "../sync";
 import { WebClientEnvStore } from "../sync";
@@ -73,16 +73,6 @@ function preloadWorkspaceModules(): void {
     import("../../state/appStore"),
   ]).catch(() => undefined);
 }
-
-/**
- * The signed-out screen, in its own chunk: a visitor without a session gets the
- * sign-in card without downloading the workspace the card sits in front of.
- */
-const WebSignInScreen = lazy(() =>
-  import("../../components/onboarding/WebSignInGate").then((module) => ({
-    default: module.WebSignInScreen,
-  })),
-);
 
 const PENDING_TARGET_KEY = "ade-web:pending-target";
 const ACCOUNT_LEASE_CHECK_INTERVAL_MS = 30_000;
@@ -172,7 +162,7 @@ function relayAccessFromAccount(
 type Phase =
   | { kind: "signing-in" }
   | { kind: "booting"; message: string }
-  | { kind: "signed-out" }
+  | { kind: "signed-out"; SignIn: React.ComponentType }
   | { kind: "ready"; AppRoot: React.ComponentType }
   | { kind: "error"; message: string };
 
@@ -468,9 +458,13 @@ export function WebClientRoot({
         // and the last-machine reconnect wait for a session, so a signed-out
         // visitor downloads neither. A pending deep link stays stashed for after
         // sign-in.
+        // The sign-in card lives in its own chunk, imported here so a failed
+        // download lands on the error screen with Retry instead of a blank page.
+        const { WebSignInScreen } = await import("../../components/onboarding/WebSignInGate");
+        if (disposed) return;
         Object.assign(window.ade, { account: createAccountNamespace(accountClient) });
         window.history.replaceState(null, "", WELCOME_PATH);
-        setPhase({ kind: "signed-out" });
+        setPhase({ kind: "signed-out", SignIn: WebSignInScreen });
         return;
       }
 
@@ -653,12 +647,10 @@ export function WebClientRoot({
           </button>
         </ScreenShell>
       );
-    case "signed-out":
-      return (
-        <Suspense fallback={<ProgressScreen title="Starting ADE" message="Checking your ADE account…" />}>
-          <WebSignInScreen />
-        </Suspense>
-      );
+    case "signed-out": {
+      const SignIn = phase.SignIn;
+      return <SignIn />;
+    }
     case "ready": {
       if (!workspaceContext) {
         return <ProgressScreen title="Starting ADE" message="Preparing your workspace…" />;
