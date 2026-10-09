@@ -26,15 +26,44 @@ export const MAX_CHAT_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 export const LEGACY_MAX_CHAT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 /**
- * Ceiling for image bytes a provider adapter inlines into a model request.
+ * Ceiling for non-image file bytes inlined into a model request by the
+ * streaming content builder (OpenCode and AI-SDK file parts, `buildStreamingUserContent`).
+ * ACP and the worker prompt text inline text under their own 512 KB limit instead.
+ * Images have their own, smaller limits below.
  *
- * Independent of the attachment cap on purpose. Staging a 50 MB screenshot for
- * Codex or handing its path to Droid is fine; base64-inlining it into an
- * Anthropic or OpenCode request is not — it triples the request body and the
- * provider rejects it. Raising the attachment cap must not raise this one, so
- * every inline path checks it and degrades to a path hint instead.
+ * Independent of the attachment cap on purpose. Staging a 50 MB file for
+ * Codex or handing its path to Droid is fine; base64-inlining it into a model
+ * request is not. Raising the attachment cap must not raise this one.
  */
-export const MAX_PROVIDER_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_PROVIDER_INLINE_FILE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * The real per-provider image limits, and the one budget ADE inlines to.
+ *
+ * - **Anthropic** (Claude, and any Claude model behind OpenCode, Pi, Droid or
+ *   ACP): an image over 5 MB *base64-encoded* (about 3.75 MB of raw bytes) is
+ *   rejected, and so is an image over 8000 px on a side — 2000 px once a
+ *   request carries more than 20 images, which a long chat's history reaches.
+ *   Claude Code checks this client-side and ends the whole turn with
+ *   `terminal_reason: "image_error"`. The model scales anything past 1568 px on
+ *   the long edge down before it looks at it, so those pixels buy nothing.
+ * - **OpenAI** (Codex, OpenCode/OpenAI): 20 MB per image. Codex is handed a
+ *   staged file path and resizes the image itself; ADE never inlines for it.
+ * - **Cursor, Pi, Droid, ACP agents**: no published limit; each may route to an
+ *   Anthropic model, so they get the Anthropic budget.
+ *
+ * So every image ADE inlines is first fitted to the strictest of these (see
+ * `fitImageForProviderInline`): at most {@link MAX_PROVIDER_INLINE_IMAGE_BYTES}
+ * raw bytes and at most {@link MAX_PROVIDER_INLINE_IMAGE_EDGE_PX} on a side.
+ * An image that cannot be fitted is sent as a path hint instead.
+ */
+export const MAX_PROVIDER_INLINE_IMAGE_BYTES = Math.floor(3.5 * 1024 * 1024);
+
+/** Longest side an inlined image may keep without being downscaled. */
+export const MAX_PROVIDER_INLINE_IMAGE_EDGE_PX = 2000;
+
+/** Long edge a downscaled image is fitted to: what Claude would scale it to. */
+export const PROVIDER_INLINE_IMAGE_TARGET_EDGE_PX = 1568;
 
 /**
  * The longest base64 string that can decode to at most `bytes` bytes.

@@ -1460,6 +1460,89 @@ describe("createAgentChatService", () => {
         text.includes("Exercise Claude streaming text."))).toHaveLength(1);
     });
 
+    it.each([
+      { path: "foreground turn", idleReader: false },
+      { path: "idle reader", idleReader: true },
+    ])("shows a Claude image_error turn as one readable failure on the $path, not as a reply", async ({ idleReader }) => {
+      const sdkSessionId = `sdk-image-error-${idleReader ? "idle" : "foreground"}`;
+      const sizeText = "Image base64 size (8.3MB) exceeds API limit (5MB). Please resize the image before sending.";
+      const imageErrorFrames = [
+        {
+          type: "assistant",
+          error: "invalid_request",
+          message: { model: "<synthetic>", content: [{ type: "text", text: sizeText }] },
+        },
+        {
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          terminal_reason: "image_error",
+          result: sizeText,
+          errors: [],
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      ];
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseIdle!: () => void;
+      const idleGate = new Promise<void>((resolve) => { releaseIdle = resolve; });
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: sdkSessionId, slash_commands: [] };
+            return;
+          }
+          if (!idleReader) {
+            for (const message of imageErrorFrames) yield message;
+            return;
+          }
+          // The foreground turn ends on a clean result; the image failure
+          // arrives later, while the query is read by the idle reader.
+          yield { type: "result", subtype: "success", is_error: false, session_id: sdkSessionId, usage: { input_tokens: 1, output_tokens: 1 } };
+          await idleGate;
+          for (const message of imageErrorFrames) yield message;
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      await service.runSessionTurn({ sessionId: session.id, text: "Attach the screenshot." });
+      if (idleReader) releaseIdle();
+
+      const isImageErrorDone = (event: AgentChatEventEnvelope["event"]): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> =>
+        event.type === "done" && event.terminalReason === "image_error";
+      await waitForCondition(() => events.some((entry) => isImageErrorDone(entry.event)), "the image_error turn to settle");
+      const failedDone = events.map((entry) => entry.event).find(isImageErrorDone);
+
+      const errors = events.map((entry) => entry.event).filter((event) => event.type === "error");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({
+        type: "error",
+        detail: expect.stringContaining("8.3MB"),
+        errorInfo: { presentation: expect.any(Object) },
+      });
+      expect(failedDone).toMatchObject({
+        type: "done",
+        status: "failed",
+        terminalReason: "image_error",
+      });
+      expect(failedDone?.model).not.toBe("<synthetic>");
+      expect(events.some((entry) => entry.event.type === "text" && entry.event.text.includes("exceeds API limit"))).toBe(false);
+      service.forceDisposeAll();
+    });
+
     it("does not duplicate Claude thinking when the final assistant message repeats streamed content", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);

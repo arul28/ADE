@@ -12,11 +12,14 @@ export function UserMessageIssueContext({
   contextAttachments,
   mode,
   sessionId,
+  accepted = false,
 }: {
   attachments: AgentChatFileRef[];
   contextAttachments: AgentChatContextAttachment[];
   mode: ChatSurfaceMode;
   sessionId?: string | null;
+  /** The message reached the agent; image previews show a small check. */
+  accepted?: boolean;
 }) {
   // The machine that owns this chat, so attachment previews read from it.
   // Taken from the chat's runtime scope rather than a prop: this renders inside
@@ -58,6 +61,7 @@ export function UserMessageIssueContext({
         contextAttachments={visibleContextAttachments}
         machinePin={machinePin}
         mode={mode}
+        accepted={accepted}
         className="mt-1 px-0 py-0"
         onOpenContext={(attachment) => {
           if (attachment.type === "linear_issue") {

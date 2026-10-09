@@ -21734,10 +21734,46 @@ function machineRuntimeMismatchReason(
     : failed.join("; ");
 }
 
+/**
+ * Whether this CLI may treat the brain on `socketPath` as its own: check its
+ * build and, when it is stale, shut it down and start a replacement.
+ *
+ * Only the machine's own socket is the CLI's to manage. A brain on any other
+ * socket belongs to whoever started it — `npm run dev:desktop`, a manual
+ * `ade runtime run`, a test home — and an `ade` that reaches it, whether by
+ * `--socket` or by `ADE_RUNTIME_SOCKET_PATH`, must connect to it as it is.
+ * Before this, an installed `ade` pointed at a lane's dev socket through the
+ * env var saw a different build, shut the dev brain down and started the
+ * installed one in its place, so the dev app silently ran released code and
+ * its chats lost their turns (2026-10-09).
+ */
 export function shouldEnforceMachineRuntimeBuildCompatibility(
-  socketPathOverride?: string | null,
+  socketPathOverride: string | null | undefined,
+  socketPath: string,
 ): boolean {
-  return !socketPathOverride?.trim();
+  if (socketPathOverride?.trim()) return false;
+  // A TCP brain is never replaced, but its build and version checks still run.
+  if (socketPath.startsWith("tcp://")) return true;
+  return isMachineDefaultRuntimeSocket(socketPath);
+}
+
+/** A live brain on a socket this CLI does not manage did not match it; it stays up. */
+class UnmanagedRuntimeMismatchError extends Error {
+  constructor(socketPath: string, mismatch: string) {
+    super(
+      `ADE runtime at ${socketPath}: ${mismatch}. This ade did not start it, so it is left running. Use the ade that started it, or stop it first.`,
+    );
+    this.name = "UnmanagedRuntimeMismatchError";
+  }
+}
+
+function isMachineDefaultRuntimeSocket(socketPath: string): boolean {
+  const defaultSocketPath = normalizeRuntimeSocketPath(resolveMachineAdeLayout().socketPath);
+  const candidate = normalizeRuntimeSocketPath(socketPath);
+  if (isAdeRuntimeNamedPipePath(candidate) || isAdeRuntimeNamedPipePath(defaultSocketPath)) {
+    return namedPipeComparisonKey(candidate) === namedPipeComparisonKey(defaultSocketPath);
+  }
+  return candidate === defaultSocketPath;
 }
 
 function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): {
@@ -22074,11 +22110,12 @@ async function connectMachineRuntimeDaemon(
   const isTcpSocket = socketPath.startsWith("tcp://");
   const isLocalRuntime = isLocalRuntimeSocketPath(socketPath);
   const enforceBuildCompatibility =
-    shouldEnforceMachineRuntimeBuildCompatibility(socketPathOverride);
+    shouldEnforceMachineRuntimeBuildCompatibility(socketPathOverride, socketPath);
   const expectedBuildHash = isTcpSocket || !enforceBuildCompatibility
     ? null
     : await resolveExpectedMachineRuntimeBuildHash();
-  const preferServiceRepair = shouldRepairMachineRuntimeServiceBeforeSpawn(
+  // Service install and uninstall only ever act for the machine's own socket.
+  const preferServiceRepair = enforceBuildCompatibility && shouldRepairMachineRuntimeServiceBeforeSpawn(
     socketPath,
     socketPathOverride,
   );
@@ -22113,6 +22150,14 @@ async function connectMachineRuntimeDaemon(
         throw new Error(
           `ADE runtime ${mismatch}.`,
         );
+      }
+      // Off the machine socket the build and version checks are skipped, so a
+      // mismatch that reaches here is a role mismatch. The brain is left running:
+      // this CLI does not manage it (see shouldEnforceMachineRuntimeBuildCompatibility).
+      // An explicit override that names the machine socket keeps the replace path.
+      if (!enforceBuildCompatibility && !isMachineDefaultRuntimeSocket(socketPath)) {
+        client.close();
+        throw new UnmanagedRuntimeMismatchError(socketPath, mismatch);
       }
       const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
         localRuntime: isLocalRuntime,
@@ -22172,6 +22217,7 @@ async function connectMachineRuntimeDaemon(
     return client;
   } catch (firstError) {
     if (firstError instanceof RuntimeSelfShutdownBlockedError) throw firstError;
+    if (firstError instanceof UnmanagedRuntimeMismatchError) throw firstError;
     if (!allowSpawn) throw firstError;
     const repaired = await repairServiceConnection();
     if (repaired) return repaired;

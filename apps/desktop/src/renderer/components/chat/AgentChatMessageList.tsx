@@ -31,9 +31,7 @@ import {
   ShieldCheck,
   CopySimple,
   Brain,
-  Image,
   Code,
-  Paperclip,
   Target,
   Clock,
   Moon,
@@ -62,7 +60,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import { WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
+import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -1071,6 +1069,17 @@ function parseLeadingIosContextChips(text: string): { chips: string[]; rest: str
   return { chips, rest: text.slice(i) };
 }
 
+/**
+ * Whether a user message's attachments reached the agent. Only a state that
+ * proves delivery counts: `processed`, `delivered` or `inline`. A message with
+ * no delivery state predates the field and was delivered. `accepted` ("Steering…",
+ * not read yet), `queued`, `unprocessed` and `failed` do not get the check.
+ */
+function userMessageAttachmentsAccepted(event: Extract<AgentChatEvent, { type: "user_message" }>): boolean {
+  const state = event.deliveryState;
+  return state === undefined || state === "processed" || state === "delivered" || state === "inline";
+}
+
 function UserMessageSendConfirmations({
   event,
 }: {
@@ -1078,37 +1087,14 @@ function UserMessageSendConfirmations({
 }) {
   if (event.deliveryState === "queued") return null;
 
-  const attachments = event.attachments ?? [];
   const contextAttachments = event.contextAttachments ?? [];
-  const hasImage = attachments.some((a) => a.type === "image");
-  const hasFile = attachments.some((a) => a.type === "file");
   const hasIssueContext = contextAttachments.some((a) => a.type === "linear_issue" || a.type === "github_issue");
-  const showFilesRow = hasImage || hasFile;
   const showSimRow = event.text.startsWith(IOS_SIMULATOR_CONTEXT_PREFIX);
 
-  if (!showFilesRow && !showSimRow && !hasIssueContext) return null;
-
-  const attachmentCount = attachments.length;
-  const attachmentLabel = attachmentCount <= 1 ? "Attachment analyzed" : "Attachments analyzed";
+  if (!showSimRow && !hasIssueContext) return null;
 
   return (
     <div className="mt-2 flex flex-col gap-1" data-testid="user-message-send-confirmations">
-      {showFilesRow ? (
-        <motion.div
-          className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
-          data-testid="user-message-attachment-analyzed"
-          initial={{ opacity: 0, y: 2 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.15, ease: "easeOut" }}
-        >
-          {hasImage ? (
-            <Image size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
-          ) : (
-            <Paperclip size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
-          )}
-          <span>{attachmentLabel}</span>
-        </motion.div>
-      ) : null}
       {showSimRow ? (
         <motion.div
           className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
@@ -2113,7 +2099,13 @@ function isKnownModelRefForDescriptor(desc: ModelDescriptor, value?: string): bo
     || (desc.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalized);
 }
 
-function resolveModelLabel(modelId?: string, model?: string): string | null {
+/** The Claude placeholder names no model, so it is treated as no model at all. */
+function realModelName(model?: string): string | undefined {
+  return model === CLAUDE_SYNTHETIC_MODEL ? undefined : model;
+}
+
+function resolveModelLabel(modelId?: string, rawModel?: string): string | null {
+  const model = realModelName(rawModel);
   if (modelId) {
     const desc = getModelById(modelId);
     if (desc) {
@@ -2137,13 +2129,14 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
   return null;
 }
 
-function resolveModelMeta(modelId?: string, model?: string): {
+function resolveModelMeta(modelId?: string, rawModel?: string): {
   label: string | null;
   family: string | null;
   cliCommand: string | null;
   modelId: string | null;
   providerModelId: string | null;
 } {
+  const model = realModelName(rawModel);
   const key = modelId ?? model;
   const descriptor = key ? (getModelById(key) ?? resolveModelDescriptor(key)) : undefined;
   const idHint = String(modelId ?? model ?? "").trim();
@@ -2804,6 +2797,7 @@ function renderEvent(
               contextAttachments={event.contextAttachments ?? []}
               mode={options?.surfaceMode ?? "standard"}
               sessionId={options?.sessionId}
+              accepted={userMessageAttachmentsAccepted(event)}
             />
           ) : null}
           <UserMessageSendConfirmations event={event} />
@@ -4488,7 +4482,7 @@ function DoneTurnDivider({
     >
         {!completed && modelLabel ? (
           <span className="inline-flex items-center gap-1.5 font-sans">
-            <ModelGlyph modelId={event.modelId} model={event.model} size={12} className="shrink-0" />
+            <ModelGlyph modelId={event.modelId} model={realModelName(event.model)} size={12} className="shrink-0" />
             <span className="font-medium">{modelLabel}</span>
           </span>
         ) : null}

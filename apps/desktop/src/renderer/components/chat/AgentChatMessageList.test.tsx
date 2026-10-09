@@ -1549,7 +1549,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
-  it("shows attachment and simulator send confirmations for delivered user messages with context", async () => {
+  it("shows the simulator send confirmation for delivered user messages with attachments", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1569,7 +1569,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(screen.getByTestId("user-message-send-confirmations")).toBeTruthy();
     });
-    expect(screen.getByTestId("user-message-attachment-analyzed").textContent).toContain("Attachments analyzed");
     expect(screen.getByTestId("user-message-simulator-analyzed").textContent).toContain("Attachments from simulator analyzed");
   });
 
@@ -1594,9 +1593,38 @@ describe("AgentChatMessageList transcript rendering", () => {
   });
 
   it.each([
+    { label: "delivered", deliveryState: "delivered", sent: true },
+    { label: "processed", deliveryState: "processed", sent: true },
+    { label: "inline", deliveryState: "inline", sent: true },
+    { label: "no delivery state", deliveryState: undefined, sent: true },
+    { label: "accepted", deliveryState: "accepted", sent: false },
+    { label: "queued", deliveryState: "queued", sent: false },
+    { label: "unprocessed", deliveryState: "unprocessed", sent: false },
+    { label: "failed", deliveryState: "failed", sent: false },
+  ] as const)("marks an image thumbnail as sent only when the message is $label", async ({ deliveryState, sent }) => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-04-28T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Look at this screenshot",
+          ...(deliveryState !== undefined ? { deliveryState } : {}),
+          attachments: [{ path: "/tmp/shot.png", type: "image" }],
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Open shot.png" })).toBeTruthy();
+    });
+    expect(Boolean(screen.queryByTestId("chat-image-attachment-accepted"))).toBe(sent);
+  });
+
+  it.each([
     { label: "empty", displayText: "" },
     { label: "missing", displayText: undefined },
-  ])("uses the paperclip icon line for pasted files when delivered with $label display text", async ({ displayText }) => {
+  ])("shows the pasted file as a chip and hides its body when delivered with $label display text", async ({ displayText }) => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1612,10 +1640,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     await waitFor(() => {
-      expect(screen.getByTestId("user-message-attachment-analyzed")).toBeTruthy();
+      expect(screen.getByText("doc.txt")).toBeTruthy();
     });
-    expect(screen.getByTestId("user-message-attachment-analyzed").textContent).toContain("Attachment analyzed");
-    expect(screen.getByText("doc.txt")).toBeTruthy();
     expect(screen.queryByText(/private pasted source body/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy message" })).toBeNull();
   });
