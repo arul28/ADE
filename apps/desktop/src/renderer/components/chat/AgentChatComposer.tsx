@@ -38,6 +38,7 @@ import {
   type PendingInputRequest,
   type AgentChatModelCatalogRefreshProvider,
   type DraftEntry,
+  type DraftScheduleInput,
 } from "../../../shared/types";
 import {
   AGENT_CHAT_STOP_MODES,
@@ -211,6 +212,11 @@ import {
   ComposerDrafts,
   type ComposerDraftsHandle,
 } from "./ComposerDrafts";
+import {
+  DraftSchedulePopover,
+  type DraftScheduleConfig,
+  type DraftScheduleTargets,
+} from "./DraftSchedulePopover";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { PENDING_STEER_DND_MIME, usePendingSteerReorder, type PendingSteerReorder } from "./usePendingSteerReorder";
@@ -935,6 +941,7 @@ function ComposerIdleSendButton({
   backgroundBusy,
   onSend,
   onSendInBackground,
+  onSchedule,
 }: {
   label: string;
   description: string;
@@ -946,6 +953,8 @@ function ComposerIdleSendButton({
   backgroundBusy: boolean;
   onSend: () => void;
   onSendInBackground: () => void;
+  /** Absent hides the Scheduled send row entirely. */
+  onSchedule?: (() => void) | undefined;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-idle-send-menu]");
   useEffect(() => {
@@ -973,6 +982,16 @@ function ComposerIdleSendButton({
       enabled: backgroundEnabled,
       onSelect: onSendInBackground,
     },
+    ...(onSchedule
+      ? [{
+        id: "schedule",
+        label: "Scheduled send…",
+        detail: "Send this prompt later, with the settings it has now.",
+        icon: <Clock size={13} weight="bold" />,
+        enabled: sendEnabled,
+        onSelect: onSchedule,
+      }]
+      : []),
   ];
 
   return (
@@ -1948,6 +1967,7 @@ export function AgentChatComposer({
   onPromptHistoryNavigate,
   attachments,
   composerMachineBinding = null,
+  scheduledSendContext = null,
   machineChipAction = null,
   cursorRuntime = null,
   modelRuntimePin = null,
@@ -2315,6 +2335,18 @@ export function AgentChatComposer({
   launchPromptClipboardNoticeEnabled?: boolean;
   onOpenLaunchPromptClipboardSettings?: () => void;
   sessionId?: string | null;
+  /**
+   * Enables the "Scheduled send" row in the send menu. Carries the lane this
+   * composer belongs to plus the lanes a new-chat schedule may start in;
+   * absent (personal chats, embedders, a pane with no lane context) leaves the
+   * row out entirely rather than offering a send that cannot be aimed.
+   */
+  scheduledSendContext?: {
+    laneId: string | null;
+    laneName: string | null;
+    lanes: Array<{ id: string; name: string }>;
+    machineName: string | null;
+  } | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
   parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null; fastMode?: boolean }>;
@@ -2392,6 +2424,11 @@ export function AgentChatComposer({
   const cursorCloudSessionActive = (cloudModeActive || cursorRuntime === "cloud") && cloudLaunch?.provider !== "devin";
   const draftsRef = useRef<ComposerDraftsHandle>(null);
   const draftsButtonEnabled = useRootAppStore((state) => state.draftsButtonEnabled);
+  const [scheduleRequest, setScheduleRequest] = useState<
+    { mode: "composer" } | { mode: "draft"; entry: DraftEntry } | null
+  >(null);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState(false);
@@ -5930,6 +5967,80 @@ export function AgentChatComposer({
   const activeTurnHasContent =
     hasComposerContextContent || (allowAttachmentOnlySubmit && attachments.length > 0);
 
+  /**
+   * The permission mode this composer would actually apply. It is per-provider
+   * — a Claude chat's "plan" and an OpenCode chat's mode are different
+   * vocabularies — so the schedule captures the one that belongs to the
+   * provider it captured, and nothing when this provider has no such control.
+   */
+  const schedulePermissionMode = useMemo((): string | null => {
+    switch (sp) {
+      case "claude": return cpmUse ?? null;
+      case "opencode": return opmUse ?? null;
+      case "droid": return dpmUse ?? null;
+      // Cursor's control is a whole config snapshot rather than one mode name,
+      // so there is no single value to freeze here; the chat keeps its own.
+      default: return null;
+    }
+  }, [cpmUse, dpmUse, opmUse, sp]);
+
+  const scheduleTargets = useMemo((): DraftScheduleTargets => ({
+    sessionId: sessionId ?? null,
+    laneId: scheduledSendContext?.laneId ?? null,
+    laneName: scheduledSendContext?.laneName ?? null,
+    // The binding key is this machine's identity for the composer's project;
+    // the draft row stores it so only that machine delivers the send.
+    machineKey: composerMachineBinding?.key ?? null,
+    machineName: scheduledSendContext?.machineName ?? composerMachineBinding?.displayName ?? null,
+  }), [composerMachineBinding, scheduledSendContext, sessionId]);
+
+  const scheduleConfig = useMemo((): DraftScheduleConfig => ({
+    provider: sp ?? null,
+    modelId: modelId ?? null,
+    // The runtime-facing model string lives with the launch builder, not here;
+    // the popover falls back to the model id, which the host accepts.
+    model: null,
+    permissionMode: schedulePermissionMode,
+    thinking: reasoningEffort ?? null,
+  }), [modelId, reasoningEffort, schedulePermissionMode, sp]);
+
+  const openComposerSchedule = useCallback(() => {
+    setScheduleError(null);
+    setScheduleRequest({ mode: "composer" });
+  }, []);
+
+  const openDraftSchedule = useCallback((entry: DraftEntry) => {
+    setScheduleError(null);
+    setScheduleRequest({ mode: "draft", entry });
+  }, []);
+
+  const submitSchedule = useCallback(async (input: DraftScheduleInput) => {
+    const request = scheduleRequest;
+    if (!request) return;
+    setScheduleBusy(true);
+    setScheduleError(null);
+    try {
+      if (request.mode === "draft") {
+        const updated = await window.ade.agentChat.drafts.update(
+          { id: request.entry.id, schedule: input },
+          composerMachineBinding,
+        );
+        if (!updated) throw new Error("That draft was taken on another machine.");
+      } else {
+        const created = await draftsRef.current?.activateScheduled(input);
+        if (!created) throw new Error("There was nothing to schedule.");
+      }
+      draftsRef.current?.reload();
+      setScheduleRequest(null);
+    } catch (scheduleFailure) {
+      setScheduleError(scheduleFailure instanceof Error
+        ? scheduleFailure.message
+        : "Could not schedule this send.");
+    } finally {
+      setScheduleBusy(false);
+    }
+  }, [composerMachineBinding, scheduleRequest]);
+
   const submitComposerDraft = useCallback(() => {
     if (pendingInput?.blocking) {
       return;
@@ -7041,7 +7152,32 @@ export function AgentChatComposer({
             onDraftChange={onDraftChange}
             onAddAttachment={onAddAttachment}
             onRemoveAttachment={handleRemoveAttachment}
+            onRequestSchedule={scheduledSendContext ? openDraftSchedule : undefined}
           /> : null}
+
+          {scheduleRequest && scheduledSendContext ? (() => {
+            // Anchored to the send caret, so scheduling reads as a send mode
+            // rather than a separate panel appearing from nowhere.
+            const anchor = document.querySelector<HTMLButtonElement>(
+              '[data-testid="composer-send-mode-button"]',
+            );
+            if (!anchor) return null;
+            return (
+              <ViewportOverlayPortal layer="popover">
+                <div className="pointer-events-auto absolute" style={composerSplitMenuPosition(anchor)}>
+                  <DraftSchedulePopover
+                    targets={scheduleTargets}
+                    config={scheduleConfig}
+                    lanes={scheduledSendContext.lanes}
+                    busy={scheduleBusy}
+                    error={scheduleError}
+                    onSubmit={(input) => { void submitSchedule(input); }}
+                    onClose={() => setScheduleRequest(null)}
+                  />
+                </div>
+              </ViewportOverlayPortal>
+            );
+          })() : null}
 
           {!parallelChatMode && compactFirstOffer ? <SmartTooltip forceEnabled side="top" content={{ label: "Compact first", description: `The cache expired after an hour. Compacting first re-sends about ${formatContextTokens(compactFirstOffer.estimatedPostTokens)} tokens instead of ${formatContextTokens(compactFirstOffer.contextTokens)}.` }}>
             <button type="button" aria-pressed={compactFirstEnabled} onClick={() => onCompactFirstChange?.(!compactFirstEnabled)} className={cn("rounded-full px-2 py-1 text-[10px] transition-colors", compactFirstEnabled ? "bg-accent/10 text-accent" : "bg-fg/5 text-fg/50 hover:bg-fg/10")}>
@@ -7336,6 +7472,7 @@ export function AgentChatComposer({
                     backgroundBusy={backgroundLaunchBusy}
                     onSend={submitComposerDraft}
                     onSendInBackground={onSubmitInBackground!}
+                    onSchedule={scheduledSendContext ? openComposerSchedule : undefined}
                   />,
                 );
               })()

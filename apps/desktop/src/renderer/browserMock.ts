@@ -101,6 +101,7 @@ import {
   type AgentChatMoveSteerArgs,
   MAX_DRAFTS,
   type DraftCreateArgs,
+  type DraftUpdateArgs,
   type DraftEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
@@ -6580,10 +6581,60 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             provider: args.provider ?? null,
             modelId: args.modelId ?? null,
             createdAt: new Date().toISOString(),
+            ...(args.schedule
+              ? {
+                kind: "scheduled" as const,
+                status: "scheduled" as const,
+                scheduledAt: args.schedule.scheduledAt,
+                deliveryPolicy: args.schedule.deliveryPolicy ?? "wait",
+                targetKind: args.schedule.targetKind,
+                targetSessionId: args.schedule.targetSessionId ?? null,
+                targetLaneId: args.schedule.targetLaneId ?? null,
+                targetMachineKey: args.schedule.targetMachineKey ?? null,
+                permissionMode: args.schedule.permissionMode ?? null,
+              }
+              : { kind: "draft" as const, status: "draft" as const }),
           };
           browserMockDrafts.unshift(entry);
           browserMockDrafts.splice(MAX_DRAFTS);
           return entry;
+        },
+        update: async (
+          args: DraftUpdateArgs,
+          _pin?: OpenProjectBinding | null,
+        ): Promise<DraftEntry | null> => {
+          const index = browserMockDrafts.findIndex((entry) => entry.id === args.id);
+          if (index < 0) return null;
+          const current = browserMockDrafts[index]!;
+          const next: DraftEntry = {
+            ...current,
+            ...(args.text === undefined ? {} : { text: args.text }),
+            updatedAt: new Date().toISOString(),
+            ...(args.unschedule
+              ? { kind: "draft" as const, status: "draft" as const, scheduledAt: null }
+              : args.schedule
+                ? {
+                  kind: "scheduled" as const,
+                  status: "scheduled" as const,
+                  scheduledAt: args.schedule.scheduledAt,
+                  deliveryPolicy: args.schedule.deliveryPolicy ?? "wait",
+                  targetKind: args.schedule.targetKind,
+                  targetSessionId: args.schedule.targetSessionId ?? null,
+                  targetLaneId: args.schedule.targetLaneId ?? null,
+                  targetMachineKey: args.schedule.targetMachineKey ?? null,
+                }
+                : {}),
+          };
+          browserMockDrafts[index] = next;
+          return next;
+        },
+        // Claim-first: the row is consumed and handed back, and a second claim
+        // finds nothing — the same shape the real runtime returns.
+        claim: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
+          const index = browserMockDrafts.findIndex((entry) => entry.id === id);
+          if (index < 0) return null;
+          const [claimed] = browserMockDrafts.splice(index, 1);
+          return claimed ? { ...claimed } : null;
         },
         delete: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
           const index = browserMockDrafts.findIndex((entry) => entry.id === id);

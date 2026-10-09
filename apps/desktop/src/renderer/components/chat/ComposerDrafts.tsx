@@ -1,10 +1,14 @@
 import {
+  ArrowUUpLeft,
   BookmarkSimple,
+  CalendarBlank,
   Check,
   File,
   Image,
+  PencilSimple,
   SpinnerGap,
   Trash,
+  WarningCircle,
 } from "@phosphor-icons/react";
 import React, {
   forwardRef,
@@ -19,19 +23,22 @@ import React, {
 import { createPortal } from "react-dom";
 import {
   type AgentChatFileRef,
+  type DraftEntry,
+  type DraftScheduleInput,
+  type DraftStatus,
   MAX_DRAFT_ATTACHMENTS,
   MAX_DRAFTS,
+  MAX_SCHEDULED_DRAFTS,
   type OpenProjectBinding,
-  type DraftEntry,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
-const STASH_SNIPPET_MAX_CHARS = 110;
-const STASH_MENU_MAX_WIDTH = 380;
-const STASH_MENU_VIEWPORT_MARGIN = 16;
-const STASH_MENU_GAP = 10;
+const DRAFT_SNIPPET_MAX_CHARS = 110;
+const DRAFTS_MENU_MAX_WIDTH = 380;
+const DRAFTS_MENU_VIEWPORT_MARGIN = 16;
+const DRAFTS_MENU_GAP = 10;
 const LOCAL_RUNTIME_PROJECT_UNAVAILABLE_MESSAGE =
   "Local runtime project is not available for this window.";
 
@@ -39,8 +46,12 @@ export type ComposerDraftsHandle = {
   activate: () => void;
   /** Save without clearing the active draft; used by keyboard history recall. */
   activatePreservingDraft: () => Promise<DraftEntry | null>;
+  /** Save the composer as a scheduled draft, with its attachments staged. */
+  activateScheduled: (input: DraftScheduleInput) => Promise<DraftEntry | null>;
   /** Consume the auto-saved entry when keyboard history restores its draft. */
   consume: (entry: DraftEntry) => Promise<boolean>;
+  /** Re-read the list from the runtime (after an edit made elsewhere). */
+  reload: () => void;
   handleMenuKeyDown: (event: {
     key: string;
     metaKey: boolean;
@@ -48,10 +59,12 @@ export type ComposerDraftsHandle = {
   }) => boolean;
 };
 
+export type DraftFilter = "all" | "scheduled" | "needs-you";
+
 function promptSnippet(text: string): string {
   const normalized = text.trim().replace(/\s+/g, " ");
-  if (normalized.length <= STASH_SNIPPET_MAX_CHARS) return normalized;
-  return `${normalized.slice(0, STASH_SNIPPET_MAX_CHARS)}…`;
+  if (normalized.length <= DRAFT_SNIPPET_MAX_CHARS) return normalized;
+  return `${normalized.slice(0, DRAFT_SNIPPET_MAX_CHARS)}…`;
 }
 
 function relativeTime(iso: string): string {
@@ -65,6 +78,22 @@ function relativeTime(iso: string): string {
   if (hours < 24) return `${hours}h`;
   const days = Math.round(hours / 24);
   return `${days}d`;
+}
+
+/** "9:00 AM", "9:00 AM tomorrow", or a date once it is further out. */
+function fireTimeLabel(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const fireAt = Date.parse(iso);
+  if (!Number.isFinite(fireAt)) return "";
+  const when = new Date(fireAt);
+  const clock = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(when);
+  const dayKey = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  const today = new Date();
+  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+  if (dayKey(when) === dayKey(today)) return clock;
+  if (dayKey(when) === dayKey(tomorrow)) return `${clock} tomorrow`;
+  const date = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(when);
+  return `${date}, ${clock}`;
 }
 
 function providerLabel(entry: DraftEntry): string | null {
@@ -83,38 +112,64 @@ function sameAttachment(left: AgentChatFileRef, right: AgentChatFileRef): boolea
     && (left.type !== "image-url" || right.type !== "image-url" || left.url === right.url);
 }
 
-function stashAttachments(entry: DraftEntry): AgentChatFileRef[] {
+function draftAttachments(entry: DraftEntry): AgentChatFileRef[] {
   return entry.attachments ?? [];
 }
 
-function isStashableAttachment(attachment: AgentChatFileRef): boolean {
+function isDraftableAttachment(attachment: AgentChatFileRef): boolean {
   return attachment.type === "image" || attachment.type === "image-url";
 }
 
 function base64FromDataUrl(dataUrl: string): string {
   const separator = dataUrl.indexOf(",");
   if (separator < 0 || !/;base64$/i.test(dataUrl.slice(0, separator))) {
-    throw new Error("The attached image could not be prepared for stashing.");
+    throw new Error("The attached image could not be prepared for saving.");
   }
   const base64 = dataUrl.slice(separator + 1);
   if (!base64) throw new Error("The attached image is empty.");
   return base64;
 }
 
-function stashEntryLabel(entry: DraftEntry, attachments: AgentChatFileRef[]): string {
+function draftEntryLabel(entry: DraftEntry, attachments: AgentChatFileRef[]): string {
   const snippet = promptSnippet(entry.text);
   if (snippet) return snippet;
   if (attachments.length === 1) return attachmentName(attachments[0]!.path);
-  const attachmentCount = stashAttachmentCount(entry);
-  return attachmentCount === 1 ? "1 stashed image" : `${attachmentCount} stashed images`;
+  const attachmentCount = draftAttachmentCount(entry);
+  return attachmentCount === 1 ? "1 image" : `${attachmentCount} images`;
 }
 
-function stashAttachmentCount(entry: DraftEntry): number {
-  return entry.attachmentCount ?? stashAttachments(entry).length;
+function draftAttachmentCount(entry: DraftEntry): number {
+  return entry.attachmentCount ?? draftAttachments(entry).length;
 }
 
-function stashAttachmentsUnavailable(entry: DraftEntry): boolean {
-  return entry.attachmentsAvailable === false && stashAttachmentCount(entry) > 0;
+function draftAttachmentsUnavailable(entry: DraftEntry): boolean {
+  return entry.attachmentsAvailable === false && draftAttachmentCount(entry) > 0;
+}
+
+function isScheduledEntry(entry: DraftEntry): boolean {
+  return entry.kind === "scheduled";
+}
+
+/** A send the user has to act on: it could not go out, or it never happened. */
+function needsAttention(entry: DraftEntry): boolean {
+  return entry.status === "blocked" || entry.status === "missed";
+}
+
+function isPendingSchedule(entry: DraftEntry): boolean {
+  return entry.status === "scheduled" || entry.status === "sending" || entry.status === "blocked";
+}
+
+/** What a row says on its second line. Never blank: it is the row's status. */
+function draftMetaLine(entry: DraftEntry): string {
+  if (needsAttention(entry)) return entry.lastError?.trim() || "Could not be sent.";
+  if (isScheduledEntry(entry)) {
+    const status: DraftStatus = entry.status ?? "scheduled";
+    if (status === "sent") return `Sent ${relativeTime(entry.firedAt ?? entry.scheduledAt ?? entry.createdAt)}`;
+    if (status === "cancelled") return "Cancelled";
+    if (status === "sending") return "Sending now…";
+    return fireTimeLabel(entry.scheduledAt) || "Scheduled";
+  }
+  return relativeTime(entry.updatedAt ?? entry.createdAt);
 }
 
 function normalizedProjectRoot(rootPath: string): string {
@@ -136,7 +191,7 @@ function hasLocalProjectRoot(
   );
 }
 
-async function isStaleLocalDraftsRequest(
+async function isStaleLocalDraftRequest(
   error: unknown,
   binding: OpenProjectBinding | null,
 ): Promise<boolean> {
@@ -159,8 +214,8 @@ async function isStaleLocalDraftsRequest(
 function draftErrorMessage(error: unknown, fallback: string): string {
   const raw = error instanceof Error ? error.message.trim() : "";
   if (!raw) return fallback;
-  if (/requires elevated role|(?:list|create|delete)Drafts/i.test(raw)) {
-    return "Stashed prompts are temporarily unavailable on this computer.";
+  if (/requires elevated role|(?:list|create|delete|update|claim)Drafts?/i.test(raw)) {
+    return "Drafts are temporarily unavailable on this computer.";
   }
   return raw
     .replace(/^Error invoking remote method '[^']+':\s*/i, "")
@@ -168,7 +223,7 @@ function draftErrorMessage(error: unknown, fallback: string): string {
     .trim() || fallback;
 }
 
-function StashImageThumbnail({
+function DraftImageThumbnail({
   attachment,
   composerMachineBinding,
 }: {
@@ -225,6 +280,8 @@ export type ComposerDraftsProps = {
   onDraftChange: (value: string) => void;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
   onRemoveAttachment: (path: string) => void;
+  /** Opens the schedule form for a draft the user picked out of the list. */
+  onRequestSchedule?: ((entry: DraftEntry) => void) | undefined;
 };
 
 export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsProps>(function ComposerDrafts({
@@ -240,6 +297,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   onDraftChange,
   onAddAttachment,
   onRemoveAttachment,
+  onRequestSchedule,
 }, ref) {
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -251,7 +309,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   latestAttachmentsRef.current = attachments;
   const latestComposerMachineBindingRef = useRef(composerMachineBinding);
   latestComposerMachineBindingRef.current = composerMachineBinding;
-  const [stashSnapshot, setStashSnapshot] = useState<{
+  const [draftSnapshot, setDraftSnapshot] = useState<{
     entries: DraftEntry[];
     ownerBinding: OpenProjectBinding | null;
   }>({
@@ -259,29 +317,40 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     ownerBinding: null,
   });
   const [menuOpen, setMenuOpen] = useState(false);
+  const [filter, setFilter] = useState<DraftFilter>("all");
+  const [openEntry, setOpenEntry] = useState<DraftEntry | null>(null);
+  const [editText, setEditText] = useState<string>("");
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveReceiptKey, setSaveReceiptKey] = useState(0);
   const [saveReceiptVisible, setSaveReceiptVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 });
-  const stashableComposerAttachments = useMemo(
-    () => attachments.filter(isStashableAttachment),
+  const draftableComposerAttachments = useMemo(
+    () => attachments.filter(isDraftableAttachment),
     [attachments],
   );
   const currentBindingKey = composerMachineBinding?.key ?? null;
-  const entriesOwnerBinding = stashSnapshot.ownerBinding;
+  const entriesOwnerBinding = draftSnapshot.ownerBinding;
   const entriesOwnerBindingKey = entriesOwnerBinding?.key ?? null;
-  const entries = entriesOwnerBindingKey === currentBindingKey ? stashSnapshot.entries : [];
-  const hasComposerContent = draft.trim().length > 0 || stashableComposerAttachments.length > 0;
+  const entries = entriesOwnerBindingKey === currentBindingKey ? draftSnapshot.entries : [];
+  const hasComposerContent = draft.trim().length > 0 || draftableComposerAttachments.length > 0;
   const renderButton = buttonVisible && (hasComposerContent || entries.length > 0);
   const attachmentSignature = attachments.map((attachment) => (
     `${attachment.type}:${attachment.path}`
   )).join("\n");
 
+  const scheduledCount = entries.filter((entry) => isScheduledEntry(entry) && isPendingSchedule(entry)).length;
+  const needsYouCount = entries.filter(needsAttention).length;
+  const visibleEntries = useMemo(() => {
+    if (filter === "scheduled") return entries.filter(isScheduledEntry);
+    if (filter === "needs-you") return entries.filter(needsAttention);
+    return entries;
+  }, [entries, filter]);
+
   const highlightedEntry = useMemo(
-    () => entries.find((entry) => entry.id === highlightedId) ?? entries[0] ?? null,
-    [entries, highlightedId],
+    () => visibleEntries.find((entry) => entry.id === highlightedId) ?? visibleEntries[0] ?? null,
+    [visibleEntries, highlightedId],
   );
 
   const refresh = useCallback(async (
@@ -294,7 +363,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     try {
       const next = await window.ade.agentChat.drafts.list(capturedBinding);
       if (sequence !== refreshSequenceRef.current) return;
-      setStashSnapshot({
+      setDraftSnapshot({
         entries: next,
         ownerBinding: capturedBinding,
       });
@@ -306,11 +375,11 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       setError(null);
     } catch (refreshError) {
       if (sequence !== refreshSequenceRef.current) return;
-      if (await isStaleLocalDraftsRequest(refreshError, capturedBinding)) {
+      if (await isStaleLocalDraftRequest(refreshError, capturedBinding)) {
         return;
       }
       if (sequence !== refreshSequenceRef.current) return;
-      setError(draftErrorMessage(refreshError, "Could not load stashed prompts."));
+      setError(draftErrorMessage(refreshError, "Could not load drafts."));
     }
   }, [composerMachineBinding]);
 
@@ -356,20 +425,20 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       const anchor = rootRef.current?.getBoundingClientRect();
       const menu = menuRef.current;
       if (!anchor || !menu) return;
-      const width = Math.min(STASH_MENU_MAX_WIDTH, window.innerWidth - (STASH_MENU_VIEWPORT_MARGIN * 2));
-      const maxLeft = Math.max(STASH_MENU_VIEWPORT_MARGIN, window.innerWidth - width - STASH_MENU_VIEWPORT_MARGIN);
+      const width = Math.min(DRAFTS_MENU_MAX_WIDTH, window.innerWidth - (DRAFTS_MENU_VIEWPORT_MARGIN * 2));
+      const maxLeft = Math.max(DRAFTS_MENU_VIEWPORT_MARGIN, window.innerWidth - width - DRAFTS_MENU_VIEWPORT_MARGIN);
       const menuHeight = menu.getBoundingClientRect().height;
-      const above = anchor.top - STASH_MENU_GAP - menuHeight;
-      const below = anchor.bottom + STASH_MENU_GAP;
-      const maxTop = Math.max(STASH_MENU_VIEWPORT_MARGIN, window.innerHeight - menuHeight - STASH_MENU_VIEWPORT_MARGIN);
+      const above = anchor.top - DRAFTS_MENU_GAP - menuHeight;
+      const below = anchor.bottom + DRAFTS_MENU_GAP;
+      const maxTop = Math.max(DRAFTS_MENU_VIEWPORT_MARGIN, window.innerHeight - menuHeight - DRAFTS_MENU_VIEWPORT_MARGIN);
       let top = above;
-      if (above < STASH_MENU_VIEWPORT_MARGIN) {
-        top = below + menuHeight <= window.innerHeight - STASH_MENU_VIEWPORT_MARGIN
+      if (above < DRAFTS_MENU_VIEWPORT_MARGIN) {
+        top = below + menuHeight <= window.innerHeight - DRAFTS_MENU_VIEWPORT_MARGIN
           ? below
-          : Math.min(Math.max(STASH_MENU_VIEWPORT_MARGIN, above), maxTop);
+          : Math.min(Math.max(DRAFTS_MENU_VIEWPORT_MARGIN, above), maxTop);
       }
       setMenuPosition({
-        left: Math.min(Math.max(STASH_MENU_VIEWPORT_MARGIN, anchor.right - width), maxLeft),
+        left: Math.min(Math.max(DRAFTS_MENU_VIEWPORT_MARGIN, anchor.right - width), maxLeft),
         top,
       });
     };
@@ -401,14 +470,21 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     };
   }, [active, menuOpen, refresh]);
 
-  const save = useCallback(async (preserveDraft = false): Promise<DraftEntry | null> => {
+  /**
+   * Persist the composer as a draft. Shared by the plain save and the
+   * scheduled save: the only difference is whether a schedule rides along.
+   */
+  const persistComposerDraft = useCallback(async (
+    schedule: DraftScheduleInput | null,
+    preserveDraft: boolean,
+  ): Promise<DraftEntry | null> => {
     if (disabled || operationInFlightRef.current) return null;
     const operationBinding = composerMachineBinding;
     const savedText = latestDraftRef.current;
     const savedComposerAttachments = [...latestAttachmentsRef.current];
-    const savedAttachments = savedComposerAttachments.filter(isStashableAttachment);
+    const savedAttachments = savedComposerAttachments.filter(isDraftableAttachment);
     if (savedAttachments.length > MAX_DRAFT_ATTACHMENTS) {
-      setError(`You can stash up to ${MAX_DRAFT_ATTACHMENTS} images at a time.`);
+      setError(`A draft can hold up to ${MAX_DRAFT_ATTACHMENTS} images.`);
       setMenuOpen(true);
       return null;
     }
@@ -442,9 +518,10 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
         ...(storedAttachments.length ? { attachments: storedAttachments } : {}),
         provider,
         modelId,
+        ...(schedule ? { schedule } : {}),
       }, operationBinding);
       if (storedAttachments.length > 0) {
-        const confirmedAttachments = stashAttachments(created);
+        const confirmedAttachments = draftAttachments(created);
         const runtimeConfirmedImages = storedAttachments.every((stored) => (
           confirmedAttachments.some((confirmed) => sameAttachment(confirmed, stored))
         ));
@@ -452,21 +529,21 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
           try {
             await window.ade.agentChat.drafts.delete({ id: created.id }, operationBinding);
           } catch {
-            // The composer remains intact even if an older runtime cannot
-            // roll back the text-only compatibility write.
+            // The composer remains intact even if an older runtime cannot roll
+            // back the text-only compatibility write.
           }
           throw new Error("The connected ADE runtime could not preserve the attached images. They are still in your composer.");
         }
       }
       const operationBindingKey = operationBinding?.key ?? null;
       if ((latestComposerMachineBindingRef.current?.key ?? null) === operationBindingKey) {
-        setStashSnapshot((current) => ({
+        setDraftSnapshot((current) => ({
           entries: [
             created,
             ...((current.ownerBinding?.key ?? null) === operationBindingKey
               ? current.entries.filter((entry) => entry.id !== created.id)
               : []),
-          ].slice(0, MAX_DRAFTS),
+          ].slice(0, MAX_DRAFTS + MAX_SCHEDULED_DRAFTS),
           ownerBinding: operationBinding,
         }));
       }
@@ -474,7 +551,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       setSaveReceiptKey((current) => current + 1);
       setSaveReceiptVisible(true);
       setMenuOpen(false);
-      // The runtime has durably accepted the stash. Only now is it safe to
+      // The runtime has durably accepted the draft. Only now is it safe to
       // clear the exact text that was saved. Input typed while a remote
       // runtime acknowledged the write belongs to a newer draft and stays.
       const composerUnchanged = (latestComposerMachineBindingRef.current?.key ?? null) === operationBindingKey
@@ -491,7 +568,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       }
       return created;
     } catch (saveError) {
-      setError(draftErrorMessage(saveError, "Could not stash this prompt."));
+      setError(draftErrorMessage(saveError, "Could not save this draft."));
       setMenuOpen(true);
       return null;
     } finally {
@@ -500,51 +577,54 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     }
   }, [composerMachineBinding, disabled, entries.length, modelId, onDraftChange, onRemoveAttachment, provider, refresh]);
 
-  const restore = useCallback(async (entry: DraftEntry) => {
+  const save = useCallback(
+    (preserveDraft = false) => persistComposerDraft(null, preserveDraft),
+    [persistComposerDraft],
+  );
+
+  /**
+   * Claim a draft and put it in the composer.
+   *
+   * The claim — a delete on the runtime — happens BEFORE the composer is
+   * filled, so the machine that loses the race never receives the text. The
+   * old order filled first and deleted after, which left the same draft in two
+   * composers and could send it twice.
+   */
+  const attach = useCallback(async (entry: DraftEntry) => {
     if (operationInFlightRef.current) return;
     const operationBinding = entriesOwnerBinding;
-    if (stashAttachmentsUnavailable(entry)) {
-      setError("These images live on the machine where this prompt was stashed. Connect to that machine to restore it.");
-      return;
-    }
-    if (latestDraftRef.current.trim() || latestAttachmentsRef.current.length > 0) {
-      setMenuOpen(false);
+    if (draftAttachmentsUnavailable(entry)) {
+      setError("These images live on the machine where this draft was made. Connect to that machine to use it.");
       return;
     }
     operationInFlightRef.current = true;
     refreshSequenceRef.current += 1;
     setBusy(true);
     setError(null);
-    const operationBindingKey = operationBinding?.key ?? null;
-    setStashSnapshot((current) => (
-      (current.ownerBinding?.key ?? null) === operationBindingKey
-        ? {
-            ...current,
-            entries: current.entries.filter((candidate) => candidate.id !== entry.id),
-          }
-        : current
-    ));
-    setHighlightedId(null);
-    setMenuOpen(false);
-    // Put the saved text into the composer before waiting on a remote delete.
-    // The user can continue editing immediately, and the acknowledgement can
-    // never overwrite those edits. A failed delete leaves a harmless duplicate
-    // stash rather than losing either the stash or the in-progress prompt.
-    onDraftChange(entry.text);
-    for (const attachment of stashAttachments(entry)) {
-      onAddAttachment(attachment);
-    }
     try {
-      const deleted = await window.ade.agentChat.drafts.delete({ id: entry.id }, operationBinding);
-      if (!deleted) {
-        if ((latestComposerMachineBindingRef.current?.key ?? null) === operationBindingKey) {
+      const claimed = await window.ade.agentChat.drafts.claim({ id: entry.id }, operationBinding);
+      if (!claimed) {
+        if ((latestComposerMachineBindingRef.current?.key ?? null) === (operationBinding?.key ?? null)) {
           await refresh(operationBinding);
         }
-        setError("That stash was already restored or deleted on another desktop.");
+        setError("That draft was taken on another machine.");
         return;
       }
-    } catch (restoreError) {
-      setError(draftErrorMessage(restoreError, "Could not restore this prompt."));
+      const operationBindingKey = operationBinding?.key ?? null;
+      setDraftSnapshot((current) => (
+        (current.ownerBinding?.key ?? null) === operationBindingKey
+          ? { ...current, entries: current.entries.filter((candidate) => candidate.id !== claimed.id) }
+          : current
+      ));
+      setHighlightedId(null);
+      setMenuOpen(false);
+      setOpenEntry(null);
+      onDraftChange(claimed.text);
+      for (const attachment of draftAttachments(claimed)) {
+        onAddAttachment(attachment);
+      }
+    } catch (claimError) {
+      setError(draftErrorMessage(claimError, "Could not attach this draft."));
     } finally {
       operationInFlightRef.current = false;
       setBusy(false);
@@ -567,19 +647,47 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
         }
         return false;
       }
-      setStashSnapshot((current) => (
+      setDraftSnapshot((current) => (
         (current.ownerBinding?.key ?? null) === operationBindingKey
-          ? {
-              ...current,
-              entries: current.entries.filter((candidate) => candidate.id !== entry.id),
-            }
+          ? { ...current, entries: current.entries.filter((candidate) => candidate.id !== entry.id) }
           : current
       ));
       setHighlightedId((current) => current === entry.id ? null : current);
+      setOpenEntry((current) => current?.id === entry.id ? null : current);
       return true;
     } catch (deleteError) {
-      setError(draftErrorMessage(deleteError, "Could not delete this prompt."));
+      setError(draftErrorMessage(deleteError, "Could not delete this draft."));
       return false;
+    } finally {
+      operationInFlightRef.current = false;
+      setBusy(false);
+    }
+  }, [entriesOwnerBinding, refresh]);
+
+  const saveEdit = useCallback(async (entry: DraftEntry, text: string) => {
+    if (operationInFlightRef.current) return;
+    const operationBinding = entriesOwnerBinding;
+    operationInFlightRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await window.ade.agentChat.drafts.update({ id: entry.id, text }, operationBinding);
+      if (!updated) {
+        setError("That draft was taken on another machine.");
+        await refresh(operationBinding);
+        setOpenEntry(null);
+        return;
+      }
+      setDraftSnapshot((current) => (
+        (current.ownerBinding?.key ?? null) === (operationBinding?.key ?? null)
+          ? { ...current, entries: current.entries.map((candidate) => (
+            candidate.id === updated.id ? updated : candidate
+          )) }
+          : current
+      ));
+      setOpenEntry(updated);
+    } catch (updateError) {
+      setError(draftErrorMessage(updateError, "Could not save this draft."));
     } finally {
       operationInFlightRef.current = false;
       setBusy(false);
@@ -593,20 +701,24 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   }): boolean => {
     if (!menuOpen) return false;
     if (event.key === "Escape") {
+      if (openEntry) {
+        setOpenEntry(null);
+        return true;
+      }
       setMenuOpen(false);
       return true;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      if (!entries.length) return true;
-      const currentIndex = entries.findIndex((entry) => entry.id === highlightedEntry?.id);
+      if (!visibleEntries.length) return true;
+      const currentIndex = visibleEntries.findIndex((entry) => entry.id === highlightedEntry?.id);
       const direction = event.key === "ArrowDown" ? 1 : -1;
       const base = currentIndex >= 0 ? currentIndex : direction > 0 ? -1 : 0;
-      const nextIndex = (base + direction + entries.length) % entries.length;
-      setHighlightedId(entries[nextIndex]?.id ?? null);
+      const nextIndex = (base + direction + visibleEntries.length) % visibleEntries.length;
+      setHighlightedId(visibleEntries[nextIndex]?.id ?? null);
       return true;
     }
     if (event.key === "Enter" && highlightedEntry) {
-      void restore(highlightedEntry);
+      setOpenEntry(highlightedEntry);
       return true;
     }
     if (event.key === "Backspace" && (event.metaKey || event.ctrlKey) && highlightedEntry) {
@@ -614,16 +726,29 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       return true;
     }
     return false;
-  }, [entries, highlightedEntry, menuOpen, remove, restore]);
+  }, [highlightedEntry, menuOpen, openEntry, remove, visibleEntries]);
 
   useImperativeHandle(ref, () => ({
     activate: () => {
       void save();
     },
     activatePreservingDraft: () => save(true),
+    activateScheduled: (input: DraftScheduleInput) => persistComposerDraft(input, false),
     consume: remove,
+    reload: () => {
+      void refresh();
+    },
     handleMenuKeyDown,
-  }), [handleMenuKeyDown, remove, save]);
+  }), [handleMenuKeyDown, persistComposerDraft, refresh, remove, save]);
+
+  useEffect(() => {
+    if (openEntry) setEditText(openEntry.text);
+  }, [openEntry]);
+
+  const openDetail = useCallback((entry: DraftEntry) => {
+    setHighlightedId(entry.id);
+    setOpenEntry(entry);
+  }, []);
 
   return (
     <div ref={rootRef} className={cn("relative shrink-0", renderButton ? "w-7" : "w-0")}>
@@ -631,18 +756,18 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
         <SmartTooltip
           forceEnabled
           content={{
-            label: hasComposerContent ? "Stash prompt" : "Open stashed prompts",
+            label: hasComposerContent ? "Save draft" : "Open drafts",
             description: hasComposerContent
-              ? "Save this prompt and its attachments across connected desktops."
-              : `Restore a saved prompt. Press ${shortcutLabel} with text to create one.`,
+              ? "Save this prompt and its images across connected machines."
+              : `Open your drafts and scheduled sends. Press ${shortcutLabel} with text to save one.`,
             shortcut: shortcutLabel,
           }}
         >
           <button
             type="button"
             aria-label={hasComposerContent
-              ? "Stash prompt"
-              : `Open ${entries.length} stashed prompt${entries.length === 1 ? "" : "s"}`}
+              ? "Save draft"
+              : `Open ${entries.length} draft${entries.length === 1 ? "" : "s"}`}
             aria-expanded={menuOpen}
             disabled={disabled || busy}
             className={cn(
@@ -676,95 +801,251 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
           ref={menuRef}
           data-drafts-menu=""
           role="dialog"
-          aria-label="Stashed prompts"
+          aria-label="Drafts"
           className="fixed z-[120] flex max-h-[calc(100vh-32px)] w-[min(380px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl border border-fg/[0.09] bg-(color:--work-popover-bg) shadow-[0_24px_72px_-28px_rgba(0,0,0,0.95)] backdrop-blur-2xl"
           style={{ left: menuPosition.left, top: menuPosition.top }}
         >
-          <div className="flex items-center justify-between gap-3 border-b border-fg/[0.06] px-3.5 py-2.5">
-            <div className="min-w-0">
-              <div className="font-sans text-[11px] font-semibold text-fg/82">Stashed prompts</div>
-              <div className="mt-0.5 font-sans text-[9.5px] text-muted-fg/42">Shared through this project’s ADE runtime</div>
-            </div>
-            <button
-              type="button"
-              className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/45 transition-colors hover:bg-fg/[0.05] hover:text-fg/70"
-              onClick={() => setMenuOpen(false)}
-            >
-              Close
-            </button>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
-            {entries.length ? entries.map((entry) => {
-              const highlighted = highlightedEntry?.id === entry.id;
-              const source = providerLabel(entry);
-              const entryAttachments = stashAttachments(entry);
-              const attachmentCount = stashAttachmentCount(entry);
-              const attachmentsUnavailable = stashAttachmentsUnavailable(entry);
-              const imageAttachment = entryAttachments.find((attachment) => (
-                attachment.type === "image" || attachment.type === "image-url"
-              ));
-              return (
-                <div
-                  key={entry.id}
-                  className={cn(
-                    "group flex cursor-default items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors",
-                    highlighted ? "bg-fg/[0.075]" : "hover:bg-fg/[0.04]",
-                  )}
-                  onMouseMove={() => setHighlightedId(entry.id)}
+          {openEntry ? (
+            <div className="flex min-h-0 flex-1 flex-col" data-draft-detail="">
+              <div className="flex items-center justify-between gap-3 border-b border-fg/[0.06] px-3.5 py-2.5">
+                <button
+                  type="button"
+                  className="flex items-center gap-1.5 rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/50 transition-colors hover:bg-fg/[0.05] hover:text-fg/75"
+                  onClick={() => setOpenEntry(null)}
                 >
-                  {imageAttachment ? (
-                    <StashImageThumbnail
-                      attachment={imageAttachment}
-                      composerMachineBinding={entriesOwnerBinding}
-                    />
-                  ) : attachmentCount ? (
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-fg/[0.08] bg-black/25 text-muted-fg/35">
-                      {attachmentsUnavailable ? <Image size={15} aria-hidden /> : <File size={15} aria-hidden />}
-                    </span>
+                  <ArrowUUpLeft size={11} aria-hidden />
+                  All drafts
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/45 transition-colors hover:bg-fg/[0.05] hover:text-fg/70"
+                  onClick={() => { setOpenEntry(null); setMenuOpen(false); }}
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                <div className="font-sans text-[9.5px] font-semibold uppercase tracking-wide text-muted-fg/40">
+                  {needsAttention(openEntry) ? "Needs you" : isScheduledEntry(openEntry) ? "Scheduled" : "Draft"}
+                </div>
+                <textarea
+                  value={editText}
+                  onChange={(event) => setEditText(event.target.value)}
+                  rows={Math.min(12, Math.max(4, editText.split("\n").length + 1))}
+                  className="mt-1.5 w-full resize-none rounded-xl border border-fg/[0.09] bg-black/25 px-2.5 py-2 font-sans text-[11.5px] leading-5 text-fg/85 outline-none focus:border-violet-400/40"
+                />
+                {draftAttachmentCount(openEntry) > 0 ? (
+                  <div className="mt-2 flex items-center gap-1.5 font-mono text-[9.5px] text-muted-fg/45">
+                    <Image size={11} aria-hidden />
+                    {draftAttachmentCount(openEntry)} image{draftAttachmentCount(openEntry) === 1 ? "" : "s"}
+                    {draftAttachmentsUnavailable(openEntry) ? " on another machine" : ""}
+                  </div>
+                ) : null}
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 font-mono text-[9.5px] text-muted-fg/45">
+                  {providerLabel(openEntry) ? <span>{providerLabel(openEntry)}</span> : null}
+                  {openEntry.modelId ?? openEntry.model ? (
+                    <span className="truncate">{openEntry.modelId ?? openEntry.model}</span>
                   ) : null}
+                  {openEntry.permissionMode ? (
+                    <span className="rounded bg-fg/[0.06] px-1 py-px">{openEntry.permissionMode}</span>
+                  ) : null}
+                </div>
+                {isScheduledEntry(openEntry) ? (
+                  <div className="mt-2 flex items-center gap-1.5 font-sans text-[10.5px] text-fg/65">
+                    <CalendarBlank size={12} className="text-muted-fg/45" aria-hidden />
+                    {draftMetaLine(openEntry)}
+                    {openEntry.deliveryPolicy ? (
+                      <span className="text-muted-fg/42">
+                        · {openEntry.deliveryPolicy === "wait" ? "wait for me" : openEntry.deliveryPolicy}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+                {needsAttention(openEntry) ? (
+                  <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-300/[0.10] bg-amber-500/[0.05] px-2 py-1.5 font-sans text-[10px] leading-4 text-amber-100/75">
+                    <WarningCircle size={12} className="mt-0.5 shrink-0" aria-hidden />
+                    <span>{openEntry.lastError?.trim() || "This send could not go out."}</span>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-fg/[0.06] px-3 py-2.5">
+                <button
+                  type="button"
+                  disabled={busy || editText === openEntry.text}
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-sans text-[11px] text-fg/70 transition-colors hover:bg-fg/[0.05] disabled:cursor-not-allowed disabled:opacity-35"
+                  onClick={() => void saveEdit(openEntry, editText)}
+                >
+                  <PencilSimple size={12} aria-hidden />
+                  Save
+                </button>
+                {onRequestSchedule ? (
                   <button
                     type="button"
-                    className="min-w-0 flex-1 text-left"
-                    onPointerDown={(event) => event.preventDefault()}
-                    onClick={() => void restore(entry)}
-                    title={attachmentsUnavailable ? "Images unavailable on this machine" : undefined}
-                  >
-                    <div className="truncate font-sans text-[11.5px] leading-5 text-fg/78">
-                      {stashEntryLabel(entry, entryAttachments)}
-                    </div>
-                    <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[9px] text-muted-fg/38">
-                      {attachmentCount ? (
-                        <span>
-                          {attachmentCount} image{attachmentCount === 1 ? "" : "s"}
-                          {attachmentsUnavailable ? " on another machine" : ""}
-                        </span>
-                      ) : null}
-                      {attachmentCount && source ? <span aria-hidden>·</span> : null}
-                      {source ? <span>{source}</span> : null}
-                      {source ? <span aria-hidden>·</span> : null}
-                      <span>{relativeTime(entry.createdAt)}</span>
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Delete stashed prompt"
                     disabled={busy}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-fg/28 opacity-0 transition-[opacity,color,background-color] hover:bg-red-500/10 hover:text-red-300/75 focus:opacity-100 group-hover:opacity-100 disabled:opacity-30"
-                    onClick={() => void remove(entry)}
+                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-sans text-[11px] text-fg/70 transition-colors hover:bg-violet-500/[0.10] hover:text-violet-100/85 disabled:cursor-not-allowed disabled:opacity-35"
+                    onClick={() => {
+                      onRequestSchedule(openEntry);
+                      setOpenEntry(null);
+                      setMenuOpen(false);
+                    }}
                   >
-                    <Trash size={12} aria-hidden />
+                    <CalendarBlank size={12} aria-hidden />
+                    {isScheduledEntry(openEntry) ? "Reschedule" : "Schedule send"}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-violet-500/85 px-2.5 py-1.5 font-sans text-[11px] font-semibold text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  onClick={() => void attach(openEntry)}
+                >
+                  <ArrowUUpLeft size={12} aria-hidden />
+                  Attach to composer
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="border-b border-fg/[0.06] px-3.5 pt-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-sans text-[11px] font-semibold text-fg/82">Drafts</div>
+                    <div className="mt-0.5 font-sans text-[9.5px] text-muted-fg/42">Shared through this project’s ADE runtime</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/45 transition-colors hover:bg-fg/[0.05] hover:text-fg/70"
+                    onClick={() => setMenuOpen(false)}
+                  >
+                    Close
                   </button>
                 </div>
-              );
-            }) : (
-              <div className="px-3 py-6 text-center">
-                <BookmarkSimple size={18} className="mx-auto text-muted-fg/24" aria-hidden />
-                <div className="mt-2 font-sans text-[11px] text-fg/55">Nothing stashed yet</div>
-                <div className="mt-1 font-sans text-[10px] leading-4 text-muted-fg/38">Type a prompt and press {shortcutLabel}.</div>
+                <div className="mt-2 flex items-center gap-1 pb-2">
+                  {([
+                    ["all", "All", entries.length],
+                    ["scheduled", "Scheduled", scheduledCount],
+                    ["needs-you", "Needs you", needsYouCount],
+                  ] as const).map(([value, label, count]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={cn(
+                        "rounded-full px-2 py-1 font-sans text-[10px] transition-colors",
+                        filter === value
+                          ? "bg-fg/[0.09] text-fg/85"
+                          : "text-muted-fg/48 hover:bg-fg/[0.04] hover:text-fg/70",
+                        value === "needs-you" && count > 0 && filter !== value && "text-amber-200/70",
+                      )}
+                      onClick={() => setFilter(value)}
+                    >
+                      {label}
+                      {count > 0 ? <span className="ml-1 font-mono text-[9px] tabular-nums opacity-70">{count}</span> : null}
+                    </button>
+                  ))}
+                </div>
               </div>
-            )}
-          </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+                {visibleEntries.length ? visibleEntries.map((entry) => {
+                  const highlighted = highlightedEntry?.id === entry.id;
+                  const source = providerLabel(entry);
+                  const entryAttachments = draftAttachments(entry);
+                  const attachmentCount = draftAttachmentCount(entry);
+                  const attachmentsUnavailable = draftAttachmentsUnavailable(entry);
+                  const imageAttachment = entryAttachments.find((attachment) => (
+                    attachment.type === "image" || attachment.type === "image-url"
+                  ));
+                  const attention = needsAttention(entry);
+                  const scheduled = isScheduledEntry(entry);
+                  return (
+                    <div
+                      key={entry.id}
+                      className={cn(
+                        "group flex cursor-default items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors",
+                        highlighted ? "bg-fg/[0.075]" : "hover:bg-fg/[0.04]",
+                      )}
+                      onMouseMove={() => setHighlightedId(entry.id)}
+                    >
+                      {imageAttachment ? (
+                        <DraftImageThumbnail
+                          attachment={imageAttachment}
+                          composerMachineBinding={entriesOwnerBinding}
+                        />
+                      ) : attachmentCount ? (
+                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-fg/[0.08] bg-black/25 text-muted-fg/35">
+                          {attachmentsUnavailable ? <Image size={15} aria-hidden /> : <File size={15} aria-hidden />}
+                        </span>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left"
+                        onPointerDown={(event) => event.preventDefault()}
+                        onClick={() => openDetail(entry)}
+                        title={attachmentsUnavailable ? "Images unavailable on this machine" : undefined}
+                      >
+                        <div className="flex items-center gap-1.5">
+                          {attention ? (
+                            <WarningCircle size={12} className="shrink-0 text-amber-300/85" aria-hidden />
+                          ) : scheduled ? (
+                            <CalendarBlank size={12} className="shrink-0 text-violet-300/70" aria-hidden />
+                          ) : null}
+                          <span className="truncate font-sans text-[11.5px] leading-5 text-fg/78">
+                            {draftEntryLabel(entry, entryAttachments)}
+                          </span>
+                        </div>
+                        <div className={cn(
+                          "mt-0.5 flex items-center gap-1.5 font-mono text-[9px]",
+                          attention ? "text-amber-200/60" : "text-muted-fg/38",
+                        )}>
+                          <span className="truncate">{draftMetaLine(entry)}</span>
+                          {attachmentCount ? (
+                            <>
+                              <span aria-hidden>·</span>
+                              <span>
+                                {attachmentCount} image{attachmentCount === 1 ? "" : "s"}
+                                {attachmentsUnavailable ? " elsewhere" : ""}
+                              </span>
+                            </>
+                          ) : null}
+                          {source ? <span aria-hidden>·</span> : null}
+                          {source ? <span>{source}</span> : null}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Delete draft"
+                        disabled={busy}
+                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-fg/28 opacity-0 transition-[opacity,color,background-color] hover:bg-red-500/10 hover:text-red-300/75 focus:opacity-100 group-hover:opacity-100 disabled:opacity-30"
+                        onClick={() => void remove(entry)}
+                      >
+                        <Trash size={12} aria-hidden />
+                      </button>
+                    </div>
+                  );
+                }) : (
+                  <div className="px-3 py-6 text-center">
+                    <BookmarkSimple size={18} className="mx-auto text-muted-fg/24" aria-hidden />
+                    <div className="mt-2 font-sans text-[11px] text-fg/55">
+                      {filter === "all"
+                        ? "No drafts yet"
+                        : filter === "scheduled"
+                          ? "Nothing scheduled"
+                          : "Nothing needs you"}
+                    </div>
+                    <div className="mt-1 font-sans text-[10px] leading-4 text-muted-fg/38">
+                      {filter === "all"
+                        ? `Type a prompt and press ${shortcutLabel}.`
+                        : filter === "scheduled"
+                          ? "Use Scheduled send from the send menu to arm one."
+                          : "Blocked and missed sends show up here."}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
 
           {error ? (
             <div className="border-t border-red-300/[0.08] bg-red-500/[0.04] px-3.5 py-2 font-sans text-[10px] leading-4 text-red-200/72" role="alert">

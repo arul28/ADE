@@ -701,6 +701,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listCliChildSessions",
     "listSubagents",
     "listDrafts",
+    "getDraft",
     "createDraft",
     "updateDraft",
     "deleteDraft",

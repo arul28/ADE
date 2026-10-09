@@ -99,6 +99,7 @@ import type {
   DraftClaimArgs,
   DraftCreateArgs,
   DraftDeleteArgs,
+  DraftGetArgs,
   DraftUpdateArgs,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
@@ -127,6 +128,7 @@ import {
   claimDraft,
   createDraft,
   deleteDraft,
+  getDraft,
   listDrafts,
   updateDraft,
 } from "../chat/draftService";
@@ -977,6 +979,10 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       runtime.db.setJson(key, normalizeAgentChatParallelLaunchState(args?.state ?? null, parentLaneId));
     },
     listDrafts: () => listDrafts(runtime.db),
+    getDraft: (args?: DraftGetArgs) => {
+      const record = readObjectActionArg(args, "chat.getDraft");
+      return getDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+    },
     createDraft: (args?: DraftCreateArgs) => {
       const record = readObjectActionArg(args, "chat.createDraft");
       // The service owns validation for both text and attachment-only drafts.

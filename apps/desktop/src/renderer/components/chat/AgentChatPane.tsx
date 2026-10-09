@@ -194,7 +194,7 @@ import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
 import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
-import { AgentChatApiProvider, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
+import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
@@ -5138,6 +5138,27 @@ export function AgentChatPane({
   }, [clearPromptSuggestionForSession, selectedSessionId, updateComposerDraft]);
   const handleInsertDraft = useLatestCallback(insertComposerDraft);
   const handleSetDraft = useLatestCallback(replaceComposerDraft);
+
+  /**
+   * What the composer's "Scheduled send" form needs to aim a send: the lane
+   * this chat is in (the default target) and every lane a new-chat schedule
+   * could start in. Null outside a project chat pane, which is what hides the
+   * row rather than offering a send that cannot be aimed.
+   */
+  // Same gate the composer uses for drafts: a scoped pane (personal chats,
+  // embedders) has no project runtime to schedule against. Called at the top
+  // level because it is a hook, not a condition.
+  const schedulePaneScope = useChatPaneScope();
+  const scheduledSendContext = useMemo(() => {
+    if (schedulePaneScope != null) return null;
+    const laneIdForChat = selectedSession?.laneId ?? laneId ?? null;
+    return {
+      laneId: laneIdForChat,
+      laneName: lanes.find((lane) => lane.id === laneIdForChat)?.name ?? null,
+      lanes: lanes.map((lane) => ({ id: lane.id, name: lane.name })),
+      machineName: chatRuntimePin?.displayName ?? null,
+    };
+  }, [chatRuntimePin?.displayName, laneId, lanes, schedulePaneScope, selectedSession?.laneId]);
 
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId ?? chatScopeLaneId;
@@ -16008,6 +16029,7 @@ export function AgentChatPane({
   compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
   const composerElement = (
       <AgentChatComposer
+            scheduledSendContext={scheduledSendContext}
             caretToEndRequest={composerCaretToEndRequest}
             browserTabInsertRequest={browserTabInsertRequest}
             threadComments={threadComments}

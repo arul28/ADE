@@ -5737,9 +5737,16 @@ export type DraftCreateArgs = {
   attachments?: AgentChatFileRef[];
   provider?: string | null;
   modelId?: string | null;
+  /** Runtime-facing model string; carried through to a new-chat schedule. */
+  model?: string | null;
   originSessionId?: string | null;
   /** Supply to arm a schedule in the same call. */
   schedule?: DraftScheduleInput;
+};
+
+/** Read one draft by id, without the list's retention window. */
+export type DraftGetArgs = {
+  id: string;
 };
 
 export type DraftScheduleInput = {
