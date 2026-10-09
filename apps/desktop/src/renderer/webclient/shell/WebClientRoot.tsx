@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeeplinkTarget } from "../../../shared/deeplinks";
 import type { WebClientEnvironmentRecord, WebRelayAccess, AdeSyncClient } from "../sync";
 import { WebClientEnvStore } from "../sync";
@@ -19,6 +19,7 @@ import {
 import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
 import { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { mergeWebMachines, webMachineCatalogKeys } from "../workspace/webWorkspaceModel";
+import { createAccountNamespace } from "../adapter/account";
 import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
 import { ScreenShell } from "./ScreenShell";
 import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
@@ -58,6 +59,30 @@ async function loadAppRoot(): Promise<React.ComponentType> {
     );
   };
 }
+
+/**
+ * Starts downloading the signed-in workspace. Module imports are cached, so the
+ * later awaits in `installFederatedAdapter` and `loadAppRoot` resolve at once.
+ * Only called when a stored session says the workspace is coming.
+ */
+function preloadWorkspaceModules(): void {
+  void Promise.all([
+    import("../adapter/federated"),
+    import("../../components/app/App"),
+    import("../../components/app/RendererErrorBoundary"),
+    import("../../state/appStore"),
+  ]).catch(() => undefined);
+}
+
+/**
+ * The signed-out screen, in its own chunk: a visitor without a session gets the
+ * sign-in card without downloading the workspace the card sits in front of.
+ */
+const WebSignInScreen = lazy(() =>
+  import("../../components/onboarding/WebSignInGate").then((module) => ({
+    default: module.WebSignInScreen,
+  })),
+);
 
 const PENDING_TARGET_KEY = "ade-web:pending-target";
 const ACCOUNT_LEASE_CHECK_INTERVAL_MS = 30_000;
@@ -147,6 +172,7 @@ function relayAccessFromAccount(
 type Phase =
   | { kind: "signing-in" }
   | { kind: "booting"; message: string }
+  | { kind: "signed-out" }
   | { kind: "ready"; AppRoot: React.ComponentType }
   | { kind: "error"; message: string };
 
@@ -413,6 +439,13 @@ export function WebClientRoot({
       stashTarget(pendingTarget);
 
       const wasCallback = path === "/account/callback";
+      if (!wasCallback) {
+        // A stored session means the signed-in workspace is coming: start its
+        // download now, alongside the session restore, instead of after it.
+        void accountClient.hasPersistedSession().then((restorable) => {
+          if (restorable && !disposed) preloadWorkspaceModules();
+        });
+      }
       const snapshot = await accountClient.bootstrap();
       if (disposed) return;
       setAccount(snapshot);
@@ -429,6 +462,17 @@ export function WebClientRoot({
       sessionManager.setRelayAccess(
         relayAccessFromAccount(snapshot, () => accountClient.getAccessToken()),
       );
+
+      if (!browserAccountIsSignedIn(snapshot.state)) {
+        // The sign-in card needs only the account namespace. The workspace router
+        // and the last-machine reconnect wait for a session, so a signed-out
+        // visitor downloads neither. A pending deep link stays stashed for after
+        // sign-in.
+        Object.assign(window.ade, { account: createAccountNamespace(accountClient) });
+        window.history.replaceState(null, "", WELCOME_PATH);
+        setPhase({ kind: "signed-out" });
+        return;
+      }
 
       const { restored } = await installFederatedAdapter(snapshot);
       if (disposed) return;
@@ -608,6 +652,12 @@ export function WebClientRoot({
             Retry
           </button>
         </ScreenShell>
+      );
+    case "signed-out":
+      return (
+        <Suspense fallback={<ProgressScreen title="Starting ADE" message="Checking your ADE account…" />}>
+          <WebSignInScreen />
+        </Suspense>
       );
     case "ready": {
       if (!workspaceContext) {

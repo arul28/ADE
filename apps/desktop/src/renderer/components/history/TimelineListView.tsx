@@ -1,8 +1,8 @@
-import React, { useCallback, useMemo } from "react";
-import * as PhosphorIcons from "@phosphor-icons/react";
+import { useCallback, useMemo } from "react";
 import { cn } from "../ui/cn";
 import type { ColumnConfig, TimelineEvent, TimelineColumn } from "./timelineTypes";
 import { CATEGORY_META, getStatusClasses } from "./eventTaxonomy";
+import { eventIcon } from "./eventIcons";
 import { EventMachineChip, isEventMachineOffline } from "./EventMachineChip";
 import { relativeWhen, formatDurationMs } from "../../lib/format";
 
@@ -138,9 +138,7 @@ export function TimelineListView({
           {group.events.map((ev) => {
             const selected = ev.id === selectedEventId;
             const catMeta = CATEGORY_META[ev.category];
-            const Icon = (PhosphorIcons as unknown as Record<string, React.ElementType>)[
-              ev.iconName
-            ];
+            const Icon = eventIcon(ev.iconName);
 
             return (
               <button
@@ -164,18 +162,11 @@ export function TimelineListView({
                       className="h-full w-[3px] shrink-0 self-stretch"
                       style={{ backgroundColor: catMeta?.color ?? ev.color }}
                     />
-                    {Icon ? (
-                      <Icon
-                        weight="bold"
-                        className="size-3.5 shrink-0"
-                        style={{ color: catMeta?.color ?? ev.color }}
-                      />
-                    ) : (
-                      <span
-                        className="size-[6px] shrink-0 rounded-full"
-                        style={{ backgroundColor: catMeta?.color ?? ev.color }}
-                      />
-                    )}
+                    <Icon
+                      weight="bold"
+                      className="size-3.5 shrink-0"
+                      style={{ color: catMeta?.color ?? ev.color }}
+                    />
                   </>
                 ) : null}
 

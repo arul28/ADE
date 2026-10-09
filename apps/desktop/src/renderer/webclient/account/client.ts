@@ -385,6 +385,20 @@ export class BrowserAccountClient {
     return current?.userId === lease.userId && current.generation === lease.generation;
   }
 
+  /**
+   * Whether a refresh session is stored for this origin. A read only: it neither
+   * refreshes nor clears anything, so the shell can start downloading the
+   * signed-in workspace while `bootstrap()` restores the session.
+   */
+  async hasPersistedSession(): Promise<boolean> {
+    if (!this.config) return false;
+    try {
+      return (await this.sessionStore.load()) !== null;
+    } catch {
+      return false;
+    }
+  }
+
   async bootstrap(): Promise<BrowserAccountSnapshot> {
     const config = this.config;
     if (!config) return this.getSnapshot();
