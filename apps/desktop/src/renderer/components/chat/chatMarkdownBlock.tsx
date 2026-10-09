@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { remarkCachedParse } from "./remarkCachedParse";
 import { FileCode } from "@phosphor-icons/react";
 
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
@@ -250,7 +251,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   // changes identity when an id or name changes, so settled bodies stay memoized.
   const entityLookup = useThreadEntityLookup();
   const remarkPlugins = useMemo(
-    () => [remarkGfm, [remarkThreadEntities, { lookup: entityLookup, filePathOf: workspaceFilePathOf }]] as React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"],
+    () => [remarkCachedParse, remarkGfm, [remarkThreadEntities, { lookup: entityLookup, filePathOf: workspaceFilePathOf }]] as React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"],
     [entityLookup],
   );
 
