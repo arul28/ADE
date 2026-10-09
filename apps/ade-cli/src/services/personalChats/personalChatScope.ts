@@ -358,6 +358,9 @@ export class PersonalChatScope {
           kickoffText: _kickoffText,
           attachmentRoots: _attachmentRoots,
           personalProfile: _personalProfile,
+          // Stamped only by the RPC server on an agent's or the CTO's call. A
+          // caller-sent actor here would claim a launcher it does not have.
+          runtimeActor: _runtimeActor,
           ...forwarded
         } = args;
         // What this chat is for. An embedded runtime (an SDK host) is always
@@ -551,8 +554,10 @@ export class PersonalChatScope {
         // `mcpServers` and `attachmentRoots` ride through with the rest: the
         // chat service accepts both only for a personal session, which
         // `requirePersonalSession` has just established, and validates them
-        // exactly as create does.
-        await service.updateSession(args as never);
+        // exactly as create does. `runtimeActor` is dropped: only the RPC
+        // server stamps it, so a caller-sent actor never reaches the service.
+        const { runtimeActor: _runtimeActor, ...updateArgs } = args;
+        await service.updateSession(updateArgs as never);
         // The same shape create returns. The summary already withholds header
         // values, so the reply never echoes back a credential the host sent.
         result = await service.getSessionSummary(sessionId);

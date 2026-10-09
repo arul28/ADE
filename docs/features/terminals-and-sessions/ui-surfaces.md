@@ -177,8 +177,12 @@ it cannot keep a lane folded once its chat is done. A raised hand (`needs_you`),
 turn, or a finished row the user has not left holds the whole lane out with its
 rows visible. Snoozed and settled rows take no part. A finished nested row
 (attached shell, subagent) can never hold its lane out — nobody opens a helper
-to mark it seen — though a nested raised hand still can. Pinned lanes never
-fold; the primary lane folds like any other.
+to mark it seen — though a nested raised hand still can. A finished helper an
+agent launched (a peer, or a `--no-parent` chat recorded as
+`launchedBySessionId`) is skipped the same way while that agent is busy in the
+same lane, because such helpers are the launcher's business while it works; once
+the launcher finishes, its own Done holds the lane out and the helpers count
+again. Pinned lanes never fold; the primary lane folds like any other.
 
 A **stalled turn** is a live chat turn that has been silent for
 `TURN_STALL_AFTER_MS` (five minutes) and owns no open work. The host folds

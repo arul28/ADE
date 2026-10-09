@@ -1215,7 +1215,7 @@ function parseHandoffMode(value: unknown, action: string): "brief" | "fork" | un
 function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHandoffArgs {
   const handoffNote = asTrimmedString(value.handoffNote);
   return {
-    ...(value as AgentChatHandoffArgs),
+    ...(withoutClientRuntimeActor(value) as AgentChatHandoffArgs),
     sourceSessionId: requireString(value.sourceSessionId, "chat.handoff requires sourceSessionId."),
     targetModelId: requireString(value.targetModelId, "chat.handoff requires targetModelId.") as AgentChatHandoffArgs["targetModelId"],
     ...(handoffNote ? { handoffNote } : {}),
@@ -2190,12 +2190,31 @@ function sessionNeedsResumeTargetHydration(session: {
   );
 }
 
+/**
+ * Spawn lineage is a fact about the row, not its runtime state, so it applies
+ * to every chat row. Mirrors `projectChatOntoSession` on desktop: an absent
+ * field stays absent rather than becoming an explicit null.
+ */
+function projectChatLineage(
+  session: ReturnType<SyncRemoteCommandServiceArgs["ptyService"]["enrichSessions"]>[number],
+  chat: AgentChatSessionSummary,
+) {
+  return {
+    ...session,
+    ...(chat.orchestrationParentSessionId
+      ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
+      : {}),
+    ...(chat.launchedBySessionId ? { launchedBySessionId: chat.launchedBySessionId } : {}),
+    ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
+  };
+}
+
 function projectChatOntoSession(
   session: ReturnType<SyncRemoteCommandServiceArgs["ptyService"]["enrichSessions"]>[number],
   chat: AgentChatSessionSummary,
 ) {
   const base = {
-    ...session,
+    ...projectChatLineage(session, chat),
     currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
@@ -2812,9 +2831,11 @@ async function listRemoteWorkSessions(
   if (chatSummaryBySessionId.size === 0) return visibleSessions;
 
   return visibleSessions.map((session) => {
-    if (!isChatToolType(session.toolType) || session.status !== "running") return session;
+    if (!isChatToolType(session.toolType)) return session;
     const chat = chatSummaryBySessionId.get(session.id);
     if (!chat) return session;
+    // Runtime fields are projected for running rows only; lineage for all chat rows.
+    if (session.status !== "running") return projectChatLineage(session, chat);
     return projectChatOntoSession(session, chat);
   });
 }
@@ -2857,10 +2878,25 @@ function parseAgentChatGetSummaryArgs(value: Record<string, unknown>): AgentChat
   };
 }
 
+/**
+ * A phone or web client is one of the user's own clients, and only the RPC
+ * server stamps `runtimeActor`. Any copy the payload carries, at the top level
+ * or under `chat.create` (a launch), is removed before the launch parsers see it.
+ */
+function withoutClientRuntimeActor(value: Record<string, unknown>): Record<string, unknown> {
+  const { runtimeActor: _topLevel, ...rest } = value;
+  const chat = isRecord(rest.chat) ? rest.chat : null;
+  const create = chat && isRecord(chat.create) ? chat.create : null;
+  if (!chat || !create) return rest;
+  const { runtimeActor: _nested, ...createRest } = create;
+  return { ...rest, chat: { ...chat, create: createRest } };
+}
+
 function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCreateArgs {
+  const clientValue = withoutClientRuntimeActor(value);
   return {
-    laneId: requireString(value.laneId, "chat.create requires laneId."),
-    ...parseAgentChatCreateFields(value),
+    laneId: requireString(clientValue.laneId, "chat.create requires laneId."),
+    ...parseAgentChatCreateFields(clientValue),
   };
 }
 
@@ -5402,7 +5438,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // minutes later from an offline outbox would surprise everyone.
   const requireChatLaunchService = () => requireService(args.chatLaunchService, "New-lane launches are not available on this host.");
   register("chat.startLaunch", { viewerAllowed: true }, async (payload) =>
-    requireChatLaunchService().start(parseChatLaunchArgs(payload)));
+    requireChatLaunchService().start(parseChatLaunchArgs(withoutClientRuntimeActor(payload))));
   register("chat.getLaunch", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().get(parseChatLaunchIdArgs(payload, "chat.getLaunch")));
   register("chat.listLaunches", { viewerAllowed: true }, async () => args.chatLaunchService?.list() ?? []);

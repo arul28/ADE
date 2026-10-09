@@ -14,6 +14,12 @@
  * whole lane out, with every row still visible, so the user sees the context of
  * the thing asking for them.
  *
+ * A finished helper that an agent launched (its nesting parent, or the
+ * `launchedBySessionId` of a `--no-parent` chat) is the launcher's business while
+ * the launcher is busy in the same lane: it takes no part in the fold, just like a
+ * finished nested row. Once the launcher finishes, its own Done holds the lane out
+ * and the helpers hold it out again until the user has looked at them.
+ *
  * A finished chat with a scheduled wake still to come is Waiting, not Done: it
  * will start again on its own (a subagent polling CI, a /loop). A parent whose
  * subagent is still busy is Waiting too, because that subagent reports back and
@@ -134,6 +140,83 @@ function isAgentSession(session: TerminalSessionSummary): boolean {
   return isChatToolType(session.toolType) || isTrackedAgentCliToolType(session.toolType);
 }
 
+/**
+ * The chat that launched a row: its nesting parent, else the agent that started
+ * it with `--no-parent`. A peer carries only the parent id and is not nested, but
+ * the agent still launched it.
+ */
+function launcherSessionId(session: TerminalSessionSummary): string | null {
+  return session.orchestrationParentSessionId?.trim() || session.launchedBySessionId?.trim() || null;
+}
+
+type LaneFocusInputs = {
+  filingBuckets: ReadonlyMap<string, SessionFilingBucket>;
+  laneWaiting: boolean;
+  nestedSessionIds: ReadonlySet<string>;
+  busySubagentParentIds?: ReadonlySet<string>;
+  nowMs?: number;
+};
+
+/**
+ * One row's focus inside its lane, or null when it takes no part. A finished
+ * nested row is null; a resting parent that a busy subagent keeps busy is Waiting.
+ * A missed wake is never dropped.
+ */
+function laneRowFocus(session: TerminalSessionSummary, seen: boolean, inputs: LaneFocusInputs): WorkRowFocus | null {
+  const row = workRowFocus({
+    session,
+    filingBucket: inputs.filingBuckets.get(session.id),
+    laneWaiting: inputs.laneWaiting,
+    seen,
+    nowMs: inputs.nowMs,
+  });
+  if (!row || row.status !== "done" || row.missedWake) return row;
+  if (inputs.nestedSessionIds.has(session.id)) return null;
+  if (row.resting && inputs.busySubagentParentIds?.has(session.id)) return { status: "waiting", holdsOut: false };
+  return row;
+}
+
+/** A busy agent row: Working or Waiting, not holding its lane out, and an agent chat or CLI. */
+function isBusyAgentRow(session: TerminalSessionSummary, row: WorkRowFocus): boolean {
+  return !row.holdsOut && (row.status === "working" || row.status === "waiting") && isAgentSession(session);
+}
+
+type LaneFocusRows = {
+  rowBySessionId: ReadonlyMap<string, WorkRowFocus | null>;
+  busyIds: ReadonlySet<string>;
+};
+
+/** Every row of one lane, computed once, and the ids of the lane's busy agent rows. */
+function laneFocusRows(
+  sessions: readonly TerminalSessionSummary[],
+  seenOf: (session: TerminalSessionSummary) => boolean,
+  inputs: LaneFocusInputs,
+): LaneFocusRows {
+  const rowBySessionId = new Map<string, WorkRowFocus | null>();
+  const busyIds = new Set<string>();
+  for (const session of sessions) {
+    const row = laneRowFocus(session, seenOf(session), inputs);
+    rowBySessionId.set(session.id, row);
+    if (row && isBusyAgentRow(session, row)) busyIds.add(session.id);
+  }
+  return { rowBySessionId, busyIds };
+}
+
+/**
+ * A finished row (not a missed wake) whose launcher is a different busy agent in
+ * the same lane. Such a helper is skipped the way a finished nested row is: the
+ * launcher still owns the lane's focus.
+ */
+function deferredToBusyLauncher(
+  session: TerminalSessionSummary,
+  row: WorkRowFocus,
+  busyIds: ReadonlySet<string>,
+): boolean {
+  if (row.status !== "done" || row.missedWake) return false;
+  const launcher = launcherSessionId(session);
+  return launcher !== null && launcher !== session.id && busyIds.has(launcher);
+}
+
 export type WorkLaneFocus = {
   /** Highest-priority status among the lane's live rows; null when it has none. */
   status: WorkLaneFocusStatus | null;
@@ -157,6 +240,12 @@ export const EMPTY_WORK_SEEN_AT: Readonly<Record<string, string>> = {};
  * lane out, but a finished nested row cannot: nobody opens a helper to mark it
  * seen, so it would pin the lane open forever. A missed wake is the exception.
  *
+ * A finished helper the agent launched (`launcherSessionId`) is skipped the same
+ * way while that launcher is a busy agent in this lane. A raised hand, a stale
+ * run, or a missed wake from a helper still holds the lane out; a chat the user
+ * started has no launcher and is unaffected; a launcher in another lane does not
+ * count. Only the direct launcher counts, not its own launcher.
+ *
  * `busySubagentParentIds` names the chats a nested subagent still keeps busy
  * (`parentsWithBusySubagents`, the same set the row label reads). Such a
  * finished parent is Waiting rather than Done: the subagent wakes it when its
@@ -177,22 +266,24 @@ export function summarizeLaneFocus(args: {
   let status: WorkLaneFocusStatus | null = launching > 0 ? "working" : null;
   let busy = launching;
   let heldOut = false;
-  for (const session of args.sessions) {
-    let row = workRowFocus({
-      session,
-      filingBucket: args.filingBuckets.get(session.id),
+  const lane = laneFocusRows(
+    args.sessions,
+    (session) => isWorkRowSeen(session, args.seenAtBySessionId[session.id]),
+    {
+      filingBuckets: args.filingBuckets,
       laneWaiting: args.laneWaiting,
-      seen: isWorkRowSeen(session, args.seenAtBySessionId[session.id]),
+      nestedSessionIds: args.nestedSessionIds,
+      busySubagentParentIds: args.busySubagentParentIds,
       nowMs: args.nowMs,
-    });
+    },
+  );
+  for (const session of args.sessions) {
+    const row = lane.rowBySessionId.get(session.id);
     if (!row) continue;
-    if (row.status === "done" && !row.missedWake) {
-      if (args.nestedSessionIds.has(session.id)) continue;
-      if (row.resting && args.busySubagentParentIds?.has(session.id)) row = { status: "waiting", holdsOut: false };
-    }
+    if (deferredToBusyLauncher(session, row, lane.busyIds)) continue;
     if (status === null || STATUS_RANK[row.status] < STATUS_RANK[status]) status = row.status;
     if (row.holdsOut) heldOut = true;
-    else if ((row.status === "working" || row.status === "waiting") && isAgentSession(session)) busy += 1;
+    else if (isBusyAgentRow(session, row)) busy += 1;
   }
   return { status, folds: !heldOut && busy > 0 };
 }
@@ -304,7 +395,9 @@ export function stampWorkSeenAt(
  * unfolded; the sidebar still shows it, which is where the user sees why it is
  * not a tile. Plain shells are not agents and never get a tile. A nested row
  * (subagent, attached shell) gets a tile only while it asks for the user; a
- * finished one is the parent's business.
+ * finished one is the parent's business. A finished helper whose launcher is
+ * busy in its lane (`summarizeLaneFocus`) gets no tile either, so the grid and
+ * the sidebar agree.
  */
 export function workFocusQueue(args: {
   sessions: readonly TerminalSessionSummary[];
@@ -316,19 +409,30 @@ export function workFocusQueue(args: {
   busySubagentParentIds?: ReadonlySet<string>;
   nowMs?: number;
 }): string[] {
-  const ids: string[] = [];
+  const sessionsByLaneId = new Map<string, TerminalSessionSummary[]>();
   for (const session of args.sessions) {
     if (args.foldedLaneIds.has(session.laneId)) continue;
-    if (!isAgentSession(session)) continue;
-    const row = workRowFocus({
-      session,
-      filingBucket: args.filingBuckets.get(session.id),
-      laneWaiting: args.laneWaiting(session.laneId),
-      seen: false,
+    const laneSessions = sessionsByLaneId.get(session.laneId);
+    if (laneSessions) laneSessions.push(session);
+    else sessionsByLaneId.set(session.laneId, [session]);
+  }
+  const laneBySessionId = new Map<string, LaneFocusRows>();
+  for (const [laneId, laneSessions] of sessionsByLaneId) {
+    const lane = laneFocusRows(laneSessions, () => false, {
+      filingBuckets: args.filingBuckets,
+      laneWaiting: args.laneWaiting(laneId),
+      nestedSessionIds: args.nestedSessionIds,
+      busySubagentParentIds: args.busySubagentParentIds,
       nowMs: args.nowMs,
     });
+    for (const session of laneSessions) laneBySessionId.set(session.id, lane);
+  }
+  const ids: string[] = [];
+  for (const session of args.sessions) {
+    const lane = laneBySessionId.get(session.id);
+    if (!lane || !isAgentSession(session)) continue;
+    const row = lane.rowBySessionId.get(session.id);
     if (!row) continue;
-    const nested = args.nestedSessionIds.has(session.id);
     if (row.status === "needs_you") {
       ids.push(session.id);
       continue;
@@ -337,8 +441,8 @@ export function workFocusQueue(args: {
       ids.push(session.id);
       continue;
     }
-    if (nested) continue;
-    if (row.resting && args.busySubagentParentIds?.has(session.id)) continue;
+    if (args.nestedSessionIds.has(session.id)) continue;
+    if (deferredToBusyLauncher(session, row, lane.busyIds)) continue;
     // A stale or stalled run is filed as working but holds its lane out: it
     // may be stuck, so the user is the one who has to look.
     if (row.status === "done" || (row.status === "working" && row.holdsOut)) ids.push(session.id);

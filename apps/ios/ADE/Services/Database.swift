@@ -2077,6 +2077,7 @@ final class DatabaseService {
       chatSessionId: row.chatSessionId,
       pendingInputItemId: row.pendingInputItemId,
       orchestrationParentSessionId: row.resumeMetadata?.orchestrationParentSessionId,
+      launchedBySessionId: row.resumeMetadata?.launchedBySessionId,
       spawnKind: row.resumeMetadata?.spawnKind
     )
   }
@@ -2088,6 +2089,7 @@ final class DatabaseService {
     guard var metadata = session.resumeMetadata else { return nil }
     metadata.orchestrationParentSessionId =
       session.orchestrationParentSessionId ?? metadata.orchestrationParentSessionId
+    metadata.launchedBySessionId = session.launchedBySessionId ?? metadata.launchedBySessionId
     metadata.spawnKind = session.spawnKind ?? metadata.spawnKind
     return metadata
   }

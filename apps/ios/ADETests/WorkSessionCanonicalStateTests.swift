@@ -2065,6 +2065,47 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(workRollUpLaneFocus([seen, shellFocus]), .working)
   }
 
+  /// Desktop `summarizeLaneFocus`'s launcher rule: a finished helper an agent
+  /// launched does not hold its lane out while that agent is busy in the lane,
+  /// and counts again once the agent itself has finished.
+  func testLaneFocusDefersFinishedHelpersToTheirBusyLauncher() {
+    var launcher = makeSession(status: "running", runtimeState: "running", toolType: "codex", startedAt: iso(now))
+    launcher.id = "launcher"
+    var helper = makeSession(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 0, startedAt: iso(now))
+    helper.id = "helper"
+    helper.launchedBySessionId = "launcher"
+    var userStarted = helper
+    userStarted.id = "user-started"
+    userStarted.launchedBySessionId = nil
+    var finishedLauncher = userStarted
+    finishedLauncher.id = "launcher"
+
+    func counted(_ sessions: [TerminalSessionSummary]) -> [WorkRowFocus?] {
+      workLaneCountedFocus(
+        sessions.map {
+          WorkLaneRosterRow(session: $0, summary: nil, archived: false, seen: false, busySubagentParent: false, nestedChild: false)
+        },
+        laneWaiting: false,
+        now: now
+      )
+    }
+
+    let deferred = counted([launcher, helper])
+    XCTAssertNil(deferred[1])
+    XCTAssertTrue(workLaneFoldsIntoWorking(deferred))
+    XCTAssertEqual(workRollUpLaneFocus(deferred), .working)
+
+    // A chat the user started has no launcher, so it still holds the lane out.
+    let held = counted([launcher, userStarted])
+    XCTAssertEqual(held[1]?.holdsOut, true)
+    XCTAssertFalse(workLaneFoldsIntoWorking(held))
+
+    // Once the launcher has finished, the helper holds the lane out again.
+    let afterLauncher = counted([finishedLauncher, helper])
+    XCTAssertEqual(afterLauncher[1]?.holdsOut, true)
+    XCTAssertFalse(workLaneFoldsIntoWorking(afterLauncher))
+  }
+
   func testLaneFocusFoldRuleHandlesScheduledAndMissedWakesAndSubagents() {
     struct Case {
       let name: String

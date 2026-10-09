@@ -281,6 +281,11 @@ export type TerminalResumeMetadata = {
   credentialId?: string | null;
   /** Chat that spawned this tracked CLI session, independent of terminal ownership. */
   orchestrationParentSessionId?: string;
+  /**
+   * Agent chat that launched this CLI session when there is no orchestration
+   * parent. Passive fact only: it does not nest, wake, or cap permissions.
+   */
+  launchedBySessionId?: string;
   /** Cosmetic/reporting relationship declared by the spawning chat. */
   spawnKind?: AgentChatSpawnKind;
   importedFrom?: {
@@ -474,6 +479,11 @@ export type TerminalSessionSummary = {
    * for migration tolerance.
    */
   orchestrationParentSessionId?: string;
+  /**
+   * Agent chat that launched this session when it has no orchestration parent.
+   * A passive fact for attribution: it does not nest, wake, or cap permissions.
+   */
+  launchedBySessionId?: string;
   spawnKind?: AgentChatSpawnKind;
   /**
    * Identity key of the spawn parent, when the parent is an IDENTITY
@@ -585,6 +595,12 @@ export type PtyCreateArgs = {
   allowExternalCwd?: boolean;
   /** Session that owns this attached terminal, when launched from chat/CLI UI or App Control. */
   chatSessionId?: string | null;
+  /**
+   * Agent chat that launched this tracked agent CLI with no orchestration
+   * parent. Merged into whatever resume metadata the launch resolves (passed or
+   * parsed from the command); see `TerminalResumeMetadata.launchedBySessionId`.
+   */
+  launchedBySessionId?: string | null;
   /**
    * `"agent"` when an agent started this shell for its chat (App Control). Such
    * a shell is archived once it is dead and nobody typed into it; see

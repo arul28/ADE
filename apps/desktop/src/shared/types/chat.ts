@@ -2572,6 +2572,13 @@ export type AgentChatInteractionMode =
  */
 export type SpawnLineageSessionFields = {
   orchestrationParentSessionId?: string;
+  /**
+   * The agent chat that launched this session, recorded only when the launch
+   * has no `orchestrationParentSessionId` (a parented spawn already carries its
+   * parent). A passive fact: it does not nest the session under the launcher,
+   * wake the launcher, or change permissions. Absent when unknown or parented.
+   */
+  launchedBySessionId?: string;
   spawnKind?: AgentChatSpawnKind;
   /**
    * When the takeover banner was dismissed or Take over was chosen. Brain-side
@@ -4058,6 +4065,8 @@ export type AgentChatLaunchCliArgs = {
   credentialId?: string | null;
   /** Foreground opens/focuses the session; background leaves focus alone. */
   disposition?: "foreground" | "background";
+  /** Who made the call; see `AgentChatRuntimeActor`. Stamped by the RPC server only. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatLaunchCliResult = {

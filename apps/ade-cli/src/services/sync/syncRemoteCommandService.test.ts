@@ -235,6 +235,46 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("chat.listLaunches"))).resolves.toEqual([]);
   });
 
+  it("strips a client-sent runtimeActor from chat.create and chat.startLaunch before the chat service sees it", async () => {
+    const createSession = vi.fn(async (_args: Record<string, unknown>) => ({ id: "chat-1", laneId: "lane-1", provider: "codex", model: "openai/gpt-5.5" }));
+    const getSessionSummary = vi.fn().mockResolvedValue({ sessionId: "chat-1", laneId: "lane-1" });
+    const start = vi.fn(async (args: unknown) => ({ launchId: (args as { launchId: string }).launchId, phase: "running" }));
+    const { service } = createService({
+      agentChatService: { createSession, getSessionSummary, getAvailableModels: vi.fn().mockResolvedValue([]) },
+      chatLaunchService: { start, list: vi.fn(() => []) },
+    });
+
+    await service.execute(makePayload("chat.create", {
+      laneId: "lane-1",
+      provider: "codex",
+      model: "openai/gpt-5.5",
+      runtimeActor: { kind: "cto" },
+    }));
+    expect(createSession).toHaveBeenCalledTimes(1);
+    const created = createSession.mock.calls[0]![0] as Record<string, unknown>;
+    expect(created).toMatchObject({ laneId: "lane-1", provider: "codex", model: "openai/gpt-5.5" });
+    expect(created).not.toHaveProperty("runtimeActor");
+
+    await service.execute(makePayload("chat.startLaunch", {
+      kind: "chat",
+      mode: "foreground",
+      launchId: "6f1c2a4e-1b2c-4d5e-8f90-123456789abc",
+      laneId: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+      laneName: "fix-flaky-test",
+      prompt: "fix the flaky test",
+      runtimeActor: { kind: "cto" },
+      chat: {
+        create: { provider: "codex", model: "openai/gpt-5.5", runtimeActor: { kind: "cto" } },
+        message: { text: "fix the flaky test" },
+      },
+    }));
+    expect(start).toHaveBeenCalledTimes(1);
+    const launch = start.mock.calls[0]![0] as Record<string, any>;
+    expect(launch).not.toHaveProperty("runtimeActor");
+    expect(launch.chat.create).toMatchObject({ provider: "codex", model: "openai/gpt-5.5" });
+    expect(launch.chat.create).not.toHaveProperty("runtimeActor");
+  });
+
   it("rejects an oversized Cursor Cloud artifact before returning it to a peer", async () => {
     const downloadCursorCloudArtifact = vi.fn().mockResolvedValue({
       path: "build.zip",
@@ -1818,6 +1858,30 @@ describe("createSyncRemoteCommandService", () => {
       includeArchived: false,
       includeIdentity: true,
     });
+  });
+
+  it("returns spawn lineage on finished chat rows, but no running-only runtime fields", async () => {
+    const finishedChat = (id: string) => ({ id, laneId: "lane-1", status: "completed", runtimeState: "idle", toolType: "codex-chat" });
+    const { service } = createService({
+      sessionService: { list: vi.fn().mockReturnValue([finishedChat("helper"), finishedChat("subagent")]) },
+      agentChatService: {
+        listSessions: vi.fn().mockResolvedValue([
+          { sessionId: "helper", laneId: "lane-1", launchedBySessionId: "launcher-1", currentTurnStartedAt: "2026-07-31T12:00:00.000Z" },
+          { sessionId: "subagent", laneId: "lane-1", orchestrationParentSessionId: "parent-1", spawnKind: "subagent", currentTurnStartedAt: "2026-07-31T12:00:00.000Z" },
+        ]),
+      },
+    });
+
+    const rows = await service.execute(makePayload("work.listSessions", {})) as Array<Record<string, unknown>>;
+    const byId = new Map(rows.map((row) => [row.id, row] as const));
+
+    expect(byId.get("helper")).toMatchObject({ launchedBySessionId: "launcher-1" });
+    expect(byId.get("helper")).not.toHaveProperty("orchestrationParentSessionId");
+    expect(byId.get("subagent")).toMatchObject({ orchestrationParentSessionId: "parent-1", spawnKind: "subagent" });
+    expect(byId.get("subagent")).not.toHaveProperty("launchedBySessionId");
+    // The chat's turn clock is a running-row projection; a finished row keeps its own shape.
+    expect(byId.get("helper")).not.toHaveProperty("currentTurnStartedAt");
+    expect(byId.get("subagent")).not.toHaveProperty("currentTurnStartedAt");
   });
 
   it("routes work.getSession through session enrichment and chat state projection", async () => {

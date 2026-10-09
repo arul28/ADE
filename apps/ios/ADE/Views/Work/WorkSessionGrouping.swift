@@ -504,6 +504,7 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(session.steeringInput)
     hasher.combine(session.chatSessionId)
     hasher.combine(session.orchestrationParentSessionId)
+    hasher.combine(session.launchedBySessionId)
     hasher.combine(session.spawnKind)
     hasher.combine(session.archivedAt)
     hasher.combine(session.settledAt)
@@ -768,20 +769,27 @@ func workSessionGroups(
     // change shelves while the user types in search. A finished nested row
     // (attached shell, subagent) cannot hold its lane out — nobody opens a
     // helper to mark it seen — but a nested row asking for input still can.
+    // Neither can a finished helper while the agent that launched it is busy
+    // in the same lane, so rows are counted per lane (`workLaneCountedFocus`).
     let focusRoster = quietReferenceSessions ?? sessions
-    var focusRowsByLaneId: [String: [WorkRowFocus?]] = [:]
+    var rosterByLaneId: [String: [WorkLaneRosterRow]] = [:]
     for session in focusRoster {
-      let focus = workCountedRowFocus(
+      rosterByLaneId[session.laneId, default: []].append(WorkLaneRosterRow(
         session: session,
         summary: chatSummaries[session.id],
         archived: archivedSessionIds.contains(session.id),
-        laneWaiting: laneWaitingReasonByLaneId[session.laneId] != nil,
         seen: workIsRowSeen(session: session, seenAt: seenAtBySessionId[session.id]),
         busySubagentParent: busySubagentParentIds.contains(session.id),
-        nestedChild: nestedChildIds.contains(session.id),
+        nestedChild: nestedChildIds.contains(session.id)
+      ))
+    }
+    var focusRowsByLaneId: [String: [WorkRowFocus?]] = [:]
+    for (laneId, roster) in rosterByLaneId {
+      focusRowsByLaneId[laneId] = workLaneCountedFocus(
+        roster,
+        laneWaiting: laneWaitingReasonByLaneId[laneId] != nil,
         now: now
       )
-      focusRowsByLaneId[session.laneId, default: []].append(focus)
     }
     let laneGroups = workSessionGroupsByLane(
       sessions: awake,

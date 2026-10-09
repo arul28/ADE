@@ -183,6 +183,7 @@ export function projectChatOntoSession(
     ...(chat.orchestrationParentSessionId
       ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
       : {}),
+    ...(chat.launchedBySessionId ? { launchedBySessionId: chat.launchedBySessionId } : {}),
     // Only stamped when there genuinely is an identity parent. Writing an
     // explicit `null` would make every ordinary spawned chat carry the field,
     // and "present but null" and "absent" would then have to mean the same

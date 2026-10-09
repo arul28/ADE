@@ -6031,6 +6031,13 @@ export function createPtyService({
           toolType: toolTypeHint,
           startupCommand: requestedStartupCommand,
         });
+      // Passive lineage rides on whichever record the launch resolved, so the
+      // command-parsed launch fields (Codex sandbox, Claude permission mode)
+      // are kept rather than replaced by a launcher-only record.
+      const launchedBySessionId = args.launchedBySessionId?.trim();
+      if (launchedBySessionId && initialResumeMetadata && !existingSession && !initialResumeMetadata.launchedBySessionId) {
+        initialResumeMetadata = { ...initialResumeMetadata, launchedBySessionId };
+      }
       const runtimeLaunchModel = typeof runtimeCliLaunch?.model === "string" && runtimeCliLaunch.model.trim().length
         ? runtimeCliLaunch.model.trim()
         : "";
