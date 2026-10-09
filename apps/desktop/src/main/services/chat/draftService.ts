@@ -22,7 +22,7 @@ import type { SqlValue } from "../state/kvDb";
  * function takes this rather than `AdeDb` because the chat service reaches its
  * database through a guarded `args.db` whose members are optional there.
  */
-export type DraftDb = Pick<AdeDb, "get" | "all" | "run"> & Partial<Pick<AdeDb, "sync">>;
+export type DraftDb = Pick<AdeDb, "get" | "all" | "run"> & Partial<Pick<AdeDb, "sync" | "runChanged">>;
 
 export {
   MAX_DRAFT_ATTACHMENTS,
@@ -661,9 +661,40 @@ export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
   return getDraft(db, id);
 }
 
+/**
+ * Take exclusive ownership of a due send before delivering it.
+ *
+ * The status flip is the claim: `scheduled` -> `sending` matches at most one
+ * row, so the runtime that wins is the only one that delivers. This makes
+ * delivery exactly-once per runtime across a restart or an overlapping sweep,
+ * and it is what keeps a second brain from re-sending a row whose turn is
+ * already in flight.
+ */
+export function claimScheduledDraft(db: DraftDb, id: string): boolean {
+  const now = new Date().toISOString();
+  const changed = db.runChanged
+    ? db.runChanged(
+      "update prompt_stashes set status = 'sending', updated_at = ? where id = ? and status = 'scheduled'",
+      [now, id],
+    )
+    : null;
+  if (changed != null) return changed === 1;
+  // Adapters without `runChanged` (narrow test doubles) fall back to a read
+  // then write, which is still atomic inside one synchronous connection.
+  const row = db.get<{ status: string | null }>(
+    "select status from prompt_stashes where id = ? limit 1",
+    [id],
+  );
+  if (!row || row.status !== "scheduled") return false;
+  db.run(
+    "update prompt_stashes set status = 'sending', updated_at = ? where id = ?",
+    [now, id],
+  );
+  return true;
+}
+
 /** Statuses/errors the scheduler writes back onto a row. */
-export function setDraftStatus(
-  db: DraftDb,
+export function setDraftStatus(  db: DraftDb,
   id: string,
   patch: {
     status: DraftStatus;
@@ -688,9 +719,25 @@ export function setDraftStatus(
 }
 
 /**
+ * Machine keys arrive from several places — this host's relay identity, the
+ * desktop's machine picker, and the phone's account directory — and they are
+ * equal as identity but not always as text. Comparing them normalized stops a
+ * send from being stranded by casing alone.
+ */
+function sameMachineKey(left: string | null | undefined, right: string | null | undefined): boolean {
+  const a = left?.trim().toLowerCase();
+  const b = right?.trim().toLowerCase();
+  return Boolean(a) && Boolean(b) && a === b;
+}
+
+/**
  * Scheduled sends that are due to fire on this machine, oldest fire time
  * first. `machineKey` filters to rows this runtime owns: another machine's
  * row is visible over sync but must not be delivered from here.
+ *
+ * A row already `sending` is excluded — it was claimed by a runtime and must
+ * not be delivered twice. `releaseStaleSendingDrafts` returns one to the queue
+ * if the runtime that claimed it died mid-send.
  */
 export function listDueScheduledDrafts(
   db: DraftDb,
@@ -704,7 +751,7 @@ export function listDueScheduledDrafts(
       select ${DRAFT_COLUMNS}
       from prompt_stashes
       where kind = 'scheduled'
-        and status in ('scheduled', 'sending')
+        and status = 'scheduled'
         and scheduled_at is not null
         and scheduled_at <= ?
       order by scheduled_at asc, created_at asc
@@ -715,8 +762,25 @@ export function listDueScheduledDrafts(
   return rows.filter((entry) => {
     const target = entry.targetMachineKey?.trim() || null;
     if (!target) return true;
-    return machineKey != null && target === machineKey;
+    return sameMachineKey(target, machineKey);
   });
+}
+
+/**
+ * Return a claimed-but-unfinished send to the queue. A runtime that dies
+ * between claiming a row and recording the outcome would otherwise leave it
+ * `sending` forever, which reads as a send that silently never happened.
+ */
+export function releaseStaleSendingDrafts(
+  db: DraftDb,
+  staleAfterMs = 10 * 60_000,
+  nowMs = Date.now(),
+): number {
+  const cutoff = new Date(nowMs - staleAfterMs).toISOString();
+  const sql = "update prompt_stashes set status = 'scheduled' where status = 'sending' and updated_at < ?";
+  if (db.runChanged) return db.runChanged(sql, [cutoff]);
+  db.run(sql, [cutoff]);
+  return 0;
 }
 
 /** Every armed send, for the drafts list's Scheduled bucket. */
@@ -753,7 +817,7 @@ export function nextScheduledDraftFireAt(
   );
   for (const row of rows) {
     const target = row.target_machine_key?.trim() || null;
-    if (target && (machineKey == null || target !== machineKey)) continue;
+    if (target && !sameMachineKey(target, machineKey)) continue;
     const fireAt = row.scheduled_at ? Date.parse(row.scheduled_at) : Number.NaN;
     if (Number.isFinite(fireAt)) return fireAt;
   }

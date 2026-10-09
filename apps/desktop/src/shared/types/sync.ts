@@ -2574,6 +2574,8 @@ export type SyncRemoteCommandAction =
   | "chat.listDrafts"
   | "chat.createDraft"
   | "chat.deleteDraft"
+  | "chat.updateDraft"
+  | "chat.claimDraft"
   | "chat.listThreadComments"
   | "chat.createThreadComment"
   | "chat.updateThreadComment"

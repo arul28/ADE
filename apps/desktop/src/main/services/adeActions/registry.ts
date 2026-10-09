@@ -979,22 +979,36 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     listDrafts: () => listDrafts(runtime.db),
     createDraft: (args?: DraftCreateArgs) => {
       const record = readObjectActionArg(args, "chat.createDraft");
-      // The service owns validation for both text and attachment-only stashes.
+      // The service owns validation for both text and attachment-only drafts.
       // Keeping the full object intact is essential on the daemon path: this is
       // the path every runtime-backed desktop uses.
-      return createDraft(runtime.db, record);
+      const created = createDraft(runtime.db, record);
+      // A newly armed send should not wait for the periodic sweep to be seen.
+      agentChatService.refreshDraftScheduler();
+      return created;
     },
     deleteDraft: (args?: DraftDeleteArgs) => {
       const record = readObjectActionArg(args, "chat.deleteDraft");
-      return deleteDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+      const deleted = deleteDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+      agentChatService.refreshDraftScheduler();
+      return deleted;
     },
     updateDraft: (args?: DraftUpdateArgs) => {
       const record = readObjectActionArg(args, "chat.updateDraft");
-      return updateDraft(runtime.db, record);
+      const updated = updateDraft(runtime.db, record);
+      agentChatService.refreshDraftScheduler();
+      return updated;
     },
     claimDraft: (args?: DraftClaimArgs) => {
       const record = readObjectActionArg(args, "chat.claimDraft");
       return claimDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+    },
+    // Delivers the draft as a real user turn now, whatever its fire time. Owned
+    // by the chat service rather than the draft store: sending is a chat
+    // concern, and this is the same path the scheduler uses at a fire time.
+    sendDraftNow: async (args?: { id?: string }) => {
+      const record = readObjectActionArg(args, "chat.sendDraftNow");
+      return await agentChatService.sendDraftNow(requireNonEmptyString(record.id, "id"));
     },
     fileSearch: async (args?: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
       const sessionId = requireNonEmptyString(args?.sessionId, "sessionId");

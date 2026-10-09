@@ -164,6 +164,8 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "chat.listDrafts",
   "chat.createDraft",
   "chat.deleteDraft",
+  "chat.updateDraft",
+  "chat.claimDraft",
   // Thread comments. An older brain omits them, and the phone hides the chip.
   ...THREAD_COMMENT_ACTION_NAMES.map((action) => `chat.${action}` as const),
   // Sources favicons improve the compact phone Sources list; older hosts keep

@@ -59,10 +59,12 @@ import type {
 import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import {
+  claimScheduledDraft,
   getDraft,
   listDraftAttachmentPaths,
   listDueScheduledDrafts,
   nextScheduledDraftFireAt,
+  releaseStaleSendingDrafts,
   setDraftStatus,
   type DraftDb,
 } from "./draftService";
@@ -10148,7 +10150,7 @@ export function createAgentChatService(args: {
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   db?: (
     Pick<AdeDb, "getJson" | "setJson">
-    & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync">>
+    & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync" | "runChanged">>
   ) | null;
   /**
    * Which Apple device a lane holds, for the `<ade-lane-tools>` hint. Defaults
@@ -64373,6 +64375,9 @@ export function createAgentChatService(args: {
   const recordDraftOutcome = (entry: DraftEntry, outcome: DraftDeliveryOutcome): void => {
     const store = draftDb();
     if (!store) return;
+    // A skipped send belongs to another pass; writing anything here would
+    // overwrite that pass's claim.
+    if (outcome.status === "skipped") return;
     if (outcome.status === "sent") {
       setDraftStatus(store, entry.id, { status: "sent", firedAt: outcome.firedAt, lastError: null });
       return;
@@ -64394,10 +64399,23 @@ export function createAgentChatService(args: {
       const store = draftDb();
       return store ? nextScheduledDraftFireAt(store, localDraftMachineKey()) : null;
     },
-    deliver: (entry) => deliverDraft(entry, draftDeliveryDeps),
+    deliver: async (entry) => {
+      const store = draftDb();
+      // Claim before sending: only the runtime whose flip matched a row
+      // delivers it, so an overlapping sweep or a restart cannot send twice.
+      if (store && !claimScheduledDraft(store, entry.id)) {
+        return { status: "skipped", error: "Another pass is already sending this draft." };
+      }
+      return await deliverDraft(entry, draftDeliveryDeps);
+    },
     onOutcome: recordDraftOutcome,
     logger,
   });
+  // A runtime that died mid-send left a row claimed; return it to the queue.
+  {
+    const store = draftDb();
+    if (store) releaseStaleSendingDrafts(store);
+  }
   draftScheduler.start();
 
   /**

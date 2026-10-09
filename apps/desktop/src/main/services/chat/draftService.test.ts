@@ -363,5 +363,22 @@ describe("draftService", () => {
       expect(stored?.status).toBe("sent");
       expect(stored?.fired_at).toBeTruthy();
     });
+
+    // Machine keys reach this host from three different places, so a row
+    // targeted at "  StUdIo  " must still fire on a host named "studio".
+    it("matches a target machine key regardless of casing or padding", () => {
+      const twoHoursOut = Date.now() + 2 * 60 * 60 * 1000;
+      const created = createDraft(db, {
+        text: "padded target",
+        schedule: schedule({
+          scheduledAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+          targetMachineKey: "  StUdIo  ",
+        }),
+      });
+
+      expect(listDueScheduledDrafts(db, "studio", twoHoursOut).map((entry) => entry.id))
+        .toEqual([created.id]);
+      expect(listDueScheduledDrafts(db, "laptop", twoHoursOut)).toEqual([]);
+    });
   });
 });

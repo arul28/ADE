@@ -13,7 +13,12 @@ export type DraftDeliveryOutcome =
   | { status: "sent"; firedAt: string }
   | { status: "blocked"; error: string }
   | { status: "missed"; error: string }
-  | { status: "retry"; error: string };
+  | { status: "retry"; error: string }
+  /**
+   * Another pass already owns this send. Never written back to the row — the
+   * runtime that owns it must not have its claim recorded over.
+   */
+  | { status: "skipped"; error: string };
 
 export type DraftDeliveryDeps = {
   now: () => number;
