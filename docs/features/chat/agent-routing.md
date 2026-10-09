@@ -598,6 +598,27 @@ fails `session.get`, only a confirmed 404 (`isOpenCodeNotFoundError`) falls
 through to fresh-session creation; any other error surfaces rather than
 silently resetting the thread into a new empty session.
 
+## Compaction per provider
+
+Every harness compacts by itself. ADE does not replace that. It sets each harness's own compaction config, renders
+one `context_compact` lifecycle, and adds a guarded Claude fallback at 97%.
+
+| Provider | Compacts by itself | ADE setting applied as | `/compact` in ADE | Context window source |
+|---|---|---|---|---|
+| Claude | Yes (`auto` window from Anthropic, per model) | SDK query `settings.autoCompactWindow` (100k–1M) and `autoCompactEnabled` | Passed to the SDK as a slash command | `modelUsage[].contextWindow`, else the registry; `getContextUsage().raw_max_tokens` is the compaction point |
+| Codex | Yes | `codex app-server -c model_auto_compact_token_limit=<n>`, capped at the model window | `thread/compact/start`; custom instructions are not supported, and ADE says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only, never the cumulative total |
+| OpenCode | Yes | OpenCode config `compaction: { auto, buffer, keep: { tokens } }` | `session.command` when the server lists `compact` | `min(models.dev limit.context, ADE registry)` |
+| Pi | Yes | `settingsManager.applyOverrides({ compaction: { enabled, reserveTokens, keepRecentTokens } })` | `sdk.compact()` | SDK `context_usage` |
+| Cursor | Yes | None ("This provider compacts by itself. ADE cannot change when.") | Not supported | The SDK's per-model window or the preCompact hook's `context_window_size` |
+| Droid, ACP agents | Varies | None | Sent as a prompt where the agent accepts it | `contextStats.limit` / `usage_update` |
+
+Settings live in project config `ai.compaction.<provider>` (`shared/compactionSettings.ts`:
+`enabled`, `atTokens` (`null` = the harness default), `reserveTokens`, `keepRecentTokens`, `idleMode`). Claude and
+Codex accounts can override them on the account record (`ProviderInstance.compaction`); the effective value is
+the provider setting with the account's fields on top. A change restarts an idle Claude or Codex runtime, so it
+applies at the next query start. ADE never writes the user's `~/.claude/settings.json` and never sets
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, which would override a user's own `/autocompact`.
+
 ## Permission modes
 
 Permission controls are provider-native. The session carries an abstract

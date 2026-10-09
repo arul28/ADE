@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowsIn, WarningCircle } from "@phosphor-icons/react";
 import type { AgentChatEvent } from "../../../shared/types";
-import { formatCompactTokenCount, formatCompactDuration } from "../../../shared/contextCompaction";
+import { compactionFailLabel, formatCompactTokenCount, formatCompactDuration } from "../../../shared/contextCompaction";
 
 export function ContextCompactDivider({ event, startedAt, onRetry }: {
   event: Extract<AgentChatEvent, { type: "context_compact" }>;
@@ -25,7 +25,7 @@ export function ContextCompactDivider({ event, startedAt, onRetry }: {
   const failure = detail && /weekly limit/i.test(detail) ? "weekly limit" : detail && /quota|usage limit/i.test(detail) ? "usage limit" : undefined;
   const title = running
     ? `Compacting context${pre ? ` · ${pre} tokens` : ""}${elapsed >= 5 ? ` · ${elapsed} s` : ""}`
-    : failed ? `Compaction failed${failure ? ` · ${failure}${event.accountLabel ? ` on ${event.accountLabel}` : ""}` : ""}`
+    : failed ? `${compactionFailLabel(event.failReason)}${failure ? ` · ${failure}${event.accountLabel ? ` on ${event.accountLabel}` : ""}` : ""}`
     : `Context compacted${pre && post ? ` · ${pre} → ${post}` : ""}${duration ? ` · ${duration}` : ""}`;
   const trigger = event.trigger === "manual" ? "you asked" : event.trigger === "ade_fallback" ? "ADE (near limit)" : "automatic";
   const count = event.sessionCompactionCount;

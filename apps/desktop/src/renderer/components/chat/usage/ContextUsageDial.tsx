@@ -18,9 +18,10 @@ import { formatContextTokens, type ContextUsageViewModel } from "./contextUsageM
  * the old Codex-only token strip and renders for every provider whose usage
  * view-model is non-null. Returns null when there is nothing to show.
  *
- * Claude, Codex, and Pi can compact from this control. The click sends the
- * existing `/compact` slash (the pane owns that send so an unsent draft is
- * not replaced). Other providers keep a read-only meter.
+ * Claude, Codex, Pi, and OpenCode (when its server lists `compact`) can
+ * compact from the popover's "Compact now". It sends the existing `/compact`
+ * slash (the pane owns that send so an unsent draft is not replaced). Other
+ * providers keep a read-only meter.
  */
 
 const RING_RADIUS = 8;
