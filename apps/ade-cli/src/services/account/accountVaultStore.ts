@@ -419,9 +419,25 @@ export function createAccountVaultStore(args: {
       }, { expectedAccountUserId: options?.expectedAccountUserId });
     },
 
-    /** Flush what is queued, then take what changed. Single-flight. */
-    sync(): Promise<AccountCacheSyncStatus> {
-      return cache.sync();
+    /**
+     * Flush what is queued, then take what changed. Single-flight. With
+     * `maxAgeMs`, answers from the cache when the last successful pull is
+     * younger than that and nothing is queued, so a read path can ask for
+     * freshness without paying a request per call.
+     */
+    sync(options?: { maxAgeMs?: number } | null): Promise<AccountCacheSyncStatus> {
+      const maxAgeMs = options?.maxAgeMs;
+      return typeof maxAgeMs === "number" && Number.isFinite(maxAgeMs)
+        ? cache.syncIfStale(maxAgeMs)
+        : cache.sync();
+    },
+
+    /** Keys in one scope and kind whose write from this machine has not reached the account yet. */
+    pendingKeys(scope: string, kind: AccountVaultItemKind): string[] {
+      return cache.pendingKeys()
+        .map(splitCacheKey)
+        .filter((split): split is NonNullable<typeof split> => split !== null && split.scope === scope && split.kind === kind)
+        .map((split) => split.key);
     },
 
     /** Start (or join) the shared background sync. Refcounted; see the helper. */

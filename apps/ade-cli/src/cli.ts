@@ -5129,7 +5129,13 @@ function parseCliArgs(argv: string[]): ParsedCli {
       command.push(token, ...rest);
       break;
     }
-    const valueFlag = inGlobalPrefix ? readGlobalValueFlag(argv, index) : null;
+    // `ade secrets list --project-root <dir>` reads naturally, and silently
+    // ignoring the flag there answered with another project's secrets. Only
+    // the secrets family takes root flags after the command: elsewhere
+    // (app-control, the iOS simulator) the command reads them as its own.
+    const valueFlag = inGlobalPrefix || command[0] === "secrets"
+      ? readGlobalRootFlag(argv, index, inGlobalPrefix)
+      : null;
     if (valueFlag) {
       GLOBAL_VALUE_FLAG_HANDLERS[valueFlag.flag](options, requireValue(valueFlag.value, valueFlag.flag));
       index += valueFlag.consumed;
@@ -5186,6 +5192,16 @@ function parseCliArgs(argv: string[]): ParsedCli {
  * The flags are the ones `isCliGlobalValueFlag` accepts, the same guard the
  * delegation check skips them with. `consumed` is how many extra tokens the value took.
  */
+function readGlobalRootFlag(
+  argv: string[],
+  index: number,
+  inGlobalPrefix: boolean,
+): { flag: CliGlobalValueFlag; value: string | null; consumed: number } | null {
+  const valueFlag = readGlobalValueFlag(argv, index);
+  if (!valueFlag || inGlobalPrefix) return valueFlag;
+  return valueFlag.flag === "--project-root" || valueFlag.flag === "--workspace-root" ? valueFlag : null;
+}
+
 function readGlobalValueFlag(
   argv: string[],
   index: number,
@@ -29878,7 +29894,7 @@ function formatProjectSecrets(value: unknown): string {
   const rows = secrets.map((secret) => [
     secret.name,
     secret.valueLength,
-    secret.storage,
+    secret.uploadPending === true ? `${secret.storage} (uploading)` : secret.storage,
     secret.updatedAt,
   ]);
   const storage = isRecord(record.storage) ? record.storage : {};

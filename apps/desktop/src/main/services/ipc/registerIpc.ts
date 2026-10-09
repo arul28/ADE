@@ -5757,13 +5757,13 @@ export function registerIpc({
   ipcMain.handle(IPC.projectSecretsList, async (): Promise<ProjectSecretsListResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.list();
+    return await ctx.projectSecretService.listFresh();
   });
 
   ipcMain.handle(IPC.projectSecretsGet, async (_event, arg: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.get(arg);
+    return await ctx.projectSecretService.getFresh(arg);
   });
 
   ipcMain.handle(IPC.projectSecretsSet, async (_event, arg: ProjectSecretSetArgs): Promise<ProjectSecretSummary> => {

@@ -100,6 +100,26 @@ export function SecretsSection() {
     void load();
   }, [load]);
 
+  // A saved account secret uploads within a second; look again a few times,
+  // further apart each time, so "Uploading" turns into "Account" without a
+  // reload — and stays visible when the upload is genuinely stuck.
+  const uploadPending = Boolean(snapshot?.secrets.some((secret) => secret.uploadPending));
+  const uploadRecheckRef = React.useRef(0);
+  React.useEffect(() => {
+    if (!uploadPending) {
+      uploadRecheckRef.current = 0;
+      return;
+    }
+    const delays = [1_000, 3_000, 10_000, 30_000];
+    const delay = delays[uploadRecheckRef.current];
+    if (delay === undefined) return;
+    const timer = window.setTimeout(() => {
+      uploadRecheckRef.current += 1;
+      void load();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [uploadPending, snapshot, load]);
+
   const fetchSecretValue = React.useCallback(async (secretName: string, cache: boolean): Promise<string> => {
     const cached = revealedValues[secretName];
     if (cache && cached != null) return cached;
@@ -392,7 +412,12 @@ export function SecretsSection() {
                     )}
                   </span>
                   <span role="cell">
-                    <span className="kit-tag">{secret.storage === "account" ? "Account" : "This device"}</span>
+                    <span
+                      className="kit-tag"
+                      title={secret.uploadPending ? "Saved here; not on your other machines until the upload finishes." : undefined}
+                    >
+                      {secret.storage === "account" ? (secret.uploadPending ? "Uploading" : "Account") : "This device"}
+                    </span>
                   </span>
                   <span role="cell" className="ade-secret-updated" title={formatUpdatedAt(secret.updatedAt)}>
                     {updatedLabel(secret.updatedAt)}

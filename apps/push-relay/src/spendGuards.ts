@@ -10,7 +10,7 @@ export type SpendGuardEnv = {
 
 // Spend backstop. Cloudflare has no native hard billing cap, so we enforce one
 // in code. The guards themselves no longer write D1 per request (the IP gate is
-// in memory, the budget reserves 50 requests per D1 write), so a request at the
+// in memory, the budget reserves requests in growing blocks), so a request at the
 // cap costs about its own fee plus CPU: ~$0.30/M requests over the account's
 // 10M included plus ~6 ms CPU ≈ $0.12/M. 750,000/day ≈ 22.5M/month, so a whole
 // month pinned at the cap adds about $7 — inside a ~$10 ceiling — while leaving
@@ -110,10 +110,22 @@ let budgetTrippedUntilMs = 0;
 // write D1 per request: at 4 billed rows per request they were three quarters
 // of this relay's D1 writes. The IP gate is in-isolate memory; the budget is
 // reserved from its D1 row in blocks and spent from memory.
+//
+// Blocks start at one request and double per reservation up to the cap. A fixed
+// 50 counted the unused tail of every block as spent, and most isolates live
+// for a handful of requests: on 2026-10-08 the row said 877K against 218K real
+// requests, the 750K cap tripped at under a third of its value, and every
+// machine's account sync was refused until midnight UTC. Doubling bounds the
+// waste to what the isolate actually used (at most 2x, and exact for a
+// one-request isolate) while keeping the guarantee that the shared count can
+// only run ahead of real traffic, never behind it.
 const ipWindows = new Map<string, { windowStart: number; count: number }>();
 const MAX_TRACKED_IPS = 10_000;
 let ipWindowsSweptAtSecond = 0;
-const BUDGET_RESERVATION_SIZE = 50;
+const BUDGET_RESERVATION_FIRST = 1;
+const BUDGET_RESERVATION_MAX = 50;
+/** The size of this isolate's next reservation; doubles up to the max. */
+let budgetNextReservationSize = BUDGET_RESERVATION_FIRST;
 let budgetDay = "";
 /** Requests left in this isolate's current reservation. */
 let budgetReservedRemaining = 0;
@@ -136,6 +148,7 @@ export function resetSpendGuardsForTests(): void {
   budgetReservedRemaining = 0;
   budgetReservedThrough = 0;
   budgetReservation = null;
+  budgetNextReservationSize = BUDGET_RESERVATION_FIRST;
 }
 
 /**
@@ -188,20 +201,23 @@ async function flushBudgetCount(env: SpendGuardEnv, day: string, increment: numb
 }
 
 async function reserveBudget(env: SpendGuardEnv, day: string, nowMs: number): Promise<void> {
-  const total = await flushBudgetCount(env, day, BUDGET_RESERVATION_SIZE, nowMs);
+  const size = budgetNextReservationSize;
+  const total = await flushBudgetCount(env, day, size, nowMs);
   // A reservation that straddles UTC midnight belongs to a closed day.
   if (budgetDay !== day) return;
   budgetReservedThrough = total;
-  budgetReservedRemaining = BUDGET_RESERVATION_SIZE;
+  budgetReservedRemaining = size;
+  budgetNextReservationSize = Math.min(BUDGET_RESERVATION_MAX, size * 2);
 }
 
 /**
  * Counts this request against the global daily budget and returns whether the
  * day is still under it.
  *
- * Each isolate reserves `BUDGET_RESERVATION_SIZE` requests from the shared
- * `budget:<day>` row in one upsert and spends them from memory, so the row is
- * written once per block instead of once per request. A request never runs
+ * Each isolate reserves a block of requests from the shared `budget:<day>` row
+ * in one upsert and spends them from memory, so the row is written once per
+ * block instead of once per request. Blocks grow 1, 2, 4, … up to
+ * `BUDGET_RESERVATION_MAX` (see the note at the reservation state). A request never runs
  * ahead of its reservation: concurrent requests wait on the one in flight and
  * are judged against the count it returns. An isolate that stops with unused
  * reservation leaves the shared count high, never low, so the cap can trip a

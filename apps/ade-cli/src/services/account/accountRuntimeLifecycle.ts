@@ -99,11 +99,15 @@ function createHeadlessAccountVaultBridge(
         ? { ok: true, value: null }
         : rejected();
     },
-    async sync() {
+    async sync(options) {
       const store = getStore();
       if (!store) return unavailable();
-      await store.sync();
-      return { ok: true, value: null };
+      return { ok: true, value: await store.sync(options) };
+    },
+    async pendingKeys(scope, kind) {
+      const store = getStore();
+      if (!store) return unavailable();
+      return { ok: true, value: store.pendingKeys(scope, kind as AccountVaultItemKind) };
     },
   };
 }
