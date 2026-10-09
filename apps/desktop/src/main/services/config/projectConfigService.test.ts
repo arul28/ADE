@@ -1432,4 +1432,27 @@ describe("projectConfigService - reads", () => {
     expect(service.getEffective().laneEnvInit?.dependencies?.[0]?.cwd).toBe("packages/web");
     expect(suiteRewrites()).toBe(2);
   });
+
+  it("updateAiConfig merges the ai section into local.yaml and keeps existing local ai keys", () => {
+    const { root, adeDir } = makeProjectFixture("config-update-ai-");
+    const localPath = path.join(adeDir, "local.yaml");
+    fs.writeFileSync(localPath, YAML.stringify({
+      version: 1,
+      testSuites: [],
+      laneOverlayPolicies: [],
+      automations: [],
+      ai: { chat: { sendOnEnter: false }, compaction: { codex: { atTokens: 300_000 } } },
+    }), "utf8");
+    const service = createProjectConfigService({ projectRoot: root, adeDir, projectId: "project-1", db: makeDb(), logger: makeLogger() });
+
+    service.updateAiConfig({ compaction: { claude: { atTokens: 400_000 } } } as any);
+
+    const persisted = YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
+    expect(persisted.ai.compaction.claude.atTokens).toBe(400_000);
+    expect(persisted.ai.compaction.codex.atTokens).toBe(300_000);
+    expect(persisted.ai.chat).toEqual({ sendOnEnter: false });
+    expect(service.get().effective.ai?.compaction?.claude?.atTokens).toBe(400_000);
+    // Nothing is written to a shared layer.
+    expect(fs.existsSync(path.join(adeDir, "ade.yaml"))).toBe(false);
+  });
 });

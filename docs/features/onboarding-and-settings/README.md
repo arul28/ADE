@@ -2187,6 +2187,17 @@ file, so they have exactly one identity per machine.
   web, or iOS surface offers or shows a per-account colour any more.
 - **Per-provider settings** (`smartBalance`, `autoStartWindows`) live in the
   same file under `settings.<provider>` and default to off.
+- **Auto-compact.** Each provider page shows the compaction settings ADE can
+  apply for that harness (`CompactionSettings.tsx`); the provider-level values
+  live in project config `ai.compaction.<provider>` in `.ade/local.yaml`. With
+  more than one account, each account card has its own **Auto-compact** choice
+  ("Same as provider default" or Custom), stored as `compaction` on that account
+  record; it overrides the provider value field by field. See
+  [Compaction per provider](../chat/agent-routing.md#compaction-per-provider).
+- **AI settings save to `.ade/local.yaml`.** `ai.updateConfig` (IPC, the `ai`
+  action domain, and the brain's remote command) merges its partial config into
+  the local layer through `projectConfigService.updateAiConfig`. The shared
+  `.ade/ade.yaml` layer is never written.
 - **Signing in is a command ADE returns, not a flow it drives.**
   `loginCommand` gives back the resolved provider binary, its argv, and the one
   env var pointing at that account's config home. `ade providers accounts add`

@@ -88,6 +88,7 @@ import {
   captureMacDesktopAnalytics,
   captureAppControlAnalytics,
   captureChatHandoffReplayAnalytics,
+  captureChatCompactionAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
@@ -4495,6 +4496,11 @@ app.whenReady().then(async () => {
         analytics: productAnalyticsService,
         projectId,
         sessionId: event.sessionId,
+      }),
+      onCompactionOutcome: (event) => captureChatCompactionAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
       }),
       onChatHandoffReplay: (event) => captureChatHandoffReplayAnalytics({
         analytics: productAnalyticsService,

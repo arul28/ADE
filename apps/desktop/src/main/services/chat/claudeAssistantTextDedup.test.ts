@@ -364,4 +364,17 @@ describe("Claude assistant text snapshot deduplication", () => {
       originTimestamp,
     });
   });
+
+  it("drops replayed assistant text stamped well before the turn began, but keeps fresh and untimestamped text", async () => {
+    const staleTimestamp = "2026-07-16T14:15:16.000Z";
+    // The first message of an idle-started turn opens the turn (its start is
+    // stamped then), so the replayed message has to follow a fresh one.
+    const textEvents = await runTextFixture([
+      assistantSnapshot("msg-fresh", "Fresh answer.", { timestamp: new Date(Date.now() + 5_000).toISOString() }),
+      assistantSnapshot("msg-replayed", "Replayed from an earlier turn.", { timestamp: staleTimestamp }),
+      assistantSnapshot("msg-untimestamped", "Untimestamped answer."),
+    ]);
+
+    expect(textEvents.map((event) => event.text)).toEqual(["Fresh answer.", "Untimestamped answer."]);
+  });
 });

@@ -91,6 +91,47 @@ export function captureChatHandoffReplayAnalytics(args: {
 }
 
 /**
+ * One coarse fact per ended context compaction.
+ *
+ * The product questions are whether compaction works and how often people ask
+ * for it: `outcome` is `completed` or `failed`, `mode` is `manual` (the user
+ * asked) or `automatic` (the provider or ADE's fallback did it). `compact_first`
+ * marks a compaction the user turned on with the "Compact first" pill. Nothing
+ * finer crosses the boundary: no token counts, summary, failure text, account,
+ * or model. Deduped per chat, action, outcome and mode with a ten-minute
+ * minimum interval, so a chat that compacts repeatedly reports once per window.
+ */
+export function captureChatCompactionAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  event: {
+    sessionId: string;
+    action: "compaction" | "compact_first";
+    outcome: "completed" | "failed";
+    mode: "manual" | "automatic";
+    provider: string;
+  };
+}): void {
+  const { sessionId, action, outcome, mode, provider } = args.event;
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    sessionId,
+    dedupeKey: `chat_${action}:${sessionId}:${outcome}:${mode}`,
+    minimumIntervalMs: 10 * 60_000,
+    properties: {
+      feature: "chat",
+      action,
+      outcome,
+      mode,
+      provider,
+      source: "runtime",
+    },
+  });
+}
+
+/**
  * One coarse fact per terminal state of a move to another machine.
  *
  * The product question is whether moving a chat to another machine works:

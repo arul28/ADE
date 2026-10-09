@@ -1841,6 +1841,32 @@ describe("product analytics producers", () => {
     });
   });
 
+  it.each(["compaction", "compact_first"])("keeps the %s fact coarse: outcome and mode survive, compaction details do not", (action) => {
+    for (const [outcome, mode] of [["completed", "manual"], ["failed", "automatic"]] as const) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "chat",
+        action,
+        outcome,
+        mode,
+        provider: "claude",
+        source: "runtime",
+        // Token counts, the summary, the failure text and the account are the
+        // whole risk; none of them is on the key list.
+        pre_tokens: 481636,
+        post_tokens: 6225,
+        summary: "Red. Blue. Green.",
+        fail_detail: "You've hit your weekly limit",
+        account_label: "Work",
+      })).toEqual({ feature: "chat", action, outcome, mode, provider: "claude", source: "runtime" });
+    }
+    // An unlisted trigger spelling is dropped, not widened.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action,
+      mode: "ade_fallback",
+    })).not.toHaveProperty("mode");
+  });
+
   it("keeps the five handoff-replay outcomes and nothing that names the chat", () => {
     // The funnel only answers "does a handoff carry the conversation?" if all
     // five ends survive the sanitizer under one filter.

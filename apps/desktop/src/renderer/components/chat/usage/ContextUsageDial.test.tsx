@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
-import { describe, it, expect, vi } from "vitest";
-import { fireEvent, render } from "@testing-library/react";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { resolveContextCompactControl } from "../../../../shared/contextCompaction";
 import { ContextUsageDial, buildContent } from "./ContextUsageDial";
 import type { ContextUsageViewModel } from "./contextUsageModel";
@@ -24,6 +24,9 @@ function vm(partial: Partial<ContextUsageViewModel>): ContextUsageViewModel {
 }
 
 describe("ContextUsageDial", () => {
+  // The popover renders in a portal on document.body, so unmount between tests.
+  afterEach(cleanup);
+
   it("renders the integer percentage inside the ring", () => {
     const { getByText, container } = render(<ContextUsageDial usage={vm({ ratio: 0.52 })} />);
     expect(getByText("52")).toBeTruthy();
@@ -63,7 +66,7 @@ describe("ContextUsageDial", () => {
     const { getByText, container } = render(
       <ContextUsageDial usage={vm({ ratio: null, contextWindow: null, usedTokens: 12_000 })} />,
     );
-    expect(getByText("12.0k")).toBeTruthy();
+    expect(getByText("12k")).toBeTruthy();
     expect(container.querySelector("svg")).toBeNull();
   });
 
@@ -81,7 +84,7 @@ describe("ContextUsageDial", () => {
 
   it("adds a cache-write breakdown segment after cached when present", () => {
     const content = buildContent(vm({ cacheReadTokens: 4_000, cacheWriteTokens: 2_048 }));
-    expect(content.gitCommand).toContain("cache write 2.0k");
+    expect(content.gitCommand).toContain("cache write 2k");
     const cachedIndex = content.gitCommand!.indexOf("cached");
     const cacheWriteIndex = content.gitCommand!.indexOf("cache write");
     expect(cachedIndex).toBeGreaterThanOrEqual(0);
@@ -93,32 +96,35 @@ describe("ContextUsageDial", () => {
     expect(content.gitCommand ?? "").not.toContain("cache write");
   });
 
-  it("keeps the meter read-only without a compact action", () => {
-    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.82 })} />);
-    expect(container.querySelector("button")).toBeNull();
-    expect(container.querySelector('[aria-label="Context usage: 82% full"]')).toBeTruthy();
+  it("opens the details popover without a Compact now action when the provider cannot compact", () => {
+    const { getByRole, queryByText } = render(<ContextUsageDial usage={vm({ ratio: 0.82 })} />);
+    fireEvent.click(getByRole("button", { name: "Context usage: 82% full" }));
+    expect(getByRole("dialog")).toBeTruthy();
+    expect(queryByText("Compact now")).toBeNull();
   });
 
-  it("tells an idle Claude/Codex/Pi dial to compact on click", () => {
+  it("compacts from the popover's Compact now when idle, then closes the popover", () => {
     const onCompact = vi.fn();
     const compact = resolveContextCompactControl({
       provider: "codex",
       state: "measured",
       enabled: true,
     });
-    const { getByRole } = render(
+    const { getByRole, queryByRole } = render(
       <ContextUsageDial usage={vm({ ratio: 0.82 })} compactControl={compact} onCompact={onCompact} />,
     );
-    const button = getByRole("button", { name: "Context usage: 82% full. Compact context" });
-    fireEvent.click(button);
+    fireEvent.click(getByRole("button", { name: "Context usage: 82% full. Compact context" }));
+    expect(onCompact).not.toHaveBeenCalled();
+    fireEvent.click(getByRole("button", { name: "Compact now" }));
     expect(onCompact).toHaveBeenCalledTimes(1);
+    expect(queryByRole("dialog")).toBeNull();
     const content = buildContent(vm({ ratio: 0.82 }), undefined, compact);
     expect(content.label).toBe("Compact context");
-    expect(content.warning).toContain("click to compact");
+    expect(content.warning).toContain("compact");
     expect(content.description).toContain("Your visible chat stays");
   });
 
-  it("disables compact while a turn is active", () => {
+  it("disables Compact now while a turn is active", () => {
     const onCompact = vi.fn();
     const compact = resolveContextCompactControl({
       provider: "claude",
@@ -129,24 +135,36 @@ describe("ContextUsageDial", () => {
     const { getByRole } = render(
       <ContextUsageDial usage={vm({ ratio: 0.4 })} compactControl={compact} onCompact={onCompact} />,
     );
-    const button = getByRole("button", {
+    fireEvent.click(getByRole("button", {
       name: "Context usage: 40% full. Wait for this turn to finish before compacting.",
-    });
+    }));
+    const button = getByRole("button", { name: "Compact now" });
     expect(button).toHaveProperty("disabled", true);
     fireEvent.click(button);
     expect(onCompact).not.toHaveBeenCalled();
   });
 
-  it("hides the compact action while occupancy is not measured", () => {
+  it("hides Compact now while occupancy is not measured", () => {
     const compact = resolveContextCompactControl({
       provider: "pi",
       state: "compacting",
       enabled: true,
     });
-    const { container } = render(
+    const { getByRole, queryByText } = render(
       <ContextUsageDial usage={vm({ ratio: 1, state: "compacting" })} compactControl={compact} onCompact={vi.fn()} />,
     );
     expect(compact.status).toBe("hidden");
-    expect(container.querySelector("button")).toBeNull();
+    fireEvent.click(getByRole("button", { name: "Context usage: compacting" }));
+    expect(queryByText("Compact now")).toBeNull();
+  });
+
+  it("links to the provider's compaction setting only for providers that can compact", () => {
+    const { getByRole, queryByText, unmount } = render(<ContextUsageDial usage={vm({ provider: "claude" })} />);
+    fireEvent.click(getByRole("button", { name: /^Context usage/ }));
+    expect(getByRole("link", { name: "Provider compaction setting" })).toBeTruthy();
+    unmount();
+    const other = render(<ContextUsageDial usage={vm({ provider: "cursor" })} />);
+    fireEvent.click(other.getByRole("button", { name: /^Context usage/ }));
+    expect(queryByText("Provider compaction setting")).toBeNull();
   });
 });

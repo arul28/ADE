@@ -10207,6 +10207,18 @@ export function createAgentChatService(args: {
     provider: AgentChatProvider;
   }) => void;
   /**
+   * Content-free hook fired when a context compaction ends (completed or
+   * failed), and once per "Compact first" send. Never token counts, the
+   * summary, the failure text, or the account.
+   */
+  onCompactionOutcome?: (event: {
+    sessionId: string;
+    action: "compaction" | "compact_first";
+    outcome: "completed" | "failed";
+    mode: "manual" | "automatic";
+    provider: AgentChatProvider;
+  }) => void;
+  /**
    * Content-free hook fired once per terminal state of a move to another
    * machine (continued, failed, cancelled, unknown). Never the machine, the
    * reason, the branch, or any capsule content.
@@ -10324,6 +10336,7 @@ export function createAgentChatService(args: {
     onClaudePluginsIgnored,
     onChatMentionsExpanded,
     onChatHandoffReplay,
+    onCompactionOutcome,
     onCrossMachineMoveOutcome,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
@@ -20640,6 +20653,15 @@ export function createAgentChatService(args: {
       if (event.state === "failed" && started) event = { ...event, trigger: started.trigger };
       if (event.state === "started") open.set(key, event);
       else open.delete(key);
+      if (event.state !== "started") {
+        onCompactionOutcome?.({
+          sessionId: managed.session.id,
+          action: "compaction",
+          outcome: event.state === "failed" ? "failed" : "completed",
+          mode: event.trigger === "manual" ? "manual" : "automatic",
+          provider: managed.session.provider,
+        });
+      }
       if (open.size) openNativeCompactions.set(managed.session.id, open);
       else openNativeCompactions.delete(managed.session.id);
     }
@@ -52418,7 +52440,15 @@ export function createAgentChatService(args: {
         if (offer) {
           const before = managed.compactionEmitterState.sessionCompactionCount;
           const result = await runSessionTurn({ sessionId: args.sessionId, text: "/compact", timeoutMs: 90_000 });
-          if (result.status !== "completed" || managed.compactionEmitterState.sessionCompactionCount <= before) {
+          const compacted = result.status === "completed" && managed.compactionEmitterState.sessionCompactionCount > before;
+          onCompactionOutcome?.({
+            sessionId: args.sessionId,
+            action: "compact_first",
+            outcome: compacted ? "completed" : "failed",
+            mode: "manual",
+            provider: managed.session.provider,
+          });
+          if (!compacted) {
             throw new Error("Compaction did not finish. Your message was not sent. Retry compaction or turn off Compact first.");
           }
         }

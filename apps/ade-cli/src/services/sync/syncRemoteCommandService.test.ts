@@ -3363,17 +3363,10 @@ describe("web-reachable settings and lane-risk commands", () => {
     // viewers ("not available to paired controller devices" in syncHostService),
     // so registering these that way left AI settings silently unsaveable from
     // the web client — the bug this command exists to fix.
-    const save = vi.fn();
+    const updateAiConfig = vi.fn();
     const refreshScheduledWork = vi.fn();
     const { service } = createService({
-      projectConfigService: {
-        // `defaultModel` used to stand in here. It is gone: nothing ever read
-        // it, so the Settings control that wrote it was deleted and the key
-        // with it. Any surviving `ai` key proves the same thing this test is
-        // about — that a paired device's write reaches `save`.
-        get: vi.fn().mockReturnValue({ shared: { ai: { defaultProvider: "claude" } }, local: {} }),
-        save,
-      },
+      projectConfigService: { updateAiConfig },
       agentChatService: { refreshScheduledWork },
     });
 
@@ -3382,10 +3375,10 @@ describe("web-reachable settings and lane-risk commands", () => {
 
     await service.execute(makePayload("ai.updateConfig", { defaultProvider: "codex" }));
 
-    expect(save).toHaveBeenCalledTimes(1);
-    expect(save.mock.calls[0]![0].shared.ai).toEqual(
-      expect.objectContaining({ defaultProvider: "codex" }),
-    );
+    // The write goes through the AI-config writer (local layer), never a
+    // whole-snapshot save that would put `ai` back into the dropped shared layer.
+    expect(updateAiConfig).toHaveBeenCalledTimes(1);
+    expect(updateAiConfig).toHaveBeenCalledWith(expect.objectContaining({ defaultProvider: "codex" }));
     // The desktop IPC handler does this too; omitting it leaves scheduled runs
     // on the previous AI configuration.
     expect(refreshScheduledWork).toHaveBeenCalledTimes(1);

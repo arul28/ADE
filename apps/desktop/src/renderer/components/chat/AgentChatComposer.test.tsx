@@ -3903,6 +3903,8 @@ describe("AgentChatComposer", () => {
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Context usage: 80% full. Compact context" }));
+      expect(onCompactContext).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
       expect(onCompactContext).toHaveBeenCalledTimes(1);
       expect(view.onSubmit).not.toHaveBeenCalled();
       expect(view.onDraftChange).not.toHaveBeenCalled();
@@ -3917,9 +3919,10 @@ describe("AgentChatComposer", () => {
         onCompactContext,
       });
 
-      const button = screen.getByRole("button", {
+      fireEvent.click(screen.getByRole("button", {
         name: "Context usage: 80% full. Wait for this turn to finish before compacting.",
-      });
+      }));
+      const button = screen.getByRole("button", { name: "Compact now" });
       expect(button).toHaveProperty("disabled", true);
       fireEvent.click(button);
       expect(onCompactContext).not.toHaveBeenCalled();

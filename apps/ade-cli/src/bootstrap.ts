@@ -163,6 +163,7 @@ import {
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
+  captureChatCompactionAnalytics,
   captureAppControlAnalytics,
   captureMacDesktopAnalytics,
   captureUserBrowserAnalytics,
@@ -2388,6 +2389,11 @@ export async function createAdeRuntime(args: {
           analytics: productAnalyticsService,
           projectId,
           event: { handoffId, outcome },
+        }),
+        onCompactionOutcome: (event) => captureChatCompactionAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event,
         }),
         onAutoResumeOutcome: (properties) => captureChatAutoResumeAnalytics({
           analytics: productAnalyticsService,
