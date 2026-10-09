@@ -44,7 +44,7 @@ function unescapeAttribute(value: string): string {
  * scroll position and anything the page changed since it loaded.
  */
 export function browserTabTakeoverHint(tabId: string): string {
-  return `It is live in front of the user: take it over with \`ade browser claim --tab ${tabId} --text\`, then read and act on it in place with \`ade browser <command> --tab ${tabId}\` (or a browser session on that tab). Do not web-fetch or curl its URL or open it in a new tab: a copy is not what the user sees.`;
+  return `It is live in front of the user: take it over with \`ade browser claim --tab ${tabId} --text\`, then read it with \`ade browser text --tab ${tabId} --text\` (its words) or \`ade browser observe --tab ${tabId}\` (what to click), and act on it in place with \`ade browser <command> --tab ${tabId}\`. Do not web-fetch or curl its URL or open it in a new tab: a copy is not what the user sees.`;
 }
 
 /** The serialized block a chat message carries for one attached tab. */

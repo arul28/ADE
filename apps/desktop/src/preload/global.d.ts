@@ -1922,6 +1922,13 @@ declare global {
           args: import("../shared/types").GetAdeUsageModelDetailArgs,
         ) => Promise<import("../shared/types").AdeUsageModelDetail | null>;
         getModelPriceOverrides?: () => Promise<import("../shared/types").AdeUsagePriceOverrides | null>;
+        /**
+         * This machine's GitHub contribution calendar (the profile's year of
+         * green squares), read with its `gh` login; null without one.
+         * Optional on the bridge: the web client does not expose it, and the
+         * home page's Contributions card falls back to the usage stats.
+         */
+        getGithubContributions?: () => Promise<import("../shared/types").GithubContributionCalendar | null>;
         setModelPriceOverride?: (
           args: import("../shared/types").SetAdeUsageModelPriceArgs,
         ) => Promise<import("../shared/types").AdeUsagePriceOverrides>;

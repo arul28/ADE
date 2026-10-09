@@ -11,7 +11,7 @@
  * rather than butting a rounded pane against a square document — which is the
  * single cheapest thing that separates a premium browser from an iframe.
  */
-import { useState, type MutableRefObject, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type MutableRefObject, type PointerEvent } from "react";
 import {
   ArrowsLeftRight,
   ClipboardText,
@@ -280,6 +280,17 @@ export function BrowserStage({
   busy,
   onRotateEmulation,
 }: BrowserStageProps) {
+  /*
+    The frame the viewport last committed. Coming from nothing (the stage not
+    measured yet, as on every mount) the frame snaps instead of growing: the
+    native view follows this element, and growing it from 0×0 resized the page
+    every frame for the length of the animation, which painted it black.
+  */
+  const committedFrameRef = useRef<BrowserViewFrame | null>(null);
+  const fromNothing = !(committedFrameRef.current && committedFrameRef.current.width > 0 && committedFrameRef.current.height > 0);
+  useEffect(() => {
+    committedFrameRef.current = viewFrame;
+  }, [viewFrame]);
   return (
     /*
       The native view is a rectangle the compositor puts on top of this
@@ -312,7 +323,7 @@ export function BrowserStage({
               width: viewFrame.width,
               height: viewFrame.height,
             }}
-            transition={reduceMotion ? { duration: 0 } : revealTransition}
+            transition={reduceMotion || fromNothing ? { duration: 0 } : revealTransition}
             onAnimationComplete={onViewportAnimationComplete}
           >
             <AnimatePresence initial={false}>

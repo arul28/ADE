@@ -144,7 +144,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   heatmap: {
     category: "insights",
     title: "Contributions",
-    description: "Your daily activity in ADE, and your streak.",
+    description: "Your GitHub contributions and ADE chats, day by day, and your streak.",
     icon: SquaresFour,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 2, h: 1 }, large: { w: 2, h: 2 } },
     defaultClass: "regular",

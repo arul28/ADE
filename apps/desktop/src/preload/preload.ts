@@ -851,6 +851,7 @@ import type {
   TestSuiteDefinition,
   WriteTextAtomicArgs,
   AdeUsageStats,
+  GithubContributionCalendar,
   GetAdeUsageStatsArgs,
   GetAdeUsageCostBreakdownArgs,
   GetAdeUsageModelDetailArgs,
@@ -6323,6 +6324,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("usage", "getModelDetail", { args }, () =>
         ipcRenderer.invoke(IPC.usageGetModelDetail, args),
       ),
+    // Machine-level (this computer's `gh` login), so main answers it directly.
+    getGithubContributions: async (): Promise<GithubContributionCalendar | null> =>
+      ipcRenderer.invoke(IPC.usageGetGithubContributions),
     getModelPriceOverrides: async (): Promise<AdeUsagePriceOverrides | null> =>
       callProjectRuntimeActionOr("usage", "getModelPriceOverrides", {}, () =>
         ipcRenderer.invoke(IPC.usageGetModelPriceOverrides),

@@ -255,7 +255,7 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   outline: 1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent);
   outline-offset: -1px;
 }
-.ade-home-cell[data-dragged] { opacity: 0.4; }
+.ade-home-cell[data-dragged], .ade-home-widget[data-dragged] { opacity: 0.4; }
 .ade-home-cell[data-drop]::before {
   content: "";
   position: absolute;

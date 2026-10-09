@@ -1129,6 +1129,32 @@ export type BuiltInBrowserNetworkLogResult = {
   entries: BuiltInBrowserNetworkLogEntry[];
 };
 
+/**
+ * Read a tab's text the way a person reads it: the rendered text of the page's
+ * main content (or one element), in pages of `maxChars`. `observe` maps what an
+ * agent can click; this is what it can read.
+ */
+export type BuiltInBrowserReadTextArgs = BuiltInBrowserTabTargetArgs & {
+  /** CSS selector to read instead of the page's main content. */
+  selector?: string | null;
+  /** Characters to skip, to read on from an earlier result's `nextOffset`. */
+  offset?: number | null;
+  maxChars?: number | null;
+};
+
+export type BuiltInBrowserReadTextResult = {
+  tabId: string;
+  url: string | null;
+  title: string | null;
+  /** Where the text came from: the selector, the page's main/article region, or the whole body. */
+  source: "selector" | "main" | "body";
+  text: string;
+  offset: number;
+  totalChars: number;
+  /** Where the next page starts, or null when this one reached the end. */
+  nextOffset: number | null;
+};
+
 export type BuiltInBrowserExportHarArgs = BuiltInBrowserTabTargetArgs & {
   filter?: string | null;
   failedOnly?: boolean;

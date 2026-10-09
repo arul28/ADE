@@ -2,7 +2,7 @@
 
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatSessionSummary } from "../../../shared/types";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
@@ -81,6 +81,8 @@ function installBridge() {
         return { result: sessions };
       case "modelCatalog":
         return { result: { groups: [], fetchedAt: "", available: true } };
+      case "updateSession":
+        return { result: { ...sessions.find((session) => session.sessionId === args?.sessionId), id: args?.sessionId, ...args } };
       case "getSummary":
         return { result: sessions.find((session) => session.sessionId === args?.sessionId) ?? null };
       case "getEventHistory":
@@ -125,8 +127,8 @@ async function renderPage() {
   );
 }
 
-/** The tab chips staged in the dock's draft: plain text, or chips once the editor draws them. */
-function tabTokensInDraft(tab: { id: string; title: string } = TAB): number {
+/** Explicit tab attachments staged in the draft, in either editor mode. */
+function tabTokensInDraft(tab: { id: string; title: string }): number {
   const field = screen.getByRole("textbox", { name: /Ask about this page/i });
   return field instanceof HTMLTextAreaElement
     ? field.value.split(`id="${tab.id}"`).length - 1
@@ -140,6 +142,7 @@ function handOffs(): unknown[] {
 describe("BrowserPage dock", () => {
   beforeEach(() => {
     cleanup();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
     resetModelPickerRuntimeCatalogForTests();
     useAppStore.setState({
       project: null,
@@ -149,20 +152,33 @@ describe("BrowserPage dock", () => {
     installBridge();
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
-  it("hands the page to the docked chat and stages it in the draft once, without activating or claiming it", async () => {
-    await renderPage();
+  it("hands the page to the docked chat and includes hidden turn context without activating or claiming it", async () => {
+    const { container } = await renderPage();
+    const call = vi.mocked(window.ade.personalChats.call);
+    const askAgent = () => within(container.querySelector("main")!).getByRole("button", { name: /Ask agent/ });
 
-    fireEvent.click(screen.getByRole("button", { name: /Ask agent/ }));
+    fireEvent.click(askAgent());
     await waitFor(() => expect(handOffs()).toEqual([{ tabCollection: "personal", tabId: TAB.id, chatSessionId: "s1" }]));
-    await waitFor(() => expect(tabTokensInDraft()).toBe(1));
+    const field = await screen.findByRole("textbox", { name: /Ask about this page/i });
+    fireEvent.change(field, { target: { value: "Summarize this page" } });
+    fireEvent.click(within(container).getByRole("button", { name: /^Send$/i }));
+    await waitFor(() => expect(call).toHaveBeenCalledWith(expect.objectContaining({
+      action: "send", args: expect.objectContaining({ sessionId: "s1", text: expect.stringContaining(TAB.url) }),
+    })));
+    const send = call.mock.calls.find(([request]) => request.action === "send")?.[0];
+    const sentText = (send?.args as { text?: string } | undefined)?.text;
+    expect(sentText).toContain(TAB.id);
+    expect(sentText).toContain("Summarize this page");
 
-    // Closing and reopening the dock on the same chat and tab adds no second chip.
-    fireEvent.click(screen.getByRole("button", { name: /Ask agent/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Ask agent/ }));
+    // Reopening hands the same page back to the same chat.
+    fireEvent.click(askAgent());
+    fireEvent.click(askAgent());
     await waitFor(() => expect(handOffs()).toHaveLength(2));
-    expect(tabTokensInDraft()).toBe(1);
 
     // "Attach to chat" on another tab lands in the same dock's draft.
     fireEvent.click(screen.getByRole("button", { name: "Attach to chat" }));
@@ -174,8 +190,8 @@ describe("BrowserPage dock", () => {
   });
 
   it("hands the page to a chat picked from the dock's switcher", async () => {
-    await renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /Ask agent/ }));
+    const { container } = await renderPage();
+    fireEvent.click(within(container.querySelector("main")!).getByRole("button", { name: /Ask agent/ }));
     await waitFor(() => expect(handOffs()).toHaveLength(1));
 
     const switcher = await screen.findByRole("button", { name: "Recent chats" });

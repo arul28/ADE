@@ -145,6 +145,7 @@ import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTracki
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
 import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
+import { readGithubContributionCalendar } from "../usage/githubActivityStats";
 import {
   parseProductAnalyticsCapture,
   type ProductAnalyticsStatus,
@@ -719,6 +720,7 @@ import type {
   CtoSetLinearTokenArgs,
   CtoSetLinearOAuthClientArgs,
   AdeUsageStats,
+  GithubContributionCalendar,
   GetAdeUsageStatsArgs,
   GetAdeUsageCostBreakdownArgs,
   GetAdeUsageModelDetailArgs,
@@ -7067,6 +7069,11 @@ export function registerIpc({
     if (accountRollupFetcher) ctx.usageTrackingService?.setAccountRollupFetcher(accountRollupFetcher);
     return ctx.usageTrackingService?.getAdeUsageStats(arg ?? {}) ?? null;
   });
+
+  // The signed-in user's GitHub calendar, across every repository: a
+  // machine-level read (this computer's `gh`), cached in the reader.
+  ipcMain.handle(IPC.usageGetGithubContributions, async (): Promise<GithubContributionCalendar | null> =>
+    readGithubContributionCalendar());
 
   ipcMain.handle(IPC.usageGetSnapshot, async (): Promise<UsageSnapshot | null> => {
     const machine = await callMachineUsageSnapshot("getUsageSnapshot");

@@ -848,25 +848,81 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("keeps owned tabs alive while hidden and mutes them until visible", async () => {
+    vi.useFakeTimers();
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const win = fakeBrowserWindow();
-    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    const panel = { x: 12, y: 24, width: 640, height: 360 };
+    try {
+      service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+      await service.createTab({ url: "https://example.test", activate: true });
+      const view = fakes.webContentsViewInstances.at(-1)!;
+      expect(service.getStatus().tabs).toHaveLength(1);
+      expect(win.contentView.children).toHaveLength(0);
+      expect(view.webContents.isAudioMuted()).toBe(true);
 
-    await service.createTab({ url: "https://example.test", activate: true });
-    expect(service.getStatus().tabs).toHaveLength(1);
-    expect(win.contentView.children).toHaveLength(0);
-    const wc = fakes.webContentsInstances[0];
-    expect(wc?.audioMutedCalls.at(-1)).toBe(true);
+      await service.setBounds({ ...panel, visible: true });
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(false);
+      service.handTabToChat({ tabId: service.getStatus().activeTabId!, chatSessionId: "chat-1" });
 
-    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
-    expect(service.getStatus().tabs).toHaveLength(1);
-    expect(win.contentView.children).toHaveLength(1);
-    expect(wc?.audioMutedCalls.at(-1)).toBe(false);
+      await service.setBounds({ ...panel, width: 0, height: 0, visible: false });
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(true);
+      expect(service.getStatus().tabs[0]!.agentViewport).toBeNull();
+      const parked = view.boundsCalls.at(-1)!;
+      expect(parked).toMatchObject({ width: panel.width, height: panel.height });
+      expect(parked.x).toBeGreaterThanOrEqual(win.getContentBounds().width);
+      expect(parked.y).toBeGreaterThanOrEqual(win.getContentBounds().height);
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(true);
+      expect(service.getStatus().tabs[0]!.agentViewport).toBeNull();
+      // The expiry sweep runs just after the sixty-second grace ends.
+      await vi.advanceTimersByTimeAsync(101);
+      expect(win.contentView.children).toHaveLength(0);
+      expect(service.getStatus().tabs).toHaveLength(1);
+      expect(view.webContents.isAudioMuted()).toBe(true);
 
-    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
-    expect(service.getStatus().tabs).toHaveLength(1);
-    expect(win.contentView.children).toHaveLength(0);
-    expect(wc?.audioMutedCalls.at(-1)).toBe(true);
+      await service.setBounds({ ...panel, visible: true });
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(false);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the same view attached when the panel returns within the parking grace", async () => {
+    vi.useFakeTimers();
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    const panel = { x: 12, y: 24, width: 640, height: 360 };
+    try {
+      service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+      await service.createTab({ url: "https://example.test", activate: true });
+      await service.setBounds({ ...panel, visible: true });
+      const view = fakes.webContentsViewInstances.at(-1)!;
+      const adds = win.addChildViewCalls.length;
+      const removes = win.removeChildViewCalls.length;
+
+      await service.setBounds({ ...panel, width: 0, height: 0, visible: false });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await service.setBounds({ ...panel, visible: true });
+      expect(win.contentView.children).toEqual([view]);
+      expect(win.addChildViewCalls).toHaveLength(adds);
+      expect(win.removeChildViewCalls).toHaveLength(removes);
+      expect(view.boundsCalls.at(-1)).toEqual(panel);
+      expect(view.webContents.isAudioMuted()).toBe(false);
+
+      // An old expiry timer must not remove the view after it returns.
+      await vi.advanceTimersByTimeAsync(30_100);
+      expect(win.contentView.children).toEqual([view]);
+      expect(win.addChildViewCalls).toHaveLength(adds);
+      expect(win.removeChildViewCalls).toHaveLength(removes);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("keeps a tab that started playing while heard audible when hidden, until it navigates", async () => {
@@ -930,29 +986,34 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("parks a previewed tab's view instead of detaching it when the panel hides", async () => {
-    // The corner card's whole premise. A WebContentsView that has been removed
-    // from the window has no compositor surface, so `capturePage()` comes back
-    // empty and the preview stream emits nothing at all — the card sat on its
-    // blank placeholder while cheerfully reporting "Live". A watched tab
-    // therefore stays attached, parked outside the window's content rect.
+    vi.useFakeTimers();
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const win = fakeBrowserWindow();
-    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    try {
+      service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+      await service.createTab({ url: "https://example.test", activate: true });
+      await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
+      const view = fakes.webContentsViewInstances.at(-1)!;
+      const tabId = service.getStatus().activeTabId!;
+      service.startPreviewStream({ tabId });
+      await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(true);
 
-    await service.createTab({ url: "https://example.test", activate: true });
-    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
-    expect(win.contentView.children).toHaveLength(1);
-    const tabId = service.getStatus().activeTabId;
-    expect(tabId).toBeTruthy();
-
-    service.startPreviewStream({ tabId });
-    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
-    expect(win.contentView.children).toHaveLength(1);
-
-    // Last watcher out: the view goes back to being detached, so a hidden panel
-    // nobody is previewing costs nothing.
-    service.stopPreviewStream({ tabId });
-    expect(win.contentView.children).toHaveLength(0);
+      // The last watcher leaves, but the attended surface keeps its grace.
+      service.stopPreviewStream({ tabId });
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.boundsCalls.at(-1)).toMatchObject({ width: 640, height: 360 });
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(true);
+      await vi.advanceTimersByTimeAsync(101);
+      expect(win.contentView.children).toHaveLength(0);
+      expect(view.webContents.isAudioMuted()).toBe(true);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("warms a never-attended view against the window before parking it off screen", async () => {
@@ -1361,25 +1422,34 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     for (const service of services) service.dispose();
   });
 
-  it("does not touch window focus on the ordering the product actually drives", async () => {
-    // The corner card only previews the tool you are NOT looking at, so the
-    // panel always hides FIRST and the stream starts after — there is no
-    // attended tab to take the keyboard from. `parkedTabFixture` drives the
-    // opposite order deliberately, to exercise the branch; this pins the real
-    // one, which must never call `focus()` at all.
+  it.each([
+    ["a focused window with an attended page", true, true, 1],
+    ["a background window with an attended page", false, true, 0],
+    ["a focused window with no attended page", true, false, 0],
+  ] as const)("returns keyboard focus only from an attended page in %s", async (_label, focused, attended, focusCalls) => {
+    vi.useFakeTimers();
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const win = fakeBrowserWindow();
-    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
-    await service.createTab({ url: "https://example.test", activate: true });
-    await service.setBounds({ x: 12, y: 24, width: 480, height: 640, visible: true });
-    const tabId = service.getStatus().activeTabId!;
+    try {
+      win.setFocused(focused);
+      service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+      await service.createTab({ url: "https://example.test", activate: true });
+      if (attended) await service.setBounds({ x: 12, y: 24, width: 480, height: 640, visible: true });
+      const tabId = service.getStatus().activeTabId!;
 
-    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
-    service.startPreviewStream({ tabId });
-
-    expect(win.webContents.focusCalls).toBe(0);
-    service.stopPreviewStream({ tabId });
-    service.dispose();
+      // The product hides the panel before the preview card subscribes.
+      await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+      expect(win.webContents.focusCalls).toBe(focusCalls);
+      service.startPreviewStream({ tabId });
+      expect(win.webContents.focusCalls).toBe(focusCalls);
+      service.stopPreviewStream({ tabId });
+      await vi.advanceTimersByTimeAsync(60_100);
+      expect(win.contentView.children).toHaveLength(0);
+      expect(win.webContents.focusCalls).toBe(focusCalls);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("hands the keyboard back to the window exactly once when an attended tab is parked", async () => {

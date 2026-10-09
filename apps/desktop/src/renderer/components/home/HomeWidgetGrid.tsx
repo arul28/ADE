@@ -15,8 +15,10 @@ import { create } from "zustand";
 import { MotionConfig, motion } from "motion/react";
 import { ArrowsInLineHorizontal, ArrowsInLineVertical, DotsSixVertical, EyeSlash, Stack, X } from "@phosphor-icons/react";
 import {
+  dropLanding,
   layoutCells,
   useHomeLayoutStore,
+  type HomeDropTarget,
   type HomeLayoutCell,
   type HomeLayoutItem,
   type HomeWidgetType,
@@ -49,6 +51,12 @@ import { WelcomeCardHead } from "../projects/ProjectWelcomeSidePanels";
  * offered while the card is wider than that), stack or unstack, and remove.
  * Widget content goes inert while editing so a
  * drag never opens a project by accident.
+ *
+ * Any card drags: the pressed card is the drag source (a stacked card leaves
+ * its stack; a host brings its stack along). Widgets are packed in order, so
+ * a drop does not just go "before the card under the pointer": it takes the
+ * place in the order that lands the card on the pointer's spot
+ * (`dropLanding`), and the drop marker shows that place.
  */
 
 const WIDGET_DRAG_TYPE = "application/x-ade-home-widget";
@@ -141,6 +149,9 @@ function WidgetFrame({
   canStack,
   renderWidget,
   dragHandleProps,
+  onDragStart,
+  onDragEnd,
+  dragged,
   span,
   shownClass,
 }: {
@@ -150,6 +161,11 @@ function WidgetFrame({
   canStack: boolean;
   renderWidget: (ctx: WidgetRenderContext) => ReactNode;
   dragHandleProps?: React.ButtonHTMLAttributes<HTMLButtonElement>;
+  /** Picks this card up (edit mode): the card itself is the drag source, so a press drags the card under the pointer. */
+  onDragStart?: (event: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd?: () => void;
+  /** This card alone is being dragged (a stacked widget leaving its stack). */
+  dragged?: boolean;
   /** The span the grid placed this widget at (a host only). */
   span?: { w: number; h: number };
   /** The class it is shown at, when the layout had to show a smaller one. */
@@ -186,7 +202,16 @@ function WidgetFrame({
   // while it is on.
   const canNarrow = !stacked && (item.narrow === true || (span != null && span.w > 1.5) || (shape.classes[asked]?.w ?? 1) >= 2);
   return (
-    <div ref={ref} className="ade-home-widget" data-stacked={stacked || undefined} data-type={item.type}>
+    <div
+      ref={ref}
+      className="ade-home-widget"
+      data-stacked={stacked || undefined}
+      data-type={item.type}
+      data-dragged={dragged || undefined}
+      draggable={editing && onDragStart != null}
+      onDragStart={editing ? onDragStart : undefined}
+      onDragEnd={editing ? onDragEnd : undefined}
+    >
       <div ref={contentRef} className="ade-home-widget-content">
         <WidgetVisibleContext.Provider value={visible}>
           <WidgetSpanContext.Provider value={spanValue}>
@@ -290,8 +315,11 @@ export function HomeWidgetGrid({
   const moveCell = useHomeLayoutStore((s) => s.moveCell);
   const nudgeCell = useHomeLayoutStore((s) => s.nudgeCell);
   const setMetrics = useHomeGridMetrics((s) => s.set);
+  /** The widget being dragged: a cell's host (it brings its stack), or a stacked widget leaving its stack. */
   const [dragId, setDragId] = useState<string | null>(null);
-  const [dropTarget, setDropTarget] = useState<{ id: string; side: "before" | "after" } | null>(null);
+  const [dropTarget, setDropTarget] = useState<HomeDropTarget | null>(null);
+  /** The pointer's last grid spot, so a drag resolves its landing once per spot, not per dragover event. */
+  const landingKey = useRef("");
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [box, setBox] = useState<{ width: number; height: number } | null>(null);
 
@@ -332,7 +360,21 @@ export function HomeWidgetGrid({
   const endDrag = useCallback(() => {
     setDragId(null);
     setDropTarget(null);
+    landingKey.current = "";
   }, []);
+  const startDrag = useCallback((event: React.DragEvent<HTMLDivElement>, id: string, image: Element | null) => {
+    // The pressed card's own drag: a stacked card is not its host's cell.
+    event.stopPropagation();
+    event.dataTransfer.setData(WIDGET_DRAG_TYPE, id);
+    event.dataTransfer.effectAllowed = "move";
+    if (image instanceof HTMLElement) {
+      const rect = image.getBoundingClientRect();
+      event.dataTransfer.setDragImage(image, event.clientX - rect.left, event.clientY - rect.top);
+    }
+    landingKey.current = "";
+    setDragId(id);
+  }, []);
+  const items = layout.items;
 
   const columns = metrics?.columns ?? 3;
   const rows = packed?.rows ?? 2;
@@ -389,21 +431,31 @@ export function HomeWidgetGrid({
                 data-drop={marker}
                 data-dragged={dragId === host.id || undefined}
                 style={single ? undefined : { gridColumn: `${x * 2 + 1} / span ${w * 2}`, gridRow: `${y + 1} / span ${h}` }}
-                draggable={editing}
-                onDragStartCapture={(event: React.DragEvent<HTMLDivElement>) => {
-                  if (!editing) return;
-                  event.dataTransfer.setData(WIDGET_DRAG_TYPE, host.id);
-                  event.dataTransfer.effectAllowed = "move";
-                  setDragId(host.id);
-                }}
                 onDragOver={(event) => {
                   if (!dragId || !event.dataTransfer.types.includes(WIDGET_DRAG_TYPE)) return;
                   event.preventDefault();
                   event.stopPropagation();
                   event.dataTransfer.dropEffect = "move";
+                  if (dragId === host.id) {
+                    // Over its own cell: it stays where it is.
+                    landingKey.current = "";
+                    if (dropTarget) setDropTarget(null);
+                    return;
+                  }
+                  // The pointer's spot on the grid (columns, rows), from where
+                  // it is inside the card under it.
                   const rect = event.currentTarget.getBoundingClientRect();
-                  const side = event.clientX < rect.left + rect.width / 2 ? "before" : "after";
-                  if (dropTarget?.id !== host.id || dropTarget.side !== side) setDropTarget({ id: host.id, side });
+                  const fx = Math.min(0.999, Math.max(0, (event.clientX - rect.left) / Math.max(1, rect.width)));
+                  const fy = Math.min(0.999, Math.max(0, (event.clientY - rect.top) / Math.max(1, rect.height)));
+                  const side = fx < 0.5 ? "before" : "after";
+                  const spot = { x: x + fx * w, y: y + fy * h };
+                  const key = `${host.id}:${side}:${Math.floor(spot.x * 2)}:${Math.floor(spot.y)}`;
+                  if (landingKey.current === key) return;
+                  landingKey.current = key;
+                  const hovered: HomeDropTarget = { id: host.id, side };
+                  setDropTarget(single || !metrics
+                    ? hovered
+                    : dropLanding(items, dragId, hovered, spot, (next) => packLayout(next, metrics, widgetShape)));
                 }}
                 onDragEnter={(event) => {
                   if (dragId) event.stopPropagation();
@@ -418,7 +470,6 @@ export function HomeWidgetGrid({
                   if (dropTarget && dropTarget.id !== dragId) moveCell(dragId, dropTarget.id, dropTarget.side);
                   endDrag();
                 }}
-                onDragEndCapture={endDrag}
               >
                 <WidgetFrame
                   item={host}
@@ -428,6 +479,8 @@ export function HomeWidgetGrid({
                   renderWidget={renderWidget}
                   span={single ? undefined : { w, h }}
                   shownClass={cls}
+                  onDragStart={(event) => startDrag(event, host.id, event.currentTarget.closest(".ade-home-cell"))}
+                  onDragEnd={endDrag}
                   dragHandleProps={{
                     onKeyDown: (event) => {
                       if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
@@ -441,7 +494,17 @@ export function HomeWidgetGrid({
                   }}
                 />
                 {stacked.map((item) => (
-                  <WidgetFrame key={item.id} item={item} stacked editing={editing} canStack={false} renderWidget={renderWidget} />
+                  <WidgetFrame
+                    key={item.id}
+                    item={item}
+                    stacked
+                    editing={editing}
+                    canStack={false}
+                    renderWidget={renderWidget}
+                    onDragStart={(event) => startDrag(event, item.id, event.currentTarget)}
+                    onDragEnd={endDrag}
+                    dragged={dragId === item.id}
+                  />
                 ))}
               </motion.div>
             );

@@ -303,7 +303,8 @@ export function startSkylineRender(args: {
 
   /**
    * Fits the 3D view to its box. First the turn: the yaw (between a street
-   * view and the 45° corner) at which the fully risen skyline draws biggest;
+   * view at 8°, the orbit's own limit, which a wide strip of a card needs to
+   * be filled, and the 45° corner) at which the fully risen skyline draws biggest;
    * among near ties the more corner-on one, which reads better as a skyline.
    * Then, in a short wide box where the tallest bars decide the size and
    * leave the sides empty, the bars come down (to no less than 60%) until the
@@ -321,7 +322,7 @@ export function startSkylineRender(args: {
       return { w: aw / Math.max(1e-6, b.maxx - b.minx), h: ah / Math.max(1e-6, b.maxy - b.miny) };
     };
     const fits: Array<{ yaw: number; s: number }> = [];
-    for (let deg = 14; deg <= 45; deg += 1) {
+    for (let deg = 8; deg <= 45; deg += 1) {
       const candidate = (deg * Math.PI) / 180;
       const size = sizeAt(candidate, 1);
       fits.push({ yaw: candidate, s: Math.min(size.w, size.h) });

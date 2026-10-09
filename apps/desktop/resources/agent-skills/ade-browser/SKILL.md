@@ -68,7 +68,10 @@ visual element map. Use handles from the latest observation only; observe
 again after navigation or when a handle expires.
 
 Start a lightweight browser session for repeated actions. Wait for a readiness
-selector or network idle after navigation. Use `find` for page text and
+selector or network idle after navigation. To read what a page says (an
+article, docs, a long thread), use `text`: it returns the rendered text of the
+page's main content, 20,000 characters at a time, with the `--offset` to read
+on; `--selector` reads one element. Observations do not carry prose. Use `find` to locate page text and
 `find-stop` to clear its highlight; the first find result is usable immediately
 and later results may refine it. Turn on the per-tab network log with
 `network on`, inspect it with `network --failed --limit 20`, and turn it off
@@ -78,6 +81,7 @@ with `network off` when finished.
 ade --socket browser session start --tab <tab-id> --text
 ade --socket browser observe --browser-session <session-id> --map --text
 ade --socket browser session wait <session-id> --network-idle --text
+ade --socket browser text --browser-session <session-id> --text
 ade --socket browser find --browser-session <session-id> "checkout" --text
 ade --socket browser network on --browser-session <session-id> --text
 ade --socket browser network --browser-session <session-id> --failed --limit 20 --text

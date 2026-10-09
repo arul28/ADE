@@ -353,13 +353,18 @@ want it).**
   size class for each (Compact, Regular, Large; each widget declares the
   shape of each class it offers, its content's minimum, ideal and maximum
   card height, and whether it uses extra room well) and an order (drag or
-  arrow keys; order is priority). The page width offers up to N columns (3
+  arrow keys; order is priority). Any card drags, a stacked one leaving its
+  stack; a drop takes the place in the order that packs the card onto the
+  pointer's spot (`dropLanding`), not just "before the card under it". The page width offers up to N columns (3
   keep the shipped width; 4+ are wider) and its height up to M rows.
   `homeGridPack.ts` packs in order, tries a widget's smaller classes before
   hiding it ("N hidden"), then hands empty cells to a neighbour (widgets that
-  grow well first) only while the card stays within its maximum. It tries
+  grow well first) only while the card stays within its maximum. The last
+  row's room past its last card stays wallpaper (no card stretches sideways
+  into it), so Compact, Regular and Large stay visibly different. It tries
   every column count from N down to 3 and keeps the one with the fewest
-  hidden, shrunk, gaps, stretched cells, then rows, so a few widgets on a
+  hidden, shrunk, gaps, stretched cells (grown, or spanning extra rows), the
+  fullest last row, then rows, so a few widgets on a
   wide window stay at the shipped width, centred. Every row shares one
   height: the tallest ideal of its cards, held under the smallest maximum
   and the page, never under a card's minimum. The grid is top-aligned and
@@ -380,8 +385,10 @@ want it).**
   whole list in a dialog (projects, feed, clipboard, ports).
 - **Contributions:** the shared `ui/ContributionSkyline.tsx` (ported from the
   user's 21st.dev pick): heat map ⇄ 3D skyline on a canvas that draws only
-  while something moves and stops off screen. Day = chats + commits + PRs.
-  The 3D view fits its box: it picks the turn (14°–45°) at which the risen
+  while something moves and stops off screen. Day = the larger of GitHub's
+  contribution calendar (one cached `gh api graphql` read in main, every
+  repository) and ADE's commits + PRs, plus ADE chats.
+  The 3D view fits its box: it picks the turn (8°–45°) at which the risen
   skyline draws biggest, and in a short wide card lowers the bars (to 60% at
   least) until the skyline spans the width. The gallery preview always shows
   the skyline rising; the page's card keeps the user's view.

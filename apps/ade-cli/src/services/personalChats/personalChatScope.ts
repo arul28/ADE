@@ -215,9 +215,18 @@ function isPersonalChatAction(value: unknown): value is PersonalChatAction {
  * the synthetic project/lane required by the existing chat + PTY services can
  * never leak into project pickers, recents, or mobile project catalogs.
  */
+const DRAFT_SLASH_COMMANDS_TTL_MS = 15_000;
+
 export class PersonalChatScope {
   private runtimePromise: Promise<AdeRuntime> | null = null;
   private readonly personalTerminalSessions = new Map<string, string>();
+  /**
+   * A new draft's `/` menu, by provider and profile. Every draft pane asks on
+   * mount, and the answer is a walk of the skill and command folders that
+   * blocks this runtime for tens of milliseconds; a few seconds of reuse
+   * makes "New chat" and reopening the Browser dock stop paying for it.
+   */
+  private readonly draftSlashCommands = new Map<string, { at: number; commands: unknown }>();
 
   constructor(private readonly options: PersonalChatScopeOptions = {}) {}
 
@@ -312,6 +321,12 @@ export class PersonalChatScope {
           : null;
         // The internal lane, never a caller's: a provider-only lookup reads the
         // personal workspace, not whatever project the caller has open.
+        const draftKey = sessionId ? null : `${provider ?? ""}:${String(args.personalProfile ?? "")}`;
+        const cached = draftKey ? this.draftSlashCommands.get(draftKey) : undefined;
+        if (cached && Date.now() - cached.at < DRAFT_SLASH_COMMANDS_TTL_MS) {
+          result = cached.commands;
+          break;
+        }
         const commands = service.getSlashCommands({
           ...(sessionId ? { sessionId } : {}),
           ...(provider ? { provider } : {}),
@@ -327,6 +342,7 @@ export class PersonalChatScope {
               || (session.personalProfile == null && args.personalProfile === "assistant")
             : args.personalProfile === "assistant");
         result = assistant ? withoutLaneOnlySkillCommands(commands) : commands;
+        if (draftKey) this.draftSlashCommands.set(draftKey, { at: Date.now(), commands: result });
         break;
       }
       case "create": {

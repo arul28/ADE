@@ -102,6 +102,9 @@ export function createBuiltInBrowserAgentViewport(deps: {
         // it here would take the person's iPhone away with our desktop.
         if (!tab.emulation && wc.debugger.isAttached()) {
           await deps.sendDebuggerCommand(wc, "Emulation.clearDeviceMetricsOverride").catch(() => {});
+          // The page re-lays out at the pane's size; without a fresh frame the
+          // view can sit black until the pointer moves over it.
+          if (!wc.isDestroyed()) wc.invalidate?.();
         }
       } finally {
         deps.releaseDebuggerHold(tab, "agent-viewport");

@@ -14,9 +14,12 @@ import type { HomeLayoutCell, HomeLayoutItem, HomeWidgetSize, HomeWidgetType } f
  * spot that holds their shape. A widget whose shape has no room tries its
  * smaller classes before it is hidden. Then every empty cell is handed to a
  * neighbour: widgets that use more room well (lists, charts) grow first, one
- * cell edge at a time and in turn, then any widget may. The result with the
- * fewest hidden widgets, then the fewest shrunk ones, then no empty cells,
- * then the fewest rows wins. Every cell of a row shares the row's height, so
+ * cell edge at a time and in turn, then any widget may. The last row's room
+ * past its last card is the exception: it stays wallpaper, so a card keeps
+ * the class the user picked (a Compact card is one column, not the rest of
+ * the row). The result with the fewest hidden widgets, then the fewest shrunk
+ * ones, then no empty cells, then the least stretching, then the fullest last
+ * row, then the fewest rows wins. Every cell of a row shares the row's height, so
  * rows are always even. Packing depends only on its inputs: the same layout
  * and window always give the same page.
  *
@@ -132,8 +135,10 @@ export type PackResult = {
   holes: number;
   /** Widgets shown at a smaller class than asked. */
   shrunk: number;
-  /** Cells widgets grew into past their own span (stretched cards). */
+  /** Cells widgets take past their own span (stretched cards): grown into, or rows added because a row was too short for them. */
   grown: number;
+  /** Empty cells at the end of the last row (wallpaper, not a hole). */
+  trailing: number;
   rows: number;
   /** Height of every row, px. Rows may total less than the page; the rest stays empty. */
   rowPx: number;
@@ -198,6 +203,9 @@ function packInto(cells: readonly HomeLayoutCell[], columns: number, rows: numbe
   const placed: Placement[] = [];
   const hidden: HomeLayoutCell[] = [];
   let shrunk = 0;
+  // Rows a card spans past its shape because this row count makes rows too
+  // short for it: as much a stretched card as one that grew.
+  let tall = 0;
   const spanPx = (h: number) => h * px + (h - 1) * GRID_GAP;
   const freeAt = (x: number, y: number, w: number, h: number) => {
     if (x < 0 || x + w > tracks || y + h > rows) return false;
@@ -238,6 +246,7 @@ function packInto(cells: readonly HomeLayoutCell[], columns: number, rows: numbe
       const index = placed.length;
       for (let dy = 0; dy < h; dy += 1) for (let dx = 0; dx < w; dx += 1) owner[spot.y + dy]![spot.x + dx] = index;
       placed.push({ cell, x: spot.x, y: spot.y, w, h, cls });
+      tall += Math.max(0, h - Math.min(span.h, rows)) * w;
       if (cls !== asked) shrunk += 1;
       done = true;
       break;
@@ -250,6 +259,17 @@ function packInto(cells: readonly HomeLayoutCell[], columns: number, rows: numbe
   // A card takes a row below or above only while it stays within its own
   // maximum at the height the rows are settling at.
   const settlingPx = settleRowPx(placed, px, shapeOf);
+  // The last row's room past its last card is wallpaper, like the height
+  // under the grid: no card stretches sideways into it, so a card shows at
+  // the class the user picked (Compact stays a column) instead of filling
+  // the row. Only a card above may reach down into it, within its maximum.
+  const lastRow = placed.reduce((max, p) => Math.max(max, p.y + p.h), 0) - 1;
+  let trailFrom = tracks;
+  if (lastRow >= 0) {
+    trailFrom = 0;
+    for (let x = 0; x < tracks; x += 1) if (owner[lastRow]![x]! >= 0) trailFrom = x + 1;
+  }
+  const trailing = (x: number, y: number) => y === lastRow && x >= trailFrom;
   const edgeFree = (p: Placement, dir: Dir): boolean => {
     if (dir === "down" || dir === "up") {
       const y = dir === "down" ? p.y + p.h : p.y - 1;
@@ -261,10 +281,10 @@ function packInto(cells: readonly HomeLayoutCell[], columns: number, rows: numbe
     }
     const x = dir === "right" ? p.x + p.w : p.x - 1;
     if (x < 0 || x >= tracks) return false;
-    for (let y = p.y; y < p.y + p.h; y += 1) if (owner[y]![x]! >= 0) return false;
+    for (let y = p.y; y < p.y + p.h; y += 1) if (owner[y]![x]! >= 0 || trailing(x, y)) return false;
     return true;
   };
-  let grown = 0;
+  let grown = tall;
   const grow = (index: number, dir: Dir) => {
     const p = placed[index]!;
     grown += dir === "down" || dir === "up" ? p.w : p.h;
@@ -293,13 +313,20 @@ function packInto(cells: readonly HomeLayoutCell[], columns: number, rows: numbe
     }
   }
   let holes = 0;
+  let trailingCells = 0;
   const used = placed.reduce((max, p) => Math.max(max, p.y + p.h), 0);
-  for (let y = 0; y < used; y += 1) for (let x = 0; x < tracks; x += 1) if (owner[y]![x]! < 0) holes += 1;
+  for (let y = 0; y < used; y += 1) {
+    for (let x = 0; x < tracks; x += 1) {
+      if (owner[y]![x]! >= 0) continue;
+      if (trailing(x, y)) trailingCells += 1;
+      else holes += 1;
+    }
+  }
   for (const p of placed) {
     p.x /= 2;
     p.w /= 2;
   }
-  return { placed, hidden, holes, shrunk, rows: Math.max(1, used), rowPx: settleRowPx(placed, px, shapeOf), columns, width: 0, grown };
+  return { placed, hidden, holes, shrunk, rows: Math.max(1, used), rowPx: settleRowPx(placed, px, shapeOf), columns, width: 0, grown, trailing: trailingCells / 2 };
 }
 
 /** The grid's width at a column count, held to the room the page has. */
@@ -310,24 +337,24 @@ function widthFor(columns: number, available: number): number {
 /**
  * The best packing over every column and row count that fits: fewest hidden,
  * then fewest shrunk, then no empty cells, then the least stretching, then
- * fewest rows, then the most columns. Columns step down from what the page offers to the shipped
+ * the fullest last row, then fewest rows, then the most columns. Columns step down from what the page offers to the shipped
  * page's three, so a few widgets on a wide window keep their size in a
  * narrower, centred grid instead of stretching or leaving holes. At least two
  * rows when they fit, so one small widget is not stretched page-tall.
  */
 export function packLayout(cells: readonly HomeLayoutCell[], metrics: Pick<GridMetrics, "columns" | "maxRows" | "height" | "width">, shapeOf: ShapeOf): PackResult {
   if (cells.length === 0) {
-    return { placed: [], hidden: [], holes: 0, shrunk: 0, grown: 0, rows: 1, rowPx: rowPx(1, metrics.height), columns: metrics.columns, width: metrics.width };
+    return { placed: [], hidden: [], holes: 0, shrunk: 0, grown: 0, trailing: 0, rows: 1, rowPx: rowPx(1, metrics.height), columns: metrics.columns, width: metrics.width };
   }
   let best: PackResult | null = null;
-  const score = (r: PackResult) => [r.hidden.length, r.shrunk, r.holes > 0 ? 1 : 0, r.grown, r.rows, -r.columns];
+  const score = (r: PackResult) => [r.hidden.length, r.shrunk, r.holes > 0 ? 1 : 0, r.grown, r.trailing, r.rows, -r.columns];
   const better = (a: PackResult, b: PackResult) => {
     const sa = score(a);
     const sb = score(b);
     for (let i = 0; i < sa.length; i += 1) if (sa[i] !== sb[i]) return sa[i]! < sb[i]!;
     return false;
   };
-  const perfect = (r: PackResult) => r.hidden.length === 0 && r.shrunk === 0 && r.holes === 0 && r.grown === 0;
+  const perfect = (r: PackResult) => r.hidden.length === 0 && r.shrunk === 0 && r.holes === 0 && r.grown === 0 && r.trailing === 0;
   const minRows = Math.min(2, metrics.maxRows);
   for (let columns = metrics.columns; columns >= Math.min(3, metrics.columns); columns -= 1) {
     for (let rows = minRows; rows <= metrics.maxRows; rows += 1) {

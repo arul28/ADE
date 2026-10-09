@@ -62,6 +62,7 @@ export function DraftMachinePicker({
   tooltipLabel = "Where it runs",
   tooltipDescription,
   triggerLabel = "Choose machine",
+  showWhenSingle = false,
 }: {
   machines: readonly DraftMachineOption[];
   selectedMachineId: string | null;
@@ -72,6 +73,11 @@ export function DraftMachinePicker({
   tooltipLabel?: string;
   tooltipDescription?: string;
   triggerLabel?: string;
+  /**
+   * With one machine, still name it (a plain pill, no menu) instead of
+   * rendering nothing: a surface where the choice would otherwise look missing.
+   */
+  showWhenSingle?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -177,7 +183,27 @@ export function DraftMachinePicker({
     machines.length < 2
     && !selectionUnavailable
     && !selected?.unavailableReason?.trim()
-  ) return null;
+  ) {
+    if (!showWhenSingle || !displayed) return null;
+    return (
+      <SmartTooltip
+        forceEnabled
+        content={{
+          label: tooltipLabel,
+          description: tooltipDescription ?? "Runs on this computer. Pair another computer in Connections to run chats there.",
+        }}
+      >
+        <span
+          data-draft-machine-picker
+          className="inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md border border-fg/[0.07] bg-fg/[0.03] px-2 font-sans text-[11px] font-medium text-muted-fg/75"
+          aria-label={`Runs on ${displayed.name}`}
+        >
+          {machineIcon(displayed)}
+          <span className="min-w-0 truncate">{displayed.name}</span>
+        </span>
+      </SmartTooltip>
+    );
+  }
   if (!displayed) return null;
   const availableFallback = machines.find((machine) => !machine.unavailableReason?.trim()) ?? displayed;
   let triggerAriaLabel: string;

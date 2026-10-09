@@ -1,16 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ArrowsOutSimple, CaretDown, ChatCircleDots, Check, NotePencil, SpinnerGap, X } from "@phosphor-icons/react";
 import type { AgentChatFileRef, AgentChatSession, AgentChatSessionSummary } from "../../../shared/types";
 import type { BuiltInBrowserStatus, BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
-import { formatBrowserTabMentionToken, type BrowserTabMentionTarget } from "../../../shared/browserTabMention";
+import {
+  formatBrowserPaneContextForPrompt,
+  formatBrowserTabMentionToken,
+  type BrowserTabMentionTarget,
+} from "../../../shared/browserTabMention";
 import { ChatSceneBackdrop } from "../personalChats/ChatSceneBackdrop";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { Z_LAYERS } from "../ui/zLayers";
 import { AgentChatPane, type AgentChatPaneComposerHandle } from "../chat/AgentChatPane";
 import { AgentChatApiProvider } from "../chat/agentChatApi";
+import { DraftMachinePicker, type DraftMachineOption } from "../chat/DraftMachinePicker";
+import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
+import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { CHROME_GHOST_ON, TOOLBAR_FOCUS, TOOLBAR_MOTION } from "../chat/browser/browserChrome";
 import {
@@ -19,7 +26,6 @@ import {
   usePersonalChatPaneScope,
 } from "../personalChats/usePersonalChatPaneScope";
 import { CHAT_HEADER_BUTTON, sessionTitle } from "../personalChats/sessionHelpers";
-import { SuggestionChips, type SuggestionPrompt } from "../personalChats/SuggestionChips";
 import {
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   navigateUrlInAdeBrowser,
@@ -30,13 +36,6 @@ import { useAppStore } from "../../state/appStore";
 /** Every call this page makes is on the personal collection, the one project-less chats see. */
 const PERSONAL_SCOPE = { tabCollection: "personal" } as const;
 
-/** Ways to start a chat about the page; a chip fills the draft beside the page chip. */
-const PAGE_SUGGESTIONS: ReadonlyArray<SuggestionPrompt> = [
-  { label: "Summarize this page", prefill: "Summarize this page." },
-  { label: "Explain it simply", prefill: "Explain what this page is about in plain words." },
-  { label: "Find something here", prefill: "Find on this page: " },
-  { label: "Do something on it", prefill: "On this page, " },
-];
 /** How many recent chats the dock's switcher offers. */
 const RECENT_CHAT_LIMIT = 8;
 /** Coalesces list refreshes: a streaming turn emits many events a second. */
@@ -58,11 +57,13 @@ async function handTabToChat(tabId: string, chatSessionId: string): Promise<void
   await window.ade?.builtInBrowser?.handTabToChat?.({ ...PERSONAL_SCOPE, tabId, chatSessionId });
 }
 
-function AskAgentButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+function AskAgentButton({ active, onClick, onWarm }: { active: boolean; onClick: () => void; onWarm: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      onPointerEnter={onWarm}
+      onFocus={onWarm}
       aria-pressed={active}
       data-testid="browser-ask-agent"
       title={active ? "Close the chat" : "Ask an agent about this page"}
@@ -132,16 +133,26 @@ export function BrowserPage() {
   const dockChatId = dock.chat?.targetKey === targetKey ? dock.chat.sessionId : null;
   const [dockGeneration, setDockGeneration] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Set when the pointer reaches "Ask agent" (or the dock opens) and kept: the
+   * model catalog loads while the hand is still moving, so the first open does
+   * not wait on it, and closing the dock does not throw it away.
+   */
+  const [dockWarm, setDockWarm] = useState(dock.open);
+  const warmDock = useCallback(() => setDockWarm(true), []);
   const { chatScope, catalog, availableModelIds, providerUnavailable } = usePersonalChatPaneScope(targetKey, {
-    enabled: dock.open,
+    enabled: dock.open || dockWarm,
     onError: setError,
   });
   const composerRef = useRef<AgentChatPaneComposerHandle | null>(null);
-  /** The tab waiting to be attached once the dock's composer has mounted. */
-  const pendingTabRef = useRef<BuiltInBrowserTab | null>(null);
-  /** The last tab attached, per pane, so reopening the dock does not add it twice. */
-  const lastAttachedRef = useRef<string | null>(null);
-  const [contextRequest, setContextRequest] = useState(0);
+  /**
+   * The page in front, kept live from the browser's status. Every message the
+   * dock sends names it in hidden context, so "this page" always means the
+   * page the person is looking at, with no chip for them to manage.
+   */
+  const [frontTab, setFrontTab] = useState<BuiltInBrowserTab | null>(null);
+  const frontTabRef = useRef<BuiltInBrowserTab | null>(null);
+  frontTabRef.current = frontTab;
   /** The tab "Ask agent" was pressed on; a new chat leases it once it exists. */
   const askedTabIdRef = useRef<string | null>(null);
   /** This machine's project-less chats, newest first: the dock's title and switcher. */
@@ -179,21 +190,48 @@ export function BrowserPage() {
     setError(`The chat could not take this tab: ${detail}`);
   }, []);
 
-  /** Stage the active tab in the dock's draft; hand it to that chat now when the chat exists. */
+  // Follow the page in front of the person on this collection.
+  useEffect(() => {
+    const api = window.ade?.builtInBrowser;
+    if (!api) return undefined;
+    let collectionKey: string | null = null;
+    let disposed = false;
+    void api.getStatus(PERSONAL_SCOPE).then((status) => {
+      if (disposed) return;
+      collectionKey = status.collectionKey;
+      setFrontTab(activePageTab(status));
+    }).catch(() => undefined);
+    const unsubscribe = api.onEvent?.((payload) => {
+      if (payload.type !== "status" && payload.type !== "open-request") return;
+      if (collectionKey == null || payload.status.collectionKey !== collectionKey) return;
+      const next = activePageTab(payload.status);
+      setFrontTab((current) => (
+        current?.id === next?.id && current?.url === next?.url && current?.title === next?.title ? current : next
+      ));
+    });
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  const ambientTurnContext = useCallback((): string | null => {
+    const tab = frontTabRef.current;
+    return tab ? formatBrowserPaneContextForPrompt({ tabId: tab.id, title: tab.title?.trim() || null, url: tab.url }) : null;
+  }, []);
+
+  /** Lease the page in front to the dock's chat (now, when the chat exists) so its agent can drive it. */
   const attachActiveTab = useCallback(async (chatSessionId: string | null) => {
     const api = window.ade?.builtInBrowser;
     if (!api) return;
-    const status = await api.getStatus(PERSONAL_SCOPE);
-    const tab = activePageTab(status);
+    const tab = activePageTab(await api.getStatus(PERSONAL_SCOPE));
     askedTabIdRef.current = tab?.id ?? null;
-    if (!tab) return;
-    pendingTabRef.current = tab;
-    setContextRequest((value) => value + 1);
-    if (chatSessionId) await handTabToChat(tab.id, chatSessionId);
+    if (tab && chatSessionId) await handTabToChat(tab.id, chatSessionId);
   }, []);
 
   const toggleDock = useCallback(() => {
     setError(null);
+    setDockWarm(true);
     if (dock.open) {
       setBrowserDock({ open: false });
       return;
@@ -242,33 +280,6 @@ export function BrowserPage() {
     navigate(`/chats?chat=${encodeURIComponent(dockChatId)}`);
   }, [dockChatId, navigate]);
 
-  // The chip lands once the pane (and so its composer) has mounted, which on a
-  // first open waits for the model catalog.
-  useEffect(() => {
-    if (!dock.open || !pendingTabRef.current) return undefined;
-    let frame: number | null = null;
-    let attempts = 0;
-    const flush = () => {
-      frame = null;
-      const handle = composerRef.current;
-      const tab = pendingTabRef.current;
-      if (!tab) return;
-      if (handle) {
-        pendingTabRef.current = null;
-        const attachedKey = `${dockGeneration}:${tab.id}`;
-        if (lastAttachedRef.current === attachedKey) return;
-        lastAttachedRef.current = attachedKey;
-        handle.insertDraft(formatBrowserTabMentionToken({ tabId: tab.id, title: tab.title?.trim() || null, url: tab.url }));
-        return;
-      }
-      if (++attempts < 120) frame = window.requestAnimationFrame(flush);
-    };
-    frame = window.requestAnimationFrame(flush);
-    return () => {
-      if (frame != null) window.cancelAnimationFrame(frame);
-    };
-  }, [catalog, contextRequest, dock.open, dockGeneration]);
-
   // Links clicked in the docked chat open as tabs here, beside it, rather than
   // in a project's browser the person cannot see from this tab.
   useEffect(() => {
@@ -285,7 +296,6 @@ export function BrowserPage() {
     return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openHere);
   }, []);
 
-  const setComposerDraft = useCallback((text: string) => composerRef.current?.setDraft(text), []);
   const insertIntoComposer = useCallback((text: string) => composerRef.current?.insertDraft(text), []);
   const attachToComposer = useCallback(
     (attachment: AgentChatFileRef) => composerRef.current?.addAttachment(attachment),
@@ -306,7 +316,7 @@ export function BrowserPage() {
       {/* The panels share the dock chat's API scope: a screenshot or element
           sent from the browser lands in that chat's attachment store. */}
       <AgentChatApiProvider scope={chatScope}>
-        <main className="relative flex min-w-0 flex-1 flex-col gap-1.5 p-1.5">
+        <main className="relative flex min-w-0 flex-1 flex-col">
           {error ? (
             <Banner
               layout="inline"
@@ -319,11 +329,12 @@ export function BrowserPage() {
               // there is a chat beside the page to receive them.
               sessionId={dock.open ? dockChatId : null}
               projectRootOverride={null}
+              flush
               onAddContext={dock.open ? addBrowserContextToComposer : undefined}
               onAddAttachment={dock.open ? attachToComposer : undefined}
               onInsertDraft={dock.open ? insertIntoComposer : undefined}
               onAttachTab={dock.open ? attachTabToComposer : undefined}
-              toolbarEnd={<AskAgentButton active={dock.open} onClick={toggleDock} />}
+              toolbarEnd={<AskAgentButton active={dock.open} onClick={toggleDock} onWarm={warmDock} />}
               toolbarEndControlCount={3}
             />
           </div>
@@ -406,7 +417,9 @@ export function BrowserPage() {
                   onSessionCreated={handleSessionCreated}
                   composerHandleRef={composerRef}
                   personalDraftKey="personal:browser-dock-draft"
-                  emptyStateAccessory={providerUnavailable ? null : <SuggestionChips prompts={PAGE_SUGGESTIONS} onSelect={setComposerDraft} />}
+                  emptyStateHero={<DockPageCard tab={frontTab} />}
+                  emptyStateAccessory={<DockMachineChoice />}
+                  ambientTurnContext={ambientTurnContext}
                   canvasFill="var(--ade-chat-scene-canvas)"
                   hideSessionTabs
                   hideWorkspaceChrome
@@ -425,6 +438,43 @@ export function BrowserPage() {
           </aside>
         ) : null}
       </AgentChatApiProvider>
+    </div>
+  );
+}
+
+const DOCK_MACHINE_DESCRIPTION =
+  "The page is in this computer's browser, so the chat beside it runs here too. To run a chat on another machine, start it from Chats.";
+
+/**
+ * Where the dock's chat runs: always this computer, because the page it reads
+ * is in this computer's browser and an agent on another machine cannot see it.
+ * Paired machines are listed, disabled with that reason, so the choice reads
+ * as made rather than missing.
+ */
+function DockMachineChoice() {
+  const { snapshot } = useRemoteConnectionSnapshot(true);
+  const machines = useMemo<DraftMachineOption[]>(() => [
+    { id: THIS_MACHINE_ID, name: THIS_MACHINE_NAME },
+    ...(snapshot?.connections ?? [])
+      .filter((connection) => connection.state === "connected")
+      .map((connection) => {
+        const name = connection.target.name || connection.target.hostname;
+        return {
+          id: connection.target.id,
+          name,
+          unavailableReason: `An agent on ${name} can't see this computer's browser. Start a chat there from Chats.`,
+        };
+      }),
+  ], [snapshot]);
+  return (
+    <div className="flex w-full items-center px-3 pt-1.5">
+      <DraftMachinePicker
+        machines={machines}
+        selectedMachineId={THIS_MACHINE_ID}
+        onChange={() => undefined}
+        tooltipDescription={DOCK_MACHINE_DESCRIPTION}
+        showWhenSingle
+      />
     </div>
   );
 }

@@ -592,6 +592,7 @@ export type FormatterId =
   | "browser-attach"
   | "browser-status"
   | "browser-dev-servers"
+  | "browser-text"
   | "browser-sessions"
   | "browser-observation"
   | "browser-trace"
@@ -3095,6 +3096,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser open localhost:5173 --device ipad
     $ ade --socket browser zoom --tab <tab-id> --factor 1.25
     $ ade --socket browser zoom --tab <tab-id> --reset
+    $ ade --socket browser text --tab <tab-id> --text           Read the page's text (main content)
+    $ ade --socket browser text --tab <tab-id> --offset 20000 --text
+    $ ade --socket browser text --tab <tab-id> --selector "#content" --max-chars 5000
     $ ade --socket browser find --tab <tab-id> "checkout"
     $ ade --socket browser find-stop --tab <tab-id>
     $ ade --socket browser devtools --tab <tab-id> --mode bottom
@@ -14092,6 +14096,7 @@ const BROWSER_SESSION_SUBCOMMANDS = {
   zoom: ["zoom"],
   findStop: ["find-stop", "stop-find"],
   find: ["find", "find-in-page", "search-page"],
+  text: ["text", "read", "read-text", "page-text"],
   devtools: ["devtools", "dev-tools", "inspector"],
   network: ["network", "net", "requests"],
   har: ["har", "export-har"],
@@ -14918,10 +14923,18 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   }
   if (isBrowserSubcommand(sub, "scroll")) {
-    const deltaX = readNumberOption(args, ["--dx", "--delta-x"]) ?? 0;
-    const deltaY = readNumberOption(args, ["--dy", "--delta-y"]) ?? 0;
+    // `--down 800` / `--up 800` / `--right` / `--left` are what agents reach
+    // for first; they are the same deltas with the sign spelled out.
+    const down = readNumberOption(args, ["--down"]);
+    const up = readNumberOption(args, ["--up"]);
+    const right = readNumberOption(args, ["--right"]);
+    const left = readNumberOption(args, ["--left"]);
+    const deltaX = readNumberOption(args, ["--dx", "--delta-x"])
+      ?? (right != null ? Math.abs(right) : left != null ? -Math.abs(left) : 0);
+    const deltaY = readNumberOption(args, ["--dy", "--delta-y"])
+      ?? (down != null ? Math.abs(down) : up != null ? -Math.abs(up) : 0);
     if (deltaX === 0 && deltaY === 0)
-      throw new CliUsageError("browser scroll requires --dy or --dx.");
+      throw new CliUsageError("browser scroll requires --dy or --dx (or --down/--up/--left/--right <px>).");
     return {
       kind: "execute",
       label: "browser scroll",
@@ -15048,6 +15061,28 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           collectGenericObjectArgs(args, {
             ...readBrowserOwnedTabTargetArgs(args),
             ...(action ? { action } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "text")) {
+    const selector = readValue(args, ["--selector", "--css"]);
+    const offset = readNumberOption(args, ["--offset", "--from"]);
+    const maxChars = readNumberOption(args, ["--max-chars", "--chars", "--limit"]);
+    return {
+      kind: "execute",
+      label: "browser text",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "readText",
+          collectGenericObjectArgs(args, {
+            ...readBrowserOwnedTabTargetArgs(args),
+            ...(selector ? { selector } : {}),
+            ...(offset == null ? {} : { offset }),
+            ...(maxChars == null ? {} : { maxChars }),
           }),
         ),
       ],
@@ -29288,6 +29323,23 @@ function formatBrowserStatus(value: unknown): string {
  * "nothing is listening" — the empty-state line says so rather than leaving an
  * agent to conclude its server failed to start.
  */
+/** The page text itself, under one line saying which slice of how much it is. */
+function formatBrowserText(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const text = asString(result.text) ?? "";
+  const offset = typeof result.offset === "number" ? result.offset : 0;
+  const total = typeof result.totalChars === "number" ? result.totalChars : text.length;
+  const nextOffset = typeof result.nextOffset === "number" ? result.nextOffset : null;
+  const header = [
+    asString(result.title) ?? asString(result.url) ?? "ADE browser text",
+    `chars ${offset}-${offset + text.length} of ${total} (${asString(result.source) ?? "body"})`,
+  ];
+  const footer = nextOffset == null
+    ? []
+    : ["", `(more: ade browser text --offset ${nextOffset}${result.tabId ? ` --tab ${String(result.tabId)}` : ""})`];
+  return [...header, "", text || "(no text on this page)", ...footer].join("\n");
+}
+
 function formatBrowserDevServers(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const servers = firstArray(result, ["servers"]);
@@ -30727,6 +30779,8 @@ function formatTextOutput(
       return formatBrowserAttach(value);
     case "browser-dev-servers":
       return formatBrowserDevServers(value);
+    case "browser-text":
+      return formatBrowserText(value);
     case "work-tools-state":
       return formatWorkToolsState(value);
     case "work-tool-show":
@@ -30956,6 +31010,7 @@ function inferFormatter(
   )
     return "browser-status";
   if (label === "browser dev servers") return "browser-dev-servers";
+  if (label === "browser text") return "browser-text";
   if (label === "work tools state") return "work-tools-state";
   if (
     label === "browser session start" ||
