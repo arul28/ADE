@@ -35,9 +35,15 @@ cat /tmp/ade-dev-<lane>.log
 ```
 
 Detach it, give the lane its own socket, read the isolation report (stop if
-sync is ON), and never hand-start `ade serve`. The full rules, and why each
-one exists: `docs/development/local-development.md` ("If you are an agent,
-start it detached").
+sync is ON), and never hand-start `ade serve`. The dev app does not connect to
+the user's other machines unless someone presses Connect in it; never press
+Connect or Disconnect for a paired machine in a dev app unless the task is
+remote machines, because that takes the machine from the user's installed ADE.
+When you finish, stop the app's process group and confirm its brain exited.
+Use Node 22 (`node -v`; an older `node` first on PATH fails the CLI build on
+`node:sqlite`). The full rules, and why each one exists:
+`docs/development/local-development.md` ("If you are an agent, start it
+detached").
 
 **"Run the dev loop"** — when the user says this (or "dev loop") after work is implemented, it names one task, not a suggestion: invoke `/quality`, then `/test`, then `/ship`, in that order. Actually invoke each skill — approximating one (running tests is not `/test`; green CI is not `/quality`) does not count. Print each skill's summary, then continue to the next without stopping; stop early only for a genuine blocker (a failing gate or a decision only the user can make) and name it.
 

@@ -62,6 +62,12 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
 
   The rules that go with it (own socket, stop if the report says `sync : ON`,
   why a plain `&` is not enough): `docs/development/local-development.md`.
+- **Leave the user's other machines alone.** A dev app connects to paired
+  machines only when someone presses Connect in it; the report's `machines`
+  line says so. Do not press Connect or Disconnect on a paired machine in a dev
+  app unless that is the task: either takes the machine away from the user's
+  installed ADE. When you are done, stop the app's process group and confirm
+  its brain exited (`pgrep -fl "<your socket>"`).
 - `docs/README.md` — the internal-docs navigation map.
 - `docs/PRD.md` — what ADE is, who it's for, the feature index.
 - `docs/ARCHITECTURE.md` — read the **section** relevant to the touched area
