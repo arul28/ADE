@@ -227,8 +227,9 @@ function commandForLocalhostUrl(entries: ChatWorkLogEntry[], url: ChatLocalhostU
   const raw = (sourceEntry.command ?? entryArgText(sourceEntry)).trim();
   if (!raw.length) return null;
   // The draft is text the agent may run, so a masked command is never offered:
-  // `<redacted>` in `--command` would become a shell redirection.
-  return redactCommandLine(raw) === raw ? raw : null;
+  // `<redacted>` in `--command` would become a shell redirection. The argument
+  // fallback is already masked, so a marker in it counts too.
+  return redactCommandLine(raw) === raw && !raw.includes("<redacted") ? raw : null;
 }
 
 function terminalizePrompt(args: {

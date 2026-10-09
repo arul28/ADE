@@ -225,10 +225,13 @@ export function maskShellCommandArgs(
       masked[key] = redactCommandLine(value);
     } else if (Array.isArray(value)) {
       const parts = value.map((part) => (typeof part === "string" ? part : JSON.stringify(part)));
-      const maskedLine = redactCommandLine(parts.join("\n"));
+      const joined = parts.join("\n");
+      const maskedLine = redactCommandLine(joined);
+      if (maskedLine === joined) continue;
       const maskedParts = maskedLine.split("\n");
-      // A masked value that spans lines (a PEM block) cannot map back to entries.
-      masked[key] = maskedParts.length === parts.length ? maskedParts : [maskedLine];
+      // Entries that hold newlines, or a masked PEM block, cannot map back line by
+      // line; mask each entry on its own instead.
+      masked[key] = maskedParts.length === parts.length ? maskedParts : parts.map(redactCommandLine);
     }
   }
   return masked;

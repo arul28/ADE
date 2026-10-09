@@ -51,32 +51,34 @@ const URL_CREDENTIAL_PATTERN = /(\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/@"']+:)[^\s@
 
 /**
  * Shell environment assignments whose NAME is an env-style secret: upper-case
- * and ending in KEY, TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL(S), or an
- * auth blob (`AUTH_CONFIG`, `AUTH_HEADER`, `AUTHORIZATION`). The secret word
- * must be a whole `_`-separated segment: `MY_API_KEY` and `DOCKER_AUTH_CONFIG`
- * match, `MONKEY` and `MAX_TOKENS` do not. Segment count and length are bounded.
+ * and ending in TOKEN, SECRET, PASSWORD or PASSWD (`PGPASSWORD`, `GHTOKEN`),
+ * or with KEY, APIKEY, CREDENTIAL(S) or an auth blob (`AUTH_CONFIG`,
+ * `AUTH_HEADER`, `AUTHORIZATION`) as a whole `_`-separated segment:
+ * `MY_API_KEY` and `DOCKER_AUTH_CONFIG` match, `MONKEY` and `MAX_TOKENS` do
+ * not. Segment count and length are bounded.
  */
-const ENV_SECRET_NAME = String.raw`(?:[A-Z][A-Z0-9]{0,31}_){0,8}(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH_CONFIG|AUTH_HEADER|AUTHORIZATION)`;
+const ENV_SECRET_NAME = String.raw`(?:[A-Z][A-Z0-9]{0,31}_){0,8}(?:[A-Z0-9]{0,31}(?:TOKEN|SECRET|PASSWORD|PASSWD)|(?:API)?KEY|CREDENTIALS?|AUTH_CONFIG|AUTH_HEADER|AUTHORIZATION)`;
 // A value is a non-empty quoted run or a non-empty bare word. A bare value cannot
 // start with a shell or printf placeholder (`$VAR`, `%s`, `<x>`, `{x}`).
 const COMMAND_VALUE = String.raw`(?:"(?:\\.|[^"\\\n])+"|'(?:\\.|[^'\\\n])+'|(?![$%<{])(?:\\.|[^\s"'&;|)<>\\])+)`;
-// PowerShell writes `$env:NAME = "value"` with spaces around `=`.
-const ENV_ASSIGNMENT_PATTERN = new RegExp(String.raw`(\b${ENV_SECRET_NAME}[ \t]*=[ \t]*)(${COMMAND_VALUE})`, "g");
+// PowerShell writes `$env:NAME = "value"` with spaces around `=`. A `==` is a
+// comparison (`[[ $TOKEN == "" ]]`), not an assignment.
+const ENV_ASSIGNMENT_PATTERN = new RegExp(String.raw`(\b${ENV_SECRET_NAME}[ \t]*=(?!=)[ \t]*)(${COMMAND_VALUE})`, "g");
 
 /**
  * A quoted JSON-style key in a command body: `-d '{"api_key": "…"}'`, or the
  * same shape escaped for a double-quoted shell argument: `-d "{\"api_key\":\"…\"}"`.
  */
-const JSON_SECRET_PATTERN = /(\\?["'][A-Za-z0-9_.-]*(?:key|token|secret|password|passwd)\\?["']\s*:\s*)(\\?["'])([^"'\\\n]+)\2/gi;
+const JSON_SECRET_PATTERN = /(\\?["'][A-Za-z0-9_.-]*(?:key|token|secret|password|passwd)\\?["']\s*:\s*)(\\?["'])((?:\\.|[^"'\\\n])+?)\2/gi;
 
 /**
- * Lower-case secret flags: `--api-key value`, `--token=value`, `--client_secret value`.
- * The secret word must be a whole segment of the flag name, so `--monkey` is not
- * a secret flag. A space-separated value that starts with `-` is the next flag
+ * Lower-case secret flags: `--api-key value`, `--token=value`, `--authtoken value`.
+ * A flag name ending in token, secret or password is a secret flag; key and
+ * credentials must be a whole segment (or `apikey`), so `--monkey` is not. A space-separated value that starts with `-` is the next flag
  * (`--token --verbose`), not a value. Segment count and length are bounded.
  */
 const FLAG_PATTERN = new RegExp(
-  String.raw`(--(?:[a-z0-9]{1,32}[-_]){0,8}(?:key|token|secret|passw(?:or)?d|passwd|credentials?)(?:=|\s+(?!-)))(${COMMAND_VALUE})`,
+  String.raw`(--(?:[a-z0-9]{1,32}[-_]){0,8}(?:[a-z0-9]{0,31}(?:token|secret|passw(?:or)?d)|(?:api)?key|credentials?)(?:=|\s+(?!-)))(${COMMAND_VALUE})`,
   "g",
 );
 
@@ -84,13 +86,18 @@ const FLAG_PATTERN = new RegExp(
  * True when a matched secret-named value must stay visible: a placeholder
  * (`<your-key>`, `%s`, `{name}`), or text the shell expands (`$VAR`, `$(…)`,
  * backticks), which is code that runs and not a literal secret. A single-quoted
- * value never expands, so it stays masked, and a quoted JSON blob (`'{"auths":…}'`)
- * is not a `{name}` placeholder. An escaped `\$` is a literal dollar.
+ * value never expands, so only an exact `'<placeholder>'` stays visible, and a
+ * quoted JSON blob (`'{"auths":…}'`) is not a `{name}` placeholder. An escaped
+ * `\$` is a literal dollar.
  */
 function staysVisible(value: string): boolean {
-  if (/^["']?(?:[<%]|\{\w+\})/.test(value)) return true;
-  if (value.startsWith("'")) return false;
+  if (value.startsWith("'")) return /^'<[^<>'\n]*>'$/.test(value);
+  if (isPlaceholder(value)) return true;
   return /[$`]/.test(value.replace(/\\[\s\S]/g, ""));
+}
+
+function isPlaceholder(value: string): boolean {
+  return /^"?(?:[<%]|\{\w+\})/.test(value);
 }
 
 /** Replacer for an assignment or flag: keeps the head, masks the value unless it must stay visible. */
@@ -98,14 +105,26 @@ function maskAssignment(_match: string, head: string, value: string): string {
   return staysVisible(value) ? head + value : `${head}<redacted>`;
 }
 
-/** Replacer for a JSON key/value pair; the value's quote (`"` or `\"`) is group 2. */
+/**
+ * Replacer for a JSON key/value pair; the value's quote (`"` or `\"`) is group 2.
+ * An escaped quote means the JSON sits in a double-quoted shell argument, where
+ * `$` expands; a plain quote means single-quoted shell text, where it is literal.
+ */
 function maskJsonSecret(match: string, head: string, quote: string, value: string): string {
-  return staysVisible(quote.replace("\\", "") + value) ? match : `${head}${quote}<redacted>${quote}`;
+  const visible = quote.startsWith("\\") ? staysVisible(`"${value}"`) : isPlaceholder(value);
+  return visible ? match : `${head}${quote}<redacted>${quote}`;
 }
 
-/** Replacer for an `Authorization` header: keeps the header, quote and scheme, masks the credential. */
-function maskAuthorization(match: string, head: string, quote: string, scheme: string, value: string): string {
-  return staysVisible(quote + value) ? match : `${head}${quote}${scheme}<redacted>`;
+/**
+ * Replacer for an `Authorization` header: keeps the header, quote and scheme,
+ * masks the credential. A header that opens a single-quoted argument
+ * (`-H 'Authorization: Bearer …'`) never expands, so it is masked like one.
+ */
+function maskAuthorization(
+  match: string, head: string, quote: string, scheme: string, value: string, offset: number, whole: string,
+): string {
+  const singleQuoted = quote === "'" || whole[offset - 1] === "'";
+  return staysVisible(singleQuoted ? `'${value}'` : quote + value) ? match : `${head}${quote}${scheme}<redacted>`;
 }
 
 /** Masks secrets in one command line. Multi-line safe (PEM blocks), never truncates. */

@@ -31,6 +31,8 @@ export const Z_LAYERS = {
   sidebar: 100,
   /** Top-bar dropdown sheets (Connections, usage, activity). */
   sheet: 120,
+  /** The command palette's backdrop; it shares the sheets' level. */
+  commandPalette: 120,
   /** Floating top-center banners. */
   floatingBanner: 140,
   /**

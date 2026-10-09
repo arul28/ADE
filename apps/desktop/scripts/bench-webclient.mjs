@@ -542,7 +542,7 @@ async function startDevServer(side) {
 function stopDevServer(server) {
   if (process.platform === "win32") {
     // Windows has no process groups to signal; taskkill /T ends Vite and what it spawned.
-    spawnSync("taskkill", ["/pid", String(server.child.pid), "/T", "/F"], { stdio: "ignore" });
+    spawnSync("taskkill", ["/pid", String(server.child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     return;
   }
   try {

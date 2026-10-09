@@ -1942,7 +1942,7 @@ export function CommandPalette({
                 // the whole window read as a different app taking over — and it
                 // is a full-window backdrop filter per frame of the fade.
                 className="fixed inset-0 bg-black/60 backdrop-blur-sm"
-                style={{ zIndex: Z_LAYERS.sheet }}
+                style={{ zIndex: Z_LAYERS.commandPalette }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
