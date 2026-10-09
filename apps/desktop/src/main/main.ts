@@ -1830,6 +1830,18 @@ app.whenReady().then(async () => {
         ?? appWindows[0]
         ?? null;
     },
+    getFallbackWindowForPersonalCollection: () => {
+      // Personal chats have no project binding to route through. When an agent
+      // opens a tab without showing the Browser pane, host its capture surface
+      // in the focused ADE window (or the first live one) without activating
+      // the personal collection in that window.
+      const appWindows = BrowserWindow.getAllWindows().filter(
+        (win) => !win.isDestroyed() && win.isVisible() && !win.isMinimized(),
+      );
+      return appWindows.find((win) => win.isFocused())
+        ?? appWindows[0]
+        ?? null;
+    },
     onEvent: (payload, targetWindow) => {
       if (targetWindow && !targetWindow.isDestroyed()) {
         try {

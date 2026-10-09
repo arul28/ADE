@@ -11301,6 +11301,7 @@ export function createAgentChatService(args: {
   const managedSessions = new Map<string, ManagedChatSession>();
   /** Assigned once the handoff helpers below exist; hooks before that no-op. */
   let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
+  let crossMachineHandoffSweepTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * When each chat's latest turn started. `currentTurnStartedAt` clears when
    * the turn settles, and the proof broker still needs the time afterwards to
@@ -45069,8 +45070,11 @@ export function createAgentChatService(args: {
   // Only the brain owns moves. A host without a transport (the desktop's own
   // fallback service) must not sweep, or it would fail moves it can't run.
   if (crossMachineHandoffTransport) {
-    const sweepTimer = setTimeout(() => crossMachineHandoff?.sweep(), 5_000);
-    sweepTimer.unref?.();
+    crossMachineHandoffSweepTimer = setTimeout(() => {
+      crossMachineHandoffSweepTimer = null;
+      crossMachineHandoff?.sweep();
+    }, 5_000);
+    crossMachineHandoffSweepTimer.unref?.();
   }
 
   const noteClaudeSessionQuota = (
@@ -59783,6 +59787,8 @@ export function createAgentChatService(args: {
    */
   const beginDispose = (): void => {
     runtimeBudget.unregister(runtimeBudgetParticipant);
+    if (crossMachineHandoffSweepTimer) clearTimeout(crossMachineHandoffSweepTimer);
+    crossMachineHandoffSweepTimer = null;
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     restartRecoverySweepStopped = true;

@@ -699,6 +699,8 @@ export function createBuiltInBrowserService(args: {
    * keyed by `projectRoot` either way, and its views stay hidden until shown.
    */
   getFallbackWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
+  /** A live ADE window that can host a personal tab while it stays off-screen. */
+  getFallbackWindowForPersonalCollection?: () => BrowserWindow | null | undefined;
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
   stateFilePath?: string | null;
   permissionFilePath?: string | null;
@@ -1110,11 +1112,15 @@ export function createBuiltInBrowserService(args: {
     const activeWindow = activeWindowId == null
       ? null
       : windowClosedListeners.get(activeWindowId)?.win ?? null;
-    const win = isLiveWindow(sourceWindow)
+    let win = isLiveWindow(sourceWindow)
       ? sourceWindow
       : isLiveWindow(activeWindow)
         ? activeWindow
         : null;
+    if (!win) {
+      const fallback = args.getFallbackWindowForPersonalCollection?.() ?? null;
+      if (isLiveWindow(fallback)) win = fallback;
+    }
     if (!win) {
       let fallbackService = fallbackServices.get("personal") ?? null;
       if (!fallbackService) {
@@ -1137,7 +1143,15 @@ export function createBuiltInBrowserService(args: {
       return fallbackService;
     }
     activeWindowId = win.id;
-    const service = serviceForWindowCollection(win, collectionForProjectRoot(null, "personal"), { markActive: true });
+    const service = serviceForWindowCollection(
+      win,
+      collectionForProjectRoot(null, "personal"),
+      // A renderer explicitly opening its personal browser owns the pane. A
+      // bridge action with no panel only needs a host for its parked surface;
+      // it must not switch the visible window away from the user's current
+      // project collection.
+      { markActive: isLiveWindow(sourceWindow) },
+    );
     service.attachToWindow(win);
     return service;
   };
