@@ -122,7 +122,7 @@ Use this as engineering guidance for keeping the Lanes tab fast while adding fea
 
 ### One branch-diff read per lane open
 - **Why it helped**: `getBranchChanges` is a temp-index diff (seconds on a big lane). Opening a lane read it twice at once (support probe + pane) and again when the first real `changes` object replaced the empty placeholder.
-- **Apply when**: A pane re-reads expensive data from an effect keyed on an object that every refresh replaces. Key the effect on a content signature and wait for the first real read; share concurrent reads in the service (`branchChangesInFlight`).
+- **Apply when**: A pane re-reads expensive data from an effect keyed on an object that every refresh replaces. Key the effect on a content signature and wait for the first real read; share concurrent reads in the service (`branchReads`), but only reads that have not started reading the working tree yet; a time window can hand a later ask a snapshot from before its edit.
 - **Verification**: `/lanes` nav `diff.getBranchChanges` x2 at 3.2 s → x1.
 
 ### Take commit trailers from the commit list

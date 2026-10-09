@@ -491,6 +491,15 @@ export function createFileSearchIndexService() {
     }
   };
 
+  const setFileEntry = (index: WorkspaceIndex, normalized: string, stat: fs.Stats): void => {
+    index.files.set(normalized, {
+      path: normalized,
+      lowerPath: normalized.toLowerCase(),
+      size: stat.size,
+      mtimeMs: stat.mtimeMs
+    });
+  };
+
   const upsertFile = (index: WorkspaceIndex, relPath: string): void => {
     const normalized = normalizeRelative(relPath);
     if (!normalized) return;
@@ -511,13 +520,7 @@ export function createFileSearchIndexService() {
       return;
     }
     if (!stat.isFile()) return;
-
-    index.files.set(normalized, {
-      path: normalized,
-      lowerPath: normalized.toLowerCase(),
-      size: stat.size,
-      mtimeMs: stat.mtimeMs
-    });
+    setFileEntry(index, normalized, stat);
   };
 
   /**
@@ -670,10 +673,17 @@ export function createFileSearchIndexService() {
         nestedRepositories.push(relPath);
         continue;
       }
-      // `--cached` also lists files deleted from the working tree; upsertFile
-      // indexes only what is on disk.
-      upsertFile(index, relPath);
-      if (!index.files.has(relPath)) continue;
+      // `--cached` also lists files deleted from the working tree, and tracked
+      // symlinks; like the walk (`Dirent.isFile()`), index only regular files
+      // on disk and never follow a link out of the workspace.
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(toAbsolute(index.rootPath, relPath));
+      } catch {
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      setFileEntry(index, relPath, stat);
       addDirectories(segments.length - 1);
       visitedFiles += 1;
       if (visitedFiles >= MAX_INDEXED_FILES) return;

@@ -623,6 +623,8 @@ function ActionButton({
   );
 }
 
+type ChangeSection = "staged" | "unstaged" | "branch";
+
 /** "Showing first N of M files. Show all" under a capped change list. */
 function TruncatedChangesNotice({ total, noun, onShowAll }: { total: number; noun: string; onShowAll: () => void }) {
   return (
@@ -793,8 +795,19 @@ export function LaneGitActionsPane({
   const hasStaged = stagedCount > 0;
   const hasUnstaged = changes.unstaged.length > 0;
   const hasUntrackedChanges = changes.unstaged.some((file) => file.kind === "untracked");
-  const [showAllStagedChanges, setShowAllStagedChanges] = useState(false);
-  const [showAllUnstagedChanges, setShowAllUnstagedChanges] = useState(false);
+  // "Show all" holds for one lane on one machine (lane ids are unique only per
+  // machine); another lane or machine starts capped again.
+  const showAllScope = `${projectStateKey}\u0000${laneId ?? ""}`;
+  const [showAllChoice, setShowAllChoice] = useState<{ scope: string; sections: readonly ChangeSection[] }>({ scope: "", sections: [] });
+  const showAllSection = (section: ChangeSection) =>
+    setShowAllChoice((prev) => ({
+      scope: showAllScope,
+      sections: prev.scope === showAllScope ? [...prev.sections, section] : [section],
+    }));
+  const isShowingAll = (section: ChangeSection) =>
+    showAllChoice.scope === showAllScope && showAllChoice.sections.includes(section);
+  const showAllStagedChanges = isShowingAll("staged");
+  const showAllUnstagedChanges = isShowingAll("unstaged");
   const [collapsedChangeFolders, setCollapsedChangeFolders] = useState<Set<string>>(() => new Set());
   const visibleStagedChanges = useMemo(
     () => (showAllStagedChanges ? changes.staged : changes.staged.slice(0, MAX_RENDERED_CHANGE_ROWS_PER_SECTION)),
@@ -809,9 +822,8 @@ export function LaneGitActionsPane({
   const branchChangeTreeStatsByPath = useMemo(() => buildChangeTreeStatsByPath(branchChanges?.files ?? []), [branchChanges]);
   // The branch scope lists every file since the merge base, which on a lane far
   // from its base is thousands: all of them mounted at once was a ~1 s freeze
-  // opening Lanes. Same cap as the uncommitted sections, per lane.
-  const [showAllBranchChangesForLane, setShowAllBranchChangesForLane] = useState<string | null>(null);
-  const showAllBranchChanges = showAllBranchChangesForLane != null && showAllBranchChangesForLane === laneId;
+  // opening Lanes. Same cap as the uncommitted sections.
+  const showAllBranchChanges = isShowingAll("branch");
   const visibleBranchChanges = useMemo(() => {
     const files = branchChanges?.files ?? [];
     if (showAllBranchChanges || files.length <= MAX_RENDERED_CHANGE_ROWS_PER_SECTION) return files;
@@ -2926,7 +2938,7 @@ export function LaneGitActionsPane({
                   <>
                     {renderChangeTree(visibleBranchChanges, "branch", branchChangeTreeStatsByPath)}
                     {hiddenBranchChangeCount > 0 ? (
-                      <TruncatedChangesNotice total={branchChanges.files.length} noun="changed" onShowAll={() => setShowAllBranchChangesForLane(laneId)} />
+                      <TruncatedChangesNotice total={branchChanges.files.length} noun="changed" onShowAll={() => showAllSection("branch")} />
                     ) : null}
                   </>
                 )}
@@ -2943,7 +2955,7 @@ export function LaneGitActionsPane({
                   </div>
                   {renderChangeTree(visibleStagedChanges, "staged", stagedChangeTreeStatsByPath)}
                   {hiddenStagedChangeCount > 0 ? (
-                    <TruncatedChangesNotice total={changes.staged.length} noun="staged" onShowAll={() => setShowAllStagedChanges(true)} />
+                    <TruncatedChangesNotice total={changes.staged.length} noun="staged" onShowAll={() => showAllSection("staged")} />
                   ) : null}
                 </div>
               ) : null}
@@ -2957,7 +2969,7 @@ export function LaneGitActionsPane({
                   </div>
                   {renderChangeTree(visibleUnstagedChanges, "unstaged", unstagedChangeTreeStatsByPath)}
                   {hiddenUnstagedChangeCount > 0 ? (
-                    <TruncatedChangesNotice total={changes.unstaged.length} noun="unstaged" onShowAll={() => setShowAllUnstagedChanges(true)} />
+                    <TruncatedChangesNotice total={changes.unstaged.length} noun="unstaged" onShowAll={() => showAllSection("unstaged")} />
                   ) : null}
                 </div>
               ) : null}

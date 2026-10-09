@@ -386,14 +386,14 @@ function nameStatusFileChanges(stdout: string): FileChange[] {
 }
 
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
-  /** Asks this close together are the same moment (opening a lane asks twice). */
-  const BRANCH_READ_JOIN_WINDOW_MS = 250;
-  type BranchRead = { startedAt: number; read: Promise<BranchDiffChanges> };
+  /** The newest read per lane, and whether it has started reading the working tree. */
+  type BranchRead = { readingWorkingTree: boolean; read: Promise<BranchDiffChanges> };
   const branchReads = new Map<string, BranchRead>();
 
-  const readBranchChanges = async (laneId: string): Promise<BranchDiffChanges> => {
+  const readBranchChanges = async (laneId: string, entry: BranchRead): Promise<BranchDiffChanges> => {
     const { baseRef, branchRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
     const { label, mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
+    entry.readingWorkingTree = true;
     return await withWorkingTreeIndex(worktreePath, async (env) => {
       const [names, numstat] = await Promise.all([
         runGit(["diff", "--cached", "--name-status", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
@@ -413,7 +413,9 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
   };
 
   const startBranchRead = (laneId: string): Promise<BranchDiffChanges> => {
-    const entry: BranchRead = { startedAt: Date.now(), read: readBranchChanges(laneId) };
+    // `read` is assigned at once; the read itself flags the entry when it starts on the tree.
+    const entry = { readingWorkingTree: false } as BranchRead;
+    entry.read = readBranchChanges(laneId, entry);
     branchReads.set(laneId, entry);
     void entry.read.catch(() => undefined).then(() => {
       if (branchReads.get(laneId) === entry) branchReads.delete(laneId);
@@ -458,11 +460,12 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
     getBranchChanges(laneId: string): Promise<BranchDiffChanges> {
       // Opening a lane asks twice at once (the Branch support probe and the
       // pane's own read), and on a lane far from its base each read is a full
-      // temp-index diff of seconds. Asks at the same moment share one read. A
-      // later ask (an edit may have landed mid-read) starts a fresh read at
-      // once, which asks after it then share.
+      // temp-index diff of seconds. An ask shares a read that has not started
+      // reading the working tree yet: that read still sees every edit made
+      // before the ask. Once it has, an edit may have landed after its
+      // snapshot, so the ask starts a fresh read at once.
       const current = branchReads.get(laneId);
-      if (current && Date.now() - current.startedAt <= BRANCH_READ_JOIN_WINDOW_MS) return current.read;
+      if (current && !current.readingWorkingTree) return current.read;
       return startBranchRead(laneId);
     },
 

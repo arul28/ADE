@@ -604,6 +604,10 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
   let pendingChunks: Buffer[] = [];
   let pendingBytes = 0;
   let awaitingBytes = 0;
+  // A buffered message whose size is not known yet (a JSONL line, or a frame
+  // without its full header) completes only on a newline: both line ends and
+  // header delimiters end in `\n`.
+  let awaitingNewline = false;
   let stopped = false;
   let draining = false;
   let responseTransport: TransportMode | null = null;
@@ -670,9 +674,11 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
         const parsed = takeNextPayload(buffer);
         if (parsed.kind === "incomplete") {
           awaitingBytes = parsed.needBytes;
+          awaitingNewline = parsed.needBytes === 0 && buffer.length > 0;
           break;
         }
         awaitingBytes = 0;
+        awaitingNewline = false;
 
         buffer = parsed.rest as Buffer;
         if (responseTransport == null) {
@@ -728,6 +734,7 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
     }
 
     if (totalBytes < awaitingBytes) return;
+    if (awaitingNewline && !part.includes(0x0a)) return;
     buffer = buffer.length || pendingChunks.length > 1
       ? (Buffer.concat([buffer, ...pendingChunks], totalBytes) as Buffer)
       : part;
