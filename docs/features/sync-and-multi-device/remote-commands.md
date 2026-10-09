@@ -398,7 +398,7 @@ that cannot encode a JSON null (iOS) must still be able to express "clear".
   `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`, `createAttachmentUpload`,
   `beginTempFileAttachment`, `appendTempFileAttachmentChunk`,
   `finishTempFileAttachment`, `abortTempFileAttachment`, `getAttachmentChunk`,
-  `listPromptStashes`, `createPromptStash`, `deletePromptStash`, `getImageDataUrl`
+  `listDrafts`, `getDraft`, `createDraft`, `updateDraft`, `deleteDraft`, `claimDraft`, `getImageDataUrl`
 - New-lane launches: `startLaunch`, `getLaunch`, `listLaunches`,
   `cancelLaunch`, `retryLaunch`, `startLaunchNow`, `queueLaunchMessage`,
   `completeLaunchClient` — see [New-lane launch commands](#new-lane-launch-commands)

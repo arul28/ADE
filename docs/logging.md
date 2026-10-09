@@ -1082,7 +1082,7 @@ The storage doctor emits one `ade_feature_used` per completed maintenance run at
 
 Desktop prompt-stash creation records the existing coarse
 `ade_feature_used` mutation fact with `feature: "chat"` and
-`action: "chat.createPromptStash"` through the durable `usage_events` ledger.
+`action: "chat.createDraft"` through the durable `usage_events` ledger.
 The event contains no prompt text, model/provider value, project path, or stash
 identifier. Reads, menu opens, restores, and deletes are not product events.
 The existing `ade_feature_used` limits cap this at 30 accepted events per minute

@@ -8459,6 +8459,17 @@ const adeBridge = {
           { args },
           () => ipcRenderer.invoke(IPC.agentChatDraftsClaim, args),
         ),
+      sendNow: async (
+        args: DraftDeleteArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<{ ok: boolean; error?: string }> =>
+        callPinnedOrBoundRuntimeActionOr(
+          pin,
+          "chat",
+          "sendDraftNow",
+          { args },
+          () => ipcRenderer.invoke(IPC.agentChatDraftsSendNow, args),
+        ),
     },
     threadComments: {
       list: async (

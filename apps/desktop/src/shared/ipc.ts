@@ -352,6 +352,7 @@ export const IPC = {
   agentChatDraftsDelete: "ade.agentChat.drafts.delete",
   agentChatDraftsUpdate: "ade.agentChat.drafts.update",
   agentChatDraftsClaim: "ade.agentChat.drafts.claim",
+  agentChatDraftsSendNow: "ade.agentChat.drafts.sendNow",
   agentChatThreadCommentsList: "ade.agentChat.threadComments.list",
   agentChatThreadCommentsCreate: "ade.agentChat.threadComments.create",
   agentChatThreadCommentsUpdate: "ade.agentChat.threadComments.update",

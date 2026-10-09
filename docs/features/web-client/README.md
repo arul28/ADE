@@ -462,9 +462,9 @@ Browser `window.ade` adapter:
   does not advertise the action. Sources favicons go through
   `chat.resolveSourceFavicons`; an older host without it leaves every row on
   its domain initial. The adapter also implements the shared
-  `agentChat.promptStashes` object through
-  `chat.listPromptStashes` / `chat.createPromptStash` /
-  `chat.deletePromptStash`. The cross-machine handoff trio is genuinely
+  `agentChat.drafts` object through
+  `chat.listDrafts` / `chat.createDraft` /
+  `chat.deleteDraft` (and `updateDraft` / `claimDraft`). The cross-machine handoff trio is genuinely
   implemented rather than left to the fallback proxy:
   `prepareCrossMachineHandoff`, `validateCrossMachineSource`, and
   `markCrossMachineHandoff` call the registered sync remote commands

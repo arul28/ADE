@@ -8881,6 +8881,13 @@ export function registerIpc({
     return claimDraft(ensureDbContext().db, arg?.id ?? "");
   });
 
+  ipcMain.handle(IPC.agentChatDraftsSendNow, async (
+    _event,
+    arg: DraftDeleteArgs,
+  ): Promise<{ ok: boolean; error?: string }> => {
+    return await ensureAgentChatContext().agentChatService.sendDraftNow(arg?.id ?? "");
+  });
+
   ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.handoffSession(withoutRendererRuntimeActor(arg));

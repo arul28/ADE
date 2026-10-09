@@ -697,8 +697,10 @@ apps/ios/
 │   │   │                            #   WorkChatAttachmentPreviewSheets
 │   │   │                            #   (chunked read-back into QuickLook and
 │   │   │                            #   video playback),
-│   │   │                            # WorkPromptStash (composer overflow +
-│   │   │                            #   per-project stash host),
+│   │   │                            # WorkDrafts + WorkDraftScheduleSheet
+│   │   │                            #   (composer-overflow drafts/schedule,
+│   │   │                            #   drafts list sheet, scheduled-send
+│   │   │                            #   half-sheet),
 │   │   │                            # WorkContextUsageViews (turn-end meter),
 │   │   │                            # WorkChatComposerAndInputViews (always-open
 │   │   │                            #   icon-only queued-steer strip + the
@@ -2868,16 +2870,27 @@ reassembled file. Attachment chips are kind-aware
 (`WorkChatInputAttachmentKind` → `photo` / `film` / `doc` glyphs), and the
 composer's fold gesture switches the tray to 24 pt chips without unstaging
 anything, and a tap on that compact row expands the composer again. Hub, Work new-session, and in-session composers open attach, dictate,
-and per-project prompt stash from `WorkComposerOverflowButton` (a three-dot
-menu) rather than a plus control or idle mic. Their `UITextView` inputs also
+and per-project drafts from `WorkComposerOverflowButton` (a three-dot
+menu) rather than a plus control or idle mic. The ⋯ item saves a draft when the
+composer has content and opens the drafts sheet when it does not; `Schedule
+send…` sits directly beneath it. The sheet filters one flat list by **All** /
+**Scheduled** / **Needs you**, and attaching a plain draft **claims it before
+filling** the composer — the claim is the delete, so a machine that loses the
+race never receives the text. `WorkDraftScheduleSheet` is the half-sheet behind
+Schedule send: an explicit target (this chat or a new chat in a lane), the
+target machine, an offset-qualified fire time, the if-late policy, and the
+captured provider/model/permission config with an elevated-mode warning. Their
+`UITextView` inputs also
 advertise Paste for image-only clipboards and stage pasted images through the
 same path. Up to ten images are normalized to JPEG and retained locally;
 overflow and load failures stay visible as blocking tray errors instead of
 being silently dropped. Staging works while offline, while upload/send waits
 for reconnection. Hosts that do not advertise `chat.saveTempAttachment` disable
 Attach only; Dictate stays available. Hosts that omit the optional
-`chat.listPromptStashes` / `chat.createPromptStash` / `chat.deletePromptStash`
-actions hide stash instead of going limited. Context usage lives on the latest
+`chat.listDrafts` / `chat.createDraft` / `chat.updateDraft` / `chat.deleteDraft`
+/ `chat.claimDraft` actions hide the drafts surface instead of going limited; a
+host that omits only `chat.createDraft` keeps the list but hides Schedule send.
+Context usage lives on the latest
 turn-end marker, not in the composer.
 
 `WorkChatInputAttachmentTray` is a separate fixed-height shelf above the input

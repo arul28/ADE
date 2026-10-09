@@ -2515,6 +2515,11 @@ declare global {
             args: DraftDeleteArgs,
             pin?: OpenProjectBinding | null,
           ) => Promise<boolean>;
+          /** Deliver now, whatever the fire time; keeps the schedule armed. */
+          sendNow: (
+            args: DraftDeleteArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<{ ok: boolean; error?: string }>;
         };
         threadComments: {
           list: (args: ChatThreadCommentListArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment[]>;

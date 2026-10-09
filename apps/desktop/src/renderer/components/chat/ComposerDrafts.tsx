@@ -3,8 +3,10 @@ import {
   BookmarkSimple,
   CalendarBlank,
   Check,
+  CopySimple,
   File,
   Image,
+  PaperPlaneTilt,
   PencilSimple,
   SpinnerGap,
   Trash,
@@ -694,6 +696,58 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     }
   }, [entriesOwnerBinding, refresh]);
 
+  /**
+   * Deliver a draft immediately. The row keeps whatever schedule it had, so a
+   * manual send that fails leaves the armed send alone rather than cancelling
+   * it as a side effect.
+   */
+  const sendNow = useCallback(async (entry: DraftEntry) => {
+    if (operationInFlightRef.current) return;
+    const operationBinding = entriesOwnerBinding;
+    operationInFlightRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await window.ade.agentChat.drafts.sendNow({ id: entry.id }, operationBinding);
+      if (!result.ok) {
+        throw new Error(result.error?.trim() || "Could not send this draft.");
+      }
+      await refresh(operationBinding);
+      setOpenEntry(null);
+    } catch (sendError) {
+      setError(draftErrorMessage(sendError, "Could not send this draft."));
+    } finally {
+      operationInFlightRef.current = false;
+      setBusy(false);
+    }
+  }, [entriesOwnerBinding, refresh]);
+
+  /** Copy a draft to the top of the list; the copy is a plain draft. */
+  const duplicate = useCallback(async (entry: DraftEntry) => {
+    if (operationInFlightRef.current) return;
+    const operationBinding = entriesOwnerBinding;
+    operationInFlightRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      const attachments = draftAttachments(entry);
+      const created = await window.ade.agentChat.drafts.create({
+        text: entry.text,
+        ...(attachments.length ? { attachments } : {}),
+        provider: entry.provider,
+        modelId: entry.modelId,
+        originSessionId: entry.originSessionId ?? null,
+      }, operationBinding);
+      await refresh(operationBinding);
+      setOpenEntry(created);
+    } catch (duplicateError) {
+      setError(draftErrorMessage(duplicateError, "Could not duplicate this draft."));
+    } finally {
+      operationInFlightRef.current = false;
+      setBusy(false);
+    }
+  }, [entriesOwnerBinding, refresh]);
+
   const handleMenuKeyDown = useCallback((event: {
     key: string;
     metaKey: boolean;
@@ -870,7 +924,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
                 ) : null}
               </div>
 
-              <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-fg/[0.06] px-3 py-2.5">
+              <div className="flex flex-wrap items-center gap-1.5 border-t border-fg/[0.06] px-3 py-2.5">
                 <button
                   type="button"
                   disabled={busy || editText === openEntry.text}
@@ -879,6 +933,15 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
                 >
                   <PencilSimple size={12} aria-hidden />
                   Save
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-sans text-[11px] text-fg/60 transition-colors hover:bg-fg/[0.05] hover:text-fg/80 disabled:cursor-not-allowed disabled:opacity-35"
+                  onClick={() => void duplicate(openEntry)}
+                >
+                  <CopySimple size={12} aria-hidden />
+                  Duplicate
                 </button>
                 {onRequestSchedule ? (
                   <button
@@ -895,10 +958,21 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
                     {isScheduledEntry(openEntry) ? "Reschedule" : "Schedule send"}
                   </button>
                 ) : null}
+                {isScheduledEntry(openEntry) && isPendingSchedule(openEntry) ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-sans text-[11px] text-fg/70 transition-colors hover:bg-emerald-500/[0.10] hover:text-emerald-100/85 disabled:cursor-not-allowed disabled:opacity-35"
+                    onClick={() => void sendNow(openEntry)}
+                  >
+                    <PaperPlaneTilt size={12} aria-hidden />
+                    Send now
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-violet-500/85 px-2.5 py-1.5 font-sans text-[11px] font-semibold text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-violet-500/85 px-2.5 py-1.5 font-sans text-[11px] font-semibold text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
                   onClick={() => void attach(openEntry)}
                 >
                   <ArrowUUpLeft size={12} aria-hidden />

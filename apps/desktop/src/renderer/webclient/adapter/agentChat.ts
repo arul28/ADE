@@ -274,6 +274,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         const result = await call<unknown>("chat.claimDraft", args, null);
         return (result ?? null) as DraftEntry | null;
       },
+      sendNow: async (args: DraftDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.sendNow", pin);
+        return await callRequiredMutation<{ ok: boolean; error?: string }>("chat.sendDraftNow", args);
+      },
     },
     threadComments: {
       list: async (args: ChatThreadCommentListArgs, pin?: RuntimePinArg) => {
