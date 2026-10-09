@@ -386,6 +386,29 @@ function nameStatusFileChanges(stdout: string): FileChange[] {
 }
 
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
+  const branchChangesInFlight = new Map<string, Promise<BranchDiffChanges>>();
+
+  const readBranchChanges = async (laneId: string): Promise<BranchDiffChanges> => {
+    const { baseRef, branchRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
+    const { label, mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
+    return await withWorkingTreeIndex(worktreePath, async (env) => {
+      const [names, numstat] = await Promise.all([
+        runGit(["diff", "--cached", "--name-status", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
+        runGit(["diff", "--cached", "--numstat", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
+      ]);
+      if (names.exitCode !== 0) throw new Error(names.stderr.trim() || "git diff failed");
+      const files = nameStatusFileChanges(names.stdout);
+      if (numstat.exitCode === 0) applyNumstat(files, numstat.stdout);
+      return {
+        baseRef: label,
+        mergeBase,
+        files,
+        additions: files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
+        deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
+      };
+    });
+  };
+
   const getLaneDiffStats = async (laneIdArg: string | { laneId?: string } | null | undefined): Promise<DiffLineStats> => {
     const laneId = readLaneIdArg(laneIdArg);
     const { baseRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
@@ -420,25 +443,18 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       return Object.fromEntries(entries);
     },
 
-    async getBranchChanges(laneId: string): Promise<BranchDiffChanges> {
-      const { baseRef, branchRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-      const { label, mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
-      return await withWorkingTreeIndex(worktreePath, async (env) => {
-        const [names, numstat] = await Promise.all([
-          runGit(["diff", "--cached", "--name-status", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
-          runGit(["diff", "--cached", "--numstat", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
-        ]);
-        if (names.exitCode !== 0) throw new Error(names.stderr.trim() || "git diff failed");
-        const files = nameStatusFileChanges(names.stdout);
-        if (numstat.exitCode === 0) applyNumstat(files, numstat.stdout);
-        return {
-          baseRef: label,
-          mergeBase,
-          files,
-          additions: files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
-          deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
-        };
+    getBranchChanges(laneId: string): Promise<BranchDiffChanges> {
+      // Opening a lane asks twice at once (the Branch support probe and the
+      // pane's own read), and on a lane far from its base each read is a
+      // full temp-index diff of seconds. Concurrent asks share one read; the
+      // next ask after it settles reads fresh.
+      const inFlight = branchChangesInFlight.get(laneId);
+      if (inFlight) return inFlight;
+      const read = readBranchChanges(laneId).finally(() => {
+        if (branchChangesInFlight.get(laneId) === read) branchChangesInFlight.delete(laneId);
       });
+      branchChangesInFlight.set(laneId, read);
+      return read;
     },
 
     async getChanges(laneId: string): Promise<DiffChanges> {

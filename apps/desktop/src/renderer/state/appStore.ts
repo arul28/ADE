@@ -2867,6 +2867,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               ...current,
               ...next,
             };
+      // Callers write on every sessions refresh whether or not anything moved;
+      // a new object for the same values re-rendered every subscriber (the
+      // whole chat pane) about once a second at idle.
+      if (prev.workViewByProject[key] && sameShallowRecord(current, updated)) return prev;
       const nextWorkViews = {
         ...prev.workViewByProject,
         [key]: updated,
@@ -2896,6 +2900,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               ...current,
               ...next,
             };
+      if (prev.laneWorkViewByScope[key] && sameShallowRecord(current, updated)) return prev;
       const nextLaneWorkViews = {
         ...prev.laneWorkViewByScope,
         [key]: updated,
@@ -3848,6 +3853,15 @@ export function retainProjectAppStoreState(
       sessionsCacheByProject,
     };
   });
+}
+
+function sameShallowRecord(previous: object, next: object): boolean {
+  if (previous === next) return true;
+  const a = previous as Record<string, unknown>;
+  const b = next as Record<string, unknown>;
+  const keys = Object.keys(b);
+  if (keys.length !== Object.keys(a).length) return false;
+  return keys.every((key) => Object.is(a[key], b[key]));
 }
 
 export function hydrateProjectAppStore(store: AppStoreApi, state: Partial<AppState>): void {

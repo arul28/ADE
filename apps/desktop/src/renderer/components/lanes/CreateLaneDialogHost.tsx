@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useLaneMachineChoice } from "./useLaneMachineChoice";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
@@ -160,7 +160,11 @@ function runDetachedLaneSetup(params: DetachedSetupParams): void {
  *   exists and runs env setup in the background; a failure surfaces a sticky,
  *   retryable toast instead of in-dialog UI.
  */
-export function CreateLaneDialogHost({
+/**
+ * Memoized: the chat pane mounts a closed host and re-renders on every streamed
+ * event; with stable props a closed dialog must not re-render its whole form.
+ */
+export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   open,
   onOpenChange,
   behavior,
@@ -945,4 +949,4 @@ export function CreateLaneDialogHost({
       selectedMachineId={selectedMachineId}
     />
   );
-}
+});

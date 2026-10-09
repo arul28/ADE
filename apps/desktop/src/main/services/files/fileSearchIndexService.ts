@@ -84,6 +84,11 @@ type WorkspaceIndex = {
 type IgnoreOptions = {
   shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
   primeIgnoreCache?: (relPaths: string[], includeIgnored: boolean) => Promise<void>;
+  /**
+   * Every non-ignored file in the workspace in one read (`git ls-files`), or
+   * null when it cannot answer and the directory walk must run instead.
+   */
+  listVisibleFiles?: () => Promise<string[] | null>;
 };
 
 function isVolatileAdeRuntimePath(relPath: string): boolean {
@@ -584,10 +589,45 @@ export function createFileSearchIndexService() {
 
   const shouldSkipDirectoryName = (name: string): boolean => ALWAYS_SKIPPED_DIRECTORY_NAMES.has(name);
 
+  /**
+   * The index from git's own list of non-ignored files: one `git ls-files`
+   * instead of a directory walk that asked `git check-ignore` once per folder
+   * (about 540 spawns and as many blocking `readdirSync`s for this repo).
+   */
+  const buildWorkspaceFromFileList = async (index: WorkspaceIndex, relPaths: string[]): Promise<void> => {
+    let visitedFiles = 0;
+    for (const raw of relPaths) {
+      const relPath = normalizeRelative(raw);
+      if (!relPath || shouldSkipPathPrefix(relPath, index.includeIgnored)) continue;
+      const segments = relPath.split("/");
+      if (segments.slice(0, -1).some((segment) => shouldSkipDirectoryName(segment))) continue;
+      for (let depth = 1; depth < segments.length; depth += 1) {
+        const dir = segments.slice(0, depth).join("/");
+        if (!index.directories.has(dir)) index.directories.set(dir, { path: dir, lowerPath: dir.toLowerCase() });
+      }
+      upsertFile(index, relPath);
+      visitedFiles += 1;
+      if (visitedFiles >= MAX_INDEXED_FILES) break;
+      if (visitedFiles % YIELD_EVERY_FILES === 0) {
+        await cooperativeYield();
+      }
+    }
+    index.builtAt = new Date().toISOString();
+    invalidateQuickOpenCache(index);
+  };
+
   const buildWorkspace = async (index: WorkspaceIndex, opts: IgnoreOptions): Promise<void> => {
     index.files.clear();
     index.directories.clear();
     invalidateQuickOpenCache(index);
+
+    if (!index.includeIgnored && opts.listVisibleFiles) {
+      const listed = await opts.listVisibleFiles().catch(() => null);
+      if (listed) {
+        await buildWorkspaceFromFileList(index, listed);
+        return;
+      }
+    }
 
     const stack: string[] = [""];
     let visitedFiles = 0;
@@ -667,11 +707,13 @@ export function createFileSearchIndexService() {
       includeIgnored: boolean;
       shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
       primeIgnoreCache?: (relPaths: string[], includeIgnored: boolean) => Promise<void>;
+      listVisibleFiles?: () => Promise<string[] | null>;
     }): Promise<void> {
       await ensureBuilt(args.workspaceId, args.rootPath, {
         includeIgnored: args.includeIgnored,
         shouldIgnore: args.shouldIgnore,
-        primeIgnoreCache: args.primeIgnoreCache
+        primeIgnoreCache: args.primeIgnoreCache,
+        listVisibleFiles: args.listVisibleFiles,
       });
     },
 
@@ -685,11 +727,13 @@ export function createFileSearchIndexService() {
       includeDirectories?: boolean;
       shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
       primeIgnoreCache?: (relPaths: string[], includeIgnored: boolean) => Promise<void>;
+      listVisibleFiles?: () => Promise<string[] | null>;
     }): Promise<FilesQuickOpenItem[]> {
       const index = await ensureBuilt(args.workspaceId, args.rootPath, {
         includeIgnored: args.includeIgnored,
         shouldIgnore: args.shouldIgnore,
-        primeIgnoreCache: args.primeIgnoreCache
+        primeIgnoreCache: args.primeIgnoreCache,
+        listVisibleFiles: args.listVisibleFiles,
       });
 
       const allowComposerPrefixFallback = Boolean(args.allowComposerPrefixFallback);
@@ -730,6 +774,7 @@ export function createFileSearchIndexService() {
       includeIgnored: boolean;
       shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
       primeIgnoreCache?: (relPaths: string[], includeIgnored: boolean) => Promise<void>;
+      listVisibleFiles?: () => Promise<string[] | null>;
     }): Promise<FilesSearchTextMatch[]> {
       // Tier 1: git greps the workspace itself. It is roughly 5x faster than
       // the walk below on a mid-size repo, and it needs no name index at all —
@@ -767,7 +812,8 @@ export function createFileSearchIndexService() {
       const index = await ensureBuilt(args.workspaceId, args.rootPath, {
         includeIgnored: args.includeIgnored,
         shouldIgnore: args.shouldIgnore,
-        primeIgnoreCache: args.primeIgnoreCache
+        primeIgnoreCache: args.primeIgnoreCache,
+        listVisibleFiles: args.listVisibleFiles,
       });
 
       const out: FilesSearchTextMatch[] = [];

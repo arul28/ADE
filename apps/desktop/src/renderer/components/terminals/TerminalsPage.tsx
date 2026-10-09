@@ -1538,6 +1538,23 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     work.setWorkSidebarWidthPct(next);
   }, [work]);
 
+  // `work` gets a new identity whenever any session state moves, and every
+  // handler below depends on it. Passed raw, they re-rendered the whole Work
+  // view (chat pane and composer included) a few times a second at idle.
+  const stableHandleOpenChatSession = useLatestCallback(handleOpenChatSession);
+  const stableHandleContinueCliSession = useLatestCallback(handleContinueCliSession);
+  const stableHandleResumeCliSession = useLatestCallback(handleResumeCliSession);
+  const stableToggleWorkSidebar = useLatestCallback(toggleWorkSidebar);
+  const stableToggleTerminalPane = useLatestCallback(toggleTerminalPane);
+  const stableOpenTerminalPane = useLatestCallback(openTerminalPane);
+  const stableHandleContextMenu = useLatestCallback(handleContextMenu);
+  const stableHandleInfoClick = useLatestCallback(handleInfoClick);
+  const stableHandleStopRunningSession = useLatestCallback(handleStopRunningSession);
+  const stableHandleGoToLaneById = useLatestCallback(handleGoToLaneById);
+  const stableHandleAddSessionToGrid = useLatestCallback(handleAddSessionToGrid);
+  const stableHandleCreateGridFromSingle = useLatestCallback(handleCreateGridFromSingle);
+  const stableHandleRemoveSessionFromGrid = useLatestCallback(handleRemoveSessionFromGrid);
+
   const workViewArea = useMemo(
     () => (
       <WorkViewArea
@@ -1552,7 +1569,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         draftContextTargetId={draftContextTargetId}
         onSelectItem={work.setActiveItemId}
         onCloseItem={work.closeTab}
-        onOpenChatSession={handleOpenChatSession}
+        onOpenChatSession={stableHandleOpenChatSession}
         onLaunchPtySession={work.launchPtySession}
         onImportedSession={work.adoptImportedSession}
         onOpenExistingImportedSession={work.openExistingImportedSession}
@@ -1560,31 +1577,31 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onDraftMachineChange={work.setDraftMachineId}
         onShowDraftKind={work.showDraftKind}
         closingPtyIds={work.closingPtyIds}
-        onContextMenu={handleContextMenu}
-        onContinueCliSession={handleContinueCliSession}
-        onResumeCliSession={handleResumeCliSession}
+        onContextMenu={stableHandleContextMenu}
+        onContinueCliSession={stableHandleContinueCliSession}
+        onResumeCliSession={stableHandleResumeCliSession}
         resolveSessionRuntimePin={resolveSessionRuntimePin}
         workSidebarOpen={work.workSidebarOpen}
-        onToggleWorkSidebar={toggleWorkSidebar}
+        onToggleWorkSidebar={stableToggleWorkSidebar}
         terminalPaneOpen={terminalPaneOpen}
-        onToggleTerminalPane={toggleTerminalPane}
-        onOpenTerminalPane={openTerminalPane}
-        onInfoClick={handleInfoClick}
-        onStopRunningSession={handleStopRunningSession}
-        onGoToLane={handleGoToLaneById}
+        onToggleTerminalPane={stableToggleTerminalPane}
+        onOpenTerminalPane={stableOpenTerminalPane}
+        onInfoClick={stableHandleInfoClick}
+        onStopRunningSession={stableHandleStopRunningSession}
+        onGoToLane={stableHandleGoToLaneById}
         gridSets={work.gridSets}
-        onAddSessionToGrid={handleAddSessionToGrid}
-        onCreateGridFromSingle={handleCreateGridFromSingle}
-        onRemoveSessionFromGrid={handleRemoveSessionFromGrid}
+        onAddSessionToGrid={stableHandleAddSessionToGrid}
+        onCreateGridFromSingle={stableHandleCreateGridFromSingle}
+        onRemoveSessionFromGrid={stableHandleRemoveSessionFromGrid}
       />
     ),
     [
       sortedLanes,
       active,
       work.gridSets,
-      handleAddSessionToGrid,
-      handleCreateGridFromSingle,
-      handleRemoveSessionFromGrid,
+      stableHandleAddSessionToGrid,
+      stableHandleCreateGridFromSingle,
+      stableHandleRemoveSessionFromGrid,
       resolveSessionRuntimePin,
       work.visibleSessions,
       work.activeItemId,
@@ -1603,16 +1620,16 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.closingPtyIds,
       work.workSidebarOpen,
       terminalPaneOpen,
-      toggleWorkSidebar,
-      toggleTerminalPane,
-      openTerminalPane,
-      handleOpenChatSession,
-      handleContinueCliSession,
-      handleResumeCliSession,
-      handleContextMenu,
-      handleInfoClick,
-      handleStopRunningSession,
-      handleGoToLaneById,
+      stableToggleWorkSidebar,
+      stableToggleTerminalPane,
+      stableOpenTerminalPane,
+      stableHandleOpenChatSession,
+      stableHandleContinueCliSession,
+      stableHandleResumeCliSession,
+      stableHandleContextMenu,
+      stableHandleInfoClick,
+      stableHandleStopRunningSession,
+      stableHandleGoToLaneById,
     ],
   );
 

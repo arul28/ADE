@@ -208,11 +208,22 @@ export function useLaneCommits(
     }
     let cancelled = false;
     // Unpinned calls keep their exact pre-pin shape (the tab's machine).
+    // `scope` asks for the detailed log, which carries each commit's
+    // Co-authored-by trailers in the same `git log`, so the trailer pass below
+    // needs no per-commit message reads.
     void (pin
-      ? window.ade.git.listRecentCommits({ laneId, limit }, pin)
-      : window.ade.git.listRecentCommits({ laneId, limit }))
+      ? window.ade.git.listRecentCommits({ laneId, limit, scope: "lane" }, pin)
+      : window.ade.git.listRecentCommits({ laneId, limit, scope: "lane" }))
       .then((rows) => {
         if (cancelled) return;
+        for (const row of rows) {
+          if (row.coAuthors && !trailerProviderCache.has(row.sha)) {
+            trailerProviderCache.set(
+              row.sha,
+              parseCoAuthorProvider(row.coAuthors.map((value) => `Co-authored-by: ${value}`).join("\n")),
+            );
+          }
+        }
         setCommits(rows);
         setLoaded(true);
       })
@@ -228,8 +239,9 @@ export function useLaneCommits(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchKey]);
 
-  // Read the full message of only the newest few commits, one at a time, to
-  // find Co-Authored-By trailers. Older commits fall back to other signals.
+  // A runtime that predates trailers in the commit list (another machine on an
+  // older ADE) leaves `coAuthors` unset: read the full message of only the
+  // newest few of those, one at a time. Older commits fall back to other signals.
   useEffect(() => {
     if (!laneId || !lane) return;
     const pending = selectLaneCommits(commits, lane)

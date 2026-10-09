@@ -1203,6 +1203,10 @@ function normalizeLocalhostHref(url: string, host: string): string {
 }
 
 export function extractLocalhostUrlsFromText(text: string): ChatLocalhostUrl[] {
+  // Every match has a scheme. Tool output and args are scanned again on every
+  // streamed event; most of it has no URL at all, and `includes` is far
+  // cheaper than running the case-insensitive Unicode pattern over it.
+  if (!text.includes("://")) return [];
   const urls: ChatLocalhostUrl[] = [];
   const seen = new Set<string>();
 

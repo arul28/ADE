@@ -243,6 +243,21 @@ function useHeaderStatusCompactLayout(): boolean {
   return compact;
 }
 
+/** Everything `ResourcePressureIndicator` draws from a sample; nothing when it is hidden. */
+function resourcePressureIndicatorKey(usage: AppResourceUsageSnapshot | null): string {
+  const level = appResourcePressureLevel(usage);
+  if (level === 0) return "0";
+  return [
+    level,
+    resourcePressureDescription(usage),
+    usage?.activePtyCount ?? 0,
+    usage?.ptyProcessCount ?? 0,
+    usage?.ptyCpuPercent ?? "",
+    usage?.ptyMemoryMB ?? "",
+    usage?.processSample?.status ?? "",
+  ].join("\u0000");
+}
+
 function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | null {
   const [usage, setUsage] = useState<AppResourceUsageSnapshot | null>(null);
 
@@ -259,7 +274,13 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
       const version = ++requestVersion;
       void getAppResourceUsageCoalesced()
         .then((snapshot) => {
-          if (!cancelled && version === requestVersion) setUsage(snapshot);
+          if (cancelled || version !== requestVersion) return;
+          // Every sample is a new object with fresh CPU numbers. Keep the old
+          // one unless the indicator would draw something different: a new
+          // object re-renders the whole top bar every 2 s.
+          setUsage((previous) => (
+            resourcePressureIndicatorKey(previous) === resourcePressureIndicatorKey(snapshot) ? previous : snapshot
+          ));
         })
     };
 

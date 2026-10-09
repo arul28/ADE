@@ -2369,6 +2369,26 @@ function resolveAssistantLabel(
   return "Assistant";
 }
 
+/**
+ * Same rows in the same order with the same contents. Summaries are small flat
+ * records re-read over IPC, so a fresh read is never reference-equal; compare
+ * by value.
+ */
+function sameSessionSummaryList(
+  previous: readonly AgentChatSessionSummary[],
+  next: readonly AgentChatSessionSummary[],
+): boolean {
+  if (previous === next) return true;
+  if (previous.length !== next.length) return false;
+  for (let index = 0; index < next.length; index += 1) {
+    const a = previous[index]!;
+    const b = next[index]!;
+    if (a === b) continue;
+    if (a.sessionId !== b.sessionId || JSON.stringify(a) !== JSON.stringify(b)) return false;
+  }
+  return true;
+}
+
 function sortSessionSummariesByRecency(
   rows: AgentChatSessionSummary[],
   localTouchBySession: ReadonlyMap<string, string>,
@@ -7480,12 +7500,16 @@ export function AgentChatPane({
       options?.force ? { force: true } : undefined,
     );
     const rows = allRows.filter((session) => !session.archivedAt);
-    setArchivedSessions(sortSessionSummariesByRecency(
+    const nextArchived = sortSessionSummariesByRecency(
       allRows.filter((session) => Boolean(session.archivedAt)),
       localTouchBySessionRef.current,
-    ));
+    );
+    // This list is re-read on every session change anywhere in the lane. An
+    // unchanged list must keep its identity: a new array re-renders the whole
+    // pane, composer included.
+    setArchivedSessions((prev) => (sameSessionSummaryList(prev, nextArchived) ? prev : nextArchived));
     const nextRows = sortSessionSummariesByRecency(rows, localTouchBySessionRef.current);
-    setSessions(nextRows);
+    setSessions((prev) => (sameSessionSummaryList(prev, nextRows) ? prev : nextRows));
     const retainedSessionIds = buildRetainedChatSessionIds({
       rows: nextRows,
       selectedSessionId: selectedSessionIdRef.current,

@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useState } from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
 import { ChatTeardropText, Quotes, Ticket } from "@phosphor-icons/react";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 import { cn } from "../ui/cn";
@@ -32,6 +32,10 @@ export function AssistantOutputSelectionToolbar({
 }) {
   const [state, setState] = useState<ToolbarState | null>(null);
   const enabled = Boolean(onAddToChat || onComment || onCreateIssue);
+  // Scrolling only moves a toolbar that is already open: it cannot change the
+  // selection, and a streaming transcript scrolls itself many times a second.
+  const showingRef = useRef(false);
+  showingRef.current = state != null;
 
   const sync = () => {
     if (!enabled) {
@@ -62,19 +66,22 @@ export function AssistantOutputSelectionToolbar({
   useLayoutEffect(() => {
     if (!enabled) return;
     const handleSelection = () => sync();
+    const handleScrollOrResize = () => {
+      if (showingRef.current) sync();
+    };
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setState(null);
     };
     document.addEventListener("selectionchange", handleSelection);
     document.addEventListener("mouseup", handleSelection);
-    window.addEventListener("resize", handleSelection);
-    window.addEventListener("scroll", handleSelection, true);
+    window.addEventListener("resize", handleScrollOrResize);
+    window.addEventListener("scroll", handleScrollOrResize, true);
     window.addEventListener("keydown", handleKey);
     return () => {
       document.removeEventListener("selectionchange", handleSelection);
       document.removeEventListener("mouseup", handleSelection);
-      window.removeEventListener("resize", handleSelection);
-      window.removeEventListener("scroll", handleSelection, true);
+      window.removeEventListener("resize", handleScrollOrResize);
+      window.removeEventListener("scroll", handleScrollOrResize, true);
       window.removeEventListener("keydown", handleKey);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `sync` reads the latest props each call

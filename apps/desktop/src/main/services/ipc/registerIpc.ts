@@ -2475,6 +2475,18 @@ export function registerIpc({
     });
   };
 
+  /**
+   * Runtime action calls all share one channel; name the action they carry so
+   * IPC summaries and perf runs can tell `lanes.list` from `chat.send`.
+   */
+  const perfChannelLabel = (channel: string, args: unknown[]): string => {
+    if (channel !== IPC.localRuntimeCallAction) return channel;
+    const request = (args[0] as { request?: { domain?: unknown; action?: unknown } } | undefined)?.request;
+    return typeof request?.domain === "string" && typeof request.action === "string"
+      ? `${channel}:${request.domain}.${request.action}`
+      : channel;
+  };
+
   const recordIpcInvokeAggregate = (input: {
     channel: string;
     winId: number | null;
@@ -2560,7 +2572,7 @@ export function registerIpc({
             }),
           ]);
           const durationMs = Date.now() - startedAt;
-          recordIpcInvokeAggregate({ channel, winId, durationMs, failed: false });
+          recordIpcInvokeAggregate({ channel: perfChannelLabel(channel, args), winId, durationMs, failed: false });
           const usageAction = usageActionFromIpcChannel(channel);
           if (isMeaningfulUsageAction(usageAction)) {
             try {
@@ -2589,7 +2601,7 @@ export function registerIpc({
           return result;
         } catch (error) {
           const durationMs = Date.now() - startedAt;
-          recordIpcInvokeAggregate({ channel, winId, durationMs, failed: true });
+          recordIpcInvokeAggregate({ channel: perfChannelLabel(channel, args), winId, durationMs, failed: true });
           const usageAction = usageActionFromIpcChannel(channel);
           if (isMeaningfulUsageAction(usageAction)) {
             const errorKind = error instanceof Error ? error.name : "unknown";

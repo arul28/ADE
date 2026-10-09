@@ -725,6 +725,29 @@ function captureWorkFocusMode(mode: "focus" | "focus_grid"): void {
   }).catch(() => undefined);
 }
 
+/**
+ * A refreshed list with the previous objects kept wherever a row is unchanged,
+ * and the previous array itself when nothing changed. Every refresh is a fresh
+ * IPC read, so without this each one (about once a second while agents work)
+ * handed every session card, the Work view and the chat pane new objects for
+ * the same rows, and all of them re-rendered.
+ */
+function reconcileSessionRows(
+  previous: TerminalSessionSummary[],
+  next: TerminalSessionSummary[],
+): TerminalSessionSummary[] {
+  if (previous === next) return previous;
+  const previousById = new Map(previous.map((row) => [row.id, row]));
+  let changed = previous.length !== next.length;
+  const merged = next.map((row, index) => {
+    const prior = previousById.get(row.id);
+    const kept = prior && (prior === row || JSON.stringify(prior) === JSON.stringify(row)) ? prior : row;
+    if (!changed && previous[index] !== kept) changed = true;
+    return kept;
+  });
+  return changed ? merged : previous;
+}
+
 export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -1675,7 +1698,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           }
         }
       }
-      setHostSessions(rows);
+      setHostSessions((prev) => reconcileSessionRows(prev, rows));
       hasLoadedOnceRef.current = true;
       hasAuthoritativeSessionsRef.current = true;
       if (pendingProjectSwitchRef.current === requestedProjectRoot) {
