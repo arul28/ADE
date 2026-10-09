@@ -42,7 +42,7 @@ import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspa
 import { webRecentProjects } from "../../webclient/workspace/webWorkspaceModel";
 import { ProjectsCard } from "./ProjectWelcomeProjectsCard";
 import { HomeAction, WelcomeHero, useMachineRows } from "./ProjectWelcomeHome";
-import { HomeWidgetGrid } from "../home/HomeWidgetGrid";
+import { HomeWidgetGrid, useHomeGridMetrics } from "../home/HomeWidgetGrid";
 import { gridMetrics } from "../home/homeGridPack";
 import { HomeDataContext, HomeRenderWidgetContext } from "../home/homeData";
 import { useHomeLayoutStore } from "../home/homeLayout";
@@ -151,6 +151,9 @@ export function ProjectWelcomePage() {
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+  // The width the grid actually packed to (fewer, centred columns on a wide
+  // window), so the hero's buttons end where the cards end.
+  const packedGridWidth = useHomeGridMetrics((s) => s.packedWidth);
   const editingHome = useHomeLayoutStore((s) => s.editing);
   const setEditingHome = useHomeLayoutStore((s) => s.setEditing);
   const homeAppearance = useHomeLayoutStore((s) => s.layout.appearance);
@@ -808,7 +811,10 @@ export function ProjectWelcomePage() {
         className="ade-home"
         data-narrow={narrow ? "true" : undefined}
         data-editing={editingHome ? "true" : undefined}
-        style={gridWidth ? ({ "--welcome-grid-max": `${gridWidth}px` } as CSSProperties) : undefined}
+        style={gridWidth || packedGridWidth ? ({
+          ...(gridWidth ? { "--welcome-grid-max": `${gridWidth}px` } : {}),
+          ...(packedGridWidth ? { "--welcome-hero-max": `${packedGridWidth}px` } : {}),
+        } as CSSProperties) : undefined}
       >
         <WelcomeHero
           headline={headline}

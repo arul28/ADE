@@ -278,7 +278,7 @@ export function createNowPlayingService(args: {
    * the Music tab's player host): skipped, since ADE reports those directly.
    */
   isOwnApp?: (appId: string) => boolean;
-  /** macOS: an app bundle's icon as a data URL (Electron's `app.getFileIcon`), for Music.app. */
+  /** macOS: an app bundle's icon as a data URL (read from its `.icns`), for Music.app. */
   getAppIcon?: (appPath: string) => Promise<string | null>;
   /** Sends a state to every subscribed renderer. */
   broadcast: (state: HomeNowPlayingState) => void;

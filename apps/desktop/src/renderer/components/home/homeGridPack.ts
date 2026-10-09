@@ -259,10 +259,10 @@ function packInto(cells: readonly HomeLayoutCell[], columns: number, rows: numbe
   // A card takes a row below or above only while it stays within its own
   // maximum at the height the rows are settling at.
   const settlingPx = settleRowPx(placed, px, shapeOf);
-  // The last row's room past its last card is wallpaper, like the height
-  // under the grid: no card stretches sideways into it, so a card shows at
-  // the class the user picked (Compact stays a column) instead of filling
-  // the row. Only a card above may reach down into it, within its maximum.
+  // The last row's room past its last card is wallpaper for a Compact card,
+  // which stays the column the user picked; a wider card on that row
+  // stretches across it, so the page ends on a full row rather than a ragged
+  // one. A card above may also reach down into it, within its maximum.
   const lastRow = placed.reduce((max, p) => Math.max(max, p.y + p.h), 0) - 1;
   let trailFrom = tracks;
   if (lastRow >= 0) {
@@ -281,7 +281,7 @@ function packInto(cells: readonly HomeLayoutCell[], columns: number, rows: numbe
     }
     const x = dir === "right" ? p.x + p.w : p.x - 1;
     if (x < 0 || x >= tracks) return false;
-    for (let y = p.y; y < p.y + p.h; y += 1) if (owner[y]![x]! >= 0 || trailing(x, y)) return false;
+    for (let y = p.y; y < p.y + p.h; y += 1) if (owner[y]![x]! >= 0 || (trailing(x, y) && p.cls === "compact")) return false;
     return true;
   };
   let grown = tall;

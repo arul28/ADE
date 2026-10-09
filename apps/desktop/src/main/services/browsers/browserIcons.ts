@@ -38,20 +38,22 @@ const ICNS_PNG_ELEMENT_SIZES: Readonly<Record<string, number>> = {
 const MAX_ICNS_BYTES = 8 * 1024 * 1024;
 
 /**
- * Pull the smallest PNG an `.icns` holds that is still at least 32 px — enough
- * for a 16 px menu row on a retina display without shipping a 512 px image per
- * browser into the renderer. Returns null for a container with no usable PNG
+ * Pull the smallest PNG an `.icns` holds that is still at least `minPx` (32 by
+ * default) — enough for a 16 px menu row on a retina display without shipping a
+ * 512 px image per browser into the renderer. When none is that large, the
+ * largest one there is. Returns null for a container with no usable PNG
  * element (legacy `ic04`/`ic05` entries are raw bitmaps we do not decode).
  *
  * The input is a file on disk, so every read is bounds-checked and a malformed
  * container ends in null rather than a throw.
  */
-export function extractIconPngFromIcns(buffer: Buffer): Buffer | null {
+export function extractIconPngFromIcns(buffer: Buffer, minPx = 32): Buffer | null {
   if (buffer.length < 8 || buffer.toString("ascii", 0, 4) !== "icns") return null;
   const declaredLength = buffer.readUInt32BE(4);
   const end = Math.min(declaredLength || buffer.length, buffer.length);
   let offset = 8;
   let best: { size: number; png: Buffer } | null = null;
+  let largest: { size: number; png: Buffer } | null = null;
   while (offset + 8 <= end) {
     const length = buffer.readUInt32BE(offset + 4);
     // `length < 8` would not advance the cursor; a length past the buffer is
@@ -61,11 +63,12 @@ export function extractIconPngFromIcns(buffer: Buffer): Buffer | null {
     const size = ICNS_PNG_ELEMENT_SIZES[elementType];
     const payload = buffer.subarray(offset + 8, offset + length);
     if (size !== undefined && payload.length > 8 && payload.subarray(0, 8).equals(PNG_SIGNATURE)) {
-      if (size >= 32 && (!best || size < best.size)) best = { size, png: payload };
+      if (size >= minPx && (!best || size < best.size)) best = { size, png: payload };
+      if (size >= 32 && (!largest || size > largest.size)) largest = { size, png: payload };
     }
     offset += length;
   }
-  return best?.png ?? null;
+  return (best ?? largest)?.png ?? null;
 }
 
 /**
@@ -111,13 +114,14 @@ export function resolveMacAppIconFile(appPath: string): string | null {
   return largest?.path ?? null;
 }
 
-function macAppIconDataUrl(appPath: string): string | null {
+/** A macOS app bundle's own icon as a PNG data URL, read from its `.icns` (never `app.getFileIcon`, which traps on macOS 27 at its large size). */
+export function macAppIconDataUrl(appPath: string, minPx = 32): string | null {
   const iconFile = resolveMacAppIconFile(appPath);
   if (!iconFile) return null;
   try {
     const { size } = fs.statSync(iconFile);
     if (size === 0 || size > MAX_ICNS_BYTES) return null;
-    const png = extractIconPngFromIcns(fs.readFileSync(iconFile));
+    const png = extractIconPngFromIcns(fs.readFileSync(iconFile), minPx);
     return png ? `data:image/png;base64,${png.toString("base64")}` : null;
   } catch {
     return null;

@@ -60,6 +60,10 @@
 /* Greeting row */
 .ade-home-hero {
   flex: none;
+  /* Held to the packed grid's width, centred, so the actions end where the cards end. */
+  width: 100%;
+  max-width: var(--welcome-hero-max, none);
+  margin-inline: auto;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
@@ -223,6 +227,9 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 .ade-home-cell { position: relative; display: flex; flex-direction: column; gap: var(--welcome-gap); min-height: 0; min-width: 0; }
 .ade-home-widget { position: relative; flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 .ade-home-widget[data-stacked] { flex: 0 1 auto; max-height: 46%; }
+/* One row per card: equal shares, and the cell's gap is the grid's, so each
+   card ends on the same row line as the cards beside it. */
+.ade-home-cell[data-row-aligned] > .ade-home-widget { flex: 1 1 0; max-height: none; }
 .ade-home-widget:has(> .ade-home-widget-content:empty) { display: none; }
 .ade-home-widget-content { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 .ade-home-widget-content > .kit-card { flex: 1 1 auto; }

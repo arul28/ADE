@@ -91,12 +91,17 @@ export function useWidgetSpan(item: HomeLayoutItem): { w: number; h: number } {
 export const useHomeGridMetrics = create<{
   metrics: GridMetrics | null;
   set: (metrics: GridMetrics) => void;
+  /** The width the packed grid actually renders at (it can step down to fewer, centred columns); the hero lines up with it. */
+  packedWidth: number | null;
+  setPackedWidth: (width: number | null) => void;
   /** Bumped when an empty cell asks for the gallery; edit mode's toolbar opens it (also on mount). */
   pickerRequest: number;
   requestPicker: () => void;
 }>((set) => ({
   metrics: null,
   set: (metrics) => set({ metrics }),
+  packedWidth: null,
+  setPackedWidth: (packedWidth) => set((state) => (state.packedWidth === packedWidth ? state : { packedWidth })),
   pickerRequest: 0,
   requestPicker: () => set((state) => ({ pickerRequest: state.pickerRequest + 1 })),
 }));
@@ -376,7 +381,15 @@ export function HomeWidgetGrid({
   }, []);
   const items = layout.items;
 
-  const columns = metrics?.columns ?? 3;
+  // The packer can step down to fewer, narrower-centred columns on a wide
+  // window; render the columns and width it chose, not the page's maximum.
+  const columns = packed?.columns ?? metrics?.columns ?? 3;
+  const gridWidth = packed?.width ?? metrics?.width;
+  const setPackedWidth = useHomeGridMetrics((s) => s.setPackedWidth);
+  useEffect(() => {
+    setPackedWidth(single ? null : gridWidth ?? null);
+  }, [gridWidth, single, setPackedWidth]);
+  useEffect(() => () => setPackedWidth(null), [setPackedWidth]);
   const rows = packed?.rows ?? 2;
   // Two tracks per column, so a narrow widget can take a column and a half.
   const gridTemplateColumns = columns === 3
@@ -412,7 +425,7 @@ export function HomeWidgetGrid({
           data-dragging={dragId ? "true" : undefined}
           style={single ? style : {
             ...style,
-            width: metrics ? `${metrics.width}px` : undefined,
+            width: gridWidth ? `${gridWidth}px` : undefined,
             gridTemplateColumns,
             gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
             visibility: metrics ? undefined : "hidden",
@@ -421,6 +434,10 @@ export function HomeWidgetGrid({
           {shown.map(({ cell, x, y, w, h, cls }, index) => {
             const { host, stacked } = cell;
             const marker = dropTarget?.id === host.id && dragId !== host.id ? dropTarget.side : undefined;
+            // One row per card (the widget and each card stacked under it):
+            // split on the grid's own row lines, so the stack lines up with
+            // the cards beside it instead of cutting across a row.
+            const rowAligned = !single && stacked.length > 0 && h === 1 + stacked.length;
             return (
               <motion.div
                 key={host.id}
@@ -430,6 +447,7 @@ export function HomeWidgetGrid({
                 data-class={cls}
                 data-drop={marker}
                 data-dragged={dragId === host.id || undefined}
+                data-row-aligned={rowAligned || undefined}
                 style={single ? undefined : { gridColumn: `${x * 2 + 1} / span ${w * 2}`, gridRow: `${y + 1} / span ${h}` }}
                 onDragOver={(event) => {
                   if (!dragId || !event.dataTransfer.types.includes(WIDGET_DRAG_TYPE)) return;
