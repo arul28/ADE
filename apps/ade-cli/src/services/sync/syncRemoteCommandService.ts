@@ -321,7 +321,7 @@ import {
   listPromptStashes,
 } from "../../../../desktop/src/main/services/chat/promptStashService";
 import { launchAgentChatCli } from "../../../../desktop/src/main/services/chat/agentChatCliLaunch";
-import { mergeAiConfig } from "../../../../desktop/src/main/services/config/projectConfigService";
+
 import { deleteApiKey } from "../../../../desktop/src/main/services/ai/apiKeyStore";
 import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -6997,12 +6997,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   // stays a desktop-only operation, and the web control says so.
   register("ai.updateConfig", { viewerAllowed: true, queueable: true }, async (payload) => {
     const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
-    const snapshot = projectConfigService.get();
-    const merged = mergeAiConfig(snapshot.shared?.ai ?? {}, payload as Partial<AiConfig>) ?? {};
-    projectConfigService.save({
-      shared: { ...snapshot.shared, ai: merged },
-      local: snapshot.local ?? {},
-    });
+    projectConfigService.updateAiConfig(payload as Partial<AiConfig>);
     // Mirrors the desktop IPC handler: a changed AI config can retarget the
     // model scheduled work runs on.
     void args.agentChatService?.refreshScheduledWork();

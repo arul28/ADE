@@ -3330,6 +3330,19 @@ export function createProjectConfigService({
       return saveCandidate(candidate);
     },
 
+    /**
+     * Merge a partial AI config into `.ade/local.yaml`. The shared layer is no
+     * longer written (see `saveCandidate`), so a merge into it would drop the
+     * change without an error.
+     */
+    updateAiConfig(partial: Partial<AiConfig>): ProjectConfigSnapshot {
+      const snapshot = readSnapshotFromDisk();
+      return saveCandidate({
+        shared: snapshot.shared,
+        local: { ...snapshot.local, ai: mergeAiConfig(snapshot.local.ai ?? {}, partial) ?? {} },
+      });
+    },
+
     setPrTranscriptGists(args: { enabled?: boolean }): ProjectConfigSnapshot {
       const snapshot = readSnapshotFromDisk();
       return saveCandidate({
