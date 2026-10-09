@@ -17,6 +17,8 @@ import "../homeWidgets.css";
  * more); its tooltip names each, plus the tokens spent. From the usage stats
  * the home page already loaded (this machine, all time); no reads of its own.
  * The canvas stops while the card is off screen or the window is hidden.
+ * The Add widget gallery always shows the skyline, rising once as it comes
+ * into sight; the page's own card keeps the view the user picked.
  */
 
 /** Commits and PRs come from git and from GitHub; the larger of the two, so one PR is not counted twice. */
@@ -41,7 +43,7 @@ export default function ContributionsWidget({ item }: HomeWidgetProps) {
   const preview = useWidgetPreview();
   const updateSettings = useHomeLayoutStore((s) => s.updateSettings);
   // "grid" and "skyline" are what earlier builds stored.
-  const view = item.settings?.view === "grid" || item.settings?.view === "2d" ? "2d" : "3d";
+  const view = !preview && (item.settings?.view === "grid" || item.settings?.view === "2d") ? "2d" : "3d";
   const setView = (next: "2d" | "3d") => updateSettings(item.id, { view: next === "2d" ? "grid" : "skyline" });
   const daily = stats && stats !== "unavailable" ? stats.daily : null;
   const data = useMemo((): ContributionDay[] => (daily ?? []).slice(-380).map((point) => ({
@@ -74,7 +76,7 @@ export default function ContributionsWidget({ item }: HomeWidgetProps) {
             onViewChange={setView}
             showToggle={false}
             unit="contribution"
-            paused={!visible || preview}
+            paused={!visible}
           />
         )}
       </div>

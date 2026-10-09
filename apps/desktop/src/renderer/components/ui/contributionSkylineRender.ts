@@ -201,6 +201,8 @@ export function startSkylineRender(args: {
   let tipW = 0;
   // Width kept free on the left in 3D for the stats column (the chart never runs under it).
   let reserveLeft = 0;
+  // Bar heights, scaled to fit a short box (fit3d).
+  let barScale = 1;
   let raf = 0;
   let last = 0;
 
@@ -265,7 +267,7 @@ export function startSkylineRender(args: {
   };
 
   // Projected extent of the scene for camera e, with each bar at zOf(i).
-  const extent = (cam: Cam, e: number, full: boolean) => {
+  const extent = (cam: Cam, e: number, full: boolean, zk = barScale) => {
     const w = lerp(0.78, 0.9, e);
     const off = (1 - w) / 2;
     let minx = Infinity;
@@ -282,7 +284,7 @@ export function startSkylineRender(args: {
     for (let i = 0; i < n; i++) {
       const x0 = wk[i]! + off;
       const y0 = dy[i]! + off;
-      const z = full ? hgt[i]! * e : zs[i]!;
+      const z = full ? hgt[i]! * zk * e : zs[i]!;
       add(x0, y0, z);
       add(x0 + w, y0, z);
       add(x0, y0 + w, z);
@@ -296,6 +298,53 @@ export function startSkylineRender(args: {
     return { minx, maxx, miny, maxy };
   };
 
+  // The 3D view's padding, px: the bars run close to the card's edges.
+  const PAD_3D = 6;
+
+  /**
+   * Fits the 3D view to its box. First the turn: the yaw (between a street
+   * view and the 45° corner) at which the fully risen skyline draws biggest;
+   * among near ties the more corner-on one, which reads better as a skyline.
+   * Then, in a short wide box where the tallest bars decide the size and
+   * leave the sides empty, the bars come down (to no less than 60%) until the
+   * skyline spans the width.
+   */
+  const fit3d = () => {
+    barScale = 1;
+    baseYaw = yawForAspect(W / Math.max(1, H));
+    if (!W || !H || !n) return;
+    const aw = W - reserveLeft - PAD_3D * 2;
+    const ah = H - PAD_3D * 2;
+    if (aw <= 0 || ah <= 0) return;
+    const sizeAt = (yawAt: number, zk: number) => {
+      const b = extent(camera(1, 0, 0, yawAt), 1, true, zk);
+      return { w: aw / Math.max(1e-6, b.maxx - b.minx), h: ah / Math.max(1e-6, b.maxy - b.miny) };
+    };
+    const fits: Array<{ yaw: number; s: number }> = [];
+    for (let deg = 14; deg <= 45; deg += 1) {
+      const candidate = (deg * Math.PI) / 180;
+      const size = sizeAt(candidate, 1);
+      fits.push({ yaw: candidate, s: Math.min(size.w, size.h) });
+    }
+    const best = Math.max(...fits.map((fit) => fit.s));
+    baseYaw = fits.filter((fit) => fit.s >= best * 0.96).at(-1)!.yaw;
+    const atFull = sizeAt(baseYaw, 1);
+    if (atFull.h >= atFull.w) return;
+    let lo = 0.6;
+    let hi = 1;
+    if (sizeAt(baseYaw, lo).h < sizeAt(baseYaw, lo).w) {
+      barScale = lo;
+      return;
+    }
+    for (let k = 0; k < 12; k++) {
+      const mid = (lo + hi) / 2;
+      const size = sizeAt(baseYaw, mid);
+      if (size.h >= size.w) lo = mid;
+      else hi = mid;
+    }
+    barScale = lo;
+  };
+
   const relayout = () => {
     const w = Math.round(stage.clientWidth);
     const h = Math.round(stage.clientHeight);
@@ -304,7 +353,7 @@ export function startSkylineRender(args: {
     H = h;
     // Narrow boxes give the weekday names' column to the grid; rows get too tight to label.
     gutter = W < 420 || H < 90 ? 0 : labelW;
-    baseYaw = yawForAspect(W / H);
+    fit3d();
     dpr = Math.min(2, window.devicePixelRatio || 1);
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
@@ -317,10 +366,10 @@ export function startSkylineRender(args: {
     if (!W || !H || !n) return;
     const e = easeInOutCubic(t);
     const cam = camera(e, yaw, elev, baseYaw);
-    for (let i = 0; i < n; i++) zs[i] = riseAt(t, wk[i]!, weeksN, dy[i]!) * hgt[i]!;
+    for (let i = 0; i < n; i++) zs[i] = riseAt(t, wk[i]!, weeksN, dy[i]!) * hgt[i]! * barScale;
     const b = extent(cam, e, false);
     const labels2d = H >= 70;
-    const pad = lerp(2, 12, e);
+    const pad = lerp(2, PAD_3D, e);
     const left = pad + gutter * (1 - e) + reserveLeft * e;
     const top = pad + (labels2d ? 16 : 0) * (1 - e);
     const aw = W - left - pad;
@@ -755,6 +804,7 @@ export function startSkylineRender(args: {
     reserve: (px: number) => {
       if (px === reserveLeft) return;
       reserveLeft = px;
+      fit3d();
       draw();
     },
   };

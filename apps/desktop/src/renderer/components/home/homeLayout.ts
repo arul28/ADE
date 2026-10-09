@@ -57,6 +57,8 @@ export type HomeLayoutItem = {
   size: HomeWidgetSize;
   /** Shares the previous widget's cell, below it (Working now under Projects). */
   stacked?: boolean;
+  /** Half a column narrower than its class, giving the room to its neighbours (`homeGridPack.ts`). */
+  narrow?: boolean;
   /** Widget-owned options (a weather place, a timer length). */
   settings?: Record<string, unknown>;
 };
@@ -121,6 +123,7 @@ export function normalizeHomeLayout(value: unknown): HomeLayout {
       type,
       size,
       ...(item.stacked === true && items.length > 0 ? { stacked: true } : {}),
+      ...(item.narrow === true ? { narrow: true } : {}),
       ...(item.settings && typeof item.settings === "object" ? { settings: item.settings as Record<string, unknown> } : {}),
     });
   }
@@ -305,6 +308,8 @@ type HomeLayoutStore = {
    */
   add: (type: HomeWidgetType, size: HomeWidgetSize, options?: HomeAddOptions) => string;
   setStacked: (id: string, stacked: boolean) => void;
+  /** Half a column narrower than its class, or back to full width. */
+  setNarrow: (id: string, narrow: boolean) => void;
   updateSettings: (id: string, patch: Record<string, unknown>) => void;
   setAppearance: (patch: Partial<HomeAppearance>) => void;
   setColumns: (columns: 3 | 4) => void;
@@ -385,6 +390,13 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
         return rest;
       }));
     },
+    setNarrow: (id, narrow) =>
+      withItems(get().layout.items.map((item) => {
+        if (item.id !== id) return item;
+        if (narrow) return { ...item, narrow: true };
+        const { narrow: _drop, ...rest } = item;
+        return rest;
+      })),
     updateSettings: (id, patch) =>
       withItems(get().layout.items.map((item) => (item.id === id ? { ...item, settings: { ...item.settings, ...patch } } : item))),
     setAppearance: (patch) => commit({ ...get().layout, appearance: { ...get().layout.appearance, ...patch } }),

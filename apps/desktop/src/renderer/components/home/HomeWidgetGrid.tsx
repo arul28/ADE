@@ -13,7 +13,7 @@ import {
 } from "react";
 import { create } from "zustand";
 import { MotionConfig, motion } from "motion/react";
-import { ArrowsInLineVertical, DotsSixVertical, EyeSlash, Stack, X } from "@phosphor-icons/react";
+import { ArrowsInLineHorizontal, ArrowsInLineVertical, DotsSixVertical, EyeSlash, Stack, X } from "@phosphor-icons/react";
 import {
   layoutCells,
   useHomeLayoutStore,
@@ -45,7 +45,9 @@ import { WelcomeCardHead } from "../projects/ProjectWelcomeSidePanels";
  *
  * Edit mode turns every cell into a tile with its own controls: a handle
  * (drag, or arrow keys) to reorder, the size classes the widget offers,
- * stack or unstack, and remove. Widget content goes inert while editing so a
+ * narrower (at most a column and a half, the rest going to its neighbours;
+ * offered while the card is wider than that), stack or unstack, and remove.
+ * Widget content goes inert while editing so a
  * drag never opens a project by accident.
  */
 
@@ -68,7 +70,7 @@ export function useWidgetPreview(): boolean {
   return useContext(WidgetPreviewContext);
 }
 
-/** The span the grid placed a widget at (it can grow taller than asked to fit its content). */
+/** The span the grid placed a widget at, in columns (it can grow taller than asked to fit its content; a narrow one can be 1.5 wide). */
 const WidgetSpanContext = createContext<{ w: number; h: number } | null>(null);
 export function useWidgetSpan(item: HomeLayoutItem): { w: number; h: number } {
   const placed = useContext(WidgetSpanContext);
@@ -160,6 +162,7 @@ function WidgetFrame({
   const resize = useHomeLayoutStore((s) => s.resize);
   const remove = useHomeLayoutStore((s) => s.remove);
   const setStacked = useHomeLayoutStore((s) => s.setStacked);
+  const setNarrow = useHomeLayoutStore((s) => s.setNarrow);
   useEffect(() => {
     // React 18 has no `inert` prop; set it on the element.
     const element = contentRef.current as (HTMLDivElement & { inert?: boolean }) | null;
@@ -178,6 +181,10 @@ function WidgetFrame({
   const shape = widgetShape(item.type);
   const classes = shapeClasses(shape);
   const asked = itemSizeClass(item, shape);
+  // Narrower (at most a column and a half) is offered while the card shows
+  // wider than that (its class spans two columns, or the page grew it), and
+  // while it is on.
+  const canNarrow = !stacked && (item.narrow === true || (span != null && span.w > 1.5) || (shape.classes[asked]?.w ?? 1) >= 2);
   return (
     <div ref={ref} className="ade-home-widget" data-stacked={stacked || undefined} data-type={item.type}>
       <div ref={contentRef} className="ade-home-widget-content">
@@ -232,6 +239,18 @@ function WidgetFrame({
                 );
               })}
             </div>
+          ) : null}
+          {canNarrow ? (
+            <button
+              type="button"
+              className="ade-home-edit-btn"
+              aria-pressed={item.narrow === true}
+              title={item.narrow ? "Narrower · on: at most a column and a half wide. Click for full width" : "Narrower · at most a column and a half wide; its neighbours take the room"}
+              aria-label={`Make ${meta.title} narrower`}
+              onClick={() => setNarrow(item.id, !item.narrow)}
+            >
+              <ArrowsInLineHorizontal size={14} />
+            </button>
           ) : null}
           {stacked ? (
             <button type="button" className="ade-home-edit-btn" title="Give it its own tile" aria-label={`Unstack ${meta.title}`} onClick={() => setStacked(item.id, false)}>
@@ -317,9 +336,10 @@ export function HomeWidgetGrid({
 
   const columns = metrics?.columns ?? 3;
   const rows = packed?.rows ?? 2;
+  // Two tracks per column, so a narrow widget can take a column and a half.
   const gridTemplateColumns = columns === 3
-    ? "minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 0.9fr)"
-    : `repeat(${columns}, minmax(0, 1fr))`;
+    ? "repeat(2, minmax(0, 1fr)) repeat(4, minmax(0, 0.9fr))"
+    : `repeat(${columns * 2}, minmax(0, 1fr))`;
   const hidden = packed?.hidden ?? [];
   const remove = useHomeLayoutStore((s) => s.remove);
   // This window's view of the Clipboard widget, told to main: a widget the
@@ -368,7 +388,7 @@ export function HomeWidgetGrid({
                 data-class={cls}
                 data-drop={marker}
                 data-dragged={dragId === host.id || undefined}
-                style={single ? undefined : { gridColumn: `${x + 1} / span ${w}`, gridRow: `${y + 1} / span ${h}` }}
+                style={single ? undefined : { gridColumn: `${x * 2 + 1} / span ${w * 2}`, gridRow: `${y + 1} / span ${h}` }}
                 draggable={editing}
                 onDragStartCapture={(event: React.DragEvent<HTMLDivElement>) => {
                   if (!editing) return;
