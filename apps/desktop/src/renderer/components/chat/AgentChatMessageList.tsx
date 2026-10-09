@@ -68,6 +68,7 @@ import { oneLineRedacted, redactCommandLine } from "../../../shared/secretRedact
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
+import { toLayoutPx } from "../../lib/webZoom";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
 import { ChipText } from "./ChipText";
 import { normalizePath } from "../../lib/pathUtils";
@@ -5112,7 +5113,9 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
     if (!el) return;
     let raf: number | null = null;
     const measureNow = (fallbackHeight = 0) => {
-      const height = Math.max(el.offsetHeight, el.getBoundingClientRect().height, fallbackHeight);
+      // The rect is screen pixels under hosted-web body zoom; the heights the
+      // scroll math stores are layout pixels.
+      const height = Math.max(el.offsetHeight, toLayoutPx(el.getBoundingClientRect().height), fallbackHeight);
       if (height > 0) onMeasure(index, height);
     };
 
@@ -5129,7 +5132,7 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
       const entry = entries[0];
       if (!entry) return;
       const measuredHeight = entry.target instanceof HTMLElement
-        ? Math.max(entry.target.offsetHeight, entry.target.getBoundingClientRect().height, entry.contentRect.height)
+        ? Math.max(entry.target.offsetHeight, toLayoutPx(entry.target.getBoundingClientRect().height), entry.contentRect.height)
         : entry.contentRect.height;
       measureNow(measuredHeight);
     });
@@ -5407,7 +5410,7 @@ export function resetTurnFoldMemoryForTests(): void {
 function readChatRowTop(container: HTMLElement, rowKey: string): number | null {
   const containerTop = container.getBoundingClientRect().top;
   for (const node of container.querySelectorAll<HTMLElement>("[data-chat-row-key]")) {
-    if (node.dataset.chatRowKey === rowKey) return node.getBoundingClientRect().top - containerTop;
+    if (node.dataset.chatRowKey === rowKey) return toLayoutPx(node.getBoundingClientRect().top - containerTop);
   }
   return null;
 }
@@ -5430,7 +5433,7 @@ function readVisibleChatRows(container: HTMLElement, limit: number): { key: stri
     const rect = node.getBoundingClientRect();
     const key = node.dataset.chatRowKey;
     if (!key || rect.bottom <= containerTop + 1) continue;
-    visible.push({ key, top: rect.top - containerTop });
+    visible.push({ key, top: toLayoutPx(rect.top - containerTop) });
     if (visible.length >= limit) break;
   }
   return visible;
@@ -5446,7 +5449,7 @@ function readLaidOutChatRowTop(container: HTMLElement, rowKey: string): number |
   for (const node of container.querySelectorAll<HTMLElement>("[data-chat-row-key]")) {
     if (node.dataset.chatRowKey !== rowKey) continue;
     const rect = node.getBoundingClientRect();
-    return rect.height > 0 ? rect.top - containerTop : null;
+    return rect.height > 0 ? toLayoutPx(rect.top - containerTop) : null;
   }
   return null;
 }
@@ -6903,8 +6906,8 @@ function AgentChatMessageListMain({
     const el = listRootRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    const width = Math.max(el.clientWidth, rect.width);
-    const height = Math.max(el.clientHeight, rect.height);
+    const width = Math.max(el.clientWidth, toLayoutPx(rect.width));
+    const height = Math.max(el.clientHeight, toLayoutPx(rect.height));
     setListRootBoxPx((current) => (
       movedByAPixel(current.width, width)
         || movedByAPixel(current.height, height)
@@ -6917,7 +6920,7 @@ function AgentChatMessageListMain({
   const measureContentColumnWidth = useCallback(() => {
     const el = contentWrapperRef.current;
     if (!el) return;
-    const width = Math.max(el.clientWidth, el.getBoundingClientRect().width);
+    const width = Math.max(el.clientWidth, toLayoutPx(el.getBoundingClientRect().width));
     setColumnWidthPx((current) => (movedByAPixel(current, width) ? width : current));
   }, []);
 
