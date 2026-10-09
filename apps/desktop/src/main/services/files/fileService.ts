@@ -642,6 +642,29 @@ export function createFileService({
     (relPath: string, includeIgnored: boolean) => isIgnoredPath(rootPath, relPath, includeIgnored);
   const primeIgnoreCacheForRoot = (rootPath: string) =>
     (relPaths: string[], includeIgnored: boolean) => primeIgnoreCache(rootPath, relPaths, includeIgnored);
+  /**
+   * Git's list of every file that is not ignored, for the search index. Null
+   * (walk the tree instead) outside a git repo, when git refuses, and when the
+   * repo has submodules: ls-files names a submodule but not the files in it.
+   */
+  const listVisibleFilesForRoot = (rootPath: string) => async (): Promise<string[] | null> => {
+    if (fs.existsSync(path.join(rootPath, ".gitmodules"))) return null;
+    const result = await runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+      cwd: rootPath,
+      timeoutMs: 15_000,
+      maxOutputBytes: 64 * 1024 * 1024,
+    });
+    // A cut-off list would silently drop files; walk instead. The index applies
+    // its own visibility rule to every entry, and skips paths git still tracks
+    // that are gone from disk.
+    return result.exitCode === 0 && !result.stdoutTruncated ? result.stdout.split("\0") : null;
+  };
+  /** The ignore inputs every search-index call takes for one workspace root. */
+  const indexIgnoreOptions = (rootPath: string) => ({
+    shouldIgnore: shouldIgnoreForRoot(rootPath),
+    primeIgnoreCache: primeIgnoreCacheForRoot(rootPath),
+    listVisibleFiles: listVisibleFilesForRoot(rootPath),
+  });
   const workspaceRootExists = (rootPath: string): boolean => {
     try {
       return fs.existsSync(rootPath) && fs.statSync(rootPath).isDirectory();
@@ -1429,8 +1452,7 @@ export function createFileService({
         includeIgnored: Boolean(args.includeIgnored),
         allowComposerPrefixFallback: Boolean(args.allowComposerPrefixFallback),
         includeDirectories: Boolean(args.includeDirectories),
-        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
-        primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
+        ...indexIgnoreOptions(workspace.rootPath),
       });
     },
 
@@ -1441,8 +1463,7 @@ export function createFileService({
           workspaceId: args.workspaceId,
           rootPath: workspace.rootPath,
           includeIgnored: Boolean(args.includeIgnored),
-          shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
-          primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
+          ...indexIgnoreOptions(workspace.rootPath),
         });
       } catch {
         // Warming is best-effort; the interactive query path reports real errors.
@@ -1460,8 +1481,7 @@ export function createFileService({
         query,
         limit,
         includeIgnored: Boolean(args.includeIgnored),
-        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
-        primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
+        ...indexIgnoreOptions(workspace.rootPath),
       });
     },
 

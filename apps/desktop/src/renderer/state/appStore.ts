@@ -1,6 +1,8 @@
 import React, { createContext, useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
+import { shallow } from "zustand/shallow";
+import { reuseStructurallyEqualArray } from "../lib/stableIdentity";
 import type { StateCreator } from "zustand";
 import {
   DEFAULT_CODEX_VOICE_PREFERENCES,
@@ -1953,20 +1955,6 @@ function formatProjectTransitionError(
   };
 }
 
-function reuseStructurallyEqualArray<T>(
-  incoming: T[] | undefined,
-  current: T[] | undefined,
-): T[] | undefined {
-  if (!incoming || !current || incoming.length !== current.length) return incoming;
-  for (let index = 0; index < incoming.length; index += 1) {
-    const nextValue = incoming[index];
-    const currentValue = current[index];
-    if (nextValue === currentValue) continue;
-    if (JSON.stringify(nextValue) !== JSON.stringify(currentValue)) return incoming;
-  }
-  return current;
-}
-
 function reuseStructurallyEqualValue<T>(incoming: T, current: T): T {
   if (incoming === current) return current;
   return JSON.stringify(incoming) === JSON.stringify(current) ? current : incoming;
@@ -2868,6 +2856,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               ...current,
               ...next,
             };
+      // Callers write on every sessions refresh whether or not anything moved;
+      // a new object for the same values re-rendered every subscriber (the
+      // whole chat pane) about once a second at idle.
+      if (prev.workViewByProject[key] && shallow(current, updated)) return prev;
       const nextWorkViews = {
         ...prev.workViewByProject,
         [key]: updated,
@@ -2897,6 +2889,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               ...current,
               ...next,
             };
+      if (prev.laneWorkViewByScope[key] && shallow(current, updated)) return prev;
       const nextLaneWorkViews = {
         ...prev.laneWorkViewByScope,
         [key]: updated,

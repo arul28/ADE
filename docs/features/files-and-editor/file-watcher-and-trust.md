@@ -328,6 +328,12 @@ their caches.
   (`ignoreCache`, `ignoredPrefixCache`) keyed by `rootPath::relPath`.
   It is invalidated by `clearIgnoreCacheForRoot` when the watcher
   reports a change that might affect gitignore rules.
+- **Search index listing.** In a git work tree the quick-open index is
+  built from one `git ls-files -z --cached --others --exclude-standard`
+  instead of a directory walk with per-directory ignore checks. Nested
+  repositories (listed as `dir/`) are walked; `--cached` entries missing
+  from disk are skipped. A `.gitmodules` file, a failed command or
+  truncated output falls back to the walk. `includeIgnored` always walks.
 - **Git status cache TTL.** Tree listings reuse the porcelain status
   for 5 seconds (`GIT_STATUS_CACHE_TTL_MS`). If you need a fresh
   status immediately after a git op, call `invalidateGitStatusCache`.

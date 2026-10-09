@@ -22325,6 +22325,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workTerminalReasonLabel("budget_exhausted"), "budget limit reached")
     XCTAssertEqual(workTerminalReasonLabel("max_turns"), "max turns reached")
     XCTAssertEqual(workTerminalReasonLabel("prompt_too_long"), "context window overflow")
+    XCTAssertEqual(workTerminalReasonLabel("image_error"), "attached image rejected")
     XCTAssertEqual(workTerminalReasonLabel("api_error"), "API error after retries")
     XCTAssertEqual(workTerminalReasonLabel("malformed_tool_use_exhausted"), "tool-call retries exhausted")
     XCTAssertEqual(workTerminalReasonLabel("structured_output_retry_exhausted"), "output retries exhausted")

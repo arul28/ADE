@@ -6,6 +6,7 @@ import {
   readChatErrorPresentation,
   sanitizeAcpStderrTail,
   summarizeAcpStderrTail,
+  externalStopSignal,
 } from "./chatErrorPresentation";
 
 describe("presentChatFailure", () => {
@@ -279,5 +280,18 @@ describe("readChatErrorPresentation", () => {
 
   it("returns null when presentation is missing", () => {
     expect(readChatErrorPresentation({ category: "unknown" })).toBeNull();
+  });
+});
+
+describe("externalStopSignal", () => {
+  it.each([
+    ["Claude Code process exited with code 143", "SIGTERM"],
+    ["Claude Code process exited with code 137", "SIGKILL"],
+    ["agent process killed by SIGKILL", "SIGKILL"],
+    ["Claude Code process exited with code 1", null],
+    ["Claude Code process exited with code 1430", null],
+    ["", null],
+  ])("reads %j as %s", (text, expected) => {
+    expect(externalStopSignal(text)).toBe(expected);
   });
 });

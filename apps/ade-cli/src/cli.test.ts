@@ -1957,13 +1957,14 @@ describe("ADE CLI", () => {
     ).toBeNull();
   });
 
-  it("only disables machine runtime build checks for explicit socket overrides", () => {
-    expect(
-      shouldEnforceMachineRuntimeBuildCompatibility(null),
-    ).toBe(true);
-    expect(
-      shouldEnforceMachineRuntimeBuildCompatibility("/tmp/ade.sock"),
-    ).toBe(false);
+  it.each([
+    { override: null, socket: "machine", enforced: true },
+    { override: null, socket: "/tmp/ade-runtime-lane.sock", enforced: false },
+    { override: null, socket: "tcp://127.0.0.1:9999", enforced: true },
+    { override: "/tmp/ade.sock", socket: "machine", enforced: false },
+  ])("enforces the build check only on the machine socket or TCP, never under a socket override (override $override, socket $socket)", ({ override, socket, enforced }) => {
+    const socketPath = socket === "machine" ? resolveMachineAdeLayout().socketPath : socket;
+    expect(shouldEnforceMachineRuntimeBuildCompatibility(override, socketPath)).toBe(enforced);
   });
 
   it("marks failed service manager results as CLI failures", () => {

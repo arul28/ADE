@@ -154,6 +154,7 @@ import {
   type ChatTurnStatusPhase,
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
+import { chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
 import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
 import {
@@ -2303,7 +2304,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --dry-run               Alias for --print-config; does not create a chat.
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
-    --no-parent             Create the chat without a parent link.
+    --no-parent             Create the chat without a parent link. From an agent
+                            it is still recorded as launched by that agent.
     --type <subagent|peer>  Required with a parent. subagent always wakes the
                             parent after every turn; peer leaves quiet notes.
 
@@ -2370,7 +2372,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID when run from a
                             tracked agent shell (the spawning chat).
-    --no-parent             Create the chat without a parent link.
+    --no-parent             Create the chat without a parent link. From an agent
+                            it is still recorded as launched by that agent.
     --type <subagent|peer>  Required with a parent. subagent always wakes the
                             parent after every turn; peer leaves quiet notes.
 
@@ -4809,24 +4812,6 @@ function normalizeChatWaitTarget(value: string | null): ChatWaitTarget {
   throw new CliUsageError(
     "chat wait --for must be idle, active, awaiting-input, or terminal.",
   );
-}
-
-function chatWaitTargetMatches(summary: JsonObject, waitFor: ChatWaitTarget): boolean {
-  const status = asString(summary.status);
-  const phase = asString(summary.phase);
-  const awaitingInput = summary.awaitingInput === true || phase === "blocked";
-  const cliSession = isRecord(summary.cliSession) ? summary.cliSession : null;
-  const cliStatus = asString(cliSession?.status);
-  if (waitFor === "idle") return status === "idle" || phase === "idle";
-  if (waitFor === "active") {
-    return (status === "active" || phase === "running") && !awaitingInput;
-  }
-  if (waitFor === "awaiting-input") return awaitingInput;
-  return status === "failed"
-    || status === "interrupted"
-    || status === "completed"
-    || summary.endedAt != null
-    || (cliStatus !== null && cliStatus !== "running");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -9764,6 +9749,13 @@ function buildChatPlan(args: string[]): CliPlan {
       throw new CliUsageError("--no-kickoff cannot be used with --prompt/--kickoff.");
     }
     const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
+    // Checked before the lineage read, which consumes `--no-parent`. An agent
+    // that opts out of lineage gets one hint on stderr (stdout may be JSON).
+    if (findFlagName(args, ["--no-parent"]) !== null && process.env.ADE_CHAT_SESSION_ID?.trim()) {
+      process.stderr.write(
+        "note: --no-parent chats do not nest under you or wake you (they are recorded as launched by you). For a fire-and-forget helper, use --type peer.\n",
+      );
+    }
     // `chat create` never launches a shell (no `allowSpawnType` option here,
     // and `allowShell: false` below), so this read always records lineage;
     // there is no dropped ambient parent to forward.
@@ -21734,10 +21726,46 @@ function machineRuntimeMismatchReason(
     : failed.join("; ");
 }
 
+/**
+ * Whether this CLI may treat the brain on `socketPath` as its own: check its
+ * build and, when it is stale, shut it down and start a replacement.
+ *
+ * Only the machine's own socket is the CLI's to manage. A brain on any other
+ * socket belongs to whoever started it — `npm run dev:desktop`, a manual
+ * `ade runtime run`, a test home — and an `ade` that reaches it, whether by
+ * `--socket` or by `ADE_RUNTIME_SOCKET_PATH`, must connect to it as it is.
+ * Before this, an installed `ade` pointed at a lane's dev socket through the
+ * env var saw a different build, shut the dev brain down and started the
+ * installed one in its place, so the dev app silently ran released code and
+ * its chats lost their turns (2026-10-09).
+ */
 export function shouldEnforceMachineRuntimeBuildCompatibility(
-  socketPathOverride?: string | null,
+  socketPathOverride: string | null | undefined,
+  socketPath: string,
 ): boolean {
-  return !socketPathOverride?.trim();
+  if (socketPathOverride?.trim()) return false;
+  // A TCP brain is never replaced, but its build and version checks still run.
+  if (socketPath.startsWith("tcp://")) return true;
+  return isMachineDefaultRuntimeSocket(socketPath);
+}
+
+/** A live brain on a socket this CLI does not manage did not match it; it stays up. */
+class UnmanagedRuntimeMismatchError extends Error {
+  constructor(socketPath: string, mismatch: string) {
+    super(
+      `ADE runtime at ${socketPath}: ${mismatch}. This ade did not start it, so it is left running. Use the ade that started it, or stop it first.`,
+    );
+    this.name = "UnmanagedRuntimeMismatchError";
+  }
+}
+
+function isMachineDefaultRuntimeSocket(socketPath: string): boolean {
+  const defaultSocketPath = normalizeRuntimeSocketPath(resolveMachineAdeLayout().socketPath);
+  const candidate = normalizeRuntimeSocketPath(socketPath);
+  if (isAdeRuntimeNamedPipePath(candidate) || isAdeRuntimeNamedPipePath(defaultSocketPath)) {
+    return namedPipeComparisonKey(candidate) === namedPipeComparisonKey(defaultSocketPath);
+  }
+  return candidate === defaultSocketPath;
 }
 
 function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): {
@@ -22074,11 +22102,12 @@ async function connectMachineRuntimeDaemon(
   const isTcpSocket = socketPath.startsWith("tcp://");
   const isLocalRuntime = isLocalRuntimeSocketPath(socketPath);
   const enforceBuildCompatibility =
-    shouldEnforceMachineRuntimeBuildCompatibility(socketPathOverride);
+    shouldEnforceMachineRuntimeBuildCompatibility(socketPathOverride, socketPath);
   const expectedBuildHash = isTcpSocket || !enforceBuildCompatibility
     ? null
     : await resolveExpectedMachineRuntimeBuildHash();
-  const preferServiceRepair = shouldRepairMachineRuntimeServiceBeforeSpawn(
+  // Service install and uninstall only ever act for the machine's own socket.
+  const preferServiceRepair = enforceBuildCompatibility && shouldRepairMachineRuntimeServiceBeforeSpawn(
     socketPath,
     socketPathOverride,
   );
@@ -22113,6 +22142,14 @@ async function connectMachineRuntimeDaemon(
         throw new Error(
           `ADE runtime ${mismatch}.`,
         );
+      }
+      // Off the machine socket the build and version checks are skipped, so a
+      // mismatch that reaches here is a role mismatch. The brain is left running:
+      // this CLI does not manage it (see shouldEnforceMachineRuntimeBuildCompatibility).
+      // An explicit override that names the machine socket keeps the replace path.
+      if (!enforceBuildCompatibility && !isMachineDefaultRuntimeSocket(socketPath)) {
+        client.close();
+        throw new UnmanagedRuntimeMismatchError(socketPath, mismatch);
       }
       const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
         localRuntime: isLocalRuntime,
@@ -22172,6 +22209,7 @@ async function connectMachineRuntimeDaemon(
     return client;
   } catch (firstError) {
     if (firstError instanceof RuntimeSelfShutdownBlockedError) throw firstError;
+    if (firstError instanceof UnmanagedRuntimeMismatchError) throw firstError;
     if (!allowSpawn) throw firstError;
     const repaired = await repairServiceConnection();
     if (repaired) return repaired;
@@ -31981,6 +32019,50 @@ function createLinkEnvelopeResolver(
   };
 }
 
+/** The first `runtimeOwnedElsewhere` / `ownedElsewhere` record in a result, two levels deep. */
+function findChatRuntimeOwnerRef(value: unknown, depth = 0): { pid: number; socketPath: string | null } | null {
+  if (!isRecord(value) || depth > 2) return null;
+  for (const key of ["runtimeOwnedElsewhere", "ownedElsewhere"]) {
+    const owner = value[key];
+    if (isRecord(owner) && typeof owner.pid === "number") {
+      return { pid: owner.pid, socketPath: asString(owner.socketPath) ?? null };
+    }
+  }
+  for (const nested of Object.values(value)) {
+    const found = findChatRuntimeOwnerRef(nested, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * The stderr line for a chat that runs under a different brain than the one
+ * this CLI reached. That brain cannot see the chat's turn and refuses to send
+ * to it, so without this a caller reads its stale "idle" as the truth — the
+ * 2026-10-09 incident, where a shell pointed at a dev brain's socket kept
+ * re-sending to workers the installed brain was running.
+ */
+function chatOwnerSocketWarning(value: unknown, connection: Pick<CliConnection, "mode" | "socketPath">): string | null {
+  const owner = findChatRuntimeOwnerRef(value);
+  if (!owner) return null;
+  // A headless CLI runs its own in-process runtime; its socketPath is only
+  // the default endpoint, not a brain it reached.
+  const cliSocketPath = connection.mode === "headless" ? null : connection.socketPath;
+  if (owner.socketPath && cliSocketPath) {
+    const ownerSocket = normalizeRuntimeSocketPath(owner.socketPath);
+    const cliSocket = normalizeRuntimeSocketPath(cliSocketPath);
+    const same = process.platform === "win32"
+      ? ownerSocket.toLowerCase() === cliSocket.toLowerCase()
+      : ownerSocket === cliSocket;
+    if (same) return null;
+  }
+  return [
+    `ADE: this chat runs under another ADE brain (pid ${owner.pid}${owner.socketPath ? `, socket ${owner.socketPath}` : ""}),`,
+    `not the one this CLI reached${cliSocketPath ? ` (${cliSocketPath})` : ""}. Its status here is not live and sends are refused.`,
+    owner.socketPath ? `Use: ade --socket "${owner.socketPath}" …` : "Use the ade CLI of the brain that owns it.",
+  ].join(" ");
+}
+
 async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
@@ -32118,6 +32200,8 @@ async function executePlan(
         };
       }
     }
+    const ownerWarning = chatOwnerSocketWarning(values, connection);
+    if (ownerWarning) process.stderr.write(`${ownerWarning}\n`);
     return summarizeExecution({ plan, connection, values });
   } catch (error) {
     if (
@@ -32238,6 +32322,7 @@ async function runChatWaitCommand(
   // The brain waits on the chat's own events (`chat.waitFor`, one ≤25 s
   // long-poll per call); an older brain without it is polled as before.
   let serverWaitSupported = true;
+  let ownerWarned = false;
   const serverWait = async (budgetMs: number): Promise<JsonObject | null | "unsupported"> => {
     try {
       const raw = await connection.request("ade/actions/call", {
@@ -32284,6 +32369,13 @@ async function runChatWaitCommand(
           elapsedMs,
         };
         return { output: formatOutput(result, options), exitCode: 1 };
+      }
+      if (!ownerWarned) {
+        const warning = chatOwnerSocketWarning(summary, connection);
+        if (warning) {
+          process.stderr.write(`${warning}\n`);
+          ownerWarned = true;
+        }
       }
       if (chatWaitTargetMatches(summary, plan.waitFor)) {
         const result = {

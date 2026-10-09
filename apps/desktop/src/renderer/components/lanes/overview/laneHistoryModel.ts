@@ -72,8 +72,13 @@ function providerFromText(text: string): string | null {
 export function parseCoAuthorProvider(message: string | null | undefined): string | null {
   if (!message) return null;
   const pattern = /^\s*co-authored-by:\s*(.+)$/gim;
-  for (const match of message.matchAll(pattern)) {
-    const provider = providerFromText(match[1] ?? "");
+  return providerFromCoAuthors(Array.from(message.matchAll(pattern), (match) => match[1] ?? ""));
+}
+
+/** The first agent named by a commit's `Co-authored-by` trailer values. */
+export function providerFromCoAuthors(values: readonly string[]): string | null {
+  for (const value of values) {
+    const provider = providerFromText(value);
     if (provider) return provider;
   }
   return null;

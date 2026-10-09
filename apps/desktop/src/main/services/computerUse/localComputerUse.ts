@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { ComputerUseArtifactKind } from "../../../shared/types";
-import { commandExists } from "../ai/utils";
+import { commandExistsCached } from "../ai/utils";
 
 export type LocalComputerUseCapabilityState = "present" | "missing" | "blocked_by_capability";
 
@@ -45,7 +45,7 @@ function blocked(detail: string): LocalComputerUseCapability {
 
 export function getLocalComputerUseCapabilities(
   platform: NodeJS.Platform = process.platform,
-  commandAvailable: (command: string) => boolean = commandExists,
+  commandAvailable: (command: string) => boolean = commandExistsCached,
 ): LocalComputerUseCapabilities {
   if (platform !== "darwin") {
     const blockedCapability = blocked(NATIVE_COMPUTER_USE_BLOCKED_DETAIL);

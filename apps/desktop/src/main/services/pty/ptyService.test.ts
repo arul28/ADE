@@ -4134,6 +4134,77 @@ describe("ptyService", () => {
       );
     });
 
+    it("records the launching chat beside the parsed launch fields, and a resume never changes it", async () => {
+      const { service, sessionService } = createHarness();
+      const seedEndedCodex = (sessionId: string, resumeMetadata: Record<string, unknown>) => {
+        sessionService.create({
+          sessionId,
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: `/tmp/transcripts/${sessionId}.log`,
+          toolType: "codex",
+          resumeCommand: "codex --no-alt-screen resume thread-launched",
+          resumeMetadata: {
+            provider: "codex",
+            targetKind: "thread",
+            targetId: "thread-launched",
+            launch: { permissionMode: "config-toml" },
+            ...resumeMetadata,
+          },
+        });
+        sessionService.end({
+          sessionId,
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+      };
+      const resumeCodex = (sessionId: string, launchedBySessionId: string, extra: Record<string, unknown> = {}) => service.create({
+        sessionId,
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen resume thread-launched",
+        launchedBySessionId,
+        ...extra,
+      });
+
+      const launched = await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude --permission-mode default",
+        launchedBySessionId: "launcher-chat",
+      });
+      expect(sessionService.get(launched.sessionId)?.resumeMetadata).toMatchObject({
+        provider: "claude",
+        launch: { permissionMode: "default" },
+        launchedBySessionId: "launcher-chat",
+      });
+
+      seedEndedCodex("session-recorded", { launchedBySessionId: "launcher-original" });
+      const createsBeforeResume = sessionService.create.mock.calls.length;
+      await resumeCodex("session-recorded", "launcher-other");
+      expect(sessionService.get("session-recorded")?.resumeMetadata?.launchedBySessionId).toBe("launcher-original");
+      expect(sessionService.create).toHaveBeenCalledTimes(createsBeforeResume);
+
+      // A session a person started has no launcher, and a resume does not add one,
+      // even when the resume backfills a model onto the stored record.
+      seedEndedCodex("session-user-started", {});
+      await resumeCodex("session-user-started", "launcher-other", {
+        runtimeCliLaunch: { provider: "codex", permissionMode: "config-toml", model: "gpt-5.4" },
+      });
+      expect(sessionService.get("session-user-started")?.resumeMetadata?.launch).toMatchObject({ model: "gpt-5.4" });
+      expect(sessionService.get("session-user-started")?.resumeMetadata?.launchedBySessionId).toBeUndefined();
+    });
+
     it("stores structured resume metadata for Codex launches", async () => {
       const { service, sessionService } = createHarness();
       await service.create({

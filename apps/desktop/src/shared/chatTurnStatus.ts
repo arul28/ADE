@@ -1,6 +1,6 @@
 import { annotateSubagentTree } from "./chatSubagentTree";
 import { resourceLinkCopyPaths } from "./claudeAgentSdkFields";
-import type { AgentChatResourceLink } from "./types/chat";
+import type { AgentChatResourceLink, AgentChatRuntimeOwnerRef } from "./types/chat";
 import type { CliSessionFacts } from "./cliChildSession";
 
 export type ChatTurnStatusPhase = "running" | "blocked" | "idle";
@@ -42,6 +42,12 @@ export type ChatTurnStatusSnapshot = {
   subagents: ChatTurnStatusSubagent[];
   /** Present when the id names a tracked CLI terminal rather than a chat. */
   cliSession?: CliSessionFacts;
+  /**
+   * Another live brain runs this chat. The answering brain cannot see that
+   * turn, so it reports the chat busy rather than idle: an "idle" here is what
+   * let a caller send into a running chat and start a second process for it.
+   */
+  ownedElsewhere?: AgentChatRuntimeOwnerRef;
 };
 
 export type DeriveChatTurnStatusInput = {
@@ -56,6 +62,7 @@ export type DeriveChatTurnStatusInput = {
   queuedMessageCount?: number;
   currentTool?: ChatTurnStatusTool | null;
   subagents?: ChatTurnStatusSubagent[];
+  ownedElsewhere?: AgentChatRuntimeOwnerRef | null;
   nowMs?: number;
 };
 
@@ -76,10 +83,12 @@ export function chatTurnStatusExitCode(phase: ChatTurnStatusPhase): number {
 
 export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurnStatusSnapshot {
   const nowMs = input.nowMs ?? Date.now();
-  const awaitingInput = input.awaitingInput === true;
+  const ownedElsewhere = input.ownedElsewhere ?? null;
+  // This brain cannot see another brain's turn, its asks included.
+  const awaitingInput = ownedElsewhere == null && input.awaitingInput === true;
   const turnStartedMs = parseTime(input.currentTurnStartedAt);
   const lastActivityMs = parseTime(input.lastActivityAt);
-  const hasLiveTurn = input.sessionStatus === "active" || turnStartedMs != null;
+  const hasLiveTurn = input.sessionStatus === "active" || turnStartedMs != null || ownedElsewhere != null;
   const phase: ChatTurnStatusPhase = awaitingInput
     ? "blocked"
     : hasLiveTurn
@@ -102,6 +111,7 @@ export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurn
         }
       : null,
     subagents: input.subagents ?? [],
+    ...(ownedElsewhere ? { ownedElsewhere } : {}),
   };
 }
 
@@ -129,9 +139,12 @@ export function formatChatTurnStatus(
   },
 ): string {
   const marker = status.phase === "running" ? "●" : status.phase === "blocked" ? "●" : "○";
-  const phaseLabel = status.phase.toUpperCase();
+  const owner = status.ownedElsewhere;
+  const phaseLabel = owner && status.phase === "running" ? "BUSY" : status.phase.toUpperCase();
   const headlineBits: string[] = [];
-  if (status.phase === "running") {
+  if (owner && status.phase === "running") {
+    headlineBits.push(`runs under another ADE brain (pid ${owner.pid}${owner.socketPath ? `, socket ${owner.socketPath}` : ""})`);
+  } else if (status.phase === "running") {
     if (status.turnElapsedMs != null) headlineBits.push(`turn ${formatCompactDuration(status.turnElapsedMs)}`);
     if (status.lastActivityMsAgo != null) headlineBits.push(`last activity ${formatCompactDuration(status.lastActivityMsAgo)} ago`);
   } else if (status.phase === "blocked") {
@@ -173,6 +186,15 @@ export function formatChatTurnStatus(
       lines.push(chatTurnStatusRow("parent", `${cli.parentSessionId}${cli.spawnKind ? ` (${cli.spawnKind})` : ""}`));
     }
     lines.push(chatTurnStatusRow("output", cli.readHint));
+  }
+
+  if (owner) {
+    lines.push(chatTurnStatusRow(
+      "owner",
+      owner.socketPath
+        ? `this brain cannot see its turn; ask the owner: ade --socket "${owner.socketPath}" chat status ${status.sessionId}`
+        : "this brain cannot see its turn; ask the brain that owns it",
+    ));
   }
 
   for (const row of options?.extraRows ?? []) lines.push(row);

@@ -56,9 +56,12 @@
   "devDependencies": {
     "@opencode/client": "2.0.24",
     "@types/node": "^20.11.30",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.17",
     "@types/ws": "^8.18.1",
     "ink-testing-library": "^4.0.0",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0",
     "postject": "^1.0.0-alpha.6",
     "tsup": "^8.3.5",
     "tsx": "^4.20.6",

@@ -161,6 +161,14 @@ refuses a recycled pid, and `agent_chat.claude_subprocess_taskkill_failed` on
 Windows. They carry pids and session ids and no command lines, and none is a
 PostHog event.
 
+An image attachment that does not fit a provider's inline limits writes one of
+two local lines, and neither is a PostHog event. `agent_chat.inline_image_resized`
+(info) records an image that was re-encoded to fit, with `provider`, the `from`
+and `to` byte sizes and pixel dimensions. `agent_chat.inline_image_omitted`
+(warn) records one that could not be sent inline, with `provider`, `bytes`, and
+the `reason`; the turn still runs and the model gets a path hint. Neither line
+carries the file's path or name.
+
 Four more local operational lines exist, and none is a PostHog event.
 `sync_paired.rpc_channel_over_budget` records the host closing one paired RPC
 channel because a reply would pass its send budget: the channel id, the method

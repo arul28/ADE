@@ -1,18 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomFillSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PNG } from "pngjs";
 import type { AgentChatFileRef } from "../../../shared/types/chat";
 import { MAX_PROVIDER_INLINE_IMAGE_BYTES } from "../../../shared/chatAttachmentLimits";
 import {
-  buildClaudeV2Message,
   buildClaudeV2MessageAsync,
   ANTHROPIC_IMAGE_MEDIA_TYPES,
   inferAttachmentMediaType,
   type SDKUserMessagePartial,
 } from "./buildClaudeV2Message";
 
-describe("buildClaudeV2Message", () => {
+describe("buildClaudeV2MessageAsync", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -33,13 +34,13 @@ describe("buildClaudeV2Message", () => {
   // ─────────────────────────────────────────────────────────────────────────
   // 1. No attachments -> plain string
   // ─────────────────────────────────────────────────────────────────────────
-  it("returns plain string when there are no attachments", () => {
-    const result = buildClaudeV2Message("Hello, Claude!", []);
+  it("returns plain string when there are no attachments", async () => {
+    const result = await buildClaudeV2MessageAsync("Hello, Claude!", []);
     expect(result).toBe("Hello, Claude!");
   });
 
-  it("can force text-only input into an SDK user message", () => {
-    const result = buildClaudeV2Message("/automate is a command, right?", [], {
+  it("can force text-only input into an SDK user message", async () => {
+    const result = await buildClaudeV2MessageAsync("/automate is a command, right?", [], {
       sessionId: "claude-sdk-session",
       forceUserMessage: true,
     });
@@ -53,23 +54,23 @@ describe("buildClaudeV2Message", () => {
   // ─────────────────────────────────────────────────────────────────────────
   // 2. Non-image attachments -> string with file hints
   // ─────────────────────────────────────────────────────────────────────────
-  it("returns string with file hints for non-image attachments", () => {
+  it("returns string with file hints for non-image attachments", async () => {
     const attachments: AgentChatFileRef[] = [
       { path: "/some/dir/data.csv", type: "file" },
       { path: "/some/dir/script.py", type: "file" },
     ];
-    const result = buildClaudeV2Message("Analyze these files", attachments);
+    const result = await buildClaudeV2MessageAsync("Analyze these files", attachments);
     expect(typeof result).toBe("string");
     expect(result).toContain("Analyze these files");
     expect(result).toContain("[File attached: /some/dir/data.csv]");
     expect(result).toContain("[File attached: /some/dir/script.py]");
   });
 
-  it("can force non-image attachments into an SDK user message", () => {
+  it("can force non-image attachments into an SDK user message", async () => {
     const attachments: AgentChatFileRef[] = [
       { path: "/some/dir/data.csv", type: "file" },
     ];
-    const result = buildClaudeV2Message("/automate is available?", attachments, {
+    const result = await buildClaudeV2MessageAsync("/automate is available?", attachments, {
       forceUserMessage: true,
     });
 
@@ -83,13 +84,13 @@ describe("buildClaudeV2Message", () => {
   // ─────────────────────────────────────────────────────────────────────────
   // 3. Image attachments -> SDKUserMessage with base64 content blocks
   // ─────────────────────────────────────────────────────────────────────────
-  it("returns SDKUserMessage with base64 image blocks for valid images", () => {
+  it("returns SDKUserMessage with base64 image blocks for valid images", async () => {
     const imgPath = writeFakeImage("photo.png");
     const attachments: AgentChatFileRef[] = [
       { path: imgPath, type: "image" },
     ];
 
-    const result = buildClaudeV2Message("Describe this image", attachments);
+    const result = await buildClaudeV2MessageAsync("Describe this image", attachments, { baseDir: tmpDir });
 
     // Should be an object, not a string
     expect(typeof result).toBe("object");
@@ -115,13 +116,13 @@ describe("buildClaudeV2Message", () => {
     expect(Buffer.from(source.data as string, "base64").toString()).toBe("fake-image-bytes");
   });
 
-  it("resolves relative image attachments against the provided base directory", () => {
+  it("resolves relative image attachments against the provided base directory", async () => {
     writeFakeImage("relative-photo.png");
     const attachments: AgentChatFileRef[] = [
       { path: "relative-photo.png", type: "image" },
     ];
 
-    const result = buildClaudeV2Message("Describe this image", attachments, { baseDir: tmpDir });
+    const result = await buildClaudeV2MessageAsync("Describe this image", attachments, { baseDir: tmpDir });
     const msg = result as SDKUserMessagePartial;
     expect(msg.session_id).toBe("");
     expect(msg.parent_tool_use_id).toBeNull();
@@ -185,15 +186,51 @@ describe("buildClaudeV2Message", () => {
     expect(blocks.some((block) => block.type === "image")).toBe(true);
   });
 
+  it("downscales an oversized PNG into an image block within the API's base64 limit", async () => {
+    const screenshot = new PNG({ width: 2000, height: 1000 });
+    randomFillSync(screenshot.data);
+    for (let i = 3; i < screenshot.data.length; i += 4) screenshot.data[i] = 255;
+    const bytes = PNG.sync.write(screenshot, { deflateLevel: 1 });
+    expect(bytes.byteLength).toBeGreaterThan(MAX_PROVIDER_INLINE_IMAGE_BYTES);
+    fs.writeFileSync(path.join(tmpDir, "retina.png"), bytes);
+    const attachments: AgentChatFileRef[] = [{ path: "retina.png", type: "image" }];
+
+    const result = await buildClaudeV2MessageAsync("Describe this", attachments, { baseDir: tmpDir });
+    const blocks = (result as SDKUserMessagePartial).message.content as Array<Record<string, unknown>>;
+
+    const image = blocks.find((block) => block.type === "image");
+    expect(image).toBeDefined();
+    const source = image!.source as Record<string, unknown>;
+    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has(source.media_type as string)).toBe(true);
+    expect(String(source.data).length).toBeLessThanOrEqual(5_000_000);
+  });
+
+  it("turns a GIF past the inline limits into a not-inlined path hint, not an image block", async () => {
+    const header = Buffer.alloc(13);
+    header.write("GIF89a", 0, "latin1");
+    header.writeUInt16LE(3000, 6);
+    header.writeUInt16LE(3000, 8);
+    fs.writeFileSync(path.join(tmpDir, "diagram.gif"), header);
+    const attachments: AgentChatFileRef[] = [{ path: "diagram.gif", type: "image" }];
+
+    const result = await buildClaudeV2MessageAsync("Describe this", attachments, { baseDir: tmpDir });
+    const blocks = (result as SDKUserMessagePartial).message.content as Array<Record<string, unknown>>;
+
+    expect(blocks.some((block) => block.type === "image")).toBe(false);
+    const hint = blocks.find((block) => block.type === "text" && String(block.text).includes("diagram.gif"));
+    expect(hint).toBeDefined();
+    expect(String(hint!.text)).toContain("not inlined");
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // 4. Missing image file -> text fallback
   // ─────────────────────────────────────────────────────────────────────────
-  it("handles missing image files gracefully with text fallback", () => {
+  it("handles missing image files gracefully with text fallback", async () => {
     const attachments: AgentChatFileRef[] = [
       { path: "/nonexistent/path/missing.png", type: "image" },
     ];
 
-    const result = buildClaudeV2Message("Look at this", attachments);
+    const result = await buildClaudeV2MessageAsync("Look at this", attachments);
 
     expect(typeof result).toBe("object");
     const msg = result as SDKUserMessagePartial;
@@ -211,14 +248,14 @@ describe("buildClaudeV2Message", () => {
   // ─────────────────────────────────────────────────────────────────────────
   // 5. Unsupported MIME type -> text fallback with media type
   // ─────────────────────────────────────────────────────────────────────────
-  it("handles unsupported MIME types gracefully", () => {
+  it("handles unsupported MIME types gracefully", async () => {
     // .svg resolves to "image/svg+xml" which is NOT in ANTHROPIC_IMAGE_MEDIA_TYPES
     const svgPath = writeFakeImage("diagram.svg");
     const attachments: AgentChatFileRef[] = [
       { path: svgPath, type: "image" },
     ];
 
-    const result = buildClaudeV2Message("Check this diagram", attachments);
+    const result = await buildClaudeV2MessageAsync("Check this diagram", attachments);
 
     expect(typeof result).toBe("object");
     const msg = result as SDKUserMessagePartial;
@@ -233,9 +270,9 @@ describe("buildClaudeV2Message", () => {
     });
   });
 
-  it("does not relabel legacy HEIC attachments as PNG", () => {
+  it("does not relabel legacy HEIC attachments as PNG", async () => {
     const heicPath = writeFakeImage("legacy-photo.heic");
-    const result = buildClaudeV2Message("Review this photo", [{ path: heicPath, type: "image" }]);
+    const result = await buildClaudeV2MessageAsync("Review this photo", [{ path: heicPath, type: "image" }]);
 
     const msg = result as SDKUserMessagePartial;
     expect(msg.type).toBe("user");
@@ -250,7 +287,7 @@ describe("buildClaudeV2Message", () => {
   // ─────────────────────────────────────────────────────────────────────────
   // 6. Mixed image and non-image attachments
   // ─────────────────────────────────────────────────────────────────────────
-  it("handles mixed image and non-image attachments", () => {
+  it("handles mixed image and non-image attachments", async () => {
     const pngPath = writeFakeImage("screenshot.png");
     const attachments: AgentChatFileRef[] = [
       { path: "/workspace/readme.md", type: "file" },
@@ -258,7 +295,7 @@ describe("buildClaudeV2Message", () => {
       { path: "/workspace/config.json", type: "file" },
     ];
 
-    const result = buildClaudeV2Message("Review these", attachments);
+    const result = await buildClaudeV2MessageAsync("Review these", attachments, { baseDir: tmpDir });
 
     expect(typeof result).toBe("object");
     const msg = result as SDKUserMessagePartial;

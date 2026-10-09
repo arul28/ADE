@@ -82,11 +82,34 @@ function logicalToolItemKey(entry: AgentChatEventEnvelope): string | null {
   return itemId ? `${event.turnId ?? ""}\u0000${itemId}` : null;
 }
 
+/**
+ * Lists this module produced through {@link upsertRepeatedToolCalls}: no two
+ * tool calls in them share a logical item key. Appending events that are not
+ * tool calls or results to such a list cannot create a duplicate, so the live
+ * merge skips the full-history pass for them (two scans of the whole transcript
+ * per streamed event otherwise).
+ */
+const toolCallDedupedLists = new WeakSet<readonly AgentChatEventEnvelope[]>();
+
+function isToolEvent(entry: AgentChatEventEnvelope): boolean {
+  return entry.event.type === "tool_call" || entry.event.type === "tool_result";
+}
+
 /** Replace streamed tool-call payloads in place, retaining their original order and results. */
 function upsertRepeatedToolCalls(
   events: AgentChatEventEnvelope[],
   previous: readonly AgentChatEventEnvelope[] = [],
   shouldRetainPreviousResult: (entry: AgentChatEventEnvelope) => boolean = () => true,
+): AgentChatEventEnvelope[] {
+  const result = upsertRepeatedToolCallsUnmarked(events, previous, shouldRetainPreviousResult);
+  toolCallDedupedLists.add(result);
+  return result;
+}
+
+function upsertRepeatedToolCallsUnmarked(
+  events: AgentChatEventEnvelope[],
+  previous: readonly AgentChatEventEnvelope[],
+  shouldRetainPreviousResult: (entry: AgentChatEventEnvelope) => boolean,
 ): AgentChatEventEnvelope[] {
   let result = events;
   const callIndexes = new Map<string, number>();
@@ -205,6 +228,11 @@ export function mergeAgentChatLiveEvents(
     appendAnchor = entry;
   }
   if (appendOnly) {
+    if (toolCallDedupedLists.has(existing) && !fresh.some(isToolEvent)) {
+      const appended = [...existing, ...fresh];
+      toolCallDedupedLists.add(appended);
+      return appended;
+    }
     return upsertRepeatedToolCalls([...existing, ...fresh], existing);
   }
 

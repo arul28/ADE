@@ -1065,6 +1065,17 @@ let appResourceUsageInFlight: {
 } | null = null;
 let appProcessMetricRowsCollector: ProcessMetricRowsCollector | null = null;
 
+/**
+ * `runtimeActor` is stamped by the RPC server on an agent's or the CTO's call
+ * and never by a renderer. A renderer's copy is dropped here, so a payload
+ * cannot claim to be the CTO or name a launcher.
+ */
+function withoutRendererRuntimeActor<T extends { runtimeActor?: unknown }>(arg: T): T {
+  if (!arg || typeof arg !== "object" || !("runtimeActor" in arg)) return arg;
+  const { runtimeActor: _rendererValue, ...rest } = arg;
+  return rest as T;
+}
+
 function getAppProcessMetricRowsCollector(): ProcessMetricRowsCollector {
   if (!appProcessMetricRowsCollector) {
     const collector = createProcessMetricRowsCollector();
@@ -2464,6 +2475,18 @@ export function registerIpc({
     });
   };
 
+  /**
+   * Runtime action calls all share one channel; name the action they carry so
+   * IPC summaries and perf runs can tell `lanes.list` from `chat.send`.
+   */
+  const perfChannelLabel = (channel: string, args: unknown[]): string => {
+    if (channel !== IPC.localRuntimeCallAction) return channel;
+    const request = (args[0] as { request?: { domain?: unknown; action?: unknown } } | undefined)?.request;
+    return typeof request?.domain === "string" && typeof request.action === "string"
+      ? `${channel}:${request.domain}.${request.action}`
+      : channel;
+  };
+
   const recordIpcInvokeAggregate = (input: {
     channel: string;
     winId: number | null;
@@ -2549,7 +2572,7 @@ export function registerIpc({
             }),
           ]);
           const durationMs = Date.now() - startedAt;
-          recordIpcInvokeAggregate({ channel, winId, durationMs, failed: false });
+          recordIpcInvokeAggregate({ channel: perfChannelLabel(channel, args), winId, durationMs, failed: false });
           const usageAction = usageActionFromIpcChannel(channel);
           if (isMeaningfulUsageAction(usageAction)) {
             try {
@@ -2578,7 +2601,7 @@ export function registerIpc({
           return result;
         } catch (error) {
           const durationMs = Date.now() - startedAt;
-          recordIpcInvokeAggregate({ channel, winId, durationMs, failed: true });
+          recordIpcInvokeAggregate({ channel: perfChannelLabel(channel, args), winId, durationMs, failed: true });
           const usageAction = usageActionFromIpcChannel(channel);
           if (isMeaningfulUsageAction(usageAction)) {
             const errorKind = error instanceof Error ? error.name : "unknown";
@@ -8760,12 +8783,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const ctx = ensureAgentChatContext();
-    return await ctx.agentChatService.createSession(arg);
+    return await ctx.agentChatService.createSession(withoutRendererRuntimeActor(arg));
   });
 
   ipcMain.handle(IPC.agentChatLaunch, async (_event, arg: AgentChatLaunchArgs): Promise<AgentChatSession> => {
     const ctx = ensureAgentChatContext();
-    return await ctx.agentChatService.launchHeadless(arg);
+    return await ctx.agentChatService.launchHeadless(withoutRendererRuntimeActor(arg));
   });
 
   // Launch a tracked CLI/terminal agent with Linear issues attached *before* the
@@ -8782,7 +8805,7 @@ export function registerIpc({
     if (!ctx.ptyService) {
       throw new Error("agentChat.launchCli requires an active terminal (pty) service.");
     }
-    return launchAgentChatCli(arg, {
+    return launchAgentChatCli(withoutRendererRuntimeActor(arg), {
       laneService: ctx.laneService,
       ptyService: ctx.ptyService,
       logger: ctx.logger,
@@ -8839,7 +8862,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
     const ctx = ensureAgentChatContext();
-    return await ctx.agentChatService.handoffSession(arg);
+    return await ctx.agentChatService.handoffSession(withoutRendererRuntimeActor(arg));
   });
 
   ipcMain.handle(
@@ -9154,7 +9177,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatUpdateSession, async (_event, arg: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const ctx = ensureAgentChatContext();
-    return await ctx.agentChatService.updateSession(arg);
+    return await ctx.agentChatService.updateSession(withoutRendererRuntimeActor(arg));
   });
 
   ipcMain.handle(

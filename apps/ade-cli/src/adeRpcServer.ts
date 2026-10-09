@@ -4588,9 +4588,7 @@ async function runCtoOperatorBridgeTool(
   // The same caller stamp `run_ade_action` puts on chat creates and updates:
   // the real CTO is trusted, a CTO-role run or step agent is capped. Resolved
   // only when a create or update actually runs.
-  const bridgeActor = async (): Promise<AgentChatRuntimeActor> => (await callerIsTrustedCto(runtime, session)
-    ? { kind: "cto" }
-    : { kind: "agent", chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null });
+  const bridgeActor = async () => (await callerRuntimeActor(runtime, session, false)) ?? undefined;
   const ctoIdentity = runtime.ctoStateService.getIdentity();
   // Null until the user picks a model the CTO can steer live; the Claude/Codex
   // fallback below already covers "nothing chosen yet".
@@ -4721,6 +4719,22 @@ async function callerIsTrustedCto(runtime: AdeRuntime, session: SessionState): P
   } catch {
     return false;
   }
+}
+
+/**
+ * Who the runtime says is calling, the one definition every chat stamp and CLI
+ * launch reads: null for one of the user's own clients (nothing is stamped),
+ * the CTO for the trusted CTO thread, otherwise the calling agent with its
+ * bound chat (null when unbound).
+ */
+async function callerRuntimeActor(
+  runtime: AdeRuntime,
+  session: SessionState,
+  isUserClient: boolean,
+): Promise<AgentChatRuntimeActor | null> {
+  if (isUserClient) return null;
+  if (await callerIsTrustedCto(runtime, session)) return { kind: "cto" };
+  return { kind: "agent", chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null };
 }
 
 /**
@@ -6087,11 +6101,7 @@ async function runTool(args: {
           `run_ade_action:chat.${action} takes one object argument.`,
         );
       }
-      const actor = isUserClient
-        ? null
-        : await callerIsTrustedCto(runtime, session)
-          ? { kind: "cto" as const }
-          : { kind: "agent" as const, chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null };
+      const actor = await callerRuntimeActor(runtime, session, isUserClient);
       scopedObjectArgs = stampChatRuntimeActor(action, scopedObjectArgs, actor);
       if (action === "launchCli" && actor?.kind === "agent") {
         // A terminal agent has no chat record to clamp later, so its
@@ -6260,6 +6270,7 @@ async function runTool(args: {
         ptyAccessDenied("start_cli_session");
       }
     }
+    const callerActor = await callerRuntimeActor(runtime, session, isUserClientSession(session));
     // An agent's CLI child never runs above the agent, or above its parent.
     const cliCeiling = await agentCliPermissionCeiling(runtime, session, orchestrationParentSessionId);
     const permissionMode = cliCeiling
@@ -6270,6 +6281,14 @@ async function runTool(args: {
       ? permissionFieldsForLevel("droid", cliCeiling).droidPermissionMode
       : requestedDroidPermissionMode;
     const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
+    // A parentless CLI launched by a bound agent records who launched it. This
+    // is a passive fact: it does not nest the session or wake the launcher.
+    // The CTO is not an agent launcher, so it records nothing here.
+    const launchedBySessionId = !orchestrationParentSessionId
+      && isCliProvider(provider)
+      && callerActor?.kind === "agent"
+      ? callerActor.chatSessionId
+      : null;
     const instanceId = toolArgs.instanceId == null
       ? null
       : assertNonEmptyString(toolArgs.instanceId, "instanceId");
@@ -6391,6 +6410,7 @@ async function runTool(args: {
           ...(presetId ? { presetId } : {}),
           ...(trackedPreset && !presetId && credentialId ? { credentialId } : {}),
           ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+          ...(launchedBySessionId ? { launchedBySessionId } : {}),
           ...(spawnKind ? { spawnKind } : {}),
         }
       : null;

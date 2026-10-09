@@ -285,6 +285,9 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const orchestrationParentSessionId = typeof record.orchestrationParentSessionId === "string"
     ? record.orchestrationParentSessionId.trim()
     : "";
+  const launchedBySessionId = typeof record.launchedBySessionId === "string"
+    ? record.launchedBySessionId.trim()
+    : "";
   const spawnKind = record.spawnKind === "subagent" || record.spawnKind === "peer"
     ? record.spawnKind
     : null;
@@ -322,6 +325,7 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
     ...(presetId ? { presetId } : {}),
     ...(credentialId ? { credentialId } : {}),
     ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+    ...(launchedBySessionId ? { launchedBySessionId } : {}),
     ...(spawnKind ? { spawnKind } : {}),
   };
 }
@@ -809,6 +813,9 @@ export function createSessionService({
       ownerProcessStartedAt: normalizeOwnerProcessStartedAt(row.ownerProcessStartedAt),
       ...(isTrackedAgentCliToolType(toolType) && resumeMetadata?.orchestrationParentSessionId
         ? { orchestrationParentSessionId: resumeMetadata.orchestrationParentSessionId }
+        : {}),
+      ...(isTrackedAgentCliToolType(toolType) && resumeMetadata?.launchedBySessionId
+        ? { launchedBySessionId: resumeMetadata.launchedBySessionId }
         : {}),
       ...(isTrackedAgentCliToolType(toolType) && resumeMetadata?.spawnKind
         ? { spawnKind: resumeMetadata.spawnKind }

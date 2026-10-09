@@ -897,18 +897,20 @@ export function createGitOperationsService({
       // Detailed rows (author email + co-authors) come from a different `git
       // log` format than the plain read, so they must not share its cache
       // entry. The plain read keeps its original key and shape; every other
-      // read is keyed by skip, scope, and whether it is detailed.
+      // read is keyed by skip, scope, and whether it is fully detailed or only
+      // carries trailers (`includeCoAuthors`).
       const detailed = args.scope != null || skip > 0;
-      const cacheKey = scope === "lane" && skip === 0 && !detailed
+      const withTrailers = detailed || args.includeCoAuthors === true;
+      const cacheKey = scope === "lane" && skip === 0 && !withTrailers
         ? `recent-commits:${laneId}:${limit}`
-        : `recent-commits:${laneId}:${limit}:${skip}:${scope}:${detailed ? "detail" : "plain"}`;
+        : `recent-commits:${laneId}:${limit}:${skip}:${scope}:${detailed ? "detail" : "trailers"}`;
       return readLaneCached(cacheKey, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
         await assertLaneWorktreeRoot(lane);
         const refs = scope === "lanes" ? await resolveLaneGraphRefs(lane) : null;
         // History asks for author email and co-author trailers; they ride in
         // the same `git log`, before the subject so a subject can't shift them.
-        const format = detailed
+        const format = withTrailers
           ? "%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%ae%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1e)%x1f%s"
           : "%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s";
         let out: string;
@@ -989,10 +991,10 @@ export function createGitOperationsService({
               parents,
               authorName: authorName ?? "",
               authoredAt: authoredAt ?? "",
-              subject: (detailed ? fields.slice(7).join("\u001f") : fields[5]) ?? "",
+              subject: (withTrailers ? fields.slice(7).join("\u001f") : fields[5]) ?? "",
               pushed: unpushedShas ? !unpushedShas.has(sha) : false
             };
-            if (detailed) {
+            if (withTrailers) {
               summary.authorEmail = fields[5] ?? "";
               summary.coAuthors = (fields[6] ?? "")
                 .split("\u001e")

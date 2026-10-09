@@ -89,6 +89,7 @@ import {
 } from "./claudeOutputStyles";
 import { createClaudeSubprocessReaper, type ClaudeSubprocessReaper } from "./claudeSubprocessReaper";
 import {
+  ChatRuntimeOwnedElsewhereError,
   decideChatRuntimeOwnership,
   nextBrainInstanceId,
   normalizeChatRuntimeOwner,
@@ -381,9 +382,12 @@ import {
 } from "../../../shared/backgroundUtilityModel";
 import { createTurnEndQuestionCheck } from "./turnEndQuestionCheck";
 import {
-  exceedsProviderInlineLimit,
+  exceedsInlineFileLimit,
+  imageNotInlinedHintPart,
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
+import { MAX_PROVIDER_INLINE_FILE_BYTES } from "../../../shared/chatAttachmentLimits";
+import { fitImageForProviderInline } from "./providerInlineImage";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { isRemoteOrDataUri } from "../../../shared/chatImageUrls";
 import {
@@ -651,6 +655,7 @@ import {
   type AgentChatResourceLink,
   type AgentChatWorkflowProgress,
   attachmentIsReferenceOnly,
+  CLAUDE_SYNTHETIC_MODEL,
   DEFAULT_ATTACHMENT_ONLY_PROMPT,
   hasPastedTextPromptAttachment,
   normalizeInboundFileRef,
@@ -1281,7 +1286,12 @@ import {
   type CursorSdkSteerOutcome,
 } from "./cursorSdkProtocol";
 import { workerPathImagesFromAttachments, type WorkerIpcImage } from "./workerAttachmentImages";
-import { presentChatFailure, isSandboxUnsupportedFailureText } from "../../../shared/chatErrorPresentation";
+import {
+  externalStopSignal,
+  isSandboxUnsupportedFailureText,
+  presentChatFailure,
+  presentExternalProcessStop,
+} from "../../../shared/chatErrorPresentation";
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import type {
@@ -1543,6 +1553,7 @@ const CLAUDE_FAILED_TERMINAL_REASONS = new Set([
   "api_error",
   "malformed_tool_use_exhausted",
   "prompt_too_long",
+  "image_error",
 ]);
 
 function classifyClaudeResultStatus(result: Record<string, unknown>): ClaudeTerminalStatus {
@@ -1560,6 +1571,74 @@ function classifyClaudeResultStatus(result: Record<string, unknown>): ClaudeTerm
   const subtype = stringOrNull(result.subtype);
   if (subtype?.startsWith("error_")) return "failed";
   return result.is_error === true ? "failed" : "completed";
+}
+
+/**
+ * The assistant message Claude Code fabricates when it refuses an attached
+ * image ("Image base64 size (8.3MB) exceeds API limit (5MB)…"). Its text is the
+ * SDK's, not the agent's, and the turn's `image_error` notice already carries
+ * it, so it is not shown as an agent reply.
+ */
+function isClaudeSyntheticImageErrorMessage(assistantMsg: Record<string, unknown>): boolean {
+  const message = asRecord(assistantMsg.message);
+  if (message?.model !== CLAUDE_SYNTHETIC_MODEL || !assistantMsg.error) return false;
+  const content = Array.isArray(message.content) ? message.content : [];
+  const text = content
+    .map((block) => {
+      const record = asRecord(block);
+      return typeof record?.text === "string" ? record.text : "";
+    })
+    .join(" ");
+  return /\bimages?\b/i.test(text) && /exceed|resize|dimension|too large/i.test(text);
+}
+
+/** Claude Code refused an attached image and ended the turn. */
+function isClaudeImageErrorResult(result: Record<string, unknown>): boolean {
+  return stringOrNull(result.terminal_reason) === "image_error";
+}
+
+/**
+ * The transcript notice for a Claude result that failed the turn when nothing
+ * else in the turn said why.
+ *
+ * Claude Code checks attached images itself; one over its limits ends the turn
+ * with `terminal_reason: "image_error"`, an empty `errors` list, the reason only
+ * in `result`, and a `<synthetic>` model. Without this the user saw a bare
+ * FAILED row and read it as the agent crashing. Other failures that carry their
+ * text only in `result` get that text; usage limits, sign-in failures and
+ * context overflow are left to the flows that already own them.
+ */
+function claudeResultFailureNotice(args: {
+  result: Record<string, unknown>;
+  status: ClaudeTerminalStatus;
+  userFacingErrors: string[];
+  userFacingErrorsShown: boolean;
+  contextOverflow: boolean;
+  assistantText: string;
+}): Omit<Extract<AgentChatEvent, { type: "error" }>, "type" | "turnId"> | null {
+  if (args.status !== "failed") return null;
+  const resultText = typeof args.result.result === "string" ? args.result.result.trim() : "";
+  if (isClaudeImageErrorResult(args.result)) {
+    // The raw SDK error strings are not emitted separately for this turn, so
+    // this notice carries them as its detail.
+    const detail = resultText || args.userFacingErrors.join("\n").trim();
+    const presentation: ChatErrorPresentation = {
+      title: "Claude couldn't read an attached image",
+      body: "An image in this message is over Claude's size limit, so Claude stopped the turn before reading it.",
+      nextAction: "Attach a smaller image, or ask the agent to read it from its path.",
+      ...(detail ? { technicalDetail: detail } : {}),
+    };
+    return {
+      message: presentation.body,
+      ...(detail ? { detail } : {}),
+      errorInfo: { category: "unknown", provider: "Claude", presentation },
+    };
+  }
+  if (args.userFacingErrorsShown || args.contextOverflow || !resultText) return null;
+  if (args.result.is_error !== true) return null;
+  if (isClaudeUsageLimitResultError(resultText) || isClaudeRuntimeAuthError(resultText)) return null;
+  if (args.assistantText.includes(resultText)) return null;
+  return { message: resultText };
 }
 
 function normalizeClaudeActiveGoalPayload(value: unknown): Omit<ClaudeActiveGoal, "updatedAt"> | null {
@@ -1964,6 +2043,8 @@ type PersistedChatState = {
   asyncQuestions?: PersistedAsyncQuestion[];
   // Spawn lineage
   orchestrationParentSessionId?: string;
+  /** See SpawnLineageSessionFields.launchedBySessionId. */
+  launchedBySessionId?: string;
   spawnKind?: AgentChatSession["spawnKind"];
   subagentTakeoverPromptShownAt?: string | null;
   pendingTranscriptReplay?: string | null;
@@ -7364,7 +7445,7 @@ function resolveModelIdFromStoredValue(
 function normalizeReportedModelName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
-  return normalized.length ? normalized : null;
+  return normalized.length && normalized !== CLAUDE_SYNTHETIC_MODEL ? normalized : null;
 }
 
 function extractReportedModelUsageNames(value: unknown): string[] {
@@ -7837,20 +7918,23 @@ async function buildStreamingUserContent(
       const data = await args.readAttachmentBytes(attachment);
       const mediaType = inferAttachmentMediaType(attachment);
 
-      // Every branch below this point inlines `data` into the request body.
-      // The attachment cap is larger than what a provider accepts inline, so
-      // an oversized file degrades to a path hint rather than a rejected turn.
-      if (exceedsProviderInlineLimit(data.byteLength)) {
-        parts.push(inlineAttachmentHintPart(attachment.path, data.byteLength));
-        continue;
-      }
-
       if (attachment.type === "image") {
         if (args.runtimeKind === "claude" || args.modelDescriptor?.capabilities.vision) {
+          // The model behind OpenCode may be Anthropic's, which rejects an
+          // image over 5 MB of base64, so images are fitted the same way the
+          // Claude adapter fits them.
+          const fitted = await fitImageForProviderInline(data, mediaType, {
+            provider: args.runtimeKind,
+            logger: args.logger,
+          });
+          if (fitted.kind === "omit") {
+            parts.push(imageNotInlinedHintPart(attachment.path, fitted.reason));
+            continue;
+          }
           parts.push({
             type: "image",
-            image: data,
-            mediaType,
+            image: fitted.data,
+            mediaType: fitted.mediaType,
           });
         } else {
           parts.push({
@@ -7858,6 +7942,14 @@ async function buildStreamingUserContent(
             text: `\nImage attached but the selected model does not advertise vision support: ${attachment.path}`,
           });
         }
+        continue;
+      }
+
+      // Every branch below this point inlines `data` into the request body.
+      // The attachment cap is larger than what a provider accepts inline, so
+      // an oversized file degrades to a path hint rather than a rejected turn.
+      if (exceedsInlineFileLimit(data.byteLength)) {
+        parts.push(inlineAttachmentHintPart(attachment.path, data.byteLength, MAX_PROVIDER_INLINE_FILE_BYTES));
         continue;
       }
 
@@ -8963,6 +9055,7 @@ function toHarnessPermissionMode(
 
 const SPAWN_LINEAGE_FIELD_NAMES = [
   "orchestrationParentSessionId",
+  "launchedBySessionId",
   "spawnKind",
   "subagentTakeoverPromptShownAt",
 ] as const;
@@ -8982,6 +9075,8 @@ function hydrateSpawnLineageFields(
   const out: Partial<PersistedChatState> = {};
   const parentId = record.orchestrationParentSessionId;
   if (typeof parentId === "string" && parentId.trim().length) out.orchestrationParentSessionId = parentId.trim();
+  const launchedBy = record.launchedBySessionId;
+  if (typeof launchedBy === "string" && launchedBy.trim().length) out.launchedBySessionId = launchedBy.trim();
   const spawnKind = record.spawnKind;
   if (typeof spawnKind === "string" && VALID_AGENT_CHAT_SPAWN_KINDS.has(spawnKind)) {
     out.spawnKind = spawnKind as "subagent" | "peer";
@@ -17133,9 +17228,16 @@ export function createAgentChatService(args: {
     // `prevPersisted`) releases it. A chat with no provider process is
     // genuinely adoptable; a chat whose process belongs to a live sibling brain
     // is not, and this is the field that says which.
+    //
+    // A brain with no runtime never claims, and never releases a live
+    // sibling's claim: its teardown releases only its own or a dead brain's
+    // stamp. Otherwise a persist on a brain that does not run the chat erased
+    // the owner's stamp and left its live chat looking adoptable.
     const runtimeOwner: ChatRuntimeOwner | null = managed.runtime
       ? selfChatRuntimeOwner()
-      : prevPersisted?.runtimeOwner ?? null;
+      : managed.runtimeInvalidated
+        ? siblingBrainOwnerOnDisk(managed.session.id)
+        : prevPersisted?.runtimeOwner ?? null;
     const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
     const claudeResultCostTotalUsd = managed.runtime?.kind === "claude"
       ? managed.runtime.resultCostBaseline
@@ -18131,6 +18233,53 @@ export function createAgentChatService(args: {
       });
     }
     return decision.adoptable;
+  };
+
+  /** The persisted owner stamp when it names another live brain process. */
+  const siblingBrainOwnerOnDisk = (
+    sessionId: string,
+    persisted?: PersistedChatState | null,
+  ): ChatRuntimeOwner | null => {
+    let owner: ChatRuntimeOwner | null = null;
+    try {
+      owner = persisted === undefined
+        ? readPersistedState(sessionId)?.runtimeOwner ?? null
+        : persisted?.runtimeOwner ?? null;
+    } catch { /* unreadable state is unowned */ }
+    if (!owner) return null;
+    return chatRuntimeOwnershipDecision(owner).verdict === "live-foreign-brain" ? owner : null;
+  };
+
+  /**
+   * The live sibling brain holding this chat's provider process, or null when
+   * this brain may drive the chat: it holds the claim itself, nobody has
+   * claimed it, or the claimant is gone (the adoption rules above). A runtime
+   * object here is not the claim — a live sibling that stamped after it is
+   * the most recent owner.
+   */
+  const liveForeignChatRuntimeOwner = (
+    sessionId: string,
+    persisted?: PersistedChatState | null,
+  ): ChatRuntimeOwner | null => siblingBrainOwnerOnDisk(sessionId, persisted);
+
+  /**
+   * Refuse to drive a chat another live brain owns. Every caller here would
+   * otherwise start, or act on, a provider process of this brain's own: a
+   * second runtime writing into the owner's transcript.
+   */
+  const assertChatRuntimeOwnedHere = (sessionId: string, action: string): void => {
+    const owner = liveForeignChatRuntimeOwner(sessionId);
+    if (!owner) return;
+    const self = selfChatRuntimeOwner();
+    logger.warn("agent_chat.foreign_owned_chat_refused", {
+      sessionId,
+      action,
+      ownerPid: owner.pid,
+      ownerBrainId: owner.brainId,
+      ownerSocketPath: owner.socketPath ?? null,
+      selfSocketPath: self.socketPath ?? null,
+    });
+    throw new ChatRuntimeOwnedElsewhereError({ sessionId, owner, self, action });
   };
 
   type ReconciledPointerCandidate = {
@@ -19505,6 +19654,7 @@ export function createAgentChatService(args: {
     const targetId = instanceId.trim();
     if (!normalizedSessionId) throw new Error("Chat session id is required.");
     if (!targetId) throw new Error("Account id is required.");
+    assertChatRuntimeOwnedHere(normalizedSessionId, "switch the account of");
     const managed = ensureManagedSession(normalizedSessionId);
     if (resolveHandoffBlockedReason(managed)
       || accountSwitchesInFlight.has(normalizedSessionId)
@@ -26694,6 +26844,8 @@ export function createAgentChatService(args: {
       const snapshotMatchesCurrentStream = assistantMessageId != null
         && assistantMessageId === state.currentStreamMessageId;
       const turnId = startClaudeIdleTurn(managed, runtime, state);
+      // The turn stays open here; the result frame settles it and shows the notice.
+      if (isClaudeSyntheticImageErrorMessage(assistantMsg)) return;
       emitClaudeTranscriptRetraction(managed, assistantMsg.supersedes, "assistant_supersedes", turnId, providerMessageId);
       const content = Array.isArray(betaMessage?.content) ? betaMessage.content : [];
       // Text-block citations the answer makes (web_search_result_location, …).
@@ -27025,11 +27177,24 @@ export function createAgentChatService(args: {
       if (usage && metadata.cacheWrite1hTokens != null) {
         state.usage = { ...state.usage, cacheWrite1hTokens: metadata.cacheWrite1hTokens };
       }
-      if (resultIsError && turnId) {
+      // An image_error turn is explained by its failure notice alone; emitting
+      // the raw SDK error strings too would show the same failure twice.
+      if (resultIsError && turnId && !isClaudeImageErrorResult(resultMsg)) {
         for (const error of resultErrors.userFacing) {
           emitChatEvent(managed, { type: "error", message: error, turnId });
         }
       }
+      const failureNotice = turnId
+        ? claudeResultFailureNotice({
+          result: resultMsg,
+          status: terminalStatus,
+          userFacingErrors: resultErrors.userFacing,
+          userFacingErrorsShown: resultIsError && resultErrors.userFacing.length > 0,
+          contextOverflow: isClaudeContextOverflowResult(resultMsg, resultErrors.all),
+          assistantText: state.assistantText,
+        })
+        : null;
+      if (failureNotice && turnId) emitChatEvent(managed, { type: "error", ...failureNotice, turnId });
       observeClaudeCompactionUnavailable(
         managed,
         runtime,
@@ -27623,6 +27788,7 @@ export function createAgentChatService(args: {
         sessionId: runtime.sdkSessionId,
         forceUserMessage: true,
         getDirtyFileTextForPath,
+        logger,
       }) as unknown as SDKUserMessage;
       messageToSend.uuid = userMessageId as NonNullable<SDKUserMessage["uuid"]>;
       messageToSend.timestamp = new Date().toISOString();
@@ -28838,6 +29004,7 @@ export function createAgentChatService(args: {
           if (assistantMsg.error === "authentication_failed") {
             failClaudeTurnUnauthenticated();
           }
+          if (isClaudeSyntheticImageErrorMessage(assistantMsg)) continue;
           if (assistantMsg.error && onBackendDispatched) {
             throw new Error(`Claude rejected the prompt before starting the turn (${assistantMsg.error}).`);
           }
@@ -29351,7 +29518,8 @@ export function createAgentChatService(args: {
               );
             }
             for (const err of resultErrors.userFacing) {
-              if (isClaudeUsageLimitResultError(err)) continue;
+              // An image_error turn is explained by its failure notice alone.
+              if (isClaudeUsageLimitResultError(err) || isClaudeImageErrorResult(resultMsg)) continue;
               emitChatEvent(managed, {
                 type: "error",
                 message: err,
@@ -29359,6 +29527,15 @@ export function createAgentChatService(args: {
               });
             }
           }
+          const failureNotice = claudeResultFailureNotice({
+            result: resultMsg,
+            status: resultTerminalStatus,
+            userFacingErrors: resultErrors.userFacing,
+            userFacingErrorsShown: resultIsError && resultErrors.userFacing.length > 0,
+            contextOverflow: recoverFromContextOverflow,
+            assistantText,
+          });
+          if (failureNotice) emitChatEvent(managed, { type: "error", ...failureNotice, turnId });
           // A result frame is the provider's definitive acknowledgement of the
           // submitted prompt even when it reports a terminal failure. Keep the
           // turn on the normal result path so terminal_reason and overflow
@@ -29630,6 +29807,9 @@ export function createAgentChatService(args: {
       }
     } catch (error) {
       const failedBeforeBackendDispatch = Boolean(onBackendDispatched);
+      // Read before this branch reaps the session below: a signal ADE sends
+      // from here on is its own cleanup, not the cause of the failure.
+      const adeSignalledProcess = claudeSubprocessReaper.terminatedByAdeSince(managed.session.id, turnStartedAt);
       onBackendDispatched = undefined;
       clearClaudeTurnTimers();
       runtime.pauseIdleWatchdog = null;
@@ -29758,9 +29938,26 @@ export function createAgentChatService(args: {
           }
         }
 
+        // A SIGTERM/SIGKILL ADE did not send: say the process was stopped from
+        // outside rather than forwarding the SDK's bare "exited with code 143".
+        const stopSignal = !isAuthFailure && !adeSignalledProcess ? externalStopSignal(errorMessage) : null;
+        const externalStop = stopSignal
+          ? presentExternalProcessStop({
+              signal: stopSignal,
+              provider: "claude",
+              message: errorMessage,
+              otherBrain: siblingBrainOwnerOnDisk(managed.session.id),
+            })
+          : null;
         emitChatEvent(managed, {
           type: "error",
-          message: errorMessage,
+          message: externalStop?.body ?? errorMessage,
+          ...(externalStop
+            ? {
+                detail: errorMessage,
+                errorInfo: { category: "unknown" as const, provider: "Claude", presentation: externalStop },
+              }
+            : {}),
           turnId,
         });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
@@ -41577,6 +41774,16 @@ export function createAgentChatService(args: {
 
   type AgentChatCreateInternalArgs = AgentChatCreateArgs & {
     idempotencyKey?: string;
+    /**
+     * Passive lineage: the agent chat that launched this chat when it has no
+     * orchestration parent. Derived only by the public `createSession` wrapper
+     * from the RPC-stamped `runtimeActor`; never accepted from a caller.
+     * Internal callers (`handoffSession`, `handOffUsageLimitChat`,
+     * `acceptCrossMachineHandoffCore`, `recoverContinuity`) leave it unset and
+     * record nothing: a handoff or recovery continues a chat, it is not a
+     * launch by the actor.
+     */
+    launchedBySessionId?: string | null;
   };
 
   const createSessionInternal = async ({
@@ -41631,6 +41838,7 @@ export function createAgentChatService(args: {
     spawnKind: requestedSpawnKind,
     idempotencyKey,
     runtimeActor,
+    launchedBySessionId: requestedLaunchedBySessionId,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
     // A client that still sends Cursor's Fast toggle as a model option gets it
     // as the chat's Fast tier, the one control that now carries it.
@@ -41640,6 +41848,9 @@ export function createAgentChatService(args: {
     );
     const requestedFastMode = foldedRequestedCursorFast.fastMode;
     const normalizedParentSessionId = requestedOrchestrationParentSessionId?.trim() || null;
+    // Passive lineage: the launching agent chat, recorded only when there is no
+    // orchestration parent to carry the relation (the parent already does).
+    const launchedBySessionId = normalizedParentSessionId ? null : requestedLaunchedBySessionId?.trim() || null;
     if (normalizedParentSessionId && requestedSpawnKind !== "subagent" && requestedSpawnKind !== "peer") {
       throw new Error(
         "A parented agent chat requires spawnKind 'subagent' or 'peer'. Use subagent whenever the parent will need, join, or review the result; use peer only for fire-and-forget work.",
@@ -42234,6 +42445,7 @@ export function createAgentChatService(args: {
         ...collectSpawnLineageFields({
           orchestrationParentSessionId: requestedOrchestrationParentSessionId,
           spawnKind: requestedSpawnKind,
+          launchedBySessionId: launchedBySessionId ?? undefined,
         }, null),
       },
       transcriptPath,
@@ -42374,8 +42586,22 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
-  const createSession = async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
-    createSessionInternal(args);
+  const createSession = async (args: AgentChatCreateArgs): Promise<AgentChatSession> => {
+    // A caller-sent `launchedBySessionId` is dropped here: lineage comes only
+    // from the RPC-stamped runtime actor, never from the payload.
+    const {
+      launchedBySessionId: _callerSentLaunchedBy,
+      ...publicArgs
+    } = args as AgentChatCreateArgs & { launchedBySessionId?: unknown };
+    const actor = publicArgs.runtimeActor;
+    // A recovery continues an earlier chat; it is not a launch by the actor.
+    const launchedBySessionId = !publicArgs.orchestrationParentSessionId?.trim()
+      && !publicArgs.recoveredFromSessionId?.trim()
+      && actor?.kind === "agent"
+      ? actor.chatSessionId?.trim() || null
+      : null;
+    return createSessionInternal({ ...publicArgs, launchedBySessionId });
+  };
 
   /**
    * Escape hatch for a claude chat wedged mid-turn with no live query — the
@@ -42487,6 +42713,7 @@ export function createAgentChatService(args: {
     if (!targetId.length) {
       throw new Error("Select a target model before handing off this chat.");
     }
+    assertChatRuntimeOwnedHere(sourceId, "hand off");
 
     const managed = ensureManagedSession(sourceId);
     const sourceSession = await getSessionSummary(sourceId);
@@ -42707,7 +42934,9 @@ export function createAgentChatService(args: {
     // A native fork resumes the source's provider thread, which lives in the
     // source account's config home, so the fork must run as that same account.
     const forkInstanceId = nativeFork ? resolveSessionInstance(managed)?.id : undefined;
-    const created = await createSession({
+    // The caller's runtime actor stays for the permission ceiling. A handoff
+    // continues the source chat, so it passes no lineage field and records none.
+    const created = await createSessionInternal({
       laneId: targetLaneId,
       ...(args.runtimeActor ? { runtimeActor: args.runtimeActor } : {}),
       provider: targetProvider,
@@ -47297,24 +47526,19 @@ export function createAgentChatService(args: {
     }
   };
 
-  const guessImageMimeForPath = (p: string): string => {
-    const lower = p.toLowerCase();
-    if (lower.endsWith(".png")) return "image/png";
-    if (lower.endsWith(".webp")) return "image/webp";
-    if (lower.endsWith(".gif")) return "image/gif";
-    return "image/jpeg";
-  };
-
   /** Maximum bytes to inline for a non-image chat attachment. */
   const MAX_INLINE_BYTES = 512 * 1024; // 512 KB
 
-  const buildAgentPromptBlocks = async (
+  /**
+   * Text blocks for a worker prompt. Images that send bytes never come here:
+   * the workers receive them as paths and fit them themselves
+   * (`materializeWorkerImages`), so the caller filters them out first.
+   */
+  const buildAgentPromptTextBlocks = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
-  ): Promise<Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>> => {
-    const blocks: Array<
-      { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
-    > = [{ type: "text", text: promptText }];
+  ): Promise<Array<{ type: "text"; text: string }>> => {
+    const blocks: Array<{ type: "text"; text: string }> = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
       if (attachmentIsReferenceOnly(attachment)) {
         blocks.push({ type: "text", text: attachmentPathHint(attachment) });
@@ -47322,40 +47546,23 @@ export function createAgentChatService(args: {
       }
       try {
         let buf: Buffer;
-        if (attachment.type === "image") {
-          // An image has no path-shaped fallback here — it is inlined or it is
-          // a text hint — so the size check happens before the read, not after.
-          const imageSize = resolvedAttachmentDiskSize(attachment);
-          if (imageSize != null && exceedsProviderInlineLimit(imageSize)) {
-            blocks.push(inlineAttachmentHintPart(attachment.path, imageSize));
+        const dirtyBuf = await readDirtyResolvedAttachmentBytes(attachment);
+        if (dirtyBuf) {
+          buf = dirtyBuf;
+        } else {
+          const fileSize = resolvedAttachmentDiskSize(attachment);
+          if (fileSize == null) continue;
+          if (fileSize > MAX_INLINE_BYTES) {
+            blocks.push({
+              type: "text",
+              text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
+            });
             continue;
           }
-          buf = await readResolvedAttachmentBytes(attachment);
-        } else {
-          const dirtyBuf = await readDirtyResolvedAttachmentBytes(attachment);
-          if (dirtyBuf) {
-            buf = dirtyBuf;
-          } else {
-            const fileSize = resolvedAttachmentDiskSize(attachment);
-            if (fileSize == null) continue;
-            if (fileSize > MAX_INLINE_BYTES) {
-              blocks.push({
-                type: "text",
-                text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
-              });
-              continue;
-            }
-            buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
-          }
+          buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
         }
 
-        if (attachment.type === "image") {
-          blocks.push({
-            type: "image",
-            data: buf.toString("base64"),
-            mimeType: guessImageMimeForPath(attachment._resolvedPath),
-          });
-        } else if (buf.length <= MAX_INLINE_BYTES) {
+        if (buf.length <= MAX_INLINE_BYTES) {
           // Non-image file attachment -- include content as text if not binary
           if (hasNullByte(buf)) {
             blocks.push({
@@ -47387,7 +47594,7 @@ export function createAgentChatService(args: {
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
   ): Promise<string> => {
-    const promptBlocks = await buildAgentPromptBlocks(
+    const promptBlocks = await buildAgentPromptTextBlocks(
       promptText,
       // A reference-only image stays in: it is sent as a path hint, not bytes.
       resolvedAttachments.filter((attachment) => (
@@ -47395,10 +47602,7 @@ export function createAgentChatService(args: {
         && (attachment.type !== "image" || attachmentIsReferenceOnly(attachment))
       )),
     );
-    return promptBlocks
-      .filter((block): block is { type: "text"; text: string } => block.type === "text")
-      .map((block) => block.text)
-      .join("\n\n");
+    return promptBlocks.map((block) => block.text).join("\n\n");
   };
 
   const pathImagesFromResolved = (
@@ -51958,6 +52162,7 @@ export function createAgentChatService(args: {
     rawArgs: AgentChatSendArgs,
     options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
+    assertChatRuntimeOwnedHere(rawArgs.sessionId, "send to");
     // Composer @-mention chips expand here, before any routing decision, so a
     // fresh turn, a steer, and every provider all receive the same pointer
     // blocks. Skipped when the caller already prepared the message (the
@@ -52183,6 +52388,7 @@ export function createAgentChatService(args: {
       sessionId: runtime.sdkSessionId ?? null,
       forceUserMessage: true,
       getDirtyFileTextForPath,
+      logger,
     }) as unknown as SDKUserMessage;
 
     // Match Claude Code's own command queue. "next" is consumed between tool
@@ -52248,6 +52454,7 @@ export function createAgentChatService(args: {
     // of them shipping raw chips. Idempotent via the expansion marker.
     // A steer can be queued without starting a turn, so it is refused here as
     // well as in `prepareSendMessage`.
+    assertChatRuntimeOwnedHere(steerArgs.sessionId, "steer");
     assertNoRerunInFlight(managedSessions.get(steerArgs.sessionId));
     const expandedArgs = await materializePastedTextPrompt(await applyChatMentionExpansion(steerArgs));
     const {
@@ -53171,6 +53378,7 @@ export function createAgentChatService(args: {
     }: AgentChatMessageSessionArgs,
     options?: { trustedSpawnCompletion?: boolean },
   ): Promise<AgentChatMessageSessionResult> => {
+    assertChatRuntimeOwnedHere(sessionId, "message");
     const managed = ensureManagedSession(sessionId);
     const normalizedKind = normalizeMessageSessionKind(kind);
     const statusBefore = managed.session.status;
@@ -53442,6 +53650,7 @@ export function createAgentChatService(args: {
   };
 
   const cancelSteer = async (args: AgentChatCancelSteerArgs): Promise<void> => {
+    assertChatRuntimeOwnedHere(args.sessionId, "cancel a queued message in");
     const removed = await cancelSteerWithoutReview(args);
     const review = queuedSteerReviews.get(args.steerId);
     queuedSteerReviews.delete(args.steerId);
@@ -53544,6 +53753,7 @@ export function createAgentChatService(args: {
   };
 
   const editSteer = async (args: AgentChatEditSteerArgs): Promise<void> => {
+    assertChatRuntimeOwnedHere(args.sessionId, "edit a queued message in");
     // The editor holds only what the user typed; keep the review block the
     // steer carries in front of the new text.
     const review = queuedSteerReviews.get(args.steerId);
@@ -54170,6 +54380,7 @@ export function createAgentChatService(args: {
     visited: Set<string>,
   ): Promise<AgentChatInterruptResult> => {
     const mode = parseAgentChatStopMode(args.mode ?? DEFAULT_AGENT_CHAT_STOP_MODE);
+    assertChatRuntimeOwnedHere(args.sessionId, "interrupt");
     visited.add(args.sessionId);
     const result = await interruptProviderTurn(
       { sessionId: args.sessionId, mode: stopModeProviderMode(mode) },
@@ -54720,9 +54931,7 @@ export function createAgentChatService(args: {
     // a different brain legitimately takes a dormant chat over. The runtime
     // owner stamp is the live one, and it is what stops a resume from starting
     // a SECOND provider process for a chat that already has one.
-    if (!chatRuntimeAdoptable(sessionId)) {
-      throw new Error("Chat session is owned by another ADE process; cannot resume from here.");
-    }
+    assertChatRuntimeOwnedHere(sessionId, "resume");
 
     let managed = ensureManagedSession(sessionId);
 
@@ -55781,6 +55990,7 @@ export function createAgentChatService(args: {
     }
     const liveManaged = managedSessions.get(row.id) ?? liveManagedInitial;
     const liveSession = liveManaged?.session ?? null;
+    const foreignRuntimeOwner = liveForeignChatRuntimeOwner(row.id, persisted);
     const persistedProvider = liveSession?.provider ?? persisted?.provider ?? null;
     const provider = persistedProvider ?? providerFromToolType(row.toolType);
     if (persistedProvider && isChatToolType(row.toolType)) {
@@ -56112,11 +56322,18 @@ export function createAgentChatService(args: {
       // other live brain holds the chat, because this brain having no runtime
       // says nothing about a sibling that does. Neither → omitted, which the
       // type documents as "this host cannot say".
+      // A chat a live sibling brain runs is neither alive nor dead here — this
+      // brain cannot see it — so it names the owner instead.
       ...(liveManaged?.runtime
         ? { runtimeAlive: true }
-        : chatRuntimeAdoptable(row.id, persisted, { quiet: true })
-          ? { runtimeAlive: false }
-          : {}),
+        : foreignRuntimeOwner
+          ? {
+              runtimeOwnedElsewhere: {
+                pid: foreignRuntimeOwner.pid,
+                ...(foreignRuntimeOwner.socketPath ? { socketPath: foreignRuntimeOwner.socketPath } : {}),
+              },
+            }
+          : { runtimeAlive: false }),
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
@@ -56221,6 +56438,8 @@ export function createAgentChatService(args: {
     },
     sessionExists: (sessionId) => Boolean(sessionService.get(sessionId)),
     messageSession: (args) => messageSession(args),
+    ownedByAnotherBrain: (sessionId) => liveForeignChatRuntimeOwner(sessionId) != null,
+    assertDeliverableHere: (sessionId) => assertChatRuntimeOwnedHere(sessionId, "arm a wait that wakes"),
     whenReady: () => scheduledWorkReady,
   });
   chatWaits = chatWaitRegistry;
@@ -56252,6 +56471,7 @@ export function createAgentChatService(args: {
       sessionId: summary.sessionId,
       provider: summary.provider,
       sessionStatus: summary.status,
+      ownedElsewhere: summary.runtimeOwnedElsewhere ?? null,
       currentTurnStartedAt: summary.currentTurnStartedAt ?? null,
       lastActivityAt: summary.lastActivityAt ?? null,
       awaitingInput: summary.awaitingInput === true,
@@ -58224,6 +58444,7 @@ export function createAgentChatService(args: {
    * stores and their `pending_input_resolved` receipts.
    */
   const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<void> => {
+    assertChatRuntimeOwnedHere(args.sessionId, "answer input for");
     await deliverInputResponse(args);
     sessionService.clearTurnStartMarkers(args.sessionId);
     resetSessionActivity(args.sessionId);
@@ -62688,6 +62909,7 @@ export function createAgentChatService(args: {
   const rerunLastTurn = async (
     args: AgentChatRerunLastTurnArgs,
   ): Promise<AgentChatRerunLastTurnResult> => {
+    assertChatRuntimeOwnedHere(args.sessionId, "rerun the last turn of");
     const managed = ensureManagedSession(args.sessionId);
     const provider = managed.session.provider;
     if (provider !== "claude" && provider !== "codex") {
@@ -62877,6 +63099,7 @@ export function createAgentChatService(args: {
     /** Interrupt the turn after this long with no activity. Absent, null or 0 means no idle watch. */
     idleTimeoutMs?: number | null;
   }): Promise<AgentChatBackgroundTurnResult> => {
+    assertChatRuntimeOwnedHere(sessionId, "run a turn in");
     const managed = ensureManagedSession(sessionId);
     const trimmed = text.trim();
     if (!trimmed.length) {
@@ -63548,6 +63771,9 @@ export function createAgentChatService(args: {
         // provider-specific visible composer markers plus a short quiet window.
         return ptyService?.canAcceptScheduledTurn(schedule.sessionId) !== true;
       }
+      // Another live brain runs this chat and fires the row at its own turn
+      // boundary; firing it here would start a second provider process.
+      if (liveForeignChatRuntimeOwner(schedule.sessionId)) return true;
       const liveManaged = managedSessions.get(schedule.sessionId);
       const liveRuntime = liveManaged?.runtime?.kind === "claude" ? liveManaged.runtime : null;
       // Never enqueue a scheduler-owned wake behind a foreground turn. Queued

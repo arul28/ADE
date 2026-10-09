@@ -44,6 +44,9 @@ export const CHAT_STOP_REASON_PROVIDER_ENDED_TURN = "the provider ended the turn
 export const CHAT_STOP_REASON_WORKFLOW_ENDED = "the workflow ended";
 export const CHAT_STOP_REASON_CHAT_HANDED_OFF = "this chat was handed off to another model";
 
+/** The model Claude Code stamps on the messages it fabricates client-side (errors, refused images). Not a real model. */
+export const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
+
 /**
  * Who ended an agent's work, for the one card that has to say it out loud.
  *
@@ -2569,6 +2572,13 @@ export type AgentChatInteractionMode =
  */
 export type SpawnLineageSessionFields = {
   orchestrationParentSessionId?: string;
+  /**
+   * The agent chat that launched this session, recorded only when the launch
+   * has no `orchestrationParentSessionId` (a parented spawn already carries its
+   * parent). A passive fact: it does not nest the session under the launcher,
+   * wake the launcher, or change permissions. Absent when unknown or parented.
+   */
+  launchedBySessionId?: string;
   spawnKind?: AgentChatSpawnKind;
   /**
    * When the takeover banner was dismissed or Take over was chosen. Brain-side
@@ -2961,6 +2971,13 @@ export type AgentChatUsageLimitResume = {
   alternateAccount?: AgentChatUsageLimitAlternateAccount | null;
 };
 
+/** The brain that holds a chat's provider process, as a client can reach it. */
+export type AgentChatRuntimeOwnerRef = {
+  pid: number;
+  /** Its control socket (a named pipe on Windows), when it has one. */
+  socketPath?: string;
+};
+
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   sessionId: string;
   laneId: string;
@@ -3149,6 +3166,12 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
    * unknown rather than as dead.
    */
   runtimeAlive?: boolean;
+  /**
+   * Set when another live ADE brain on the same ADE home holds this chat's
+   * provider process. This host cannot see that brain's turn, so its own
+   * `status` for the chat is not the truth: ask the owner (`socketPath`).
+   */
+  runtimeOwnedElsewhere?: AgentChatRuntimeOwnerRef;
   /** True when this chat's durable schedules are paused. */
   scheduledWorkPaused?: boolean;
   /** KV-backed durable schedules. This is the management source of truth. */
@@ -4055,6 +4078,8 @@ export type AgentChatLaunchCliArgs = {
   credentialId?: string | null;
   /** Foreground opens/focuses the session; background leaves focus alone. */
   disposition?: "foreground" | "background";
+  /** Who made the call; see `AgentChatRuntimeActor`. Stamped by the RPC server only. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatLaunchCliResult = {

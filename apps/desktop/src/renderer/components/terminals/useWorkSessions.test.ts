@@ -2210,8 +2210,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => {
       expect(listSessionsCachedMock).toHaveBeenCalled();
     });
-    await waitFor(() => {
-      expect(setWorkViewStateSpy).toHaveBeenCalled();
+    // Let the initial refresh settle so its writes land before the spies reset.
+    await act(async () => {
+      await Promise.all(listSessionsCachedMock.mock.results.map((call) => call.value));
     });
     focusSessionSpy.mockClear();
     selectLaneSpy.mockClear();

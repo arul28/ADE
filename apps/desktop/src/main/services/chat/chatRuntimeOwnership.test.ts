@@ -65,6 +65,21 @@ describe("decideChatRuntimeOwnership", () => {
     ).toEqual({ adoptable: true, verdict: "self" });
   });
 
+  it.each([
+    // A project reopened inside one brain: new service, new brainId, same process.
+    ["an earlier chat service in this same process", { startedAt: SELF.startedAt }, { adoptable: true, verdict: "self" }],
+    // The pid was reused by a later process start, which is a different brain.
+    ["a different process start that reused this pid", { startedAt: "2026-09-18T19:00:00.000Z" }, { adoptable: false, verdict: "live-foreign-brain" }],
+  ])("decides a claim from %s by process identity, not brainId", (_label, stamp, expected) => {
+    expect(
+      decideChatRuntimeOwnership({
+        owner: owner({ brainId: "brain-earlier", pid: SELF.pid, ...stamp }),
+        self: SELF,
+        isProcessIdentityLive: () => true,
+      }),
+    ).toEqual(expected);
+  });
+
   it("ignores a claim made against a different ADE home, whose pid means nothing here", () => {
     expect(
       decideChatRuntimeOwnership({
