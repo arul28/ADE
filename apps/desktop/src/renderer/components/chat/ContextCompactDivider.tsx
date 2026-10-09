@@ -33,6 +33,10 @@ export function ContextCompactDivider({ event, startedAt, onRetry }: {
   const [now, setNow] = useState(Date.now());
   const running = event.state === "started";
   const failed = event.state === "failed";
+  // One click per failure: the retry starts a new compaction, which replaces
+  // this row as the latest one and removes its Retry.
+  const [retrying, setRetrying] = useState(false);
+  useEffect(() => setRetrying(false), [event.compactionId, event.state]);
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(() => setNow(Date.now()), 1_000);
@@ -86,7 +90,7 @@ export function ContextCompactDivider({ event, startedAt, onRetry }: {
           ? <span className="text-fg/35">{trigger}{countLabel}</span>
           : null}
         {failed && onRetry
-          ? <button type="button" className="text-[var(--color-warning)] underline underline-offset-2" onClick={onRetry}>Retry</button>
+          ? <button type="button" className="text-[var(--color-warning)] underline underline-offset-2" disabled={retrying} onClick={() => { setRetrying(true); onRetry(); }}>Retry</button>
           : null}
         <Hairline pulse={running} />
       </div>

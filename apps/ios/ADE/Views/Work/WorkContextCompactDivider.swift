@@ -10,8 +10,12 @@ struct WorkContextCompactDivider: View {
   var onRetry: (() -> Void)? = nil
   @State private var expanded = false
 
+  /// The structured lines only; provider text after `summary:` never counts.
+  private var header: [String] {
+    summary.map { workCompactSummaryHeader($0).components(separatedBy: "\n") } ?? []
+  }
   private func field(_ key: String) -> String? {
-    summary?.components(separatedBy: "\n").first(where: { $0.hasPrefix(key + ":") }).map { String($0.dropFirst(key.count + 1)) }
+    header.first(where: { $0.hasPrefix(key + ":") }).map { String($0.dropFirst(key.count + 1)) }
   }
   private var failed: Bool { field("state") == "failed" }
   /// The provider's own text. The parser writes it last behind a line-anchored
@@ -41,9 +45,8 @@ struct WorkContextCompactDivider: View {
     return "Context compacted" + (parsed.tokensLabel.map { " · " + $0 } ?? "") + (parsed.durationLabel.map { " · " + $0 } ?? "")
   }
   private var trigger: String {
-    let lines = summary?.components(separatedBy: "\n") ?? []
-    if lines.contains("Manual") { return "you asked" }
-    if lines.contains("Ade Fallback") { return "ADE (near limit)" }
+    if header.contains("Manual") { return "you asked" }
+    if header.contains("Ade Fallback") { return "ADE (near limit)" }
     return "automatic"
   }
   private var countLabel: String {
@@ -78,6 +81,8 @@ struct WorkContextCompactDivider: View {
         .font(.caption2)
         .foregroundStyle(failed ? ADEColor.warning : ADEColor.textSecondary)
         .frame(minHeight: 28)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title(at: context.date))
       }
       if expanded, let providerSummary {
         Text(providerSummary).font(.caption).foregroundStyle(ADEColor.textSecondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -132,20 +137,12 @@ struct WorkContextCompactSummary: Equatable {
   let durationLabel: String?
   let triggerLabel: String?
 
-  func accessibilityLabel(for title: String) -> String {
-    var parts = [title]
-    if let tokensLabel { parts.append(tokensLabel) }
-    if let durationLabel { parts.append(durationLabel) }
-    if let triggerLabel { parts.append(triggerLabel.lowercased()) }
-    return parts.joined(separator: ", ")
-  }
-
   static func parse(_ raw: String?) -> WorkContextCompactSummary {
     guard let raw else {
       return WorkContextCompactSummary(tokensLabel: nil, durationLabel: nil, triggerLabel: nil)
     }
 
-    let contentLines = raw
+    let contentLines = workCompactSummaryHeader(raw)
       .split(separator: "\n")
       .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { line in

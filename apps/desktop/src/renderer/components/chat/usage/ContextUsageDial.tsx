@@ -2,9 +2,10 @@ import { Link, useInRouterContext } from "react-router-dom";
 import { settingsRouteFor } from "../../settings/settingsManifest";
 import { providerDisplayName } from "../../../../shared/pendingInputLabels";
 import { HeaderSheet } from "../../app/HeaderSheet";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   HIDDEN_CONTEXT_COMPACT,
+  providerSupportsManualCompact,
   type ContextCompactControl,
 } from "../../../../shared/contextCompaction";
 import { SmartTooltip, type SmartTooltipContent } from "../../ui/SmartTooltip";
@@ -173,6 +174,19 @@ export function ContextUsageDial({
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ left: 0, bottom: 0 });
   const panelRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // Focus goes back to the dial, where the keyboard user left it.
+  const closeSheet = useCallback(() => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  }, []);
+  // The sheet is placed from the dial's rectangle once; a resize would strand it.
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("resize", close);
+    return () => window.removeEventListener("resize", close);
+  }, [open]);
   const compact = compactControl ?? HIDDEN_CONTEXT_COMPACT;
   const content = useMemo(
     () => buildContent(usage, modelLabel, compact),
@@ -246,7 +260,7 @@ export function ContextUsageDial({
 
   return <>
     <SmartTooltip forceEnabled side="top" content={content}>
-      <button type="button" className={triggerClassName} aria-label={ariaLabel} aria-expanded={open} onClick={(event) => {
+      <button ref={triggerRef} type="button" className={triggerClassName} aria-label={ariaLabel} aria-haspopup="dialog" aria-expanded={open} onClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
         // Right-align the sheet to the dial, above it, kept 8px inside the window.
         setPosition({
@@ -256,13 +270,18 @@ export function ContextUsageDial({
         setOpen(true);
       }}>{inner}</button>
     </SmartTooltip>
-    <HeaderSheet open={open} panelRef={panelRef} title="Context usage" onClose={() => setOpen(false)} width="w-80" panelStyle={{ top: "auto", right: "auto", ...position }}>
+    <HeaderSheet open={open} panelRef={panelRef} title="Context usage" onClose={closeSheet} width="w-80" panelStyle={{ top: "auto", right: "auto", ...position }}>
       <div className="flex flex-col gap-3 p-4 text-xs text-fg/65">
         <p>{formatContextTokens(usage.usedTokens) ?? "Unknown"} of {formatContextTokens(usage.contextWindow) ?? "unknown"} used{usage.compactAtTokens ? ` · compacts at ${formatContextTokens(usage.compactAtTokens)}` : ""}</p>
         {usage.compactAtTokens ? <p className="text-fg/45">{usage.compactAtSource === "setting" ? "Your setting" : `${providerDisplayName(usage.provider)} default`}</p> : null}
         {content.gitCommand ? <p className="font-mono">{content.gitCommand}</p> : null}
         {compact.status !== "hidden" ? <button type="button" disabled={compactDisabled} title={compact.status === "disabled" ? compact.reason : undefined} className="kit-btn kit-btn-primary" onClick={() => { if (compact.status === "ready") { setOpen(false); onCompact?.(); } }}>Compact now</button> : null}
-        {inRouter ? <Link to={settingsRouteFor(`agents.provider.${usage.provider}`)} onClick={() => setOpen(false)}>Provider compaction setting</Link> : <a href={settingsRouteFor(`agents.provider.${usage.provider}`)}>Provider compaction setting</a>}
+        {/* Only providers ADE can configure have a compaction setting to open. */}
+        {providerSupportsManualCompact(usage.provider)
+          ? inRouter
+            ? <Link to={settingsRouteFor(`agents.provider.${usage.provider}`)} onClick={() => setOpen(false)}>Provider compaction setting</Link>
+            : <a href={settingsRouteFor(`agents.provider.${usage.provider}`)} onClick={() => setOpen(false)}>Provider compaction setting</a>
+          : null}
       </div>
     </HeaderSheet>
   </>;

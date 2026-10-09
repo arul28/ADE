@@ -453,7 +453,8 @@ struct WorkProviderCompactionSettings: View {
     loading = true
     defer { loading = false }
     var value = settings
-    value["enabled"] = enabled
+    // Codex has no auto-compact toggle (desktop hides it too), so leave its stored value alone.
+    if provider != "codex" { value["enabled"] = enabled }
     if provider == "claude" || provider == "codex" {
       if !tokens.isEmpty {
         guard let number = Int(tokens), number > 0 else { errorMessage = "Enter a positive token count."; return }

@@ -254,9 +254,9 @@ export function latestContextUsageInput(
       if (current) current = { ...current, state: "compacting" };
       continue;
     }
+    // A failed compaction changed nothing: keep the last reading, and keep
+    // accepting the turn's own usage (no post-compaction protection).
     if ((event.type === "context_compact" || event.type === "codex_context_compaction") && event.state === "failed") {
-      compactionProtected = true;
-      protectedCompactionTurnId = event.turnId ?? null;
       if (current) current = { ...current, state: "measured" };
       continue;
     }

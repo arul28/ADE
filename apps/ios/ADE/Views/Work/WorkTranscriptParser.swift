@@ -384,6 +384,15 @@ func workContextCompactSummary(from eventDict: [String: Any]) -> String {
   return header + trailer.compactMap { $0 }.map { "\n" + $0 }.joined()
 }
 
+/// The structured fields of a compaction summary: the text before the
+/// provider's own summary, which follows a line-anchored `summary:` header.
+/// Field checks read only this part, so provider text cannot spoof them.
+func workCompactSummaryHeader(_ summary: String) -> String {
+  let lines = summary.components(separatedBy: "\n")
+  let end = lines.firstIndex(where: { $0.hasPrefix("summary:") }) ?? lines.count
+  return lines[..<end].joined(separator: "\n")
+}
+
 func workContextCompactMergeId(from eventDict: [String: Any], turnId: String?) -> String? {
   if let compactionId = optionalString(eventDict["compactionId"]) {
     return compactionId

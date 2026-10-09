@@ -1503,7 +1503,7 @@ struct WorkChatSessionView: View {
           let ended = workParsedDate(lastDone.timestamp) else { return nil }
     let post = transcript.reversed().compactMap { entry -> Int? in
       guard case .contextCompact(let summary, false, let tokens, _, _) = entry.event,
-            summary?.contains("state:failed") != true else { return nil }
+            !workCompactSummaryHeader(summary).contains("state:failed") else { return nil }
       return tokens
     }.first
     return WorkCompactFirstOffer(endedAt: ended, contextTokens: context, estimatedPostTokens: post ?? Int(Double(context) * 0.02), mode: chatSummaryContext.compactionIdleMode)

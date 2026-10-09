@@ -5768,7 +5768,7 @@ func workContextUsageViewModel(
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
     case .contextCompact(let summary, let isInProgress, let postTokens, let turnId, _):
-      if summary?.contains("state:failed") == true {
+      if workCompactSummaryHeader(summary).contains("state:failed") {
         compactionProtected = true
         protectedCompactionTurnId = turnId
         usageState = .measured
@@ -5824,6 +5824,8 @@ func workContextUsageViewModel(
           // fields sum every request in the turn and would overstate it.
           if !doneTurnId.isEmpty { snapshotTurnIds.insert(doneTurnId) }
           latestUsage = WorkUsageSummary(
+            compactAtTokens: latestUsage?.compactAtTokens,
+            compactAtSource: latestUsage?.compactAtSource,
             turnCount: 1,
             inputTokens: contextTokens,
             outputTokens: 0,

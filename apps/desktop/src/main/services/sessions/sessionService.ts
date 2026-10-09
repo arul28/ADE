@@ -2463,9 +2463,17 @@ export function createSessionService({
         options.onlyIfEmpty && current
           ? undefined
           : (() => {
+              const details = {
+                ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}),
+                ...(options.failDetail ? { failDetail: options.failDetail } : {}),
+              };
               const next = nextDetectedActivityReport(current, value, { turnStartedAt, nowIso });
-              if (!next) return undefined;
-              return { ...next, ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}), ...(options.failDetail ? { failDetail: options.failDetail } : {}) };
+              if (next) return { ...next, ...details };
+              // Same activity, newer details (a token count for "compacting", a
+              // reason for "compaction_failed"): keep the report, update them.
+              const changed = current?.value === value && Object.entries(details)
+                .some(([key, detail]) => (current as Record<string, unknown>)[key] !== detail);
+              return changed && current ? { ...current, ...details } : undefined;
             })()
       ));
     },

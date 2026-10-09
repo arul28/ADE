@@ -397,7 +397,9 @@ extension WorkChatSessionView {
         onOpenFile: { path in Task { await onOpenFile(path) } },
         onOpenPr: { number in Task { await onOpenPr(number) } },
         onCompact: { Task {
-          if await !onSend("/compact", [], .queue), errorMessage == nil {
+          if await onSend("/compact", [], .queue) {
+            errorMessage = nil
+          } else if errorMessage == nil {
             errorMessage = "Couldn’t start compacting. Try again."
           }
         } }

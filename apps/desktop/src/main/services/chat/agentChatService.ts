@@ -20634,6 +20634,10 @@ export function createAgentChatService(args: {
       if (event.state === "started" && event.turnId && compactOnlyTurns.has(event.turnId)) event = { ...event, trigger: "manual" };
       const open = openNativeCompactions.get(managed.session.id) ?? new Map();
       const key = event.compactionId ?? event.turnId ?? "native";
+      // A failure event may not know who asked (OpenCode reports none); the
+      // start event does, so a failed manual compaction still reads "you asked".
+      const started = open.get(key);
+      if (event.state === "failed" && started) event = { ...event, trigger: started.trigger };
       if (event.state === "started") open.set(key, event);
       else open.delete(key);
       if (open.size) openNativeCompactions.set(managed.session.id, open);
@@ -25715,13 +25719,15 @@ export function createAgentChatService(args: {
 
     if (/^\/compact(?:\s|$)/i.test(slashText)) {
       try {
-        runtime.manualCompactionPending = true;
         if (slashText.replace(/^\/compact(?:\s+|$)/i, "").trim()) {
           emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Codex compaction ignores custom instructions." });
         }
         await runtime.request("thread/compact/start", {
           threadId: managed.session.threadId,
         });
+        // Only after Codex accepts it: a compaction item that arrives earlier
+        // belongs to an automatic compaction already under way.
+        runtime.manualCompactionPending = true;
         completeInlineCodexSlash("Codex context compaction started.");
       } catch (error) {
         runtime.manualCompactionPending = false;
@@ -27034,7 +27040,8 @@ export function createAgentChatService(args: {
       // "Error during compaction" under a later, successful /compact). Its
       // origin time sits well before this turn began. The tolerance covers an
       // idle-started turn, whose start is stamped when its first block arrives.
-      if (!snapshotMatchesCurrentStream && originTimestamp && managed.session.currentTurnStartedAt
+      // Text resumed after incomplete thinking keeps its original time on purpose.
+      if (!snapshotMatchesCurrentStream && !resumedFromIncompleteThinking && originTimestamp && managed.session.currentTurnStartedAt
         && Date.parse(originTimestamp) < Date.parse(managed.session.currentTurnStartedAt) - STALE_ASSISTANT_ORIGIN_TOLERANCE_MS) return;
       const turnId = startClaudeIdleTurn(managed, runtime, state);
       // The turn stays open here; the result frame settles it and shows the notice.
@@ -29201,8 +29208,10 @@ export function createAgentChatService(args: {
           const assistantWireUuid = compactString(assistantMsg.uuid);
           const assistantProviderMessageId = assistantMessageId ?? assistantWireUuid ?? null;
           const assistantOriginTimestamp = compactString(assistantMsg.timestamp);
-          if (assistantOriginTimestamp && Date.parse(assistantOriginTimestamp) < turnStartedAt - STALE_ASSISTANT_ORIGIN_TOLERANCE_MS) continue;
           const resumedFromIncompleteThinking = assistantMsg.resumed_from_incomplete_thinking === true;
+          // Same stale-replay guard as the streaming path; resumed text keeps its original time.
+          if (!resumedFromIncompleteThinking && assistantOriginTimestamp
+            && Date.parse(assistantOriginTimestamp) < turnStartedAt - STALE_ASSISTANT_ORIGIN_TOLERANCE_MS) continue;
           emitClaudeTranscriptRetraction(
             managed,
             assistantMsg.supersedes,
@@ -48194,8 +48203,6 @@ export function createAgentChatService(args: {
         if (ev.type === "context_usage" && ev.usage.maxTokens > 0) {
           runtime.eventMapperState.contextWindow = ev.usage.maxTokens;
           runtime.eventMapperState.lastContextTokens = ev.usage.totalTokens;
-          const model = resolveSessionModelDescriptor(managed.session);
-          if (model) model.contextWindow = ev.usage.maxTokens;
         }
         if (!isCloud && turnId) noteCursorSdkVisibleOutput(runtime, turnId, meta?.runId ?? null, ev.type);
         emitCursorSdkMappedEvent(managed, runtime, ev);

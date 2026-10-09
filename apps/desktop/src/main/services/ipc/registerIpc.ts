@@ -6943,7 +6943,9 @@ export function registerIpc({
       ? record.settings as Partial<ProviderInstanceSettings>
       : {};
     const provider = providerInstanceProvider(record.provider);
-    const result = getMachineProviderInstanceStore().setProviderSettings(provider, settings);
+    // An account card's compaction setting targets that account, as the runtime action does.
+    const instanceId = typeof record.instanceId === "string" ? record.instanceId : undefined;
+    const result = getMachineProviderInstanceStore().setProviderSettings(provider, settings, instanceId);
     if (typeof settings.smartBalance === "boolean") {
       captureProviderAccount("balance_changed", settings.smartBalance ? "enabled" : "disabled", provider);
     }

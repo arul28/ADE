@@ -41,7 +41,12 @@ export function CompactionSettings({ provider, value, account = false, onChange 
       className={NUMBER_INPUT_CLASS}
       onBlur={(event) => {
         const parsed = parsePositiveTokenInput(event.target.value, max);
-        if (parsed === "invalid") return;
+        if (parsed === "invalid") {
+          // Put the saved value back and say why, instead of keeping text that was never saved.
+          event.target.value = settings[key] != null ? String(settings[key]) : "";
+          showToast({ tone: "warning", title: `${label}: enter a whole number above 0${max ? `, at most ${max.toLocaleString("en-US")}` : ""}.` });
+          return;
+        }
         void save({ ...settings, [key]: parsed });
       }} />
   );

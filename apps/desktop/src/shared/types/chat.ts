@@ -3343,7 +3343,12 @@ export type AgentChatContextUsageCategory = {
 export type AgentChatContextUsage = {
   categories: AgentChatContextUsageCategory[];
   totalTokens: number;
+  /** The model's maximum context window. The meter fills against this. */
   maxTokens: number;
+  /**
+   * Claude SDK `raw_max_tokens`: the resolved auto-compact window (a setting,
+   * or the provider's policy window), not the model maximum.
+   */
   rawMaxTokens?: number;
   compactAtTokens?: number;
   compactAtSource?: "setting" | "provider";

@@ -254,7 +254,10 @@ export function sessionStatusPresentation(
   // becomes the more current status and must not be hidden by the last one.
   // It never changes the phase; Needs you, snooze, and woke remain
   // higher-priority signals.
-  const reportedActivity = (phase === "running" && liveness === "turn") || activity.activityStatus?.value === "compaction_failed"
+  // A failed compaction stays visible after its turn, but only while the chat is
+  // still open (ready or idle); an ended or stopped chat says so instead.
+  const compactionFailedShows = activity.activityStatus?.value === "compaction_failed" && (phase === "ready" || phase === "idle");
+  const reportedActivity = (phase === "running" && liveness === "turn") || compactionFailedShows
     ? currentActivityReport(activity.activityStatus, activity.currentTurnStartedAt)
     : null;
   const nativePlanning = phase === "running" && liveness === "turn" && activity.chatActivityMode === "planning";
