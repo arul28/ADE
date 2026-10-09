@@ -2279,6 +2279,19 @@ export async function createAdeRuntime(args: {
         sessionActivityReportingEnabled,
         adeDir: paths.adeDir,
         transcriptsDir: paths.transcriptsDir,
+        // Both are declared later in this scope — the launch service is built
+        // *from* this service, and the machine identity comes from the sync
+        // relay store. Reading them through closures keeps the cycle from
+        // existing; before each is initialized the getter throws and the
+        // caller treats the dependency as absent, which is exactly right.
+        getChatLaunchService: () => chatLaunchService,
+        getLocalMachineKey: () => {
+          try {
+            return cloudRelayStore.getMachineIdentity().machineKey;
+          } catch {
+            return null;
+          }
+        },
         fileService: headlessLinearServices.fileService,
         linearIssueTracker: headlessLinearServices.linearIssueTracker,
         githubService: headlessLinearServices.githubService,

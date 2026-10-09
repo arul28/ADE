@@ -5691,6 +5691,8 @@ export type DraftEntry = {
   attachmentsAvailable?: boolean;
   provider: string | null;
   modelId: string | null;
+  /** The runtime-facing model string the composer would launch with. */
+  model?: string | null;
   createdAt: string;
   updatedAt?: string;
   /** Absent on a pre-scheduling ADE runtime — treat as "draft". */
@@ -5751,6 +5753,8 @@ export type DraftScheduleInput = {
   graceSeconds?: number;
   provider?: string | null;
   modelId?: string | null;
+  /** Runtime-facing model string; required when `targetKind` is "new". */
+  model?: string | null;
   permissionMode?: string | null;
   thinking?: string | null;
   scheduledBy?: DraftScheduledBy;

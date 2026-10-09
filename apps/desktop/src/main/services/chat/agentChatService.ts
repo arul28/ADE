@@ -58,7 +58,16 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
-import { listDraftAttachmentPaths } from "./draftService";
+import {
+  getDraft,
+  listDraftAttachmentPaths,
+  listDueScheduledDrafts,
+  nextScheduledDraftFireAt,
+  setDraftStatus,
+  type DraftDb,
+} from "./draftService";
+import { deliverDraft, type DraftDeliveryOutcome } from "./draftDelivery";
+import { createDraftScheduler } from "./draftScheduler";
 import { ClaudeInputPump } from "./claudeInputPump";
 import { createSessionActivityDetector, type SessionActivityDetector } from "./sessionActivityDetector";
 import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
@@ -256,6 +265,7 @@ import type { GithubService } from "../github/githubService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import { createChatLaunchDefaultsStore } from "./chatLaunchDefaults";
+import type { ChatLaunchArgs } from "../../../shared/types/chatLaunch";
 import { applySteerOrder, moveSteerId } from "../../../shared/steerOrder";
 import { createParentWakeBatcher } from "./parentWakeBatcher";
 import {
@@ -726,6 +736,7 @@ import type {
   AgentChatSwitchAccountArgs,
   AgentChatSwitchAccountResult,
   AgentChatUsageLimitAlternateAccount,
+  DraftEntry,
 } from "../../../shared/types/chat";
 import type { UsageAccount, UsageSnapshot, UsageWindow } from "../../../shared/types/usage";
 import {
@@ -10014,6 +10025,20 @@ export function createAgentChatService(args: {
       limit?: number;
     }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor: unknown }>;
   } | null;
+  /**
+   * Lazily reachable new-chat launcher, used by a scheduled send whose target
+   * is a new chat rather than an existing one. Lazy on purpose: the host builds
+   * the launch service *from* this service, so holding it directly would be a
+   * cycle. Absent (tests, embedders) means a "new chat" schedule reports itself
+   * as blocked instead of being delivered somewhere the user did not name.
+   */
+  getChatLaunchService?: () => { start: (args: ChatLaunchArgs) => Promise<unknown> } | null;
+  /**
+   * This host's account-level machine key. A scheduled send names a machine,
+   * and only the machine whose key matches delivers it, so this is what stops
+   * two synced brains from both sending the same row.
+   */
+  getLocalMachineKey?: () => string | null;
   prService?: ReturnType<typeof createPrService> | null;
   diskPressureMonitor?: DiskPressureMonitor | null;
   /**
@@ -60091,6 +60116,7 @@ export function createAgentChatService(args: {
     clearAllCursorCloudHydrationState();
     clearAllDevinCloudAttentionState();
     scheduledWorkScheduler?.dispose();
+    draftScheduler.stop();
     autoResume.forgetAll();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
@@ -64237,6 +64263,163 @@ export function createAgentChatService(args: {
     scheduledWorkLoaded = true;
   });
 
+  /**
+   * Scheduled sends. There is no schedule file: the drafts table is the only
+   * state, so a restart, a sync from another machine, or an edit in the
+   * composer all take effect on the next arm with nothing to keep in step.
+   *
+   * Only the machine a send names delivers it. A row with no machine is
+   * machine-agnostic, but a row naming a machine is delivered from here only
+   * when this host's machine key matches — otherwise two brains holding the
+   * same synced row would both send it.
+   */
+  const localDraftMachineKey = (): string | null => {
+    try {
+      return args.getLocalMachineKey?.() ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const draftDeliveryDeps = {
+    now: () => Date.now(),
+    targetChatExists: (sessionId: string) => {
+      const row = sessionService.get(sessionId);
+      return Boolean(row && !row.archivedAt);
+    },
+    // Replicated images are the norm, so a missing file means the copy has
+    // not landed here yet — hold the send rather than deliver without it.
+    attachmentsReady: (draft: { attachments?: { type: string; path: string }[] }) =>
+      (draft.attachments ?? []).every((attachment) => (
+        attachment.type !== "image" || fs.existsSync(attachment.path)
+      )),
+    sendToChat: async ({ sessionId, text, attachments }: {
+      sessionId: string;
+      text: string;
+      attachments: AgentChatFileRef[];
+    }) => {
+      // "auto" is the programmatic twin of the person pressing send: it joins
+      // a live turn where the provider supports that, and starts a new turn
+      // otherwise, so the message reads as theirs rather than as agent work.
+      await messageSession({ sessionId, text, kind: "auto", attachments });
+    },
+    createChatAndSend: async ({
+      laneId,
+      text,
+      attachments,
+      provider,
+      model,
+      modelId,
+      permissionMode,
+      thinking,
+    }: {
+      laneId: string;
+      text: string;
+      attachments: AgentChatFileRef[];
+      provider: string | null;
+      model: string | null;
+      modelId: string | null;
+      permissionMode: string | null;
+      thinking: string | null;
+    }) => {
+      const launches = args.getChatLaunchService?.() ?? null;
+      if (!launches) {
+        throw new Error("This host cannot start a new chat for a scheduled send.");
+      }
+      if (!provider || !model) {
+        // The service refuses to arm a new-chat schedule without these, so this
+        // is a row from an older build rather than something the user can fix.
+        throw new Error("This send has no model to start its new chat with.");
+      }
+      await launches.start({
+        kind: "chat",
+        // Background: nobody is watching for the composer to hand off to.
+        mode: "background",
+        launchId: randomUUID(),
+        laneId,
+        prompt: text,
+        attachments,
+        modelId,
+        provider,
+        chat: {
+          create: {
+            provider: provider as AgentChatProvider,
+            model,
+            ...(modelId ? { modelId } : {}),
+            ...(permissionMode ? { permissionMode: permissionMode as AgentChatPermissionMode } : {}),
+            ...(thinking ? { reasoningEffort: thinking } : {}),
+          },
+          message: { text, attachments },
+        },
+      });
+    },
+    logger,
+  };
+
+  /**
+   * The drafts store needs a real database handle, and this host's `db` is the
+   * guarded accessor whose members are optional. Narrowing once here keeps the
+   * "is there a database at all" question in one place.
+   */
+  const draftDb = (): DraftDb | null => {
+    const candidate = db;
+    return candidate
+      && typeof candidate.get === "function"
+      && typeof candidate.all === "function"
+      && typeof candidate.run === "function"
+      ? candidate as DraftDb
+      : null;
+  };
+
+  const recordDraftOutcome = (entry: DraftEntry, outcome: DraftDeliveryOutcome): void => {
+    const store = draftDb();
+    if (!store) return;
+    if (outcome.status === "sent") {
+      setDraftStatus(store, entry.id, { status: "sent", firedAt: outcome.firedAt, lastError: null });
+      return;
+    }
+    if (outcome.status === "retry") {
+      // Leave the row armed; record why it is waiting without unarming it.
+      setDraftStatus(store, entry.id, { status: "scheduled", lastError: outcome.error });
+      return;
+    }
+    setDraftStatus(store, entry.id, { status: outcome.status, lastError: outcome.error });
+  };
+
+  const draftScheduler = createDraftScheduler({
+    dueNow: (nowMs) => {
+      const store = draftDb();
+      return store ? listDueScheduledDrafts(store, localDraftMachineKey(), nowMs) : [];
+    },
+    nextFireAt: () => {
+      const store = draftDb();
+      return store ? nextScheduledDraftFireAt(store, localDraftMachineKey()) : null;
+    },
+    deliver: (entry) => deliverDraft(entry, draftDeliveryDeps),
+    onOutcome: recordDraftOutcome,
+    logger,
+  });
+  draftScheduler.start();
+
+  /**
+   * Deliver one draft immediately, whatever its fire time. Used by "Send now"
+   * and by resending a blocked or missed row. The row is not unarmed first: a
+   * failed manual send leaves the schedule it already had.
+   */
+  const sendDraftNow = async (draftId: string): Promise<{ ok: boolean; error?: string }> => {
+    const store = draftDb();
+    if (!store) return { ok: false, error: "Chat storage is not available." };
+    const entry = getDraft(store, draftId);
+    if (!entry) return { ok: false, error: "That draft is gone." };
+    const outcome = await deliverDraft(
+      { ...entry, scheduledAt: new Date().toISOString() },
+      draftDeliveryDeps,
+    );
+    recordDraftOutcome(entry, outcome);
+    return outcome.status === "sent"
+      ? { ok: true }
+      : { ok: false, error: outcome.error };
+  };
+
   const isTranscriptPathActive = (filePath: string): boolean => {
     const normalized = path.resolve(filePath);
     if (
@@ -64293,6 +64476,14 @@ export function createAgentChatService(args: {
 
   return {
     createSession,
+    /** Deliver a draft right now, whatever its fire time (the "Send now" action). */
+    sendDraftNow,
+    /**
+     * Re-arm the scheduled-send timer. Called after this machine creates,
+     * edits, or cancels a draft, so a newly armed send does not wait for the
+     * periodic sweep to be noticed.
+     */
+    refreshDraftScheduler: () => draftScheduler.refresh(),
     /**
      * Run the stale-run reconcile now instead of waiting for the 60 s timer.
      * Named on the service (rather than left to the interval) so diagnostics —

@@ -17,6 +17,13 @@ import {
 import type { AdeDb } from "../state/kvDb";
 import type { SqlValue } from "../state/kvDb";
 
+/**
+ * The slice of the project database the draft store needs. Every public
+ * function takes this rather than `AdeDb` because the chat service reaches its
+ * database through a guarded `args.db` whose members are optional there.
+ */
+export type DraftDb = Pick<AdeDb, "get" | "all" | "run"> & Partial<Pick<AdeDb, "sync">>;
+
 export {
   MAX_DRAFT_ATTACHMENTS,
   MAX_DRAFTS,
@@ -52,6 +59,7 @@ type DraftRow = {
   attachment_origin_site_id: string | null;
   provider: string | null;
   model_id: string | null;
+  model: string | null;
   created_at: string;
   updated_at: string | null;
   kind: string | null;
@@ -73,7 +81,7 @@ type DraftRow = {
 };
 
 const DRAFT_COLUMNS = `
-  id, text, attachments_json, attachment_origin_site_id, provider, model_id, created_at,
+  id, text, attachments_json, attachment_origin_site_id, provider, model_id, model, created_at,
   updated_at, kind, status, scheduled_at, delivery_policy, grace_seconds, target_kind,
   target_session_id, target_lane_id, target_machine_key, origin_session_id, permission_mode,
   thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error
@@ -196,6 +204,7 @@ function fromRow(row: DraftRow, localSiteId: string | null): DraftEntry {
     attachmentsAvailable: attachments.length === storedAttachments.length,
     provider: row.provider,
     modelId: row.model_id,
+    model: row.model,
     createdAt: row.created_at,
     updatedAt: row.updated_at ?? row.created_at,
     kind: asEnum(row.kind, DRAFT_KINDS) ?? "draft",
@@ -223,7 +232,7 @@ function fromRow(row: DraftRow, localSiteId: string | null): DraftEntry {
  * seen. That keeps locally-created rows on top even when this machine's clock
  * lags the machine that created the newest synced row.
  */
-function nextCreatedAt(db: AdeDb): string {
+function nextCreatedAt(db: DraftDb): string {
   const latest = db.get<{ created_at: string }>(
     "select created_at from prompt_stashes order by created_at desc limit 1",
   )?.created_at;
@@ -287,13 +296,13 @@ function pruneDraftRetention(db: DraftRetentionDb, nowMs = Date.now()): void {
 }
 
 /** Plain-draft rows (the ones the 20-row ceiling applies to). */
-function countPlainDrafts(db: AdeDb): number {
+function countPlainDrafts(db: DraftDb): number {
   return db.get<{ count: number }>(
     "select count(*) as count from prompt_stashes where coalesce(kind, 'draft') = 'draft'",
   )?.count ?? 0;
 }
 
-function countPendingScheduledDrafts(db: AdeDb): number {
+function countPendingScheduledDrafts(db: DraftDb): number {
   return db.get<{ count: number }>(
     `
       select count(*) as count
@@ -304,7 +313,7 @@ function countPendingScheduledDrafts(db: AdeDb): number {
 }
 
 export function listDrafts(
-  db: AdeDb,
+  db: DraftDb,
   limit = MAX_DRAFTS,
 ): DraftEntry[] {
   pruneDraftRetention(db);
@@ -321,7 +330,7 @@ export function listDrafts(
   ).map((row) => fromRow(row, currentSiteId(db)));
 }
 
-export function getDraft(db: AdeDb, id: string): DraftEntry | null {
+export function getDraft(db: DraftDb, id: string): DraftEntry | null {
   const normalizedId = id.trim();
   if (!normalizedId) return null;
   const row = db.get<DraftRow>(
@@ -366,6 +375,7 @@ type NormalizedSchedule = {
   graceSeconds: number | null;
   provider: string | null;
   modelId: string | null;
+  model: string | null;
   permissionMode: string | null;
   thinking: string | null;
   scheduledBy: DraftScheduledBy;
@@ -400,6 +410,13 @@ function normalizeSchedule(value: unknown, nowMs = Date.now()): NormalizedSchedu
   if (targetKind === "new" && !targetLaneId) {
     throw new Error("Choose the lane a new chat should start in.");
   }
+  // A brand-new chat has to be created with a real model, and the scheduled
+  // send captures the composer's, so require it here rather than discovering
+  // the gap at fire time when nobody is watching.
+  const newChatModel = optionalString(args.model);
+  if (targetKind === "new" && !newChatModel) {
+    throw new Error("Choose a model for the new chat.");
+  }
 
   const deliveryPolicy = asEnum(args.deliveryPolicy, DELIVERY_POLICIES) ?? "wait";
   let graceSeconds: number | null = null;
@@ -424,6 +441,7 @@ function normalizeSchedule(value: unknown, nowMs = Date.now()): NormalizedSchedu
     graceSeconds,
     provider: optionalString(args.provider),
     modelId: optionalString(args.modelId),
+    model: optionalString(args.model),
     permissionMode: optionalString(args.permissionMode),
     thinking: optionalString(args.thinking),
     scheduledBy: asEnum(args.scheduledBy, ["user", "agent"] as const) ?? "user",
@@ -432,7 +450,7 @@ function normalizeSchedule(value: unknown, nowMs = Date.now()): NormalizedSchedu
 }
 
 export function createDraft(
-  db: AdeDb,
+  db: DraftDb,
   value: unknown,
 ): DraftEntry {
   const args = objectRecord(value);
@@ -466,6 +484,7 @@ export function createDraft(
     attachmentsAvailable: true,
     provider: schedule?.provider ?? optionalString(args.provider),
     modelId: schedule?.modelId ?? optionalString(args.modelId),
+    model: schedule?.model ?? optionalString(args.model),
     createdAt: nextCreatedAt(db),
     updatedAt: nowIso,
     kind: schedule ? "scheduled" : "draft",
@@ -488,12 +507,12 @@ export function createDraft(
   db.run(
     `
       insert into prompt_stashes(
-        id, text, attachments_json, attachment_origin_site_id, provider, model_id, created_at,
+        id, text, attachments_json, attachment_origin_site_id, provider, model_id, model, created_at,
         updated_at, kind, status, scheduled_at, delivery_policy, grace_seconds, target_kind,
         target_session_id, target_lane_id, target_machine_key, origin_session_id, permission_mode,
         thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error
       )
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       entry.id,
@@ -502,6 +521,7 @@ export function createDraft(
       attachmentOriginSiteId,
       entry.provider,
       entry.modelId,
+      entry.model ?? null,
       entry.createdAt,
       nowIso,
       entry.kind ?? "draft",
@@ -527,7 +547,7 @@ export function createDraft(
   return entry;
 }
 
-export function deleteDraft(db: AdeDb, id: string): boolean {
+export function deleteDraft(db: DraftDb, id: string): boolean {
   const normalizedId = id.trim();
   if (!normalizedId) {
     throw new Error("A draft id is required.");
@@ -551,7 +571,7 @@ export function deleteDraft(db: AdeDb, id: string): boolean {
  * instant is still decided by CRR convergence afterwards rather than before —
  * see docs/features/chat/drafts-and-scheduled-send.md.
  */
-export function claimDraft(db: AdeDb, id: string): DraftEntry | null {
+export function claimDraft(db: DraftDb, id: string): DraftEntry | null {
   const normalizedId = id.trim();
   if (!normalizedId) {
     throw new Error("A draft id is required.");
@@ -572,7 +592,7 @@ export function claimDraft(db: AdeDb, id: string): DraftEntry | null {
  * Edit a draft's text, or arm/retime/clear its schedule. Returns the updated
  * row, or null when the draft is gone (taken on another machine).
  */
-export function updateDraft(db: AdeDb, value: unknown): DraftEntry | null {
+export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
   const args = objectRecord(value);
   const id = optionalString(args.id);
   if (!id) throw new Error("A draft id is required.");
@@ -600,6 +620,7 @@ export function updateDraft(db: AdeDb, value: unknown): DraftEntry | null {
     patch.target_session_id = null;
     patch.target_lane_id = null;
     patch.target_machine_key = null;
+    patch.model = null;
     patch.permission_mode = null;
     patch.thinking = null;
     patch.scheduled_by = null;
@@ -621,6 +642,7 @@ export function updateDraft(db: AdeDb, value: unknown): DraftEntry | null {
     patch.target_session_id = schedule.targetSessionId;
     patch.target_lane_id = schedule.targetLaneId;
     patch.target_machine_key = schedule.targetMachineKey;
+    patch.model = schedule.model;
     patch.permission_mode = schedule.permissionMode;
     patch.thinking = schedule.thinking;
     patch.scheduled_by = schedule.scheduledBy;
@@ -641,7 +663,7 @@ export function updateDraft(db: AdeDb, value: unknown): DraftEntry | null {
 
 /** Statuses/errors the scheduler writes back onto a row. */
 export function setDraftStatus(
-  db: AdeDb,
+  db: DraftDb,
   id: string,
   patch: {
     status: DraftStatus;
@@ -671,7 +693,7 @@ export function setDraftStatus(
  * row is visible over sync but must not be delivered from here.
  */
 export function listDueScheduledDrafts(
-  db: AdeDb,
+  db: DraftDb,
   machineKey: string | null,
   nowMs = Date.now(),
 ): DraftEntry[] {
@@ -698,7 +720,7 @@ export function listDueScheduledDrafts(
 }
 
 /** Every armed send, for the drafts list's Scheduled bucket. */
-export function listScheduledDrafts(db: AdeDb): DraftEntry[] {
+export function listScheduledDrafts(db: DraftDb): DraftEntry[] {
   const localSiteId = currentSiteId(db);
   return db.all<DraftRow>(
     `
@@ -708,6 +730,34 @@ export function listScheduledDrafts(db: AdeDb): DraftEntry[] {
       order by scheduled_at asc, created_at desc
     `,
   ).map((row) => fromRow(row, localSiteId));
+}
+
+/**
+ * The soonest fire time this machine still has to wake for, or null when it
+ * owns nothing pending. Machine-untargeted rows belong to whichever runtime is
+ * running, so they count here; another machine's targeted row does not.
+ */
+export function nextScheduledDraftFireAt(
+  db: DraftDb,
+  machineKey: string | null,
+): number | null {
+  const rows = db.all<Pick<DraftRow, "scheduled_at" | "target_machine_key">>(
+    `
+      select scheduled_at, target_machine_key
+      from prompt_stashes
+      where kind = 'scheduled'
+        and status = 'scheduled'
+        and scheduled_at is not null
+      order by scheduled_at asc
+    `,
+  );
+  for (const row of rows) {
+    const target = row.target_machine_key?.trim() || null;
+    if (target && (machineKey == null || target !== machineKey)) continue;
+    const fireAt = row.scheduled_at ? Date.parse(row.scheduled_at) : Number.NaN;
+    if (Number.isFinite(fireAt)) return fireAt;
+  }
+  return null;
 }
 
 export type DraftScheduleInputType = DraftScheduleInput;

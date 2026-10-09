@@ -3707,6 +3707,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table prompt_stashes add column target_lane_id text");
   safeAddColumn(db, "alter table prompt_stashes add column target_machine_key text");
   safeAddColumn(db, "alter table prompt_stashes add column origin_session_id text");
+  safeAddColumn(db, "alter table prompt_stashes add column model text");
   safeAddColumn(db, "alter table prompt_stashes add column permission_mode text");
   safeAddColumn(db, "alter table prompt_stashes add column thinking text");
   safeAddColumn(db, "alter table prompt_stashes add column scheduled_by text");
