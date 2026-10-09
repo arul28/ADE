@@ -426,7 +426,7 @@ func workToolActivityPresentation(tool: String, argsText: String?) -> WorkToolAc
 
 func workToolArgPreview(tool: String, argsText: String?) -> String? {
   guard let argsText else { return nil }
-  let trimmed = argsText.trimmingCharacters(in: .whitespacesAndNewlines)
+  let trimmed = workMaskShellCommandArgsText(tool: tool, argsText: argsText).trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return nil }
 
   if let object = workJSONObject(from: trimmed) {
@@ -1771,8 +1771,9 @@ func workSummarizeInlineText(_ value: String, maxChars: Int = 120) -> String {
 /// command, search pattern, etc. Avoids leaking raw `{` from pretty-printed
 /// JSON in collapsed work-log rows (desktop `entryArgText` parity).
 func workToolArgPreview(toolName: String, argsText: String?) -> String? {
-  guard let object = workJSONObject(from: argsText) else {
-    guard let argsText else { return nil }
+  let displayArgs = argsText.map { workMaskShellCommandArgsText(tool: toolName, argsText: $0) }
+  guard let object = workJSONObject(from: displayArgs) else {
+    guard let argsText = displayArgs else { return nil }
     let trimmed = argsText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
     let preview = workSummarizeInlineText(trimmed, maxChars: 140)

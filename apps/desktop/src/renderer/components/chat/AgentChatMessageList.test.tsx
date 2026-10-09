@@ -16,6 +16,7 @@ import {
   TEXT_REVEAL_HORIZON_STORAGE_KEY,
 } from "./textReveal";
 import { setPerfActive } from "../../perf/markers";
+import { applyHostedWebZoom, __resetHostedWebZoomForTests } from "../../lib/webZoom";
 import { ChatComposerOverlayContext, createChatComposerOverlay } from "./chatComposerOverlayInset";
 import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
@@ -7178,7 +7179,7 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
    * placed against the pane's scrollTop. `offsetHeight` feeds the virtualizer's
    * row measurement; `getBoundingClientRect` feeds the DOM anchors.
    */
-  function installFakeLayout(clientHeight: number, heightOf: (key: string) => number): () => void {
+  function installFakeLayout(clientHeight: number, heightOf: (key: string) => number, zoom = 1): () => void {
     const paneOf = () => document.querySelector<HTMLElement>(".ade-chat-timeline-pane");
     const keyOf = (el: Element): string | null => {
       if (!(el instanceof HTMLElement)) return null;
@@ -7207,7 +7208,7 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
       return y;
     };
     const rect = (top: number, height: number) => ({
-      top, bottom: top + height, height, left: 0, right: 800, width: 800, x: 0, y: top, toJSON: () => ({}),
+      top: top * zoom, bottom: (top + height) * zoom, height: height * zoom, left: 0, right: 800 * zoom, width: 800 * zoom, x: 0, y: top * zoom, toJSON: () => ({}),
     }) as DOMRect;
     const saved = (["scrollHeight", "clientHeight"] as const)
       .map((prop) => [prop, Object.getOwnPropertyDescriptor(Element.prototype, prop)!] as const);
@@ -7289,15 +7290,20 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
   }
 
   describe.each([
-    { path: "virtualized", tailRows: 80 },
-    { path: "plain", tailRows: 12 },
-  ])("an older page prepended on the $path path", ({ path, tailRows }) => {
+    { path: "virtualized", tailRows: 80, zoom: 1 },
+    { path: "plain", tailRows: 12, zoom: 1 },
+    { path: "virtualized", tailRows: 80, zoom: 1.1 },
+    { path: "plain", tailRows: 12, zoom: 1.1 },
+    { path: "virtualized", tailRows: 80, zoom: 1.25 },
+    { path: "plain", tailRows: 12, zoom: 1.25 },
+  ])("an older page prepended on the $path path at zoom $zoom", ({ path, tailRows, zoom }) => {
     it("keeps measured heights and mounted rows, and moves scrollTop by exactly the inserted height", async () => {
       const TAIL_ROW = 120;
       const tail = userEvents("tail", tailRows, 30);
       const older = userEvents("older", 40, 10);
       const olderKeys = new Set(buildTranscriptEventRowKeys(older));
-      const restoreLayout = installFakeLayout(600, (key) => (olderKeys.has(key) ? OLDER_ROW : TAIL_ROW));
+      applyHostedWebZoom(zoom);
+      const restoreLayout = installFakeLayout(600, (key) => (olderKeys.has(key) ? OLDER_ROW : TAIL_ROW), zoom);
       try {
         const view = render(listElement(tail, { hasOlderHistory: true }));
         await nextFrame();
@@ -7318,7 +7324,7 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
         // The row the reader was on did not move on screen and was not remounted.
         const anchorNow = timelinePane().querySelector<HTMLElement>(`[data-chat-row-key="${anchor.key}"]`)!;
         expect(anchorNow).toBe(anchor.node);
-        expect(anchorNow.getBoundingClientRect().top).toBe(anchor.top);
+        expect(anchorNow.getBoundingClientRect().top).toBeCloseTo(anchor.top);
         // Every tail row still mounted is the same DOM node (no remount, so no
         // replayed fade-ins or re-highlighting).
         const survivors = rowNodes().filter((node) => mountedBefore.has(node.dataset.chatRowKey!));
@@ -7330,6 +7336,7 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
         }
       } finally {
         restoreLayout();
+        __resetHostedWebZoomForTests();
       }
     });
   });

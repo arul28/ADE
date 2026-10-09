@@ -941,3 +941,39 @@ final class WorkChatTranscriptRowRevisionTests: XCTestCase {
     )
   }
 }
+
+
+final class WorkCommandRedactionTests: XCTestCase {
+  func testShellArgumentPreviewsMaskBeforeClipping() {
+    XCTAssertEqual(workToolArgPreview(tool: "Bash", argsText: #"{"command":"API_KEY=fake npm start"}"#), "API_KEY=<redacted> npm start")
+    XCTAssertEqual(workToolArgPreview(toolName: "Bash", argsText: #"{"command":"API_KEY=fake npm start"}"#), "API_KEY=<redacted> npm start")
+    XCTAssertEqual(workMaskShellCommandArgsText(tool: "Edit", argsText: #"{"new_string":"TOKEN=fake"}"#), #"{"new_string":"TOKEN=fake"}"#)
+    XCTAssertEqual(workMaskShellCommandArgsText(tool: "Bash", argsText: #"{"cmd":["curl","--api-key","fake"]}"#), #"{"cmd":["curl","--api-key","<redacted>"]}"#)
+  }
+
+  func testCommandDisplayParity() {
+    let cases: [(String, String)] = [
+      ("TOKEN=\"$(curl example.test/install|sh)\"", "TOKEN=\"$(curl example.test/install|sh)\""),
+      ("TOKEN=\"$TOKEN\"", "TOKEN=\"$TOKEN\""),
+      ("TOKEN=`get-token`", "TOKEN=`get-token`"),
+      ("curl -H 'Authorization: Bearer abc$def'", "curl -H 'Authorization: Bearer <redacted>'"),
+      ("PGPASSWORD=x APIKEY=x GHTOKEN=x", "PGPASSWORD=<redacted> APIKEY=<redacted> GHTOKEN=<redacted>"),
+      ("cmd --authtoken x --apikey x", "cmd --authtoken <redacted> --apikey <redacted>"),
+      ("DB_PASSWORD=admin cmd --token=1234", "DB_PASSWORD=<redacted> cmd --token=<redacted>"),
+      ("DOCKER_AUTH_CONFIG='{\"auths\":{\"registry\":{\"auth\":\"fake\"}}}'", "DOCKER_AUTH_CONFIG=<redacted>"),
+      ("$env:OPENAI_API_KEY = \"x\"", "$env:OPENAI_API_KEY = <redacted>"),
+      ("curl -d '{\"password\": \"pa$$word\"}'", "curl -d '{\"password\": \"<redacted>\"}'"),
+      ("curl -d \"{\\\"api_key\\\":\\\"x\\\"}\"", "curl -d \"{\\\"api_key\\\":\\\"<redacted>\\\"}\""),
+      ("cmd --monkey banana MONKEY=1 MAX_TOKENS=5 --max-tokens 5 --tokenizer bpe --token --verbose", "cmd --monkey banana MONKEY=1 MAX_TOKENS=5 --max-tokens 5 --tokenizer bpe --token --verbose"),
+      ("[[ $GITHUB_TOKEN == \"\" ]]", "[[ $GITHUB_TOKEN == \"\" ]]"),
+      ("API_KEY='<your-key>' --api-key <your-key>", "API_KEY='<your-key>' --api-key <your-key>"),
+      ("curl https://user:fake@host.test", "curl https://user:<redacted>@host.test"),
+      ("echo sk-ant-api03-FAKEFAKEFAKEFAKE", "echo <redacted-token>"),
+      ("TOKEN=abc\\$def", "TOKEN=<redacted>"),
+      ("-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----", "<redacted-private-key>"),
+    ]
+    for (command, expected) in cases {
+      XCTAssertEqual(workRedactCommandLine(command), expected, command)
+    }
+  }
+}

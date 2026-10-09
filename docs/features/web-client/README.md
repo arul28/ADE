@@ -39,6 +39,11 @@ direct deployment-check fallback. The app is built from `apps/desktop` with
 
 ## Source file map
 
+- `apps/desktop/src/renderer/components/app/AppearanceRoot.tsx` — shared appearance lifetime for workspace and sign-in.
+- `apps/desktop/src/renderer/webclient/adapter/infra/backoffPoller.ts` — visibility-aware unchanged-read cadence and teardown.
+- `apps/desktop/src/renderer/webclient/adapter/infra/pageVisibility.ts` — shared tab visibility observer.
+- `apps/desktop/src/renderer/scene/scenePreferences.ts` — platform defaults and explicit scene choices.
+
 Build and static host:
 
 - `apps/desktop/package.json` - `dev:webclient` and `build:webclient`. The
@@ -1351,6 +1356,30 @@ exists, and `adapter/infra/localState.ts` stores browser-only preferences such
 as layout, zoom, and keybinding overrides. The catalog cache holds project
 names, paths, lane counts, and icons - never project contents - and is dropped
 when its account signs out or another account signs in.
+
+## Appearance and background reads
+
+`components/app/AppearanceRoot.tsx` owns the shared theme, document colour
+scheme, motion, and scene preferences for both `App` and the lazily loaded
+`WebSignInScreen`. Signed-out boot loads the sign-in chunk without the workspace
+router; a failed chunk load reaches the shell's error phase with Retry.
+
+The web default scene is `plain`: the theme background without a picture or
+motion. An untouched shipped Shuffle preference also reads as Plain in web;
+a saved choice or tuned texture, dim, theme matching, or image visibility stays
+as chosen. `showImage` remains true in the web default so choosing Image shows
+its picture. Reset to Shuffle is an explicit choice. Desktop retains Shuffle.
+The command palette uses `Z_LAYERS.commandPalette` above the shared overlays.
+
+`adapter/infra/backoffPoller.ts` owns subscriber-scoped App Control and Cursor
+fleet cadence: three unchanged reads at the base interval, then doubling to
+15 seconds; a changed snapshot or explicit action resets the cadence. Hidden
+tabs make no reads and visibility resumes with an immediate read. App Control's
+explicit status read moves a pending long timer back to the base delay. Stopping
+removes timers and visibility listeners. OAuth status draining in `adapter/misc.ts`
+also pauses while hidden and slows after a quiet interval; cancellation during
+an in-flight read sets a drain-again flag so the terminal cancelled status is
+still delivered before the drain stops.
 
 ## Deeplinks
 

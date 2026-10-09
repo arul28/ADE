@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
-import { ChatToolActivityDetails, webResultCount } from "./ChatWorkLogBlock";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ChatToolActivityDetails, ChatWorkLogBlock, webResultCount } from "./ChatWorkLogBlock";
 import type { ChatWorkLogEntry } from "./chatTranscriptRows";
 
 const base = { id: "e", createdAt: "2026-09-23T00:00:00.000Z", label: "Web search", tone: "info", status: "completed" } as const;
@@ -32,5 +32,31 @@ describe("web result count on the collapsed row", () => {
     );
     expect(screen.getByTestId("work-log-web-result-count").textContent).toBe("2 results");
     expect(screen.queryByText("vitejs.dev")).toBeNull();
+  });
+});
+
+
+describe("localhost terminal drafts", () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it.each([
+    ["API_KEY=fake npm start", false],
+    ["npm start --token <redacted>", false],
+    ["npm start", true],
+  ])("offers only runnable unmasked commands: %s", async (command, includeCommand) => {
+    const draft = vi.fn();
+    vi.stubGlobal("ade", { localhost: { probePort: async () => true } });
+    render(<ChatWorkLogBlock entries={[{
+      ...base, entryKind: "command", command,
+      localUrls: [{ url: "http://localhost:4321", href: "http://localhost:4321", host: "localhost", port: 4321 }],
+    }]} onInsertDraft={draft} />);
+    const logs = await screen.findByRole("button", { name: /Open terminal logs/ });
+    fireEvent.click(logs);
+    await waitFor(() => expect(draft).toHaveBeenCalledOnce());
+    const text = draft.mock.calls[0]![0] as string;
+    expect(text.includes("Detected command:")).toBe(includeCommand);
+    expect(text).not.toContain("API_KEY=fake");
+    expect(text).not.toContain("<redacted>");
+    expect(text).toContain("http://localhost:4321");
   });
 });

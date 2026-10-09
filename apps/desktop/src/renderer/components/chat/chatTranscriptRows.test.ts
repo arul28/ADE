@@ -3502,14 +3502,14 @@ describe("subagent one-card rendering", () => {
         type: "subagent_started",
         taskId: "bg-1",
         taskType: "background",
-        description: "cd /repo && npm install",
+        description: "cd /repo && npm install --token=fake",
       }),
     ]);
 
     expect(rows).toHaveLength(1);
     if (rows[0]!.event.type !== "background_job_line") throw new Error("Expected background job line");
     expect(rows[0]!.event.status).toBe("running");
-    expect(rows[0]!.event.label).toBe("npm install");
+    expect(rows[0]!.event.label).toBe("npm install --token=<redacted>");
     expect(rows[0]!.event.taskId).toBe("bg-1");
     expect(rows[0]!.key).toBe("background-chip:bg-1");
   });
