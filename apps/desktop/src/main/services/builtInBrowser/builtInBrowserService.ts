@@ -3842,8 +3842,6 @@ function createBuiltInBrowserWindowService(args: {
     releaseDebuggerHold: (tab, owner) => releaseDebuggerHold(tab, owner),
     sendDebuggerCommand: (wc, method, params) => sendDebuggerCommand(wc, method, params),
     logger,
-    // Placement runs inside the view loop; tell the panes after it.
-    onScreenChanged: () => queueMicrotask(() => emitStatus()),
   });
   const syncAgentViewport = agentViewport.sync;
   const refreshAgentViewport = agentViewport.refresh;
@@ -3889,7 +3887,7 @@ function createBuiltInBrowserWindowService(args: {
           const parkedRect = warming ?? graceRect ?? parkedPreviewRect(tab);
           tab.view.setBounds(parkedRect);
           if (graceRect) syncAgentViewport(tab);
-          else syncAgentViewport(tab, parkedRect, false);
+          else syncAgentViewport(tab, parkedRect);
           if (warming) scheduleParkAfterWarming(tab.id);
           tab.view.setVisible(true);
           // Still not the active tab: parked means composited, not attended, so
@@ -3906,7 +3904,7 @@ function createBuiltInBrowserWindowService(args: {
         tab.view.setVisible(false);
         removeTabViewFromWindow(tab);
         applyTabLifecycle(tab, false);
-        syncAgentViewport(tab, null, false);
+        syncAgentViewport(tab, null);
         continue;
       }
       // Parked (off screen) or detached a moment ago: Chromium can present the
@@ -3924,7 +3922,7 @@ function createBuiltInBrowserWindowService(args: {
       // On screen at real bounds: whatever else happens, this view has a surface.
       surfacedTabIds.add(tab.id);
       tab.view.setBounds(electronRect);
-      syncAgentViewport(tab, electronRect, true);
+      syncAgentViewport(tab, electronRect);
       tab.view.setVisible(true);
       applyTabLifecycle(tab, true);
       if (cameOnScreen) repaintTab(tab);
@@ -4284,7 +4282,7 @@ function createBuiltInBrowserWindowService(args: {
     const wc = currentTab?.webContents ?? null;
     const tabSnapshots = tabs
       .filter((tab) => !tab.webContents.isDestroyed())
-      .map((tab) => tabStatus(tab, agentViewport.appliesTo(tab)));
+      .map(tabStatus);
     return {
       attached: Boolean(
         win
@@ -6688,8 +6686,7 @@ function urlForBrowserLog(value: string): string | null {
   }
 }
 
-/** `onAgentViewport`: laid out at the agent viewport right now (owned or recording, and off screen). */
-function tabStatus(tab: BrowserTabState, onAgentViewport: boolean): BuiltInBrowserTab {
+function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
   const wc = tab.webContents;
   const url = wc.isDestroyed() ? null : emptyToNull(wc.getURL());
   // A launchpad tab stops being one the moment it points at a real page, even
@@ -6713,7 +6710,7 @@ function tabStatus(tab: BrowserTabState, onAgentViewport: boolean): BuiltInBrows
     zoomFactor: tab.zoomFactor,
     devToolsOpen: tab.devToolsMode !== null,
     emulation: tab.emulation,
-    agentViewport: onAgentViewport
+    agentViewport: tabUsesAgentViewport(tab)
       ? { width: BUILT_IN_BROWSER_AGENT_VIEWPORT.width, height: BUILT_IN_BROWSER_AGENT_VIEWPORT.height }
       : null,
     networkLogging: tab.networkLoggingEnabled,
