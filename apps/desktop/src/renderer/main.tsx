@@ -14,6 +14,7 @@ import { initPerfRuntime } from "./perf/harness";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
 import { installScrollingIndicator } from "./lib/scrollingIndicator";
+import { installAnimationPhaseAlignment } from "./lib/animationPhaseAlignment";
 
 document.documentElement.dataset.adePlatform = rendererPlatformAttribute();
 
@@ -24,6 +25,7 @@ trackWindowsCaptionInset();
 
 // Scrollbars show only while you scroll the region under the pointer.
 installScrollingIndicator();
+installAnimationPhaseAlignment();
 
 (function injectFontFaces() {
   const style = document.createElement("style");

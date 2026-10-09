@@ -278,10 +278,6 @@ type GitChild = {
 };
 
 async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
-  if (process.env.ADE_PERF_GIT_LOG) { // PERFTMP
-    const stack = (new Error().stack ?? "").split("\n").slice(2, 9).map((l) => l.trim().replace(/^at /, "").replace(/\(.*\/(dist|src)\//, "(")).join(" < "); // PERFTMP
-    fs.appendFileSync(process.env.ADE_PERF_GIT_LOG, `${JSON.stringify({ t: Date.now(), args: args.slice(0, 4), cwd: opts.cwd, stack })}\n`); // PERFTMP
-  } // PERFTMP
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const maxOutputBytes = Number.isFinite(opts.maxOutputBytes)
     ? Math.max(0, Math.floor(opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES))

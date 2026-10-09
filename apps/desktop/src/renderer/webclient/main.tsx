@@ -7,6 +7,7 @@ import geistMonoVariableUrl from "../../../node_modules/geist/dist/fonts/geist-m
 import { AdeSyncClient, bindProjectHostRecoveryClient } from "./sync";
 import { WebClientRoot } from "./shell/WebClientRoot";
 import { installScrollingIndicator } from "../lib/scrollingIndicator";
+import { installAnimationPhaseAlignment } from "../lib/animationPhaseAlignment";
 
 // Mark web-client mode before any renderer module loads, so desktop-only chrome
 // (extra tabs, onboarding tour, native window controls, updater) hides cleanly.
@@ -60,6 +61,7 @@ bindProjectHostRecoveryClient(client);
 
 // Scrollbars show only while you scroll the region under the pointer.
 installScrollingIndicator();
+installAnimationPhaseAlignment();
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <WebClientRoot client={client} />,
