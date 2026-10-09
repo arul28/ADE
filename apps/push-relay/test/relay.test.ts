@@ -1158,7 +1158,7 @@ describe("push relay", () => {
     expect(health.status).toBe(200);
   });
 
-  it("counts every request against the budget while writing its D1 row once per reserved block", async () => {
+  it("counts every request against the budget with growing reserved blocks, never behind real traffic", async () => {
     const env: PushRelayEnv = {
       ...makeEnv(db, undefined),
       DAILY_REQUEST_BUDGET: "60",
@@ -1178,12 +1178,13 @@ describe("push relay", () => {
     // Exactly the 61st request is over a budget of 60, across distinct IPs.
     expect(statuses.slice(0, 60).every((status) => status !== 429)).toBe(true);
     expect(statuses[60]).toBe(429);
-    // 61 counted requests cost two counter writes (one 50-request block, then
-    // the next), not one per request. The shared row holds what was reserved,
-    // so it can only run ahead of real traffic, never behind it.
-    expect(flushes).toBe(2);
+    // Blocks grow 1, 2, 4, 8, 16, 32: six counter writes for 61 requests, not
+    // one per request. The shared row holds what was reserved, so it runs
+    // ahead of real traffic but never behind it — and an isolate that stops
+    // early wastes at most about what it used, not a fixed 50.
+    expect(flushes).toBe(6);
     const stored = [...db.rateCounters.entries()].find(([bucket]) => bucket.startsWith("budget:"));
-    expect(stored?.[1].count).toBe(100);
+    expect(stored?.[1].count).toBe(63);
   });
 
   it("judges a burst on a fresh isolate against the shared count, not against zero", async () => {
@@ -1200,8 +1201,9 @@ describe("push relay", () => {
       env,
     )));
     expect(burst.map((response) => response.status)).toEqual(Array.from({ length: 20 }, () => 429));
-    // The whole burst waited on one reservation instead of each writing.
-    expect(db.rateCounters.get(`budget:${today}`)?.count).toBe(150);
+    // The whole burst waited on one reservation instead of each writing; a
+    // fresh isolate's first block is a single request.
+    expect(db.rateCounters.get(`budget:${today}`)?.count).toBe(101);
   });
 
   it("does not carry yesterday's budget into today when a flush straddles UTC midnight", async () => {

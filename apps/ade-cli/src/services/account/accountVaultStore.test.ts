@@ -6,7 +6,7 @@ import {
   createAccountVaultStore,
   type AccountVaultRelay,
 } from "./accountVaultStore";
-import type { AccountVaultItem } from "../push/pushRelayClient";
+import { PushRelayRequestError, type AccountVaultItem } from "../push/pushRelayClient";
 import { recordAccountChangeMarks } from "./accountChangeMarks";
 
 /**
@@ -461,6 +461,82 @@ describe("account vault store", () => {
       // A settings change does not pull the vault, and every tick still says ready.
       expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
       expect(ticks).toEqual(["ready", "ready", "ready", "ready"]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A secret saved on one machine is wanted on the next one now: the write
+  // must not sit in the queue until the 30-second tick.
+  it("uploads a local write within a moment and reports it pending until it lands", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      const stop = store.startPeriodicSync(30_000);
+      store.set("repo:github.com/acme/app", "project_secret", "STRIPE_KEY", "sk-1");
+      expect(store.pendingKeys("repo:github.com/acme/app", "project_secret")).toEqual(["STRIPE_KEY"]);
+      expect(store.pendingKeys("repo:github.com/acme/other", "project_secret")).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(relay.putAccountVault).toHaveBeenCalledTimes(1);
+      expect(relay.putAccountVault.mock.calls[0]?.[0]).toEqual([
+        expect.objectContaining({ key: "STRIPE_KEY", value: "sk-1" }),
+      ]);
+      expect(store.pendingKeys("repo:github.com/acme/app", "project_secret")).toEqual([]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("answers a read-path sync from the cache while it is fresh and asks the account once it is not", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      await expect(store.sync()).resolves.toBe("ready");
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+
+      await expect(store.sync({ maxAgeMs: 10_000 })).resolves.toBe("ready");
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(10_001);
+      await expect(store.sync({ maxAgeMs: 10_000 })).resolves.toBe("ready");
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A relay that refused (its daily budget, a rate limit) must not get the
+  // same request again from every write and every agent read on every machine.
+  it("holds writes and read-path syncs during a 429 backoff, but not an explicit sync or another account", async () => {
+    vi.useFakeTimers();
+    try {
+      relay.putAccountVault.mockRejectedValue(
+        new PushRelayRequestError("putAccountVault", 429, "relay daily budget reached"),
+      );
+      const store = makeStore();
+      const stop = store.startPeriodicSync(30_000);
+      store.set("all", "provider_key", "anthropic", "sk-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(relay.putAccountVault).toHaveBeenCalledTimes(1);
+
+      store.set("all", "provider_key", "openai", "sk-2");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(store.sync({ maxAgeMs: 0 })).resolves.toBe("failed");
+      expect(relay.putAccountVault).toHaveBeenCalledTimes(1);
+
+      // A person asking explicitly still gets an attempt.
+      await expect(store.sync()).resolves.toBe("failed");
+      expect(relay.putAccountVault).toHaveBeenCalledTimes(2);
+
+      // The backoff belongs to the account that earned it.
+      relay.putAccountVault.mockResolvedValue({ updatedAt: "2026-09-16T00:00:00.000Z" });
+      accountUserId = "user_someone_else";
+      await expect(store.sync({ maxAgeMs: 0 })).resolves.toBe("ready");
+      expect(relay.getAccountVault).toHaveBeenCalled();
       stop();
     } finally {
       vi.useRealTimers();

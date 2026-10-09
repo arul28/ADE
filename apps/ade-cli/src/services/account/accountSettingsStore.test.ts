@@ -6,7 +6,7 @@ import {
   createAccountSettingsStore,
   type AccountSettingsRelay,
 } from "./accountSettingsStore";
-import type { AccountSettingRecord } from "../push/pushRelayClient";
+import { PushRelayRequestError, type AccountSettingRecord } from "../push/pushRelayClient";
 import { recordAccountChangeMarks } from "./accountChangeMarks";
 
 /**
@@ -538,21 +538,36 @@ describe("account settings store", () => {
       stop();
     });
 
-    it("retries a failing sync once per tick, not again on every heartbeat", async () => {
-      relay.getAccountSettings.mockRejectedValue(new Error("relay unavailable"));
+    it.each([
+      // Plain failure: 30 s, then 60 s, then 120 s between attempts.
+      { label: "a failing relay", error: () => new Error("relay unavailable"), pulledAtTicks: [0, 1, 3] },
+      // 429 (budget or rate limit): never sooner than 60 s.
+      {
+        label: "a rate-limited relay",
+        error: () => new PushRelayRequestError("getAccountSettings", 429, "relay daily budget reached"),
+        pulledAtTicks: [0, 2, 4],
+      },
+    ])("backs off $label instead of retrying every tick or heartbeat", async ({ error, pulledAtTicks }) => {
+      relay.getAccountSettings.mockImplementation(async () => { throw error(); });
       const store = makeStore();
       const stop = store.startPeriodicSync(TICK);
       const mark = { settings: "2026-10-07T14:00:00.000Z", vault: null };
+      const pulledAt: number[] = [];
+      let seen = 0;
       recordAccountChangeMarks(user, mark);
       await vi.advanceTimersByTimeAsync(0);
-      expect(relay.getAccountSettings).toHaveBeenCalledTimes(1);
-
-      for (let beat = 0; beat < 4; beat += 1) {
-        recordAccountChangeMarks(user, mark);
-        await vi.advanceTimersByTimeAsync(TICK);
+      for (let tick = 0; tick <= 5; tick += 1) {
+        if (tick > 0) {
+          // The heartbeat keeps arriving with the same mark; it adds nothing.
+          recordAccountChangeMarks(user, mark);
+          await vi.advanceTimersByTimeAsync(TICK);
+        }
+        const calls = relay.getAccountSettings.mock.calls.length;
+        if (calls > seen) pulledAt.push(tick);
+        expect(calls - seen).toBeLessThanOrEqual(1);
+        seen = calls;
       }
-      // Four ticks, four retries: the heartbeat's unchanged mark adds none.
-      expect(relay.getAccountSettings).toHaveBeenCalledTimes(5);
+      expect(pulledAt).toEqual(pulledAtTicks);
       stop();
     });
 

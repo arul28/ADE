@@ -242,6 +242,11 @@ export async function recordDailyBudget(
     // The day rolled over while this request waited: it was yesterday's, and
     // yesterday's cap is closed.
     if (budgetDay !== day) return { allowed: true };
+    // Another waiter on the same reservation already found the day over budget;
+    // reserving again would only inflate the shared count.
+    if (budgetTrippedNow()) {
+      return { allowed: false, day, count: budgetReservedThrough, budget };
+    }
     if (budgetReservedRemaining > 0) {
       budgetReservedRemaining -= 1;
       const count = budgetReservedThrough - budgetReservedRemaining;
