@@ -16,6 +16,8 @@
 import { spawn } from "node:child_process";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import { localDayKey } from "./localDay";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
+import type { GithubContributionCalendar } from "../../../shared/types";
 
 /**
  * The window to report on.
@@ -117,6 +119,18 @@ export function runBufferedCommand(
   args: string[],
   options: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number } = {},
 ): Promise<string> {
+  if (offThreadSpawnEnabled()) {
+    return execFileOffThread(command, args, {
+      cwd: options.cwd,
+      env: process.env,
+      timeoutMs: options.timeoutMs ?? GITHUB_STATS_COMMAND_TIMEOUT_MS,
+      maxBuffer: options.maxOutputBytes ?? GITHUB_STATS_MAX_OUTPUT_BYTES,
+    }).then((result) => {
+      if (result.error) throw result.error;
+      if (result.exitCode === 0) return result.stdout;
+      throw new Error(result.stderr.trim() || `${command} exited with code ${result.exitCode ?? "unknown"}`);
+    });
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     let stdout = "";
@@ -399,4 +413,75 @@ export async function scanGithubActivityStats(projectRoot: string | null | undef
   } catch (error) {
     return makeEmptyGithubStats(getErrorMessage(error), null);
   }
+}
+
+/**
+ * The signed-in user's GitHub contribution calendar: one `gh api graphql`
+ * call for the year GitHub shows on the profile, across every repository.
+ * The home page's Contributions card reads it; a per-project repo scan only
+ * sees the open project, and a single project's ADE database is sparser still.
+ *
+ * Cached for an hour (the calendar moves slowly), with one read in flight at
+ * a time. No `gh`, no login, or a bad answer is null, cached for a few
+ * minutes so a later `gh auth login` shows up without a restart.
+ */
+const CONTRIBUTION_CALENDAR_QUERY =
+  "query{viewer{contributionsCollection{contributionCalendar{totalContributions weeks{contributionDays{date contributionCount}}}}}}";
+const CONTRIBUTION_CALENDAR_TTL_MS = 60 * 60_000;
+const CONTRIBUTION_CALENDAR_FAILURE_TTL_MS = 5 * 60_000;
+
+function parseGithubContributionCalendar(raw: string): GithubContributionCalendar | null {
+  const parsed = safeJsonParse<unknown>(raw.trim(), null);
+  if (!isRecord(parsed)) return null;
+  const calendar = parsed.data && isRecord(parsed.data) && isRecord(parsed.data.viewer)
+    && isRecord(parsed.data.viewer.contributionsCollection)
+    && isRecord(parsed.data.viewer.contributionsCollection.contributionCalendar)
+    ? parsed.data.viewer.contributionsCollection.contributionCalendar
+    : null;
+  if (!calendar || !Array.isArray(calendar.weeks)) return null;
+  const days: Array<{ date: string; count: number }> = [];
+  for (const week of calendar.weeks) {
+    if (!isRecord(week) || !Array.isArray(week.contributionDays)) continue;
+    for (const day of week.contributionDays) {
+      if (!isRecord(day) || typeof day.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day.date)) continue;
+      days.push({ date: day.date, count: toNonNegativeInt(day.contributionCount) });
+    }
+  }
+  if (days.length === 0) return null;
+  days.sort((a, b) => a.date.localeCompare(b.date));
+  const total = toNonNegativeInt(calendar.totalContributions);
+  return { total: total || days.reduce((sum, day) => sum + day.count, 0), days, fetchedAt: nowIso() };
+}
+
+let contributionCalendarCache: { at: number; value: GithubContributionCalendar | null } | null = null;
+let contributionCalendarInFlight: Promise<GithubContributionCalendar | null> | null = null;
+
+export function readGithubContributionCalendar(
+  runCommand: GithubCommandRunner = runBufferedCommand,
+): Promise<GithubContributionCalendar | null> {
+  const cached = contributionCalendarCache;
+  if (cached) {
+    const ttl = cached.value ? CONTRIBUTION_CALENDAR_TTL_MS : CONTRIBUTION_CALENDAR_FAILURE_TTL_MS;
+    if (Date.now() - cached.at < ttl) return Promise.resolve(cached.value);
+  }
+  if (contributionCalendarInFlight) return contributionCalendarInFlight;
+  const read = (async () => {
+    let value: GithubContributionCalendar | null = null;
+    try {
+      const raw = await runCommand("gh", ["api", "graphql", "-f", `query=${CONTRIBUTION_CALENDAR_QUERY}`], {
+        timeoutMs: 20_000,
+        maxOutputBytes: 1024 * 1024,
+      });
+      value = parseGithubContributionCalendar(raw);
+    } catch {
+      value = null;
+    }
+    contributionCalendarCache = { at: Date.now(), value };
+    return value;
+  })();
+  contributionCalendarInFlight = read;
+  void read.finally(() => {
+    if (contributionCalendarInFlight === read) contributionCalendarInFlight = null;
+  });
+  return read;
 }

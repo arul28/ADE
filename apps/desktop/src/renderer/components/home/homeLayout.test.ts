@@ -13,7 +13,7 @@ import {
   type HomeLayoutItem,
   type HomeWidgetType,
 } from "./homeLayout";
-import { gridMetrics, packLayout } from "./homeGridPack";
+import { GRID_GAP, gridMetrics, packLayout } from "./homeGridPack";
 import { HOME_WIDGET_CATALOG, widgetShape } from "./homeWidgetCatalog";
 import { useHomeAppEffects } from "./useHomeAppEffects";
 
@@ -137,13 +137,13 @@ describe("packing the home grid", () => {
       expect(placement.x + placement.w).toBeLessThanOrEqual(columns);
       expect(placement.y + placement.h).toBeLessThanOrEqual(result.rows);
       for (let y = placement.y; y < placement.y + placement.h; y += 1) {
-        for (let x = placement.x; x < placement.x + placement.w; x += 1) {
+        for (let x = placement.x; x < placement.x + placement.w; x += 0.5) {
           expect(owner.has(`${x},${y}`)).toBe(false);
           owner.set(`${x},${y}`, placement.cell.host.id);
         }
       }
     }
-    return owner.size;
+    return owner.size / 2;
   }
 
   it.each([
@@ -159,7 +159,26 @@ describe("packing the home grid", () => {
 
     expect(second).toEqual(first);
     expect(first.holes).toBe(0);
-    expect(coverage(first, metrics.columns)).toBe(metrics.columns * first.rows);
+    expect(coverage(first, first.columns) + first.trailing).toBe(first.columns * first.rows);
+    expect(first.columns).toBeLessThanOrEqual(metrics.columns);
+    if (first.trailing > 0) {
+      const lastCard = first.placed.filter((placement) => placement.y + placement.h === first.rows)
+        .sort((a, b) => (b.x + b.w) - (a.x + a.w))[0]!;
+      expect(lastCard.w).toBeLessThanOrEqual(widgetShape(lastCard.cell.host.type).classes[lastCard.cls]!.w);
+    }
+    expect(Math.min(...first.placed.map((placement) => placement.y))).toBe(0);
+    if (width === 2_400) {
+      expect(first.rows * first.rowPx + (first.rows - 1) * GRID_GAP).toBeLessThan(metrics.height);
+      for (const placement of first.placed) {
+        const shape = widgetShape(placement.cell.host.type);
+        const stackedHeight = placement.cell.stacked.reduce((sum, item) =>
+          sum + GRID_GAP + Math.round((widgetShape(item.type).minHeight.compact ?? 160) * 0.75), 0);
+        const cardHeight = placement.h * first.rowPx + (placement.h - 1) * GRID_GAP - stackedHeight;
+        expect(cardHeight).toBeGreaterThanOrEqual(shape.minHeight[placement.cls]!);
+        expect(cardHeight).toBeLessThanOrEqual(shape.maxHeight[placement.cls]!);
+      }
+      if (_label === "the default layout on a wide monitor") expect(first.columns).toBeLessThan(metrics.columns);
+    }
     expect(first.placed.length + first.hidden.length).toBe(cells.length);
   });
 

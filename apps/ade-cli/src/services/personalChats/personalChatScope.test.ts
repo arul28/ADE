@@ -29,6 +29,7 @@ describe("PersonalChatScope", () => {
     if (previousAdeHome == null) delete process.env.ADE_HOME;
     else process.env.ADE_HOME = previousAdeHome;
     fs.rmSync(adeHome, { recursive: true, force: true });
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -1063,6 +1064,29 @@ describe("PersonalChatScope", () => {
     expect((service as unknown as { getSlashCommands: ReturnType<typeof vi.fn> }).getSlashCommands)
       .toHaveBeenCalledWith(expect.objectContaining({ sessionId: "chat-1", laneId: "internal-lane" }));
     await scope.dispose();
+  });
+
+  it("reuses draft slash commands for 15 seconds but always refreshes a session lookup", async () => {
+    vi.useFakeTimers();
+    const { service, createRuntime } = fixture();
+    const getSlashCommands = vi.fn(() => [{ name: "/review" }]);
+    Object.assign(service, { getSlashCommands });
+    const scope = new PersonalChatScope({ createRuntime });
+    try {
+      const draft = { provider: "codex", personalProfile: "assistant" };
+      await scope.call("slashCommands", draft);
+      vi.advanceTimersByTime(14_999);
+      await scope.call("slashCommands", draft);
+      expect(getSlashCommands).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      await scope.call("slashCommands", draft);
+      expect(getSlashCommands).toHaveBeenCalledTimes(2);
+      await scope.call("slashCommands", { sessionId: "chat-1" });
+      await scope.call("slashCommands", { sessionId: "chat-1" });
+      expect(getSlashCommands).toHaveBeenCalledTimes(4);
+    } finally {
+      await scope.dispose();
+    }
   });
 
   it("pins a chat and reports the agent's own row state on the next list", async () => {

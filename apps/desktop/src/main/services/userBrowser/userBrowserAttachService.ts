@@ -200,6 +200,7 @@ const METHOD_COMMAND_WORDS: Record<string, string> = {
   setZoom: "zoom",
   findInPage: "find",
   stopFindInPage: "find-stop",
+  readText: "text",
   setDevTools: "devtools",
   setNetworkLogging: "network",
   getNetworkLog: "network",

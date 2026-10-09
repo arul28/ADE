@@ -11301,6 +11301,7 @@ export function createAgentChatService(args: {
   const managedSessions = new Map<string, ManagedChatSession>();
   /** Assigned once the handoff helpers below exist; hooks before that no-op. */
   let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
+  let crossMachineHandoffSweepTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * When each chat's latest turn started. `currentTurnStartedAt` clears when
    * the turn settles, and the proof broker still needs the time afterwards to
@@ -21785,10 +21786,19 @@ export function createAgentChatService(args: {
         || isBackgroundTask(taskMsg)
         || patch?.is_backgrounded === true,
     );
-    const taskType = localBashIsBackground
+    const messageAgentType = compactString(taskMsg.subagent_type);
+    // A later message for a background shell ADE already tracks (a bare
+    // `task_updated` arriving between turns, often for a shell a subagent
+    // started) carries no task_type. It is still that shell: classified as a
+    // subagent it became a "Background task" row stuck at running, because the
+    // shell's end only ever reaches its background row.
+    const knownBackgroundShell = !rawTaskType
+      && !messageAgentType
+      && !existing?.agentType
+      && Boolean(taskId && (runtime.liveBackgroundTaskIds.has(taskId) || runtime.backgroundTaskTitleById.has(taskId)));
+    const taskType = localBashIsBackground || knownBackgroundShell
       ? "background"
       : normalizeClaudeTaskType(taskMsg.task_type) ?? existing?.taskType;
-    const messageAgentType = compactString(taskMsg.subagent_type);
     const classificationAgentType = stashed?.subagentType ?? messageAgentType ?? existing?.agentType;
     // `name` is the spawn's display label, never its agent type — it rides the
     // wire as `label` (see rememberClaudeSubagentLabel) so the UI can show the
@@ -45060,8 +45070,11 @@ export function createAgentChatService(args: {
   // Only the brain owns moves. A host without a transport (the desktop's own
   // fallback service) must not sweep, or it would fail moves it can't run.
   if (crossMachineHandoffTransport) {
-    const sweepTimer = setTimeout(() => crossMachineHandoff?.sweep(), 5_000);
-    sweepTimer.unref?.();
+    crossMachineHandoffSweepTimer = setTimeout(() => {
+      crossMachineHandoffSweepTimer = null;
+      crossMachineHandoff?.sweep();
+    }, 5_000);
+    crossMachineHandoffSweepTimer.unref?.();
   }
 
   const noteClaudeSessionQuota = (
@@ -59774,6 +59787,8 @@ export function createAgentChatService(args: {
    */
   const beginDispose = (): void => {
     runtimeBudget.unregister(runtimeBudgetParticipant);
+    if (crossMachineHandoffSweepTimer) clearTimeout(crossMachineHandoffSweepTimer);
+    crossMachineHandoffSweepTimer = null;
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     restartRecoverySweepStopped = true;

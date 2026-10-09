@@ -255,7 +255,7 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   outline: 1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent);
   outline-offset: -1px;
 }
-.ade-home-cell[data-dragged] { opacity: 0.4; }
+.ade-home-cell[data-dragged], .ade-home-widget[data-dragged] { opacity: 0.4; }
 .ade-home-cell[data-drop]::before {
   content: "";
   position: absolute;
@@ -318,6 +318,7 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   cursor: pointer;
 }
 .ade-home-edit-btn:hover { color: var(--color-fg); border-color: color-mix(in srgb, var(--color-fg) 26%, transparent); }
+.ade-home-edit-btn[aria-pressed="true"] { color: var(--color-accent-fg); background: var(--color-accent); border-color: transparent; }
 .ade-home-edit-btn[data-danger="true"]:hover { color: var(--color-error); border-color: color-mix(in srgb, var(--color-error) 45%, transparent); }
 .ade-home-edit-btn:focus-visible,
 .ade-home-edit-sizes > button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }

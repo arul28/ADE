@@ -77,6 +77,8 @@ import type {
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
   BuiltInBrowserFindInPageResult,
+  BuiltInBrowserReadTextArgs,
+  BuiltInBrowserReadTextResult,
   BuiltInBrowserHoverArgs,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserNetworkLogEntry,
@@ -697,6 +699,8 @@ export function createBuiltInBrowserService(args: {
    * keyed by `projectRoot` either way, and its views stay hidden until shown.
    */
   getFallbackWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
+  /** A live ADE window that can host a personal tab while it stays off-screen. */
+  getFallbackWindowForPersonalCollection?: () => BrowserWindow | null | undefined;
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
   stateFilePath?: string | null;
   permissionFilePath?: string | null;
@@ -1108,11 +1112,15 @@ export function createBuiltInBrowserService(args: {
     const activeWindow = activeWindowId == null
       ? null
       : windowClosedListeners.get(activeWindowId)?.win ?? null;
-    const win = isLiveWindow(sourceWindow)
+    let win = isLiveWindow(sourceWindow)
       ? sourceWindow
       : isLiveWindow(activeWindow)
         ? activeWindow
         : null;
+    if (!win) {
+      const fallback = args.getFallbackWindowForPersonalCollection?.() ?? null;
+      if (isLiveWindow(fallback)) win = fallback;
+    }
     if (!win) {
       let fallbackService = fallbackServices.get("personal") ?? null;
       if (!fallbackService) {
@@ -1135,7 +1143,15 @@ export function createBuiltInBrowserService(args: {
       return fallbackService;
     }
     activeWindowId = win.id;
-    const service = serviceForWindowCollection(win, collectionForProjectRoot(null, "personal"), { markActive: true });
+    const service = serviceForWindowCollection(
+      win,
+      collectionForProjectRoot(null, "personal"),
+      // A renderer explicitly opening its personal browser owns the pane. A
+      // bridge action with no panel only needs a host for its parked surface;
+      // it must not switch the visible window away from the user's current
+      // project collection.
+      { markActive: isLiveWindow(sourceWindow) },
+    );
     service.attachToWindow(win);
     return service;
   };
@@ -1756,6 +1772,12 @@ export function createBuiltInBrowserService(args: {
     ): Promise<BuiltInBrowserStopFindInPageResult> {
       return serviceForInput(input, sourceWindow).stopFindInPage(input);
     },
+    readText(
+      input: BuiltInBrowserReadTextArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserReadTextResult> {
+      return serviceForInput(input, sourceWindow).readText(input);
+    },
     /**
      * Give the OS keyboard back to the window's own renderer.
      *
@@ -1913,6 +1935,9 @@ type GeometryEmitter = {
 };
 
 const asGeometryEmitter = (value: unknown): GeometryEmitter => value as GeometryEmitter;
+
+/** How long a tab that left the screen stays parked (surface kept) before it is detached. */
+const RECENTLY_ATTENDED_GRACE_MS = 60_000;
 
 /**
  * Screen events that can invalidate a parked view's position without the window
@@ -2072,6 +2097,33 @@ function createBuiltInBrowserWindowService(args: {
   const captureHoldCounts = new Map<string, number>();
   const needsParkedSurface = (tabId: string): boolean =>
     hasPreviewWatchers(tabId) || (captureHoldCounts.get(tabId) ?? 0) > 0;
+  /**
+   * Tabs that just left the screen (the person switched route or tab), held
+   * parked rather than detached until the time here. A detached view loses its
+   * compositor surface, and Chromium takes the better part of a second to
+   * draw a re-added one, so coming straight back showed a black page. Parked,
+   * coming back is a move.
+   */
+  const recentlyAttendedUntil = new Map<string, number>();
+  let recentlyAttendedTimer: ReturnType<typeof setTimeout> | null = null;
+  const inRecentlyAttendedGrace = (tabId: string): boolean =>
+    (recentlyAttendedUntil.get(tabId) ?? 0) > Date.now();
+  const scheduleRecentlyAttendedExpiry = (): void => {
+    if (recentlyAttendedTimer) clearTimeout(recentlyAttendedTimer);
+    recentlyAttendedTimer = null;
+    const now = Date.now();
+    for (const [tabId, until] of recentlyAttendedUntil) {
+      if (until <= now) recentlyAttendedUntil.delete(tabId);
+    }
+    if (recentlyAttendedUntil.size === 0) return;
+    const next = Math.min(...recentlyAttendedUntil.values());
+    recentlyAttendedTimer = setTimeout(() => {
+      recentlyAttendedTimer = null;
+      attachViewsToCurrentWindow();
+      scheduleRecentlyAttendedExpiry();
+    }, Math.max(0, next - now) + 50);
+    recentlyAttendedTimer.unref?.();
+  };
   let tabs: BrowserTabState[] = [];
   let browserSessions: BrowserSessionState[] = [];
   let activeTabId: string | null = null;
@@ -3808,7 +3860,13 @@ function createBuiltInBrowserWindowService(args: {
       const isActive = tab.id === activeTabId;
       const shouldAttach = visible && isActive;
       if (!shouldAttach) {
-        if (needsParkedSurface(tab.id)) {
+        const wasAttended = win.contentView.children.includes(tab.view) && !parkedTabIds.has(tab.id);
+        if (wasAttended && surfacedTabIds.has(tab.id)) {
+          recentlyAttendedUntil.set(tab.id, Date.now() + RECENTLY_ATTENDED_GRACE_MS);
+          scheduleRecentlyAttendedExpiry();
+        }
+        const graceOnly = !needsParkedSurface(tab.id) && inRecentlyAttendedGrace(tab.id);
+        if (needsParkedSurface(tab.id) || graceOnly) {
           const wasAttached = win.contentView.children.includes(tab.view);
           const wasParked = parkedTabIds.has(tab.id);
           if (!wasAttached) win.contentView.addChildView(tab.view);
@@ -3821,9 +3879,15 @@ function createBuiltInBrowserWindowService(args: {
           // warm, where the radius exists to clip the pixel that overlaps the
           // UI rather than to decorate anything.
           applyTabViewCornerRadius(tab, warming ? warmingCornerRadius : 0);
-          const parkedRect = warming ?? parkedPreviewRect(tab);
+          // A grace park keeps the page exactly as it was on screen: same size,
+          // no agent viewport, so the way back is a move and not a relayout.
+          const graceRect = graceOnly && tab.lastPanelRect
+            ? { ...parkedPreviewRect(tab), width: tab.lastPanelRect.width, height: tab.lastPanelRect.height }
+            : null;
+          const parkedRect = warming ?? graceRect ?? parkedPreviewRect(tab);
           tab.view.setBounds(parkedRect);
-          syncAgentViewport(tab, parkedRect);
+          if (graceRect) syncAgentViewport(tab);
+          else syncAgentViewport(tab, parkedRect);
           if (warming) scheduleParkAfterWarming(tab.id);
           tab.view.setVisible(true);
           // Still not the active tab: parked means composited, not attended, so
@@ -3840,9 +3904,13 @@ function createBuiltInBrowserWindowService(args: {
         tab.view.setVisible(false);
         removeTabViewFromWindow(tab);
         applyTabLifecycle(tab, false);
-        syncAgentViewport(tab);
+        syncAgentViewport(tab, null);
         continue;
       }
+      // Parked (off screen) or detached a moment ago: Chromium can present the
+      // returning view black until something invalidates it.
+      const cameOnScreen = parkedTabIds.has(tab.id) || !win.contentView.children.includes(tab.view);
+      recentlyAttendedUntil.delete(tab.id);
       parkedTabIds.delete(tab.id);
       if (!win.contentView.children.includes(tab.view)) {
         win.contentView.addChildView(tab.view);
@@ -3857,7 +3925,33 @@ function createBuiltInBrowserWindowService(args: {
       syncAgentViewport(tab, electronRect);
       tab.view.setVisible(true);
       applyTabLifecycle(tab, true);
+      if (cameOnScreen) repaintTab(tab);
     }
+  };
+
+  /**
+   * Ask Chromium for a fresh frame now and again a few frames later. A view
+   * that was off screen, hidden, or behind another app keeps no frame worth
+   * showing, and without this it stays black until the pointer moves over it.
+   */
+  const repaintTab = (tab: BrowserTabState): void => {
+    const invalidate = () => {
+      try {
+        if (!tab.webContents.isDestroyed()) tab.webContents.invalidate?.();
+      } catch {
+        // a renderer mid-swap repaints on its own
+      }
+    };
+    invalidate();
+    const timer = setTimeout(invalidate, 60);
+    timer.unref?.();
+  };
+
+  /** The window came back (shown, restored, refocused): repaint the page the person sees. */
+  const repaintAttendedTab = (): void => {
+    if (!visible) return;
+    const tab = activeTab();
+    if (tab?.view) repaintTab(tab);
   };
 
   const applyTabLifecycle = (tab: BrowserTabState, active: boolean): void => {
@@ -3983,6 +4077,10 @@ function createBuiltInBrowserWindowService(args: {
    * process-wide `screen` registry above, because `screen` is a singleton and
    * these services are not.
    */
+  /** The window coming back into view; the attended page repaints on each. */
+  const WINDOW_REVEAL_EVENTS = ["show", "restore", "focus"] as const;
+  let winRevealListener: (() => void) | null = null;
+
   const WINDOW_GEOMETRY_EVENTS = [
     "resize",
     "move",
@@ -4070,7 +4168,18 @@ function createBuiltInBrowserWindowService(args: {
         }
       }
     }
+    if (win && !win.isDestroyed() && winRevealListener) {
+      const emitter = asGeometryEmitter(win);
+      for (const event of WINDOW_REVEAL_EVENTS) {
+        try {
+          emitter.removeListener?.(event, winRevealListener);
+        } catch {
+          // ignore teardown races
+        }
+      }
+    }
     winGeometryListener = null;
+    winRevealListener = null;
     releaseScreenGeometryWatcher?.();
     releaseScreenGeometryWatcher = null;
     if (hostWebContents && hostRendererGoneListener) {
@@ -4099,12 +4208,26 @@ function createBuiltInBrowserWindowService(args: {
         // A platform without one of these events is not a failure.
       }
     }
+    winRevealListener = () => repaintAttendedTab();
+    for (const event of WINDOW_REVEAL_EVENTS) {
+      try {
+        windowEmitter.on?.(event, winRevealListener);
+      } catch {
+        // A platform without one of these events is not a failure.
+      }
+    }
     releaseScreenGeometryWatcher = addScreenGeometryWatcher(() => scheduleParkedViewRecheck());
     const wc = nextWin.webContents ?? null;
     if (!wc || wc.isDestroyed?.()) return;
     hostWebContents = wc;
     hostWebContentsId = typeof wc.id === "number" ? wc.id : null;
-    hostRendererGoneListener = () => stopPreviewStreamsForWindow();
+    hostRendererGoneListener = () => {
+      // The pane that would come back to a grace-parked page is gone with it.
+      const hadGrace = recentlyAttendedUntil.size > 0;
+      recentlyAttendedUntil.clear();
+      stopPreviewStreamsForWindow();
+      if (hadGrace) attachViewsToCurrentWindow();
+    };
     try {
       wc.on("render-process-gone", hostRendererGoneListener);
       wc.once("destroyed", hostRendererGoneListener);
@@ -5496,6 +5619,9 @@ function createBuiltInBrowserWindowService(args: {
 
   function dispose(): void {
     disposed = true;
+    if (recentlyAttendedTimer) clearTimeout(recentlyAttendedTimer);
+    recentlyAttendedTimer = null;
+    recentlyAttendedUntil.clear();
     // Clear inspecting flags up front so any in-flight debugger callbacks that fire
     // during teardown don't act on torn-down state. stopInspect() is async, but the
     // synchronous flag flip here protects the message listener (handleInspectNodeRequested
@@ -6375,6 +6501,7 @@ function createBuiltInBrowserWindowService(args: {
     setZoom: tabCapabilities.setZoom,
     findInPage: tabCapabilities.findInPage,
     stopFindInPage: tabCapabilities.stopFindInPage,
+    readText: tabCapabilities.readText,
     setDevTools: tabCapabilities.setDevTools,
     setNetworkLogging: tabCapabilities.setNetworkLogging,
     getNetworkLog: tabCapabilities.getNetworkLog,

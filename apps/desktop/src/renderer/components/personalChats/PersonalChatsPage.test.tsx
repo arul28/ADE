@@ -162,6 +162,7 @@ describe("PersonalChatsPage", () => {
   beforeEach(() => {
     cleanup();
     vi.clearAllMocks();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
     delete window.__adeWebClient;
     webChatsState.picker = null;
     resetModelPickerRuntimeCatalogForTests();
@@ -173,6 +174,7 @@ describe("PersonalChatsPage", () => {
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     delete window.__adeWebClient;
   });
 

@@ -1106,6 +1106,7 @@ export const IPC = {
   projectConfigDiffAgainstDisk: "ade.projectConfig.diffAgainstDisk",
   getAggregatedUsage: "ade.usage.getAggregated",
   usageGetAdeStats: "ade.usage.getAdeStats",
+  usageGetGithubContributions: "ade.usage.getGithubContributions",
   usageGetSnapshot: "ade.usage.getSnapshot",
   usageRefresh: "ade.usage.refresh",
   usageRefreshHistory: "ade.usage.refreshHistory",

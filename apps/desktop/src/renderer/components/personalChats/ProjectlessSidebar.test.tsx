@@ -22,13 +22,10 @@ function renderSidebar(overrides: Partial<Parameters<typeof ProjectlessSidebar>[
     query: "",
     onQueryChange: vi.fn(),
     selectedId: null,
-    onSelect: vi.fn(),
+    onRowClick: vi.fn(),
     onNewChat: vi.fn(),
     onBack: vi.fn(),
     mobileListOpen: true,
-    menuId: null,
-    onToggleMenu: vi.fn(),
-    onRemove: vi.fn(),
     ...overrides,
   };
   render(<ProjectlessSidebar {...props} />);

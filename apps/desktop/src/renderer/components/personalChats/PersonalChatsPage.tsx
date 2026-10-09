@@ -1,6 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatBrowserTabMentionToken } from "../../../shared/browserTabMention";
-import { AppWindow, ArrowLeft, Globe, SpinnerGap, TerminalWindow } from "@phosphor-icons/react";
+import {
+  AppWindow,
+  Archive,
+  ArrowCounterClockwise,
+  ArrowLeft,
+  Copy,
+  Globe,
+  PencilSimple,
+  PushPin,
+  PushPinSlash,
+  SpinnerGap,
+  Stop,
+  TerminalWindow,
+  Trash,
+  X,
+} from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type {
   AgentChatFileRef,
@@ -10,9 +25,13 @@ import type {
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
+import { ContextMenu, type ContextMenuEntry } from "../ui/ContextMenu";
+import { confirmDialog } from "../ui/dialog/confirm";
+import { showToast } from "../app/toast/toastStore";
 import { AgentChatPane, type AgentChatPaneComposerHandle } from "../chat/AgentChatPane";
 import { AgentChatApiProvider } from "../chat/agentChatApi";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
+import { DraftMachinePicker } from "../chat/DraftMachinePicker";
 import { PersonalTerminalPanel } from "./PersonalTerminalPanel";
 import { ProjectlessSidebar } from "./ProjectlessSidebar";
 import { CHAT_HEADER_BUTTON, sessionPreview, sessionTitle } from "./sessionHelpers";
@@ -60,6 +79,26 @@ const EMPTY_REMOTE_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
 const EMPTY_TAB_ROOTS: string[] = [];
 /** Rail refreshes coalesce: a streaming turn emits many events a second. */
 const SESSIONS_REFRESH_DEBOUNCE_MS = 400;
+const EMPTY_SELECTION: ReadonlySet<string> = new Set();
+/** Same look as the Work sidebar's selection toolbar. */
+const BULK_ACTION_BUTTON_CLASS =
+  "inline-flex h-6 items-center gap-1 rounded-md px-1.5 font-sans text-[10px] font-medium text-muted-fg transition-colors hover:bg-fg/[0.04] hover:text-fg";
+const BULK_DESTRUCTIVE_BUTTON_CLASS =
+  "inline-flex h-6 items-center gap-1 rounded-md px-1.5 font-sans text-[10px] font-medium text-red-300/75 transition-colors hover:bg-red-500/10 hover:text-red-200";
+
+/** A row's menu: the rows it acts on (one, or the whole multi-selection) and where it opened. */
+type RowMenuState = { x: number; y: number; anchorId: string; targetIds: string[] } | null;
+
+function errorDetail(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
+/** Copy from a menu that has already closed, so a refused write still says so. */
+function copyToClipboard(text: string, what: string): void {
+  void navigator.clipboard.writeText(text).catch(() => {
+    showToast({ title: `Could not copy ${what}`, tone: "error" });
+  });
+}
 
 function groupLabel(value: string | null | undefined): string {
   const timestamp = value ? Date.parse(value) : NaN;
@@ -97,7 +136,16 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [menuId, setMenuId] = useState<string | null>(null);
+  const [rowMenu, setRowMenu] = useState<RowMenuState>(null);
+  // Rows picked with shift / cmd / ctrl-click. Separate from `selectedId`
+  // (the chat open in the pane), as in the Work sidebar.
+  const [multiSelectedIds, setMultiSelectedIds] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  // The rail lists archived chats instead of live ones, so they can come back.
+  const [showArchived, setShowArchived] = useState(false);
+  const showArchivedRef = useRef(showArchived);
+  showArchivedRef.current = showArchived;
   const [toolPanel, setToolPanel] = useState<ToolPanel>(null);
   const [mobileListOpen, setMobileListOpen] = useState(true);
   const targetGenerationRef = useRef(0);
@@ -122,9 +170,14 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   });
 
   const refreshSessions = useCallback(async (generation = targetGenerationRef.current) => {
-    const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: false });
-    if (generation !== targetGenerationRef.current) return;
-    const ordered = [...(Array.isArray(rows) ? rows : [])].sort(
+    const archived = showArchivedRef.current;
+    const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: archived });
+    // A reply for the other view (the toggle moved mid-flight) is dropped too.
+    if (generation !== targetGenerationRef.current || archived !== showArchivedRef.current) return;
+    const listed = Array.isArray(rows) ? rows : [];
+    // `includeArchived` returns live chats as well; the archived view shows only the archived ones.
+    const inView = listed.filter((session) => Boolean(session.archivedAt) === archived);
+    const ordered = [...inView].sort(
       (left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt),
     );
     setSessions(ordered);
@@ -134,6 +187,10 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     const generation = ++targetGenerationRef.current;
     setSessions([]);
     setSelectedId(null);
+    setMultiSelectedIds(EMPTY_SELECTION);
+    setSelectionAnchorId(null);
+    setRowMenu(null);
+    setRenamingId(null);
     setPaneGeneration((value) => value + 1);
     setToolPanel(null);
     setLoading(true);
@@ -146,6 +203,27 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       if (generation === targetGenerationRef.current) setLoading(false);
     });
   }, [refreshSessions, targetKey]);
+
+  // Switching between live and archived chats reloads the rail; the open chat stays open.
+  const archivedViewInitializedRef = useRef(false);
+  useEffect(() => {
+    if (!archivedViewInitializedRef.current) {
+      archivedViewInitializedRef.current = true;
+      return;
+    }
+    const generation = targetGenerationRef.current;
+    setSessions([]);
+    setMultiSelectedIds(EMPTY_SELECTION);
+    setSelectionAnchorId(null);
+    setRowMenu(null);
+    setRenamingId(null);
+    setLoading(true);
+    void refreshSessions(generation).catch((reason) => {
+      if (generation === targetGenerationRef.current) setError(errorDetail(reason));
+    }).finally(() => {
+      if (generation === targetGenerationRef.current) setLoading(false);
+    });
+  }, [refreshSessions, showArchived]);
 
   // The rail follows the same event stream the pane reads: titles, activity
   // and new chats appear without a manual refresh.
@@ -193,13 +271,19 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openPersonalBrowser);
   }, [navigate]);
 
-  const selectedSession = sessions.find((session) => session.sessionId === selectedId) ?? null;
+  // The open chat keeps its summary while the rail shows the other view
+  // (archived chats), where its row is not listed.
+  const lastSelectedSessionRef = useRef<AgentChatSessionSummary | null>(null);
+  const listedSelectedSession = sessions.find((session) => session.sessionId === selectedId) ?? null;
+  if (listedSelectedSession) lastSelectedSessionRef.current = listedSelectedSession;
+  const selectedSession = listedSelectedSession
+    ?? (lastSelectedSessionRef.current?.sessionId === selectedId ? lastSelectedSessionRef.current : null);
 
 
   const selectSession = useCallback((sessionId: string | null) => {
     setSelectedId(sessionId);
     setPaneGeneration((value) => value + 1);
-    setMenuId(null);
+    setRowMenu(null);
     setMobileListOpen(false);
   }, []);
 
@@ -220,44 +304,6 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     void refreshSessions().catch(() => undefined);
   }, [refreshSessions]);
 
-  const runRowAction = useCallback(async (label: string, action: () => Promise<unknown>) => {
-    setMenuId(null);
-    setError(null);
-    try {
-      await action();
-    } catch (reason) {
-      const detail = reason instanceof Error ? reason.message : String(reason);
-      setError(`Could not ${label} this chat${detail ? `: ${detail}` : "."}`);
-    }
-    await refreshSessions().catch(() => undefined);
-  }, [refreshSessions]);
-
-  const removeSession = useCallback(async (sessionId: string, action: "archive" | "delete") => {
-    await runRowAction(action, () => callPersonal<void>(action, { sessionId }));
-    if (selectedId === sessionId) selectSession(null);
-  }, [runRowAction, selectSession, selectedId]);
-
-  const renameSession = useCallback((sessionId: string, title: string) => {
-    void runRowAction("rename", () => callPersonal("updateSession", { sessionId, title, manuallyNamed: true }));
-  }, [runRowAction]);
-
-  // An older host has no `setPinned` (personal-chat capabilities are not
-  // exposed to this page): its refusal hides Pin for that machine instead of
-  // surfacing as an error.
-  const [pinUnsupportedTarget, setPinUnsupportedTarget] = useState<string | null>(null);
-  const pinSupported = pinUnsupportedTarget !== targetKey;
-  const togglePin = useCallback((sessionId: string, pinned: boolean) => {
-    void runRowAction(pinned ? "pin" : "unpin", async () => {
-      try {
-        await callPersonal("setPinned", { sessionId, pinned });
-      } catch (reason) {
-        const detail = reason instanceof Error ? reason.message : String(reason);
-        if (!detail.includes("Unsupported personal chat action")) throw reason;
-        setPinUnsupportedTarget(targetKey);
-      }
-    });
-  }, [runRowAction, targetKey]);
-
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle
@@ -274,7 +320,403 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     return [...groups.entries()].sort(([left], [right]) => (left === "Pinned" ? -1 : right === "Pinned" ? 1 : 0));
   }, [filtered]);
 
+  // The rail's rows in the order they are drawn: what a shift-click range and
+  // the arrow keys walk.
+  const orderedIds = useMemo(
+    () => grouped.flatMap(([, rows]) => rows.map((session) => session.sessionId)),
+    [grouped],
+  );
+  const sessionsById = useMemo(
+    () => new Map(sessions.map((session) => [session.sessionId, session] as const)),
+    [sessions],
+  );
+
+  // A selected row that leaves the rail (deleted, archived elsewhere, filtered
+  // out by search) leaves the selection with it.
+  useEffect(() => {
+    const visible = new Set(orderedIds);
+    setMultiSelectedIds((current) => {
+      if (current.size === 0) return current;
+      const next = new Set([...current].filter((id) => visible.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [orderedIds]);
+
+  const clearSelection = useCallback(() => {
+    setMultiSelectedIds(EMPTY_SELECTION);
+    setSelectionAnchorId(null);
+  }, []);
+
+  /**
+   * Runs one action over every chat it names, each on its own: one chat that
+   * refuses does not stop the rest. Failures are reported with a count.
+   */
+  const runChatAction = useCallback(async (
+    verb: string,
+    ids: string[],
+    action: (sessionId: string) => Promise<unknown>,
+  ): Promise<string[]> => {
+    setRowMenu(null);
+    setError(null);
+    const succeeded: string[] = [];
+    let firstFailure: unknown = null;
+    for (const sessionId of ids) {
+      try {
+        await action(sessionId);
+        succeeded.push(sessionId);
+      } catch (reason) {
+        firstFailure ??= reason;
+      }
+    }
+    if (firstFailure != null) {
+      const detail = errorDetail(firstFailure);
+      setError(ids.length === 1
+        ? `Could not ${verb} this chat${detail ? `: ${detail}` : "."}`
+        : `Could not ${verb} ${ids.length - succeeded.length} of ${ids.length} chats${detail ? `: ${detail}` : "."}`);
+    }
+    await refreshSessions().catch(() => undefined);
+    return succeeded;
+  }, [refreshSessions]);
+
+  const removeChats = useCallback(async (ids: string[], action: "archive" | "unarchive" | "delete") => {
+    if (ids.length === 0) return;
+    if (action === "delete") {
+      const only = ids.length === 1 ? sessionsById.get(ids[0]!) : undefined;
+      const confirmed = await confirmDialog({
+        title: ids.length === 1
+          ? `Delete "${only ? sessionTitle(only) : "this chat"}"?`
+          : `Delete ${ids.length} chats?`,
+        message: ids.length === 1
+          ? "This permanently removes the chat and its history."
+          : "This permanently removes the selected chats and their history.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
+      if (!confirmed) return;
+    }
+    const done = await runChatAction(action, ids, (sessionId) => callPersonal<void>(action, { sessionId }));
+    // An archived or deleted chat leaves the pane; an unarchived one stays open.
+    if (selectedId && done.includes(selectedId) && action !== "unarchive") selectSession(null);
+    setMultiSelectedIds((current) => {
+      if (!done.some((id) => current.has(id))) return current;
+      return new Set([...current].filter((id) => !done.includes(id)));
+    });
+  }, [runChatAction, selectSession, selectedId, sessionsById]);
+
+  const renameSession = useCallback((sessionId: string, title: string) => {
+    setRenamingId(null);
+    void runChatAction("rename", [sessionId], () => callPersonal("updateSession", { sessionId, title, manuallyNamed: true }));
+  }, [runChatAction]);
+
+  // An older host has no `setPinned` (personal-chat capabilities are not
+  // exposed to this page): its refusal hides Pin for that machine instead of
+  // surfacing as an error.
+  const [pinUnsupportedTarget, setPinUnsupportedTarget] = useState<string | null>(null);
+  const pinSupported = pinUnsupportedTarget !== targetKey;
+  const setPinned = useCallback((ids: string[], pinned: boolean) => {
+    let unsupported = false;
+    void runChatAction(pinned ? "pin" : "unpin", ids, async (sessionId) => {
+      if (unsupported) return;
+      try {
+        await callPersonal("setPinned", { sessionId, pinned });
+      } catch (reason) {
+        if (!errorDetail(reason).includes("Unsupported personal chat action")) throw reason;
+        unsupported = true;
+        setPinUnsupportedTarget(targetKey);
+      }
+    });
+  }, [runChatAction, targetKey]);
+
+  const stopChats = useCallback((ids: string[]) => {
+    void runChatAction("stop", ids, (sessionId) => callPersonal("interrupt", { sessionId }));
+  }, [runChatAction]);
+
+  /** Selected rows, in rail order. */
+  const selectedRowIds = useMemo(
+    () => orderedIds.filter((id) => multiSelectedIds.has(id)),
+    [multiSelectedIds, orderedIds],
+  );
+
+  /**
+   * Plain click opens the chat. Shift-click selects the range from the anchor;
+   * cmd-click (ctrl-click on Windows and Linux) adds or removes one row. The
+   * chat already open counts as the first pick, so cmd-clicking a second row
+   * selects both.
+   */
+  const handleRowClick = useCallback((id: string, event: React.MouseEvent) => {
+    const useRange = event.shiftKey;
+    const useToggle = event.metaKey || event.ctrlKey;
+    if (useRange) {
+      const anchorId = [selectionAnchorId, selectedId, id]
+        .find((candidate) => candidate != null && orderedIds.includes(candidate)) ?? id;
+      const from = orderedIds.indexOf(anchorId);
+      const to = orderedIds.indexOf(id);
+      if (from >= 0 && to >= 0) {
+        const [start, end] = from <= to ? [from, to] : [to, from];
+        setMultiSelectedIds(new Set(orderedIds.slice(start, end + 1)));
+        setSelectionAnchorId(anchorId);
+        return;
+      }
+    }
+    if (useToggle || useRange) {
+      setMultiSelectedIds((current) => {
+        const next = new Set(current);
+        if (next.size === 0 && selectedId && selectedId !== id && orderedIds.includes(selectedId)) next.add(selectedId);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      setSelectionAnchorId(id);
+      return;
+    }
+    clearSelection();
+    setSelectionAnchorId(id);
+    selectSession(id);
+  }, [clearSelection, orderedIds, selectSession, selectedId, selectionAnchorId]);
+
+  // Right-clicking a row inside a multi-selection acts on the selection, the
+  // way the Work sidebar (and Finder) does; any other row gets its own menu.
+  const openRowMenu = useCallback((id: string, position: { x: number; y: number }) => {
+    const targetIds = multiSelectedIds.size > 1 && multiSelectedIds.has(id) ? selectedRowIds : [id];
+    setRowMenu({ ...position, anchorId: id, targetIds });
+  }, [multiSelectedIds, selectedRowIds]);
+
   const browserAvailable = !isWebClientMode() && Boolean(window.ade?.builtInBrowser);
+
+  const rowMenuEntries = useMemo((): ContextMenuEntry[] => {
+    if (!rowMenu) return [];
+    const targets = rowMenu.targetIds
+      .map((id) => sessionsById.get(id))
+      .filter((session): session is AgentChatSessionSummary => session != null);
+    if (targets.length === 0) return [];
+    const ids = targets.map((session) => session.sessionId);
+    const total = targets.length;
+    const hint = (count: number) => (total > 1 && count < total ? `${count} of ${total}` : undefined);
+    const unpinned = targets.filter((session) => !session.pinned).map((session) => session.sessionId);
+    const running = targets.filter((session) => session.status === "active").map((session) => session.sessionId);
+    const archived = targets.filter((session) => session.archivedAt).map((session) => session.sessionId);
+    const live = targets.filter((session) => !session.archivedAt).map((session) => session.sessionId);
+    const plural = total > 1 ? ` ${total}` : "";
+    const single = total === 1 ? targets[0]! : null;
+
+    return [
+      ...(total > 1 ? [{ kind: "label" as const, key: "count", label: `${total} selected` }] : []),
+      ...(single
+        ? [{
+            kind: "item" as const,
+            key: "rename",
+            label: "Rename",
+            icon: PencilSimple,
+            onSelect: () => setRenamingId(single.sessionId),
+          }]
+        : []),
+      ...(pinSupported
+        ? [unpinned.length
+            ? {
+                kind: "item" as const,
+                key: "pin",
+                label: "Pin",
+                icon: PushPin,
+                hint: hint(unpinned.length),
+                onSelect: () => setPinned(unpinned, true),
+              }
+            : {
+                kind: "item" as const,
+                key: "unpin",
+                label: "Unpin",
+                icon: PushPinSlash,
+                onSelect: () => setPinned(ids, false),
+              }]
+        : []),
+      ...(running.length
+        ? [{
+            kind: "item" as const,
+            key: "stop",
+            label: "Stop",
+            icon: Stop,
+            hint: hint(running.length),
+            title: "Stop the turn in progress",
+            onSelect: () => stopChats(running),
+          }]
+        : []),
+      ...(single && browserAvailable
+        ? [{
+            kind: "item" as const,
+            key: "browser-tab",
+            label: "Open in the Browser tab",
+            icon: AppWindow,
+            onSelect: () => {
+              void openChatInBrowserTab(single.sessionId, targetKey, navigate)
+                .catch((reason) => setError(errorDetail(reason)));
+            },
+          }]
+        : []),
+      { kind: "separator", key: "copy-sep" },
+      {
+        kind: "item",
+        key: "copy-id",
+        label: total > 1 ? "Copy chat IDs" : "Copy chat ID",
+        icon: Copy,
+        onSelect: () => copyToClipboard(ids.join("\n"), total > 1 ? "chat IDs" : "chat ID"),
+      },
+      ...(total > 1
+        ? [{ kind: "item" as const, key: "clear", label: "Clear selection", icon: X, onSelect: clearSelection }]
+        : []),
+      { kind: "separator", key: "remove-sep" },
+      ...(live.length
+        ? [{
+            kind: "item" as const,
+            key: "archive",
+            label: `Archive${plural}`,
+            icon: Archive,
+            hint: hint(live.length),
+            onSelect: () => void removeChats(live, "archive"),
+          }]
+        : []),
+      ...(archived.length
+        ? [{
+            kind: "item" as const,
+            key: "unarchive",
+            label: `Unarchive${plural}`,
+            icon: ArrowCounterClockwise,
+            hint: hint(archived.length),
+            onSelect: () => void removeChats(archived, "unarchive"),
+          }]
+        : []),
+      {
+        kind: "item",
+        key: "delete",
+        label: total > 1 ? `Delete ${total}…` : "Delete…",
+        icon: Trash,
+        danger: true,
+        onSelect: () => void removeChats(ids, "delete"),
+      },
+    ];
+  }, [
+    browserAvailable,
+    clearSelection,
+    navigate,
+    pinSupported,
+    removeChats,
+    rowMenu,
+    sessionsById,
+    setPinned,
+    stopChats,
+    targetKey,
+  ]);
+
+  const focusRow = useCallback((id: string) => {
+    const row = Array.from(document.querySelectorAll<HTMLElement>("[data-chat-row-id]"))
+      .find((element) => element.dataset.chatRowId === id);
+    const button = row?.querySelector<HTMLButtonElement>("button");
+    button?.focus();
+    button?.scrollIntoView({ block: "nearest" });
+  }, []);
+
+  /**
+   * Keys on a focused row: arrows move focus (shift extends the selection),
+   * Enter opens (the row is a button), Delete or Backspace deletes the
+   * selection or the focused row after a confirm, Escape clears the selection,
+   * cmd/ctrl+A selects every listed chat. Typing in the rename field is left alone.
+   */
+  const handleListKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("input, textarea, [contenteditable='true']")) return;
+    const rowId = target.closest<HTMLElement>("[data-chat-row-id]")?.dataset.chatRowId ?? null;
+    const mod = event.metaKey || event.ctrlKey;
+    switch (event.key) {
+      case "Escape": {
+        if (multiSelectedIds.size === 0) return;
+        event.preventDefault();
+        clearSelection();
+        return;
+      }
+      case "Delete":
+      case "Backspace": {
+        const ids = selectedRowIds.length ? selectedRowIds : rowId ? [rowId] : [];
+        if (ids.length === 0) return;
+        event.preventDefault();
+        void removeChats(ids, "delete");
+        return;
+      }
+      case "ArrowDown":
+      case "ArrowUp": {
+        if (orderedIds.length === 0) return;
+        event.preventDefault();
+        const from = rowId ?? selectedId;
+        const index = from ? orderedIds.indexOf(from) : -1;
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        const nextIndex = index < 0
+          ? (step > 0 ? 0 : orderedIds.length - 1)
+          : Math.min(orderedIds.length - 1, Math.max(0, index + step));
+        const nextId = orderedIds[nextIndex]!;
+        if (event.shiftKey) {
+          const anchorId = [selectionAnchorId, from]
+            .find((candidate) => candidate != null && orderedIds.includes(candidate)) ?? nextId;
+          const anchorIndex = orderedIds.indexOf(anchorId);
+          const [start, end] = anchorIndex <= nextIndex ? [anchorIndex, nextIndex] : [nextIndex, anchorIndex];
+          setMultiSelectedIds(new Set(orderedIds.slice(start, end + 1)));
+          setSelectionAnchorId(anchorId);
+        }
+        focusRow(nextId);
+        return;
+      }
+      case "a":
+      case "A": {
+        if (!mod || orderedIds.length === 0) return;
+        event.preventDefault();
+        setMultiSelectedIds(new Set(orderedIds));
+        setSelectionAnchorId(orderedIds[0]!);
+        return;
+      }
+      default:
+    }
+  }, [clearSelection, focusRow, multiSelectedIds.size, orderedIds, removeChats, selectedId, selectedRowIds, selectionAnchorId]);
+
+  const selectedRows = selectedRowIds
+    .map((id) => sessionsById.get(id))
+    .filter((session): session is AgentChatSessionSummary => session != null);
+  const selectionToolbar = selectedRows.length > 0 ? (
+    <div
+      className="mx-3 mb-2 flex min-h-8 flex-wrap items-center gap-0.5 border-t border-fg/[0.06] px-1 pt-1"
+      data-testid="personal-chats-selection-toolbar"
+    >
+      <span className="min-w-0 flex-1 truncate px-1 font-sans text-[10px] font-medium tabular-nums text-muted-fg/70">
+        {selectedRows.length} selected
+      </span>
+      {pinSupported && selectedRows.some((session) => !session.pinned) ? (
+        <button
+          type="button"
+          className={BULK_ACTION_BUTTON_CLASS}
+          onClick={() => setPinned(selectedRows.filter((session) => !session.pinned).map((session) => session.sessionId), true)}
+        >
+          <PushPin size={10} /> Pin
+        </button>
+      ) : null}
+      {showArchived ? (
+        <button type="button" className={BULK_ACTION_BUTTON_CLASS} onClick={() => void removeChats(selectedRowIds, "unarchive")}>
+          <ArrowCounterClockwise size={10} /> Unarchive
+        </button>
+      ) : (
+        <button type="button" className={BULK_ACTION_BUTTON_CLASS} onClick={() => void removeChats(selectedRowIds, "archive")}>
+          <Archive size={10} /> Archive
+        </button>
+      )}
+      <button type="button" className={BULK_DESTRUCTIVE_BUTTON_CLASS} onClick={() => void removeChats(selectedRowIds, "delete")}>
+        <Trash size={10} /> Delete {selectedRows.length}
+      </button>
+      <button
+        type="button"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-fg/50 transition-colors hover:bg-fg/[0.04] hover:text-fg"
+        onClick={clearSelection}
+        aria-label="Clear selected chats"
+        title="Clear selection"
+      >
+        <X size={10} />
+      </button>
+    </div>
+  ) : null;
+
   // A chat that is browsing, or the one docked in the Browser tab, is one
   // click from its page there.
   const selectedBrowsingSince = useAgentBrowserPresenceSince(selectedId);
@@ -378,15 +820,30 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         query={query}
         onQueryChange={setQuery}
         selectedId={selectedId}
-        onSelect={selectSession}
-        onNewChat={() => selectSession(null)}
+        multiSelectedIds={multiSelectedIds}
+        onRowClick={handleRowClick}
+        onRowContextMenu={openRowMenu}
+        menuOpenId={rowMenu?.anchorId ?? null}
+        renamingId={renamingId}
+        onRenameCommit={renameSession}
+        onRenameCancel={() => setRenamingId(null)}
+        showArchived={showArchived}
+        onToggleArchived={() => setShowArchived((current) => !current)}
+        selectionToolbar={selectionToolbar}
+        onListKeyDown={handleListKeyDown}
+        onNewChat={() => { clearSelection(); selectSession(null); }}
         onBack={() => navigate("/work")}
         mobileListOpen={mobileListOpen}
-        menuId={menuId}
-        onToggleMenu={setMenuId}
-        onRemove={(id, action) => void removeSession(id, action)}
-        onRename={renameSession}
-        onTogglePin={pinSupported ? togglePin : undefined}
+      />
+      {/* Portaled: the rail's frosted plane is a containing block for fixed
+          children, which would pin the menu to the rail instead of the pointer. */}
+      <ContextMenu
+        menu={rowMenu && rowMenuEntries.length ? rowMenu : null}
+        entries={rowMenuEntries}
+        onClose={() => setRowMenu(null)}
+        label={rowMenu && rowMenu.targetIds.length > 1 ? `${rowMenu.targetIds.length} selected chats` : "Chat actions"}
+        testId="personal-chats-row-menu"
+        portal
       />
 
       <main className="ade-chat-scene-plane relative flex min-w-0 flex-1 flex-col">
@@ -441,7 +898,22 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                 availableModelIdsOverride={availableModelIds}
                 onSessionCreated={handleSessionCreated}
                 composerHandleRef={composerRef}
-                emptyStateAccessory={providerUnavailable ? null : <SuggestionChips prompts={CHAT_SUGGESTIONS} onSelect={setComposerDraft} />}
+                emptyStateAccessory={(
+                  <div className="flex flex-col items-center gap-2">
+                    {/* Where a new chat runs, chosen beside the prompt like a
+                        project chat's launch shelf. Shown even with no provider
+                        here: another machine may have one. Renders nothing with
+                        a single machine. */}
+                    <DraftMachinePicker
+                      machines={machineOptions}
+                      selectedMachineId={machineId}
+                      onChange={selectMachine}
+                      tooltipLabel="Where it runs"
+                      showWhenSingle
+                    />
+                    {providerUnavailable ? null : <SuggestionChips prompts={CHAT_SUGGESTIONS} onSelect={setComposerDraft} />}
+                  </div>
+                )}
                 canvasFill="var(--ade-chat-scene-canvas)"
                 hideSessionTabs
                 hideWorkspaceChrome

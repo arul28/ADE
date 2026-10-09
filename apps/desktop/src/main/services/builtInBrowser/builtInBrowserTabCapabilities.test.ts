@@ -71,6 +71,7 @@ const fakes = vi.hoisted(() => {
       this.currentUrl = url;
       this.emit("did-navigate", {}, url);
     };
+    executeJavaScriptInIsolatedWorld = vi.fn(async (): Promise<unknown> => ({ source: "body", text: "" }));
     reload = (): void => undefined;
     goBack = (): void => undefined;
     goForward = (): void => undefined;
@@ -1380,5 +1381,39 @@ describe("built-in browser find waiter (awaitFoundInPage)", () => {
     };
     await expect(awaitFoundInPage(throwing.wc, findWaiters(), findArgs())).rejects.toThrow(/tab is gone/);
     expect(throwing.raw.listenerCount("found-in-page")).toBe(0);
+  });
+});
+
+
+describe("built-in browser page text", () => {
+  it.each([
+    [0, 4, "abcd", 4],
+    [4, 4, "efgh", 8],
+    [8, 4, "ij", null],
+    [10, 4, "", null],
+  ])("pages text from offset %s with a %s character budget", async (offset, maxChars, text, nextOffset) => {
+    const { service, tabId } = await serviceWithTab();
+    fakes.webContentsInstances[0]!.executeJavaScriptInIsolatedWorld.mockResolvedValue({ source: "main", text: "abcdefghij" });
+    await expect(service.readText({ tabId, offset, maxChars })).resolves.toMatchObject({
+      text, offset, totalChars: 10, nextOffset, source: "main",
+    });
+    service.dispose();
+  });
+
+  it("surfaces a selector miss rather than returning an empty page", async () => {
+    const { service, tabId } = await serviceWithTab();
+    fakes.webContentsInstances[0]!.executeJavaScriptInIsolatedWorld.mockResolvedValue({ error: "No element matches #missing." });
+    await expect(service.readText({ tabId, selector: "#missing" })).rejects.toThrow("No element matches #missing.");
+    service.dispose();
+  });
+
+  it("caps a page read at 100000 characters even when the caller asks for more", async () => {
+    const { service, tabId } = await serviceWithTab();
+    fakes.webContentsInstances[0]!.executeJavaScriptInIsolatedWorld.mockResolvedValue({ source: "body", text: "x".repeat(100_005) });
+    const page = await service.readText({ tabId, maxChars: 500_000 });
+    expect(page.text).toHaveLength(100_000);
+    expect(page.totalChars).toBe(100_005);
+    expect(page.nextOffset).toBe(100_000);
+    service.dispose();
   });
 });

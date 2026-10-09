@@ -57,6 +57,8 @@ export type HomeLayoutItem = {
   size: HomeWidgetSize;
   /** Shares the previous widget's cell, below it (Working now under Projects). */
   stacked?: boolean;
+  /** Half a column narrower than its class, giving the room to its neighbours (`homeGridPack.ts`). */
+  narrow?: boolean;
   /** Widget-owned options (a weather place, a timer length). */
   settings?: Record<string, unknown>;
 };
@@ -121,6 +123,7 @@ export function normalizeHomeLayout(value: unknown): HomeLayout {
       type,
       size,
       ...(item.stacked === true && items.length > 0 ? { stacked: true } : {}),
+      ...(item.narrow === true ? { narrow: true } : {}),
       ...(item.settings && typeof item.settings === "object" ? { settings: item.settings as Record<string, unknown> } : {}),
     });
   }
@@ -239,16 +242,75 @@ function flatten(cells: readonly HomeLayoutCell[]): HomeLayoutItem[] {
   return out;
 }
 
-/** Moves a whole cell (a widget and its stack) before or after another cell. */
+/**
+ * Moves a whole cell (a widget and its stack) before or after another cell.
+ * A widget stacked under another moves alone, into a cell of its own.
+ */
 export function moveCell(items: readonly HomeLayoutItem[], fromId: string, toId: string, side: "before" | "after"): HomeLayoutItem[] {
+  if (fromId === toId) return [...items];
   const cells = layoutCells(items);
+  let moving: HomeLayoutCell | undefined;
   const from = cells.findIndex((cell) => cell.host.id === fromId);
-  if (from < 0 || fromId === toId) return [...items];
-  const [moving] = cells.splice(from, 1);
+  if (from >= 0) {
+    [moving] = cells.splice(from, 1);
+  } else {
+    const owner = cells.find((cell) => cell.stacked.some((item) => item.id === fromId));
+    const item = owner?.stacked.find((entry) => entry.id === fromId);
+    if (!owner || !item) return [...items];
+    owner.stacked = owner.stacked.filter((entry) => entry.id !== fromId);
+    const { stacked: _stacked, ...host } = item;
+    moving = { host, stacked: [] };
+  }
   const to = cells.findIndex((cell) => cell.host.id === toId);
   if (to < 0 || !moving) return [...items];
   cells.splice(side === "before" ? to : to + 1, 0, moving);
   return flatten(cells);
+}
+
+export type HomeDropTarget = { id: string; side: "before" | "after" };
+
+/**
+ * Where a dragged widget goes when it is dropped with the pointer at `spot`
+ * (grid columns and rows, fractional) over the card `hovered`. The page packs
+ * widgets in order, so "before the card under the pointer" can land a widget
+ * somewhere else entirely (a wide card ahead of it moves on to the next row).
+ * Every place in the order is tried: the one the packer puts the widget on
+ * the spot wins, else the one nearest it, with the hovered card's side
+ * breaking ties. Null when the widget is already where it would land.
+ */
+export function dropLanding(
+  items: readonly HomeLayoutItem[],
+  fromId: string,
+  hovered: HomeDropTarget,
+  spot: { x: number; y: number },
+  pack: (cells: HomeLayoutCell[]) => { placed: ReadonlyArray<{ cell: HomeLayoutCell; x: number; y: number; w: number; h: number }>; hidden: readonly HomeLayoutCell[] },
+): HomeDropTarget | null {
+  const naive = hovered.id === fromId ? null : hovered;
+  const candidates: Array<HomeDropTarget | null> = [];
+  // Staying put is a candidate for a widget with its own cell; a stacked one
+  // being dragged out always leaves its stack.
+  if (layoutCells(items).some((cell) => cell.host.id === fromId)) candidates.push(null);
+  for (const cell of layoutCells(items)) {
+    if (cell.host.id === fromId) continue;
+    candidates.push({ id: cell.host.id, side: "before" }, { id: cell.host.id, side: "after" });
+  }
+  const seen = new Set<string>();
+  let best: { target: HomeDropTarget | null; score: number[] } | null = null;
+  for (const target of candidates) {
+    const next = target ? moveCell(items, fromId, target.id, target.side) : [...items];
+    const key = next.map((item) => `${item.id}${item.stacked ? "+" : ""}`).join(",");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const result = pack(layoutCells(next));
+    const at = result.placed.find((placement) => placement.cell.host.id === fromId);
+    const dx = at ? Math.max(at.x - spot.x, 0, spot.x - (at.x + at.w)) : Number.POSITIVE_INFINITY;
+    const dy = at ? Math.max(at.y - spot.y, 0, spot.y - (at.y + at.h)) : Number.POSITIVE_INFINITY;
+    const isNaive = naive != null && target != null && target.id === naive.id && target.side === naive.side;
+    const score = [result.hidden.length, at ? Math.hypot(dx, dy) : Number.POSITIVE_INFINITY, isNaive ? 0 : 1];
+    const index = best ? score.findIndex((value, i) => value !== best!.score[i]) : -1;
+    if (!best || (index >= 0 && score[index]! < best.score[index]!)) best = { target, score };
+  }
+  return best ? best.target : naive;
 }
 
 /** Moves a cell one step earlier or later (keyboard reorder). */
@@ -305,6 +367,8 @@ type HomeLayoutStore = {
    */
   add: (type: HomeWidgetType, size: HomeWidgetSize, options?: HomeAddOptions) => string;
   setStacked: (id: string, stacked: boolean) => void;
+  /** Half a column narrower than its class, or back to full width. */
+  setNarrow: (id: string, narrow: boolean) => void;
   updateSettings: (id: string, patch: Record<string, unknown>) => void;
   setAppearance: (patch: Partial<HomeAppearance>) => void;
   setColumns: (columns: 3 | 4) => void;
@@ -385,6 +449,13 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
         return rest;
       }));
     },
+    setNarrow: (id, narrow) =>
+      withItems(get().layout.items.map((item) => {
+        if (item.id !== id) return item;
+        if (narrow) return { ...item, narrow: true };
+        const { narrow: _drop, ...rest } = item;
+        return rest;
+      })),
     updateSettings: (id, patch) =>
       withItems(get().layout.items.map((item) => (item.id === id ? { ...item, settings: { ...item.settings, ...patch } } : item))),
     setAppearance: (patch) => commit({ ...get().layout, appearance: { ...get().layout.appearance, ...patch } }),

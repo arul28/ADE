@@ -40,6 +40,8 @@ import type {
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
   BuiltInBrowserFindInPageResult,
+  BuiltInBrowserReadTextArgs,
+  BuiltInBrowserReadTextResult,
   BuiltInBrowserHoverArgs,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserNetworkLogEntry,
@@ -121,6 +123,32 @@ import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 
 const DEFAULT_FIND_IN_PAGE_TIMEOUT_MS = 5_000;
 const MAX_FIND_IN_PAGE_TIMEOUT_MS = 30_000;
+const DEFAULT_READ_TEXT_CHARS = 20_000;
+const MAX_READ_TEXT_CHARS = 100_000;
+/** Its own isolated world, so a page's scripts can neither see nor patch the read. */
+const READ_TEXT_ISOLATED_WORLD_ID = 1_071_131;
+
+/**
+ * Runs in the page. A region counts as the main content only when it holds a
+ * real share of the text; a stub `<main>` around a cookie banner does not.
+ */
+const readTextSource = (selector: string | null): string => `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const clean = (value) => String(value || "").replace(/[ \\t]+\\n/g, "\\n").replace(/\\n{3,}/g, "\\n\\n").trim();
+  if (selector) {
+    const node = document.querySelector(selector);
+    if (!node) return { error: "No element matches " + selector + "." };
+    return { source: "selector", text: clean(node.innerText ?? node.textContent) };
+  }
+  const body = document.body || document.documentElement;
+  const bodyText = clean(body && (body.innerText ?? body.textContent));
+  const main = document.querySelector("main, [role=main], article");
+  const mainText = main ? clean(main.innerText ?? main.textContent) : "";
+  if (mainText.length >= 500 || (mainText && mainText.length >= bodyText.length * 0.5)) {
+    return { source: "main", text: mainText };
+  }
+  return { source: "body", text: bodyText };
+})()`;
 const MAX_DRAG_STEPS = 50;
 const DEFAULT_DRAG_STEPS = 8;
 const MAX_UPLOAD_FILE_COUNT = 20;
@@ -604,6 +632,45 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         matches: result.matches ?? null,
         finalUpdate: Boolean(result.finalUpdate),
         status: statusForInput(input),
+      };
+    });
+  }
+
+  async function readText(
+    input: BuiltInBrowserReadTextArgs = {},
+  ): Promise<BuiltInBrowserReadTextResult> {
+    const tab = await prepareTabCapability(input, {
+      emptyMessage: "No active browser tab. Open a tab before reading its text.",
+      consentReason: "The agent asked to read this tab's text.",
+    });
+    const selector = stringOrNull(input.selector);
+    const offset = Math.max(0, Math.floor(optionalFiniteNumber(input.offset) ?? 0));
+    const maxChars = Math.min(
+      MAX_READ_TEXT_CHARS,
+      Math.max(1, Math.floor(optionalFiniteNumber(input.maxChars) ?? DEFAULT_READ_TEXT_CHARS)),
+    );
+    return runTracedTabCapability(tab, "readText", input, async () => {
+      const wc = tab.webContents;
+      if (wc.isDestroyed()) throw new Error(`Browser tab ${tab.id} is closed.`);
+      const raw = await wc.executeJavaScriptInIsolatedWorld(
+        READ_TEXT_ISOLATED_WORLD_ID,
+        [{ code: readTextSource(selector) }],
+      ) as { error?: string; source?: string; text?: string } | null;
+      if (raw?.error) throw new Error(raw.error);
+      const full = typeof raw?.text === "string" ? raw.text : "";
+      const source = raw?.source === "selector" || raw?.source === "main" ? raw.source : "body";
+      const start = Math.min(offset, full.length);
+      const text = full.slice(start, start + maxChars);
+      const end = start + text.length;
+      return {
+        tabId: tab.id,
+        url: emptyToNull(wc.getURL()),
+        title: emptyToNull(wc.getTitle()),
+        source,
+        text,
+        offset: start,
+        totalChars: full.length,
+        nextOffset: end < full.length ? end : null,
       };
     });
   }
@@ -1557,6 +1624,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     applyTabZoom,
     findInPage,
     stopFindInPage,
+    readText,
     setDevTools,
     setNetworkLogging,
     getNetworkLog,

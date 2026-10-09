@@ -90,6 +90,7 @@ export function useHomePageWiring(args: {
       prCounts = counts;
     }
     const limits = usageGroups.groups.flatMap((group) => group.lines.map((line) => ({
+      provider: group.provider,
       providerLabel: line.providerLabel,
       percentLeft: line.percentLeft,
       resetsInMs: line.resetsInMs,

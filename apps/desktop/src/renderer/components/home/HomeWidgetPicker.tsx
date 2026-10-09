@@ -65,11 +65,42 @@ function useWidth(ref: React.RefObject<HTMLElement | null>, fallback: number): n
   return width;
 }
 
-/** A stage as wide as its slot. */
+/**
+ * True once the element has come near the visible part of the page, and kept.
+ * The gallery mounts a live copy of every widget; only the ones on screen need
+ * to exist when it opens, and building all of them at once was most of the
+ * half second it took to appear.
+ */
+function useSeen(ref: React.RefObject<HTMLElement | null>): boolean {
+  const [seen, setSeen] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (seen || !element) return undefined;
+    if (typeof IntersectionObserver === "undefined") {
+      setSeen(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setSeen(true);
+    }, { rootMargin: "200px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref, seen]);
+  return seen;
+}
+
+/** A stage as wide as its slot, built once it scrolls near the view. */
 function FluidPreview(props: { type: HomeWidgetType; cls: HomeSizeClass; metrics: GridMetrics; stageHeight: number }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const width = useWidth(ref, 260);
-  return <div ref={ref} className="ade-picker-fluid">{width > 0 ? <LivePreview {...props} stageWidth={width} /> : null}</div>;
+  // No guessed width: a preview built at a fallback width and again at the real
+  // one renders the widget twice.
+  const width = useWidth(ref, 0);
+  const seen = useSeen(ref);
+  return (
+    <div ref={ref} className="ade-picker-fluid" style={{ minHeight: props.stageHeight }}>
+      {seen && width > 0 ? <LivePreview {...props} stageWidth={width} /> : null}
+    </div>
+  );
 }
 
 /** The real widget at a span, scaled into a stage. */

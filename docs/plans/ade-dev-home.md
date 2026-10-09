@@ -168,6 +168,12 @@ input outright; agent actions now hold the tab parked for their duration
 (`withCaptureSurface` in `runTracedAgentAction`). The attached-tab badge now
 tells the agent to read the live tab with `ade browser observe` instead of
 fetching the URL.
+Fixed (2026-10-09): the page is edge to edge; a tab on screen is never laid out
+at the agent viewport (only a parked one is), so the dock opening, closing or
+an agent's claim no longer shrinks or letterboxes it; the dock sends hidden
+context naming the tab in front instead of a chip, and its empty state is a
+small page card with no suggestion chips; a personal chat's `ade browser` calls
+no longer fail on "Refusing to register the user home directory".
 
 ### What is true today
 
@@ -343,23 +349,49 @@ want it).**
   live in `ade.home.layouts.v2`; a v1 layout (`ade.home.layout.v1`) loads as
   "Default", and the active preset is still mirrored there for older builds.
   `home.layout.next` (Mod+Shift+L, rebindable) cycles presets.
-- **Auto-layout, no scrolling, no gaps:** the user picks widgets, a size class
-  for each (Compact, Regular, Large; each widget declares the shape of each
-  class it offers, its content's minimum height, and whether it uses extra
-  room well) and an order (drag or arrow keys; order is priority). The grid
-  takes columns from the page width (3 keep the shipped width; 4+ stretch to
-  fill a wide window) and rows from its height. `homeGridPack.ts` packs in
-  order, tries a widget's smaller classes before hiding it ("N hidden"), then
-  hands every empty cell to a neighbour (widgets that grow well first), and
-  keeps the row count with the fewest hidden, shrunk, gaps, then rows. Every
-  row shares one height; cells glide to new places (motion layout, off under
-  reduced motion). No corner resize.
+- **Auto-layout, no scrolling, compact cards:** the user picks widgets, a
+  size class for each (Compact, Regular, Large; each widget declares the
+  shape of each class it offers, its content's minimum, ideal and maximum
+  card height, and whether it uses extra room well) and an order (drag or
+  arrow keys; order is priority). Any card drags, a stacked one leaving its
+  stack; a drop takes the place in the order that packs the card onto the
+  pointer's spot (`dropLanding`), not just "before the card under it". The page width offers up to N columns (3
+  keep the shipped width; 4+ are wider) and its height up to M rows.
+  `homeGridPack.ts` packs in order, tries a widget's smaller classes before
+  hiding it ("N hidden"), then hands empty cells to a neighbour (widgets that
+  grow well first) only while the card stays within its maximum. The last
+  row's room past its last card stays wallpaper (no card stretches sideways
+  into it), so Compact, Regular and Large stay visibly different. It tries
+  every column count from N down to 3 and keeps the one with the fewest
+  hidden, shrunk, gaps, stretched cells (grown, or spanning extra rows), the
+  fullest last row, then rows, so a few widgets on a
+  wide window stay at the shipped width, centred. Every row shares one
+  height: the tallest ideal of its cards, held under the smallest maximum
+  and the page, never under a card's minimum. The grid is top-aligned and
+  only as tall as its rows; the rest of the page is wallpaper. More room
+  means room for more widgets, not bigger cards. Cells glide to new places
+  (motion layout, off under reduced motion). No corner resize.
+- **Narrower:** widths are packed in half columns (two tracks per column;
+  classes still span whole columns). Edit mode's Narrower toggle (offered
+  while a card shows wider than a column and a half) stores `narrow: true`
+  on the item: the card is at most a column and a half wide (a two-column
+  class shows at 1.5; a one-column class the page would stretch stops at
+  1.5), sits so the half column it frees is beside the widget placed before
+  it, and that neighbour grows into it. It only goes wider when nothing else
+  can fill the room, so narrow never leaves a hole. Leftover room is handed
+  out half a column at a time, so two neighbours share a free column.
 - **Lists never scroll:** `HomeFitList.tsx` shows the rows that fit and a
   "N more" line that opens the full view (PRs tab, Activity, machines) or the
   whole list in a dialog (projects, feed, clipboard, ports).
 - **Contributions:** the shared `ui/ContributionSkyline.tsx` (ported from the
   user's 21st.dev pick): heat map ⇄ 3D skyline on a canvas that draws only
-  while something moves and stops off screen. Day = chats + commits + PRs.
+  while something moves and stops off screen. Day = the larger of GitHub's
+  contribution calendar (one cached `gh api graphql` read in main, every
+  repository) and ADE's commits + PRs, plus ADE chats.
+  The 3D view fits its box: it picks the turn (8°–45°) at which the risen
+  skyline draws biggest, and in a short wide card lowers the bars (to 60% at
+  least) until the skyline spans the width. The gallery preview always shows
+  the skyline rising; the page's card keeps the user's view.
 - **Picker:** categories, search, live previews (the real widget, inert),
   size classes, and a fit check (the same engine) that offers to make room
   (others to Compact) or replace.
@@ -388,9 +420,12 @@ want it).**
     C++/WinRT, built by `build:now-playing:win`) lists every SMTC session with
     the app's shell icon and name; ADE's own sessions (`com.ade.desktop*`, the
     Music host) are skipped. If the helper exits on its own the widget clears
-    its sessions and the next subscribe starts a new one. macOS (unverified,
-    never run on a Mac): Music.app over AppleScript, asked only while Music is
-    already running, with Music's icon; other Mac apps are not listed. Runs
+    its sessions and the next subscribe starts a new one. macOS: Music.app over AppleScript, asked only while Music is
+    already running, with Music's icon read from the bundle's own `.icns`
+    (`browserIconDataUrl`; `app.getFileIcon` with `size: "large"` is
+    unsupported on macOS and kills the main process); other Mac apps are not
+    listed. Opening the gallery with this preview is checked on a Mac;
+    playback with Music.app is not yet. Runs
     only while the widget is on screen.
 - **Shipped share:** a canvas-drawn PNG, copied or saved by main; no upload.
 - **Clipboard:** main watches the clipboard while a Clipboard widget is in
@@ -420,7 +455,12 @@ want it).**
   for this page only.
 - **Headline:** built from real data, in priority order:
   blocked → momentum → milestone → welcome back → capacity → all clear.
-  No canned quotes.
+  No canned quotes. A blocked sentence with room left takes a momentum
+  clause (chats working, merges, a streak). Limits only speak when they
+  would stop you: a provider used in the last 7 days (per-provider daily
+  tokens), at its best account, at 5% or less; or most providers (two
+  thirds or more) out at once. Capacity (20% or less) also only names a
+  provider you use. One idle provider at 0% is not news.
 - **New widgets:**
   - Now Playing (piece 3)
   - Pomodoro / session timer, which ties into the streak

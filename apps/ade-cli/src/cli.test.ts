@@ -15246,6 +15246,10 @@ describe("ADE CLI", () => {
     [["type", "--tab", "tab-1", "hello"], "typeText", { tabId: "tab-1", text: "hello" }],
     [["press", "--tab", "tab-1", "--selector", "input[name=q]", "Enter"], "dispatchKey", { tabId: "tab-1", selector: "input[name=q]", key: "Enter" }],
     [["scroll", "--tab", "tab-1", "--dy", "480"], "scroll", { tabId: "tab-1", deltaX: 0, deltaY: 480 }],
+    [["scroll", "--tab", "tab-1", "--down", "800"], "scroll", { tabId: "tab-1", deltaX: 0, deltaY: 800 }],
+    [["scroll", "--tab", "tab-1", "--up", "300"], "scroll", { tabId: "tab-1", deltaX: 0, deltaY: -300 }],
+    [["text", "--tab", "tab-1", "--selector", "#content", "--offset", "20", "--max-chars", "500"], "readText", { tabId: "tab-1", selector: "#content", offset: 20, maxChars: 500 }],
+    [["read", "--tab", "tab-1", "--selector", "article", "--offset", "100", "--max-chars", "2000"], "readText", { tabId: "tab-1", selector: "article", offset: 100, maxChars: 2000 }],
     [["select", "--x", "120", "--y", "420", "--tab", "tab-1", "--no-screenshot"], "selectPoint", { tabId: "tab-1", x: 120, y: 420, includeScreenshot: false }],
   ])("browser %j maps its flags onto the %s action", (argv, action, args) => withEnv({
     ADE_LANE_ID: undefined,

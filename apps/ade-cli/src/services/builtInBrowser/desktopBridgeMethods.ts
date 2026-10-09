@@ -73,6 +73,11 @@ export const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS = [
   "setEmulation",
   "setZoom",
   "findInPage",
+  /**
+   * The page's rendered text, paged. `observe` maps what can be clicked and
+   * leaves the prose out; this is how an agent reads an article or a doc.
+   */
+  "readText",
   "stopFindInPage",
   "setDevTools",
   "setNetworkLogging",

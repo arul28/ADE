@@ -650,6 +650,7 @@ const WORK_LIVE_ACTION_CAPTIONS: Readonly<Record<string, string>> = {
   screenshot: "Captured",
   findInPage: "Searched",
   stopFindInPage: "Closed find",
+  readText: "Read",
   setEmulation: "Changed device",
   setZoom: "Zoomed",
   setDevTools: "Toggled DevTools",

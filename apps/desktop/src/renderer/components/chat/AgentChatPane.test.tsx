@@ -11380,7 +11380,7 @@ describe("AgentChatPane Work draft launches", () => {
     applyChatLaunchSnapshot(LOCAL_PROJECT_BINDING, launch);
     // The host answers a queued message with the launch holding its own copy.
     let hostSequence = 2;
-    api.queueMessage.mockImplementation((async (args: { text: string }) => {
+    api.queueMessage.mockImplementation((async (args: { text: string; displayText?: string }) => {
       const current = getChatLaunchEntry("launch-chat-1")!.snapshot;
       hostSequence += 1;
       return {
@@ -11388,7 +11388,7 @@ describe("AgentChatPane Work draft launches", () => {
         sequence: hostSequence,
         queuedMessages: [
           ...current.queuedMessages.filter((message) => !message.id.startsWith("local:")),
-          { id: `q-host-${hostSequence}`, text: args.text, createdAt: "2026-09-22T10:00:04.000Z" },
+          { id: `q-host-${hostSequence}`, text: args.displayText ?? args.text, createdAt: "2026-09-22T10:00:04.000Z" },
         ],
       };
     }) as any);
@@ -11399,7 +11399,13 @@ describe("AgentChatPane Work draft launches", () => {
 
     render(
       <MemoryRouter>
-        <AgentChatPane laneId="lane-new" lockSessionId="launch-chat-1" hideSessionTabs onSessionCreated={vi.fn()} />
+        <AgentChatPane
+          laneId="lane-new"
+          lockSessionId="launch-chat-1"
+          hideSessionTabs
+          onSessionCreated={vi.fn()}
+          ambientTurnContext={() => "Current Browser tab: Checkout"}
+        />
       </MemoryRouter>,
     );
 
@@ -11421,7 +11427,8 @@ describe("AgentChatPane Work draft launches", () => {
     await waitFor(() => {
       expect(api.queueMessage).toHaveBeenCalledWith(expect.objectContaining({
         launchId: "launch-chat-1",
-        text: "Also check the logout path",
+        text: "Current Browser tab: Checkout\n\nAlso check the logout path",
+        displayText: "Also check the logout path",
       }), LOCAL_PROJECT_BINDING);
     });
     expect(await screen.findByText("Also check the logout path")).toBeTruthy();
@@ -11470,7 +11477,7 @@ describe("AgentChatPane Work draft launches", () => {
     await waitFor(() => {
       expect(api.queueMessage).toHaveBeenCalledWith(expect.objectContaining({
         launchId: "launch-chat-1",
-        text: "And the signup path",
+        text: "Current Browser tab: Checkout\n\nAnd the signup path",
       }), LOCAL_PROJECT_BINDING);
     });
     expect(send).not.toHaveBeenCalled();
