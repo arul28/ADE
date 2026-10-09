@@ -1565,6 +1565,32 @@ function classifyClaudeResultStatus(result: Record<string, unknown>): ClaudeTerm
 }
 
 /**
+ * Claude Code stamps the assistant message it fabricates for a client-side
+ * error (an oversized image, an API error) with this model. It names no model,
+ * so the turn keeps the model that actually ran it.
+ */
+const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
+
+/**
+ * The assistant message Claude Code fabricates when it refuses an attached
+ * image ("Image base64 size (8.3MB) exceeds API limit (5MB)…"). Its text is the
+ * SDK's, not the agent's, and the turn's `image_error` notice already carries
+ * it, so it is not shown as an agent reply.
+ */
+function isClaudeSyntheticImageErrorMessage(assistantMsg: Record<string, unknown>): boolean {
+  const message = asRecord(assistantMsg.message);
+  if (message?.model !== CLAUDE_SYNTHETIC_MODEL || !assistantMsg.error) return false;
+  const content = Array.isArray(message.content) ? message.content : [];
+  const text = content
+    .map((block) => {
+      const record = asRecord(block);
+      return typeof record?.text === "string" ? record.text : "";
+    })
+    .join(" ");
+  return /\bimages?\b/i.test(text) && /exceed|resize|dimension|too large/i.test(text);
+}
+
+/**
  * The transcript notice for a Claude result that failed the turn when nothing
  * else in the turn said why.
  *
@@ -7402,13 +7428,6 @@ function resolveModelIdFromStoredValue(
 
   return preferred?.id ?? matches[0]?.id;
 }
-
-/**
- * Claude Code stamps the assistant message it fabricates for a client-side
- * error (an oversized image, an API error) with this model. It names no model,
- * so the turn keeps the model that actually ran it.
- */
-const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
 
 function normalizeReportedModelName(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -26755,6 +26774,7 @@ export function createAgentChatService(args: {
       const snapshotMatchesCurrentStream = assistantMessageId != null
         && assistantMessageId === state.currentStreamMessageId;
       const turnId = startClaudeIdleTurn(managed, runtime, state);
+      if (isClaudeSyntheticImageErrorMessage(assistantMsg)) return;
       emitClaudeTranscriptRetraction(managed, assistantMsg.supersedes, "assistant_supersedes", turnId, providerMessageId);
       const content = Array.isArray(betaMessage?.content) ? betaMessage.content : [];
       // Text-block citations the answer makes (web_search_result_location, …).
@@ -28914,6 +28934,7 @@ export function createAgentChatService(args: {
             throw new Error(`Claude rejected the prompt before starting the turn (${assistantMsg.error}).`);
           }
           markBackendDispatched();
+          if (isClaudeSyntheticImageErrorMessage(assistantMsg)) continue;
           const betaMessage = assistantMsg.message;
           const assistantMessageId = typeof betaMessage?.id === "string" ? betaMessage.id : null;
           const assistantWireUuid = compactString(assistantMsg.uuid);
