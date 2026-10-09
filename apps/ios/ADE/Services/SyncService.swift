@@ -15088,52 +15088,56 @@ final class SyncService: ObservableObject {
     return payload.dataUrl
   }
 
-  func listPromptStashes(
+  func listDrafts(
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
-  ) async throws -> [PromptStashEntry] {
-    try requireInvokableRemoteAction("chat.listPromptStashes")
+  ) async throws -> [DraftEntry] {
+    try requireInvokableRemoteAction("chat.listDrafts")
     return try await sendDecodableCommand(
-      action: "chat.listPromptStashes",
+      action: "chat.listDrafts",
       args: [:],
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
-      as: [PromptStashEntry].self
+      as: [DraftEntry].self
     )
   }
 
-  func createPromptStash(
+  func createDraft(
     text: String,
     attachments: [AgentChatFileRef] = [],
     provider: String? = nil,
     modelId: String? = nil,
+    originSessionId: String? = nil,
+    schedule: DraftScheduleInput? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
-  ) async throws -> PromptStashEntry {
-    try requireInvokableRemoteAction("chat.createPromptStash")
+  ) async throws -> DraftEntry {
+    try requireInvokableRemoteAction("chat.createDraft")
     var args: [String: Any] = ["text": text]
     if !attachments.isEmpty {
       args["attachments"] = chatAttachmentArgs(attachments)
     }
     if let provider, !provider.isEmpty { args["provider"] = provider }
     if let modelId, !modelId.isEmpty { args["modelId"] = modelId }
+    if let originSessionId, !originSessionId.isEmpty { args["originSessionId"] = originSessionId }
+    if let schedule { args["schedule"] = schedule.args }
     return try await sendDecodableCommand(
-      action: "chat.createPromptStash",
+      action: "chat.createDraft",
       args: args,
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
-      as: PromptStashEntry.self
+      as: DraftEntry.self
     )
   }
 
-  func deletePromptStash(
+  func deleteDraft(
     id: String,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
   ) async throws -> Bool {
-    try requireInvokableRemoteAction("chat.deletePromptStash")
+    try requireInvokableRemoteAction("chat.deleteDraft")
     return try await sendDecodableCommand(
-      action: "chat.deletePromptStash",
+      action: "chat.deleteDraft",
       args: ["id": id],
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
@@ -15141,36 +15145,113 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func listPromptStashesForChat(sessionId: String) async throws -> [PromptStashEntry] {
+  /// Edit a draft in place: its text, or arm/retime/clear a schedule. Returns
+  /// the updated row, or nil when the draft is gone (taken on another machine).
+  func updateDraft(
+    id: String,
+    text: String? = nil,
+    schedule: DraftScheduleInput? = nil,
+    unschedule: Bool = false,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> DraftEntry? {
+    try requireInvokableRemoteAction("chat.updateDraft")
+    var args: [String: Any] = ["id": id]
+    if let text { args["text"] = text }
+    if unschedule {
+      args["unschedule"] = true
+    } else if let schedule {
+      args["schedule"] = schedule.args
+    }
+    return try await sendDecodableCommand(
+      action: "chat.updateDraft",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: DraftEntry?.self
+    )
+  }
+
+  /// Claim a draft before putting it in a composer. The runtime deletes the row
+  /// and only the caller that wins the claim is allowed to fill its composer, so
+  /// two machines can never both hold the same text. Nil when the draft was
+  /// already taken.
+  func claimDraft(
+    id: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> DraftEntry? {
+    try requireInvokableRemoteAction("chat.claimDraft")
+    return try await sendDecodableCommand(
+      action: "chat.claimDraft",
+      args: ["id": id],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: DraftEntry?.self
+    )
+  }
+
+  func listDraftsForChat(sessionId: String) async throws -> [DraftEntry] {
     if isPersonalChatScope(sessionId: sessionId) { return [] }
     let scope = chatCommandScope(for: sessionId)
-    return try await listPromptStashes(
+    return try await listDrafts(
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
   }
 
-  func createPromptStashForChat(
+  func createDraftForChat(
     sessionId: String,
     text: String,
     attachments: [AgentChatFileRef] = [],
     provider: String? = nil,
-    modelId: String? = nil
-  ) async throws -> PromptStashEntry {
+    modelId: String? = nil,
+    schedule: DraftScheduleInput? = nil
+  ) async throws -> DraftEntry {
     let scope = chatCommandScope(for: sessionId)
-    return try await createPromptStash(
+    return try await createDraft(
       text: text,
       attachments: attachments,
       provider: provider,
       modelId: modelId,
+      originSessionId: sessionId,
+      schedule: schedule,
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
   }
 
-  func deletePromptStashForChat(sessionId: String, id: String) async throws -> Bool {
+  func deleteDraftForChat(sessionId: String, id: String) async throws -> Bool {
     let scope = chatCommandScope(for: sessionId)
-    return try await deletePromptStash(
+    return try await deleteDraft(
+      id: id,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  func updateDraftForChat(
+    sessionId: String,
+    id: String,
+    text: String? = nil,
+    schedule: DraftScheduleInput? = nil,
+    unschedule: Bool = false
+  ) async throws -> DraftEntry? {
+    let scope = chatCommandScope(for: sessionId)
+    return try await updateDraft(
+      id: id,
+      text: text,
+      schedule: schedule,
+      unschedule: unschedule,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  func claimDraftForChat(sessionId: String, id: String) async throws -> DraftEntry? {
+    if isPersonalChatScope(sessionId: sessionId) { return nil }
+    let scope = chatCommandScope(for: sessionId)
+    return try await claimDraft(
       id: id,
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath

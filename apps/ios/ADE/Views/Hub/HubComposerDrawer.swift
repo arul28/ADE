@@ -703,12 +703,14 @@ struct HubInlineComposer: View {
           canCompose: !busy,
           attachmentsAvailable: attachmentsAvailable,
           onDictate: { dictationCoordinator.requestStart() },
-          stashAvailable: syncService.canInvokeRemoteAction("chat.listPromptStashes"),
-          scope: WorkPromptStashScope(
+          draftsAvailable: syncService.canInvokeRemoteAction("chat.listDrafts"),
+          scheduleAvailable: syncService.canInvokeRemoteAction("chat.createDraft"),
+          scope: WorkDraftScope(
             projectId: pickedProjectId.isEmpty ? nil : pickedProjectId
           ),
           provider: provider,
           modelId: modelId,
+          runtimeMode: runtimeMode,
           extraMenuContent: AnyView(
             Section {
               Button {

@@ -2823,8 +2823,8 @@ private struct WorkChatComposerDraftInput: View {
     }
   }
 
-  private var stashAvailable: Bool {
-    !isPersonalChat && syncService.canInvokeRemoteAction("chat.listPromptStashes")
+  private var draftsAvailable: Bool {
+    !isPersonalChat && syncService.canInvokeRemoteAction("chat.listDrafts")
   }
 
   /// The fold is a gesture, not a control: a downward swipe anywhere on the
@@ -3209,10 +3209,12 @@ private struct WorkChatComposerDraftInput: View {
       attachHint: workChatComposerAttachHint(canCompose: canCompose, canAttach: canAttach),
       attachmentsAvailable: attachmentsAvailable,
       onDictate: { dictationCoordinator.requestStart() },
-      stashAvailable: stashAvailable,
-      scope: WorkPromptStashScope(chatSessionId: sessionId),
+      draftsAvailable: draftsAvailable,
+      scheduleAvailable: syncService.canInvokeRemoteAction("chat.createDraft"),
+      scope: WorkDraftScope(chatSessionId: sessionId),
       provider: chatSummary.provider,
       modelId: chatSummary.currentModelId,
+      runtimeMode: workInitialRuntimeMode(chatSummary),
       extraMenuContent: AnyView(stopAndSendSettingsMenu)
     )
   }

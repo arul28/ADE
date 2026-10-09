@@ -488,7 +488,7 @@ func workChatInputAttachments(
               from: image,
               filename: workChatAttachmentDisplayName(ref)
             ) else {
-        throw workChatStashImageRestoreError
+        throw workChatDraftImageRestoreError
       }
       restored.append(attachment)
       continue
@@ -517,7 +517,7 @@ func workChatInputAttachments(
         targetProjectRootPath: projectRootPath
       )
     } else {
-      throw workChatStashImageRestoreError
+      throw workChatDraftImageRestoreError
     }
     guard let image = WorkChatAttachmentImagePreview.image(
             fromDataUrl: dataUrl,
@@ -528,7 +528,7 @@ func workChatInputAttachments(
             from: image,
             filename: workChatAttachmentDisplayName(ref)
           ) else {
-      throw workChatStashImageRestoreError
+      throw workChatDraftImageRestoreError
     }
     attachment.hostRef = ref
     restored.append(attachment)
@@ -536,10 +536,10 @@ func workChatInputAttachments(
   return restored
 }
 
-private let workChatStashImageRestoreError = NSError(
+private let workChatDraftImageRestoreError = NSError(
   domain: "ADE",
   code: 28,
-  userInfo: [NSLocalizedDescriptionKey: "Could not restore a stashed image. The prompt is still in your stash."]
+  userInfo: [NSLocalizedDescriptionKey: "Could not restore a draft image. The draft is still available on the machine that made it."]
 )
 
 private func workChatJPEGDataForUpload(_ image: UIImage) -> (image: UIImage, data: Data)? {

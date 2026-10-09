@@ -1997,10 +1997,15 @@ private struct WorkNewChatComposerBar: View {
           canCompose: !busy,
           attachmentsAvailable: attachmentsAvailable,
           onDictate: startDictation,
-          stashAvailable: syncService.canInvokeRemoteAction("chat.listPromptStashes"),
-          scope: WorkPromptStashScope(),
+          draftsAvailable: syncService.canInvokeRemoteAction("chat.listDrafts"),
+          scheduleAvailable: syncService.canInvokeRemoteAction("chat.createDraft"),
+          scope: WorkDraftScope(
+            projectId: activeProjectId,
+            projectRootPath: activeProjectRootPath
+          ),
           provider: provider,
           modelId: modelId,
+          runtimeMode: runtimeMode,
           extraMenuContent: AnyView(sessionSettingsMenu)
         )
       },
