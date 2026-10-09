@@ -422,8 +422,9 @@ want it).**
     Music host) are skipped. If the helper exits on its own the widget clears
     its sessions and the next subscribe starts a new one. macOS: Music.app over AppleScript, asked only while Music is
     already running, with Music's icon read from the bundle's own `.icns`
-    (`browserIconDataUrl`; `app.getFileIcon` with `size: "large"` is
-    unsupported on macOS and kills the main process); other Mac apps are not
+    by `macAppIconDataUrl` (`services/apps/macAppIconFile.ts`), not
+    `app.getFileIcon`, which kills the main process at `size: "large"` on
+    macOS 27; other Mac apps are not
     listed. Opening the gallery with this preview is checked on a Mac;
     playback with Music.app is not yet. Runs
     only while the widget is on screen.

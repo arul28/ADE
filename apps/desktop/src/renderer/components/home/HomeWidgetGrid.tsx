@@ -25,6 +25,7 @@ import {
 } from "./homeLayout";
 import { HOME_CLASS_LABEL, HOME_WIDGET_CATALOG, widgetShape } from "./homeWidgetCatalog";
 import {
+  GRID_GAP,
   classSpan,
   gridMetrics,
   itemSizeClass,
@@ -101,7 +102,7 @@ export const useHomeGridMetrics = create<{
   metrics: null,
   set: (metrics) => set({ metrics }),
   packedWidth: null,
-  setPackedWidth: (packedWidth) => set((state) => (state.packedWidth === packedWidth ? state : { packedWidth })),
+  setPackedWidth: (packedWidth) => set({ packedWidth }),
   pickerRequest: 0,
   requestPicker: () => set((state) => ({ pickerRequest: state.pickerRequest + 1 })),
 }));
@@ -303,6 +304,12 @@ function WidgetFrame({
 /** Cells glide to their new places on a reflow; sizes snap (scaling text mid-flight reads badly). */
 const REFLOW = { type: "spring", stiffness: 520, damping: 42, mass: 0.9 } as const;
 
+/** The shortest row a card's content can sit in at its size class (180 px when the class has no entry). */
+function cardMinRowPx(item: HomeLayoutItem, sizeClass: HomeSizeClass | undefined): number {
+  const minHeight = sizeClass ? widgetShape(item.type).minHeight[sizeClass] : undefined;
+  return minHeight ?? 180;
+}
+
 export function HomeWidgetGrid({
   single,
   style,
@@ -388,9 +395,11 @@ export function HomeWidgetGrid({
   const setPackedWidth = useHomeGridMetrics((s) => s.setPackedWidth);
   useEffect(() => {
     setPackedWidth(single ? null : gridWidth ?? null);
+    return () => setPackedWidth(null);
   }, [gridWidth, single, setPackedWidth]);
-  useEffect(() => () => setPackedWidth(null), [setPackedWidth]);
   const rows = packed?.rows ?? 2;
+  // The height each row is drawn at: the rows share the grid's height evenly.
+  const drawnRowPx = metrics && packed ? (metrics.height - (rows - 1) * GRID_GAP) / rows : 0;
   // Two tracks per column, so a narrow widget can take a column and a half.
   const gridTemplateColumns = columns === 3
     ? "repeat(2, minmax(0, 1fr)) repeat(4, minmax(0, 0.9fr))"
@@ -436,8 +445,12 @@ export function HomeWidgetGrid({
             const marker = dropTarget?.id === host.id && dragId !== host.id ? dropTarget.side : undefined;
             // One row per card (the widget and each card stacked under it):
             // split on the grid's own row lines, so the stack lines up with
-            // the cards beside it instead of cutting across a row.
-            const rowAligned = !single && stacked.length > 0 && h === 1 + stacked.length;
+            // the cards beside it instead of cutting across a row. Only when
+            // every card fits one row; a shorter row would cut its content
+            // off, so those cells keep the split sized to their content.
+            const rowAligned = !single && stacked.length > 0 && h === 1 + stacked.length
+              && cardMinRowPx(host, cls) <= drawnRowPx
+              && stacked.every((item) => cardMinRowPx(item, itemSizeClass(item, widgetShape(item.type))) <= drawnRowPx);
             return (
               <motion.div
                 key={host.id}

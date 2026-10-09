@@ -15,10 +15,10 @@ import type { HomeLayoutCell, HomeLayoutItem, HomeWidgetSize, HomeWidgetType } f
  * smaller classes before it is hidden. Then every empty cell is handed to a
  * neighbour: widgets that use more room well (lists, charts) grow first, one
  * cell edge at a time and in turn, then any widget may. The last row's room
- * past its last card is the exception: it stays wallpaper, so a card keeps
- * the class the user picked (a Compact card is one column, not the rest of
- * the row). The result with the fewest hidden widgets, then the fewest shrunk
- * ones, then no empty cells, then the least stretching, then the fullest last
+ * past its last card is the exception: a Compact card keeps its one column and
+ * the rest of that row stays wallpaper, while a wider card on the last row
+ * stretches across the room instead. The result with the fewest hidden
+ * widgets, then the fewest shrunk ones, then no empty cells, then the least stretching, then the fullest last
  * row, then the fewest rows wins. Every cell of a row shares the row's height, so
  * rows are always even. Packing depends only on its inputs: the same layout
  * and window always give the same page.

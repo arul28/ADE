@@ -223,7 +223,9 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 }
 
 /* A cell is one widget plus whatever is stacked under it: the host takes
-   what the stack leaves, and a stacked card never grows past its rows. */
+   what the stack leaves, and a stacked card never grows past its rows. A cell
+   with one row per card (data-row-aligned) splits evenly on the row lines
+   instead. */
 .ade-home-cell { position: relative; display: flex; flex-direction: column; gap: var(--welcome-gap); min-height: 0; min-width: 0; }
 .ade-home-widget { position: relative; flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 .ade-home-widget[data-stacked] { flex: 0 1 auto; max-height: 46%; }

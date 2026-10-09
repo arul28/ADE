@@ -7,8 +7,9 @@ import {
   _testing as detection,
   type BrowserDetectionDeps,
 } from "./browserDetection";
-import { _testing as icons, browserIconDataUrl } from "./browserIcons";
+import { browserIconDataUrl } from "./browserIcons";
 import { appIconDataUrlByName } from "../apps/appIcons";
+import { extractIconPngFromIcns, resolveMacAppIconFile } from "../apps/macAppIconFile";
 
 /**
  * What is installed, and what its icon looks like.
@@ -178,7 +179,7 @@ describe("extractIconPngFromIcns", () => {
     const small = fakePng(2);
     const tiny = fakePng(3);
 
-    expect(icons.extractIconPngFromIcns(icns([
+    expect(extractIconPngFromIcns(icns([
       { type: "ic13", payload: large },
       { type: "ic11", payload: small },
       { type: "icp4", payload: tiny },
@@ -198,7 +199,7 @@ describe("extractIconPngFromIcns", () => {
       fakePng(4),
     ])],
   ])("returns null for %s instead of throwing", (_label, buffer) => {
-    expect(icons.extractIconPngFromIcns(buffer)).toBeNull();
+    expect(extractIconPngFromIcns(buffer)).toBeNull();
   });
 
   it("prefers the bundle's own icon file over an unrelated one beside it", () => {
@@ -207,7 +208,7 @@ describe("extractIconPngFromIcns", () => {
     // A document-type icon that must not win: it sorts first alphabetically.
     fs.writeFileSync(path.join(resources, "aaa-document.icns"), icns([{ type: "ic11", payload: fakePng(8) }]));
 
-    expect(icons.resolveMacAppIconFile(appPath)).toBe(path.join(resources, "app.icns"));
+    expect(resolveMacAppIconFile(appPath)).toBe(path.join(resources, "app.icns"));
   });
 });
 

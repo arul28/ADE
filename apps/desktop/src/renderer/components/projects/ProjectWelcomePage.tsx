@@ -811,10 +811,10 @@ export function ProjectWelcomePage() {
         className="ade-home"
         data-narrow={narrow ? "true" : undefined}
         data-editing={editingHome ? "true" : undefined}
-        style={gridWidth || packedGridWidth ? ({
+        style={{
           ...(gridWidth ? { "--welcome-grid-max": `${gridWidth}px` } : {}),
           ...(packedGridWidth ? { "--welcome-hero-max": `${packedGridWidth}px` } : {}),
-        } as CSSProperties) : undefined}
+        } as CSSProperties}
       >
         <WelcomeHero
           headline={headline}
