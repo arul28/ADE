@@ -1379,7 +1379,7 @@ struct WorkCommandCardView: View, Equatable {
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Command, \(card.status.rawValue). Tap to \(isExpanded ? "collapse" : "expand") output.")
     .workCollapsedCardPeek(enabled: !isExpanded && !card.output.isEmpty, onExpand: onToggle) {
-      WorkANSIOutputBlock(title: card.command, text: card.output)
+      WorkANSIOutputBlock(title: workRedactCommandLine(card.command), text: card.output)
     }
   }
 

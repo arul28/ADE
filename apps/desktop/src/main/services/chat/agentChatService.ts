@@ -32799,7 +32799,8 @@ export function createAgentChatService(args: {
       const itemId = String(params.itemId ?? randomUUID());
       // Display text only: the approval headline is masked, the stored command below is not.
       const shownCommand = typeof params.command === "string" ? redactCommandLine(params.command) : "command";
-      const description = params.reason?.trim() || `Run command: ${shownCommand}`;
+      const description =
+        redactShownText(params.reason?.trim()) || `Run command: ${shownCommand}`;
       const request: PendingInputRequest = {
         requestId: String(id),
         itemId,
