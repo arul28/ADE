@@ -16,6 +16,11 @@ updates:
       interval: daily
       time: "21:00"
       timezone: "America/New_York"
+    # GitHub holds a new version back for about 3 days by default. These SDKs
+    # release every day or two, and the automation checks each bump live, so
+    # open the PR as soon as a version is published.
+    cooldown:
+      default-days: 0
     allow:
       - dependency-name: "@anthropic-ai/claude-agent-sdk"
       - dependency-name: "@openai/codex"
