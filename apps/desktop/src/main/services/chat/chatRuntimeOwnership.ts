@@ -137,3 +137,51 @@ export function decideChatRuntimeOwnership(args: {
   }
   return { adoptable: true, verdict: "dead-owner" };
 }
+
+/**
+ * Why this brain refuses to drive a chat a live sibling brain owns.
+ *
+ * Sending, steering, interrupting or resuming a chat starts (or talks to) its
+ * provider process. On a brain that does not hold that process, every one of
+ * those used to start a SECOND one for the same chat: both then wrote into one
+ * transcript, and killing the duplicate surfaced as a failed turn (lane
+ * 9ec98328, 2026-10-09). There is no brain-to-brain proxy, so the honest
+ * answer is to name the owner and the socket that reaches it. `ade --socket`
+ * is the one form that works for a Unix socket and a Windows named pipe alike.
+ */
+export class ChatRuntimeOwnedElsewhereError extends Error {
+  readonly code = "chat_runtime_owned_elsewhere";
+  readonly owner: ChatRuntimeOwner;
+
+  constructor(args: {
+    sessionId: string;
+    owner: ChatRuntimeOwner;
+    self: Pick<ChatRuntimeOwnerSelf, "pid" | "socketPath">;
+    /** What was refused, as a verb phrase: "send to", "interrupt". */
+    action: string;
+  }) {
+    super(describeChatRuntimeOwnedElsewhere(args));
+    this.name = "ChatRuntimeOwnedElsewhereError";
+    this.owner = args.owner;
+  }
+}
+
+export function describeChatRuntimeOwner(owner: Pick<ChatRuntimeOwner, "pid" | "socketPath">): string {
+  return owner.socketPath ? `pid ${owner.pid}, socket ${owner.socketPath}` : `pid ${owner.pid}`;
+}
+
+export function describeChatRuntimeOwnedElsewhere(args: {
+  sessionId: string;
+  owner: ChatRuntimeOwner;
+  self: Pick<ChatRuntimeOwnerSelf, "pid" | "socketPath">;
+  action: string;
+}): string {
+  const route = args.owner.socketPath
+    ? `Run the command against the owner instead: ade --socket "${args.owner.socketPath}" …`
+    : "Run the command through the ade CLI of the brain that owns it.";
+  return [
+    `Chat ${args.sessionId} is running under another ADE brain (${describeChatRuntimeOwner(args.owner)}).`,
+    `This brain (${describeChatRuntimeOwner(args.self)}) will not ${args.action} it: only the brain running a chat may drive it, and a second one starts a duplicate agent process.`,
+    route,
+  ].join(" ");
+}
