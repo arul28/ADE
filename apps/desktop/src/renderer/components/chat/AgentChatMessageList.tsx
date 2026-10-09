@@ -31,9 +31,7 @@ import {
   ShieldCheck,
   CopySimple,
   Brain,
-  Image,
   Code,
-  Paperclip,
   Target,
   Clock,
   Moon,
@@ -1071,6 +1069,16 @@ function parseLeadingIosContextChips(text: string): { chips: string[]; rest: str
   return { chips, rest: text.slice(i) };
 }
 
+/**
+ * Whether a user message's attachments reached the agent. Queued, unprocessed
+ * and failed sends did not; a message with no delivery state predates the
+ * field and was delivered.
+ */
+function userMessageAttachmentsAccepted(event: Extract<AgentChatEvent, { type: "user_message" }>): boolean {
+  const state = event.deliveryState;
+  return state !== "queued" && state !== "unprocessed" && state !== "failed";
+}
+
 function UserMessageSendConfirmations({
   event,
 }: {
@@ -1078,37 +1086,14 @@ function UserMessageSendConfirmations({
 }) {
   if (event.deliveryState === "queued") return null;
 
-  const attachments = event.attachments ?? [];
   const contextAttachments = event.contextAttachments ?? [];
-  const hasImage = attachments.some((a) => a.type === "image");
-  const hasFile = attachments.some((a) => a.type === "file");
   const hasIssueContext = contextAttachments.some((a) => a.type === "linear_issue" || a.type === "github_issue");
-  const showFilesRow = hasImage || hasFile;
   const showSimRow = event.text.startsWith(IOS_SIMULATOR_CONTEXT_PREFIX);
 
-  if (!showFilesRow && !showSimRow && !hasIssueContext) return null;
-
-  const attachmentCount = attachments.length;
-  const attachmentLabel = attachmentCount <= 1 ? "Attachment analyzed" : "Attachments analyzed";
+  if (!showSimRow && !hasIssueContext) return null;
 
   return (
     <div className="mt-2 flex flex-col gap-1" data-testid="user-message-send-confirmations">
-      {showFilesRow ? (
-        <motion.div
-          className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
-          data-testid="user-message-attachment-analyzed"
-          initial={{ opacity: 0, y: 2 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.15, ease: "easeOut" }}
-        >
-          {hasImage ? (
-            <Image size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
-          ) : (
-            <Paperclip size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
-          )}
-          <span>{attachmentLabel}</span>
-        </motion.div>
-      ) : null}
       {showSimRow ? (
         <motion.div
           className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
@@ -2804,6 +2789,7 @@ function renderEvent(
               contextAttachments={event.contextAttachments ?? []}
               mode={options?.surfaceMode ?? "standard"}
               sessionId={options?.sessionId}
+              accepted={userMessageAttachmentsAccepted(event)}
             />
           ) : null}
           <UserMessageSendConfirmations event={event} />

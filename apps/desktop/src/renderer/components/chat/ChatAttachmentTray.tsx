@@ -1,5 +1,5 @@
 import { Suspense, forwardRef, lazy, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import { Copy, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
+import { Check, Copy, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
@@ -280,6 +280,7 @@ function ImageAttachmentPreview({
   toneClassName,
   initialPreviewUrl,
   machinePin,
+  accepted = false,
   onRemove,
   onFocusPrompt,
 }: {
@@ -287,6 +288,7 @@ function ImageAttachmentPreview({
   toneClassName: string;
   initialPreviewUrl?: string | null;
   machinePin: OpenProjectBinding | null;
+  accepted?: boolean;
   onRemove?: (path: string) => void;
   onFocusPrompt?: () => void;
 }) {
@@ -394,6 +396,16 @@ function ImageAttachmentPreview({
         {previewFailed ? (
           <span className="absolute inset-x-1 bottom-1 truncate rounded bg-black/65 px-1 py-0.5 text-center text-[8px] text-white/75">
             No preview
+          </span>
+        ) : null}
+        {accepted ? (
+          <span
+            className="pointer-events-none absolute bottom-0.5 right-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-white shadow-sm"
+            title="Sent to the agent"
+            aria-label="Sent to the agent"
+            data-testid="chat-image-attachment-accepted"
+          >
+            <Check size={8} weight="bold" />
           </span>
         ) : null}
         <span className="pointer-events-none absolute inset-0 flex items-start justify-end gap-1 bg-black/0 p-1 opacity-0 transition-opacity group-hover/image:bg-black/35 group-hover/image:opacity-100 group-focus-within/image:bg-black/35 group-focus-within/image:opacity-100">
@@ -649,6 +661,8 @@ type ChatAttachmentTrayProps = {
    */
   machinePin?: OpenProjectBinding | null;
   mode: ChatSurfaceMode;
+  /** The message carrying these attachments reached the agent: image previews get a check. */
+  accepted?: boolean;
   onRemove?: (path: string) => void;
   onRemoveContext?: (key: string) => void;
   onOpenContext?: (attachment: AgentChatContextAttachment) => void;
@@ -665,6 +679,7 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
   attachmentSizes = {},
   machinePin = null,
   mode,
+  accepted = false,
   onRemove,
   onRemoveContext,
   onOpenContext,
@@ -737,6 +752,7 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
               toneClassName={chipTone}
               initialPreviewUrl={imagePreviewUrls[attachment.path]}
               machinePin={machinePin}
+              accepted={accepted}
               onRemove={onRemove}
               onFocusPrompt={onFocusPrompt}
             />
