@@ -1296,6 +1296,9 @@ export type AgentChatUserMessageDeliveryState =
   | "inline"
   | "failed";
 
+/** Why a `context_compact` event ended in `state: "failed"`. */
+export type ContextCompactFailReason = "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
+
 export type AgentChatEvent =
   | {
       type: "user_message";
@@ -1917,7 +1920,7 @@ export type AgentChatEvent =
       // legacy/completion-only sources (treated as "completed"). "failed" covers
       // interrupt, teardown, and a wall-clock stall so the divider cannot spin forever.
       state?: "started" | "completed" | "failed";
-      failReason?: "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
+      failReason?: ContextCompactFailReason;
       failDetail?: string;
       summary?: string;
       accountLabel?: string;
@@ -1929,7 +1932,7 @@ export type AgentChatEvent =
       state: "started" | "completed" | "failed";
       trigger: "manual" | "auto";
       compactionId?: string;
-      failReason?: "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
+      failReason?: ContextCompactFailReason;
       failDetail?: string;
       summary?: string;
       accountLabel?: string;

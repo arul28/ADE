@@ -332,13 +332,6 @@ private func workTranscriptToolName(from eventDict: [String: Any]) -> String {
   return "\(source):\(action)"
 }
 
-private func formatWorkCompactTokenCount(_ value: Int) -> String {
-  if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000.0) }
-  if value >= 10_000 { return "\(Int((Double(value) / 1_000.0).rounded()))k" }
-  if value >= 1_000 { return String(format: "%.1fk", Double(value) / 1_000.0) }
-  return "\(value)"
-}
-
 func workContextCompactSummary(
   trigger: String,
   preTokens: Int? = nil,
@@ -359,7 +352,7 @@ func workContextCompactSummary(
   let triggerLabel = trigger.replacingOccurrences(of: "_", with: " ").capitalized
   lines.append(triggerLabel)
   if let pre = preTokens, let post = postTokens {
-    lines.append("\(formatWorkCompactTokenCount(pre)) → \(formatWorkCompactTokenCount(post))")
+    lines.append("\(workAbbreviateCount(pre)) → \(workAbbreviateCount(post))")
   } else if let pre = preTokens {
     lines.append("Pre-compact tokens: \(pre)")
   }
@@ -370,7 +363,7 @@ func workContextCompactSummary(
 }
 
 func workContextCompactSummary(from eventDict: [String: Any]) -> String {
-  workContextCompactSummary(
+  let header = workContextCompactSummary(
     trigger: stringValue(eventDict["trigger"]),
     preTokens: optionalWorkInt(eventDict["preTokens"]),
     postTokens: optionalWorkInt(eventDict["postTokens"]),
@@ -378,7 +371,17 @@ func workContextCompactSummary(from eventDict: [String: Any]) -> String {
     provider: optionalString(eventDict["provider"]),
     sessionCompactionCount: optionalWorkInt(eventDict["sessionCompactionCount"]),
     state: optionalString(eventDict["state"])
-  ) + [optionalString(eventDict["accountLabel"]).map { "account:\($0)" }, optionalString(eventDict["failDetail"]).map { "failure:\($0)" }, optionalString(eventDict["summary"]).map { "summary:\($0)" }].compactMap { $0 }.map { "\n" + $0 }.joined()
+  )
+  // The reader matches each field as a line prefix. A failure message is
+  // flattened to one line so it cannot start a fake line, and `summary:` stays
+  // last because the provider text after it can run to many lines.
+  let trailer: [String?] = [
+    optionalString(eventDict["accountLabel"]).map { "account:\($0)" },
+    optionalString(eventDict["failReason"]).map { "failReason:\($0)" },
+    optionalString(eventDict["failDetail"]).map { "failure:" + $0.components(separatedBy: .newlines).joined(separator: " ") },
+    optionalString(eventDict["summary"]).map { "summary:\($0)" },
+  ]
+  return header + trailer.compactMap { $0 }.map { "\n" + $0 }.joined()
 }
 
 func workContextCompactMergeId(from eventDict: [String: Any], turnId: String?) -> String? {

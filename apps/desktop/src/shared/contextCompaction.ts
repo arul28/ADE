@@ -3,10 +3,13 @@ import type {
   AgentChatCompactProvider,
   AgentChatContextUsageState,
   AgentChatEvent,
+  ContextCompactFailReason,
 } from "./types";
 
+export type { ContextCompactFailReason };
+
 /** Providers whose `/compact` slash is a real compact action, not a normal prompt. */
-export type ManualCompactProvider = "claude" | "codex" | "pi" | "opencode";
+type ManualCompactProvider = "claude" | "codex" | "pi" | "opencode";
 
 /** Matches the host `/compact` slash, including optional trailing instructions. */
 export function isManualCompactCommand(text: string | null | undefined): boolean {
@@ -76,14 +79,12 @@ export function resolveContextCompactControl(args: {
 
 export type ContextCompactEvent = Extract<AgentChatEvent, { type: "context_compact" }>;
 
-export type ContextCompactFailReason = "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
-
 export type NormalizedContextCompact = {
   trigger: "manual" | "auto" | "ade_fallback";
   state: "started" | "completed" | "failed";
   failReason?: ContextCompactFailReason;
   failDetail?: string;
-      summary?: string;
+  summary?: string;
   accountLabel?: string;
   turnId?: string;
   compactionId?: string;
@@ -157,12 +158,23 @@ export function contextCompactMergeKey(event: Pick<NormalizedContextCompact, "co
   return "legacy";
 }
 
+/**
+ * Short token count shared by the chat divider and the context dial:
+ * 972 -> "972", 6279 -> "6.3k", 142_000 -> "142k", 1_000_000 -> "1M".
+ * `Number(...)` drops a trailing ".0", so 1000 reads "1k", not "1.0k".
+ */
+/** "6.3k", "400k", "1M": one decimal at most, no trailing ".0". */
+export function abbreviateTokenCount(n: number): string {
+  // The thresholds are where rounding reaches the next unit: 999,950 reads
+  // "1M", not "1000k"; 999.5 reads "1k", not "1000".
+  if (n >= 999_950) return `${Number((n / 1_000_000).toFixed(1))}M`;
+  if (n >= 999.5) return `${Number((n / 1_000).toFixed(1))}k`;
+  return String(Math.round(n));
+}
+
 export function formatCompactTokenCount(value: number | null | undefined): string | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-  return value.toLocaleString();
+  return abbreviateTokenCount(value);
 }
 
 export function formatCompactDuration(durationMs: number | null | undefined): string | null {
@@ -179,7 +191,7 @@ export function resolveProviderTint(provider?: AgentChatCompactProvider | string
   ring: string;
   border: string;
 } {
-  if (provider && provider in PROVIDER_TINTS) {
+  if (provider && Object.hasOwn(PROVIDER_TINTS, provider)) {
     return PROVIDER_TINTS[provider as AgentChatCompactProvider];
   }
   return PROVIDER_TINTS.claude;

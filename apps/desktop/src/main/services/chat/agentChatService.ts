@@ -1,5 +1,5 @@
 import { compactFirstOffer } from "../../../shared/compactFirst";
-import { claudeCompactionSettings, normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { claudeCompactionSettings, claudeCompactWindow, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -2642,6 +2642,9 @@ type ClaudeTaskToolInput = {
   isBackground?: boolean;
   model?: string;
 };
+
+/** How far before a turn's start an assistant message may originate and still belong to it. */
+const STALE_ASSISTANT_ORIGIN_TOLERANCE_MS = 2_000;
 
 type ClaudeRuntime = {
   kind: "claude";
@@ -15970,7 +15973,7 @@ export function createAgentChatService(args: {
         }), "utf8").digest("hex").slice(0, 12)
       : "no-activity";
     const toolPolicyKey = [
-      JSON.stringify(compactionSettingsFor(managed)),
+      compactionSignatureFor(managed),
       piToolPolicy.tools.join(","),
       piToolPolicy.approvalTools.join(","),
       piExtensionsEnabled ? "ext" : "no-ext",
@@ -20639,8 +20642,12 @@ export function createAgentChatService(args: {
     if (event.type === "done") {
       for (const [key, compact] of openNativeCompactions.get(managed.session.id) ?? []) {
         if (compact.turnId && event.turnId && compact.turnId !== event.turnId) continue;
+        // ADE's own fallback /compact is issued at this very boundary and has
+        // its own failure paths (refused, abandoned on teardown).
+        if (compact.type === "context_compact" && compact.trigger === "ade_fallback") continue;
         openNativeCompactions.get(managed.session.id)?.delete(key);
-        const detail = managed.liveTurnErrorText ?? "The turn ended before compaction completed.";
+        const detail = (event.status !== "completed" ? managed.liveTurnErrorText : null)
+          ?? "The turn ended before compaction completed.";
         emitChatEvent(managed, { ...compact, state: "failed", failReason: event.status === "interrupted" ? "interrupted" : /quota|weekly limit|usage limit/i.test(detail) ? "quota" : "provider_error", failDetail: detail });
       }
     }
@@ -21133,8 +21140,8 @@ export function createAgentChatService(args: {
       totalTokens: Math.max(0, guardrail.totalTokens),
       maxTokens: Math.max(0, maxTokens),
       rawMaxTokens: Math.max(0, guardrail.compactAtTokens || maxTokens),
-      compactAtTokens: Math.max(0, guardrail.compactAtTokens || compactionSettingsFor(managed).atTokens || maxTokens),
-      compactAtSource: compactionSettingsFor(managed).atTokens ? "setting" : "provider",
+      compactAtTokens: Math.max(0, guardrail.compactAtTokens || claudeSettingCompactAt(managed) || maxTokens),
+      compactAtSource: claudeSettingCompactAt(managed) ? "setting" : "provider",
       percentage: maxTokens > 0
         ? Math.max(0, Math.min(100, (guardrail.totalTokens / maxTokens) * 100))
         : 0,
@@ -21197,7 +21204,7 @@ export function createAgentChatService(args: {
       guardrail.compactAtTokens = Math.min(usage.rawMaxTokens ?? usage.maxTokens, guardrail.maxTokens);
       usage.maxTokens = guardrail.maxTokens;
       usage.compactAtTokens = guardrail.compactAtTokens;
-      usage.compactAtSource = compactionSettingsFor(managed).atTokens ? "setting" : "provider";
+      usage.compactAtSource = claudeSettingCompactAt(managed) ? "setting" : "provider";
       usage.percentage = usage.maxTokens > 0 ? usage.totalTokens / usage.maxTokens * 100 : 0;
       updateClaudeContextEpisode(guardrail, guardrail.compactAtTokens > 0 ? usage.totalTokens / guardrail.compactAtTokens * 100 : 0);
       emitClaudeContextUsageState(managed, runtime, "measured", origin, turnId, usage);
@@ -21256,7 +21263,7 @@ export function createAgentChatService(args: {
     guardrail.totalTokens = guardrail.inputTokens
       + guardrail.cacheReadTokens
       + guardrail.cacheCreationTokens;
-    guardrail.compactAtTokens ||= Math.min(compactionSettingsFor(managed).atTokens || guardrail.maxTokens, guardrail.maxTokens);
+    guardrail.compactAtTokens ||= Math.min(claudeSettingCompactAt(managed) || guardrail.maxTokens, guardrail.maxTokens);
     const occupancyPct = Math.max(0, Math.min(100, (guardrail.totalTokens / guardrail.compactAtTokens) * 100));
     updateClaudeContextEpisode(guardrail, occupancyPct);
 
@@ -27020,11 +27027,15 @@ export function createAgentChatService(args: {
       const assistantMessageId = compactString(betaMessage?.id);
       const providerMessageId = assistantMessageId ?? assistantWireUuid ?? null;
       const originTimestamp = compactString(assistantMsg.timestamp);
-      if (originTimestamp && managed.session.currentTurnStartedAt
-        && Date.parse(originTimestamp) < Date.parse(managed.session.currentTurnStartedAt)) return;
       const resumedFromIncompleteThinking = assistantMsg.resumed_from_incomplete_thinking === true;
       const snapshotMatchesCurrentStream = assistantMessageId != null
         && assistantMessageId === state.currentStreamMessageId;
+      // A resumed thread can replay an earlier turn's message (seen: an old
+      // "Error during compaction" under a later, successful /compact). Its
+      // origin time sits well before this turn began. The tolerance covers an
+      // idle-started turn, whose start is stamped when its first block arrives.
+      if (!snapshotMatchesCurrentStream && originTimestamp && managed.session.currentTurnStartedAt
+        && Date.parse(originTimestamp) < Date.parse(managed.session.currentTurnStartedAt) - STALE_ASSISTANT_ORIGIN_TOLERANCE_MS) return;
       const turnId = startClaudeIdleTurn(managed, runtime, state);
       // The turn stays open here; the result frame settles it and shows the notice.
       if (isClaudeSyntheticImageErrorMessage(assistantMsg)) return;
@@ -29190,7 +29201,7 @@ export function createAgentChatService(args: {
           const assistantWireUuid = compactString(assistantMsg.uuid);
           const assistantProviderMessageId = assistantMessageId ?? assistantWireUuid ?? null;
           const assistantOriginTimestamp = compactString(assistantMsg.timestamp);
-          if (assistantOriginTimestamp && Date.parse(assistantOriginTimestamp) < turnStartedAt) continue;
+          if (assistantOriginTimestamp && Date.parse(assistantOriginTimestamp) < turnStartedAt - STALE_ASSISTANT_ORIGIN_TOLERANCE_MS) continue;
           const resumedFromIncompleteThinking = assistantMsg.resumed_from_incomplete_thinking === true;
           emitClaudeTranscriptRetraction(
             managed,
@@ -38168,23 +38179,43 @@ export function createAgentChatService(args: {
       .catch(() => { /* account/rateLimits/read not supported — ignore */ });
   };
 
+  // `projectConfigService.get()` resolves and validates the whole config, and this
+  // runs per usage event, so the compaction block is read at most once a second.
+  let compactionConfigCache: { at: number; value: Record<string, unknown> | undefined } | null = null;
+  const readCompactionConfig = (): Record<string, unknown> | undefined => {
+    const now = Date.now();
+    if (!compactionConfigCache || now - compactionConfigCache.at > 1_000) {
+      compactionConfigCache = { at: now, value: projectConfigService.get().effective.ai?.compaction };
+    }
+    return compactionConfigCache.value;
+  };
   const compactionSettingsForSession = (session: { provider?: string; instanceId?: string | null }) => {
     const provider = session.provider ?? "";
-    const defaults = normalizeCompactionSettings(projectConfigService.get().effective.ai?.compaction?.[provider]);
+    const defaults = normalizeCompactionSettings(readCompactionConfig()?.[provider]);
     const account = isProviderInstanceProvider(provider)
       ? getMachineProviderInstanceStore().get(session.instanceId ?? defaultProviderInstanceId(provider))
       : null;
     return { ...defaults, ...account?.compaction };
   };
   const compactionSettingsFor = (managed: ManagedChatSession) => compactionSettingsForSession(managed.session);
+  const compactionSignatureFor = (managed: ManagedChatSession) =>
+    compactionRuntimeSignature(managed.session.provider ?? "", compactionSettingsFor(managed));
+  /** Claude's compaction point from the ADE setting, clamped like the SDK clamps it. */
+  const claudeSettingCompactAt = (managed: ManagedChatSession) => claudeCompactWindow(compactionSettingsFor(managed).atTokens);
   const runtimeCompactionSettings = new WeakMap<object, string>();
   const refreshRuntimeCompactionSettings = (managed: ManagedChatSession): void => {
     const runtime = managed.runtime;
     if (!runtime) return;
-    const signature = JSON.stringify(compactionSettingsFor(managed));
+    const signature = compactionSignatureFor(managed);
     const previous = runtimeCompactionSettings.get(runtime);
-    if (previous !== undefined && previous !== signature && (runtime.kind === "claude" ? !runtime.busy : runtime.kind === "codex" ? !runtime.activeTurnId : false)) {
-      teardownRuntime(managed, "handle_close");
+    // A changed setting needs a fresh process. "restart" keeps the provider
+    // thread; a runtime still running a turn or background work keeps its old
+    // settings until it is next idle.
+    const idle = runtime.kind === "claude"
+      ? !runtime.busy && runtime.liveBackgroundTaskIds.size === 0
+      : runtime.kind === "codex" ? !runtime.activeTurnId : false;
+    if (previous !== undefined && previous !== signature && idle) {
+      teardownRuntime(managed, "restart");
     } else if (previous === undefined) runtimeCompactionSettings.set(runtime, signature);
   };
 
@@ -38567,7 +38598,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "codex") return managed.runtime;
     runtimeBudget.enforce(managed.session.id);
     const runtime = await startCodexRuntime(managed);
-    runtimeCompactionSettings.set(runtime, JSON.stringify(compactionSettingsFor(managed)));
+    runtimeCompactionSettings.set(runtime, compactionSignatureFor(managed));
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
     return runtime;
@@ -40860,7 +40891,7 @@ export function createAgentChatService(args: {
         steer: { ...steer },
       });
     }
-    runtimeCompactionSettings.set(runtime, JSON.stringify(compactionSettingsFor(managed)));
+    runtimeCompactionSettings.set(runtime, compactionSignatureFor(managed));
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
 
@@ -52368,14 +52399,15 @@ export function createAgentChatService(args: {
     assertChatRuntimeOwnedHere(args.sessionId, "send to");
     const managed = ensureManagedSession(args.sessionId);
     await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
-    const mode = compactionSettingsFor(managed).idleMode ?? "ask";
-    if (managed.session.provider === "claude" && !isManualCompactCommand(args.text)
-      && (args.compactFirst === true || (args.compactFirst === undefined && mode === "always" && !runtimeMidTurn(managed) && managed.session.status !== "active"))) {
-      if (runtimeMidTurn(managed) || managed.session.status === "active") throw turnInFlightError("A turn is already active.");
+    // Only an explicit `compactFirst: true` compacts first. The pill sends it,
+    // already on in "always" mode; automation and CLI sends never carry it. A
+    // chat that became busy meanwhile skips it and steers as usual.
+    if (args.compactFirst === true && managed.session.provider === "claude" && !isManualCompactCommand(args.text)
+      && !runtimeMidTurn(managed) && managed.session.status !== "active") {
       // Native resume_return owns its send; never combine it with ADE's pill.
       if (!collectPendingInputRequests(managed).length) {
         const history = (await getChatEventHistory(args.sessionId, { maxEvents: 512 })).events;
-        const offer = compactFirstOffer({ provider: "claude", events: history, mode });
+        const offer = compactFirstOffer({ provider: "claude", events: history, mode: compactionSettingsFor(managed).idleMode ?? "ask" });
         if (offer) {
           const before = managed.compactionEmitterState.sessionCompactionCount;
           const result = await runSessionTurn({ sessionId: args.sessionId, text: "/compact", timeoutMs: 90_000 });

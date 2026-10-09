@@ -1,6 +1,7 @@
-import { HeaderSheet } from "../../app/HeaderSheet";
 import { Link, useInRouterContext } from "react-router-dom";
 import { settingsRouteFor } from "../../settings/settingsManifest";
+import { providerDisplayName } from "../../../../shared/pendingInputLabels";
+import { HeaderSheet } from "../../app/HeaderSheet";
 import { useMemo, useRef, useState } from "react";
 import {
   HIDDEN_CONTEXT_COMPACT,
@@ -24,6 +25,9 @@ import { formatContextTokens, type ContextUsageViewModel } from "./contextUsageM
  * providers keep a read-only meter.
  */
 
+/** Matches the sheet's `w-80`. */
+const SHEET_WIDTH_PX = 320;
+const SHEET_MARGIN_PX = 8;
 const RING_RADIUS = 8;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS; // ≈ 50.27
 
@@ -244,14 +248,18 @@ export function ContextUsageDial({
     <SmartTooltip forceEnabled side="top" content={content}>
       <button type="button" className={triggerClassName} aria-label={ariaLabel} aria-expanded={open} onClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
-        setPosition({ left: Math.max(8, Math.min(rect.right - 320, window.innerWidth - 328)), bottom: window.innerHeight - rect.top + 8 });
+        // Right-align the sheet to the dial, above it, kept 8px inside the window.
+        setPosition({
+          left: Math.max(SHEET_MARGIN_PX, Math.min(rect.right - SHEET_WIDTH_PX, window.innerWidth - SHEET_WIDTH_PX - SHEET_MARGIN_PX)),
+          bottom: window.innerHeight - rect.top + SHEET_MARGIN_PX,
+        });
         setOpen(true);
       }}>{inner}</button>
     </SmartTooltip>
     <HeaderSheet open={open} panelRef={panelRef} title="Context usage" onClose={() => setOpen(false)} width="w-80" panelStyle={{ top: "auto", right: "auto", ...position }}>
       <div className="flex flex-col gap-3 p-4 text-xs text-fg/65">
         <p>{formatContextTokens(usage.usedTokens) ?? "Unknown"} of {formatContextTokens(usage.contextWindow) ?? "unknown"} used{usage.compactAtTokens ? ` · compacts at ${formatContextTokens(usage.compactAtTokens)}` : ""}</p>
-        {usage.compactAtTokens ? <p className="text-fg/45">{usage.compactAtSource === "setting" ? "Your setting" : `${usage.provider === "claude" ? "Claude" : usage.provider} default`}</p> : null}
+        {usage.compactAtTokens ? <p className="text-fg/45">{usage.compactAtSource === "setting" ? "Your setting" : `${providerDisplayName(usage.provider)} default`}</p> : null}
         {content.gitCommand ? <p className="font-mono">{content.gitCommand}</p> : null}
         {compact.status !== "hidden" ? <button type="button" disabled={compactDisabled} title={compact.status === "disabled" ? compact.reason : undefined} className="kit-btn kit-btn-primary" onClick={() => { if (compact.status === "ready") { setOpen(false); onCompact?.(); } }}>Compact now</button> : null}
         {inRouter ? <Link to={settingsRouteFor(`agents.provider.${usage.provider}`)} onClick={() => setOpen(false)}>Provider compaction setting</Link> : <a href={settingsRouteFor(`agents.provider.${usage.provider}`)}>Provider compaction setting</a>}

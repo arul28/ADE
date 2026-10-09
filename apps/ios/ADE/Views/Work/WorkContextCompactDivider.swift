@@ -14,15 +14,23 @@ struct WorkContextCompactDivider: View {
     summary?.components(separatedBy: "\n").first(where: { $0.hasPrefix(key + ":") }).map { String($0.dropFirst(key.count + 1)) }
   }
   private var failed: Bool { field("state") == "failed" }
+  /// The provider's own text. The parser writes it last behind a line-anchored
+  /// `summary:` header, so match that line rather than any `summary:` substring
+  /// (a failure message or account label could contain one).
   private var providerSummary: String? {
-    guard let summary, let range = summary.range(of: "summary:") else { return nil }
-    return String(summary[range.upperBound...])
+    guard let summary else { return nil }
+    var lines = summary.components(separatedBy: "\n")
+    guard let index = lines.firstIndex(where: { $0.hasPrefix("summary:") }) else { return nil }
+    lines[index] = String(lines[index].dropFirst("summary:".count))
+    return lines[index...].joined(separator: "\n")
   }
   private func title(at now: Date) -> String {
     if failed {
       let detail = field("failure") ?? ""
       let reason = detail.localizedCaseInsensitiveContains("weekly limit") ? "weekly limit" : detail.localizedCaseInsensitiveContains("usage limit") ? "usage limit" : nil
-      return "Compaction failed" + (reason.map { " · " + $0 + (field("account").map { " on " + $0 } ?? "") } ?? "")
+      // Matches desktop compactionFailLabel: only a timeout gets its own label.
+      let base = field("failReason") == "timed_out" ? "Compaction timed out" : "Compaction failed"
+      return base + (reason.map { " · " + $0 + (field("account").map { " on " + $0 } ?? "") } ?? "")
     }
     if isInProgress {
       let tokens = field("Pre-compact tokens").flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }.map { " · \(workAbbreviateCount($0)) tokens" } ?? ""
@@ -40,7 +48,18 @@ struct WorkContextCompactDivider: View {
   }
   private var countLabel: String {
     guard let count = field("sessionCount").flatMap(Int.init) ?? sessionCompactionCount, count >= 2 else { return "" }
-    let suffix = (11...13).contains(count % 100) ? "th" : count % 10 == 1 ? "st" : count % 10 == 2 ? "nd" : count % 10 == 3 ? "rd" : "th"
+    let suffix: String
+    switch count % 100 {
+    case 11...13:
+      suffix = "th"
+    default:
+      switch count % 10 {
+      case 1: suffix = "st"
+      case 2: suffix = "nd"
+      case 3: suffix = "rd"
+      default: suffix = "th"
+      }
+    }
     return " · \(count)\(suffix) this chat"
   }
   var body: some View {
@@ -149,10 +168,7 @@ struct WorkContextCompactSummary: Equatable {
       return WorkContextCompactSummary(tokensLabel: tokens, durationLabel: extractDuration(normalized), triggerLabel: trigger)
     }
 
-    let tokens = extractTokenCount(normalized).map { count -> String in
-      let rounded = formatCompactTokenCount(count)
-      return "~\(rounded) freed"
-    }
+    let tokens = extractTokenCount(normalized).map { "~\(workAbbreviateCount($0)) tokens freed" }
 
     return WorkContextCompactSummary(tokensLabel: tokens, durationLabel: extractDuration(normalized), triggerLabel: trigger)
   }
@@ -187,14 +203,5 @@ struct WorkContextCompactSummary: Equatable {
       }
     }
     return Int(digits)
-  }
-
-  private static func formatCompactTokenCount(_ count: Int) -> String {
-    if count < 1000 { return "\(count) tokens" }
-    let value = Double(count) / 1000.0
-    if value < 10 {
-      return String(format: "%.1fk tokens", value)
-    }
-    return "\(Int(value.rounded()))k tokens"
   }
 }

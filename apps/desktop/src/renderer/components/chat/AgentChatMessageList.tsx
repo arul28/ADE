@@ -224,6 +224,7 @@ import { ChatTaskListCard } from "./ChatTaskListCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { ContextCompactDivider } from "./ContextCompactDivider";
+import { contextCompactMergeKey } from "../../../shared/contextCompaction";
 import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from "./chatEventDisplay";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
@@ -2463,6 +2464,10 @@ function renderEvent(
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
     onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
+    /** Re-runs compaction through the pane's guarded compact action. */
+    onRetryCompaction?: () => void;
+    /** Merge key of the chat's latest compaction; only that divider offers Retry. */
+    latestCompactionKey?: string | null;
     onChooseProviderFailureModel?: () => void;
     onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
     onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
@@ -3111,7 +3116,12 @@ function renderEvent(
           turnId: event.turnId,
           compactionId: event.compactionId ?? event.turnId,
         };
-    return <ContextCompactDivider event={compactEvent} startedAt={envelope.timestamp} onRetry={options?.sessionId ? () => { void window.ade.agentChat.send({ sessionId: options.sessionId!, text: "/compact" }, options.runtimePin); } : undefined} />;
+    // Only the chat's latest compaction offers Retry; an older failure was
+    // already superseded. The pane's action refuses while a turn is live.
+    const retry = options?.onRetryCompaction && options.latestCompactionKey === contextCompactMergeKey(compactEvent)
+      ? options.onRetryCompaction
+      : undefined;
+    return <ContextCompactDivider event={compactEvent} startedAt={envelope.timestamp} onRetry={retry} />;
   }
 
   if (event.type === "codex_safety_buffering") {
@@ -4808,6 +4818,10 @@ type EventRowProps = SpawnedChatProviderProps & {
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
+  /** Re-runs compaction through the pane's guarded compact action. */
+  onRetryCompaction?: () => void;
+  /** Merge key of the chat's latest compaction; only that divider offers Retry. */
+  latestCompactionKey?: string | null;
   onChooseProviderFailureModel?: () => void;
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
@@ -4888,6 +4902,8 @@ const EventRow = React.memo(function EventRow({
   onCodexRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
+  onRetryCompaction,
+  latestCompactionKey,
   onChooseProviderFailureModel,
   onRunUnprocessedMessage,
   onEditUnprocessedMessage,
@@ -5009,6 +5025,8 @@ const EventRow = React.memo(function EventRow({
             onCodexRecovery,
             onRecoverContinuity,
             onRetryProviderFailure,
+            onRetryCompaction,
+            latestCompactionKey,
             onChooseProviderFailureModel,
             onRunUnprocessedMessage,
             onEditUnprocessedMessage,
@@ -5523,6 +5541,8 @@ function AgentChatMessageListMain({
   onCodexRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
+  onRetryCompaction,
+  latestCompactionKey,
   onChooseProviderFailureModel,
   onRunUnprocessedMessage,
   onEditUnprocessedMessage,
@@ -5593,6 +5613,10 @@ function AgentChatMessageListMain({
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
+  /** Re-runs compaction through the pane's guarded compact action. */
+  onRetryCompaction?: () => void;
+  /** Merge key of the chat's latest compaction; only that divider offers Retry. */
+  latestCompactionKey?: string | null;
   onChooseProviderFailureModel?: () => void;
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
@@ -8106,6 +8130,8 @@ function AgentChatMessageListMain({
           onCodexRecovery={onCodexRecovery}
           onRecoverContinuity={onRecoverContinuity}
           onRetryProviderFailure={onRetryProviderFailure}
+          onRetryCompaction={onRetryCompaction}
+          latestCompactionKey={latestCompactionKey}
           onChooseProviderFailureModel={onChooseProviderFailureModel}
           onRunUnprocessedMessage={onRunUnprocessedMessage}
           onEditUnprocessedMessage={onEditUnprocessedMessage}
@@ -8179,6 +8205,8 @@ function AgentChatMessageListMain({
         onCodexRecovery={onCodexRecovery}
         onRecoverContinuity={onRecoverContinuity}
         onRetryProviderFailure={onRetryProviderFailure}
+        onRetryCompaction={onRetryCompaction}
+        latestCompactionKey={latestCompactionKey}
         onChooseProviderFailureModel={onChooseProviderFailureModel}
         onRunUnprocessedMessage={onRunUnprocessedMessage}
         onEditUnprocessedMessage={onEditUnprocessedMessage}

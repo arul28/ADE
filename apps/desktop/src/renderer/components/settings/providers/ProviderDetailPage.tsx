@@ -1,4 +1,3 @@
-import { CompactionSettings } from "./CompactionSettings";
 /**
  * One provider's page.
  *
@@ -31,6 +30,7 @@ import {
 } from "./providerUi";
 import { providerStatusFor } from "./descriptors";
 import { ProviderAccountsPanel } from "./accounts/ProviderAccountsPanel";
+import { CompactionSettings } from "./CompactionSettings";
 import { ProviderApiKeysPanel } from "./keys/ProviderApiKeysPanel";
 import { extraKeyProviders } from "./keys/providerKeySpecs";
 import { persistOpenCodeProviderBlock } from "./keys/openCodeCustomProviders";

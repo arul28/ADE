@@ -5,6 +5,7 @@ import {
   type AgentChatCompactProvider,
   type AgentChatEvent,
   type AgentChatSession,
+  type ContextCompactFailReason,
 } from "../../../shared/types";
 import { contextCompactMergeKey, type ContextCompactEvent } from "../../../shared/contextCompaction";
 
@@ -41,7 +42,7 @@ export function buildContextCompactEvent(
   input: {
     trigger: "manual" | "auto" | "ade_fallback";
     state?: "started" | "completed" | "failed";
-    failReason?: "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
+    failReason?: ContextCompactFailReason;
     failDetail?: string;
     summary?: string;
     accountLabel?: string;

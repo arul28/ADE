@@ -1,4 +1,3 @@
-import { CompactionSettings } from "../CompactionSettings";
 /**
  * Settings → Agents & Models → Claude Code / Codex CLI → Accounts.
  *
@@ -36,6 +35,7 @@ import { useAccountSignInSheet } from "./AddProviderAccountSheet";
 import { pinnedProviderInstances, useProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { providerActionMessage } from "../providerErrorMessage";
+import { CompactionSettings } from "../CompactionSettings";
 
 const SMART_BALANCE_HINT =
   "On: each new chat goes to the account whose weekly room resets soonest, so no account's room expires unused. A chat that hits a usage limit moves to another account that still has room. Off: new chats use the account marked New chats. Click an account to use it.";

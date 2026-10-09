@@ -1,9 +1,10 @@
-import { formatContextTokens } from "./usage/contextUsageModel";
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { formatContextTokens } from "./usage/contextUsageModel";
 import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { linearIssueRef } from "../../../shared/issueRefs";
+import type { CompactFirstOffer } from "../../../shared/compactFirst";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
@@ -2133,7 +2134,7 @@ export function AgentChatComposer({
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
-  compactFirstOffer?: import("../../../shared/compactFirst").CompactFirstOffer | null;
+  compactFirstOffer?: CompactFirstOffer | null;
   compactFirstEnabled?: boolean;
   onCompactFirstChange?: (value: boolean) => void;
   /** Sends `/compact` without replacing the unsent draft. Claude/Codex/Pi only. */

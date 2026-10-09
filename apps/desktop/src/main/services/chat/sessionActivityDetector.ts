@@ -455,7 +455,9 @@ export function createSessionActivityDetector(): SessionActivityDetector {
         if (state !== "compacting") beforeCompaction = state;
         state = "compacting";
       } else {
-        state = event.state === "failed" ? "compaction_failed" : beforeCompaction ?? "exploring";
+        // Back to what the chat was doing; null when nothing was known, rather
+        // than claiming an activity the chat never reported.
+        state = event.state === "failed" ? "compaction_failed" : beforeCompaction;
         beforeCompaction = null;
       }
       return { activity: state, counted: true };

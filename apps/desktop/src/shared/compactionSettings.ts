@@ -21,9 +21,30 @@ export function normalizeCompactionSettings(value: unknown): ProviderCompactionS
   return out;
 }
 
+/** Claude Code accepts an auto-compact window from 100k to 1M; ADE clamps the same way everywhere it shows it. */
+export function claudeCompactWindow(atTokens: number | null | undefined): number | undefined {
+  return atTokens != null ? Math.max(100_000, Math.min(1_000_000, atTokens)) : undefined;
+}
+
 export function claudeCompactionSettings(settings: ProviderCompactionSettings): { autoCompactEnabled?: boolean; autoCompactWindow?: number } {
+  const window = claudeCompactWindow(settings.atTokens);
   return {
     ...(settings.enabled !== undefined ? { autoCompactEnabled: settings.enabled } : {}),
-    ...(settings.atTokens != null ? { autoCompactWindow: Math.max(100_000, Math.min(1_000_000, settings.atTokens)) } : {}),
+    ...(window !== undefined ? { autoCompactWindow: window } : {}),
   };
+}
+
+/**
+ * The settings a running process was started with. Only fields the provider's
+ * process reads count, so changing `idleMode` (a send-time choice) never
+ * restarts a runtime.
+ */
+export function compactionRuntimeSignature(provider: string, settings: ProviderCompactionSettings): string {
+  switch (provider) {
+    case "claude": return JSON.stringify([settings.enabled, claudeCompactWindow(settings.atTokens)]);
+    case "codex": return JSON.stringify([settings.atTokens]);
+    case "pi":
+    case "opencode": return JSON.stringify([settings.enabled, settings.reserveTokens, settings.keepRecentTokens]);
+    default: return "";
+  }
 }

@@ -846,7 +846,7 @@ import {
   appendDiffTruncationNotice,
 } from "../diffs/diffService";
 import type { createFileService } from "../files/fileService";
-import { type createProjectConfigService } from "../config/projectConfigService";
+import type { createProjectConfigService } from "../config/projectConfigService";
 import {
   addOpenCodeOAuthStatusListener,
   cancelOAuth as cancelOpenCodeOAuth,

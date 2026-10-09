@@ -1310,8 +1310,9 @@ chat pane mount, which happens either way.
   `/compact` as its own turn (90 s limit) before the message. If that compaction
   does not complete, the message stays unsent and the user sees "Compaction did
   not finish. Your message was not sent." The Claude provider setting "After an
-  hour idle" chooses `ask` (the pill), `always` (pill on by default; a send
-  without the pill compacts too), or `never` (no pill). When Claude's own
+  hour idle" chooses `ask` (the pill), `always` (the pill starts on), or
+  `never` (no pill). Only a send that carries `compactFirst: true` compacts
+  first, so CLI, automation, and queued sends never do. When Claude's own
   `resume_return` question is pending, ADE does not also compact. Thresholds:
   `shared/compactFirst.ts` (`COMPACT_FIRST_IDLE_MS`, 100k). Desktop, web, and
   iOS share the rule.

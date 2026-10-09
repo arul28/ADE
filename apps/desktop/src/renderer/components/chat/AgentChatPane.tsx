@@ -1,5 +1,6 @@
-import { COMPACT_FIRST_IDLE_MS, compactFirstOffer } from "../../../shared/compactFirst";
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { compactFirstOffer } from "../../../shared/compactFirst";
+import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { compareTextInsensitive } from "../../../shared/formatting";
 import { useNavigate } from "react-router-dom";
@@ -5163,27 +5164,8 @@ export function AgentChatPane({
     : EMPTY_CHAT_EVENTS;
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
-  const [compactFirstNow, setCompactFirstNow] = useState(Date.now());
-  const [compactFirstChoice, setCompactFirstChoice] = useState<{ sessionId: string; value: boolean } | null>(null);
-  // Walks back only to the last `done`, so streaming deltas stay cheap.
-  const lastTurnEndedAt = useMemo(() => {
-    for (let index = selectedEvents.length - 1; index >= 0; index -= 1) {
-      const entry = selectedEvents[index];
-      if (entry?.event.type === "done") return Date.parse(entry.timestamp);
-    }
-    return null;
-  }, [selectedEvents]);
-  // The pill choice covers one send: a new turn end or another chat clears it.
-  useEffect(() => {
-    setCompactFirstChoice(null);
-  }, [renderedSessionId, lastTurnEndedAt]);
-  useEffect(() => {
-    if (lastTurnEndedAt == null || !Number.isFinite(lastTurnEndedAt)) return;
-    const wait = lastTurnEndedAt + COMPACT_FIRST_IDLE_MS - Date.now();
-    if (wait <= 0) { setCompactFirstNow(Date.now()); return; }
-    const timer = setTimeout(() => setCompactFirstNow(Date.now()), Math.min(wait + 1, 2_147_483_647));
-    return () => clearTimeout(timer);
-  }, [lastTurnEndedAt]);
+  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId);
+  const latestCompactionKey = useMemo(() => latestCompactionKeyOf(selectedEvents), [selectedEvents]);
 
   const selectedSyncPending = renderedSessionId ? syncPendingBySession[renderedSessionId] === true : false;
   /**
@@ -13669,7 +13651,7 @@ export function AgentChatPane({
           await agentChatApiRef.current.send({
             sessionId,
             text: finalText,
-            ...(compactFirstChoice?.sessionId === sessionId ? { compactFirst: compactFirstChoice.value } : {}),
+            ...(compactFirst.sendRef.current?.sessionId === sessionId ? { compactFirst: compactFirst.sendRef.current.value } : {}),
             displayText: hasPastedPrompt
               ? finalDisplayText
               : finalDisplayText || (includeThreadComments ? "" : "Selected visual app context"),
@@ -13763,7 +13745,6 @@ export function AgentChatPane({
   }, [
     isPersonalPane, attachments,
     ambientTurnContext,
-    compactFirstChoice,
     buildNativeControlPayload,
     busy,
     clearPromptSuggestionForSession,
@@ -13875,6 +13856,7 @@ export function AgentChatPane({
     subagentView,
     turnActive,
   ]);
+  const retryCompaction = useCallback(() => { void compactContext(); }, [compactContext]);
 
   // Staged-row dispatch/edit remain fire-and-forget IPC. New active-turn sends
   // are atomic through steer({ dispatchMode }) and never enter the staged queue.
@@ -16016,14 +15998,14 @@ export function AgentChatPane({
   const compactionIdleMode = selectedSession?.compactionIdleMode;
   const selectedProvider = selectedSession?.provider ?? "";
   const measuredContextTokens = selectedUsageViewModel?.state === "measured" ? selectedUsageViewModel.usedTokens : null;
-  const idleWindowOpen = lastTurnEndedAt != null && compactFirstNow >= lastTurnEndedAt + COMPACT_FIRST_IDLE_MS;
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
   // it only runs once a chat has sat an hour, when no deltas stream.
-  const idleCompactOffer = compactionIdleMode != null && idleWindowOpen && !turnActive && !pendingInput && measuredContextTokens != null
-    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, mode: compactionIdleMode, now: compactFirstNow })
+  const idleCompactOffer = compactionIdleMode != null && compactFirst.idleWindowOpen && !turnActive && !pendingInput && measuredContextTokens != null
+    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, mode: compactionIdleMode, now: compactFirst.now })
     : null;
-  const compactFirstEnabled = compactFirstChoice?.sessionId === selectedSessionId
-    ? compactFirstChoice.value : selectedSession?.compactionIdleMode === "always";
+  const compactFirstEnabled = compactFirst.choice?.sessionId === selectedSessionId
+    ? compactFirst.choice.value : selectedSession?.compactionIdleMode === "always";
+  compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
   const composerElement = (
       <AgentChatComposer
             caretToEndRequest={composerCaretToEndRequest}
@@ -16071,7 +16053,7 @@ export function AgentChatPane({
             usageViewModel={selectedUsageViewModel}
             compactFirstOffer={idleCompactOffer}
             compactFirstEnabled={compactFirstEnabled}
-            onCompactFirstChange={(value) => { if (selectedSessionId) setCompactFirstChoice({ sessionId: selectedSessionId, value }); }}
+            onCompactFirstChange={(value) => { if (selectedSessionId) compactFirst.setChoice({ sessionId: selectedSessionId, value }); }}
             compactionPulse={contextCompactionPulse}
             onCompactContext={compactContext}
             compactSessionProvider={selectedSession?.provider ?? null}
@@ -17154,6 +17136,8 @@ export function AgentChatPane({
                         onEditUnprocessedMessage={listEditUnprocessedMessage}
                         onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
                         onRetryProviderFailure={handleListRetryProviderFailure}
+                        onRetryCompaction={retryCompaction}
+                        latestCompactionKey={latestCompactionKey}
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
                         onStopSubagent={listStopSubagent}
                         mosaic={subagentView ? undefined : mosaicContext}

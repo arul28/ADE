@@ -3,6 +3,7 @@ import type {
   AgentChatEventEnvelope,
   CodexThreadTokenUsage,
 } from "../../../../shared/types";
+import { abbreviateTokenCount } from "../../../../shared/contextCompaction";
 
 /**
  * Provider-agnostic context-usage view-model consumed by `ContextUsageDial`.
@@ -68,10 +69,7 @@ function clamp01(value: number): number {
 export function formatContextTokens(value: number | null | undefined): string | null {
   const n = nonNegative(value);
   if (n == null) return null;
-  // `Number(...)` drops a trailing ".0": "400k" and "1M", not "400.0k" and "1.0M".
-  if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(1))}M`;
-  if (n >= 1_000) return `${Number((n / 1_000).toFixed(1))}k`;
-  return String(Math.round(n));
+  return abbreviateTokenCount(n);
 }
 
 /**

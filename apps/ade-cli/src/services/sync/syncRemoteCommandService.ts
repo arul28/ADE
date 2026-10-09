@@ -321,7 +321,6 @@ import {
   listPromptStashes,
 } from "../../../../desktop/src/main/services/chat/promptStashService";
 import { launchAgentChatCli } from "../../../../desktop/src/main/services/chat/agentChatCliLaunch";
-
 import { deleteApiKey } from "../../../../desktop/src/main/services/ai/apiKeyStore";
 import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";

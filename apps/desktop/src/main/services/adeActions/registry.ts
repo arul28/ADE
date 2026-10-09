@@ -187,7 +187,6 @@ import {
   parseChatLaunchQueueMessageArgs,
 } from "../chat/chatLaunchArgs";
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
-
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
 import { isPathInside } from "../shared/pathCompare";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
