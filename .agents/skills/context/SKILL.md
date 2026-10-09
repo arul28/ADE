@@ -133,7 +133,10 @@ invariant usually deserves care (and a test later in `/test`).
 
 If the area maps to a performance skill (`ade-perf-boot`, `ade-perf-lanes`,
 `ade-perf-prs`, `ade-perf-work`, or `ade-tui-web-preview`), open that skill too
-**before editing** — it records measured patterns you must preserve.
+**before editing** — it records measured patterns you must preserve. When the
+work can move performance, also read `docs/perf/macos-baseline.md`: the
+measured numbers and ceilings the **Performance budget** in `AGENTS.md` holds
+the work to.
 
 ### UI primitives doc
 

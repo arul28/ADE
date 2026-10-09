@@ -28,6 +28,41 @@ including agents started by a skill.
 5. **Pick the cheapest model that can do the job.** Leave the most capable
    model for work that needs it.
 
+## Performance budget
+
+Claude Code does not load `AGENTS.md`, so this is a copy of its **Performance
+budget** section. Keep the two the same.
+
+`docs/perf/macos-baseline.md` holds ADE's measured performance numbers
+(macOS dev build) and a ceiling for each. They came out of a pass that took
+the app from unusable to smooth. Do not let them climb back.
+
+1. **Know when it applies.** Your change can move performance when it renders
+   lists or long content; adds an effect, timer, poll, subscription or
+   animation; adds or changes an IPC call or runtime action; spawns processes
+   (git, shells); reads files or databases on a hot path; builds caches or
+   large in-memory structures; or adds a surface that loads its own data. CPU,
+   GPU and memory all count. When in doubt, it applies.
+2. **Measure before and after, during the work,** with the scripts the doc
+   lists, on the same machine and under the same conditions. Follow the doc's
+   gotchas: no perf run for idle, GPU, typing or memory numbers; close extra
+   windows; keep the warm pass.
+3. **Compare with the table.** If a row gets more than 25% worse or crosses
+   its ceiling, or your new surface costs far more than comparable rows,
+   optimize before you call the work done: profile the hot path, fix it,
+   measure again. Do it carefully: keep every feature and the UI as they are,
+   and never trade them for a number. `/optimize` and the `ade-perf-*` skills
+   hold the methods and the patterns that worked.
+4. **Update the table** in the same branch: add a row for a new surface, and
+   record new baselines (with the commit) for rows you moved. Never raise a
+   ceiling to make a change pass; that needs the user's approval and a
+   recorded reason.
+5. **Report it.** The PR body lists the rows you measured, with before and
+   after numbers. If you could not measure (not on macOS, no display), say so
+   and give what you did measure; the service benches run anywhere.
+
+Numbers drift as ADE grows, and that is expected. A spike is not.
+
 ## Writing tests
 
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Writing tests**
