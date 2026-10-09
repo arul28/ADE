@@ -538,16 +538,25 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(contract?.example).toContain("cto_memory.recordDiscovery");
   });
 
-  it("exposes prompt stashes through the project runtime for connected desktops", () => {
+  // Drafts stopped being CTO-only when they became the store behind scheduled
+  // send: an agent arming a send on the user's behalf is the point of the
+  // feature. The consequence is recorded in actionPolicy.ts — an agent can
+  // read unsent drafts — so this asserts the new boundary rather than the old.
+  it("exposes drafts to agents as well as connected desktops", () => {
     const actions = ADE_ACTION_ALLOWLIST.chat ?? [];
     expect(actions).toEqual(expect.arrayContaining([
       "listDrafts",
       "createDraft",
+      "updateDraft",
       "deleteDraft",
+      "claimDraft",
     ]));
-    expect(isCtoOnlyAdeAction("chat", "listDrafts")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "createDraft")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "deleteDraft")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "listDrafts")).toBe(false);
+    expect(isCtoOnlyAdeAction("chat", "createDraft")).toBe(false);
+    expect(isCtoOnlyAdeAction("chat", "deleteDraft")).toBe(false);
+    // The post-update resume arm is a different matter: it is machine-wide and
+    // spends a real turn on every chat the desktop names, so it stays CTO-only.
+    expect(isCtoOnlyAdeAction("chat", "armUpdateResume")).toBe(true);
   });
 });
 

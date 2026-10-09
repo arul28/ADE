@@ -990,19 +990,21 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       // the path every runtime-backed desktop uses.
       const created = createDraft(runtime.db, record);
       // A newly armed send should not wait for the periodic sweep to be seen.
-      agentChatService.refreshDraftScheduler();
+      // Optional on purpose: re-arming is an optimisation, and a service that
+      // cannot do it still picks the row up on its next sweep.
+      agentChatService.refreshDraftScheduler?.();
       return created;
     },
     deleteDraft: (args?: DraftDeleteArgs) => {
       const record = readObjectActionArg(args, "chat.deleteDraft");
       const deleted = deleteDraft(runtime.db, requireNonEmptyString(record.id, "id"));
-      agentChatService.refreshDraftScheduler();
+      agentChatService.refreshDraftScheduler?.();
       return deleted;
     },
     updateDraft: (args?: DraftUpdateArgs) => {
       const record = readObjectActionArg(args, "chat.updateDraft");
       const updated = updateDraft(runtime.db, record);
-      agentChatService.refreshDraftScheduler();
+      agentChatService.refreshDraftScheduler?.();
       return updated;
     },
     claimDraft: (args?: DraftClaimArgs) => {
