@@ -1,3 +1,5 @@
+import { isRedactedBuiltInBrowserQueryParam } from "./types/builtInBrowser";
+
 // A built-in browser tab attached to a chat message ("Attach to chat" on a tab).
 //
 // The message carries one single-line `<ade-browser-tab …>` block. The agent
@@ -63,6 +65,30 @@ export function formatBrowserTabMentionForPrompt(target: BrowserTabMentionTarget
   const url = oneLine(target.url);
   const described = [title ? `"${title}"` : null, url ? `(${url})` : null].filter(Boolean).join(" ");
   return `ADE browser tab ${described ? `${described}, ` : ""}tab id ${tabId}. ${browserTabTakeoverHint(tabId)}`;
+}
+
+/** Automatic page context omits credentials and fragments from the live URL. */
+export function formatBrowserPaneContextForPrompt(target: BrowserTabMentionTarget): string {
+  let url: string | null = oneLine(target.url) || null;
+  if (url) {
+    try {
+      const parsed = new URL(url);
+      let changed = Boolean(parsed.username || parsed.password || parsed.hash);
+      parsed.username = "";
+      parsed.password = "";
+      parsed.hash = "";
+      for (const name of [...parsed.searchParams.keys()]) {
+        if (!isRedactedBuiltInBrowserQueryParam(name)
+          && !/^(?:key|authorization|password|passwd|code|auth|session|sid|sig|jwt|otp|bearer)$|(?:token|secret|signature|credential|api[_-]?key)$/i.test(name)) continue;
+        parsed.searchParams.set(name, "[redacted by ADE]");
+        changed = true;
+      }
+      if (changed) url = parsed.toString();
+    } catch {
+      url = null;
+    }
+  }
+  return formatBrowserTabMentionForPrompt({ ...target, url });
 }
 
 export function hasBrowserTabMention(text: string): boolean {

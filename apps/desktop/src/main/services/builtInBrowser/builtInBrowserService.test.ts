@@ -868,7 +868,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       await service.setBounds({ ...panel, width: 0, height: 0, visible: false });
       expect(win.contentView.children).toEqual([view]);
       expect(view.webContents.isAudioMuted()).toBe(true);
-      expect(service.getStatus().tabs[0]!.agentViewport).toBeNull();
+      expect(service.getStatus().tabs[0]!.agentViewport).toEqual({ width: 1280, height: 800 });
       const parked = view.boundsCalls.at(-1)!;
       expect(parked).toMatchObject({ width: panel.width, height: panel.height });
       expect(parked.x).toBeGreaterThanOrEqual(win.getContentBounds().width);
@@ -876,7 +876,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       await vi.advanceTimersByTimeAsync(59_999);
       expect(win.contentView.children).toEqual([view]);
       expect(view.webContents.isAudioMuted()).toBe(true);
-      expect(service.getStatus().tabs[0]!.agentViewport).toBeNull();
+      expect(service.getStatus().tabs[0]!.agentViewport).toEqual({ width: 1280, height: 800 });
       // The expiry sweep runs just after the sixty-second grace ends.
       await vi.advanceTimersByTimeAsync(101);
       expect(win.contentView.children).toHaveLength(0);

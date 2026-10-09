@@ -3701,6 +3701,8 @@ export function AgentChatPane({
   chatScope = null,
   composerHandleRef,
   emptyStateAccessory = null,
+  emptyStateHero = null,
+  ambientTurnContext,
 }: {
   laneId: string | null;
   laneLabel?: string | null;
@@ -3824,6 +3826,8 @@ export function AgentChatPane({
    * state), e.g. a host's suggestion chips. Not rendered once a chat exists.
    */
   emptyStateAccessory?: React.ReactNode;
+  emptyStateHero?: React.ReactNode;
+  ambientTurnContext?: () => string | null;
 }) {
   // The chat API this pane talks to. A ref so every callback below reads the
   // current one without joining its dependency list; the scope a pane is given
@@ -12972,6 +12976,10 @@ export function AgentChatPane({
       }
       return;
     }
+    const readAmbientPrefix = () => {
+      const context = ambientTurnContext?.()?.trim();
+      return context ? `${context}\n\n` : "";
+    };
     if (selectedSessionId) {
       const sessionPending = resolvedPendingInputsBySession[selectedSessionId] ?? [];
       const hasBlockingPending = sessionPending.some((entry) => entry.request.blocking);
@@ -13322,7 +13330,9 @@ export function AgentChatPane({
     const contextAttachmentsSnapshot = [...contextAttachments];
     const visualContext = composeVisualContext(iosContextSnapshot, appControlContextSnapshot, builtInBrowserContextSnapshot);
     const visualContextPrefix = visualContext.prefix;
-    const composedWithVisualContext = applyVisualContext(text, visualContext);
+    const composedWithVisualContext = applyVisualContext(text, isProviderSlashCommandInput(text)
+      ? visualContext
+      : { ...visualContext, prefix: `${readAmbientPrefix()}${visualContext.prefix}` });
     // Pending thread comments ride this send: the host adds them to the
     // message. They can go on their own, with nothing typed.
     const threadCommentCountForSend = selectedSessionId && selectedSessionId === threadCommentsSessionIdRef.current
@@ -13728,6 +13738,7 @@ export function AgentChatPane({
     return steerResult;
   }, [
     isPersonalPane, attachments,
+    ambientTurnContext,
     buildNativeControlPayload,
     busy,
     clearPromptSuggestionForSession,
@@ -17178,11 +17189,11 @@ export function AgentChatPane({
                           style={{ aspectRatio: "560 / 300" }}
                           exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                         >
-                          <img
+                          {emptyStateHero ?? <img
                             src="./logo.png"
                             alt="ADE"
                             className="relative z-10 h-full w-full object-contain"
-                          />
+                          />}
                         </motion.div>
 
                         {/* Inline composer for empty state (only when sim drawer closed) */}

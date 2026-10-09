@@ -200,6 +200,8 @@ type PendingTunnelApproval = {
 
 type ChatBuiltInBrowserPanelProps = {
   sessionId: string | null;
+  /** Page hosts already supply their outer frame. */
+  flush?: boolean;
   /** Override project tab routing. `null` selects the personal-chat tab collection. */
   projectRootOverride?: string | null;
   onAddContext?: (item: BuiltInBrowserContextItem) => void;
@@ -317,6 +319,7 @@ function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boole
  */
 export function ChatBuiltInBrowserPanel({
   sessionId,
+  flush = false,
   projectRootOverride,
   onAddContext,
   onAddAttachment,
@@ -2827,7 +2830,7 @@ export function ChatBuiltInBrowserPanel({
       onKeyDownCapture={handlePanelKeyDown}
       className="flex h-full min-h-0 min-w-0 flex-col font-sans text-[12px] text-fg/75"
     >
-      <div className="ade-browser-frame flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-fg/[0.08] bg-[var(--color-bg)]">
+      <div className={cn("ade-browser-frame flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-bg)]", !flush && "rounded-md border border-fg/[0.08]")}>
         <BrowserTabStrip
           stripRef={tabStripRef}
           tabs={orderedBrowserTabs}
