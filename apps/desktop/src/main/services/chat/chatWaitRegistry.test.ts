@@ -6,7 +6,7 @@ const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } 
 
 type Summary = Record<string, unknown> | null | Error;
 
-function harness(initial: Record<string, Summary>) {
+function harness(initial: Record<string, Summary>, ownedByAnotherBrain: ReadonlySet<string> = new Set()) {
   const summaries = new Map<string, Summary>(Object.entries(initial));
   const sent: AgentChatMessageSessionArgs[] = [];
   let store: unknown = null;
@@ -24,6 +24,7 @@ function harness(initial: Record<string, Summary>) {
     describeTarget: async (sessionId) => `- ${sessionId}`,
     sessionExists: (sessionId) => summaries.has(sessionId),
     messageSession: async (args) => { sent.push(args); },
+    ownedByAnotherBrain: (sessionId) => ownedByAnotherBrain.has(sessionId),
     whenReady: async () => {},
   });
   // `arm` reads each target once (the fake read waits on a timer).
@@ -85,5 +86,21 @@ describe("chatWaitRegistry", () => {
     registry.signal("a");
     await vi.advanceTimersByTimeAsync(2_000);
     expect(sent).toEqual([{ sessionId: "b", kind: "wake", text: "start the review" }]);
+  });
+
+  // Waiters live in the project database every brain on it loads. A brain
+  // that does not run a chat saw it "idle" and woke the caller with a false
+  // "reached idle" (2026-10-09), starting a second process for the caller.
+  it.each([
+    ["the target", { caller: { status: "active" }, worker: { status: "idle", runtimeOwnedElsewhere: { pid: 4242 } } }, new Set<string>()],
+    ["the chat to wake", { caller: { status: "idle" }, worker: { status: "idle" } }, new Set(["caller"])],
+  ])("leaves a wait alone when another brain runs %s", async (_label, summaries, owned) => {
+    const { registry, arm, sent } = harness(summaries, owned);
+    await arm({ callerSessionId: "caller", targetSessionIds: ["worker"], waitFor: "idle" });
+    registry.signal("worker");
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(sent).toEqual([]);
+    expect(await registry.list()).toHaveLength(1);
   });
 });

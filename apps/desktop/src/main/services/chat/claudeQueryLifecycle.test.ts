@@ -130,6 +130,7 @@ function createReaperSpy(): ClaudeSubprocessReaper {
     spawnClaudeCodeProcess: vi.fn(() => ({ pid: 4321 }) as any),
     liveRecords: vi.fn(() => []),
     recordsForSession: vi.fn(() => []),
+    terminatedByAdeSince: vi.fn(() => false),
   };
 }
 
