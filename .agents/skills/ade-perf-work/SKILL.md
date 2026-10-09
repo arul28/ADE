@@ -768,3 +768,53 @@ cputime over 15 s windows, one chat streaming throughout.
   account) on mount; six tiles hit the limit. It now runs only for a chat that
   can still launch to Cursor Cloud (no output yet), and the repo list is
   shared in flight and cached for 5 minutes.
+
+### Idle re-render cascades and the brain (seventh pass)
+
+Measured with a render-counting `__REACT_DEVTOOLS_GLOBAL_HOOK__` that walks only
+fibers React processed in a commit (descend only where `prev.child !==
+next.child`; a walk over every fiber reads stale `PerformedWork` flags and
+over-counts by 10x), plus per-component prop-diff and hook-diff logging.
+
+- **A store write must change something.** `setWorkViewState` and
+  `setLaneWorkViewState` wrote a new per-project object on every sessions
+  refresh even when no field changed, re-rendering the whole chat pane about
+  once a second at idle. They now return the previous state when the merge is
+  shallow-equal.
+- **Re-read lists keep identity.** `useWorkSessions` reconciles each IPC read
+  against the previous rows (`reconcileSessionRows`: equal rows keep their
+  object, an unchanged list keeps its array), and `AgentChatPane` compares its
+  chat-session list by value before `setSessions`. Session cards went from
+  ~15 renders/s at idle to 0.
+- **Handlers into `WorkViewArea` are `useLatestCallback`.** `work` changes
+  identity on any session state, and every handler depended on it, breaking
+  the `useMemo` around `WorkViewArea` (30 → 2 renders per 12 idle seconds).
+- **The resource chip only re-renders the top bar when it would draw
+  differently** (`resourcePressureIndicatorKey`). Top bar own-updates 28 → 1
+  per 15 s.
+- **Closed dialogs are memo'd.** `CreateLaneDialogHost` rendered its whole
+  form on every streamed event while closed.
+- **Loops share one clock** (`lib/animationPhaseAlignment.ts`). Four stepped
+  spinners started at different moments drew 120 frames/s; aligned to the
+  document timeline they draw 30 (GPU swap 118 → 61 ms/s on the PR page).
+- **Chat markdown parses once per text** (`remarkCachedParse`): warm chat
+  switch settle 247 → 56 ms. Clone on hit; later plugins mutate the tree.
+- **The plain composer sizes with `field-sizing: content`.** Measuring with
+  `height = 0` + `scrollHeight` forced two layouts per keystroke.
+- **Streaming merge skips the full pass for non-tool events**
+  (`toolCallDedupedLists`) and the URL scan pre-checks `"://"`.
+
+Brain (installed-brain CPU profile, 8 min with agents working):
+
+- Per-message/per-tool `commandExists` spawned a login shell each time
+  (`commandExistsCached`, 60 s).
+- The shell PATH probe re-ran synchronously at TTL expiry (1.2 s blocked);
+  now stale-while-revalidate in the background.
+- `ProjectRegistry.read()` normalized every root (realpath/stat) per call and
+  hot paths call `get` per project: 360 ms → 0.4 ms with a stat-keyed 5 s cache.
+- The activity roster opened every recent project's DB (~450-table schema
+  parse) every few seconds; cached by db+wal file signature: 43 → 2.5 ms.
+- The JSON-RPC server reader concatenated each chunk onto the whole buffer
+  (quadratic); 10 MB request 240 → 11 ms.
+- The Files quick-open index walked the repo with one `git check-ignore`
+  per directory (~540 spawns, 17.5 s); `git ls-files` once: 0.12 s.
