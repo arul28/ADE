@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
 import type { DetectedAuth } from "./authDetector";
@@ -60,6 +61,13 @@ export type ProviderTaskRunnerArgs = {
    *   setting never bills a chat name at Fast rates.
    */
   backgroundUtility?: boolean;
+  /**
+   * The provider-account env patch (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) for the
+   * Claude and Codex CLIs. Without it the CLI reads whatever config home the
+   * process environment names, which is not necessarily the account the
+   * caller's chat runs on.
+   */
+  accountEnv?: Record<string, string>;
 };
 
 export type ProviderTaskRunnerResult = {
@@ -192,10 +200,12 @@ async function runCommand(args: {
   cwd: string;
   timeoutMs?: number;
   stdinText?: string;
+  env?: Record<string, string>;
 }): Promise<SpawnResult> {
   return await new Promise((resolve, reject) => {
     const env = {
       ...userProcessEnv(),
+      ...args.env,
       NO_COLOR: "1",
       TERM: "dumb",
     };
@@ -219,11 +229,15 @@ async function runCommand(args: {
       reject(new Error(`Provider task timed out after ${timeoutMs}ms.`));
     }, timeoutMs);
 
+    // A decoder per stream keeps a UTF-8 character split across two chunks
+    // (the "·" in Claude's usage-limit message) intact.
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     child.stdout?.on("data", (chunk) => {
-      stdout += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      stdout += Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
     });
     child.stderr?.on("data", (chunk) => {
-      stderr += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      stderr += Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : String(chunk);
     });
     child.stdin?.on("error", (error) => {
       if (settled || isBenignStdinCloseError(error)) return;
@@ -244,13 +258,41 @@ async function runCommand(args: {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutHandle);
-      resolve({ stdout, stderr, exitCode });
+      resolve({ stdout: stdout + stdoutDecoder.end(), stderr: stderr + stderrDecoder.end(), exitCode });
     });
 
     if (args.stdinText != null && child.stdin) {
       child.stdin.end(args.stdinText);
     }
   });
+}
+
+/**
+ * The message Claude reports for a failed print-mode run. With
+ * `--output-format json` an API failure (a 429 usage limit, an auth error)
+ * arrives on stdout as `{"is_error":true,"result":"...","api_error_status":429}`
+ * with an empty stderr, so the exit code alone hides the cause.
+ */
+function extractClaudeError(stdout: string): string | null {
+  const trimmed = stdout.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (parsed.is_error !== true) return null;
+    const message = typeof parsed.result === "string" && parsed.result.trim()
+      ? parsed.result.trim()
+      : "Claude reported an error";
+    const status = typeof parsed.api_error_status === "number" ? parsed.api_error_status : null;
+    return status ? `${message} (HTTP ${status})` : message;
+  } catch {
+    return null;
+  }
+}
+
+/** Why a CLI exited non-zero: stderr, else the tail of stdout, else nothing. */
+function describeCliFailure(label: string, result: SpawnResult): string {
+  const detail = result.stderr.trim() || result.stdout.trim().slice(-2_000);
+  return `${label} exited with code ${result.exitCode ?? "unknown"}${detail ? `\n\n${detail}` : ""}`;
 }
 
 function extractClaudeText(stdout: string): string {
@@ -308,9 +350,14 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
     stdinText: prompt,
+    env: args.accountEnv,
   });
+  const reportedError = extractClaudeError(result.stdout);
+  if (reportedError) {
+    throw new Error(`Claude failed: ${reportedError}`);
+  }
   if (result.exitCode !== 0) {
-    throw new Error(`Claude exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+    throw new Error(describeCliFailure("Claude", result));
   }
   const text = extractClaudeText(result.stdout);
   return {
@@ -375,10 +422,11 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
       cwd: args.cwd,
       timeoutMs: args.timeoutMs,
       stdinText: combinedPrompt,
+      env: args.accountEnv,
     });
     const output = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8").trim() : result.stdout.trim();
     if (result.exitCode !== 0) {
-      throw new Error(`Codex exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+      throw new Error(describeCliFailure("Codex", result));
     }
     return {
       text: output,
@@ -460,7 +508,7 @@ async function runAcpOneShotTask(
     stdinText: config.stdinText,
   });
   if (result.exitCode !== 0) {
-    throw new Error(`${config.providerLabel} exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+    throw new Error(describeCliFailure(config.providerLabel, result));
   }
   const text = result.stdout.trim();
   return {

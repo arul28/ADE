@@ -135,55 +135,61 @@ describe("createSessionMetadataRegenerator", () => {
       applied: ["title", "statusLine", "laneName"],
       skipped: [],
       generationError: null,
-      usedDeterministicFallback: false,
     });
     expect(applyTitle).toHaveBeenCalledWith(expect.anything(), "Wire Rag Search");
     expect(setStatusNote).toHaveBeenCalledWith("sess-1", "Sources show before generate");
     expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-1", name: "Search Answer Path" });
   });
 
-  it("uses the conversation summary when every model returns unusable JSON", async () => {
+  it.each([
+    {
+      label: "every model returns unusable JSON",
+      runPrompt: async () => ({ text: "I named it. Hope that helps!" }),
+      candidates: undefined,
+      error: "The AI returned no usable names.",
+    },
+    {
+      label: "no naming model is available",
+      runPrompt: undefined,
+      candidates: [] as string[],
+      error: "No AI model is available to generate names.",
+    },
+    {
+      label: "the account hit its usage limit",
+      runPrompt: async () => {
+        throw new Error("Claude failed: You've hit your weekly limit · resets 6am (America/New_York) (HTTP 429)");
+      },
+      candidates: undefined,
+      error: "Claude failed: You've hit your weekly limit · resets 6am (America/New_York) (HTTP 429)",
+    },
+    {
+      label: "the runtime cannot sandbox the model",
+      runPrompt: async () => {
+        throw new Error("Local SDK sandboxing was requested, but sandboxing is not supported in this environment.");
+      },
+      candidates: undefined,
+      error: "This ADE runtime can't provide the sandbox this agent asked for.",
+    },
+  ])("keeps the current names and reports why when $label", async ({ runPrompt, candidates, error }) => {
     const { regenerate, applyTitle, setStatusNote, renameLane } = createHarness({
       summary: "Wired project aiSummary into RAG excerpts so Cmd+K answers from the overview",
-      runPrompt: vi.fn(async () => ({ text: "I named it. Hope that helps!" })),
+      conversation: [
+        { role: "user", text: "stop one-shot AI from picking Haiku" },
+        { role: "assistant", text: "…(earlier omitted) every local change is queued then replayed" },
+      ],
+      ...(runPrompt ? { runPrompt: vi.fn(runPrompt) } : {}),
+      ...(candidates ? { resolveModelCandidates: async () => candidates } : {}),
     });
 
-    const result = await regenerate({ sessionId: "sess-1" });
-    expect(result.applied.length).toBeGreaterThan(0);
-    expect(applyTitle).toHaveBeenCalled();
-    expect(String(applyTitle.mock.calls[0]?.[1])).not.toMatch(/start skill using aws/i);
-    expect(setStatusNote).toHaveBeenCalled();
-    expect(renameLane).toHaveBeenCalled();
-  });
-
-  it("uses deterministic metadata when no naming model is available", async () => {
-    const { regenerate, applyTitle, setStatusNote, renameLane, runPrompt } = createHarness({
-      summary: "Wired project aiSummary into RAG excerpts so Cmd+K answers from the overview",
-      resolveModelCandidates: async () => [],
-    });
-
-    const result = await regenerate({ sessionId: "sess-1" });
-    expect(runPrompt).not.toHaveBeenCalled();
-    expect(result.usedDeterministicFallback).toBe(true);
-    expect(result.generationError).toBeNull();
-    expect(result.applied.length).toBeGreaterThan(0);
-    expect(applyTitle).toHaveBeenCalled();
-    expect(String(applyTitle.mock.calls[0]?.[1])).not.toMatch(/start skill using aws/i);
-    expect(setStatusNote).toHaveBeenCalled();
-    expect(renameLane).toHaveBeenCalled();
-  });
-
-  it("reports the model failure that forced a deterministic name", async () => {
-    const { regenerate } = createHarness({
-      summary: "Wired project aiSummary into RAG excerpts so Cmd+K answers from the overview",
-      runPrompt: vi.fn(async () => {
-        throw new Error("Local SDK sandboxing was requested, but sandboxing is not supported in this environment.");
-      }),
-    });
-
-    const result = await regenerate({ sessionId: "sess-1" });
-    expect(result.usedDeterministicFallback).toBe(true);
-    expect(result.generationError).toBe("This ADE runtime can't provide the sandbox this agent asked for.");
+    for (const fields of [undefined, ["laneName"] as const]) {
+      const result = await regenerate({ sessionId: "sess-1", ...(fields ? { fields: [...fields] } : {}) });
+      expect(result.applied).toEqual([]);
+      expect(result.skipped).toEqual(fields ? [...fields] : ["title", "laneName", "statusLine"]);
+      expect(result.generationError).toBe(error);
+    }
+    expect(applyTitle).not.toHaveBeenCalled();
+    expect(setStatusNote).not.toHaveBeenCalled();
+    expect(renameLane).not.toHaveBeenCalled();
   });
 
   it("sends the full thread, latest assistant paragraphs, lane threads, and git work in one call", async () => {
@@ -283,35 +289,5 @@ describe("createSessionMetadataRegenerator", () => {
     expect(collectConversationEntries).not.toHaveBeenCalled();
     expect(listLaneThreads).toHaveBeenCalled();
     expect(gatherLaneWorkVersusRemote).toHaveBeenCalled();
-  });
-
-  it("titles from this thread when models fail, not from the kickoff slug", async () => {
-    const { regenerate, applyTitle, renameLane } = createHarness({
-      resolveModelCandidates: async () => [],
-      conversation: [
-        { role: "user", text: "stop one-shot AI from picking Haiku" },
-        { role: "assistant", text: "Removed the default namer so skip-path tests stay green." },
-      ],
-    });
-
-    const result = await regenerate({ sessionId: "sess-1", fields: ["title"] });
-    expect(result.applied).toEqual(["title"]);
-    expect(renameLane).not.toHaveBeenCalled();
-    expect(applyTitle).toHaveBeenCalled();
-    expect(String(applyTitle.mock.calls[0]?.[1])).not.toMatch(/start skill using aws/i);
-    expect(String(applyTitle.mock.calls[0]?.[1])).toMatch(/stop one shot/i);
-  });
-
-  it("does not stamp this thread's kickoff onto the shared lane when models fail", async () => {
-    const { regenerate, applyTitle, renameLane, setStatusNote } = createHarness({
-      resolveModelCandidates: async () => [],
-    });
-
-    await expect(regenerate({ sessionId: "sess-1", fields: ["laneName"] })).rejects.toThrow(
-      "The AI returned no usable session metadata.",
-    );
-    expect(renameLane).not.toHaveBeenCalled();
-    expect(applyTitle).not.toHaveBeenCalled();
-    expect(setStatusNote).not.toHaveBeenCalled();
   });
 });

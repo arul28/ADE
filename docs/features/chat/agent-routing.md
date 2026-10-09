@@ -1825,8 +1825,8 @@ one-shot route forwards supported image attachments.
 
 Both stages walk `buildSessionIntelligenceModelCandidates` in
 `sessionNaming.ts`. A provider-level failure condemns every remaining
-model behind that provider. An empty candidate list uses the
-deterministic title.
+model behind that provider. For a chat title, an empty candidate list
+uses the deterministic title.
 
 `ai.sessionIntelligence.titles.enabled` is not a gate. Naming always
 runs (except Cursor Cloud titles and `manuallyNamed`).
@@ -1846,11 +1846,33 @@ the title write, not after, because adopting a title has side effects (session
 meta, runtime push) that a rename landing mid-request must stop.
 
 The same chain — cheap helper for the ADE provider, then this session's
-model, then deterministic — covers chat titles, idle status lines,
-explicit session-metadata regeneration, automatic lane names, handoff
-briefs, and identity-continuity summaries. CLI sessions are always
-ADE-named from the cheap helper plus the stored launch model. See
+model — covers chat titles, idle status lines, explicit
+session-metadata regeneration, automatic lane names, handoff briefs,
+and identity-continuity summaries. Chat titles and automatic lane
+names end in a deterministic name when every model misses; explicit
+regeneration and idle status lines do not (see below). CLI sessions
+are always ADE-named from the cheap helper plus the stored launch
+model. See
 [AI-driven titles](../terminals-and-sessions/pty-and-sessions.md#ai-driven-titles).
+
+**Every helper call runs as the chat's own provider account.** The
+Claude or Codex CLI behind a name, status line, summary or turn-end
+question check gets the same `CLAUDE_CONFIG_DIR` / `CODEX_HOME` the
+chat's runtime uses (a harness preset's config home first, then the
+chat's account; the base account inherits the environment). A call
+with no chat yet — naming a new lane from its opening prompt — runs
+on smart balance's pick, the account the new chat gets. Any other
+one-shot task runs on the provider's default account. Before this, a
+helper call read whatever config home the process environment named,
+so a chat on a healthy account failed to rename because another
+account had hit its usage limit.
+
+A failed Claude run is reported with Claude's own reason: in JSON mode
+the CLI prints `{"is_error":true,"result":"…","api_error_status":429}`
+on stdout with an empty stderr, and ADE surfaces it as
+`Claude failed: <result> (HTTP 429)`. A usage limit or HTTP 429 is a
+provider-level failure, so the chain does not retry the session model
+on the same exhausted account.
 
 ## One-shot utility tasks
 

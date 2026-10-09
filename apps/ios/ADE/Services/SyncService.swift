@@ -15494,14 +15494,22 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func regenerateChatSessionMetadata(sessionId: String, fields: [String]? = nil) async throws {
+  /// Returns why nothing changed when the host applied no field and named a
+  /// cause (a usage limit, no model). The host keeps the current names rather
+  /// than guessing one, so without this the menu would look like it did nothing.
+  func regenerateChatSessionMetadata(sessionId: String, fields: [String]? = nil) async throws -> String? {
     let scope = chatCommandScope(for: sessionId)
-    _ = try await sendChatCommand(
+    let result = try await sendChatCommand(
       action: chatActionName("chat.regenerateSessionMetadata", sessionId: sessionId),
       payload: AgentChatRegenerateSessionMetadataRequest(sessionId: sessionId, fields: fields),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
+    guard let record = result as? [String: Any],
+          let applied = record["applied"] as? [Any], applied.isEmpty,
+          let reason = (record["generationError"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !reason.isEmpty else { return nil }
+    return reason
   }
 
   /// `chat.resumeUsageLimitNow` — cancel the durable arm, reset the streak, and

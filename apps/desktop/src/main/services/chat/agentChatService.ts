@@ -317,8 +317,14 @@ import {
 import {
   getMachineProviderInstanceStore,
   providerInstanceEnvPatch,
+  resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
-import { isProviderInstanceProvider, type ProviderInstance, type ProviderInstanceProvider } from "../../../shared/types/providerInstances";
+import {
+  isProviderInstanceProvider,
+  PROVIDER_INSTANCE_ENV_KEY,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
+} from "../../../shared/types/providerInstances";
 import {
   buildOpenCodeDoneUsage,
   resolveOpenCodeServedModel,
@@ -879,7 +885,7 @@ import {
   isExecutablePath,
   resolveClaudeCodeExecutable,
 } from "../ai/claudeCodeExecutable";
-import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import type { createAiIntegrationService, ProviderTaskAccount } from "../ai/aiIntegrationService";
 import {
   getProviderRuntimeHealth,
   reportProviderRuntimeAuthFailure,
@@ -1818,7 +1824,23 @@ type PersistedRecentConversationEntry = {
   text: string;
   displayText?: string;
   turnId?: string;
+  /** The latest assistant message joined into this entry. */
+  messageId?: string;
 };
+
+/**
+ * Join one streamed assistant chunk onto the text already collected for its
+ * turn. Chunks join raw, because a chunk's leading or trailing space is the
+ * gap between two words; a new message in the same turn starts a paragraph.
+ * Readers trim the result.
+ */
+function joinAssistantChunk(
+  current: { text: string; messageId?: string | null },
+  chunk: { text: string; messageId?: string | null },
+): string {
+  const newMessage = Boolean(chunk.messageId && current.messageId && chunk.messageId !== current.messageId);
+  return newMessage ? `${current.text.trimEnd()}\n\n${chunk.text}` : `${current.text}${chunk.text}`;
+}
 
 type PersistedUnprocessedMessageResolutionReceipt = {
   steerId: string;
@@ -4557,9 +4579,12 @@ type ManagedChatSession = {
   bufferedText: (BufferedAssistantText & { timer: NodeJS.Timeout | null }) | null;
   recentConversationEntries: Array<{
     role: "user" | "assistant";
+    /** An assistant entry is raw streamed text; trim it when reading. */
     text: string;
     displayText?: string;
     turnId?: string;
+    /** The latest assistant message joined into this entry. */
+    messageId?: string;
   }>;
   /**
    * Steers whose row this process showed as `accepted` and that no one has
@@ -10598,11 +10623,47 @@ export function createAgentChatService(args: {
    */
   const sessionConfigHome = (managed: ManagedChatSession): string | null => {
     const provider = managed.session.provider;
-    const key = provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : null;
-    if (!key) return null;
+    if (!isProviderInstanceProvider(provider)) return null;
+    const key = PROVIDER_INSTANCE_ENV_KEY[provider];
     const instance = resolveSessionInstance(managed);
     const presetHome = resolveSessionLaunchPlan(managed)?.env?.[key]?.trim();
     return presetHome || instance?.configHome || null;
+  };
+
+  /**
+   * The account a background call for this chat (its name, status line,
+   * summary) runs as: the same config home its own runtime uses. Without it
+   * the call ran on whatever account the process environment named, so a chat
+   * on a healthy account could fail to rename because another account had hit
+   * its usage limit.
+   */
+  const sessionProviderAccount = (managed: ManagedChatSession): ProviderTaskAccount | undefined => {
+    const provider = managed.session.provider;
+    if (!isProviderInstanceProvider(provider)) return undefined;
+    const key = PROVIDER_INSTANCE_ENV_KEY[provider];
+    const presetHome = resolveSessionLaunchPlan(managed)?.env?.[key]?.trim();
+    if (presetHome) return { provider, env: { [key]: presetHome } };
+    const instance = resolveSessionInstance(managed);
+    return instance ? { provider, env: providerInstanceEnvPatch(instance) } : undefined;
+  };
+
+  /**
+   * The account a background call made before its chat exists (naming a new
+   * lane from the opening prompt) runs as: smart balance's pick when it is on,
+   * the same account the new chat will get. Undefined means the provider's
+   * default account, which is what chat creation falls back to as well.
+   */
+  const newChatProviderAccount = (provider: string | null | undefined): ProviderTaskAccount | undefined => {
+    if (provider !== "claude" && provider !== "codex") return undefined;
+    try {
+      const pick = getAccountUsage()?.resolveBalancedInstance(provider);
+      // The same resolution chat creation uses: a pick that no longer names
+      // an account falls back to the default.
+      const instance = pick?.instanceId ? resolveProviderInstanceForLaunch(provider, pick.instanceId) : null;
+      return instance ? { provider, env: providerInstanceEnvPatch(instance) } : undefined;
+    } catch {
+      return undefined;
+    }
   };
 
   /**
@@ -11256,10 +11317,17 @@ export function createAgentChatService(args: {
     imagePaths?: string[];
     jsonSchema?: unknown;
     taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
+    /**
+     * The provider account to run as: the served chat's (`sessionProviderAccount`)
+     * or, before the chat exists, `newChatProviderAccount`. Omitted means the
+     * provider's default account.
+     */
+    providerAccount?: ProviderTaskAccount;
   }) => {
     const reasoningEffort = args.reasoningEffort
       ?? backgroundUtilityReasoningEffort(args.modelId);
     return await aiIntegrationService.summarizeTerminal({
+      ...(args.providerAccount ? { providerAccount: args.providerAccount } : {}),
       cwd: args.cwd,
       model: args.modelId,
       prompt: args.prompt,
@@ -11322,7 +11390,14 @@ export function createAgentChatService(args: {
       hasPendingInput: hasLivePendingInput(managedSessions.get(sessionId)),
       attentionRequestedAt: sessionService.get(sessionId)?.attentionRequestedAt,
     }),
-    runPrompt: (prompt) => runSessionIntelligencePrompt({ ...prompt, taskType: "session_summary" }),
+    runPrompt: ({ sessionId, ...prompt }) => {
+      const managed = managedSessions.get(sessionId);
+      return runSessionIntelligencePrompt({
+        ...prompt,
+        taskType: "session_summary",
+        providerAccount: managed ? sessionProviderAccount(managed) : undefined,
+      });
+    },
     requestAttention: requestSessionAttention,
   });
   // Declared here rather than next to its only caller further down the file:
@@ -14411,33 +14486,39 @@ export function createAgentChatService(args: {
   const collectConversationEntries = (
     managed: ManagedChatSession,
   ): SessionMetadataConversationEntry[] => {
-    const fromTranscript: SessionMetadataConversationEntry[] = [];
+    // Assistant replies are stored as streamed chunks ("raises a", " Windows
+    // admin"), so one reply is many `text` events: join each turn's chunks
+    // with `joinAssistantChunk`, the same rule the live ring uses.
+    // `includeBuffered` adds events still on their way to disk, so a refresh
+    // right after a turn ends sees that turn's last words.
+    const fromTranscript: Array<SessionMetadataConversationEntry & { turnId?: string; messageId?: string }> = [];
     try {
-      for (const entry of readTranscriptEnvelopes(managed)) {
-        if (entry.event.type === "user_message") {
-          const text = entry.event.text.trim();
+      for (const { event } of readTranscriptEnvelopes(managed, { includeBuffered: true })) {
+        if (event.type === "user_message") {
+          const text = event.text.trim();
           if (text) fromTranscript.push({ role: "user", text });
-        } else if (entry.event.type === "text") {
-          const text = entry.event.text.trim();
-          if (text) fromTranscript.push({ role: "assistant", text });
+        } else if (event.type === "text") {
+          const last = fromTranscript[fromTranscript.length - 1];
+          if (last?.role === "assistant" && last.turnId === event.turnId) {
+            last.text = joinAssistantChunk(last, event);
+            if (event.messageId) last.messageId = event.messageId;
+          } else if (event.text.trim()) {
+            fromTranscript.push({ role: "assistant", text: event.text, turnId: event.turnId, messageId: event.messageId });
+          }
         }
       }
     } catch {
       // Live ring still helps when the transcript file is unreadable.
     }
-    const live = managed.recentConversationEntries
-      .map((entry) => ({
-        role: entry.role,
-        text: entry.text.trim(),
-      }))
+    // The live ring holds the same turns as the transcript's tail, so it only
+    // stands in when the transcript has nothing; appending it would repeat
+    // the latest turns in a different shape.
+    const source = fromTranscript.length
+      ? fromTranscript
+      : managed.recentConversationEntries.map((entry) => ({ role: entry.role, text: entry.text }));
+    return source
+      .map((entry) => ({ role: entry.role, text: entry.text.trim() }))
       .filter((entry) => entry.text.length > 0);
-    const combined: SessionMetadataConversationEntry[] = [];
-    for (const entry of [...fromTranscript, ...live]) {
-      const prev = combined[combined.length - 1];
-      if (prev && prev.role === entry.role && prev.text === entry.text) continue;
-      combined.push(entry);
-    }
-    return combined;
   };
 
   const RECENT_CONVERSATION_TAIL_TITLE = "Recent Conversation Tail";
@@ -14604,6 +14685,7 @@ export function createAgentChatService(args: {
             modelId: descriptor.id,
             prompt,
             taskType: "continuity_summary",
+            providerAccount: sessionProviderAccount(managed),
           });
           const text = response.text.trim();
           return text.length ? text : null;
@@ -14633,21 +14715,29 @@ export function createAgentChatService(args: {
     // A steer is one entry, on the row where the model read it: not its
     // `queued` or `accepted` rows, and not at all when it was dropped.
     if (event.type === "user_message" && event.steerId && !steerReachedModel(event.deliveryState)) return;
-    const text = event.text.trim();
-    if (!text.length) return;
 
     const role = event.type === "user_message" ? "user" : "assistant";
+    const turnId = "turnId" in event ? event.turnId : undefined;
+    const lastEntry = managed.recentConversationEntries[managed.recentConversationEntries.length - 1];
+    if (event.type === "text" && lastEntry?.role === "assistant" && lastEntry.turnId === turnId) {
+      lastEntry.text = joinAssistantChunk(lastEntry, event);
+      if (event.messageId) lastEntry.messageId = event.messageId;
+      return;
+    }
+    const text = role === "user" ? event.text.trim() : event.text;
+    if (!text.trim().length) return;
     const displayText = event.type === "user_message" && event.displayText?.trim()
       ? event.displayText.trim()
       : undefined;
-    const turnId = "turnId" in event ? event.turnId : undefined;
-    const lastEntry = managed.recentConversationEntries[managed.recentConversationEntries.length - 1];
-    if (role === "assistant" && lastEntry?.role === "assistant" && lastEntry.turnId === turnId) {
-      lastEntry.text = `${lastEntry.text}${text}`.trim();
-      return;
-    }
+    const messageId = event.type === "text" ? event.messageId : undefined;
 
-    managed.recentConversationEntries.push({ role, text, ...(displayText ? { displayText } : {}), turnId });
+    managed.recentConversationEntries.push({
+      role,
+      text,
+      ...(displayText ? { displayText } : {}),
+      turnId,
+      ...(messageId ? { messageId } : {}),
+    });
     if (managed.recentConversationEntries.length > MAX_RECENT_CONVERSATION_ENTRIES) {
       managed.recentConversationEntries.splice(
         0,
@@ -15220,6 +15310,7 @@ export function createAgentChatService(args: {
           modelId: descriptor.id,
           prompt,
           taskType: "handoff_summary",
+          providerAccount: sessionProviderAccount(args.managed),
         });
         const brief = response.text.trim();
         return brief.length ? brief : null;
@@ -15584,6 +15675,7 @@ export function createAgentChatService(args: {
                 titleContext.join("\n"),
               ].join("\n\n"),
               taskType: "session_title",
+              providerAccount: sessionProviderAccount(managed),
             });
             // Guard BEFORE the write: setManagedSessionTitle has side effects
             // (session meta, runtime push), so a manual rename that landed while
@@ -15696,13 +15788,14 @@ export function createAgentChatService(args: {
           uncommitted: uncommitted?.exitCode === 0 ? uncommitted.stdout : null,
         };
       },
-      runPrompt: ({ cwd, modelId, prompt, systemPrompt, jsonSchema }) => runSessionIntelligencePrompt({
+      runPrompt: ({ cwd, modelId, prompt, systemPrompt, jsonSchema }, managed) => runSessionIntelligencePrompt({
         cwd,
         modelId,
         prompt,
         systemPrompt,
         jsonSchema,
         taskType: "session_title",
+        providerAccount: sessionProviderAccount(managed),
       }),
       normalizeTitle: normalizeSuggestedLaneTitle,
       normalizeStatusLine: normalizeSessionStatusNote,
@@ -16630,6 +16723,7 @@ export function createAgentChatService(args: {
           sessionModelId: chatModelId,
           sessionModel: requestedModelId,
         });
+        const namingAccount = newChatProviderAccount(args.provider);
 
           // Naming runs in the background, but it still must not walk the whole
           // registry when everything is down.
@@ -16644,6 +16738,7 @@ export function createAgentChatService(args: {
                 imagePaths,
                 jsonSchema: AUTO_LANE_IDENTITY_JSON_SCHEMA,
                 taskType: "session_title",
+                providerAccount: namingAccount,
               });
               const parsed = parseAutoLaneIdentity(result.structuredOutput ?? result.text);
               if (!parsed || (!parsed.laneTitle && !parsed.branchFragment)) return null;
@@ -16723,6 +16818,7 @@ export function createAgentChatService(args: {
         provider: args.provider,
         sessionModelId: requestedModelId,
       });
+      const namingAccount = newChatProviderAccount(args.provider);
       const { result: suggested } = await runNamingAcrossProviders<string>(candidateModelIds, {
         run: async (descriptor) => {
           const result = await runSessionIntelligencePrompt({
@@ -16731,6 +16827,7 @@ export function createAgentChatService(args: {
             systemPrompt: LEGACY_LANE_NAME_SYSTEM_PROMPT,
             prompt: `User message for the new lane:\n${prompt.slice(0, 2000)}`,
             taskType: "session_title",
+            providerAccount: namingAccount,
           });
           return normalizeSuggestedLaneName(result.text);
         },
@@ -17527,6 +17624,7 @@ export function createAgentChatService(args: {
               text: entry.text,
               ...(entry.displayText ? { displayText: entry.displayText } : {}),
               ...(entry.turnId ? { turnId: entry.turnId } : {}),
+              ...(entry.messageId ? { messageId: entry.messageId } : {}),
             })),
           }
         : {}),
@@ -17839,6 +17937,7 @@ export function createAgentChatService(args: {
                 ? { displayText: entry.displayText.trim() }
                 : {}),
               ...(entry.turnId ? { turnId: entry.turnId } : {}),
+              ...(typeof entry.messageId === "string" && entry.messageId ? { messageId: entry.messageId } : {}),
             }))
             .slice(-12)
         : undefined;
@@ -24710,6 +24809,7 @@ export function createAgentChatService(args: {
         text: entry.text,
         ...(entry.displayText ? { displayText: entry.displayText } : {}),
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
+        ...(entry.messageId ? { messageId: entry.messageId } : {}),
       })) ?? [],
       localPendingInputs: new Map(),
       asyncQuestions: new Map(),

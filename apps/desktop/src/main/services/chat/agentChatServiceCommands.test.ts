@@ -6,6 +6,7 @@ import {
   createService,
   detectAllAuth,
   fs,
+  installRealTranscriptParser,
   makeDefaultClaudeSession,
   mockState,
   path,
@@ -17,6 +18,7 @@ import {
   waitFor,
   waitForEvent,
   waitForSessionTitle,
+  writeTestTranscriptEnvelopes,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
@@ -1977,6 +1979,40 @@ describe("createAgentChatService", () => {
       expect(result.skipped).toEqual(["statusLine"]);
       expect(sessionService.get(session.id)?.title).toBe(generatedMetadata.chatTitle);
       expect(sessionService.setStatusNote).not.toHaveBeenCalled();
+    });
+
+    it("hands the namer each streamed reply as whole words, one paragraph per message", async () => {
+      installAutoTitleAuth();
+      installRealTranscriptParser();
+      const { service, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      const at = "2026-10-09T21:25:49.000Z";
+      writeTestTranscriptEnvelopes(session.id, [
+        { sessionId: session.id, timestamp: at, event: { type: "user_message", text: "What can you do alone?" } },
+        ...["Anything that raises a", " Windows admin (UAC) prompt,", " I can't click through."].map((text) => ({
+          sessionId: session.id,
+          timestamp: at,
+          event: { type: "text" as const, text, turnId: "turn-1", messageId: "msg-1" },
+        })),
+        { sessionId: session.id, timestamp: at, event: { type: "text", text: "Nothing is started yet.", turnId: "turn-1", messageId: "msg-2" } },
+      ] as AgentChatEventEnvelope[]);
+      aiIntegrationService.summarizeTerminal.mockResolvedValue({
+        text: JSON.stringify(generatedMetadata),
+        structuredOutput: generatedMetadata,
+      } as never);
+
+      await service.regenerateSessionMetadata({ sessionId: session.id, fields: ["statusLine"] });
+
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
+        prompt: expect.stringContaining(
+          "Anything that raises a Windows admin (UAC) prompt, I can't click through.\n\nNothing is started yet.",
+        ),
+      }));
     });
 
     it("keeps a same-text manual rename made while generation is in flight", async () => {
