@@ -49,6 +49,8 @@ export type TurnEndQuestionCheckDeps = {
   /** Read per call: the hand may have gone up, or a card opened, meanwhile. */
   readHandState: (sessionId: string) => TurnEndHandState;
   runPrompt: (args: {
+    /** The chat whose turn ended; the call runs as that chat's account. */
+    sessionId: string;
     cwd: string;
     modelId: string;
     systemPrompt: string;
@@ -128,6 +130,7 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
       // CLAUDE.md or AGENTS.md, no hooks.
       cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ade-turn-end-ask-"));
       const result = await deps.runPrompt({
+        sessionId,
         cwd,
         modelId: backgroundUtilityModelId(provider),
         systemPrompt: TURN_END_ASK_SYSTEM_PROMPT,

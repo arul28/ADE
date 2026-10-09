@@ -60,6 +60,13 @@ export type ProviderTaskRunnerArgs = {
    *   setting never bills a chat name at Fast rates.
    */
   backgroundUtility?: boolean;
+  /**
+   * The provider-account env patch (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) for the
+   * Claude and Codex CLIs. Without it the CLI reads whatever config home the
+   * process environment names, which is not necessarily the account the
+   * caller's chat runs on.
+   */
+  accountEnv?: Record<string, string>;
 };
 
 export type ProviderTaskRunnerResult = {
@@ -192,10 +199,12 @@ async function runCommand(args: {
   cwd: string;
   timeoutMs?: number;
   stdinText?: string;
+  env?: Record<string, string>;
 }): Promise<SpawnResult> {
   return await new Promise((resolve, reject) => {
     const env = {
       ...userProcessEnv(),
+      ...args.env,
       NO_COLOR: "1",
       TERM: "dumb",
     };
@@ -253,6 +262,34 @@ async function runCommand(args: {
   });
 }
 
+/**
+ * The message Claude reports for a failed print-mode run. With
+ * `--output-format json` an API failure (a 429 usage limit, an auth error)
+ * arrives on stdout as `{"is_error":true,"result":"...","api_error_status":429}`
+ * with an empty stderr, so the exit code alone hides the cause.
+ */
+function extractClaudeError(stdout: string): string | null {
+  const trimmed = stdout.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (parsed.is_error !== true) return null;
+    const message = typeof parsed.result === "string" && parsed.result.trim()
+      ? parsed.result.trim()
+      : "Claude reported an error";
+    const status = typeof parsed.api_error_status === "number" ? parsed.api_error_status : null;
+    return status ? `${message} (HTTP ${status})` : message;
+  } catch {
+    return null;
+  }
+}
+
+/** Why a CLI exited non-zero: stderr, else the tail of stdout, else nothing. */
+function describeCliFailure(label: string, result: SpawnResult): string {
+  const detail = result.stderr.trim() || result.stdout.trim().slice(-2_000);
+  return `${label} exited with code ${result.exitCode ?? "unknown"}${detail ? `\n\n${detail}` : ""}`;
+}
+
 function extractClaudeText(stdout: string): string {
   const trimmed = stdout.trim();
   if (!trimmed) return "";
@@ -308,9 +345,14 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
     stdinText: prompt,
+    env: args.accountEnv,
   });
+  const reportedError = extractClaudeError(result.stdout);
+  if (reportedError) {
+    throw new Error(`Claude failed: ${reportedError}`);
+  }
   if (result.exitCode !== 0) {
-    throw new Error(`Claude exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+    throw new Error(describeCliFailure("Claude", result));
   }
   const text = extractClaudeText(result.stdout);
   return {
@@ -375,10 +417,11 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
       cwd: args.cwd,
       timeoutMs: args.timeoutMs,
       stdinText: combinedPrompt,
+      env: args.accountEnv,
     });
     const output = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8").trim() : result.stdout.trim();
     if (result.exitCode !== 0) {
-      throw new Error(`Codex exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+      throw new Error(describeCliFailure("Codex", result));
     }
     return {
       text: output,
@@ -460,7 +503,7 @@ async function runAcpOneShotTask(
     stdinText: config.stdinText,
   });
   if (result.exitCode !== 0) {
-    throw new Error(`${config.providerLabel} exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+    throw new Error(describeCliFailure(config.providerLabel, result));
   }
   const text = result.stdout.trim();
   return {

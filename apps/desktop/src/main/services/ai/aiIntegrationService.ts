@@ -43,12 +43,17 @@ import {
   resolveModelAlias,
   resolveProviderGroupForModel,
   type LocalProviderFamily,
+  type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { disabledProviderSet } from "../../../shared/providerEnablement";
 import { presetSourceLabel } from "../../../shared/harnessPresets";
 import { getCachedDevinModels, warmDevinModels } from "./devinModelsDiscovery";
 import { readHarnessPresetsOrEmpty } from "../chat/harnessPresetSettings";
-import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import {
+  getMachineProviderInstanceStore,
+  providerInstanceEnvPatch,
+} from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import type { ProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../shared/cursorCloudArtifactLimits";
 import { probeAllAcpProviderAuth } from "./acpAuthProbe";
@@ -229,6 +234,17 @@ export type AiIntegrationStatus = {
   };
 };
 
+/**
+ * The provider account a task on behalf of one chat must run as: that chat's
+ * env patch for its own provider (an empty patch is the base account). It only
+ * applies when the task's model runs on that provider; every other task runs
+ * as the provider's default account.
+ */
+export type ProviderTaskAccount = {
+  provider: ProviderInstanceProvider;
+  env: Record<string, string>;
+};
+
 export type ExecuteAiTaskArgs = {
   feature: AiFeatureKey;
   taskType: AiTaskType;
@@ -245,6 +261,8 @@ export type ExecuteAiTaskArgs = {
   oneShot?: boolean;
   /** See `ProviderTaskRunnerArgs.backgroundUtility`. */
   backgroundUtility?: boolean;
+  /** See `ProviderTaskAccount`. */
+  providerAccount?: ProviderTaskAccount;
   sessionId?: string;
   projectId?: string;
   runId?: string;
@@ -1744,6 +1762,31 @@ export function createAiIntegrationService(args: {
     );
   };
 
+  /**
+   * Which account's config home a Claude or Codex CLI task reads: the calling
+   * chat's account when it names one for this provider, else the provider's
+   * default account — the same one a new chat launches on. Undefined for every
+   * other provider, and when the account store is unreadable (the CLI then
+   * inherits the environment, as before accounts existed).
+   */
+  const resolveTaskAccountEnv = (
+    descriptor: ModelDescriptor,
+    account: ProviderTaskAccount | undefined,
+  ): Record<string, string> | undefined => {
+    const provider: ProviderInstanceProvider | null = !descriptor.isCliWrapped
+      ? null
+      : descriptor.family === "anthropic"
+        ? "claude"
+        : descriptor.family === "openai" ? "codex" : null;
+    if (!provider) return undefined;
+    if (account?.provider === provider) return account.env;
+    try {
+      return providerInstanceEnvPatch(getMachineProviderInstanceStore().getDefault(provider));
+    } catch {
+      return undefined;
+    }
+  };
+
   const executeProviderTaskPath = async (
     args: ExecuteAiTaskArgs,
     auth?: DetectedAuth[],
@@ -1755,6 +1798,7 @@ export function createAiIntegrationService(args: {
       throw new Error(`Unknown model '${modelId}'.`);
     }
 
+    const accountEnv = resolveTaskAccountEnv(descriptor, args.providerAccount);
     const start = Date.now();
     const result = await runProviderTask({
       cwd: args.cwd,
@@ -1771,6 +1815,7 @@ export function createAiIntegrationService(args: {
       imagePaths: args.imagePaths,
       reasoningEffort: args.reasoningEffort ?? null,
       ...(args.backgroundUtility ? { backgroundUtility: true } : {}),
+      ...(accountEnv ? { accountEnv } : {}),
     });
     const durationMs = Date.now() - start;
     const provider = resolveProviderGroupForModel(descriptor) as AgentProvider;
@@ -2015,6 +2060,7 @@ export function createAiIntegrationService(args: {
     reasoningEffort?: string | null;
     imagePaths?: string[];
     backgroundUtility?: boolean;
+    providerAccount?: ProviderTaskAccount;
   }): Promise<ExecuteAiTaskResult> => {
     return await executeTask({
       feature: args.feature,
@@ -2028,6 +2074,7 @@ export function createAiIntegrationService(args: {
       ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
       ...(args.imagePaths?.length ? { imagePaths: args.imagePaths } : {}),
       ...(args.backgroundUtility ? { backgroundUtility: true } : {}),
+      ...(args.providerAccount ? { providerAccount: args.providerAccount } : {}),
       permissionMode: "read-only",
       oneShot: true
     });
@@ -2487,6 +2534,7 @@ export function createAiIntegrationService(args: {
       jsonSchema?: unknown;
       systemPrompt?: string;
       taskType?: Extract<AiTaskType, "terminal_summary" | "session_title" | "session_summary" | "handoff_summary" | "continuity_summary" | "context_compaction">;
+      providerAccount?: ProviderTaskAccount;
     }): Promise<ExecuteAiTaskResult> {
       // Every caller hands over the text to read in the prompt, so these run
       // as background utility calls: no tools or plan-mode setup on Claude,
@@ -2503,6 +2551,7 @@ export function createAiIntegrationService(args: {
         jsonSchema: args.jsonSchema,
         systemPrompt: args.systemPrompt,
         backgroundUtility: true,
+        ...(args.providerAccount ? { providerAccount: args.providerAccount } : {}),
       });
     },
 
