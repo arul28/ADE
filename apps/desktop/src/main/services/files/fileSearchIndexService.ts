@@ -589,16 +589,13 @@ export function createFileSearchIndexService() {
 
   const shouldSkipDirectoryName = (name: string): boolean => ALWAYS_SKIPPED_DIRECTORY_NAMES.has(name);
 
-  /**
-   * Walk directories below `roots`, asking `shouldIgnore` per entry. Returns the
-   * running count of indexed files, or null once the index is full.
-   */
+  /** Walk directories below `roots`, asking `shouldIgnore` per entry, until the index is full. */
   const walkDirectories = async (
     index: WorkspaceIndex,
     opts: IgnoreOptions,
     roots: string[],
     visitedSoFar: number,
-  ): Promise<number | null> => {
+  ): Promise<void> => {
     const stack = [...roots];
     let visitedFiles = visitedSoFar;
 
@@ -634,13 +631,12 @@ export function createFileSearchIndexService() {
         if (!entry.isFile()) continue;
         upsertFile(index, relPath);
         visitedFiles += 1;
-        if (visitedFiles >= MAX_INDEXED_FILES) return null;
+        if (visitedFiles >= MAX_INDEXED_FILES) return;
         if (visitedFiles % YIELD_EVERY_FILES === 0) {
           await cooperativeYield();
         }
       }
     }
-    return visitedFiles;
   };
 
   /**
@@ -662,21 +658,24 @@ export function createFileSearchIndexService() {
       const relPath = normalizeRelative(raw).replace(/\/+$/, "");
       if (!relPath || !isSearchableRelPath(relPath, index.includeIgnored)) continue;
       const segments = relPath.split("/");
+      const addDirectories = (count: number) => {
+        for (let depth = 1; depth <= count; depth += 1) {
+          const dir = segments.slice(0, depth).join("/");
+          if (!index.directories.has(dir)) index.directories.set(dir, { path: dir, lowerPath: dir.toLowerCase() });
+        }
+      };
       if (isDirectory) {
         if (shouldSkipDirectoryName(segments[segments.length - 1] ?? "")) continue;
+        addDirectories(segments.length);
         nestedRepositories.push(relPath);
-      } else {
-        // `--cached` also lists files deleted from the working tree; upsertFile
-        // indexes only what is on disk.
-        upsertFile(index, relPath);
-        if (!index.files.has(relPath)) continue;
-        visitedFiles += 1;
+        continue;
       }
-      for (let depth = 1; depth <= segments.length - (isDirectory ? 0 : 1); depth += 1) {
-        const dir = segments.slice(0, depth).join("/");
-        if (!index.directories.has(dir)) index.directories.set(dir, { path: dir, lowerPath: dir.toLowerCase() });
-      }
-      if (isDirectory) continue;
+      // `--cached` also lists files deleted from the working tree; upsertFile
+      // indexes only what is on disk.
+      upsertFile(index, relPath);
+      if (!index.files.has(relPath)) continue;
+      addDirectories(segments.length - 1);
+      visitedFiles += 1;
       if (visitedFiles >= MAX_INDEXED_FILES) return;
       if (visitedFiles % YIELD_EVERY_FILES === 0) {
         await cooperativeYield();

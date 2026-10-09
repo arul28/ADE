@@ -1954,7 +1954,6 @@ function formatProjectTransitionError(
   };
 }
 
-
 function reuseStructurallyEqualValue<T>(incoming: T, current: T): T {
   if (incoming === current) return current;
   return JSON.stringify(incoming) === JSON.stringify(current) ? current : incoming;

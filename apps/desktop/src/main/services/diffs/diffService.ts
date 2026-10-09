@@ -388,7 +388,7 @@ function nameStatusFileChanges(stdout: string): FileChange[] {
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
   /** Asks this close together are the same moment (opening a lane asks twice). */
   const BRANCH_READ_JOIN_WINDOW_MS = 250;
-  type BranchRead = { startedAt: number; read: Promise<BranchDiffChanges>; followUp: Promise<BranchDiffChanges> | null };
+  type BranchRead = { startedAt: number; read: Promise<BranchDiffChanges> };
   const branchReads = new Map<string, BranchRead>();
 
   const readBranchChanges = async (laneId: string): Promise<BranchDiffChanges> => {
@@ -413,7 +413,7 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
   };
 
   const startBranchRead = (laneId: string): Promise<BranchDiffChanges> => {
-    const entry: BranchRead = { startedAt: Date.now(), read: readBranchChanges(laneId), followUp: null };
+    const entry: BranchRead = { startedAt: Date.now(), read: readBranchChanges(laneId) };
     branchReads.set(laneId, entry);
     void entry.read.catch(() => undefined).then(() => {
       if (branchReads.get(laneId) === entry) branchReads.delete(laneId);
@@ -459,14 +459,10 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       // Opening a lane asks twice at once (the Branch support probe and the
       // pane's own read), and on a lane far from its base each read is a full
       // temp-index diff of seconds. Asks at the same moment share one read. A
-      // later ask (an edit landed mid-read) gets one fresh read after it,
-      // shared by everyone else who asks meanwhile.
+      // later ask (an edit may have landed mid-read) starts a fresh read at
+      // once, which asks after it then share.
       const current = branchReads.get(laneId);
-      if (current) {
-        if (Date.now() - current.startedAt <= BRANCH_READ_JOIN_WINDOW_MS) return current.read;
-        current.followUp ??= current.read.catch(() => undefined).then(() => startBranchRead(laneId));
-        return current.followUp;
-      }
+      if (current && Date.now() - current.startedAt <= BRANCH_READ_JOIN_WINDOW_MS) return current.read;
       return startBranchRead(laneId);
     },
 

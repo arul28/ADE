@@ -897,12 +897,13 @@ export function createGitOperationsService({
       // Detailed rows (author email + co-authors) come from a different `git
       // log` format than the plain read, so they must not share its cache
       // entry. The plain read keeps its original key and shape; every other
-      // read is keyed by skip, scope, and whether it is detailed.
+      // read is keyed by skip, scope, and whether it is fully detailed or only
+      // carries trailers (`includeCoAuthors`).
       const detailed = args.scope != null || skip > 0;
       const withTrailers = detailed || args.includeCoAuthors === true;
       const cacheKey = scope === "lane" && skip === 0 && !withTrailers
         ? `recent-commits:${laneId}:${limit}`
-        : `recent-commits:${laneId}:${limit}:${skip}:${scope}:${detailed ? "detail" : withTrailers ? "trailers" : "plain"}`;
+        : `recent-commits:${laneId}:${limit}:${skip}:${scope}:${detailed ? "detail" : "trailers"}`;
       return readLaneCached(cacheKey, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
         await assertLaneWorktreeRoot(lane);
