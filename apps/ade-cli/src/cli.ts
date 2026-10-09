@@ -5133,9 +5133,11 @@ function parseCliArgs(argv: string[]): ParsedCli {
     // ignoring the flag there answered with another project's secrets. Only
     // the secrets family takes root flags after the command: elsewhere
     // (app-control, the iOS simulator) the command reads them as its own.
-    const valueFlag = inGlobalPrefix || command[0] === "secrets"
-      ? readGlobalRootFlag(argv, index, inGlobalPrefix)
-      : null;
+    const valueFlag = inGlobalPrefix
+      ? readGlobalValueFlag(argv, index)
+      : (command[0] === "secrets" || command[0] === "secret") && !SECRETS_VALUE_FLAGS.has(argv[index - 1] ?? "")
+        ? readRootValueFlag(argv, index)
+        : null;
     if (valueFlag) {
       GLOBAL_VALUE_FLAG_HANDLERS[valueFlag.flag](options, requireValue(valueFlag.value, valueFlag.flag));
       index += valueFlag.consumed;
@@ -5188,20 +5190,27 @@ function parseCliArgs(argv: string[]): ParsedCli {
 }
 
 /**
+ * `ade secrets` flags whose next token is a value. A secret or reason that
+ * happens to read `--project-root` stays the value, not a root flag.
+ */
+const SECRETS_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--name", "--value", "--value-file", "--secret", "--secret-file", "--reason", "--session", "--timeout",
+]);
+
+/** `--project-root` / `--workspace-root` at `argv[index]`, else null. */
+function readRootValueFlag(
+  argv: string[],
+  index: number,
+): { flag: CliGlobalValueFlag; value: string | null; consumed: number } | null {
+  const valueFlag = readGlobalValueFlag(argv, index);
+  return valueFlag?.flag === "--project-root" || valueFlag?.flag === "--workspace-root" ? valueFlag : null;
+}
+
+/**
  * A global value flag at `argv[index]`, spelled `--flag value` or `--flag=value`.
  * The flags are the ones `isCliGlobalValueFlag` accepts, the same guard the
  * delegation check skips them with. `consumed` is how many extra tokens the value took.
  */
-function readGlobalRootFlag(
-  argv: string[],
-  index: number,
-  inGlobalPrefix: boolean,
-): { flag: CliGlobalValueFlag; value: string | null; consumed: number } | null {
-  const valueFlag = readGlobalValueFlag(argv, index);
-  if (!valueFlag || inGlobalPrefix) return valueFlag;
-  return valueFlag.flag === "--project-root" || valueFlag.flag === "--workspace-root" ? valueFlag : null;
-}
-
 function readGlobalValueFlag(
   argv: string[],
   index: number,

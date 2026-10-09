@@ -236,6 +236,7 @@ export async function recordDailyBudget(
     budgetReservedRemaining = 0;
     budgetReservedThrough = 0;
     budgetReservation = null;
+    budgetNextReservationSize = BUDGET_RESERVATION_FIRST;
   }
   for (;;) {
     // The day rolled over while this request waited: it was yesterday's, and

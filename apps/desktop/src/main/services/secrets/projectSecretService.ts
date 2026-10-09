@@ -76,6 +76,14 @@ const UNAVAILABLE_PULL: ProjectSecretPullResult = { state: "unavailable" };
  */
 const FRESH_READ_MAX_AGE_MS = 10_000;
 
+/**
+ * How long a read waits for that account check before answering from this
+ * machine's copy. A slow relay must not turn opening the Secrets page or an
+ * agent's `ade secrets get` into a 15-second hang; the sync keeps running and
+ * the next read sees what it brought in.
+ */
+const FRESH_READ_WAIT_MS = 3_000;
+
 type AccountRefresh = "fresh" | "unreachable" | "not_linked";
 
 function normalizeSecretName(name: string | undefined | null): string {
@@ -424,6 +432,10 @@ export function createProjectSecretService(projectRoot: string, options: Project
         continue;
       }
 
+      // Already holding the vault's stamp: nothing to fetch. Checked before
+      // the value read, which is a brain round trip per name from desktop.
+      if (known?.updatedAt === item.updatedAt) continue;
+
       const value = await readVaultValue(name, item.value);
       if (!value?.length) continue;
       // The account changed under this pull; stop rather than write one
@@ -496,10 +508,27 @@ export function createProjectSecretService(projectRoot: string, options: Project
     if (!vault) return { refresh: "not_linked", pulled: UNAVAILABLE_PULL };
     let refresh: AccountRefresh = "unreachable";
     try {
-      if (typeof vault.sync !== "function") throw new Error("account vault cannot sync");
-      const synced = await vault.sync(maxAgeMs === null ? undefined : { maxAgeMs });
-      if (synced.ok && synced.value === "ready") refresh = "fresh";
-      else logVaultFailure("sync", "*", synced.ok ? { status: synced.value } : synced);
+      const syncing = vault.sync(maxAgeMs === null ? undefined : { maxAgeMs });
+      let waitTimer: ReturnType<typeof setTimeout> | null = null;
+      const synced = maxAgeMs === null
+        ? await syncing
+        : await Promise.race([
+          syncing,
+          new Promise<null>((resolve) => {
+            waitTimer = setTimeout(() => resolve(null), FRESH_READ_WAIT_MS);
+            waitTimer.unref?.();
+          }),
+        ]).finally(() => {
+          if (waitTimer) clearTimeout(waitTimer);
+        });
+      if (synced === null) {
+        // Still running; it will land for the next read.
+        syncing.catch((error: unknown) => logVaultFailure("sync", "*", error));
+      } else if (synced.ok && synced.value === "ready") {
+        refresh = "fresh";
+      } else {
+        logVaultFailure("sync", "*", synced.ok ? `sync status ${synced.value ?? "unknown"}` : synced);
+      }
     } catch (error) {
       logVaultFailure("sync", "*", error);
     }
@@ -558,7 +587,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
       refresh === "fresh"
         ? `ADE secret '${name}' was not found on this machine or in your account for this repository.`
         : refresh === "unreachable"
-          ? `ADE secret '${name}' was not found on this machine, and ADE could not reach your account to check for a copy saved on another machine. Try again in a minute, or run 'ade secrets pull'.`
+          ? `ADE secret '${name}' was not found on this machine, and ADE could not reach your account just now to check for a copy saved on another machine.`
           : `ADE secret '${name}' was not found.`,
     );
     const index = readIndex();
@@ -588,6 +617,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
      * machine a moment ago is found, and a value changed there is current.
      */
     async getFresh(args: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> {
+      // Reject a malformed name before asking the account anything.
       normalizeSecretName(args?.name);
       const { refresh } = await refreshFromAccount(FRESH_READ_MAX_AGE_MS);
       return getLocal(args, refresh);

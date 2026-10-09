@@ -2,6 +2,7 @@ import React from "react";
 import { Check, CloudArrowDown, Copy, DownloadSimple, Eye, EyeSlash, Key, MagnifyingGlass, Plus, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
 import type {
   ProjectSecretStorage,
+  ProjectSecretSummary,
   ProjectSecretsImportPreview,
   ProjectSecretsListResult,
 } from "../../../shared/types";
@@ -14,6 +15,14 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 
 /** The anchor `secrets.secrets` in `settingsManifest.ts` points at. */
 const ANCHOR = "secrets";
+
+/** Waits between re-reads while a row still says "Uploading"; then it stays. */
+const UPLOAD_RECHECK_DELAYS_MS = [1_000, 3_000, 10_000, 30_000];
+
+function storageLabel(secret: ProjectSecretSummary): string {
+  if (secret.storage !== "account") return "This device";
+  return secret.uploadPending ? "Uploading" : "Account";
+}
 
 /**
  * What to say after a save whose requested scope could not be honoured.
@@ -102,7 +111,8 @@ export function SecretsSection() {
 
   // A saved account secret uploads within a second; look again a few times,
   // further apart each time, so "Uploading" turns into "Account" without a
-  // reload — and stays visible when the upload is genuinely stuck.
+  // reload — and stays visible when the upload is genuinely stuck. Each
+  // `load()` sets a new snapshot, which re-runs this effect for the next delay.
   const uploadPending = Boolean(snapshot?.secrets.some((secret) => secret.uploadPending));
   const uploadRecheckRef = React.useRef(0);
   React.useEffect(() => {
@@ -110,8 +120,7 @@ export function SecretsSection() {
       uploadRecheckRef.current = 0;
       return;
     }
-    const delays = [1_000, 3_000, 10_000, 30_000];
-    const delay = delays[uploadRecheckRef.current];
+    const delay = UPLOAD_RECHECK_DELAYS_MS[uploadRecheckRef.current];
     if (delay === undefined) return;
     const timer = window.setTimeout(() => {
       uploadRecheckRef.current += 1;
@@ -148,6 +157,8 @@ export function SecretsSection() {
         delete next[nextName];
         return next;
       });
+      // A new save starts the "Uploading" re-checks over.
+      uploadRecheckRef.current = 0;
       await load();
       note(savedMessage(nextName, storage, saved.storage), storage === saved.storage ? "success" : "warning");
     } catch (err) {
@@ -416,7 +427,7 @@ export function SecretsSection() {
                       className="kit-tag"
                       title={secret.uploadPending ? "Saved here; not on your other machines until the upload finishes." : undefined}
                     >
-                      {secret.storage === "account" ? (secret.uploadPending ? "Uploading" : "Account") : "This device"}
+                      {storageLabel(secret)}
                     </span>
                   </span>
                   <span role="cell" className="ade-secret-updated" title={formatUpdatedAt(secret.updatedAt)}>

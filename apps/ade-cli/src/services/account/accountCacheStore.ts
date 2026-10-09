@@ -121,6 +121,12 @@ export type AccountCacheStoreConfig<
    * stale, or the safety interval passed; see `shouldPullOnTick`.
    */
   changeMarkKind?: AccountChangeMarkKind;
+  /**
+   * Upload a local write right away instead of on the next tick. The vault
+   * sets it: a secret saved on one machine is wanted on the next one now.
+   * Settings keep the tick (see accountSettingsFlush.ts).
+   */
+  flushOnWrite?: boolean;
   /** Log event names, so each store keeps the telemetry it already emits. */
   events: {
     writeFailed: string;
@@ -226,18 +232,24 @@ export function createAccountCacheStore<
   /** The mark the most recent sync attempt started from, whatever its outcome. */
   let lastAttemptedMark: string | null | undefined;
   let lastAttemptedAccountUserId: string | null = null;
+  let consecutiveFailures = 0;
   /**
    * Background syncs wait until this time after failures. Without it a relay
    * that is down or rate-limiting gets the same request every 30 seconds from
    * every machine, which is exactly the traffic that keeps it rate-limiting.
    */
-  let consecutiveFailures = 0;
   let backoffUntilMs = 0;
+  /** The account the backoff was earned by; another account is not held by it. */
+  let backoffAccountUserId: string | null = null;
+  /** Whether the current sync attempt failed with a 429 (sets a longer backoff). */
+  let lastErrorRateLimited = false;
+  /** The pending post-write upload, and whether one is owed after the sync in flight. */
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let flushAfterInFlight = false;
   const forgetLastSync = (): void => {
     consecutiveFailures = 0;
     backoffUntilMs = 0;
+    backoffAccountUserId = null;
     lastAttemptedMark = undefined;
     lastAttemptedAccountUserId = null;
     lastSyncedMark = undefined;
@@ -473,7 +485,7 @@ export function createAccountCacheStore<
       cache = before;
       return false;
     }
-    if (current.pending.length > 0) scheduleFlush();
+    if (config.flushOnWrite && current.pending.length > 0) scheduleFlush();
     return true;
   }
 
@@ -490,10 +502,13 @@ export function createAccountCacheStore<
       return;
     }
     if (flushTimer) return;
+    // Inside a backoff the write waits it out; the tick would retry it then
+    // anyway, and a burst of writes must not become a burst of refused PUTs.
+    const delayMs = Math.max(LOCAL_WRITE_FLUSH_DELAY_MS, backoffRemainingMs());
     flushTimer = setTimeout(() => {
       flushTimer = null;
       syncAndNotify();
-    }, LOCAL_WRITE_FLUSH_DELAY_MS);
+    }, delayMs);
     flushTimer.unref?.();
   }
 
@@ -507,14 +522,21 @@ export function createAccountCacheStore<
       });
   }
 
+  function backoffRemainingMs(): number {
+    if (backoffAccountUserId !== config.getAccountUserId()) return 0;
+    return Math.max(0, backoffUntilMs - Date.now());
+  }
+
   function recordSyncOutcome(status: AccountCacheSyncStatus, rateLimited: boolean): void {
-    if (status !== "failed") {
-      if (status === "ready") {
-        consecutiveFailures = 0;
-        backoffUntilMs = 0;
-      }
+    if (status === "ready") {
+      consecutiveFailures = 0;
+      backoffUntilMs = 0;
       return;
     }
+    if (status !== "failed") return;
+    const accountUserId = config.getAccountUserId();
+    if (backoffAccountUserId !== accountUserId) consecutiveFailures = 0;
+    backoffAccountUserId = accountUserId;
     consecutiveFailures += 1;
     let waitMs = Math.min(
       FAILURE_BACKOFF_MAX_MS,
@@ -533,6 +555,7 @@ export function createAccountCacheStore<
       clearTimeout(flushTimer);
       flushTimer = null;
     }
+    flushAfterInFlight = false;
     if (!syncTimer) return;
     clearInterval(syncTimer);
     syncTimer = null;
@@ -572,9 +595,8 @@ export function createAccountCacheStore<
     }
   };
 
-  let lastErrorRateLimited = false;
   const noteError = (error: unknown): void => {
-    lastErrorRateLimited = isRecord(error) && (error as { status?: unknown }).status === 429;
+    lastErrorRateLimited = isRecord(error) && error.status === 429;
   };
 
   async function runSync(): Promise<AccountCacheSyncStatus> {
@@ -725,7 +747,9 @@ export function createAccountCacheStore<
             lastSyncedMark = markAtStart;
             lastReadySyncAtMs = Date.now();
           }
-          recordSyncOutcome(status, lastErrorRateLimited);
+          // A reset during the pass (sign-out, account switch) owns the state
+          // now; this pass's failure must not hold the next owner back.
+          if (epoch === epochAtStart) recordSyncOutcome(status, lastErrorRateLimited);
           return status;
         })
         .finally(() => {
@@ -743,7 +767,7 @@ export function createAccountCacheStore<
       // Inside a failure backoff a read answers from the cache: every agent
       // read retrying a relay that just refused would be the flood the
       // backoff exists to stop. An explicit `sync()` still goes through.
-      if (Date.now() < backoffUntilMs) return "failed";
+      if (backoffRemainingMs() > 0) return "failed";
       const accountUserId = config.getAccountUserId();
       if (
         accountUserId
@@ -790,7 +814,7 @@ export function createAccountCacheStore<
       syncTimer = setInterval(() => {
         // Failing or rate-limited: stay quiet until the backoff passes, and do
         // not tell listeners "ready" about a cache that could not be refreshed.
-        if (!syncInFlight && Date.now() < backoffUntilMs) return;
+        if (!syncInFlight && backoffRemainingMs() > 0) return;
         // A sync already running (sign-in, a user action) is joined, never
         // pre-empted by a synthetic "ready" that would land before its pull.
         if (syncInFlight || shouldPullOnTick(Date.now())) {
@@ -812,7 +836,7 @@ export function createAccountCacheStore<
           // after a failed sync stay on the tick's cadence, so failures never
           // double the traffic.
           if (marks[kind] === lastAttemptedMark && lastAttemptedAccountUserId === accountUserId) return;
-          if (Date.now() < backoffUntilMs) return;
+          if (backoffRemainingMs() > 0) return;
           syncAndNotify();
         });
       }

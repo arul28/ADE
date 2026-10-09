@@ -247,6 +247,7 @@ export function createAccountVaultStore(args: {
     logger,
     defaultSyncIntervalMs: DEFAULT_SYNC_INTERVAL_MS,
     changeMarkKind: "vault",
+    flushOnWrite: true,
     events: {
       writeFailed: "account.vault_cache_write_failed",
       mutationDropped: "account.vault_mutation_dropped",

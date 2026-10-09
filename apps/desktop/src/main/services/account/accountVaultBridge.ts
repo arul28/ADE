@@ -24,6 +24,7 @@ export const ACCOUNT_VAULT_REJECTED_MESSAGE =
 
 export type AccountVaultActionPool = AccountActionPool;
 
+/** Mirrors the brain's `AccountCacheSyncStatus` (apps/ade-cli). */
 export type AccountVaultSyncStatus = "ready" | "unavailable" | "failed";
 
 export type AccountVaultBridgeOptions = {
@@ -145,8 +146,9 @@ export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {
 
 type FullAccountVaultBridge = ReturnType<typeof createAccountVaultBridge>;
 /**
- * `pendingKeys` is optional: a brain from before it existed cannot answer, and
- * callers treat "can't say" as "nothing pending".
+ * `pendingKeys` is optional so other vault implementations (the headless
+ * bridges, test doubles) need not provide it; callers treat its absence as
+ * "nothing pending". An older brain answers it through `call` as unavailable.
  */
 export type AccountVaultBridge = Omit<FullAccountVaultBridge, "pendingKeys">
   & Partial<Pick<FullAccountVaultBridge, "pendingKeys">>;

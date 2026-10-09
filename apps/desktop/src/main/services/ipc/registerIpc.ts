@@ -5757,6 +5757,7 @@ export function registerIpc({
   ipcMain.handle(IPC.projectSecretsList, async (): Promise<ProjectSecretsListResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
+    // Same freshness as the `project_secret` action domain (adeActions/registry.ts).
     return await ctx.projectSecretService.listFresh();
   });
 
