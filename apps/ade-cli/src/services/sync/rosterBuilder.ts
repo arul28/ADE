@@ -271,6 +271,26 @@ function desktopVisibleRosterRows(rows: TerminalSessionRow[], visibleLaneIds: Se
   });
 }
 
+function fileSignature(filePath: string): string {
+  try {
+    const stat = fs.statSync(filePath);
+    return `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return "-";
+  }
+}
+
+/**
+ * Last successful disk read per project database, keyed by the database and
+ * WAL file identities. Every SQLite write changes one of them (WAL append,
+ * checkpoint, or a rollback-journal write to the main file), so an unchanged
+ * signature means the rows are unchanged. The roster is rebuilt every few
+ * seconds while agents work; without this every recent project paid a fresh
+ * connection and a full schema parse (~450 tables) each time, blocking the
+ * brain's event loop, even when nothing in it had moved.
+ */
+const diskProjectCache = new Map<string, { signature: string; data: DiskProjectData }>();
+
 /**
  * Read a project's lanes + chat sessions straight off disk (read-only). Never
  * throws: a missing, locked, or schema-shifted DB yields empty lanes/chats so
@@ -279,8 +299,27 @@ function desktopVisibleRosterRows(rows: TerminalSessionRow[], visibleLaneIds: Se
 function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> | null): DiskProjectData {
   const empty: DiskProjectData = { lanes: [], chats: [], prWaitingReasonByLaneId: new Map() };
   const dbPath = resolveAdeLayout(projectRoot).dbPath;
-  if (!fs.existsSync(dbPath)) return empty;
+  const dbSignature = fileSignature(dbPath);
+  if (dbSignature === "-") {
+    diskProjectCache.delete(dbPath);
+    return empty;
+  }
+  const signature = `${dbSignature}|${fileSignature(`${dbPath}-wal`)}`;
+  const cached = diskProjectCache.get(dbPath);
+  if (cached && cached.signature === signature) return cached.data;
+  diskProjectCache.delete(dbPath);
+  const data = readProjectFromDiskUncached(dbPath, projectRoot, logger);
+  if (data) diskProjectCache.set(dbPath, { signature, data });
+  return data ?? empty;
+}
 
+/** Null when the read failed (locked, unreadable) so the caller retries next time. */
+function readProjectFromDiskUncached(
+  dbPath: string,
+  projectRoot: string,
+  logger?: Pick<Logger, "warn"> | null,
+): DiskProjectData | null {
+  const empty: DiskProjectData = { lanes: [], chats: [], prWaitingReasonByLaneId: new Map() };
   let db: DatabaseSyncType | null = null;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
@@ -385,7 +424,7 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
       projectRoot,
       error: error instanceof Error ? error.message : String(error),
     });
-    return empty;
+    return null;
   } finally {
     db?.close();
   }

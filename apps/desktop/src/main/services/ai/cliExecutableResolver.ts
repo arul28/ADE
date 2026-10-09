@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -444,6 +444,18 @@ function readShellPath(
 ): string | null {
   const source = env ?? process.env;
   const key = [shellPath, shellFlag, source.PATH ?? "", source.HOME ?? ""].join("\u0000");
+  // Once a shell has answered, never wait on it again: an expired answer is
+  // returned as is while one background probe replaces it. Re-probing
+  // synchronously at expiry spawned a login (and interactive) shell on the
+  // brain's event loop exactly when agents were busy, with up to a second of
+  // timeout each.
+  const cached = shellPathCache.get(key);
+  if (cached && cached.value !== null) {
+    if (Date.now() - cached.at >= ENVIRONMENT_PROBE_TTL_MS) {
+      refreshShellPathInBackground(key, shellPath, shellFlag, timeoutMs, env);
+    }
+    return cached.value;
+  }
   // A null is a timeout or a broken rc file -- most likely under exactly the
   // load this cache is for -- so it is not kept: the next agent env retries.
   return memoizeProbe(
@@ -452,6 +464,49 @@ function readShellPath(
     () => readShellPathUncached(shellPath, shellFlag, timeoutMs, env),
     (resolved) => resolved !== null,
   );
+}
+
+const shellPathRefreshesInFlight = new Set<string>();
+
+function refreshShellPathInBackground(
+  key: string,
+  shellPath: string,
+  shellFlag: "-lc" | "-ic",
+  timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
+): void {
+  if (shellPathRefreshesInFlight.has(key)) return;
+  shellPathRefreshesInFlight.add(key);
+  try {
+    execFile(
+      shellPath,
+      [shellFlag, shellPathProbeScript()],
+      { encoding: "utf-8", env, timeout: timeoutMs, windowsHide: true },
+      (error, stdout) => {
+        shellPathRefreshesInFlight.delete(key);
+        const resolved = error ? null : parseShellPathProbeOutput(stdout);
+        const entry = shellPathCache.get(key);
+        // A failed refresh keeps the last answer; it is tried again after
+        // another TTL rather than on every call.
+        if (resolved !== null) shellPathCache.set(key, { at: Date.now(), value: resolved });
+        else if (entry) entry.at = Date.now();
+      },
+    );
+  } catch {
+    shellPathRefreshesInFlight.delete(key);
+  }
+}
+
+function shellPathProbeScript(): string {
+  return `printf '${PATH_MARKER_START}%s${PATH_MARKER_END}' "$PATH"`;
+}
+
+function parseShellPathProbeOutput(raw: string): string | null {
+  const startIdx = raw.indexOf(PATH_MARKER_START);
+  const endIdx = raw.indexOf(PATH_MARKER_END, startIdx + PATH_MARKER_START.length);
+  if (startIdx === -1 || endIdx === -1) return null;
+  const resolved = raw.slice(startIdx + PATH_MARKER_START.length, endIdx).trim();
+  return resolved.length > 0 ? resolved : null;
 }
 
 function readShellPathUncached(
@@ -463,7 +518,7 @@ function readShellPathUncached(
   try {
     const raw = execFileSync(
       shellPath,
-      [shellFlag, `printf '${PATH_MARKER_START}%s${PATH_MARKER_END}' "$PATH"`],
+      [shellFlag, shellPathProbeScript()],
       {
         encoding: "utf-8",
         env,
@@ -472,11 +527,7 @@ function readShellPathUncached(
         windowsHide: true,
       },
     );
-    const startIdx = raw.indexOf(PATH_MARKER_START);
-    const endIdx = raw.indexOf(PATH_MARKER_END, startIdx + PATH_MARKER_START.length);
-    if (startIdx === -1 || endIdx === -1) return null;
-    const resolved = raw.slice(startIdx + PATH_MARKER_START.length, endIdx).trim();
-    return resolved.length > 0 ? resolved : null;
+    return parseShellPathProbeOutput(raw);
   } catch {
     return null;
   }

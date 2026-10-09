@@ -49,7 +49,7 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const revealedLength = useRevealedLength(text, paced, hostRef);
-  const { settled, tail } = useSplitRevealed(text, revealedLength);
+  const { settled, tail } = useSplitRevealed(text, revealedLength, paced);
 
   return (
     /*

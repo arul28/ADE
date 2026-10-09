@@ -418,6 +418,23 @@ function parseContentLength(headerBlock: string): number | null {
   return null;
 }
 
+/**
+ * Total bytes `buffer` must hold before its first framed message is complete,
+ * or 0 when that is not known yet (no full header, or a JSONL line).
+ */
+function framedBytesNeeded(buffer: Buffer): number {
+  let offset = 0;
+  while (offset < buffer.length && isWhitespaceByte(buffer[offset]!)) offset += 1;
+  if (offset >= buffer.length) return 0;
+  const first = buffer[offset]!;
+  if (first === 0x7b || first === 0x5b) return 0;
+  const boundary = findHeaderBoundary(buffer, offset);
+  if (!boundary) return 0;
+  const contentLength = parseContentLength(buffer.slice(offset, boundary.index).toString("utf8"));
+  if (contentLength == null) return 0;
+  return boundary.index + boundary.delimiterLength + contentLength;
+}
+
 type ParsedPayload =
   | {
       kind: "payload";
@@ -586,6 +603,13 @@ export interface JsonRpcServerOptions {
 
 export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTransport, options?: JsonRpcServerOptions): JsonRpcServerHandle {
   let buffer: Buffer = Buffer.alloc(0);
+  // Chunks that arrived after `buffer`, joined only once the frame they belong
+  // to is complete. Appending each chunk to the whole buffer copied a large
+  // message once per chunk — quadratic, and it blocked the brain's event loop
+  // for hundreds of milliseconds on multi-megabyte requests.
+  let pendingChunks: Buffer[] = [];
+  let pendingBytes = 0;
+  let awaitingBytes = 0;
   let stopped = false;
   let draining = false;
   let responseTransport: TransportMode | null = null;
@@ -650,7 +674,11 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
     try {
       while (!stopped) {
         const parsed = takeNextPayload(buffer);
-        if (!parsed) break;
+        if (!parsed) {
+          awaitingBytes = framedBytesNeeded(buffer);
+          break;
+        }
+        awaitingBytes = 0;
 
         buffer = parsed.rest as Buffer;
         if (responseTransport == null) {
@@ -678,10 +706,14 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
   const onData = (chunk: Buffer | string): void => {
     if (stopped) return;
 
-    const part: Buffer = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
-    buffer = buffer.length ? (Buffer.concat([buffer, part]) as Buffer) : part;
+    const part: Buffer = typeof chunk === "string"
+      ? Buffer.from(chunk, "utf8")
+      : Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    pendingChunks.push(part);
+    pendingBytes += part.length;
+    const totalBytes = buffer.length + pendingBytes;
 
-    if (buffer.length > MAX_BUFFER_BYTES) {
+    if (totalBytes > MAX_BUFFER_BYTES) {
       try {
         writeMessage({
           jsonrpc: "2.0",
@@ -701,6 +733,12 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
       return;
     }
 
+    if (totalBytes < awaitingBytes) return;
+    buffer = buffer.length || pendingChunks.length > 1
+      ? (Buffer.concat([buffer, ...pendingChunks], totalBytes) as Buffer)
+      : part;
+    pendingChunks = [];
+    pendingBytes = 0;
     void drain();
   };
 

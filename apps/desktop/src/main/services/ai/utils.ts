@@ -19,6 +19,23 @@ export function commandExists(command: string): boolean {
   }
 }
 
+const COMMAND_EXISTS_CACHE_MS = 60_000;
+const commandExistsCache = new Map<string, { available: boolean; checkedAt: number }>();
+
+/**
+ * `commandExists` with a short memory. Each probe is a synchronous login shell
+ * (~10-20 ms on macOS, where `path_helper` runs), so callers on per-message or
+ * per-tool paths must not probe every time: it blocks the brain's event loop.
+ */
+export function commandExistsCached(command: string, ttlMs = COMMAND_EXISTS_CACHE_MS): boolean {
+  const nowMs = Date.now();
+  const cached = commandExistsCache.get(command);
+  if (cached && nowMs - cached.checkedAt < ttlMs) return cached.available;
+  const available = commandExists(command);
+  commandExistsCache.set(command, { available, checkedAt: nowMs });
+  return available;
+}
+
 export function isCursorAdminApiKey(value: string | null | undefined): boolean {
   return Boolean(value?.trim().startsWith("key_"));
 }
