@@ -1,3 +1,4 @@
+import { reconcileRowsById } from "../../lib/stableIdentity";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { setSessionsPinned as setSessionsPinnedAction } from "./sessionLifecycleActions";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -1675,7 +1676,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           }
         }
       }
-      setHostSessions(rows);
+      // Every refresh is a fresh IPC read; unchanged rows keep their objects so
+      // session cards, the Work view and the chat pane do not all re-render.
+      setHostSessions((prev) => reconcileRowsById(prev, rows));
       hasLoadedOnceRef.current = true;
       hasAuthoritativeSessionsRef.current = true;
       if (pendingProjectSwitchRef.current === requestedProjectRoot) {

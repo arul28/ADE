@@ -438,7 +438,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [],
   );
 
-  const handleContextMenu = useCallback(
+  const handleContextMenu = useLatestCallback(
     (
       session: TerminalSessionSummary,
       e: React.MouseEvent,
@@ -469,9 +469,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(laneType ? { laneType } : {}),
       });
     },
-    [selectedSessionIds],
   );
-  const handleOpenChatSession = useCallback(
+  const handleOpenChatSession = useLatestCallback(
     (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => {
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
       // the new session on their next refresh.
@@ -501,7 +500,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         });
       });
     },
-    [projectBinding?.key, work],
   );
 
   // Jump-to-session bridge for spawned-chat deep links: `onOpenSession`
@@ -584,12 +582,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [work],
   );
 
-  const handleGoToLaneById = useCallback(
+  const handleGoToLaneById = useLatestCallback(
     (laneId: string) => {
       work.selectLane(laneId);
       work.navigate(openLaneInLanesTabPath(laneId));
     },
-    [work],
   );
 
   const handleDeleteChat = useCallback(
@@ -1026,7 +1023,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [finalizeCliResumeResult, resolveSessionRuntimePin],
   );
 
-  const handleContinueCliSession = useCallback(
+  const handleContinueCliSession = useLatestCallback(
     async (session: TerminalSessionSummary, text: string, launch: TerminalResumeLaunchConfig | null) => {
       const args = {
         sessionId: session.id,
@@ -1039,17 +1036,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         pin ? window.ade.pty.sendToSession(args, pin) : window.ade.pty.sendToSession(args)
       ));
     },
-    [runCliResumeRequest],
   );
 
-  const handleResumeCliSession = useCallback(
+  const handleResumeCliSession = useLatestCallback(
     async (session: TerminalSessionSummary) => {
       const args = { sessionId: session.id, cols: 100, rows: 30 };
       await runCliResumeRequest(session, "Resume", (pin) => (
         pin ? window.ade.pty.resumeSession(args, pin) : window.ade.pty.resumeSession(args)
       ));
     },
-    [runCliResumeRequest],
   );
 
   const activeWorkSession = useMemo(
@@ -1286,22 +1281,22 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     };
   }, [active, setWorkSidebarTool]);
 
-  const toggleWorkSidebar = useCallback(() => {
+  const toggleWorkSidebar = useLatestCallback(() => {
     work.setWorkSidebarOpen(!work.workSidebarOpen);
-  }, [work]);
+  });
   const terminalPaneOpen = work.workSidebarOpen && workSidebarTool === "terminal";
-  const toggleTerminalPane = useCallback(() => {
+  const toggleTerminalPane = useLatestCallback(() => {
     if (work.workSidebarOpen && workSidebarTool === "terminal") {
       work.setWorkSidebarOpen(false);
     } else {
       setWorkSidebarTool("terminal");
     }
-  }, [setWorkSidebarTool, work, workSidebarTool]);
-  const openTerminalPane = useCallback(() => {
+  });
+  const openTerminalPane = useLatestCallback(() => {
     if (!work.workSidebarOpen || workSidebarTool !== "terminal") {
       setWorkSidebarTool("terminal");
     }
-  }, [setWorkSidebarTool, work, workSidebarTool]);
+  });
   const closeWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(false);
   }, [work]);
@@ -1310,7 +1305,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // A session card dropped onto an existing grid tile. PaneTilingLayout already
   // spliced the dragged session into the tree at the hovered edge; here we only
   // update the grid set's membership and focus the dropped session.
-  const handleAddSessionToGrid = useCallback((draggedId: string, targetId: string, _edge: DropEdge) => {
+  const handleAddSessionToGrid = useLatestCallback((draggedId: string, targetId: string, _edge: DropEdge) => {
     if (draggedId === targetId) return;
     work.setGridSets((prev) => addSessionBesideTarget(prev, {
       sessionId: draggedId,
@@ -1319,11 +1314,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     }).gridSets);
     work.openSessionTab(draggedId);
     work.setActiveItemId(draggedId);
-  }, [work, projectStateKey]);
+  });
 
   // A session card dropped onto a single (non-grid) session — create a new grid
   // from the pair, seeding the split tree to honor the drop edge.
-  const handleCreateGridFromSingle = useCallback((draggedId: string, targetId: string, edge: DropEdge) => {
+  const handleCreateGridFromSingle = useLatestCallback((draggedId: string, targetId: string, edge: DropEdge) => {
     if (draggedId === targetId) return;
     const placeAfter = edge === "right" || edge === "bottom";
     const { gridSets: next, gridSetId } = addSessionBesideTarget(work.gridSets, {
@@ -1341,15 +1336,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     work.setGridSets(next);
     work.openSessionTab(draggedId);
     work.setActiveItemId(draggedId);
-  }, [work, projectStateKey]);
+  });
 
   // Remove a session from any grid it belongs to (right-click / drag-out) and
   // open it as a single session.
-  const handleRemoveSessionFromGrid = useCallback((sessionId: string) => {
+  const handleRemoveSessionFromGrid = useLatestCallback((sessionId: string) => {
     work.setGridSets((prev) => removeSessionFromGrids(prev, sessionId));
     work.openSessionTab(sessionId);
     work.setActiveItemId(sessionId);
-  }, [work]);
+  });
 
   const gridSessionIds = useMemo(
     () => work.gridSets.flatMap((set) => set.sessionIds),
@@ -1410,7 +1405,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       return changed ? next : prev;
     });
   }, [work.canPruneSessionIndex, work.loading, work.sessionsById, setGridSets]);
-  const handleStopRunningSession = useCallback((session: TerminalSessionSummary) => {
+  const handleStopRunningSession = useLatestCallback((session: TerminalSessionSummary) => {
     if (!session.ptyId) return;
     work.stopRuntime(session.ptyId, session.id).catch((err: unknown) => {
       console.error("[TerminalsPage] Failed to stop CLI session from header", {
@@ -1419,7 +1414,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         err,
       });
     });
-  }, [work]);
+  });
   /**
    * Teardown for a splitter drag that is currently in flight.
    *
@@ -1538,6 +1533,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     work.setWorkSidebarWidthPct(next);
   }, [work]);
 
+  // The handlers passed here are `useLatestCallback`s. Most of them read
+  // `work`, which changes identity whenever any session state moves; as
+  // `useCallback`s they broke this memo and re-rendered the whole Work view,
+  // chat pane included, a few times a second at idle.
   const workViewArea = useMemo(
     () => (
       <WorkViewArea

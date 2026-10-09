@@ -3332,6 +3332,7 @@ function parseGitListRecentCommitsArgs(value: Record<string, unknown>): GitListR
     limit: asOptionalNumber(value.limit),
     ...(skip != null ? { skip } : {}),
     ...(scope ? { scope } : {}),
+    ...(value.includeCoAuthors === true ? { includeCoAuthors: true } : {}),
   };
 }
 

@@ -113,3 +113,19 @@ Use this as engineering guidance for keeping the Lanes tab fast while adding fea
 - **Apply when**: A pane body owns timers, subscriptions, local Git reads, PR/AI/runtime status, or history loads. Pass pane minimized state into the render path, make child effects explicitly inactive while minimized, and stagger non-primary visible pane mounts so only the immediate lane warms eagerly.
 - **Avoid**: Treating visual collapse as inactive, or adding a single page-level throttle while hidden pane components keep their own timers running.
 - **Verification**: `perf(lanes): pause minimized git actions panes` adds `PaneConfig.renderChildren`, passes `active={!minimized}` to `LaneGitActionsPane` and `CommitTimeline`, staggers inline Git Actions bodies by visible-lane order, and covers inactive/active transitions in component tests. A real Electron `/lanes` segment, `lanes-minimized-git-idle` in `lanes-20260531-1421-throttles-after3`, kept the Git Actions pane minimized for 33.4 s with no slow Git Actions status/history IPC; main/browser p95 CPU was 0.15% and renderer tab p95 was 0.05%.
+
+### Cap the Branch scope like the Uncommitted sections
+- **Why it helped**: The Git pane's Branch scope rendered every file since the merge base. On a lane far from its base (3,461 files) opening `/lanes` built ~20,700 DOM nodes in one 924 ms long task.
+- **Apply when**: Any change list in a Lanes pane can be as large as the lane's whole diff. Reuse `MAX_RENDERED_CHANGE_ROWS_PER_SECTION` and its "Show all" row.
+- **Avoid**: Mounting an unbounded tree because "usually it is small".
+- **Verification**: Real dev app, `/lanes` nav: long tasks 1,152 ms → 74 ms, DOM 22.8k → 4.5k nodes.
+
+### One branch-diff read per lane open
+- **Why it helped**: `getBranchChanges` is a temp-index diff (seconds on a big lane). Opening a lane read it twice at once (support probe + pane) and again when the first real `changes` object replaced the empty placeholder.
+- **Apply when**: A pane re-reads expensive data from an effect keyed on an object that every refresh replaces. Key the effect on a content signature and wait for the first real read; share concurrent reads in the service (`branchReads`), but only reads that have not started reading the working tree yet; a time window can hand a later ask a snapshot from before its edit.
+- **Verification**: `/lanes` nav `diff.getBranchChanges` x2 at 3.2 s → x1.
+
+### Take commit trailers from the commit list
+- **Why it helped**: The lane overview read the full message of the newest 20 commits one IPC (and one `git show`) at a time to find `Co-authored-by`. `listRecentCommits` with a `scope` already returns `coAuthors` from the same `git log`.
+- **Avoid**: N per-row reads for data one `git log` format string can carry. Keep the per-commit fallback only for hosts that predate the field.
+- **Verification**: `/lanes` nav `git.getCommitMessage` x20 (1.27 s) → 0.

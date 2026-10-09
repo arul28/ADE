@@ -236,6 +236,9 @@ export type ComposerDraftEditIntent = {
 // leg the bytes take, which depends on the machine that owns the chat. See
 // `chatAttachmentStaging.ts` and `shared/chatAttachmentLimits.ts`.
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
+/** The plain composer sizes itself with CSS; older web-client browsers measure instead. */
+const TEXTAREA_FIELD_SIZING_SUPPORTED =
+  typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("field-sizing", "content");
 const PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS = 3_000;
 type PromptHistoryArrowKey = "ArrowUp" | "ArrowDown";
 
@@ -2909,16 +2912,20 @@ export function AgentChatComposer({
   });
   const [voiceShimmer, setVoiceShimmer] = useState(false);
 
+  const textareaMaxHeightPx = layoutVariant === "grid-tile" ? (composerMaxHeightPx ?? 200) : 200;
   const resizeTextarea = useCallback(() => {
-    if (useRichComposer) return;
+    // Where `field-sizing: content` works (Electron's Chromium) the textarea
+    // grows in the browser's own layout pass. Measuring it here set the height
+    // to 0 and read scrollHeight on every keystroke, twice: two forced layouts
+    // of the whole window per key.
+    if (useRichComposer || TEXTAREA_FIELD_SIZING_SUPPORTED) return;
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "0px";
-    const maxH = layoutVariant === "grid-tile" ? (composerMaxHeightPx ?? 200) : 200;
-    const next = Math.min(Math.max(el.scrollHeight, 28), maxH);
+    const next = Math.min(Math.max(el.scrollHeight, 28), textareaMaxHeightPx);
     el.style.height = `${next}px`;
-    el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
-  }, [layoutVariant, composerMaxHeightPx, useRichComposer]);
+    el.style.overflowY = el.scrollHeight > textareaMaxHeightPx ? "auto" : "hidden";
+  }, [textareaMaxHeightPx, useRichComposer]);
   useEffect(() => {
     resizeTextarea();
     if (!shouldAutofocus) return;
@@ -7599,7 +7606,7 @@ export function AgentChatComposer({
                   spellCheck={true}
                   aria-label={composerInputAccessibleLabel}
                   className={cn(
-                    "block w-full resize-none bg-transparent px-4 py-2.5 text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
+                    "block min-h-[28px] w-full resize-none overflow-y-auto bg-transparent px-4 py-2.5 [field-sizing:content] text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
                     // The textarea sits above the token overlay with transparent text, so the
                     // default (opaque) selection background would paint over the overlay and
                     // make the selected text vanish entirely. A translucent selection reads as
@@ -7608,7 +7615,7 @@ export function AgentChatComposer({
                     dragActive ? "opacity-30" : "",
                     parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
                   )}
-                  style={plainOverlayContent ? { caretColor: "var(--color-fg)" } : undefined}
+                  style={{ maxHeight: textareaMaxHeightPx, ...(plainOverlayContent ? { caretColor: "var(--color-fg)" } : {}) }}
                   data-chat-layout-variant={layoutVariant}
                   data-chat-composer-text=""
                   placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}

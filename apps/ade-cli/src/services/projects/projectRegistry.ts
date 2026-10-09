@@ -7,6 +7,7 @@ import {
   resolveMachineAdeLayout,
   type MachineAdeLayout,
 } from "./machineLayout";
+import { statIdentity } from "./fileIdentity";
 import { normalizeProjectRootPath } from "./projectRoots";
 
 export type ProjectId = string;
@@ -94,6 +95,19 @@ function ensureProjectAdeDir(rootPath: string): void {
   fs.mkdirSync(path.join(rootPath, ".ade"), { recursive: true });
 }
 
+/**
+ * How long a parsed registry may be reused while `projects.json` is unchanged.
+ * Each read normalizes every root (realpath, stat, linked-worktree checks), and
+ * hot paths call `get` once per project, so an uncached read is O(projects²)
+ * synchronous filesystem work on the brain's event loop. The window bounds how
+ * stale a root's normalization can get when the disk under it changes.
+ */
+const REGISTRY_READ_CACHE_MS = 5_000;
+
+function cloneRegistryFile(file: ProjectRegistryFile): ProjectRegistryFile {
+  return { version: 2, projects: file.projects.map((project) => ({ ...project })) };
+}
+
 function emptyFile(): ProjectRegistryFile {
   return { version: 2, projects: [] };
 }
@@ -160,6 +174,7 @@ function coerceRecord(
 export class ProjectRegistry {
   private readonly layout: MachineAdeLayout;
   private readonly legacyRecentProjectRoots: Set<string>;
+  private readCache: { identity: string; at: number; file: ProjectRegistryFile } | null = null;
 
   constructor(
     layout: MachineAdeLayout = resolveMachineAdeLayout(),
@@ -304,6 +319,30 @@ export class ProjectRegistry {
   }
 
   private read(): ProjectRegistryFile {
+    // Other processes (CLI, a second brain) rewrite this file by rename, so the
+    // inode changes on every write; size and mtime cover in-place edits.
+    let identity: string;
+    try {
+      const stat = fs.statSync(this.layout.projectsPath);
+      identity = statIdentity(stat);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.readCache = null;
+        return emptyFile();
+      }
+      throw error;
+    }
+    const now = Date.now();
+    const cached = this.readCache;
+    if (cached && cached.identity === identity && now - cached.at < REGISTRY_READ_CACHE_MS) {
+      return cloneRegistryFile(cached.file);
+    }
+    const file = this.readUncached();
+    this.readCache = { identity, at: now, file: cloneRegistryFile(file) };
+    return file;
+  }
+
+  private readUncached(): ProjectRegistryFile {
     try {
       const raw = fs.readFileSync(this.layout.projectsPath, "utf8");
       const parsed = JSON.parse(raw) as unknown;
@@ -373,6 +412,7 @@ export class ProjectRegistry {
   }
 
   private write(file: ProjectRegistryFile): void {
+    this.readCache = null;
     fs.mkdirSync(this.layout.adeDir, { recursive: true, mode: 0o700 });
     fs.mkdirSync(path.dirname(this.layout.projectsPath), {
       recursive: true,

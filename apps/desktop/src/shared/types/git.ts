@@ -153,6 +153,11 @@ export type GitListRecentCommitsArgs = {
   /** Newest commits to skip, for loading older pages. */
   skip?: number;
   scope?: GitCommitListScope;
+  /**
+   * Fill `coAuthors` (Co-authored-by trailers) from the same `git log`, without
+   * the rest of the detailed read. A host that predates this leaves it unset.
+   */
+  includeCoAuthors?: boolean;
 };
 
 export type GitFileHistoryEntry = {

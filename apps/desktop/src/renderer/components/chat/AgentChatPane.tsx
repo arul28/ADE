@@ -2,7 +2,7 @@ import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, 
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { compareTextInsensitive } from "../../../shared/formatting";
 import { useNavigate } from "react-router-dom";
-import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
+import { reuseStructurallyEqualArray, sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import { applySteerOrder } from "../../../shared/steerOrder";
@@ -7480,12 +7480,16 @@ export function AgentChatPane({
       options?.force ? { force: true } : undefined,
     );
     const rows = allRows.filter((session) => !session.archivedAt);
-    setArchivedSessions(sortSessionSummariesByRecency(
+    const nextArchived = sortSessionSummariesByRecency(
       allRows.filter((session) => Boolean(session.archivedAt)),
       localTouchBySessionRef.current,
-    ));
+    );
+    // This list is re-read on every session change anywhere in the lane. An
+    // unchanged list must keep its identity: a new array re-renders the whole
+    // pane, composer included.
+    setArchivedSessions((prev) => reuseStructurallyEqualArray(nextArchived, prev));
     const nextRows = sortSessionSummariesByRecency(rows, localTouchBySessionRef.current);
-    setSessions(nextRows);
+    setSessions((prev) => reuseStructurallyEqualArray(nextRows, prev));
     const retainedSessionIds = buildRetainedChatSessionIds({
       rows: nextRows,
       selectedSessionId: selectedSessionIdRef.current,

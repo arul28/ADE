@@ -386,6 +386,43 @@ function nameStatusFileChanges(stdout: string): FileChange[] {
 }
 
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
+  /** The newest read per lane, and whether it has started reading the working tree. */
+  type BranchRead = { readingWorkingTree: boolean; read: Promise<BranchDiffChanges> };
+  const branchReads = new Map<string, BranchRead>();
+
+  const readBranchChanges = async (laneId: string, entry: BranchRead): Promise<BranchDiffChanges> => {
+    const { baseRef, branchRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
+    const { label, mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
+    entry.readingWorkingTree = true;
+    return await withWorkingTreeIndex(worktreePath, async (env) => {
+      const [names, numstat] = await Promise.all([
+        runGit(["diff", "--cached", "--name-status", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
+        runGit(["diff", "--cached", "--numstat", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
+      ]);
+      if (names.exitCode !== 0) throw new Error(names.stderr.trim() || "git diff failed");
+      const files = nameStatusFileChanges(names.stdout);
+      if (numstat.exitCode === 0) applyNumstat(files, numstat.stdout);
+      return {
+        baseRef: label,
+        mergeBase,
+        files,
+        additions: files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
+        deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
+      };
+    });
+  };
+
+  const startBranchRead = (laneId: string): Promise<BranchDiffChanges> => {
+    // `read` is assigned at once; the read itself flags the entry when it starts on the tree.
+    const entry = { readingWorkingTree: false } as BranchRead;
+    entry.read = readBranchChanges(laneId, entry);
+    branchReads.set(laneId, entry);
+    void entry.read.catch(() => undefined).then(() => {
+      if (branchReads.get(laneId) === entry) branchReads.delete(laneId);
+    });
+    return entry.read;
+  };
+
   const getLaneDiffStats = async (laneIdArg: string | { laneId?: string } | null | undefined): Promise<DiffLineStats> => {
     const laneId = readLaneIdArg(laneIdArg);
     const { baseRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
@@ -420,25 +457,16 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       return Object.fromEntries(entries);
     },
 
-    async getBranchChanges(laneId: string): Promise<BranchDiffChanges> {
-      const { baseRef, branchRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-      const { label, mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
-      return await withWorkingTreeIndex(worktreePath, async (env) => {
-        const [names, numstat] = await Promise.all([
-          runGit(["diff", "--cached", "--name-status", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
-          runGit(["diff", "--cached", "--numstat", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
-        ]);
-        if (names.exitCode !== 0) throw new Error(names.stderr.trim() || "git diff failed");
-        const files = nameStatusFileChanges(names.stdout);
-        if (numstat.exitCode === 0) applyNumstat(files, numstat.stdout);
-        return {
-          baseRef: label,
-          mergeBase,
-          files,
-          additions: files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
-          deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
-        };
-      });
+    getBranchChanges(laneId: string): Promise<BranchDiffChanges> {
+      // Opening a lane asks twice at once (the Branch support probe and the
+      // pane's own read), and on a lane far from its base each read is a full
+      // temp-index diff of seconds. An ask shares a read that has not started
+      // reading the working tree yet: that read still sees every edit made
+      // before the ask. Once it has, an edit may have landed after its
+      // snapshot, so the ask starts a fresh read at once.
+      const current = branchReads.get(laneId);
+      if (current && !current.readingWorkingTree) return current.read;
+      return startBranchRead(laneId);
     },
 
     async getChanges(laneId: string): Promise<DiffChanges> {
