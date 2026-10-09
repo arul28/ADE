@@ -10,6 +10,7 @@ import {
   type ChatTaskListSnapshot,
 } from "../../../desktop/src/shared/chatTaskList";
 import { deriveChatSources } from "../../../desktop/src/shared/chatSources";
+import { redactCommandLine } from "../../../desktop/src/shared/secretRedaction";
 import { deriveSubagentCardName, subagentSummaryPlainText } from "../../../desktop/src/shared/chatSubagents";
 import { describeUserMessageStatus } from "../../../desktop/src/shared/chatUserMessageStatus";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
@@ -1044,12 +1045,14 @@ export function renderChatLines(args: {
     }
     if (event.type === "command") {
       const failed = event.status === "failed" || (event.exitCode ?? 0) !== 0;
+      // The TUI prints the command on screen: mask secrets the same way the desktop does.
+      const shownCommand = redactCommandLine(event.command ?? "");
       lines.push({
         id,
         tone: failed ? "error" : "tool",
         body: failed && expanded
-          ? `x run ${event.command}  ${event.durationMs ? `${event.durationMs}ms` : ""}\n${multiLine(event.output, 24)}`
-          : `${failed ? "x" : "✓"} run ${event.command}  ${event.durationMs ? `${event.durationMs}ms` : ""}${failed ? "  ↵ expands" : ""}\n${summarizeCommandOutput(event.output)}`,
+          ? `x run ${shownCommand}  ${event.durationMs ? `${event.durationMs}ms` : ""}\n${multiLine(event.output, 24)}`
+          : `${failed ? "x" : "✓"} run ${shownCommand}  ${event.durationMs ? `${event.durationMs}ms` : ""}${failed ? "  ↵ expands" : ""}\n${summarizeCommandOutput(event.output)}`,
       });
       continue;
     }

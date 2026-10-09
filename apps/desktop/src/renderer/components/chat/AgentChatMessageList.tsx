@@ -64,6 +64,7 @@ import type {
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
+import { oneLineRedacted, redactCommandLine } from "../../../shared/secretRedaction";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
@@ -1746,9 +1747,9 @@ export function resolveWorkingIndicatorLabel(
 
 const RUNNING_COMMAND_LABEL_MAX = 72;
 
+/** Secrets are masked before the cut: a key sliced at 72 chars would leak its prefix. */
 function oneLineCommand(command: string): string {
-  const line = command.replace(/\s+/g, " ").trim();
-  return line.length > RUNNING_COMMAND_LABEL_MAX ? `${line.slice(0, RUNNING_COMMAND_LABEL_MAX - 1)}…` : line;
+  return oneLineRedacted(command, RUNNING_COMMAND_LABEL_MAX);
 }
 
 /**
@@ -2265,7 +2266,7 @@ function CommandEventCard({
       </span>
       <Terminal size={11} weight="regular" className="text-fg/34" />
       <span className="font-medium text-fg/62">{timelineVerb}</span>
-      <span className="min-w-0 flex-1 truncate text-fg/76">{event.command}</span>
+      <span className="min-w-0 flex-1 truncate text-fg/76">{redactCommandLine(event.command ?? "")}</span>
       {event.durationMs != null ? <span className="text-[length:calc(var(--chat-font-size)*10/14)] text-fg/28">{Math.max(0, event.durationMs)}ms</span> : null}
       {event.exitCode != null ? (
         <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)]", event.exitCode === 0 ? "text-emerald-300/60" : "text-red-300/65")}>
@@ -2279,7 +2280,7 @@ function CommandEventCard({
     <>
       <div className="rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80">
         <span className="select-none text-amber-500/40">$ </span>
-        {event.command}
+        {redactCommandLine(event.command ?? "")}
       </div>
       {hasOutput ? (
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60">
@@ -3658,7 +3659,8 @@ function renderEvent(
     const args = event.args as Record<string, unknown> | null;
     const safeArgs = args && typeof args === "object" ? args : {};
 
-    const targetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
+    const rawTargetLine = meta.getTarget ? meta.getTarget(safeArgs) : null;
+    const targetLine = rawTargetLine ? redactCommandLine(rawTargetLine) : null;
     const label = targetLine
       ? `${meta.label} ${targetLine}`
       : toolDisplay.secondaryLabel
@@ -3670,7 +3672,11 @@ function renderEvent(
     const argsDisplay = kvPairs.length > 0 ? (
       <div className="space-y-1 border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)]">
         {kvPairs.map(([k, v]) => {
-          const val = typeof v === "string" ? v : JSON.stringify(v);
+          // Only a shell command is masked here. Edit, Write and patch content, and
+          // diffs, are shown exactly as the agent wrote them.
+          const isShellCommand = (meta.category === "exec" || meta.category === "codex") && (k === "command" || k === "cmd");
+          const rawVal = typeof v === "string" ? v : JSON.stringify(v);
+          const val = isShellCommand ? redactCommandLine(rawVal) : rawVal;
           const isLongStr = typeof v === "string" && v.includes("\n");
           return (
             <div key={k} className={isLongStr ? "flex flex-col gap-0.5" : "flex items-start gap-2"}>

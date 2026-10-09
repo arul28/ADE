@@ -58,6 +58,7 @@ import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from ".
 import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatWorkflowActiveCard } from "./ChatWorkflowActiveCard";
+import { redactCommandLine } from "../../../shared/secretRedaction";
 
 const PANE_UI_STORAGE_PREFIX = "ade.chat.paneUi.v1";
 const PANE_CLEARED_STORAGE_PREFIX = "ade.chat.paneCleared.v1";
@@ -719,7 +720,8 @@ function BackgroundCommandRow({
   onStop?: (snapshot: ChatScheduledWorkSnapshot) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const rawCommand = (snapshot.title || snapshot.prompt || snapshot.summary || "").trim();
+  // Masked before the label cuts it: a background command can carry a key.
+  const rawCommand = redactCommandLine((snapshot.title || snapshot.prompt || snapshot.summary || "").trim());
   const label = backgroundCommandLabel(rawCommand) || rawCommand || "Background command";
   const cwd = backgroundCommandCwd(rawCommand);
   const isRunning = snapshot.status === "running" || snapshot.status === "fired";

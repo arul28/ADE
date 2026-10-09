@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowSquareOut, ArrowUp, CaretDown, CaretRight, Check, GitDiff, Globe, Terminal, Warning, Wrench, XCircle } from "@phosphor-icons/react";
 import type { OperatorNavigationSuggestion } from "../../../shared/types";
+import { redactCommandLine } from "../../../shared/secretRedaction";
 import {
   deriveWebSearchResultDisplay,
   formatStructuredValue,
@@ -89,15 +90,35 @@ function isCodeChangeEntry(entry: ChatWorkLogEntry): boolean {
   return false;
 }
 
+/**
+ * The expanded argument dump of a shell tool masks its command text. Other
+ * arguments (file edits, patch content) are shown as the agent wrote them.
+ */
+function maskShellCommandArgs(toolName: string | null | undefined, args: Record<string, unknown>): Record<string, unknown> {
+  if (!toolName) return args;
+  const category = getToolMeta(toolName).category;
+  if (category !== "exec" && category !== "codex") return args;
+  const masked = { ...args };
+  for (const key of ["command", "cmd"] as const) {
+    if (typeof masked[key] === "string") masked[key] = redactCommandLine(masked[key] as string);
+  }
+  return masked;
+}
+
+/** Redacts before it summarises: a key cut at 140 chars would leak its prefix. */
+function summarizeArgText(value: string, maxChars: number): string {
+  return summarizeInlineText(redactCommandLine(value), maxChars);
+}
+
 function entryArgText(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "command") {
-    return summarizeInlineText(entry.command ?? "", 140);
+    return summarizeArgText(entry.command ?? "", 140);
   }
   if (entry.entryKind === "web_search") {
-    return summarizeInlineText(entry.query ?? "", 140);
+    return summarizeArgText(entry.query ?? "", 140);
   }
   if (entry.entryKind === "hook") {
-    return summarizeInlineText(entry.detail ?? entry.label, 140);
+    return summarizeArgText(entry.detail ?? entry.label, 140);
   }
   if (entry.entryKind === "tool" && entry.toolName) {
     if (entry.mcp) {
@@ -105,16 +126,16 @@ function entryArgText(entry: ChatWorkLogEntry): string {
       for (const key of ["query", "url", "path", "file_path", "name", "id"] as const) {
         const value = args[key];
         if (typeof value === "string" && value.trim().length) {
-          return summarizeInlineText(value, 140);
+          return summarizeArgText(value, 140);
         }
       }
-      return summarizeInlineText(entry.detail ?? entry.mcp.tool, 140);
+      return summarizeArgText(entry.detail ?? entry.mcp.tool, 140);
     }
     const meta = getToolMeta(entry.toolName);
     const args = readRecord(entry.args) ?? {};
     const target = meta.getTarget ? meta.getTarget(args) : null;
-    if (target) return summarizeInlineText(target, 140);
-    if (entry.detail) return summarizeInlineText(entry.detail, 140);
+    if (target) return summarizeArgText(target, 140);
+    if (entry.detail) return summarizeArgText(entry.detail, 140);
   }
   return "";
 }
@@ -218,7 +239,8 @@ function commandForLocalhostUrl(entries: ChatWorkLogEntry[], url: ChatLocalhostU
     (entry.localUrls ?? []).some((candidate) => candidate.href === url.href),
   ) ?? entries[0];
   if (!sourceEntry) return null;
-  const trimmed = (sourceEntry.command ?? entryArgText(sourceEntry)).trim();
+  // The command lands in the composer draft the user reads, so it is masked too.
+  const trimmed = redactCommandLine(sourceEntry.command ?? entryArgText(sourceEntry)).trim();
   return trimmed.length ? trimmed : null;
 }
 
@@ -662,7 +684,7 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
       return toolEntryFailureText(entry) ?? formatStructuredValue(entry.result);
     }
     const args = readRecord(entry.args);
-    if (args && Object.keys(args).length > 0) return formatStructuredValue(args);
+    if (args && Object.keys(args).length > 0) return formatStructuredValue(maskShellCommandArgs(entry.toolName, args));
   }
   if (entry.detail?.trim().length) {
     return replaceInternalToolNames(entry.detail);

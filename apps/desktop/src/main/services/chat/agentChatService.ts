@@ -143,6 +143,7 @@ import {
   shouldCoalesceCodexCheckIn,
 } from "../../../shared/codexComposerCommands";
 import { readCodexIsBlocking } from "../../../shared/codexRequestUserInput";
+import { redactCommandLine } from "../../../shared/secretRedaction";
 import { PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { codedError } from "../../../shared/codedError";
 import { isUserOnlyConsentCard, USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../shared/types/macDesktop";
@@ -11425,9 +11426,11 @@ export function createAgentChatService(args: {
     if (sdkOptions?.decisionReason) {
       headline = sdkOptions.decisionReason;
     } else if (lowerName.includes("bash")) {
-      const cmd = typeof input.command === "string" ? input.command
+      const rawCmd = typeof input.command === "string" ? input.command
         : typeof input.cmd === "string" ? input.cmd
         : null;
+      // Masked before the cut: a key sliced at 120 chars would leak its prefix.
+      const cmd = rawCmd ? redactCommandLine(rawCmd) : null;
       headline = cmd
         ? `Run command: ${cmd.length > 120 ? cmd.slice(0, 117) + "..." : cmd}`
         : "Run a shell command";
@@ -21736,7 +21739,7 @@ export function createAgentChatService(args: {
     command: string | undefined,
     durationMs: unknown,
   ): string | undefined => {
-    const parts = [summary ?? (command ? `command: ${command}` : undefined)];
+    const parts = [summary ?? (command ? `command: ${redactCommandLine(command)}` : undefined)];
     if (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0) {
       parts.push(`duration: ${Math.round(durationMs)}ms`);
     }
@@ -22412,7 +22415,9 @@ export function createAgentChatService(args: {
       }
       snapshotBackgroundTaskIds.add(id);
       const description = compactString(task.description);
-      const command = compactString(task.command);
+      // This title and summary reach the Work row and sync clients: mask secrets.
+      const rawCommand = compactString(task.command);
+      const command = rawCommand ? redactCommandLine(rawCommand) : undefined;
       const agentType = compactString(task.agent_type);
       const workflowName = compactString(task.name);
       const title = description ?? command ?? workflowName ?? agentType ?? type ?? "Background work";
