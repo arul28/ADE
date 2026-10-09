@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
 import type { DetectedAuth } from "./authDetector";
@@ -228,11 +229,15 @@ async function runCommand(args: {
       reject(new Error(`Provider task timed out after ${timeoutMs}ms.`));
     }, timeoutMs);
 
+    // A decoder per stream keeps a UTF-8 character split across two chunks
+    // (the "·" in Claude's usage-limit message) intact.
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     child.stdout?.on("data", (chunk) => {
-      stdout += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      stdout += Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
     });
     child.stderr?.on("data", (chunk) => {
-      stderr += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      stderr += Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : String(chunk);
     });
     child.stdin?.on("error", (error) => {
       if (settled || isBenignStdinCloseError(error)) return;
@@ -253,7 +258,7 @@ async function runCommand(args: {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutHandle);
-      resolve({ stdout, stderr, exitCode });
+      resolve({ stdout: stdout + stdoutDecoder.end(), stderr: stderr + stderrDecoder.end(), exitCode });
     });
 
     if (args.stdinText != null && child.stdin) {
