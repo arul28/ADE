@@ -126,9 +126,21 @@ func workRowFocus(
   }
 }
 
+/// The chat that launched a row: its nesting parent, else the agent that started
+/// it with `--no-parent`. Mirrors desktop `launcherSessionId`.
+func workLauncherSessionId(_ session: TerminalSessionSummary) -> String? {
+  for raw in [session.orchestrationParentSessionId, session.launchedBySessionId] {
+    let id = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !id.isEmpty { return id }
+  }
+  return nil
+}
+
 /// Applies the lane-list overlays after the row's own focus is known. Busy
 /// subagents turn an otherwise seen/unseen Done parent into Waiting; ordinary
 /// Done children are omitted, while missed wakes stay counted even when nested.
+/// A finished helper whose launcher is a busy agent in the same lane is omitted
+/// too (`launcherBusy`, from `workLaneCountedFocus`).
 func workCountedRowFocus(
   session: TerminalSessionSummary,
   summary: AgentChatSessionSummary?,
@@ -137,6 +149,7 @@ func workCountedRowFocus(
   seen: Bool,
   busySubagentParent: Bool,
   nestedChild: Bool,
+  launcherBusy: Bool = false,
   now: Date
 ) -> WorkRowFocus? {
   guard var focus = workRowFocus(
@@ -153,9 +166,53 @@ func workCountedRowFocus(
      !focus.missedWake, busySubagentParent {
     focus = WorkRowFocus(status: .waiting, holdsOut: false, missedWake: false)
   }
-  if focus.status == .done, !focus.missedWake, nestedChild { return nil }
+  if focus.status == .done, !focus.missedWake, nestedChild || launcherBusy { return nil }
   if !isWorkAgentToolType(session.toolType) { focus.countsAsBusy = false }
   return focus
+}
+
+/// One row of a lane's roster, with the inputs `workCountedRowFocus` reads.
+struct WorkLaneRosterRow {
+  let session: TerminalSessionSummary
+  let summary: AgentChatSessionSummary?
+  let archived: Bool
+  let seen: Bool
+  let busySubagentParent: Bool
+  let nestedChild: Bool
+}
+
+/// A lane's counted focus rows, one per roster row (nil when the row takes no
+/// part). Two passes, like desktop `summarizeLaneFocus`: the first finds the busy
+/// agent rows from their own focus; the second omits a finished helper whose
+/// launcher is one of them. Busy never depends on `seen`, and a busy row is never
+/// finished, so the second pass cannot change the first.
+func workLaneCountedFocus(_ roster: [WorkLaneRosterRow], laneWaiting: Bool, now: Date) -> [WorkRowFocus?] {
+  func counted(_ row: WorkLaneRosterRow, launcherBusy: Bool) -> WorkRowFocus? {
+    workCountedRowFocus(
+      session: row.session,
+      summary: row.summary,
+      archived: row.archived,
+      laneWaiting: laneWaiting,
+      seen: row.seen,
+      busySubagentParent: row.busySubagentParent,
+      nestedChild: row.nestedChild,
+      launcherBusy: launcherBusy,
+      now: now
+    )
+  }
+  var busyIds: Set<String> = []
+  for row in roster {
+    guard let focus = counted(row, launcherBusy: false) else { continue }
+    if !focus.holdsOut, focus.status == .working || focus.status == .waiting, focus.countsAsBusy {
+      busyIds.insert(row.session.id)
+    }
+  }
+  return roster.map { row in
+    let launcherBusy = workLauncherSessionId(row.session).map { launcher in
+      launcher != row.session.id && busyIds.contains(launcher)
+    } ?? false
+    return counted(row, launcherBusy: launcherBusy)
+  }
 }
 
 func workRollUpLaneFocus(_ rows: [WorkRowFocus?]) -> WorkLaneFocusStatus? {

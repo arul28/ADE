@@ -5155,6 +5155,7 @@ struct TerminalResumeMetadata: Codable, Equatable {
   /// phone caches omit them; decode-if-present so a JSON blob that already
   /// carries lineage survives a SQLite round trip.
   var orchestrationParentSessionId: String? = nil
+  var launchedBySessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
 }
 
@@ -5267,6 +5268,9 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// Same-lane `spawnKind == .subagent` chats nest under this parent in the
   /// by-lane Work list. Older hosts omit both keys.
   var orchestrationParentSessionId: String? = nil
+  /// Agent chat that launched this session when it has no orchestration parent.
+  /// Passive attribution only: it does not nest the row under the launcher.
+  var launchedBySessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
   /// The chat's live goal (Codex `thread/goal`, Claude `/goal`), projected by
   /// the host onto `work.listSessions` rows. Absent on older hosts and on rows
@@ -5339,6 +5343,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.parentIdentityKey == rhs.parentIdentityKey
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
+      && lhs.launchedBySessionId == rhs.launchedBySessionId
       && lhs.spawnKind == rhs.spawnKind
       && lhs.activeGoal == rhs.activeGoal
       && lhs.claudeTag == rhs.claudeTag
@@ -5395,6 +5400,7 @@ extension TerminalSessionSummary {
     case cursorRuntime
     case parentIdentityKey
     case orchestrationParentSessionId
+    case launchedBySessionId
     case spawnKind
     case activeGoal
     case claudeTag
@@ -5449,6 +5455,7 @@ extension TerminalSessionSummary {
     cursorRuntime = try container.decodeIfPresent(String.self, forKey: .cursorRuntime)
     parentIdentityKey = try container.decodeIfPresent(String.self, forKey: .parentIdentityKey)
     orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
+    launchedBySessionId = try container.decodeIfPresent(String.self, forKey: .launchedBySessionId)
     spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
     // Tolerant: a goal shape this build does not know drops the decoration,
     // never the row.

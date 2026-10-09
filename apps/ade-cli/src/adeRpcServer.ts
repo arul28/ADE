@@ -6270,6 +6270,14 @@ async function runTool(args: {
       ? permissionFieldsForLevel("droid", cliCeiling).droidPermissionMode
       : requestedDroidPermissionMode;
     const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
+    // A parentless CLI launched by a bound agent records who launched it. This
+    // is a passive fact: it does not nest the session or wake the launcher.
+    // The CTO is not an agent launcher, matching the chat path's runtime actor.
+    const launchedByChatSessionId = !orchestrationParentSessionId
+      && isCliProvider(provider)
+      && !(await callerIsTrustedCto(runtime, session))
+      ? asOptionalTrimmedString(session.identity.chatSessionId) ?? null
+      : null;
     const instanceId = toolArgs.instanceId == null
       ? null
       : assertNonEmptyString(toolArgs.instanceId, "instanceId");
@@ -6391,6 +6399,7 @@ async function runTool(args: {
           ...(presetId ? { presetId } : {}),
           ...(trackedPreset && !presetId && credentialId ? { credentialId } : {}),
           ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+          ...(launchedByChatSessionId ? { launchedBySessionId: launchedByChatSessionId } : {}),
           ...(spawnKind ? { spawnKind } : {}),
         }
       : null;

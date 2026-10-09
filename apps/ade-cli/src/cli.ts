@@ -9767,6 +9767,13 @@ function buildChatPlan(args: string[]): CliPlan {
     // `chat create` never launches a shell (no `allowSpawnType` option here,
     // and `allowShell: false` below), so this read always records lineage;
     // there is no dropped ambient parent to forward.
+    // Checked before the lineage read, which consumes `--no-parent`. An agent
+    // that opts out of lineage gets one hint on stderr (stdout may be JSON).
+    if (args.includes("--no-parent") && process.env.ADE_CHAT_SESSION_ID?.trim()) {
+      process.stderr.write(
+        "note: --no-parent records no lineage; this chat will not nest under you or wake you. For a fire-and-forget helper, use --type peer.\n",
+      );
+    }
     const lineage = readAgentSpawnLineage(args);
     // Read once: `readValue` consumes the flag it matches, so the value has to
     // be captured here and reused for both the validation and the action args.

@@ -2036,6 +2036,8 @@ type PersistedChatState = {
   asyncQuestions?: PersistedAsyncQuestion[];
   // Spawn lineage
   orchestrationParentSessionId?: string;
+  /** See SpawnLineageSessionFields.launchedBySessionId. */
+  launchedBySessionId?: string;
   spawnKind?: AgentChatSession["spawnKind"];
   subagentTakeoverPromptShownAt?: string | null;
   pendingTranscriptReplay?: string | null;
@@ -9046,6 +9048,7 @@ function toHarnessPermissionMode(
 
 const SPAWN_LINEAGE_FIELD_NAMES = [
   "orchestrationParentSessionId",
+  "launchedBySessionId",
   "spawnKind",
   "subagentTakeoverPromptShownAt",
 ] as const;
@@ -9065,6 +9068,8 @@ function hydrateSpawnLineageFields(
   const out: Partial<PersistedChatState> = {};
   const parentId = record.orchestrationParentSessionId;
   if (typeof parentId === "string" && parentId.trim().length) out.orchestrationParentSessionId = parentId.trim();
+  const launchedBy = record.launchedBySessionId;
+  if (typeof launchedBy === "string" && launchedBy.trim().length) out.launchedBySessionId = launchedBy.trim();
   const spawnKind = record.spawnKind;
   if (typeof spawnKind === "string" && VALID_AGENT_CHAT_SPAWN_KINDS.has(spawnKind)) {
     out.spawnKind = spawnKind as "subagent" | "peer";
@@ -41683,6 +41688,12 @@ export function createAgentChatService(args: {
 
   type AgentChatCreateInternalArgs = AgentChatCreateArgs & {
     idempotencyKey?: string;
+    /**
+     * Set only by `handoffSession`. A handoff forwards the caller's runtime
+     * actor for its permission ceiling, but it is a continuation of the source
+     * chat, not a launch by the actor, so it must not record `launchedBySessionId`.
+     */
+    isHandoff?: boolean;
   };
 
   const createSessionInternal = async ({
@@ -41737,6 +41748,7 @@ export function createAgentChatService(args: {
     spawnKind: requestedSpawnKind,
     idempotencyKey,
     runtimeActor,
+    isHandoff,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
     // A client that still sends Cursor's Fast toggle as a model option gets it
     // as the chat's Fast tier, the one control that now carries it.
@@ -41746,6 +41758,14 @@ export function createAgentChatService(args: {
     );
     const requestedFastMode = foldedRequestedCursorFast.fastMode;
     const normalizedParentSessionId = requestedOrchestrationParentSessionId?.trim() || null;
+    // Who launched this chat, recorded only when there is no parent to carry it.
+    // A recovery or a handoff is not a launch by the caller, so neither gets it.
+    const launchedBySessionId = !normalizedParentSessionId
+      && !recoveredFromSessionId?.trim()
+      && !isHandoff
+      && runtimeActor?.kind === "agent"
+      ? runtimeActor.chatSessionId?.trim() || null
+      : null;
     if (normalizedParentSessionId && requestedSpawnKind !== "subagent" && requestedSpawnKind !== "peer") {
       throw new Error(
         "A parented agent chat requires spawnKind 'subagent' or 'peer'. Use subagent whenever the parent will need, join, or review the result; use peer only for fire-and-forget work.",
@@ -42340,6 +42360,7 @@ export function createAgentChatService(args: {
         ...collectSpawnLineageFields({
           orchestrationParentSessionId: requestedOrchestrationParentSessionId,
           spawnKind: requestedSpawnKind,
+          launchedBySessionId: launchedBySessionId ?? undefined,
         }, null),
       },
       transcriptPath,
@@ -42813,7 +42834,8 @@ export function createAgentChatService(args: {
     // A native fork resumes the source's provider thread, which lives in the
     // source account's config home, so the fork must run as that same account.
     const forkInstanceId = nativeFork ? resolveSessionInstance(managed)?.id : undefined;
-    const created = await createSession({
+    const created = await createSessionInternal({
+      isHandoff: true,
       laneId: targetLaneId,
       ...(args.runtimeActor ? { runtimeActor: args.runtimeActor } : {}),
       provider: targetProvider,
