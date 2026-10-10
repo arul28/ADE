@@ -12,7 +12,12 @@ import { watchTree } from "../../../apps/desktop/src/main/services/shared/treeWa
 const STEPS = Number(process.env.STEPS ?? 60);
 let seed = Number(process.env.SEED ?? 7);
 const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
-const pick = <T,>(xs: T[]): T => xs[Math.floor(rnd() * xs.length)]!;
+/** An operation found no file or directory to act on; the step is skipped, not failed. */
+class NoCandidate extends Error {}
+const pick = <T,>(xs: T[]): T => {
+  if (!xs.length) throw new NoCandidate();
+  return xs[Math.floor(rnd() * xs.length)]!;
+};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-watchdiff-")));
 const root = path.join(base, "root");
@@ -89,6 +94,7 @@ if (process.env.ONLY && !(process.env.ONLY in ops)) {
 }
 let mismatches = 0;
 let failedOps = 0;
+let skippedOps = 0;
 const counts: Record<string, number> = {};
 for (let step = 0; step < STEPS; step++) {
   const name = process.env.ONLY ?? names[step % names.length]!;
@@ -98,6 +104,10 @@ for (let step = 0; step < STEPS; step++) {
     await ops[name]!();
   }
   catch (e) {
+    if (e instanceof NoCandidate) {
+      skippedOps++;
+      continue;
+    }
     console.log("op failed", name, String(e).slice(0, 80));
     failedOps++;
   }
@@ -114,7 +124,7 @@ for (let step = 0; step < STEPS; step++) {
     console.log(`STEP ${step} ${name}: chokidar-only ${JSON.stringify(onlyA.slice(0, 6))} native-only ${JSON.stringify(onlyB.slice(0, 6))} (sizes ${log.a.size}/${log.b.size})`);
   }
 }
-console.log(JSON.stringify({ steps: STEPS, mismatches, failedOps, eventsPerOp: counts }));
+console.log(JSON.stringify({ steps: STEPS, mismatches, failedOps, skippedOps, eventsPerOp: counts }));
 await a.close();
 await b.close();
 fs.rmSync(base, { recursive: true, force: true });
