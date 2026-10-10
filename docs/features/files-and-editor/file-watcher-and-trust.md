@@ -135,6 +135,14 @@ connection handler does the same when a connection closes. Both call the
 ordinary `stopWatching`, once per outstanding reference, so another
 client's references on the same workspace are not touched.
 
+A connection can also close while its page stays open (a dropped link to
+a remote machine). The brain releases the watches of that connection, but
+the page still holds them and its Files view stays mounted. The bridge
+marks the ledger entry when the event stream of the page ends
+(`notePageRuntimeDisconnected`) and opens every held watch again when the
+page subscribes to events on the new connection
+(`restorePageFileWatches`).
+
 The watcher itself comes from `watchTree`
 (`services/shared/treeWatcher.ts`): chokidar off macOS, one recursive
 native watch per root on macOS. See "File watching" in the README.

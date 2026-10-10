@@ -11,6 +11,7 @@ import {
   useLocation,
   useNavigate
 } from "react-router-dom";
+import { shallow } from "zustand/shallow";
 import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
@@ -460,8 +461,8 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
 
   // The Work surface stays mounted behind every other tab. While it is parked
   // its element is the same object and the router values above it are held,
-  // so a switch between two other tabs renders nothing in it. Before, each tab
-  // switch rendered the session list, the open chat and its composer again.
+  // so a switch between two other tabs renders nothing in it (not the session
+  // list, the open chat or its composer).
   const workShown = active && isWorkRoute;
   const workSurface = React.useMemo(() => (shouldRenderWork ? (
     <ProjectSurfaceRouterScope active={workShown}>
@@ -574,10 +575,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
  * Holds the router's location and route match still for a parked project
  * surface. Every mounted project sits under the one router, and most of a Work
  * surface reads them (`useLocation`, `useNavigate`, each nested `<Routes>`),
- * so one switch between two projects re-rendered the Work surface of every
- * mounted project several times: about 12,900 component renders per switch
- * with four projects open. A parked surface keeps what it last had while it
- * was on screen (until then, what it mounted with), which is also its own
+ * so without this one switch between two projects renders the Work surface
+ * of every mounted project several times. A parked surface keeps what it last
+ * had while it was on screen (until then, what it mounted with), which is also its own
  * location and not the visible project's. It gets the live values again in
  * the render that shows it.
  */
@@ -840,9 +840,7 @@ function ProjectTabHost() {
       // re-rendered everything in it that reads the binding.
       const built = localProjectBindingForProject(project);
       const known = localBindingsRef.current.get(built.key);
-      const binding = known && known.rootPath === built.rootPath && known.displayName === built.displayName
-        ? known
-        : built;
+      const binding = known && shallow(known, built) ? known : built;
       localBindingsRef.current.set(binding.key, binding);
       entries.push({ surfaceKey: binding.key, project, binding });
     }

@@ -129,7 +129,25 @@ export function selectEffectiveThemeId(
   return effectiveThemeId(state.themeId, state.themeFollowsSystem, state.systemColorScheme);
 }
 
-type AppearanceStoreApi = StoreApi<AppearanceState>;
+/** The store as the appearance hooks use it: read and subscribe. The app store fits this as it is. */
+type AppearanceStoreApi = Pick<StoreApi<AppearanceState>, "getState" | "getInitialState" | "subscribe">;
+
+/**
+ * The OS colour scheme changed. Returns the new scheme with the base mode it
+ * paints, or null when the scheme is the one already held.
+ */
+export function systemColorSchemeChange(
+  prev: Pick<AppearanceState, "themeId" | "themeFollowsSystem" | "systemColorScheme" | "customThemes">,
+  scheme: ThemeId,
+): Pick<AppearanceState, "theme" | "systemColorScheme"> | null {
+  const systemColorScheme: ThemeId = scheme === "light" ? "light" : "dark";
+  if (systemColorScheme === prev.systemColorScheme) return null;
+  const theme = baseModeForThemeId(
+    effectiveThemeId(prev.themeId, prev.themeFollowsSystem, systemColorScheme),
+    prev.customThemes,
+  );
+  return { theme, systemColorScheme };
+}
 
 /**
  * The project store in scope, as `AppStoreProvider` sets it. One context
@@ -150,21 +168,26 @@ type StoredAppearance = Pick<
   "theme" | "themeId" | "customThemes" | "themeFollowsSystem" | "interfacePreferences" | "smartTooltipsEnabled"
 >;
 
-/** The saved appearance, read the way `appStore` reads it (unified key, then the legacy keys). */
+/** The appearance values of a saved unified preferences record. `appStore` reads them with this too. */
+export function parseStoredAppearance(parsed: Record<string, unknown>): StoredAppearance {
+  return {
+    theme: coerceTheme(parsed.theme) ?? "dark",
+    themeId: coerceThemeId(parsed.themeId ?? parsed.theme),
+    customThemes: normalizeAdeThemeList(parsed.customThemes),
+    themeFollowsSystem: parsed.themeFollowsSystem === true,
+    interfacePreferences: normalizeInterfacePreferences(parsed.interfacePreferences),
+    // Detailed tooltips are an onboarding aid that defaults OFF in the browser
+    // web client (clutter for an already oriented user), and ON on desktop. An
+    // explicit toggle is still honored.
+    smartTooltipsEnabled: (parsed.smartTooltipsEnabled as boolean | null | undefined) ?? !isWebClientMode(),
+  };
+}
+
+/** The saved appearance: the unified key, then the legacy keys, as `appStore` reads them. */
 function readStoredAppearance(): StoredAppearance {
   try {
     const raw = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      return {
-        theme: coerceTheme(parsed.theme) ?? "dark",
-        themeId: coerceThemeId(parsed.themeId ?? parsed.theme),
-        customThemes: normalizeAdeThemeList(parsed.customThemes),
-        themeFollowsSystem: parsed.themeFollowsSystem === true,
-        interfacePreferences: normalizeInterfacePreferences(parsed.interfacePreferences),
-        smartTooltipsEnabled: (parsed.smartTooltipsEnabled as boolean | null | undefined) ?? !isWebClientMode(),
-      };
-    }
+    if (raw) return parseStoredAppearance(JSON.parse(raw) as Record<string, unknown>);
   } catch {
     // Unreadable storage reads as "nothing saved".
   }
@@ -227,14 +250,10 @@ function createStandInStore(): AppearanceStoreApi {
       }),
     setSystemColorScheme: (scheme) =>
       set((prev) => {
-        const nextScheme: ThemeId = scheme === "light" ? "light" : "dark";
-        if (nextScheme === prev.systemColorScheme) return {};
-        const theme = baseModeForThemeId(
-          effectiveThemeId(prev.themeId, prev.themeFollowsSystem, nextScheme),
-          prev.customThemes,
-        );
-        if (theme !== prev.theme) patchStoredPreferences({ theme });
-        return { theme, systemColorScheme: nextScheme };
+        const change = systemColorSchemeChange(prev, scheme);
+        if (!change) return {};
+        if (change.theme !== prev.theme) patchStoredPreferences({ theme: change.theme });
+        return change;
       }),
   }));
 }

@@ -32,7 +32,7 @@ import {
   useAllMachineLanes,
   useStableBinding,
 } from "../../state/laneMachineRouting";
-import { pinKey } from "../../state/projectMachines";
+import { pinKey } from "../../state/pinKey";
 import { machineScopedId, type MachineReadLoad } from "../../state/foreignMachineReads";
 import type { HistoryMachineSource } from "./useTimelineStore";
 

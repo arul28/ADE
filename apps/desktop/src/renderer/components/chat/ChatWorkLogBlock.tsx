@@ -21,7 +21,7 @@ import { getToolMeta } from "./chatToolAppearance";
 import { maskShellCommandArgs, replaceInternalToolNames } from "./toolPresentation";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { pinKey } from "../../state/projectMachines";
+import { pinKey } from "../../state/pinKey";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { useChatWorkspacePaths } from "./chatWorkspacePaths";
 import { ComputerUseInlineIcon } from "./ChatComputerUseActions";

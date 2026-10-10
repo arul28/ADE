@@ -902,7 +902,9 @@ app's modules so that it keeps its place ahead of every chunk stylesheet.
   names with it. A top-level `await` in `browserMock.ts` has the same effect.
 - The dev Electron window must not load the browser-mock snapshot
   (`browser-mock-ade-snapshot.generated.json`). `vite.config.ts` serves it an
-  empty module. With a 60 MB snapshot the renderer heap was 477 MB after GC and
+  empty module. It finds the app window by the `ADEDevShell` mark that
+  `main.ts` adds to the user agent in dev; a page in the built-in browser has
+  the plain Electron user agent and must still get the snapshot. With a 60 MB snapshot the renderer heap was 477 MB after GC and
   the launch stalled for 6 s; it is 129 MB without.
 
 ### Parked surfaces and the router (ninth pass, four projects open)
@@ -956,6 +958,10 @@ number below looked fine.
   destroyed (`trackPageFileWatch`), and the brain releases a connection's
   watches when the connection closes (`adeRpcServer` `handler.dispose`). Keep
   both: the first covers a reload, the second covers the app quitting.
+  The second also releases the watches of a page that only lost its
+  connection, so the bridge opens them again when the page subscribes to
+  events on the new connection (`restorePageFileWatches`). Do not remove
+  that step, or an open Files tab stops its updates after a reconnect.
 
 ### The appearance store
 

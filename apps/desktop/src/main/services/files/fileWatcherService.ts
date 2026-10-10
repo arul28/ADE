@@ -1,7 +1,6 @@
 import path from "node:path";
-import type { ChokidarOptions } from "chokidar";
 import type { FileChangeEvent } from "../../../shared/types";
-import { watchTree, type TreeWatcher } from "../shared/treeWatcher";
+import { watchTree, type TreeWatcher, type TreeWatcherOptions } from "../shared/treeWatcher";
 import { normalizeRelative } from "../shared/utils";
 
 type WatchCallback = (event: FileChangeEvent) => void;
@@ -140,7 +139,7 @@ export function createFileWatcherService() {
     /(^|[/\\])\.ade($|[/\\])/,
   ];
 
-  const ignoredPatternsFor = (rootPath: string, includeIgnored: boolean): ChokidarOptions["ignored"] => [
+  const ignoredPatternsFor = (rootPath: string, includeIgnored: boolean): TreeWatcherOptions["ignored"] => [
     ...(includeIgnored ? ALWAYS_IGNORED_PATTERNS : DEFAULT_IGNORED_PATTERNS),
     (candidatePath: string) => {
       const relPath = normalizeRelative(path.relative(rootPath, candidatePath));

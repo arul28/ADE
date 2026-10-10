@@ -4,7 +4,7 @@ import type {
 } from "../../../shared/types";
 import {
   agentChatEventIdentityKey,
-  agentChatLiveAppendOf,
+  foldedOverAppends,
   recordAgentChatLiveAppend,
 } from "../../../shared/chatHistoryMerge";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
@@ -255,7 +255,7 @@ type ChatDisplayFilter = {
   droppedIndexes: readonly number[];
 };
 
-const chatDisplayFilterByEvents = new WeakMap<readonly AgentChatEventEnvelope[], ChatDisplayFilter>();
+const chatDisplayFilterByEvents = new WeakMap<readonly AgentChatEventEnvelope[], { value: ChatDisplayFilter }>();
 
 /** How many of the sorted `indexes` are below `index`. */
 function countBelow(indexes: readonly number[], index: number): number {
@@ -267,6 +267,11 @@ function countBelow(indexes: readonly number[], index: number): number {
     else high = middle;
   }
   return low;
+}
+
+/** A dotted `subagent.*` event; the transcript shows its plain twin. */
+function isSubagentTwin(envelope: AgentChatEventEnvelope): boolean {
+  return envelope.event.type.startsWith("subagent.");
 }
 
 function touchesSteerState(envelope: AgentChatEventEnvelope): boolean {
@@ -290,7 +295,7 @@ function filterChatDisplayEvents(events: AgentChatEventEnvelope[]): ChatDisplayF
   const droppedIndexes: number[] = [];
   const display = events.filter((envelope, index) => {
     const event = envelope.event;
-    const hidden = event.type.startsWith("subagent.")
+    const hidden = isSubagentTwin(envelope)
       // Historical immediate sends were first persisted as queued and then
       // resolved under the same steer id. Once resolved, hide the obsolete
       // queue notice so the transcript cannot contradict the delivered bubble.
@@ -318,47 +323,34 @@ function filterChatDisplayEvents(events: AgentChatEventEnvelope[]): ChatDisplayF
  * takes the full filter.
  */
 export function chatDisplayEvents(events: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
-  const known = chatDisplayFilterByEvents.get(events);
-  if (known) return known.display;
-  const append = agentChatLiveAppendOf(events);
-  const before = append ? chatDisplayFilterByEvents.get(append.base) : undefined;
-  let next: ChatDisplayFilter | null = null;
-  if (append && before) {
-    const shown: AgentChatEventEnvelope[] = [];
-    const dropped: number[] = [];
-    let carry = true;
-    for (let index = append.appendedFrom; index < events.length; index += 1) {
-      const envelope = events[index]!;
-      if (touchesSteerState(envelope)) {
-        carry = false;
-        break;
+  return foldedOverAppends(
+    chatDisplayFilterByEvents,
+    events,
+    (before, append) => {
+      const shown: AgentChatEventEnvelope[] = [];
+      const dropped: number[] = [];
+      for (let index = append.appendedFrom; index < events.length; index += 1) {
+        const envelope = events[index]!;
+        if (touchesSteerState(envelope)) return null;
+        if (isSubagentTwin(envelope)) dropped.push(index);
+        else shown.push(envelope);
       }
-      if (envelope.event.type.startsWith("subagent.")) dropped.push(index);
-      else shown.push(envelope);
-    }
-    if (carry) {
       const droppedIndexes = dropped.length ? [...before.droppedIndexes, ...dropped] : before.droppedIndexes;
-      if (!droppedIndexes.length) {
-        next = { display: events, droppedIndexes };
-      } else if (!shown.length && !append.replacedIndexes.length) {
-        next = { display: before.display, droppedIndexes };
-      } else {
-        const display = before.display.slice();
-        const replacedIndexes = append.replacedIndexes.map((index) => index - countBelow(before.droppedIndexes, index));
-        append.replacedIndexes.forEach((index, at) => {
-          display[replacedIndexes[at]!] = events[index]!;
-        });
-        for (const envelope of shown) display.push(envelope);
-        recordAgentChatLiveAppend(display, {
-          base: before.display,
-          appendedFrom: before.display.length,
-          replacedIndexes,
-        });
-        next = { display, droppedIndexes };
-      }
-    }
-  }
-  next ??= filterChatDisplayEvents(events);
-  chatDisplayFilterByEvents.set(events, next);
-  return next.display;
+      if (!droppedIndexes.length) return { value: { display: events, droppedIndexes } };
+      if (!shown.length && !append.replacedIndexes.length) return { value: { display: before.display, droppedIndexes } };
+      const display = before.display.slice();
+      const replacedIndexes = append.replacedIndexes.map((index) => index - countBelow(before.droppedIndexes, index));
+      append.replacedIndexes.forEach((index, at) => {
+        display[replacedIndexes[at]!] = events[index]!;
+      });
+      for (const envelope of shown) display.push(envelope);
+      recordAgentChatLiveAppend(display, {
+        base: before.display,
+        appendedFrom: before.display.length,
+        replacedIndexes,
+      });
+      return { value: { display, droppedIndexes } };
+    },
+    () => filterChatDisplayEvents(events),
+  ).display;
 }

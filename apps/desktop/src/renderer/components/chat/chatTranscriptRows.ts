@@ -835,7 +835,9 @@ type CollapseCheckpoint = {
 /** A checkpoint is taken each time this many events have passed the newest one. */
 const COLLAPSE_CHECKPOINT_INTERVAL = 128;
 
-export function createCollapseTranscriptContext(rowIndexesComplete = false): CollapseTranscriptContext {
+export function createCollapseTranscriptContext(
+  { rowIndexesComplete = false }: { rowIndexesComplete?: boolean } = {},
+): CollapseTranscriptContext {
   return {
     latestTodoItemsByTurn: new Map(),
     subagentAnchors: new Map(),
@@ -3530,7 +3532,7 @@ export function collapseChatTranscriptEventsWithContext(
   events: AgentChatEventEnvelope[],
 ): CollapseTranscriptResult {
   const rows: ChatTranscriptRenderEnvelope[] = [];
-  const context = createCollapseTranscriptContext(true);
+  const context = createCollapseTranscriptContext({ rowIndexesComplete: true });
   // Leave the pass with checkpoints one and two intervals behind the end, so
   // the first resend after opening a long chat replays a tail, not the chat.
   const olderCheckpointAt = events.length - 2 * COLLAPSE_CHECKPOINT_INTERVAL;

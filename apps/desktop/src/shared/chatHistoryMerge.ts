@@ -150,17 +150,10 @@ function upsertRepeatedToolCallsUnmarked(
     }
     if (result === events) result = [...events];
     const kept = result[earlier]!;
-    const selectedSource = callSources.get(key)!;
-    // For equal millisecond stamps, array order is the available arrival order.
-    const useIncomingPayload = compareAgentChatEventTime(selectedSource, entry) <= 0;
-    const timestamp = compareAgentChatEventTime(kept, entry) <= 0 ? kept.timestamp : entry.timestamp;
-    if (useIncomingPayload || timestamp !== kept.timestamp) {
-      result[earlier] = {
-        ...kept,
-        ...(useIncomingPayload ? { event: entry.event } : {}),
-        timestamp,
-      };
-      if (useIncomingPayload) callSources.set(key, entry);
+    const resend = applyToolCallResend(kept, callSources.get(key)!, entry);
+    if (resend) {
+      result[earlier] = resend.call;
+      if (resend.tookPayload) callSources.set(key, entry);
     }
     duplicateIndexes.add(index);
   }
@@ -248,6 +241,44 @@ export function recordAgentChatLiveAppend(
   liveAppendByList.set(events, append);
 }
 
+/**
+ * A value folded from a whole transcript, kept per event list. A list the live
+ * merge appended to asks `carry` first: given the answer for the list before
+ * it and the append, either the new answer or null for "fold again". One
+ * streamed event then costs that event, not the transcript.
+ */
+export function foldedOverAppends<T>(
+  cache: WeakMap<readonly AgentChatEventEnvelope[], { value: T }>,
+  events: AgentChatEventEnvelope[],
+  carry: (before: T, append: AgentChatLiveAppend) => { value: T } | null,
+  fold: () => T,
+): T {
+  const known = cache.get(events);
+  if (known) return known.value;
+  const append = agentChatLiveAppendOf(events);
+  const before = append ? cache.get(append.base) : undefined;
+  const next = (append && before ? carry(before.value, append) : null) ?? { value: fold() };
+  cache.set(events, next);
+  return next.value;
+}
+
+/**
+ * A tool call sent again for a call already held. `source` is the envelope
+ * whose payload the held call shows now. Returns the updated call, or null
+ * when the resend changes nothing. The held call keeps its row either way.
+ */
+function applyToolCallResend(
+  kept: AgentChatEventEnvelope,
+  source: AgentChatEventEnvelope,
+  entry: AgentChatEventEnvelope,
+): { call: AgentChatEventEnvelope; tookPayload: boolean } | null {
+  // For equal millisecond stamps, array order is the available arrival order.
+  const tookPayload = compareAgentChatEventTime(source, entry) <= 0;
+  const timestamp = compareAgentChatEventTime(kept, entry) <= 0 ? kept.timestamp : entry.timestamp;
+  if (!tookPayload && timestamp === kept.timestamp) return null;
+  return { call: { ...kept, ...(tookPayload ? { event: entry.event } : {}), timestamp }, tookPayload };
+}
+
 function toolCallIndexFor(events: readonly AgentChatEventEnvelope[]): Map<string, number> {
   const indexByKey = new Map<string, number>();
   for (let index = 0; index < events.length; index += 1) {
@@ -287,23 +318,15 @@ function appendToToolCallDedupedList(
     }
     // A resend: it updates the stored call and takes no row of its own.
     const kept = result[earlier]!;
-    const source = sources.get(key) ?? kept;
-    // For equal millisecond stamps, array order is the available arrival order.
-    const useIncomingPayload = compareAgentChatEventTime(source, entry) <= 0;
-    const timestamp = compareAgentChatEventTime(kept, entry) <= 0 ? kept.timestamp : entry.timestamp;
+    const resend = applyToolCallResend(kept, sources.get(key) ?? kept, entry);
     index.identityKeys.delete(agentChatEventIdentityKey(entry));
-    if (useIncomingPayload || timestamp !== kept.timestamp) {
-      const replaced = {
-        ...kept,
-        ...(useIncomingPayload ? { event: entry.event } : {}),
-        timestamp,
-      };
+    if (resend) {
       index.identityKeys.delete(agentChatEventIdentityKey(kept));
-      index.identityKeys.add(agentChatEventIdentityKey(replaced));
-      result[earlier] = replaced;
+      index.identityKeys.add(agentChatEventIdentityKey(resend.call));
+      result[earlier] = resend.call;
       // A call first seen in this same batch sits in the appended part.
       if (earlier < existing.length && !replacedIndexes.includes(earlier)) replacedIndexes.push(earlier);
-      if (useIncomingPayload) sources.set(key, entry);
+      if (resend.tookPayload) sources.set(key, entry);
     }
   }
   liveAppendByList.set(result, { base: existing, appendedFrom: existing.length, replacedIndexes });

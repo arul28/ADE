@@ -238,10 +238,10 @@ function writeStoredProjectRoute(projectRoot: string, route: string): void {
 const FEEDBACK_PROGRESS_TOAST_ID = "ade-feedback-report-progress";
 
 /**
- * The shell renders several times during one project or tab switch, and the
- * top bar (every project tab, tool button and tooltip) rendered with it each
- * time because its two handlers are new closures. It now renders when one of
- * its own values changes.
+ * The shell renders several times during one project or tab switch, and its
+ * two handlers for the top bar are new closures each time. The top bar (every
+ * project tab, tool button and tooltip) renders only when one of its own
+ * values changes.
  */
 const ShellTopBar = memoWithLatestHandlers<NonNullable<Parameters<typeof TopBar>[0]>>(TopBar);
 

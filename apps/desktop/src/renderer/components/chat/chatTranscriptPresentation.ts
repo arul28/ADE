@@ -1,6 +1,6 @@
 import { useMemo, useRef } from "react";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types/chat";
-import { agentChatLiveAppendOf, type AgentChatLiveAppend } from "../../../shared/chatHistoryMerge";
+import { agentChatLiveAppendOf, foldedOverAppends } from "../../../shared/chatHistoryMerge";
 import type { ChatTranscriptGroupedEnvelope, ChatWorkLogEntry } from "./chatTranscriptRows";
 import { dedupeChatToolActivityEntries } from "./ChatWorkLogBlock";
 import {
@@ -240,27 +240,6 @@ function deriveActiveProviderRetryActivity(
     }
   }
   return null;
-}
-
-/**
- * A value folded from a whole transcript, kept per event list. A list the live
- * merge appended to asks `carry` first: given the answer for the list before
- * it and the appended events, either the new answer or null for "fold again".
- * One streamed event then costs that event, not the transcript.
- */
-function foldedOverAppends<T>(
-  cache: WeakMap<readonly AgentChatEventEnvelope[], { value: T }>,
-  events: AgentChatEventEnvelope[],
-  carry: (before: T, append: AgentChatLiveAppend) => { value: T } | null,
-  fold: () => T,
-): T {
-  const known = cache.get(events);
-  if (known) return known.value;
-  const append = agentChatLiveAppendOf(events);
-  const before = append ? cache.get(append.base) : undefined;
-  const next = (append && before ? carry(before.value, append) : null) ?? { value: fold() };
-  cache.set(events, next);
-  return next.value;
 }
 
 const activeTurnIdByEvents = new WeakMap<readonly AgentChatEventEnvelope[], { value: string | null }>();

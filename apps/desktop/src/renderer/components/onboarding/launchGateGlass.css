@@ -8,29 +8,6 @@
  * reduce-motion preference and ADE's own (`html[data-motion="reduced"]`).
  */
 
-/*
- * An older card shared this class name (a glass card for conflict and PR
- * panels) and lived in `index.css`. Nothing else uses the class now, but its
- * rules still reach the sign-in card: the transition, and a border and shadow
- * change while the pointer is over the card. They moved here unchanged, ahead
- * of the gate's own rules as before, so the card looks the same in the app and
- * on the hosted client, which no longer loads `index.css` for this screen.
- */
-.ade-glass-card {
-  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.5);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  transition: border-color 150ms ease, box-shadow 200ms ease, transform 150ms ease;
-}
-
-.ade-glass-card:hover {
-  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22);
-  box-shadow: var(--shadow-card-hover);
-}
-
 .ade-gate {
   --gate-glass-fill: color-mix(in srgb, var(--color-bg) 24%, transparent);
   --gate-glass-tint-top: color-mix(in srgb, var(--color-fg) 10%, transparent);
@@ -116,6 +93,13 @@
     var(--gate-glass-shadow);
   overflow: hidden;
   text-align: center;
+  transition: border-color 150ms ease, box-shadow 200ms ease, transform 150ms ease;
+}
+
+/* The border and the shadow lift a little while the pointer is over the card. */
+.ade-glass-card:hover {
+  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22);
+  box-shadow: var(--shadow-card-hover);
 }
 
 /* A lit rim — bright where light catches the top edge, fading down the sides —

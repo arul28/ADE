@@ -371,7 +371,8 @@ export type ChatSubagentDerivation = {
  * does not re-render every subagent card). The prefix is compared by element
  * identity, so a trim or a reorder takes the full path. A rewritten tool call
  * does not: a provider resends every tool call, the merge replaces the stored
- * one in place, and a tool call is not a subagent event in either version.
+ * one in place, and a tool call is not a subagent event before or after the
+ * rewrite.
  */
 export function deriveChatSubagentSnapshotsIncremental(
   previous: ChatSubagentDerivation | null,

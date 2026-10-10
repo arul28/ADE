@@ -1693,7 +1693,7 @@ not apply, and the full computation is the definition of the result.
 - **A merged list knows what it extended.** `agentChatLiveAppendOf(list)`
   names the list an append extended, where the new events start, and which
   positions a resend replaced. Folds that keep their answer per list
-  (`deriveRuntimeState`, the active turn, its start time, the turn-start map)
+  (`deriveRuntimeState` in `chatRuntimeState.ts`, the active turn, its start time, the turn-start map)
   read only the appended events, and fold again only when one of them can
   change the answer.
 - **The display filter extends its previous answer** (`chatDisplayEvents` in

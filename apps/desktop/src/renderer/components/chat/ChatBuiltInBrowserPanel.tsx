@@ -67,7 +67,7 @@ import {
 } from "../../lib/openExternal";
 import { takeHeldBrowserLinkOpens } from "../../lib/pendingBrowserLinkOpens";
 import { useLaneDevServers } from "../../lib/laneDevServers";
-import { pinKey } from "../../state/projectMachines";
+import { pinKey } from "../../state/pinKey";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { showToast } from "../app/toast/toastStore";
 import { useChatMachineLanes, useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";

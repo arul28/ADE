@@ -1,25 +1,23 @@
 import fs from "node:fs";
 import path from "node:path";
 import chokidar, { type ChokidarOptions } from "chokidar";
-import { withMacosSafeChokidarOptions } from "./chokidarOptions";
 
 /**
  * Watches a directory tree and reports `add`, `change`, `unlink`, `addDir` and
  * `unlinkDir` with absolute paths, as chokidar does.
  *
- * Off macOS this is chokidar, unchanged. On macOS chokidar had to poll
- * (`chokidarOptions.ts`: its native mode opens one watch per directory, and
- * closing thousands of those can block the event loop), and polling checks
- * every path under the root once a second for as long as the watcher lives:
- * 16,000 paths for this repository, about a tenth of a core in the brain while
- * a Files tab is open and nothing is changing.
+ * Off macOS this is chokidar. On macOS chokidar has two modes and neither
+ * fits a tree: the native one opens one watch per directory, and closing
+ * thousands of those can block the event loop; the polling one
+ * (`chokidarOptions.ts`) checks every path under the root once a second for
+ * as long as the watcher lives.
  *
  * So macOS gets one recursive native watch per root, which costs nothing while
  * the tree is still, and one handle to close. The native event only says where
- * to look. What happened is decided the way the poller decided it: the path is
- * read again and compared with what was there before. A new directory is
- * walked and a removed one is reported entry by entry, so callers receive the
- * same events; they arrive sooner.
+ * to look. What happened is decided as a poller decides it: the path is read
+ * again and compared with what was there before. A new directory is walked
+ * and a removed one is reported entry by entry, so callers receive the events
+ * chokidar sends.
  */
 
 export type TreeWatcherEvent = "add" | "change" | "unlink" | "addDir" | "unlinkDir";
@@ -47,11 +45,11 @@ const SCAN_CONCURRENCY = 32;
 
 export function watchTree(rootPath: string, options: TreeWatcherOptions = {}): TreeWatcher {
   if (process.platform !== "darwin") {
-    return chokidar.watch(rootPath, withMacosSafeChokidarOptions({
+    return chokidar.watch(rootPath, {
       ignoreInitial: true,
       ...(options.awaitWriteFinish ? { awaitWriteFinish: options.awaitWriteFinish } : {}),
       ...(options.ignored ? { ignored: options.ignored } : {}),
-    })) as unknown as TreeWatcher;
+    }) as unknown as TreeWatcher;
   }
   return createNativeTreeWatcher(rootPath, options);
 }
@@ -66,7 +64,7 @@ function buildIgnore(ignored: TreeWatcherOptions["ignored"]): (absPath: string) 
   });
 }
 
-function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions = {}): TreeWatcher {
+function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions): TreeWatcher {
   const root = path.resolve(rootPath);
   const isIgnored = buildIgnore(options.ignored);
   const settle = options.awaitWriteFinish ?? null;
@@ -218,6 +216,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions =
   };
 
   const watchExternal = (realDir: string): void => {
+    if (closed) return;
     if (nativeWatchers.has(realDir) || realDir === root || realDir.startsWith(`${root}${path.sep}`)) return;
     try {
       const watcher = fs.watch(realDir, { recursive: true }, (_event, filename) => {
@@ -298,7 +297,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions =
       child.linked ? walkLinkedDirectory(child.path, announce, visitedReal) : syncDirectory(child.path, announce, visitedReal)));
   };
 
-  /** Walk a directory reached through a link, the way the poller followed it. */
+  /** Walk a directory reached through a link; chokidar follows links too. */
   const walkLinkedDirectory = async (absDir: string, announce: boolean, visitedReal: Set<string>): Promise<void> => {
     let real: string;
     try {
@@ -306,7 +305,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions =
     } catch {
       return;
     }
-    if (visitedReal.has(real)) return;
+    if (closed || visitedReal.has(real)) return;
     let known = aliases.get(real);
     if (!known) {
       known = new Set();
@@ -358,13 +357,21 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions =
     if (closed) return;
     const known = entries.get(absPath);
     if (!stat) {
-      if (absPath !== root) forget(absPath, true);
+      if (known) {
+        forget(absPath, true);
+      } else if (entries.has(root) && !(await statOrNull(root))) {
+        // The event for a root that was moved away or deleted names a path
+        // that never existed. The root takes its whole tree with it.
+        if (!closed) forget(root, true);
+      }
       return;
     }
+    // A root that came back is diffed against an empty tree.
+    if (!entries.has(root)) remember(root, { dir: true, mtimeMs: 0, size: 0 });
     if (stat.isDirectory()) {
       if (known && !known.dir) forget(absPath, true);
       const visited = await ancestorsReal(parent);
-      if (!entries.has(absPath) && absPath !== root) {
+      if (!entries.has(absPath)) {
         remember(absPath, { dir: true, mtimeMs: stat.mtimeMs, size: 0 });
         emit("addDir", absPath);
         await walkDirectory(absPath, true, visited);
@@ -427,7 +434,10 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions =
       watcher.on("error", (error) => emit("error", error));
       nativeWatchers.set(root, watcher);
     } catch (error) {
+      // No watch means no events; the caller still gets `ready`, so it does not wait on a dead watcher.
       emit("error", error);
+      ready = true;
+      emit("ready");
       return;
     }
     remember(root, { dir: true, mtimeMs: rootStat.mtimeMs, size: 0 });

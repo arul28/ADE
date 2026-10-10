@@ -167,8 +167,6 @@ export function useProjectMachines(active = true): ProjectMachinesState {
   };
 }
 
-export { pinKey } from "./pinKey";
-
 /** Upper bound on one machine's read, so a wedged machine never holds a list. */
 export const MACHINE_READ_TIMEOUT_MS = 8_000;
 

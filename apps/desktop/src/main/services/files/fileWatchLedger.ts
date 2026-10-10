@@ -5,11 +5,9 @@
  *
  * A page that goes away without running its cleanup (a reload, a crashed
  * renderer, a closed window, the app quitting) never sends its stops. The
- * brain outlives the page, and on macOS a watcher polls every path under its
- * root once a second, so each lost stop left the brain stat-ing a whole
- * repository until it restarted: two watchers measured 29,000 paths and 20%
- * of a core. Whoever sees the client go drains its ledger and sends the stops
- * the page did not.
+ * brain outlives the page, so each lost stop leaves a watcher on a whole
+ * repository until the brain restarts. Whoever sees the client go drains its
+ * ledger and sends the stops the page did not.
  */
 
 export type FileWatchRef = {
@@ -23,8 +21,10 @@ type Entry = FileWatchRef & { count: number };
 export type FileWatchLedger = {
   noteWatch(args: Record<string, unknown>, clientId: number): void;
   noteStop(args: Record<string, unknown>, clientId: number): void;
-  /** Every reference still held, one entry per reference; the ledger is empty afterwards. */
-  drain(clientId?: number): FileWatchRef[];
+  /** Every reference still held, one entry per reference. */
+  refs(): FileWatchRef[];
+  /** The same references; the ledger is empty afterwards. */
+  drain(): FileWatchRef[];
   readonly size: number;
 };
 
@@ -41,6 +41,15 @@ function watchKey(args: Record<string, unknown>, clientId: number): string | nul
 
 export function createFileWatchLedger(): FileWatchLedger {
   const entries = new Map<string, Entry>();
+  const refs = (): FileWatchRef[] => {
+    const held: FileWatchRef[] = [];
+    for (const entry of entries.values()) {
+      for (let index = 0; index < entry.count; index += 1) {
+        held.push({ args: entry.args, clientId: entry.clientId });
+      }
+    }
+    return held;
+  };
   return {
     noteWatch(args, clientId) {
       const key = watchKey(args, clientId);
@@ -56,16 +65,11 @@ export function createFileWatchLedger(): FileWatchLedger {
       entry.count -= 1;
       if (entry.count <= 0) entries.delete(key);
     },
-    drain(clientId) {
-      const refs: FileWatchRef[] = [];
-      for (const [key, entry] of [...entries]) {
-        if (clientId !== undefined && entry.clientId !== clientId) continue;
-        entries.delete(key);
-        for (let index = 0; index < entry.count; index += 1) {
-          refs.push({ args: entry.args, clientId: entry.clientId });
-        }
-      }
-      return refs;
+    refs,
+    drain() {
+      const held = refs();
+      entries.clear();
+      return held;
     },
     get size() {
       return entries.size;

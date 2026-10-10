@@ -58,8 +58,10 @@ import {
   coerceThemeId,
   effectiveThemeId,
   normalizeInterfacePreferences,
+  parseStoredAppearance,
   readSystemColorScheme,
   registerRootAppearanceStore,
+  systemColorSchemeChange,
   type InterfacePreferences,
   type ThemeId,
 } from "./appearanceStore";
@@ -77,16 +79,6 @@ export {
 export type { InterfaceMonoFont, InterfacePreferences, InterfaceSansFont, ThemeId } from "./appearanceStore";
 import { captureHomeTabOpened } from "../components/home/homeAnalytics";
 import { applyInterfacePreferences } from "../theme/applyInterface";
-
-/** Same project, field for field (whatever fields the host sends). */
-function sameProjectInfo(left: ProjectInfo, right: ProjectInfo): boolean {
-  if (left === right) return true;
-  const leftRecord = left as unknown as Record<string, unknown>;
-  const rightRecord = right as unknown as Record<string, unknown>;
-  const keys = Object.keys(leftRecord);
-  return keys.length === Object.keys(rightRecord).length
-    && keys.every((key) => leftRecord[key] === rightRecord[key]);
-}
 
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
 export const DEFAULT_TERMINAL_FONT_FAMILY = [
@@ -1115,16 +1107,8 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PersistedUserPreferences>;
     return {
-      theme: coerceTheme(parsed.theme) ?? "dark",
-      themeId: coerceThemeId(parsed.themeId ?? parsed.theme),
-      customThemes: normalizeAdeThemeList(parsed.customThemes),
-      themeFollowsSystem: parsed.themeFollowsSystem === true,
-      interfacePreferences: normalizeInterfacePreferences(parsed.interfacePreferences),
+      ...parseStoredAppearance(parsed as Record<string, unknown>),
       terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
-      // Detailed tooltips are an onboarding aid that defaults OFF in the browser
-      // web client (clutter for an already oriented user), and ON on desktop. An
-      // explicit toggle is still honored.
-      smartTooltipsEnabled: parsed.smartTooltipsEnabled ?? !isWebClientMode(),
       launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
       // The setting was `promptStashButtonEnabled` before drafts replaced
@@ -2166,7 +2150,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       // reports, which is a new object that reads the same. The stored object
       // stays, so what reads `project` renders once for the switch, not twice.
       const knownProject = incomingProject ? prev.projectInfoByRoot[incomingProject.rootPath] : undefined;
-      const project = incomingProject && knownProject && sameProjectInfo(knownProject, incomingProject)
+      const project = incomingProject && knownProject && shallow(knownProject, incomingProject)
         ? knownProject
         : incomingProject;
       const previousProjectRoot = selectActiveProjectRoot(prev);
@@ -2325,7 +2309,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       // that reads the same keeps the stored object, or each mounted surface
       // of that project takes a new `project` and renders for nothing.
       const known = prev.projectInfoByRoot[project.rootPath];
-      if (known && sameProjectInfo(known, project)) return prev;
+      if (known && shallow(known, project)) return prev;
       return {
         projectInfoByRoot: {
           ...prev.projectInfoByRoot,
@@ -2615,16 +2599,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }),
   setSystemColorScheme: (scheme) =>
     set((prev) => {
-      const systemColorScheme: ThemeId = scheme === "light" ? "light" : "dark";
-      if (systemColorScheme === prev.systemColorScheme) return {};
-      const theme = baseModeForThemeId(
-        effectiveThemeId(prev.themeId, prev.themeFollowsSystem, systemColorScheme),
-        prev.customThemes,
-      );
+      const change = systemColorSchemeChange(prev, scheme);
+      if (!change) return {};
       // Persist the painted base mode so the next launch paints it before the
       // OS is asked; the choice itself (`themeId`) does not change.
-      if (theme !== prev.theme) persistUserPreferencesFrom({ ...prev, theme });
-      return { theme, systemColorScheme };
+      if (change.theme !== prev.theme) persistUserPreferencesFrom({ ...prev, theme: change.theme });
+      return change;
     }),
   setCodeBlockCopyButtonPosition: (position) =>
     set((prev) => {
@@ -3583,20 +3563,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 export type AppStoreApi = StoreApi<AppState>;
 
 const rootAppStore = createStore<AppState>()(createAppState);
-// One context object for `useAppStore` and `useAppearanceStore`.
+// One context object for `useAppStore` and `useAppearanceStore`. A context is
+// both written and read, so its two types cannot meet without a cast; every
+// value put in it is a full app store.
 const AppStoreContext = AppearanceStoreContext as unknown as React.Context<AppStoreApi | null>;
-registerRootAppearanceStore(rootAppStore as unknown as Parameters<typeof registerRootAppearanceStore>[0]);
+registerRootAppearanceStore(rootAppStore);
 
 /** `previous` when it is the same local binding as `next`, field for field. */
 function reuseSameLocalBinding(previous: OpenProjectBinding | null, next: OpenProjectBinding): OpenProjectBinding {
-  if (previous?.kind !== "local" || next.kind !== "local") return next;
-  const previousRecord = previous as unknown as Record<string, unknown>;
-  const nextRecord = next as unknown as Record<string, unknown>;
-  const keys = Object.keys(nextRecord);
-  return keys.length === Object.keys(previousRecord).length
-    && keys.every((key) => previousRecord[key] === nextRecord[key])
-    ? previous
-    : next;
+  return previous?.kind === "local" && next.kind === "local" && shallow(previous, next) ? previous : next;
 }
 
 function createLocalProjectBinding(project: ProjectInfo): OpenProjectBinding {

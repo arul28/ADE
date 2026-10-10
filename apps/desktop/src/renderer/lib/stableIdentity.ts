@@ -1,4 +1,14 @@
-import { createElement, memo, useRef, type ComponentType, type FunctionComponent } from "react";
+import {
+  createElement,
+  memo,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type FunctionComponent,
+  type SetStateAction,
+} from "react";
 
 /** Compare maps by key/value identity so derived values can retain identity across renders. */
 export function sameMapContents<K, V>(previous: ReadonlyMap<K, V>, next: ReadonlyMap<K, V>): boolean {
@@ -126,4 +136,30 @@ export function memoWithLatestHandlers<P extends object>(
   }
   WithLatestHandlers.displayName = `WithLatestHandlers(${Component.displayName ?? Component.name ?? "Component"})`;
   return WithLatestHandlers;
+}
+
+/**
+ * `useState` whose setter drops a plain value equal to the one most recently
+ * asked for. React cannot drop a same-value write early while the component
+ * has other updates queued, so each such write renders the component again.
+ * A functional update always goes through.
+ */
+export function useStateSkippingSameValue<T>(initial: T): [T, (next: SetStateAction<T>) => void] {
+  const [value, setValue] = useState(initial);
+  // The value most recently asked for; `pending` while a functional update is queued.
+  const requested = useRef<{ pending: true } | { pending: false; value: T }>({ pending: false, value });
+  const set = useCallback((next: SetStateAction<T>) => {
+    if (typeof next === "function") {
+      requested.current = { pending: true };
+    } else {
+      if (!requested.current.pending && Object.is(requested.current.value, next)) return;
+      requested.current = { pending: false, value: next };
+    }
+    setValue(next);
+  }, []);
+  // Every commit: a functional update that kept the value must still clear the mark.
+  useLayoutEffect(() => {
+    requested.current = { pending: false, value };
+  });
+  return [value, set];
 }
