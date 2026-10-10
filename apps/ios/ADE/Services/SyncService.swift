@@ -15208,6 +15208,13 @@ final class SyncService: ObservableObject {
     modelId: String? = nil,
     schedule: DraftScheduleInput? = nil
   ) async throws -> DraftEntry {
+    guard !isPersonalChatScope(sessionId: sessionId) else {
+      throw NSError(
+        domain: "ADE",
+        code: 29,
+        userInfo: [NSLocalizedDescriptionKey: "Drafts are not available in personal chats."]
+      )
+    }
     let scope = chatCommandScope(for: sessionId)
     return try await createDraft(
       text: text,

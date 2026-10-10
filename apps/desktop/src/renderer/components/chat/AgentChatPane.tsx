@@ -6914,7 +6914,10 @@ export function AgentChatPane({
   // level because it is a hook, not a condition.
   const schedulePaneScope = useChatPaneScope();
   const scheduledSendContext = useMemo(() => {
-    if (schedulePaneScope != null) return null;
+    // `useChatPaneScope()` is null both for a project pane AND for a personal
+    // pane that has no enclosing provider, so the pane's own scope is the
+    // signal that distinguishes them. Drafts are a project surface.
+    if (schedulePaneScope != null || personalScope != null) return null;
     const laneIdForChat = selectedSession?.laneId ?? laneId ?? null;
     // A chat pinned to another machine lives on THAT machine's lanes. Offering
     // this computer's list would aim a new-chat send at a lane the host does
@@ -6926,7 +6929,7 @@ export function AgentChatPane({
       lanes: sourceLanes.map((lane) => ({ id: lane.id, name: lane.name })),
       machineName: chatRuntimePin?.displayName ?? null,
     };
-  }, [chatMachineLanes, chatRuntimePin?.displayName, laneId, lanes, schedulePaneScope, selectedSession?.laneId]);
+  }, [chatMachineLanes, chatRuntimePin?.displayName, laneId, lanes, personalScope, schedulePaneScope, selectedSession?.laneId]);
   const cloudReadinessLaneId = useMemo(() => {
     const sourceLanes = chatMachineLanes ?? lanes;
     if (isAutoCreateLaneOptionId(draftLaunchTargetId)) {

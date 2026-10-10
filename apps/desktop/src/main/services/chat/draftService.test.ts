@@ -7,6 +7,7 @@ import {
   claimDraft,
   claimScheduledDraft,
   createDraft,
+  getDraft,
   draftLaunchModel,
   deleteDraft,
   listDraftAttachmentPaths,
@@ -309,6 +310,16 @@ describe("draftService", () => {
       const cleared = updateDraft(db, { id: created.id, unschedule: true });
       expect(cleared).toMatchObject({ kind: "draft", status: "draft", scheduledAt: null });
       expect(listScheduledDrafts(db)).toEqual([]);
+    });
+
+    // An armed send is not an attachable draft: deleting it here would cancel
+    // a send the user is still expecting.
+    it("refuses to claim a send that is still armed", () => {
+      const armed = createDraft(db, { text: "later", schedule: schedule() });
+
+      expect(() => claimDraft(db, armed.id)).toThrow("scheduled send");
+      // The row is untouched, so the scheduler can still deliver it.
+      expect(getDraft(db, armed.id)).toMatchObject({ id: armed.id, status: "scheduled" });
     });
 
     it("reports a draft taken on another machine instead of claiming it twice", () => {

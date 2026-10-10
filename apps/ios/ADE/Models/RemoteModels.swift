@@ -3410,6 +3410,8 @@ struct DraftEntry: Codable, Equatable, Identifiable {
   var attachmentsAvailable: Bool?
   var provider: String?
   var modelId: String?
+  /// The runtime-facing model string; a new chat cannot start without one.
+  var model: String?
   var createdAt: String
   var updatedAt: String?
   /// Absent on a pre-scheduling ADE runtime — treat as "draft".
@@ -3475,6 +3477,8 @@ struct DraftScheduleInput: Equatable {
   var graceSeconds: Int?
   var provider: String?
   var modelId: String?
+  /// The runtime-facing model string; a new chat cannot start without one.
+  var model: String?
   var permissionMode: String?
   var thinking: String?
   var scheduledBy: DraftScheduledBy?
@@ -3492,6 +3496,7 @@ struct DraftScheduleInput: Equatable {
     if let graceSeconds { out["graceSeconds"] = graceSeconds }
     if let provider { out["provider"] = provider }
     if let modelId { out["modelId"] = modelId }
+    if let model { out["model"] = model }
     if let permissionMode { out["permissionMode"] = permissionMode }
     if let thinking { out["thinking"] = thinking }
     if let scheduledBy { out["scheduledBy"] = scheduledBy.rawValue }

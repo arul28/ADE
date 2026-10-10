@@ -64387,16 +64387,11 @@ export function createAgentChatService(args: {
    * stale sweep — and picked up by another runtime — is never overwritten with
    * this attempt's result.
    */
-  /** The claim token for the send currently being delivered, if any. */
-  const draftClaimTokens = new Map<string, string>();
-
   const recordDraftOutcome = (
     entry: DraftEntry,
     outcome: DraftDeliveryOutcome,
-    owned: boolean,
+    claimToken: string | null,
   ): void => {
-    const claimToken = draftClaimTokens.get(entry.id) ?? null;
-    draftClaimTokens.delete(entry.id);
     const store = draftDb();
     if (!store) return;
     // A skipped send belongs to another pass; writing anything here would
@@ -64412,7 +64407,7 @@ export function createAgentChatService(args: {
       firedAt: outcome.status === "sent" ? outcome.firedAt : null,
       lastError: outcome.status === "sent" ? null : outcome.error,
     };
-    if (owned && claimToken) {
+    if (claimToken) {
       setDraftStatusIfSending(store, entry.id, patch, claimToken);
       return;
     }
@@ -64436,9 +64431,13 @@ export function createAgentChatService(args: {
       if (store && !claimToken) {
         return { status: "skipped", error: "Another pass is already sending this draft." };
       }
-      if (claimToken) draftClaimTokens.set(entry.id, claimToken);
+      // The claim and the write of its result are one operation, so the token
+      // never has to be kept anywhere: two deliveries of the same draft each
+      // hold their own, and neither can write the other's outcome.
       try {
-        return await deliverDraft(entry, draftDeliveryDeps);
+        const outcome = await deliverDraft(entry, draftDeliveryDeps);
+        if (store) recordDraftOutcome(entry, outcome, claimToken);
+        return outcome;
       } catch (deliveryError) {
         // deliverDraft reports failures rather than throwing, so reaching here
         // means something outside it broke. Hand the claim back rather than
@@ -64452,7 +64451,8 @@ export function createAgentChatService(args: {
         throw deliveryError;
       }
     },
-    onOutcome: (entry, outcome) => recordDraftOutcome(entry, outcome, true),
+    // The outcome is already written by the delivery that held the claim.
+    onOutcome: () => {},
     logger,
   });
   // A runtime that died mid-send left a row claimed; return it to the queue.
@@ -64477,10 +64477,10 @@ export function createAgentChatService(args: {
     // already retrying — would be delivered twice.
     const armed = entry.kind === "scheduled"
       && (entry.status === "scheduled" || entry.status === "sending");
+    let claimToken: string | null = null;
     if (armed) {
-      const claimToken = claimScheduledDraft(store, entry.id);
+      claimToken = claimScheduledDraft(store, entry.id);
       if (!claimToken) return { ok: false, error: "This send is already going out." };
-      draftClaimTokens.set(entry.id, claimToken);
     }
     try {
       const outcome = await deliverDraft(
@@ -64491,7 +64491,7 @@ export function createAgentChatService(args: {
         { ...entry, scheduledAt: new Date().toISOString(), deliveryPolicy: "wait" },
         draftDeliveryDeps,
       );
-      recordDraftOutcome(entry, outcome, armed);
+      recordDraftOutcome(entry, outcome, claimToken);
       return outcome.status === "sent"
         ? { ok: true }
         : { ok: false, error: outcome.error };

@@ -598,6 +598,12 @@ export function claimDraft(db: DraftDb, id: string): DraftEntry | null {
   );
   if (!row) return null;
   const entry = fromRow(row, currentSiteId(db));
+  // An armed send is not an attachable draft. Deleting it here would silently
+  // cancel a send the user is still expecting; the scheduler must be the one
+  // to consume it.
+  if (entry.kind === "scheduled" && entry.status !== "sent" && entry.status !== "cancelled") {
+    throw new Error("This is a scheduled send. Cancel its schedule before attaching it.");
+  }
   db.run("delete from prompt_stashes where id = ?", [normalizedId]);
   return entry;
 }
