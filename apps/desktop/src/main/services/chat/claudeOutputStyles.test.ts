@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   claudeSettingsLocalPath,
+  defaultClaudeSubagentPromptCacheTtl,
   discoverClaudePlugins,
   discoverClaudeOutputStyles,
   readClaudeOutputStyleSelection,
@@ -280,6 +281,40 @@ describe("settings precedence", () => {
     expect(readClaudeWorkflowSizeGuideline(tmpRoot)).toBeNull();
     writeSettings(homeRoot, "settings.json", { workflowSizeGuideline: "large" });
     expect(readClaudeWorkflowSizeGuideline(tmpRoot)).toBe("large");
+  });
+
+  it.each<{
+    name: string;
+    usesPresetOrCredential?: boolean;
+    env?: NodeJS.ProcessEnv;
+    settings?: "user" | "lane" | "otherAccount";
+    expected: "1h" | undefined;
+  }>([
+    { name: "nothing states a TTL", expected: "1h" },
+    { name: "the launch runs on a preset or stored credential", usesPresetOrCredential: true, expected: undefined },
+    { name: "the user's env var states one", env: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" }, expected: undefined },
+    { name: "the user's settings.json states one", settings: "user", expected: undefined },
+    { name: "the lane's settings.local.json states one", settings: "lane", expected: undefined },
+    // A second account has its own config home; the default one saying nothing
+    // must not make ADE override what that account's settings state.
+    { name: "the launch's own account states one", settings: "otherAccount", expected: undefined },
+  ])("asks for a 1-hour subagent prompt cache unless $name", ({ usesPresetOrCredential, env, settings, expected }) => {
+    const otherAccountHome = path.join(homeRoot, "other-account");
+    if (settings === "user") writeSettings(homeRoot, "settings.json", { subagentPromptCacheTtl: "5m" });
+    if (settings === "lane") writeSettings(tmpRoot, "settings.local.json", { subagentPromptCacheTtl: "5m" });
+    if (settings === "otherAccount") {
+      fs.mkdirSync(otherAccountHome, { recursive: true });
+      fs.writeFileSync(path.join(otherAccountHome, "settings.json"), JSON.stringify({ subagentPromptCacheTtl: "5m" }));
+    }
+
+    expect(defaultClaudeSubagentPromptCacheTtl({
+      cwd: tmpRoot,
+      env: {
+        CLAUDE_CONFIG_DIR: settings === "otherAccount" ? otherAccountHome : process.env.CLAUDE_CONFIG_DIR,
+        ...env,
+      },
+      usesPresetOrCredential: usesPresetOrCredential === true,
+    })).toBe(expected);
   });
 });
 

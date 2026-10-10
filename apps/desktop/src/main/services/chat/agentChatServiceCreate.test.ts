@@ -1695,8 +1695,9 @@ describe("createAgentChatService", () => {
       // "outputStyle" key would override the user's global selection.
       expect(opts?.settings).not.toHaveProperty("outputStyle");
       expect(opts?.settings).toEqual(expect.objectContaining({
-        // ADE's own default, which applies only while no settings file states one.
+        // ADE's own defaults, which apply only while no settings file states one.
         workflowSizeGuideline: "medium",
+        subagentPromptCacheTtl: "1h",
         fastMode: false,
         dialogExpiry: "never",
         enabledPlugins: expect.objectContaining({
@@ -1720,7 +1721,7 @@ describe("createAgentChatService", () => {
       );
       fs.writeFileSync(
         path.join(userClaudeDir, "settings.json"),
-        JSON.stringify({ outputStyle: "ASD-STE100", workflowSizeGuideline: "large" }),
+        JSON.stringify({ outputStyle: "ASD-STE100", workflowSizeGuideline: "large", subagentPromptCacheTtl: "5m" }),
       );
       const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
       process.env.CLAUDE_CONFIG_DIR = userClaudeDir;
@@ -1739,8 +1740,9 @@ describe("createAgentChatService", () => {
           settings?: { outputStyle?: string; workflowSizeGuideline?: string };
         } | undefined;
         expect(opts?.settings?.outputStyle).toBe("ASD-STE100");
-        // A user-stated guideline replaces ADE's default rather than losing to it.
+        // A user-stated value replaces ADE's default rather than losing to it.
         expect(opts?.settings).not.toHaveProperty("workflowSizeGuideline");
+        expect(opts?.settings).not.toHaveProperty("subagentPromptCacheTtl");
       } finally {
         if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
         else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;

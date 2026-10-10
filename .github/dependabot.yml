@@ -28,17 +28,14 @@ updates:
       - dependency-name: "@opencode/client"
       - dependency-name: "@cursor/sdk"
       - dependency-name: "@factory/droid-sdk"
+    # One PR for each SDK. group-by puts the bump for both folders in that
+    # one PR, so apps/desktop and apps/ade-cli stay on the same version.
     groups:
-      provider-sdks:
-        patterns:
-          - "@anthropic-ai/claude-agent-sdk"
-          - "@openai/codex"
-          - "@opencode/cli"
-          - "@opencode/client"
-          - "@cursor/sdk"
-          - "@factory/droid-sdk"
+      each-provider-sdk:
+        group-by: dependency-name
     labels:
       - dependencies
     commit-message:
       prefix: "deps"
-    open-pull-requests-limit: 2
+    # One open PR for each of the 6 SDKs.
+    open-pull-requests-limit: 6

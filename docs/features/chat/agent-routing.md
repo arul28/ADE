@@ -472,6 +472,21 @@ preferred default, supplied rather than imposed.
 order, that the SDK itself resolves with `settingSources: ["user", "project",
 "local"]` — lane `settings.local.json`, lane `settings.json`, each ancestor
 root, then the user root — and return `null` when no file declares it.
+
+`subagentPromptCacheTtl: "1h"` follows the same rule, with two more
+conditions. Claude Code keeps the prompt cache of the main conversation for an
+hour on a subscription, but subagents, workflows and helper requests for five
+minutes. `defaultClaudeSubagentPromptCacheTtl` (`claudeOutputStyles.ts`) asks
+for the hour unless a settings file or the
+`CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` env var already states a TTL, or the
+launch runs on a preset or stored credential: the CLI sends a stated TTL to
+any endpoint, 1-hour cache writes are billed at a higher rate, and that
+endpoint's billing is not ADE's. It reads the user tier from the environment
+the Claude process will run with, so a second account's own settings count. An
+SDK chat gets the value as a setting. A terminal `claude` session gets it as
+the env var, set in `ptyService.create` because that is the one path every
+fresh launch and resume takes (a POSIX resume is rendered as a command line and
+drops the launch builder's env).
 Two traps this closes: substituting `"Default"` suppresses a globally
 configured style, and materialising a fallback onto the session record makes it
 read back as a real choice on the next launch, pinning it forever. The session's

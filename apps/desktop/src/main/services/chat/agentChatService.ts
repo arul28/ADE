@@ -99,6 +99,7 @@ import {
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
 import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
 import {
+  defaultClaudeSubagentPromptCacheTtl,
   discoverClaudePluginPaths,
   discoverClaudePlugins,
   discoverClaudeOutputStyles,
@@ -39280,6 +39281,11 @@ export function createAgentChatService(args: {
     const workflowSizeGuideline = readClaudeWorkflowSizeGuideline(managed.laneWorktreePath)
       ? undefined
       : "medium";
+    const subagentPromptCacheTtl = defaultClaudeSubagentPromptCacheTtl({
+      cwd: managed.laneWorktreePath,
+      env: claudeEnv,
+      usesPresetOrCredential: Boolean(claudePresetPlan),
+    });
     const bundledPluginPaths = claudeAgentSkillPluginRoots(claudeEnv);
     const pluginPaths = adeSkillCatalogFor(managed.session) === "none"
       ? []
@@ -39326,6 +39332,7 @@ export function createAgentChatService(args: {
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
         fastMode: sessionEffectiveFastMode(managed.session),
         ...(workflowSizeGuideline ? { workflowSizeGuideline } : {}),
+        ...(subagentPromptCacheTtl ? { subagentPromptCacheTtl } : {}),
         dialogExpiry: "never",
       },
       ...(pluginPaths.length
