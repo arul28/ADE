@@ -166,7 +166,7 @@ struct WorkComposerOverflowButton: View {
             modelId: modelId,
             onDraftChange: { draft = $0 },
             onAttachmentsChange: { attachments = $0 },
-            currentComposer: { (draft, attachments) }
+            currentComposer: { (text: draft, attachments: attachments) }
           )
         }
       },
