@@ -48,6 +48,7 @@ type ClaudePluginManifest = {
 type ClaudeSettingsLocal = Record<string, unknown> & {
   outputStyle?: unknown;
   workflowSizeGuideline?: unknown;
+  subagentPromptCacheTtl?: unknown;
   enabledPlugins?: unknown;
 };
 
@@ -439,6 +440,11 @@ export function readClaudeOutputStyleSelection(cwd: string): string | null {
 /** The workflow size guideline the user configured, or null when none is set. */
 export function readClaudeWorkflowSizeGuideline(cwd: string): string | null {
   return readClaudeSettingsValue(cwd, "workflowSizeGuideline");
+}
+
+/** The subagent prompt cache TTL the user configured, or null when none is set. */
+export function readClaudeSubagentPromptCacheTtl(cwd: string): string | null {
+  return readClaudeSettingsValue(cwd, "subagentPromptCacheTtl");
 }
 
 export function writeClaudeOutputStyleSelection(cwd: string, outputStyle: string): string {

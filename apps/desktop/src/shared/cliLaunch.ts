@@ -956,6 +956,20 @@ export function harnessPresetLaunchEnv(
   return preset?.env && Object.keys(preset.env).length ? { ...preset.env } : {};
 }
 
+/**
+ * Claude Code keeps the main conversation's prompt cache for an hour on a
+ * subscription but everything else (subagents, workflows, helpers) for five
+ * minutes. This is the CLI's lowest-priority opt-in to one hour: a TTL the user
+ * states in a settings file or env var still wins. It also moves the main
+ * conversation to one hour where the CLI would pick five minutes (an API key),
+ * so a preset launch is left alone: its endpoint and billing are not ADE's.
+ */
+function claudePromptCacheLaunchEnv(
+  preset: TrackedCliPresetLaunch | null | undefined,
+): Record<string, string> {
+  return preset ? {} : { ENABLE_PROMPT_CACHING_1H: "1" };
+}
+
 function mergeLaunchEnv<B extends Record<string, string> | null | undefined>(
   base: B,
   patch: Record<string, string>,
@@ -1099,6 +1113,7 @@ export function buildTrackedCliLaunchCommand(args: {
     const shellArgs = commandArgs.filter(
       (arg, i, arr) => arg !== "--append-system-prompt" && arr[i - 1] !== "--append-system-prompt",
     );
+    const claudeEnv = mergeLaunchEnv(agentSkillEnv, claudePromptCacheLaunchEnv(args.preset));
     return {
       command: "claude",
       args: commandArgs,
@@ -1107,7 +1122,7 @@ export function buildTrackedCliLaunchCommand(args: {
       ...(initialPrompt && !promptRidesInArgv
         ? { initialInput: initialPrompt, initialInputDelayMs: 750 }
         : {}),
-      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+      ...(claudeEnv ? { env: claudeEnv } : {}),
     };
   }
 
@@ -2137,6 +2152,7 @@ export function buildTrackedCliResumeLaunchCommand(
   // Preset last, for the same reason as a fresh launch: a preset that owns its
   // own config home must outrank the account patch.
   const resumeEnv = {
+    ...(metadata.provider === "claude" ? claudePromptCacheLaunchEnv(overrides.preset) : {}),
     ...providerInstanceLaunchEnv(metadata.provider, overrides.instance),
     ...harnessPresetLaunchEnv(overrides.preset),
   };
