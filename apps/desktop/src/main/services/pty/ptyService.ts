@@ -161,6 +161,7 @@ import {
   PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS,
 } from "../externalSessions/providerSessionHandles";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
+import { defaultClaudeSubagentPromptCacheTtl } from "../chat/claudeOutputStyles";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
@@ -6305,6 +6306,24 @@ export function createPtyService({
         else delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
       } else {
         delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
+      }
+      // An SDK chat states this default as a setting. A terminal CLI gets it
+      // here, on the one path every fresh launch and resume takes, as the env
+      // var: a `--settings` flag would not survive the POSIX resume rendering.
+      if (isClaudeTrackedCliToolType(toolTypeHint)) {
+        const subagentPromptCacheTtl = defaultClaudeSubagentPromptCacheTtl({
+          cwd,
+          env: launchEnv,
+          usesPresetOrCredential: Boolean(
+            runtimeLaunchPresetId
+            || runtimeLaunchCredentialId
+            || trackedCliResumePresetId(initialResumeMetadata)
+            || trackedCliResumeCredentialId(initialResumeMetadata),
+          ),
+        });
+        if (subagentPromptCacheTtl) {
+          launchEnv.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL = subagentPromptCacheTtl;
+        }
       }
       launchEnv = withResolvedCliLaunchPath(launchEnv, {
         includeInteractiveShell: Boolean(directCommand || startupCommand),

@@ -99,11 +99,11 @@ import {
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
 import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
 import {
+  defaultClaudeSubagentPromptCacheTtl,
   discoverClaudePluginPaths,
   discoverClaudePlugins,
   discoverClaudeOutputStyles,
   readClaudeOutputStyleSelection,
-  readClaudeSubagentPromptCacheTtl,
   readClaudeWorkflowSizeGuideline,
   resolveClaudeOutputStyle,
   writeClaudeOutputStyleSelection,
@@ -39281,15 +39281,11 @@ export function createAgentChatService(args: {
     const workflowSizeGuideline = readClaudeWorkflowSizeGuideline(managed.laneWorktreePath)
       ? undefined
       : "medium";
-    // The same rule for the subagent prompt cache: Claude Code keeps the main
-    // conversation warm for an hour on a subscription but subagents for five
-    // minutes, so a subagent that waits on a long tool call rewrites its whole
-    // prefix. A preset or stored credential is left alone: the CLI sends a
-    // stated TTL to any endpoint, and 1-hour writes are billed at a higher rate.
-    const subagentPromptCacheTtl = claudePresetPlan
-      || readClaudeSubagentPromptCacheTtl(managed.laneWorktreePath)
-      ? undefined
-      : "1h";
+    const subagentPromptCacheTtl = defaultClaudeSubagentPromptCacheTtl({
+      cwd: managed.laneWorktreePath,
+      env: claudeEnv,
+      usesPresetOrCredential: Boolean(claudePresetPlan),
+    });
     const bundledPluginPaths = claudeAgentSkillPluginRoots(claudeEnv);
     const pluginPaths = adeSkillCatalogFor(managed.session) === "none"
       ? []

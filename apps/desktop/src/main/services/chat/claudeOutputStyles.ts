@@ -212,7 +212,7 @@ function ancestorClaudeRoots(cwd: string): string[] {
   return roots;
 }
 
-function claudeRootsByPrecedence(cwd: string): string[] {
+function claudeRootsByPrecedence(cwd: string, env?: NodeJS.ProcessEnv): string[] {
   const roots: string[] = [];
   const seen = new Set<string>();
   const addRoot = (root: string): void => {
@@ -227,7 +227,7 @@ function claudeRootsByPrecedence(cwd: string): string[] {
   // Passed explicitly so that os.homedir() spies reach the shared helper, which
   // imports `homedir` by name.
   const homeDir = os.homedir();
-  const userRoot = claudeConfigHome({ homeDir });
+  const userRoot = claudeConfigHome({ homeDir, ...(env ? { env } : {}) });
   const realHomeRoot = path.join(path.resolve(homeDir), ".claude");
   // A lane normally sits under $HOME, so the ancestor walk reaches ~/.claude and
   // would rank it as a project tier ABOVE the user tier. That is wrong whenever
@@ -418,8 +418,8 @@ export function readClaudeSettingsLocal(cwd: string): ClaudeSettingsLocal {
  *
  * See providerConfigHomes.ts for why absence must stay absent.
  */
-function readClaudeSettingsValue(cwd: string, key: string): string | null {
-  for (const root of claudeRootsByPrecedence(cwd)) {
+function readClaudeSettingsValue(cwd: string, key: string, env?: NodeJS.ProcessEnv): string | null {
+  for (const root of claudeRootsByPrecedence(cwd, env)) {
     for (const fileName of ["settings.local.json", "settings.json"]) {
       const value = maybeString(readClaudeSettingsFile(path.join(root, fileName))[key]);
       if (value) return value;
@@ -442,9 +442,30 @@ export function readClaudeWorkflowSizeGuideline(cwd: string): string | null {
   return readClaudeSettingsValue(cwd, "workflowSizeGuideline");
 }
 
-/** The subagent prompt cache TTL the user configured, or null when none is set. */
-export function readClaudeSubagentPromptCacheTtl(cwd: string): string | null {
-  return readClaudeSettingsValue(cwd, "subagentPromptCacheTtl");
+/**
+ * ADE's default prompt cache TTL for everything outside a Claude session's main
+ * conversation (subagents, workflows, helper requests), or undefined when ADE
+ * must not state one.
+ *
+ * Claude Code keeps the main conversation warm for an hour on a subscription
+ * but the rest for five minutes, so a subagent that waits on a long tool call
+ * rewrites its whole prefix. ADE asks for the hour unless the user already
+ * chose a TTL (settings file or env var), or the launch runs on a preset or
+ * stored credential: the CLI sends a stated TTL to any endpoint, 1-hour writes
+ * are billed at a higher rate, and that endpoint's billing is not ADE's.
+ *
+ * `env` is the environment the Claude process will run with: an account other
+ * than the default one moves the user settings tier through `CLAUDE_CONFIG_DIR`.
+ */
+export function defaultClaudeSubagentPromptCacheTtl(args: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  usesPresetOrCredential: boolean;
+}): "1h" | undefined {
+  if (args.usesPresetOrCredential) return undefined;
+  if (args.env.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL?.trim()) return undefined;
+  if (readClaudeSettingsValue(args.cwd, "subagentPromptCacheTtl", args.env)) return undefined;
+  return "1h";
 }
 
 export function writeClaudeOutputStyleSelection(cwd: string, outputStyle: string): string {
