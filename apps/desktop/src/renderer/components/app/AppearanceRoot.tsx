@@ -1,7 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import { MotionConfig } from "motion/react";
 import { applyInterfacePreferences } from "../../theme/applyInterface";
-import { useAppStore } from "../../state/appStore";
+import { useAppearanceStore } from "../../state/appearanceStore";
 import { ThemeDocumentSync } from "./ThemeDocumentSync";
 
 /**
@@ -11,8 +11,8 @@ import { ThemeDocumentSync } from "./ThemeDocumentSync";
  * sign-in screen both mount it, so a signed-out visitor sees the same look.
  */
 export function AppearanceRoot({ children }: { children: ReactNode }) {
-  const setSystemColorScheme = useAppStore((s) => s.setSystemColorScheme);
-  const interfacePreferences = useAppStore((s) => s.interfacePreferences);
+  const setSystemColorScheme = useAppearanceStore((s) => s.setSystemColorScheme);
+  const interfacePreferences = useAppearanceStore((s) => s.interfacePreferences);
 
   useEffect(() => {
     applyInterfacePreferences(interfacePreferences);

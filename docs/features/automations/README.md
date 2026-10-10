@@ -172,7 +172,7 @@ Stability rules:
 
 ## File-change triggers
 
-`file.change` triggers use `chokidar` to watch paths under the target lane's worktree (or project root if no lane). `WatchedFileRoot` scopes the watcher per lane. Changes are debounced and posted to `triggerRun` with the matched paths.
+`file.change` triggers use `watchTree` (`services/shared/treeWatcher.ts`: chokidar off macOS, one recursive native watch per root on macOS) to watch paths under the target lane's worktree (or project root if no lane). `WatchedFileRoot` scopes the watcher per lane. Changes are debounced and posted to `triggerRun` with the matched paths.
 
 `globToRegExp` and `matchesGlob` are the primitives for path matching. `escapeRegExp` is used by the legacy path-list matcher.
 

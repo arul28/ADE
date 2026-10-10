@@ -6,9 +6,12 @@ import {
   Navigate,
   Route,
   Routes,
+  UNSAFE_LocationContext as RouterLocationContext,
+  UNSAFE_RouteContext as RouterRouteContext,
   useLocation,
   useNavigate
 } from "react-router-dom";
+import { shallow } from "zustand/shallow";
 import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
@@ -456,25 +459,32 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   useParkedSurfaceFocus(lanesSurfaceRef, !isLanesRoute, shouldRenderLanes);
   useParkedSurfaceFocus(pageSurfaceRef, overlayOpen, pagePath);
 
-  const workSurface = shouldRenderWork ? (
-    <Routes location={visibleWorkRoute}>
-      <Route path="/work/*" element={
-        <div
-          ref={workSurfaceRef}
-          className="h-full min-h-0 w-full"
-          {...parkedSurfaceProps(!isWorkRoute)}
-        >
-          <PageErrorBoundary>
-            <React.Suspense fallback={LazyFallback}>
-              <ProjectSidebarHold held={heldWork}>
-                <TerminalsPage active={active && isWorkRoute} />
-              </ProjectSidebarHold>
-            </React.Suspense>
-          </PageErrorBoundary>
-        </div>
-      } />
-    </Routes>
-  ) : null;
+  // The Work surface stays mounted behind every other tab. While it is parked
+  // its element is the same object and the router values above it are held,
+  // so a switch between two other tabs renders nothing in it (not the session
+  // list, the open chat or its composer).
+  const workShown = active && isWorkRoute;
+  const workSurface = React.useMemo(() => (shouldRenderWork ? (
+    <ProjectSurfaceRouterScope active={workShown}>
+      <Routes location={visibleWorkRoute}>
+        <Route path="/work/*" element={
+          <div
+            ref={workSurfaceRef}
+            className="h-full min-h-0 w-full"
+            {...parkedSurfaceProps(!isWorkRoute)}
+          >
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>
+                <ProjectSidebarHold held={heldWork}>
+                  <TerminalsPage active={workShown} />
+                </ProjectSidebarHold>
+              </React.Suspense>
+            </PageErrorBoundary>
+          </div>
+        } />
+      </Routes>
+    </ProjectSurfaceRouterScope>
+  ) : null), [heldWork, isWorkRoute, shouldRenderWork, visibleWorkRoute, workShown]);
 
   const lanesSurface = shouldRenderLanes ? (
     <Routes location={visibleLanesRoute}>
@@ -561,7 +571,31 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   );
 }
 
-function ProjectSurface({
+/**
+ * Holds the router's location and route match still for a parked project
+ * surface. Every mounted project sits under the one router, and most of a Work
+ * surface reads them (`useLocation`, `useNavigate`, each nested `<Routes>`),
+ * so without this one switch between two projects renders the Work surface
+ * of every mounted project several times. A parked surface keeps what it last
+ * had while it was on screen (until then, what it mounted with), which is also its own
+ * location and not the visible project's. It gets the live values again in
+ * the render that shows it.
+ */
+function ProjectSurfaceRouterScope({ active, children }: { active: boolean; children: React.ReactNode }) {
+  const liveLocation = React.useContext(RouterLocationContext);
+  const liveRoute = React.useContext(RouterRouteContext);
+  const held = React.useRef({ location: liveLocation, route: liveRoute });
+  if (active) held.current = { location: liveLocation, route: liveRoute };
+  return (
+    <RouterLocationContext.Provider value={held.current.location}>
+      <RouterRouteContext.Provider value={held.current.route}>
+        {children}
+      </RouterRouteContext.Provider>
+    </RouterLocationContext.Provider>
+  );
+}
+
+const ProjectSurface = React.memo(function ProjectSurface({
   active,
   project,
   projectBinding,
@@ -628,11 +662,13 @@ function ProjectSurface({
         data-project-binding-key={projectBinding.key}
         data-project-root={project.rootPath}
       >
-        <ProjectRouteContent active={active} route={route} />
+        <ProjectSurfaceRouterScope active={active}>
+          <ProjectRouteContent active={active} route={route} />
+        </ProjectSurfaceRouterScope>
       </div>
     </AppStoreProvider>
   );
-}
+});
 
 function ProjectTabHost() {
   const location = useLocation();
@@ -784,6 +820,7 @@ function ProjectTabHost() {
     setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === route ? prev : { ...prev, [activeSurfaceKey]: route }));
   }, [activeSurfaceKey, location]);
 
+  const localBindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
   const projectEntries = React.useMemo<ProjectSurfaceEntry[]>(() => {
     const entries: ProjectSurfaceEntry[] = [];
     const activeRemoteRoot =
@@ -798,7 +835,13 @@ function ProjectTabHost() {
         activeProject?.rootPath === root && !activeRemoteRoot ? activeProject : null
       );
       if (!project) continue;
-      const binding = localProjectBindingForProject(project);
+      // Same fields, same object: this list is rebuilt on every project
+      // switch, and a new binding object for a project that did not change
+      // re-rendered everything in it that reads the binding.
+      const built = localProjectBindingForProject(project);
+      const known = localBindingsRef.current.get(built.key);
+      const binding = known && shallow(known, built) ? known : built;
+      localBindingsRef.current.set(binding.key, binding);
       entries.push({ surfaceKey: binding.key, project, binding });
     }
     for (const binding of openRemoteProjectTabs) {

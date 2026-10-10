@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { mergeAgentChatLiveEvents } from "../../../shared/chatHistoryMerge";
 import React from "react";
 import { encodeRoutePresetId } from "../../../shared/harnessRoutes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11586,6 +11587,38 @@ describe("shouldPromoteSessionForComputerUse", () => {
 });
 
 describe("deriveRuntimeState", () => {
+  it("follows a streamed turn batch by batch: text keeps the state, a steer and the end of the turn change it", () => {
+    const at = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-07-16T12:00:${String(second).padStart(2, "0")}.000Z`,
+      event,
+    });
+    const started = [at(0, { type: "status", turnStatus: "started", turnId: "turn-1" })];
+    expect(deriveRuntimeState(started)).toMatchObject({ turnActive: true, pendingSteers: [], pendingInputs: [] });
+
+    const streaming = mergeAgentChatLiveEvents(started, [
+      at(1, { type: "text", text: "one", messageId: "m-1", turnId: "turn-1" }),
+      at(2, { type: "tool_call", tool: "bash", args: {}, itemId: "call-1", turnId: "turn-1" }),
+    ]);
+    expect(deriveRuntimeState(streaming)).toMatchObject({ turnActive: true, pendingSteers: [] });
+
+    const steered = mergeAgentChatLiveEvents(streaming, [
+      at(3, { type: "user_message", text: "also this", steerId: "steer-1", deliveryState: "queued" }),
+    ]);
+    expect(deriveRuntimeState(steered).pendingSteers.map((steer) => steer.steerId)).toEqual(["steer-1"]);
+
+    // More text after the steer must not drop it.
+    const moreText = mergeAgentChatLiveEvents(steered, [at(4, { type: "text", text: "two", messageId: "m-1", turnId: "turn-1" })]);
+    expect(deriveRuntimeState(moreText)).toMatchObject({ turnActive: true });
+    expect(deriveRuntimeState(moreText).pendingSteers.map((steer) => steer.steerId)).toEqual(["steer-1"]);
+
+    const ended = mergeAgentChatLiveEvents(moreText, [
+      at(5, { type: "user_message", text: "also this", steerId: "steer-1", deliveryState: "delivered" }),
+      at(6, { type: "done", turnId: "turn-1", status: "completed" }),
+    ]);
+    expect(deriveRuntimeState(ended)).toMatchObject({ turnActive: false, pendingSteers: [] });
+  });
+
   it("clears a staged steer when Claude reports that its command started", () => {
     const events: AgentChatEventEnvelope[] = [
       {

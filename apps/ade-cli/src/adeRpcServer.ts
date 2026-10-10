@@ -50,6 +50,8 @@ import {
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
+import { readRuntimeFileWatchSenderId, toRuntimeFileWatchArgs } from "../../desktop/src/main/services/adeActions/actionArgs";
+import { createFileWatchLedger } from "../../desktop/src/main/services/files/fileWatchLedger";
 import { captureAppControlAnalytics } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/services/chat/spawnMissionOwnership";
 import { runGit } from "../../desktop/src/main/services/git/git";
@@ -8250,6 +8252,18 @@ export function createAdeRpcRequestHandler(args: {
     };
   };
 
+  /** File watches opened over this connection and not yet stopped. */
+  const fileWatches = createFileWatchLedger();
+  const noteFileWatchAction = (actionName: string, actionArgs: Record<string, unknown>, result: unknown): void => {
+    if (actionName !== "run_ade_action" || actionArgs.domain !== "file") return;
+    if (actionArgs.action !== "watchWorkspace" && actionArgs.action !== "stopWatching") return;
+    if (isRecord(result) && (result.ok === false || result.isError === true)) return;
+    const watchArgs = safeObject(actionArgs.args);
+    const clientId = readRuntimeFileWatchSenderId(watchArgs);
+    if (actionArgs.action === "watchWorkspace") fileWatches.noteWatch(watchArgs, clientId);
+    else fileWatches.noteStop(watchArgs, clientId);
+  };
+
   const callAction = async (actionName: string, actionArgs: Record<string, unknown>): Promise<unknown> => {
     if (READ_ONLY_TOOLS.has(actionName)) {
       return await runTool({ runtime, session, name: actionName, toolArgs: actionArgs });
@@ -8504,7 +8518,9 @@ export function createAdeRpcRequestHandler(args: {
       const actionName = assertNonEmptyString(params.name, "name");
       const actionArgs = safeObject(params.arguments);
       try {
-        return await callAction(actionName, actionArgs);
+        const result = await callAction(actionName, actionArgs);
+        noteFileWatchAction(actionName, actionArgs, result);
+        return result;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
@@ -8670,7 +8686,17 @@ export function createAdeRpcRequestHandler(args: {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Method not found: ${method}`);
   }) as JsonRpcHandler & { dispose: () => void };
 
-  handler.dispose = () => {};
+  // The connection is gone, and with it every client that could still send a
+  // stop for the watches it opened here.
+  handler.dispose = () => {
+    for (const ref of fileWatches.drain()) {
+      try {
+        runtime.fileService?.stopWatching(toRuntimeFileWatchArgs(ref.args), ref.clientId);
+      } catch {
+        // The project may already be closing; its watchers go with it.
+      }
+    }
+  };
 
   return handler;
 }

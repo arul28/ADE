@@ -501,6 +501,18 @@ describe("appStore", () => {
       const project = { id: "p1", name: "Test", rootPath: "/tmp/test", gitRemoteUrl: null, gitDefaultBranch: "main", createdAt: "" } as any;
       useAppStore.getState().setProject(project);
       expect(useAppStore.getState().project).toBe(project);
+      const binding = useAppStore.getState().projectBinding;
+
+      // The host sends a fresh object on every switch. Equal fields keep the
+      // stored project and binding, so nothing that reads them renders again.
+      useAppStore.getState().setProject({ ...project });
+      expect(useAppStore.getState().project).toBe(project);
+      expect(useAppStore.getState().projectBinding).toBe(binding);
+
+      const renamed = { ...project, displayName: "Renamed" };
+      useAppStore.getState().setProject(renamed);
+      expect(useAppStore.getState().project).toBe(renamed);
+      expect(useAppStore.getState().projectBinding).not.toBe(binding);
     });
 
     it("setProject restores a persisted lane cache before the first refresh", () => {

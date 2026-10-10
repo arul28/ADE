@@ -2,7 +2,11 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
 } from "../../../shared/types";
-import { agentChatEventIdentityKey } from "../../../shared/chatHistoryMerge";
+import {
+  agentChatEventIdentityKey,
+  foldedOverAppends,
+  recordAgentChatLiveAppend,
+} from "../../../shared/chatHistoryMerge";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
 
 const chatEventResidentSizeCache = new WeakMap<AgentChatEventEnvelope, number>();
@@ -243,4 +247,110 @@ export function resolveMergedSnapshotHistoryCursor(args: {
   return snapshotOverlaps && keptOldestExisting
     ? Math.min(args.currentCursor, args.snapshotCursor)
     : args.snapshotCursor;
+}
+
+type ChatDisplayFilter = {
+  display: AgentChatEventEnvelope[];
+  /** Positions in the source list of the events left out, ascending. */
+  droppedIndexes: readonly number[];
+};
+
+const chatDisplayFilterByEvents = new WeakMap<readonly AgentChatEventEnvelope[], { value: ChatDisplayFilter }>();
+
+/** How many of the sorted `indexes` are below `index`. */
+function countBelow(indexes: readonly number[], index: number): number {
+  let low = 0;
+  let high = indexes.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (indexes[middle]! < index) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/** A dotted `subagent.*` event; the transcript shows its plain twin. */
+function isSubagentTwin(envelope: AgentChatEventEnvelope): boolean {
+  return envelope.event.type.startsWith("subagent.");
+}
+
+function touchesSteerState(envelope: AgentChatEventEnvelope): boolean {
+  const event = envelope.event;
+  return (event.type === "user_message" || event.type === "system_notice") && Boolean(event.steerId);
+}
+
+function filterChatDisplayEvents(events: AgentChatEventEnvelope[]): ChatDisplayFilter {
+  const settledSteerIds = new Set<string>();
+  for (const { event } of events) {
+    if (event.type === "user_message" && event.steerId && event.deliveryState !== "queued") {
+      settledSteerIds.add(event.steerId);
+    } else if (
+      event.type === "system_notice"
+      && event.steerId
+      && /\b(?:cancelled|delivering)\b/i.test(event.message)
+    ) {
+      settledSteerIds.add(event.steerId);
+    }
+  }
+  const droppedIndexes: number[] = [];
+  const display = events.filter((envelope, index) => {
+    const event = envelope.event;
+    const hidden = isSubagentTwin(envelope)
+      // Historical immediate sends were first persisted as queued and then
+      // resolved under the same steer id. Once resolved, hide the obsolete
+      // queue notice so the transcript cannot contradict the delivered bubble.
+      || (
+        event.type === "system_notice"
+        && Boolean(event.steerId)
+        && settledSteerIds.has(event.steerId!)
+        && /^Message queued\b/i.test(event.message)
+      );
+    if (hidden) droppedIndexes.push(index);
+    return !hidden;
+  });
+  return droppedIndexes.length ? { display, droppedIndexes } : { display: events, droppedIndexes };
+}
+
+/**
+ * The events a transcript shows: everything except the dotted `subagent.*`
+ * twins and queue notices a later delivery made obsolete.
+ *
+ * A list the live merge appended to extends the previous answer instead of
+ * filtering the whole transcript again, and the view keeps that relation, so
+ * what is folded from it carries forward as well. When nothing new is shown
+ * (a batch of `subagent.*` twins) the previous list itself comes back and the
+ * transcript does not render. A steer event can hide an older notice, so it
+ * takes the full filter.
+ */
+export function chatDisplayEvents(events: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
+  return foldedOverAppends(
+    chatDisplayFilterByEvents,
+    events,
+    (before, append) => {
+      const shown: AgentChatEventEnvelope[] = [];
+      const dropped: number[] = [];
+      for (let index = append.appendedFrom; index < events.length; index += 1) {
+        const envelope = events[index]!;
+        if (touchesSteerState(envelope)) return null;
+        if (isSubagentTwin(envelope)) dropped.push(index);
+        else shown.push(envelope);
+      }
+      const droppedIndexes = dropped.length ? [...before.droppedIndexes, ...dropped] : before.droppedIndexes;
+      if (!droppedIndexes.length) return { value: { display: events, droppedIndexes } };
+      if (!shown.length && !append.replacedIndexes.length) return { value: { display: before.display, droppedIndexes } };
+      const display = before.display.slice();
+      const replacedIndexes = append.replacedIndexes.map((index) => index - countBelow(before.droppedIndexes, index));
+      append.replacedIndexes.forEach((index, at) => {
+        display[replacedIndexes[at]!] = events[index]!;
+      });
+      for (const envelope of shown) display.push(envelope);
+      recordAgentChatLiveAppend(display, {
+        base: before.display,
+        appendedFrom: before.display.length,
+        replacedIndexes,
+      });
+      return { value: { display, droppedIndexes } };
+    },
+    () => filterChatDisplayEvents(events),
+  ).display;
 }

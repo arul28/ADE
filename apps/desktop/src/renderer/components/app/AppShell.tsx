@@ -8,6 +8,7 @@ import { CommandPalette } from "./CommandPalette";
 import { IntegrationBanners } from "./IntegrationBanners";
 import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
+import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import { useProjectSidebarShortcuts } from "./projectSidebar/useProjectSidebarShortcuts";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
@@ -235,6 +236,14 @@ function writeStoredProjectRoute(projectRoot: string, route: string): void {
 }
 
 const FEEDBACK_PROGRESS_TOAST_ID = "ade-feedback-report-progress";
+
+/**
+ * The shell renders several times during one project or tab switch, and its
+ * two handlers for the top bar are new closures each time. The top bar (every
+ * project tab, tool button and tooltip) renders only when one of its own
+ * values changes.
+ */
+const ShellTopBar = memoWithLatestHandlers<NonNullable<Parameters<typeof TopBar>[0]>>(TopBar);
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
@@ -1048,7 +1057,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       )}
     >
       <div className="shrink-0 relative z-20">
-        <TopBar
+        <ShellTopBar
           personalChatsRouteActive={isPersonalChatsRoute}
           browserRouteActive={isBrowserRoute}
           musicRouteActive={isMusicRoute}

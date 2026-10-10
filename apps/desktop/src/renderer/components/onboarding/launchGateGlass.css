@@ -93,6 +93,13 @@
     var(--gate-glass-shadow);
   overflow: hidden;
   text-align: center;
+  transition: border-color 150ms ease, box-shadow 200ms ease, transform 150ms ease;
+}
+
+/* The border and the shadow lift a little while the pointer is over the card. */
+.ade-glass-card:hover {
+  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22);
+  box-shadow: var(--shadow-card-hover);
 }
 
 /* A lit rim — bright where light catches the top edge, fading down the sides —

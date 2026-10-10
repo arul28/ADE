@@ -1,7 +1,6 @@
 import path from "node:path";
-import chokidar, { type ChokidarOptions, type FSWatcher } from "chokidar";
 import type { FileChangeEvent } from "../../../shared/types";
-import { withMacosSafeChokidarOptions } from "../shared/chokidarOptions";
+import { watchTree, type TreeWatcher, type TreeWatcherOptions } from "../shared/treeWatcher";
 import { normalizeRelative } from "../shared/utils";
 
 type WatchCallback = (event: FileChangeEvent) => void;
@@ -18,7 +17,7 @@ type WatchSubscription = {
 };
 
 type ManagedWatcher = {
-  watcher: FSWatcher;
+  watcher: TreeWatcher;
   active: boolean;
   ready: boolean;
   closeAfterReady: boolean;
@@ -94,7 +93,7 @@ export function createFileWatcherService() {
     managed.active = false;
 
     if (!managed.ready) {
-      // On macOS, closing chokidar while FSEvents is still starting can block Node's main loop.
+      // Close once the first scan is done, so a close never races the scan.
       managed.closeAfterReady = true;
       return;
     }
@@ -140,7 +139,7 @@ export function createFileWatcherService() {
     /(^|[/\\])\.ade($|[/\\])/,
   ];
 
-  const ignoredPatternsFor = (rootPath: string, includeIgnored: boolean): ChokidarOptions["ignored"] => [
+  const ignoredPatternsFor = (rootPath: string, includeIgnored: boolean): TreeWatcherOptions["ignored"] => [
     ...(includeIgnored ? ALWAYS_IGNORED_PATTERNS : DEFAULT_IGNORED_PATTERNS),
     (candidatePath: string) => {
       const relPath = normalizeRelative(path.relative(rootPath, candidatePath));
@@ -152,14 +151,13 @@ export function createFileWatcherService() {
   const startWatcher = (key: string, subscription: WatchSubscription): void => {
     closeWatcher(subscription);
 
-    const watcher = chokidar.watch(subscription.rootPath, withMacosSafeChokidarOptions({
-      ignoreInitial: true,
+    const watcher = watchTree(subscription.rootPath, {
       awaitWriteFinish: {
         stabilityThreshold: 120,
         pollInterval: 50,
       },
       ignored: ignoredPatternsFor(subscription.rootPath, subscription.includeIgnored),
-    }));
+    });
     const managed: ManagedWatcher = {
       watcher,
       active: true,
@@ -199,7 +197,7 @@ export function createFileWatcherService() {
         subscriptions.delete(key);
         closeWatcher(subscription);
       }
-      // Other errors are non-fatal for chokidar; ignore silently
+      // Other errors are non-fatal for the watcher; ignore silently
     });
 
     watcher.on("add", (absPath) => forward("add", absPath));
@@ -226,7 +224,7 @@ export function createFileWatcherService() {
 
     if (current.defaultRefCount === 0 && current.includeIgnoredRefCount === 0) {
       // Keep an idle watcher alive briefly so rapid route changes do not
-      // thrash chokidar setup/teardown on large repos.
+      // thrash watcher setup/teardown on large repos.
       scheduleIdleClose(key, current);
       return;
     }

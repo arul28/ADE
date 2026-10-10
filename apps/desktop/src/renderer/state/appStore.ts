@@ -1,4 +1,4 @@
-import React, { createContext, useContext, type ReactNode } from "react";
+import React, { useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { shallow } from "zustand/shallow";
@@ -45,40 +45,41 @@ import {
 import {
   DEFAULT_THEME_ID,
   baseModeForThemeId,
-  canonicalThemeId,
   normalizeAdeThemeList,
   resolveTheme,
   resolveThemeById,
-  themeIdForMode,
   type AdeTheme,
 } from "../../shared/theme";
 import { applyAdeTheme } from "../theme/applyTheme";
+import {
+  AppearanceStoreContext,
+  USER_PREFERENCES_STORAGE_KEY,
+  coerceTheme,
+  coerceThemeId,
+  effectiveThemeId,
+  normalizeInterfacePreferences,
+  parseStoredAppearance,
+  readSystemColorScheme,
+  registerRootAppearanceStore,
+  systemColorSchemeChange,
+  type InterfacePreferences,
+  type ThemeId,
+} from "./appearanceStore";
+
+// The appearance values and their parsing live in `appearanceStore.ts`, so the
+// components that paint the look do not have to import this file. Everything
+// that was exported from here still is.
+export {
+  DEFAULT_INTERFACE_PREFERENCES,
+  effectiveThemeId,
+  normalizeInterfacePreferences,
+  readSystemColorScheme,
+  selectEffectiveThemeId,
+} from "./appearanceStore";
+export type { InterfaceMonoFont, InterfacePreferences, InterfaceSansFont, ThemeId } from "./appearanceStore";
 import { captureHomeTabOpened } from "../components/home/homeAnalytics";
 import { applyInterfacePreferences } from "../theme/applyInterface";
-import { DEFAULT_SCENE_PREFERENCES, normalizeScenePreferences, type ScenePreferences } from "../scene/scenePreferences";
 
-export type ThemeId = "dark" | "light";
-
-/**
- * The theme id to paint. `themeId` is the user's choice and the synced value;
- * when the theme follows the system, the same family's variant for the OS mode
- * is painted instead. A custom theme has one mode and paints as it is.
- */
-export function effectiveThemeId(themeId: string, followsSystem: boolean, systemColorScheme: ThemeId): string {
-  return followsSystem ? themeIdForMode(themeId, systemColorScheme) : themeId;
-}
-
-/** The OS colour scheme now. Local to this machine; never persisted or synced. */
-export function readSystemColorScheme(): ThemeId {
-  try {
-    if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
-      return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-    }
-  } catch {
-    // Fall through to the default.
-  }
-  return "dark";
-}
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
 export const DEFAULT_TERMINAL_FONT_FAMILY = [
   "ui-monospace",
@@ -90,36 +91,9 @@ export const DEFAULT_TERMINAL_FONT_FAMILY = [
   "\"Geist Mono\"",
   "monospace",
 ].join(", ");
-/** The interface and code faces ADE ships, plus the platform's own. */
-export type InterfaceSansFont = "geist" | "system" | "geist-mono";
-export type InterfaceMonoFont = "jetbrains" | "geist-mono" | "system";
 
 export { DEFAULT_SCENE_PREFERENCES, normalizeScenePreferences } from "../scene/scenePreferences";
 export type { SceneMode, ScenePreferences, SceneTexture } from "../scene/scenePreferences";
-
-export type InterfacePreferences = {
-  sansFont: InterfaceSansFont;
-  monoFont: InterfaceMonoFont;
-  /** Stops transitions and animations across the app, whatever the OS says. */
-  reduceMotion: boolean;
-  scene: ScenePreferences;
-};
-
-export const DEFAULT_INTERFACE_PREFERENCES: InterfacePreferences = {
-  sansFont: "geist",
-  monoFont: "jetbrains",
-  reduceMotion: false,
-  scene: DEFAULT_SCENE_PREFERENCES,
-};
-
-export function normalizeInterfacePreferences(value: unknown): InterfacePreferences {
-  const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const sansFont: InterfaceSansFont =
-    raw.sansFont === "system" || raw.sansFont === "geist-mono" ? raw.sansFont : "geist";
-  const monoFont: InterfaceMonoFont =
-    raw.monoFont === "geist-mono" || raw.monoFont === "system" ? raw.monoFont : "jetbrains";
-  return { sansFont, monoFont, reduceMotion: raw.reduceMotion === true, scene: normalizeScenePreferences(raw.scene) };
-}
 
 export type TerminalPreferences = {
   fontFamily: string;
@@ -406,7 +380,6 @@ const EMPTY_CTO_ATTENTION: CtoAttentionState = {
 
 const WORK_VIEW_STORAGE_KEY = "ade.workViewState.v1";
 const TERMINAL_PREFERENCES_STORAGE_KEY = "ade.terminalPreferences.v1";
-const USER_PREFERENCES_STORAGE_KEY = "ade.userPreferences.v1";
 const LANE_CACHE_STORAGE_PREFIX = "ade.laneCache.v1:";
 const LANE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Lane status older than this is re-measured when a surface shows it. */
@@ -1128,47 +1101,14 @@ export type ActiveDictationTarget = {
   focus: () => void;
 };
 
-function coerceTheme(value: unknown): ThemeId | null {
-  if (value === "dark" || value === "light") return value;
-  if (value === "github" || value === "bloomberg" || value === "rainbow" || value === "pats") return "dark";
-  if (value === "e-paper" || value === "sky") return "light";
-  return null;
-}
-
-/**
- * Keep the active theme id verbatim rather than resolving it here.
- *
- * A custom theme's id can arrive from the account store before the theme list
- * itself does, and resolving now would pin the machine to the fallback and lose
- * the user's choice. The renderer resolves the id against the full list at paint
- * time (`resolveThemeById`), so an id that names nothing today paints as the
- * default until its definition lands.
- */
-function coerceThemeId(value: unknown): string {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    // A retired shipped id maps to the variant that replaced it.
-    if (trimmed) return canonicalThemeId(trimmed);
-  }
-  return DEFAULT_THEME_ID;
-}
-
 function readUnifiedUserPreferences(): PersistedUserPreferences | null {
   try {
     const raw = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PersistedUserPreferences>;
     return {
-      theme: coerceTheme(parsed.theme) ?? "dark",
-      themeId: coerceThemeId(parsed.themeId ?? parsed.theme),
-      customThemes: normalizeAdeThemeList(parsed.customThemes),
-      themeFollowsSystem: parsed.themeFollowsSystem === true,
-      interfacePreferences: normalizeInterfacePreferences(parsed.interfacePreferences),
+      ...parseStoredAppearance(parsed as Record<string, unknown>),
       terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
-      // Detailed tooltips are an onboarding aid that defaults OFF in the browser
-      // web client (clutter for an already oriented user), and ON on desktop. An
-      // explicit toggle is still honored.
-      smartTooltipsEnabled: parsed.smartTooltipsEnabled ?? !isWebClientMode(),
       launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
       // The setting was `promptStashButtonEnabled` before drafts replaced
@@ -1813,13 +1753,6 @@ export type AppState = {
   closeProject: (options?: { preserveRemoteViewState?: boolean }) => Promise<void>;
 };
 
-/** The theme id to paint, after the follow-the-system rule. */
-export function selectEffectiveThemeId(
-  state: Pick<AppState, "themeId" | "themeFollowsSystem" | "systemColorScheme">,
-): string {
-  return effectiveThemeId(state.themeId, state.themeFollowsSystem, state.systemColorScheme);
-}
-
 export function selectActiveProjectRoot(state: Pick<AppState, "project" | "projectBinding">): string | null {
   const root = state.projectBinding?.kind === "remote"
     ? state.projectBinding.rootPath
@@ -2211,8 +2144,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   crossMachineLaneIntendedMachineIds: null,
   crossMachineLanesByMachineId: {},
 
-  setProject: (project) =>
+  setProject: (incomingProject) =>
     set((prev) => {
+      // A warm switch sets the cached project and then the one the host
+      // reports, which is a new object that reads the same. The stored object
+      // stays, so what reads `project` renders once for the switch, not twice.
+      const knownProject = incomingProject ? prev.projectInfoByRoot[incomingProject.rootPath] : undefined;
+      const project = incomingProject && knownProject && shallow(knownProject, incomingProject)
+        ? knownProject
+        : incomingProject;
       const previousProjectRoot = selectActiveProjectRoot(prev);
       const nextProjectRoot = project?.rootPath ?? null;
       const matchingRemoteBinding =
@@ -2257,7 +2197,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : null;
       return {
         project,
-        projectInfoByRoot: project && !matchingRemoteBinding
+        projectInfoByRoot: project && !matchingRemoteBinding && project !== knownProject
           ? {
               ...prev.projectInfoByRoot,
               [project.rootPath]: project,
@@ -2267,7 +2207,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           ? [...prev.openProjectTabRoots, project.rootPath]
           : prev.openProjectTabRoots,
         projectBinding: project
-          ? matchingRemoteBinding ?? createLocalProjectBinding(project)
+          ? matchingRemoteBinding ?? reuseSameLocalBinding(prev.projectBinding, createLocalProjectBinding(project))
           : null,
         projectRevision:
           projectChanged ? prev.projectRevision + 1 : prev.projectRevision,
@@ -2364,12 +2304,19 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         typeof next === "function" ? next(prev.openProjectTabRoots) : next,
     })),
   rememberProjectInfo: (project) =>
-    set((prev) => ({
-      projectInfoByRoot: {
-        ...prev.projectInfoByRoot,
-        [project.rootPath]: project,
-      },
-    })),
+    set((prev) => {
+      // Every project switch reports the project again as a new object. One
+      // that reads the same keeps the stored object, or each mounted surface
+      // of that project takes a new `project` and renders for nothing.
+      const known = prev.projectInfoByRoot[project.rootPath];
+      if (known && shallow(known, project)) return prev;
+      return {
+        projectInfoByRoot: {
+          ...prev.projectInfoByRoot,
+          [project.rootPath]: project,
+        },
+      };
+    }),
   setProjectBinding: (projectBinding) =>
     set((prev) => {
       const shouldDropStaleRemoteRoot =
@@ -2652,16 +2599,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }),
   setSystemColorScheme: (scheme) =>
     set((prev) => {
-      const systemColorScheme: ThemeId = scheme === "light" ? "light" : "dark";
-      if (systemColorScheme === prev.systemColorScheme) return {};
-      const theme = baseModeForThemeId(
-        effectiveThemeId(prev.themeId, prev.themeFollowsSystem, systemColorScheme),
-        prev.customThemes,
-      );
+      const change = systemColorSchemeChange(prev, scheme);
+      if (!change) return {};
       // Persist the painted base mode so the next launch paints it before the
       // OS is asked; the choice itself (`themeId`) does not change.
-      if (theme !== prev.theme) persistUserPreferencesFrom({ ...prev, theme });
-      return { theme, systemColorScheme };
+      if (change.theme !== prev.theme) persistUserPreferencesFrom({ ...prev, theme: change.theme });
+      return change;
     }),
   setCodeBlockCopyButtonPosition: (position) =>
     set((prev) => {
@@ -3620,7 +3563,16 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 export type AppStoreApi = StoreApi<AppState>;
 
 const rootAppStore = createStore<AppState>()(createAppState);
-const AppStoreContext = createContext<AppStoreApi | null>(null);
+// One context object for `useAppStore` and `useAppearanceStore`. A context is
+// both written and read, so its two types cannot meet without a cast; every
+// value put in it is a full app store.
+const AppStoreContext = AppearanceStoreContext as unknown as React.Context<AppStoreApi | null>;
+registerRootAppearanceStore(rootAppStore);
+
+/** `previous` when it is the same local binding as `next`, field for field. */
+function reuseSameLocalBinding(previous: OpenProjectBinding | null, next: OpenProjectBinding): OpenProjectBinding {
+  return previous?.kind === "local" && next.kind === "local" && shallow(previous, next) ? previous : next;
+}
 
 function createLocalProjectBinding(project: ProjectInfo): OpenProjectBinding {
   const binding: Extract<OpenProjectBinding, { kind: "local" }> = {

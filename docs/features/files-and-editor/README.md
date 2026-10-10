@@ -2,7 +2,7 @@
 
 An IDE-style file explorer and Monaco editor surface integrated into
 ADE. Shared workspace selection, atomic writes, file watching with
-reference-counted chokidar subscriptions, Monaco model reuse, streaming
+reference-counted watcher subscriptions, Monaco model reuse, streaming
 large-file previews, and specialized view modes (diff, conflict, and the
 flagged v2 workbench shell).
 
@@ -13,7 +13,7 @@ back to it for "open this file", and lanes surface files by worktree.
 ## Where this runs
 
 File listing, atomic writes, the file-name index and content search, and the
-chokidar-backed file watcher all run inside the **active runtime**
+file watcher all run inside the **active runtime**
 for the window's project binding — the local ADE daemon for
 local-bound windows and the SSH-attached remote runtime for
 remote-bound windows. The Monaco editor in the renderer is purely
@@ -68,8 +68,15 @@ targets for the legacy IPC path.
 - `apps/desktop/src/main/services/files/externalFilesWorkspaceRegistry.ts`
   — local-only registry for files or folders opened from outside the active
   project through Finder / OS open-file events or renderer drag-and-drop.
+- `apps/desktop/src/main/services/shared/treeWatcher.ts` — `watchTree`,
+  the tree watcher under the file watcher and the automation file trigger.
+  chokidar off macOS; on macOS one recursive native watch per root (see
+  "File watching").
+- `apps/desktop/src/main/services/files/fileWatchLedger.ts` — the watches a
+  client still holds, so the stops a vanished page never sent can be sent
+  for it.
 - `apps/desktop/src/main/services/files/fileWatcherService.ts` —
-  chokidar wrapper with per-sender ref counting, debounced events,
+  `watchTree` wrapper with per-sender ref counting, debounced events,
   idle watcher close, plus `stopAllForWorkspace(workspaceId)` and
   `countActiveForWorkspace(workspaceId)` helpers used by the lane
   delete pipeline to tear down watchers as a discrete teardown step
@@ -326,7 +333,7 @@ rather than threading a `pin` argument through a dozen call sites: the object's
 identity changes exactly when the machine does, so effects that hold it (the
 file watcher above all) unsubscribe from the machine they subscribed to before
 subscribing to the new one. A ref would have lied — a callback built before the
-pin arrived would read the current value, and a chokidar watcher could be left
+pin arrived would read the current value, and a file watcher could be left
 running on a remote host with nothing left to stop it.
 
 The workspace picker groups lanes by machine and labels each group. Choosing a
@@ -462,17 +469,41 @@ outside the workspace root and refuse any path that traverses `.git`.
 
 ## File watching
 
-`fileWatcherService` wraps a single `chokidar` instance per
+`fileWatcherService` wraps a single tree watcher (`watchTree`) per
 `workspaceId + senderId` key. It supports two ignore profiles:
 
 - **default** — ignores `.git/`, `node_modules/`, `.ade/`
 - **include ignored** — ignores only `.git/`
 
-Both profiles share the same chokidar instance when possible. The
+Both profiles share the same watcher when possible. The
 watcher tracks `defaultRefCount` and `includeIgnoredRefCount`; adding a
 subscription in `include ignored` mode will tear down and restart the
 watcher if the mode changed. When all ref counts hit zero, an idle
 timer (`IDLE_WATCHER_CLOSE_MS = 15_000`) schedules a soft close.
+
+`watchTree` (`services/shared/treeWatcher.ts`) reports chokidar's events
+(`add`, `change`, `unlink`, `addDir`, `unlinkDir`) on every platform. Off
+macOS it is chokidar. On macOS it is one recursive native watch per root: the
+native event says where to look, and the path is read again and compared with
+a snapshot of the tree to decide what happened, so a new directory is walked
+and a removed one is reported entry by entry, as chokidar reports them.
+chokidar's own native mode opens one watch per directory, and closing a few
+thousand of those blocks the event loop (13 s measured on this repository),
+which is why the watcher polled on macOS before; polling checked every path
+once a second (about 11% of a core for this repository's root). One known
+difference from the poller: a file replaced by a directory of the same name
+is reported as a delete and creates, where the poller reported one `change`.
+(A file written in pieces may get a `change` after its `add` from either
+watcher, depending on timing.)
+`scripts/perf/service/tree-watcher-parity.mts` compares the two.
+
+A watch is one reference and a stop releases one. A page that goes away
+without its cleanup (a reload, a dead renderer, a closed window, the app
+quitting) never sends its stops, so two places keep a ledger of outstanding
+references (`fileWatchLedger.ts`): the desktop's runtime bridge sends the
+missing stops when a page starts a new document, loses its renderer or is
+destroyed, and the brain releases a connection's watches when the connection
+closes.
 
 Events are debounced per file key for 140 ms, so a build tool writing
 hundreds of files gets coalesced. Volatile `.ade/` paths (transcripts,

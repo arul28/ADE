@@ -369,7 +369,10 @@ export type ChatSubagentDerivation = {
  * with no subagent lifecycle. The derivation reads only those events, so the
  * previous snapshots still hold and keep their identity (a streamed text delta
  * does not re-render every subagent card). The prefix is compared by element
- * identity, so a trim, a reorder or a rewritten event takes the full path.
+ * identity, so a trim or a reorder takes the full path. A rewritten tool call
+ * does not: a provider resends every tool call, the merge replaces the stored
+ * one in place, and a tool call is not a subagent event before or after the
+ * rewrite.
  */
 export function deriveChatSubagentSnapshotsIncremental(
   previous: ChatSubagentDerivation | null,
@@ -378,7 +381,12 @@ export function deriveChatSubagentSnapshotsIncremental(
   if (previous && events.length >= previous.events.length) {
     let samePrefix = true;
     for (let index = 0; index < previous.events.length; index += 1) {
-      if (events[index] !== previous.events[index]) {
+      const event = events[index]!;
+      const previousEvent = previous.events[index]!;
+      if (
+        event !== previousEvent
+        && !(event.event.type === "tool_call" && previousEvent.event.type === "tool_call")
+      ) {
         samePrefix = false;
         break;
       }

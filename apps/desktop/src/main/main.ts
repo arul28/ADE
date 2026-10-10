@@ -448,6 +448,8 @@ const APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE = "desktop-windows";
 
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
+/** Appended to the user agent of the app window when it loads from the Vite dev server. */
+const DEV_APP_WINDOW_USER_AGENT_MARK = "ADEDevShell";
 
 type AdePackageChannel = "alpha" | "beta";
 
@@ -1234,6 +1236,14 @@ async function createWindow(args: {
   }
 
   const rendererUrl = getRendererUrl();
+  if (/^https?:/i.test(rendererUrl)) {
+    // The window loads from the Vite dev server (an unpackaged launch does so
+    // with or without VITE_DEV_SERVER_URL). The server uses this mark to tell
+    // the app window from a page of the built-in browser, which has the same
+    // Electron user agent (`skipBrowserMockSnapshotForAppWindow` in vite.config.ts).
+    win.webContents.setUserAgent(`${win.webContents.getUserAgent()} ${DEV_APP_WINDOW_USER_AGENT_MARK}`);
+  }
+
   args.logger?.info("window.loading_url", {
     windowId: win.id,
     url: rendererUrl,

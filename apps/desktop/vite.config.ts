@@ -1,14 +1,44 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * `browserMock.ts` imports the generated snapshot of the project database
+ * (`browser-mock-ade-snapshot.generated.json`, tens of MB when it exists) for
+ * the browser preview. The dev app window loads the same modules from this
+ * server and never installs the mock, so it gets an empty module instead of a
+ * file it would parse and hold for the life of the window. The window marks
+ * its user agent (`DEV_APP_WINDOW_USER_AGENT_MARK` in `src/main/main.ts`); a
+ * preview in the built-in browser or any other browser has no mark and gets
+ * the snapshot. Dev server only; builds are untouched.
+ */
+function skipBrowserMockSnapshotForAppWindow(): Plugin {
+  return {
+    name: "ade-skip-browser-mock-snapshot-for-app-window",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const pathname = (req.url ?? "").split("?")[0];
+        const fromAppWindow = String(req.headers["user-agent"] ?? "").includes("ADEDevShell");
+        if (fromAppWindow && pathname.endsWith("/browser-mock-ade-snapshot.generated.json")) {
+          res.setHeader("Content-Type", "text/javascript");
+          res.setHeader("Cache-Control", "no-store");
+          res.end("export default null;\n");
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
   root: "src/renderer",
   base: "./",
-  plugins: [react()],
+  plugins: [react(), skipBrowserMockSnapshotForAppWindow()],
   optimizeDeps: {
     // Loaded lazily by the first terminal, so the dep scan misses it; found at
     // runtime, Vite re-optimizes and the open page's import fails with

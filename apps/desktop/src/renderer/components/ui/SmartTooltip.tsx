@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useAppStore } from "../../state/appStore";
+import { useAppearanceStore } from "../../state/appearanceStore";
 import { openExternalUrl } from "../../lib/openExternal";
 import { computeTooltipPosition, type TooltipPlacement, type TooltipSide } from "./tooltipPosition";
 
@@ -55,7 +55,7 @@ export function SmartTooltip({
   wrapperClassName,
   wrapperStyle,
 }: SmartTooltipProps) {
-  const globalEnabled = useAppStore((s) => s.smartTooltipsEnabled);
+  const globalEnabled = useAppearanceStore((s) => s.smartTooltipsEnabled);
   const enabled = Boolean(forceEnabled ?? globalEnabled);
   const tooltipId = useId();
 

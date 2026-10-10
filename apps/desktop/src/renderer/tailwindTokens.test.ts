@@ -30,6 +30,8 @@ describe("tailwind token wiring", () => {
   const desktopRoot = path.resolve(__dirname, "..", "..");
   const cssPath = path.join(desktopRoot, "src/renderer/index.css");
   const css = fs.readFileSync(cssPath, "utf8");
+  // The token blocks live in the foundation stylesheet that index.css imports.
+  const tokenCss = fs.readFileSync(path.join(desktopRoot, "src/renderer/styles/foundation.css"), "utf8");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const config = require(path.join(desktopRoot, "tailwind.config.cjs")) as {
     theme?: { extend?: { colors?: Record<string, unknown> } };
@@ -43,13 +45,13 @@ describe("tailwind token wiring", () => {
     expect(fs.existsSync(target), `@config points at a missing file: ${target}`).toBe(true);
   });
 
-  it("backs every colour token with a CSS variable that index.css defines", () => {
+  it("backs every colour token with a CSS variable that the stylesheet defines", () => {
     const colors = (config.theme?.extend?.colors ?? {}) as Record<string, string>;
     for (const [token, value] of Object.entries(colors)) {
       if (typeof value !== "string") continue;
       const variable = value.match(/var\((--[a-z0-9-]+)\)/i)?.[1];
       if (!variable) continue;
-      expect(css.includes(`${variable}:`), `${token} -> ${variable} is never defined in index.css`).toBe(true);
+      expect(tokenCss.includes(`${variable}:`), `${token} -> ${variable} is never defined in foundation.css`).toBe(true);
     }
   });
 

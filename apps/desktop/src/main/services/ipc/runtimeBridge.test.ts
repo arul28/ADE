@@ -1173,6 +1173,92 @@ describe("registerRuntimeBridge", () => {
         }
       }
     });
+
+    function pageWithFileWatches(id: number) {
+      const { subscriptions, pool } = recordingLocalRuntimePool();
+      const callActionForRoot = vi.fn(async (_rootPath: string, _request: Record<string, unknown>) => ({ ok: true }));
+      const stream = registerWithPool({ ...pool, callActionForRoot });
+      const listeners = new Map<string, (details?: unknown) => void>();
+      const webContents = {
+        ...sender(id),
+        on: vi.fn((channel: string, handler: (details?: unknown) => void) => {
+          listeners.set(channel, handler);
+        }),
+      } as any;
+      const fileAction = (action: "watchWorkspace" | "stopWatching") =>
+        ipcHandlers.get(IPC.localRuntimeCallAction)!(eventForSender(webContents), {
+          rootPath: "/repo",
+          request: { domain: "file", action, args: { workspaceId: "ws-1" } },
+        });
+      const sent = (action: string) =>
+        callActionForRoot.mock.calls.filter(([, request]) => request.action === action);
+      return {
+        subscriptions,
+        fileAction,
+        sent,
+        poll: () => stream(eventForSender(webContents), { rootPath: "/repo", request: activePumpRequest }),
+        /** A main-frame document committed (a reload or a new URL). */
+        loadNewDocument: () => listeners.get("did-navigate")?.(),
+        closeDuringNextCall: () => {
+          callActionForRoot.mockImplementationOnce(async () => {
+            webContents.isDestroyed.mockReturnValue(true);
+            return { ok: true };
+          });
+        },
+      };
+    }
+
+    it("sends the stops a page still owes when it loads a new document", async () => {
+      const page = pageWithFileWatches(231);
+      await page.fileAction("watchWorkspace");
+      await page.fileAction("watchWorkspace");
+      await page.fileAction("watchWorkspace");
+      await page.fileAction("stopWatching");
+      expect(page.sent("stopWatching")).toHaveLength(1);
+
+      page.loadNewDocument();
+      // Three watches, one stop from the page itself: two are still owed.
+      expect(page.sent("stopWatching")).toHaveLength(3);
+      expect(page.sent("stopWatching")[2]?.[1]).toEqual({
+        domain: "file",
+        action: "stopWatching",
+        args: { workspaceId: "ws-1", __adeRuntimeClientId: 231 },
+      });
+
+      // Nothing is owed twice.
+      page.loadNewDocument();
+      expect(page.sent("stopWatching")).toHaveLength(3);
+
+      // A page that closes while the runtime answers has nobody left to stop that watch.
+      page.closeDuringNextCall();
+      await page.fileAction("watchWorkspace");
+      expect(page.sent("stopWatching")).toHaveLength(4);
+    });
+
+    it("opens a page's file watches again after its runtime connection comes back", async () => {
+      const page = pageWithFileWatches(232);
+      await page.poll();
+      await page.fileAction("watchWorkspace");
+      expect(page.sent("watchWorkspace")).toHaveLength(1);
+
+      // The runtime releases the watches of a connection that closes.
+      page.subscriptions[0].end();
+      expect(page.sent("watchWorkspace")).toHaveLength(1);
+
+      await page.poll();
+      expect(page.subscriptions).toHaveLength(2);
+      expect(page.sent("watchWorkspace")).toHaveLength(2);
+      expect(page.sent("watchWorkspace")[1]?.[1]).toEqual({
+        domain: "file",
+        action: "watchWorkspace",
+        args: { workspaceId: "ws-1", __adeRuntimeClientId: 232 },
+      });
+
+      // A later poll on the live connection opens nothing more.
+      await page.poll();
+      expect(page.sent("watchWorkspace")).toHaveLength(2);
+      expect(page.sent("stopWatching")).toHaveLength(0);
+    });
   });
 
   it("opens a cross-machine Activity project whose id the runtime has never seen", async () => {

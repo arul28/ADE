@@ -4,7 +4,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import cron from "node-cron";
-import chokidar, { type FSWatcher } from "chokidar";
 import type {
   AutomationAction,
   AutomationActionResult,
@@ -71,7 +70,7 @@ import {
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createConflictService } from "../conflicts/conflictService";
-import { withMacosSafeChokidarOptions } from "../shared/chokidarOptions";
+import { watchTree, type TreeWatcher } from "../shared/treeWatcher";
 import type { createTestService } from "../tests/testService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
@@ -1575,7 +1574,7 @@ export function createAutomationService({
 
   const runQueuesByAutomationId = new Map<string, Promise<AutomationRun | null>>();
   const scheduleTasks = new Map<string, CronTask>();
-  const fileWatchers = new Map<string, FSWatcher>();
+  const fileWatchers = new Map<string, TreeWatcher>();
   const fileChangeDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let scheduledCleanupTimer: NodeJS.Timeout | null = null;
   let scheduledCleanupSweepRunning = false;
@@ -4745,8 +4744,7 @@ export function createAutomationService({
 
     for (const root of desired) {
       if (fileWatchers.has(root.key)) continue;
-      const watcher = chokidar.watch(root.rootPath, withMacosSafeChokidarOptions({
-        ignoreInitial: true,
+      const watcher = watchTree(root.rootPath, {
         awaitWriteFinish: {
           stabilityThreshold: 120,
           pollInterval: 50,
@@ -4756,7 +4754,7 @@ export function createAutomationService({
           /(^|[/\\])node_modules($|[/\\])/,
           /(^|[/\\])\.ade($|[/\\])/,
         ],
-      }));
+      });
       const onFileEvent = (kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir", absPath: string) => {
         const relPath = path.relative(root.rootPath, absPath).split(path.sep).join("/");
         if (!relPath || relPath.startsWith(".git/") || relPath.startsWith("node_modules/") || relPath.startsWith(".ade/")) return;

@@ -818,3 +818,157 @@ Brain (installed-brain CPU profile, 8 min with agents working):
   (quadratic); 10 MB request 240 → 11 ms.
 - The Files quick-open index walked the repo with one `git check-ignore`
   per directory (~540 spawns, 17.5 s); `git ls-files` once: 0.12 s.
+
+### One streamed event must cost one event (eighth pass, ADE-175)
+
+Measured on a Mac Studio (M4 Max) with `scripts/perf-chat-stream.mjs` against a
+9,700-event Claude chat, and with `scripts/perf/service/chat-transcript.bench.mts`
+on the five largest local transcripts. Renderer busy time for 400 streamed
+events fell from 3,890 ms to 2,200 ms, and the row builder from 3.5 ms to
+0.08 ms per event.
+
+- **A provider resend is not a reason to rebuild the chat.** Claude sends each
+  `tool_call` twice (empty arguments, then the command), and the live merge
+  replaces the stored envelope in place. The row builder used to answer every
+  replacement with a full pass over the transcript: 1,314 full passes for
+  12,000 streamed events in real chats, up to 44 ms each. It now keeps the two
+  most recent checkpoints of its state (`CollapseCheckpoint`, one each 128
+  events) and replays from the newest one that ends before the replaced event.
+  The context is cloned field by field (`cloneCollapseTranscriptContext`), so a
+  new context field fails to compile until it is copied. Keep the parity rule:
+  a replay must give the rows that a full pass gives.
+- **A missing index entry must mean "no such row".** The first sighting of
+  every tool call scanned all rows for a row to merge into, and every subagent
+  progress tick scanned all rows for a background-job line that it never had.
+  A context made by a full pass sets `rowIndexesComplete`, and the lookups
+  (`findMatchingWorkLogEntryIndex`, `resolveKeyedRowIndex`) trust an absent
+  entry only then. A stale entry still falls back to the scan. Repair every
+  index map in `repairIndexedTranscriptRowsAfterSplice` when you add one.
+- **The live merge carries its indexes forward.** `mergeAgentChatLiveEvents`
+  rebuilt a `Set` of every identity key on each merge, and ran the full
+  tool-call pass for each tool event. The list it returns now owns that set and
+  a tool-call position map (`liveMergeIndexByList`); the next merge takes them.
+  A list that is merged twice rebuilds from the start, which is correct and slow.
+- **Folds over the transcript read the append, not the transcript.**
+  `agentChatLiveAppendOf(list)` names the list that an append extended, where
+  the new events start, and which tool calls a resend replaced. A fold that
+  keeps its answer per list (`deriveRuntimeState`, `deriveActiveTurnId`,
+  `deriveTurnStartedAt`, the turn-start map, `chatDisplayEvents`) looks at the
+  appended events only and falls back to the full fold when one of them can
+  change the answer. A derived list (the display filter) records its own
+  relation with `recordAgentChatLiveAppend`, or every fold after it loses the
+  shortcut. Do not build a new filtered array per event: `selectedEventsForDisplay`
+  did, and that hid the append from the whole list.
+- **A same-value `setState` is not free.** A locked pane wrote its own session
+  id to `selectedSessionId` on every event. React cannot drop that write early
+  while the component has other updates queued, so the 17,000-line pane ran
+  twice per event. The setter now skips a value that was already requested.
+- **Handlers that reach every row must be stable.** `onRetryCompaction` was a
+  `useCallback` on a value that changes each render, and it re-rendered every
+  mounted row on every event (24 row renders per event; now 0.1). The per-turn
+  model descriptor had the same effect after each resend. Check new list props
+  with the render counter before you merge them.
+- **Measure renders by cause.** `render-hook.js` counts renders; to find why the
+  pane renders, compare hooks that own a queue (`hook.queue`) and the context
+  dependencies, not `memoizedState` alone. A render with no visible cause is a
+  same-value write.
+
+Open: the pane's own chrome (header, composer, three closed dialogs) still
+renders once per event and once per keystroke, about 150 component renders
+each. A selected chat at its resident cap (60,000 events or 32 MB) trims one
+event from the front on every flush, which gives a new list each time and
+sends the merge and the row builder back to full passes; trim in steps instead.
+
+### The hosted client's sign-in stylesheet
+
+The entry stylesheet of the hosted client was the whole of `index.css`
+(672 KB). It is now `webclient/gate.css` (58 KB): Tailwind limited to the files
+in `tailwind.gate.config.cjs`, plus `styles/foundation.css` (theme values,
+tokens, base element rules) and the two component partials the sign-in screen
+draws (`toolPickerBackdrop.css`, `smartTooltip.css`). `index.css` imports the
+same partials and loads with the workspace (`loadAppStylesheet`), before the
+app's modules so that it keeps its place ahead of every chunk stylesheet.
+
+- Check a change to this split with computed styles, not screenshots: compare
+  `getComputedStyle` of every element (and `::before`/`::after`) between the old
+  and the new build, in the default, hover, focus-visible and active states and
+  in both themes. That check found the backdrop rules, the tooltip rules, a
+  theme value that Tailwind had dropped (`@theme static` keeps them), and an old
+  `.ade-glass-card` rule in `index.css` that changes the sign-in card on hover.
+- Do not move the desktop entry's `import "./index.css"` or make `main.tsx` a
+  dynamic import. Both change the chunk graph, and with it the order of the
+  stylesheets: `HomeWidgetGrid`, `music` and the primitives stylesheet then
+  load before `index.css` instead of after it, and they share `.kit-*` class
+  names with it. A top-level `await` in `browserMock.ts` has the same effect.
+- The dev Electron window must not load the browser-mock snapshot
+  (`browser-mock-ade-snapshot.generated.json`). `vite.config.ts` serves it an
+  empty module. It finds the app window by the `ADEDevShell` mark that
+  `main.ts` adds to the user agent in dev; a page in the built-in browser has
+  the plain Electron user agent and must still get the snapshot. With a 60 MB snapshot the renderer heap was 477 MB after GC and
+  the launch stalled for 6 s; it is 129 MB without.
+
+### Parked surfaces and the router (ninth pass, four projects open)
+
+Measure switches with more than one project open. With one project every
+number below looked fine.
+
+- **A parked surface must not see the router move.** Every mounted project
+  sits under the one router, and `useLocation`, `useNavigate` and each nested
+  `<Routes>` read its contexts. One project switch rendered the Work surface
+  of all four mounted projects several times: 12,950 component renders and a
+  170 ms first frame. `ProjectSurfaceRouterScope` (App.tsx) holds the
+  location and route-match contexts at their last on-screen value for a parked
+  project, and for the parked Work surface of the visible project. The Work
+  element is also the same object while parked (`useMemo`). Project switch:
+  173-180 ms to 53-55 ms; tab switch 59-63 ms to 28-32 ms. Routes, the selected
+  chat and its scroll position survive (checked by driving the app).
+- **A switch must not hand out new objects for the same project.** The
+  binding and the `ProjectInfo` of each open project were rebuilt on every
+  switch (`projectEntries`, `setProject`). Reuse the stored object when its
+  fields are the same.
+- **The top bar is memoized in the shell** (`ShellTopBar`,
+  `memoWithLatestHandlers`): the shell renders several times per switch.
+- Count renders per interaction with a `__REACT_DEVTOOLS_GLOBAL_HOOK__` that
+  is installed before load, and read the roots (components that rendered while
+  their parent did not) and the causes. Import the store through the URL the
+  page loaded (`performance.getEntriesByType("resource")`): after an HMR edit
+  the page uses `appStore.ts?t=...`, and a plain import is a second store.
+
+### File watchers in the brain
+
+- Watch a directory tree with `watchTree` (`services/shared/treeWatcher.ts`),
+  not with chokidar directly. On macOS chokidar must poll (its native mode
+  opens one watch per directory, and closing thousands of them blocked the
+  event loop for 13 s on this repo), and a poll checks every path each second:
+  16,000 paths and about 11% of a core for this repo's root. `watchTree` uses
+  one recursive native watch per root on macOS and decides what happened by
+  reading the path again and comparing with a snapshot, so the events are
+  chokidar's. Check a change to it with
+  `scripts/perf/service/tree-watcher-parity.mts` and
+  `tree-watcher.bench.mts`. `withMacosSafeChokidarOptions` is still right for
+  a handful of named files (`configReloadService`).
+- Count polled paths in the brain with `process.getActiveResourcesInfo()`
+  (`StatWatcher`; `FSEventWrap` is a native watch), after
+  `process._debugProcess(<pid>)`. Poll CPU is on the libuv worker threads, so
+  a JS profile of the brain shows nothing; `sample <pid>` shows `stat`.
+- A watch is one reference and a stop releases one. A page that goes away
+  without its cleanup never sends the stop. `fileWatchLedger.ts` keeps the
+  outstanding references in two places: the desktop main process sends the
+  missing stops when a page commits a new document, loses its renderer or is
+  destroyed (`trackPageFileWatch`), and the brain releases a connection's
+  watches when the connection closes (`adeRpcServer` `handler.dispose`). Keep
+  both: the first covers a reload, the second covers the app quitting.
+  The second also releases the watches of a page that only lost its
+  connection, so the bridge opens them again when the page subscribes to
+  events on the new connection (`restorePageFileWatches`). Do not remove
+  that step, or an open Files tab stops its updates after a reconnect.
+
+### The appearance store
+
+`state/appearanceStore.ts` holds the theme, scene, font, motion and tooltip
+values and their parsing. `appStore` imports the parsing and registers itself;
+`useAppearanceStore` reads the project store in context, then the root store,
+then a stand-in. Components that the hosted sign-in screen draws must use
+`useAppearanceStore`, not `useAppStore`, or `appStore` (257 KB) returns to the
+signed-out download. `pinKey` is in its own file for the same reason.
+

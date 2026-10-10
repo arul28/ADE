@@ -14,7 +14,7 @@ import { AgentChatPane } from "../chat/AgentChatPane";
 import type { ComposerMachineChipAction } from "../chat/AgentChatComposer";
 import { useChatMachineLanes } from "../chat/ChatRuntimeScope";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
-import { pinKey } from "../../state/projectMachines";
+import { pinKey } from "../../state/pinKey";
 import { CtoHomeChooser } from "./CtoHomeChooser";
 import { CtoHomeProvider, useCtoHome, type CtoHomeScope } from "./useCtoHome";
 import { cn } from "../ui/cn";

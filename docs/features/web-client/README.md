@@ -585,8 +585,10 @@ Browser shell and routes:
   Signed-out boot loads no workspace code. After account bootstrap and privacy
   pruning, a visitor with no account session gets only `window.ade.account`
   and a lazy `WebSignInScreen` chunk (`components/onboarding/WebSignInGate.tsx`).
-  The federated adapter and `App` stay unloaded (`appStore` is still in that
-  graph: the gate's theme, scene and tooltip code read preferences from it). When
+  The federated adapter, `App` and `appStore` stay unloaded: the gate's theme,
+  scene and tooltip code read their values through `state/appearanceStore.ts`,
+  which is a stand-in filled from the saved preferences until `appStore` loads
+  and registers itself there. When
   `hasPersistedSession()` reports a stored session, `preloadWorkspaceModules()`
   starts those imports alongside bootstrap, so a signed-in reload does not wait
   for them afterwards. Cold signed-out load measured 123 → 47 requests and
@@ -594,6 +596,26 @@ Browser shell and routes:
   per side). The
   `@phosphor-icons/react` namespace import that kept 4.9 MB of icons on that
   path is gone too (`components/history/eventIcons.ts`).
+
+  The entry stylesheet is `webclient/gate.css`, not `index.css`. It holds what
+  the boot screens and the sign-in card draw: Tailwind limited to the files in
+  `apps/desktop/tailwind.gate.config.cjs`, `styles/foundation.css` (theme
+  values, the dark and light token blocks, base element rules), the surface
+  kit, the scene rules, and the backdrop and tooltip partials
+  (`styles/toolPickerBackdrop.css`, `styles/smartTooltip.css`). `index.css`
+  imports the same partials, so every rule of the entry stylesheet is in the
+  full one as well. The full stylesheet loads with the workspace
+  (`loadAppStylesheet()` in `WebClientRoot.tsx`): `loadAppRoot()` waits for it,
+  and `preloadWorkspaceModules()` starts it with the other imports. It is
+  first in both lists, because stylesheets apply in the order their links are
+  added and the app's stylesheet was ahead of every chunk stylesheet when the
+  entry carried it. With the store split above, the entry stylesheet fell from
+  657 KB to 57 KB, the signed-out JavaScript from 739 KB to 518 KB, and the cold
+  signed-out transfer from 1,556 KB to 736 KB (Mac Studio numbers in
+  `docs/perf/macos-baseline.md`). A component that renders before the workspace
+  loads must be in the gate config's `content` list, and a component rule it
+  needs must be in a partial that both stylesheets import; otherwise it is
+  unstyled on the sign-in screen only.
 - `apps/desktop/src/renderer/webclient/workspace/WebMachineSessionManager.ts` -
   browser machine-session owner. It merges saved environments with live
   clients, serializes admission, deduplicates same-target connects, retains

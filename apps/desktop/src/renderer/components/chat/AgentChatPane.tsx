@@ -4,10 +4,15 @@ import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { compareTextInsensitive } from "../../../shared/formatting";
 import { useNavigate } from "react-router-dom";
-import { reuseStructurallyEqualArray, sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
+import {
+  reuseStructurallyEqualArray,
+  sameSetContents,
+  useLatestCallback,
+  useStableIdentity,
+  useStateSkippingSameValue,
+} from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
-import { applySteerOrder } from "../../../shared/steerOrder";
 import type { ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
@@ -101,7 +106,7 @@ import {
   removeChatContextAttachment,
 } from "../../../shared/chatContextAttachments";
 import { isChatMentionTokenBody } from "../../../shared/chatMentions";
-import { isSettledSteerDeliveryState, parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   captureAgentChatHistoryArrivalWatermark,
   mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot,
@@ -160,7 +165,7 @@ import {
   setThreadComments,
   useThreadComments,
 } from "./threadCommentsStore";
-import { parseThreadReviewBlock, threadReviewCountLabel } from "../../../shared/threadComments";
+import { threadReviewCountLabel } from "../../../shared/threadComments";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
 import { resolveDisplayedReasoningEffort } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -201,6 +206,7 @@ import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachin
 import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
+  chatDisplayEvents,
   chatEventDedupKey,
   estimatedChatEventResidentBytes,
   INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
@@ -268,7 +274,9 @@ import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminal
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { deriveMissionSnapshot, missionHasContent } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
-import { derivePendingInputRequests, resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
+import { resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
+import { deriveRuntimeState, userMessageVisibleText, type PendingSteerEntry } from "./chatRuntimeState";
+export { deriveRuntimeState, type PendingSteerEntry } from "./chatRuntimeState";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
@@ -1370,13 +1378,6 @@ function getExecutionModeOptions(model: ModelDescriptor | null | undefined): Exe
   return [];
 }
 
-export type PendingSteerEntry = {
-  steerId: string;
-  text: string;
-  attachments: AgentChatFileRef[];
-  contextAttachments: AgentChatContextAttachment[];
-};
-
 /** A finished turn a fork keeps the conversation through ("Fork from here"). */
 type HandoffForkPoint = { turnId: string; timestamp: string };
 
@@ -1389,84 +1390,12 @@ function formatHandoffForkPointTime(iso: string): string {
     : `on ${date.toLocaleDateString([], { month: "short", day: "numeric" })} at ${date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }
 
-/**
- * Re-sorts the staged queue to the host's published order. Ids the event does
- * not name (a steer queued after it, on another client) keep their place after
- * the named ones; a named id that already left the queue is skipped.
- */
-function reorderSteerMap(steerMap: Map<string, PendingSteerEntry>, steerIds: readonly string[]): void {
-  const ordered = applySteerOrder([...steerMap.entries()], ([id]) => id, steerIds);
-  steerMap.clear();
-  for (const [id, entry] of ordered) steerMap.set(id, entry);
-}
-
-export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
-  turnActive: boolean;
-  pendingInputs: DerivedPendingInput[];
-  pendingSteers: PendingSteerEntry[];
-} {
-  let turnActive = false;
-
-  // Track pending steers: added on queued user_message, removed on cancel/deliver notices
-  const steerMap = new Map<string, PendingSteerEntry>();
-  const resolvedSteerIds = new Set<string>();
-
-  for (const envelope of events) {
-    const event = envelope.event;
-    if (event.type === "status") {
-      turnActive = event.turnStatus === "started";
-    } else if (event.type === "done") {
-      turnActive = false;
-    } else if (event.type === "user_message" && event.steerId) {
-      if (event.deliveryState === "queued") {
-        if (!resolvedSteerIds.has(event.steerId)) {
-          const previous = steerMap.get(event.steerId);
-          steerMap.set(event.steerId, {
-            steerId: event.steerId,
-            text: userMessageVisibleText(event),
-            attachments: event.attachments ?? previous?.attachments ?? [],
-            contextAttachments: event.contextAttachments ?? previous?.contextAttachments ?? [],
-          });
-        }
-      } else {
-        // "inline" / "delivered" / "failed" — the steer left the queue, so
-        // clear it from the display. Without this the chip stays staged after
-        // the user clicks "Send Now" or after a queued steer is delivered.
-        steerMap.delete(event.steerId);
-        // "accepted" is not final: a Cursor or OpenCode turn can refuse an
-        // inline steer it was offered, and the same steerId comes back as
-        // "queued". Resolving it here would keep that chip hidden for good.
-        if (isSettledSteerDeliveryState(event.deliveryState)) resolvedSteerIds.add(event.steerId);
-      }
-    } else if (event.type === "system_notice" && event.steerId) {
-      // "cancelled" or "Delivering" notices resolve the steer
-      if (/cancelled|delivering/i.test(event.message)) {
-        steerMap.delete(event.steerId);
-        resolvedSteerIds.add(event.steerId);
-      }
-    } else if (event.type === "command_lifecycle" && event.steerId && event.status !== "queued") {
-      steerMap.delete(event.steerId);
-      resolvedSteerIds.add(event.steerId);
-    } else if (event.type === "queue_reordered") {
-      reorderSteerMap(steerMap, event.steerIds);
-    } else if (event.type === "queue_recovery" && event.state === "restored") {
-      for (const steer of event.restoredSteers ?? []) {
-        resolvedSteerIds.delete(steer.steerId);
-        steerMap.set(steer.steerId, {
-          steerId: steer.steerId,
-          text: steer.text,
-          attachments: steer.attachments ?? [],
-          contextAttachments: steer.contextAttachments ?? [],
-        });
-      }
-    }
+/** `{ ...record, ...patch }`, or `record` itself when the patch changes nothing. */
+function patchRecord<T>(record: Record<string, T>, patch: Record<string, T>): Record<string, T> {
+  for (const key in patch) {
+    if (!(key in record) || record[key] !== patch[key]) return { ...record, ...patch };
   }
-
-  return {
-    turnActive,
-    pendingInputs: derivePendingInputRequests(events),
-    pendingSteers: Array.from(steerMap.values()),
-  };
+  return record;
 }
 
 function deriveTranscriptTurnActive(events: AgentChatEventEnvelope[]): boolean {
@@ -2476,16 +2405,6 @@ configureChatSessionRetention({
   },
   appendEvents: appendRetainedChatSessionEvents,
 });
-
-function userMessageVisibleText(event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>): string {
-  const displayText = event.displayText?.trim();
-  if (displayText?.length) return displayText;
-  // A send that carried thread comments: the user saw what they typed, or,
-  // with nothing typed, the comment count the optimistic bubble shows.
-  const review = parseThreadReviewBlock(event.text);
-  if (review) return review.rest.trim() || threadReviewCountLabel(review.comments.length);
-  return event.text.trim();
-}
 
 function attachmentMatchKey(attachment: AgentChatFileRef): string {
   return attachment.type === "image-url"
@@ -4056,7 +3975,10 @@ export function AgentChatPane({
       : laneId ? `draft:${laneId}` : "draft");
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
+  // A locked pane re-selects its own chat on every streamed event.
+  const [selectedSessionId, setSelectedSessionId] = useStateSkippingSameValue<string | null>(
+    lockSessionId ?? initialSessionId ?? null,
+  );
   const [draftLaunchTargetId, setDraftLaunchTargetId] = useState<string | null>(null);
   const isWorkCliLaunchDraft =
     !lockSessionId
@@ -5195,40 +5117,7 @@ export function AgentChatPane({
     const baseEvents = shouldRenderOptimistic
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
       : selectedEvents;
-    const settledSteerIds = new Set(baseEvents.flatMap((envelope) => {
-      const event = envelope.event;
-      if (
-        event.type === "user_message"
-        && event.steerId
-        && event.deliveryState !== "queued"
-      ) {
-        return [event.steerId];
-      }
-      if (
-        event.type === "system_notice"
-        && event.steerId
-        && /\b(?:cancelled|delivering)\b/i.test(event.message)
-      ) {
-        return [event.steerId];
-      }
-      return [];
-    }));
-    const displayEvents = baseEvents.filter((envelope) => {
-      const event = envelope.event;
-      if (event.type.startsWith("subagent.")) return false;
-      // Historical immediate sends were first persisted as queued and then
-      // resolved under the same steer id. Once resolved, hide the obsolete
-      // queue notice so the transcript cannot contradict the delivered bubble.
-      if (
-        event.type === "system_notice"
-        && event.steerId
-        && settledSteerIds.has(event.steerId)
-        && /^Message queued\b/i.test(event.message)
-      ) {
-        return false;
-      }
-      return true;
-    });
+    const displayEvents = chatDisplayEvents(baseEvents);
     // A launching chat shows its prompt, setup card and queued messages until
     // the real transcript carries them (each stand-in yields to its real row).
     // Queued messages the host has not delivered yet outlive the launch.
@@ -7498,7 +7387,7 @@ export function AgentChatPane({
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
     return summary;
-  }, [initialSessionSummary, lockSessionId]);
+  }, [initialSessionSummary, lockSessionId, setSelectedSessionId]);
 
   const refreshSessions = useCallback(async (options?: { force?: boolean }) => {
     if (lockedSingleSessionMode && lockSessionId) {
@@ -7622,7 +7511,7 @@ export function AgentChatPane({
       }
       return nextSelectedSessionId;
     });
-  }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary]);
+  }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary, setSelectedSessionId]);
 
   useEffect(() => {
     if (!isTileActive) return;
@@ -8176,14 +8065,14 @@ export function AgentChatPane({
       draftSelectionLockedRef.current = false;
       setSelectedSessionId(lockSessionId);
     }
-  }, [lockSessionId]);
+  }, [lockSessionId, setSelectedSessionId]);
 
   useLayoutEffect(() => {
     if (!lockedSingleSessionMode || !lockSessionId || initialSessionSummary?.sessionId !== lockSessionId) return;
     setSessions([initialSessionSummary]);
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
-  }, [initialSessionSummary, lockSessionId, lockedSingleSessionMode]);
+  }, [initialSessionSummary, lockSessionId, lockedSingleSessionMode, setSelectedSessionId]);
 
   useLayoutEffect(() => {
     const nextInitialSessionId = initialSessionId ?? null;
@@ -8197,7 +8086,7 @@ export function AgentChatPane({
     pendingSelectedSessionIdRef.current = null;
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(nextInitialSessionId);
-  }, [initialSessionId, lockSessionId]);
+  }, [initialSessionId, lockSessionId, setSelectedSessionId]);
 
   useEffect(() => {
     draftSelectionLockedRef.current = false;
@@ -8211,14 +8100,14 @@ export function AgentChatPane({
       draftSelectionLockedRef.current = true;
       setSelectedSessionId(null);
     }
-  }, [forceDraft, laneId, lockSessionId]);
+  }, [forceDraft, laneId, lockSessionId, setSelectedSessionId]);
 
   useEffect(() => {
     if (!forceDraft || lockSessionId) return;
     pendingSelectedSessionIdRef.current = null;
     draftSelectionLockedRef.current = true;
     setSelectedSessionId(null);
-  }, [forceDraft, lockSessionId]);
+  }, [forceDraft, lockSessionId, setSelectedSessionId]);
 
   useLayoutEffect(() => {
     syncComposerToSession(selectedSession);
@@ -9119,10 +9008,13 @@ export function AgentChatPane({
     }
 
     // All setters fire synchronously — React 18 batches them into one render.
+    // The three derived maps keep their identity while a turn streams: most
+    // events change none of them, and a new object would re-run every hook
+    // that reads one.
     setEventsBySession(next);
-    setTurnActiveBySession((activePrev) => ({ ...activePrev, ...activePatch }));
-    setPendingInputsBySession((pendingPrev) => ({ ...pendingPrev, ...pendingInputPatch }));
-    setPendingSteersBySession((steerPrev) => ({ ...steerPrev, ...pendingSteerPatch }));
+    setTurnActiveBySession((activePrev) => patchRecord(activePrev, activePatch));
+    setPendingInputsBySession((pendingPrev) => patchRecord(pendingPrev, pendingInputPatch));
+    setPendingSteersBySession((steerPrev) => patchRecord(steerPrev, pendingSteerPatch));
   }, [initialSessionSummary, lockSessionId]);
 
   const returnHistoryToLatest = useCallback((sessionId: string, pin: OpenProjectBinding | null) => {
@@ -9486,7 +9378,7 @@ export function AgentChatPane({
       }
     }, chatRuntimePin);
     return unsubscribe;
-  }, [isPersonalPane, applyCrossMachineHandoffRecord, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [isPersonalPane, applyCrossMachineHandoffRecord, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession, setSelectedSessionId]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -10639,7 +10531,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId && canRefreshPinnedProject(options.pin)) void refreshSessions({ force: true }).catch(() => {});
       return created;
-  }, [buildChatCreateArgs, canRefreshPinnedProject, constrainedModelSelectionError, initialNativeControls, laneId, lastLaunchConfigStorageKey, notifySessionCreated, refreshSessions, touchSession]);
+  }, [buildChatCreateArgs, canRefreshPinnedProject, constrainedModelSelectionError, initialNativeControls, laneId, lastLaunchConfigStorageKey, notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -11877,6 +11769,7 @@ export function AgentChatPane({
     startDraftChatLaunch,
     startDraftCliLaunch,
     workDraftKind,
+    setSelectedSessionId,
   ]);
 
   const launchDraftChat = useCallback((mode: DraftLaunchMode) => launchDraftSession("chat", mode), [launchDraftSession]);
@@ -11899,7 +11792,7 @@ export function AgentChatPane({
     if (session) notifySessionCreated(session);
     setSelectedSessionId(sessionId);
     void refreshSessions().catch(() => undefined);
-  }, [notifySessionCreated, refreshSessions, touchSession]);
+  }, [notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
 
   // Identical adoption path for a Devin Cloud chat: select the session the
   // ACP relay is bound to and let the transcript hydrate.
@@ -11915,7 +11808,7 @@ export function AgentChatPane({
     if (session) notifySessionCreated(session);
     setSelectedSessionId(sessionId);
     void refreshSessions().catch(() => undefined);
-  }, [notifySessionCreated, refreshSessions, touchSession]);
+  }, [notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
 
   useEffect(() => {
     const session = selectedSession;
@@ -12725,7 +12618,7 @@ export function AgentChatPane({
         const message = err instanceof Error ? err.message : String(err);
         setError(`Archive failed: ${message}`);
       });
-  }, [invalidateCurrentChatSessionList, refreshSessions]);
+  }, [invalidateCurrentChatSessionList, refreshSessions, setSelectedSessionId]);
 
   const requestArchiveChat = useCallback(
     async (sessionId: string, title: string) => {
@@ -13884,7 +13777,9 @@ export function AgentChatPane({
     subagentView,
     turnActive,
   ]);
-  const retryCompaction = useCallback(() => { void compactContext(); }, [compactContext]);
+  // Stable: `compactContext` is rebuilt on every pane render, and this handler
+  // reaches every transcript row.
+  const retryCompaction = useLatestCallback(() => { void compactContext(); });
 
   // Staged-row dispatch/edit remain fire-and-forget IPC. New active-turn sends
   // are atomic through steer({ dispatchMode }) and never enter the staged queue.
