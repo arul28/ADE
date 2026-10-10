@@ -951,6 +951,9 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
       const opts = spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
       expect(opts?.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
+      // A POSIX resume is rendered as a command line, so a default that rode
+      // only the launch builder's env would be lost here.
+      expect(opts?.env?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe("1h");
     });
 
     it("resumes into the provider default when the stored account is gone", async () => {
@@ -1594,6 +1597,55 @@ describe("ptyService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: "/tmp/test-project",
       }));
+      service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
+    });
+
+    it.each<{
+      name: string;
+      toolType: "claude" | "claude-orchestrated" | "codex";
+      env?: Record<string, string>;
+      presetId?: string;
+      expected: string | undefined;
+    }>([
+      { name: "a Claude CLI", toolType: "claude", expected: "1h" },
+      { name: "an orchestrated Claude CLI", toolType: "claude-orchestrated", expected: "1h" },
+      { name: "another provider's CLI", toolType: "codex", expected: undefined },
+      { name: "a Claude CLI on a preset", toolType: "claude", presetId: "hp_other_endpoint", expected: undefined },
+      {
+        name: "a Claude CLI whose caller already chose a TTL",
+        toolType: "claude",
+        env: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" },
+        expected: "5m",
+      },
+    ])("sets the subagent prompt cache TTL for $name to $expected", async ({ toolType, env, presetId, expected }) => {
+      const { service, loadPty } = createHarness();
+      const provider = toolType === "codex" ? "codex" : "claude";
+
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "CLI",
+        cols: 80,
+        rows: 24,
+        toolType,
+        command: provider,
+        ...(env ? { env } : {}),
+        ...(presetId
+          ? {
+              resumeMetadata: {
+                provider,
+                targetKind: "session",
+                targetId: null,
+                presetId,
+                launch: { permissionMode: "default", presetId },
+              },
+            }
+          : {}),
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.ADE_LANE_ID, "the launch env reached the spawn").toBe("lane-1");
+      expect(opts?.env?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe(expected);
       service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
     });
 
