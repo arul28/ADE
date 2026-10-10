@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.99] - 2026-10-10
+
+### Desktop and web
+
+- Chat drafts, scheduled messages, and reusable prompts (#1572).
+- Automatic compaction settings and clearer context usage (#1570).
+- Account-aware chat naming that preserves names on failure (#1571).
+- Fixed Home add-widget crash on macOS 27 and grid alignment (#1569).
+
+### iOS
+
+- Drafts, scheduled sending, reusable prompts, and context compaction parity.
+
 ## [1.2.98] - 2026-10-09
 
 ### Desktop and web
@@ -2420,7 +2433,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.97...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.99...HEAD
+[1.2.99]: https://github.com/arul28/ADE/compare/v1.2.98...v1.2.99
 [1.2.98]: https://github.com/arul28/ADE/compare/v1.2.97...v1.2.98
 [1.2.97]: https://github.com/arul28/ADE/compare/v1.2.96...v1.2.97
 [1.2.96]: https://github.com/arul28/ADE/compare/v1.2.95...v1.2.96
