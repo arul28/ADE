@@ -252,6 +252,10 @@ function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
       // No new `done`: the completed turns are the same, so the newest
       // appended event of the turn that was active keeps it active. An event
       // of any other turn needs the completed set, which only the fold has.
+      // A call rewritten in place counts for the turn it names now.
+      for (const index of append.replacedIndexes) {
+        if (getEventTurnId(events[index]!.event) !== getEventTurnId(append.base[index]!.event)) return null;
+      }
       let newestTurnId: string | null = null;
       for (let index = events.length - 1; index >= append.appendedFrom; index -= 1) {
         const evt = events[index]!.event;
