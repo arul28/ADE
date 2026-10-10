@@ -446,7 +446,7 @@ final class WorkDraftController: ObservableObject {
       // Clear only the snapshot that was saved. Text or images added while the
       // round trip was in flight belong to a newer draft; wiping them loses
       // what the user typed. With no reader supplied, behave as before.
-      let current = currentComposer?() ?? (text, attachments)
+      let current = currentComposer?() ?? (text: text, attachments: attachments)
       if current.text == text && current.attachments.count == attachments.count {
         onDraftChange("")
         onAttachmentsChange([])
