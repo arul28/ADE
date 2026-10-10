@@ -54,7 +54,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@opencode/client": "2.0.24",
+    "@opencode/client": "2.0.26",
     "@types/node": "^20.11.30",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.17",
