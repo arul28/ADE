@@ -604,6 +604,10 @@ final class WorkDraftController: ObservableObject {
       graceSeconds: entry.graceSeconds,
       provider: entry.provider,
       modelId: entry.modelId,
+      // Carried through as well: a new-chat send the desktop armed names the
+      // runtime-facing model and may have no id at all, and dropping it here
+      // makes the retime fail with "Choose a model for the new chat."
+      model: entry.model,
       permissionMode: entry.permissionMode,
       thinking: entry.thinking
     )
