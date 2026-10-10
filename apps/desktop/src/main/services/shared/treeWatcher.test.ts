@@ -6,8 +6,9 @@ import { watchTree, type TreeWatcher, type TreeWatcherEvent } from "./treeWatche
 
 const TREE_EVENTS: TreeWatcherEvent[] = ["add", "change", "unlink", "addDir", "unlinkDir"];
 
-// The recursive native watcher is the macOS path; other platforms hand the
-// tree to chokidar, which has its own tests.
+// DARWIN-GATE: `watchTree` selects the recursive native watcher only on macOS
+// and has no seam to select it elsewhere; other platforms hand the tree to
+// chokidar. No macOS CI job runs the desktop tests, so these run on a Mac.
 describe.skipIf(process.platform !== "darwin")("watchTree on macOS", () => {
   let base: string;
   let root: string;
