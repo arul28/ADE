@@ -1008,6 +1008,38 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("stops the file watches a connection still holds when that connection closes", async () => {
+    const { runtime } = createRuntime();
+    runtime.fileService = {
+      watchWorkspace: vi.fn(async () => undefined),
+      stopWatching: vi.fn(),
+    } as any;
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+    const fileAction = async (action: string, args: Record<string, unknown>) => {
+      const result = await callTool(handler, "run_ade_action", { domain: "file", action, args });
+      expect(result?.isError, `setup: file.${action} ran`).toBeUndefined();
+    };
+
+    await fileAction("watchWorkspace", { workspaceId: "ws-1", __adeRuntimeClientId: 7 });
+    await fileAction("watchWorkspace", { workspaceId: "ws-1", __adeRuntimeClientId: 7 });
+    await fileAction("watchWorkspace", { workspaceId: "ws-2", includeIgnored: true, __adeRuntimeClientId: 9 });
+    await fileAction("stopWatching", { workspaceId: "ws-1", __adeRuntimeClientId: 7 });
+    expect(runtime.fileService.stopWatching).toHaveBeenCalledTimes(1);
+
+    handler.dispose();
+
+    // One watch of ws-1 was already stopped by its client; the other two references are released.
+    const stops = runtime.fileService.stopWatching.mock.calls.slice(1);
+    expect(stops).toHaveLength(2);
+    expect(stops).toContainEqual([expect.objectContaining({ workspaceId: "ws-1" }), 7]);
+    expect(stops).toContainEqual([expect.objectContaining({ workspaceId: "ws-2", includeIgnored: true }), 9]);
+
+    // A closed connection owes nothing more.
+    handler.dispose();
+    expect(runtime.fileService.stopWatching).toHaveBeenCalledTimes(3);
+  });
+
   it("exposes direct PTY RPC methods with enriched create/list responses", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });

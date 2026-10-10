@@ -175,8 +175,8 @@ function releasePageFileWatches(senderId: number): void {
 
 /**
  * Record a file watch or stop that a runtime accepted for `sender`. The first
- * watch also ties the page's lifetime to its watches: a new document in the
- * main frame (a reload), a dead renderer and a destroyed window all end the
+ * watch also ties the page's lifetime to its watches: a new document committed
+ * in the main frame (a reload), a dead renderer and a destroyed window all end the
  * page without its cleanup running.
  */
 function trackPageFileWatch(
@@ -187,17 +187,31 @@ function trackPageFileWatch(
 ): void {
   if (request.domain !== "file") return;
   if (request.action !== "watchWorkspace" && request.action !== "stopWatching") return;
-  const senderId = sender.id;
-  const { [RUNTIME_ACTION_CLIENT_ID_FIELD]: _clientId, ...args } = isObjectRecord(request.args) ? request.args : {};
+  const { [RUNTIME_ACTION_CLIENT_ID_FIELD]: clientId, ...args } = isObjectRecord(request.args) ? request.args : {};
+  // The id the runtime counted this watch under. Read from the request: the
+  // page can be gone by now, and a destroyed sender has no id to read.
+  if (typeof clientId !== "number") return;
+  const senderId = clientId;
+  if (sender.isDestroyed()) {
+    // The page closed while the runtime answered, so its `destroyed` event is
+    // past. A watch the runtime just accepted has nobody left to stop it.
+    if (request.action === "watchWorkspace") {
+      void call({ ...request, action: "stopWatching" }).catch(() => {
+        // The runtime is gone or unreachable; its own connection cleanup covers it.
+      });
+    }
+    return;
+  }
   let runtimes = fileWatchesBySender.get(senderId);
   if (!runtimes) {
     if (request.action === "stopWatching") return;
     runtimes = new Map();
     fileWatchesBySender.set(senderId, runtimes);
     const release = () => releasePageFileWatches(senderId);
-    sender.on("did-start-navigation", (details) => {
-      if (details.isMainFrame && !details.isSameDocument) release();
-    });
+    // `did-navigate` reports a main-frame document that committed. A
+    // navigation that only started can still end with the page alive (a
+    // download, a 204, an abort), and an in-page route change keeps the page.
+    sender.on("did-navigate", release);
     sender.on("render-process-gone", release);
     sender.once("destroyed", () => {
       release();

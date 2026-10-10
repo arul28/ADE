@@ -1426,6 +1426,40 @@ describe("readRecord", () => {
 });
 
 describe("collapseChatTranscriptEventsIncremental", () => {
+  it("matches a full recompute when a long thread has an old tool call rewritten, then a newer one", () => {
+    const second = (index: number) => new Date(Date.UTC(2026, 5, 1, 10, 0, index)).toISOString();
+    const stream: AgentChatEventEnvelope[] = [];
+    for (let index = 0; index < 420; index += 1) {
+      stream.push(index % 7 === 3
+        ? env(second(index), { type: "tool_call", tool: "bash", args: {}, itemId: `call-${index}`, turnId: "turn-1" })
+        : env(second(index), { type: "text", text: `part ${index}`, messageId: `m-${Math.floor(index / 5)}`, turnId: "turn-1" }));
+    }
+    const rewrite = (events: AgentChatEventEnvelope[], index: number): AgentChatEventEnvelope[] => {
+      const call = events[index]!;
+      expect(call.event.type, "setup: a tool call sits at this index").toBe("tool_call");
+      const next = events.slice();
+      next[index] = { ...call, event: { ...call.event, args: { command: `echo ${index}` } } as AgentChatEventEnvelope["event"] };
+      next.push(env(second(events.length), { type: "text", text: "after", messageId: `tail-${events.length}`, turnId: "turn-1" }));
+      return next;
+    };
+
+    let prevEvents: AgentChatEventEnvelope[] = [];
+    let prev = collapseChatTranscriptEventsWithContext(prevEvents);
+    const advance = (nextEvents: AgentChatEventEnvelope[]) => {
+      prev = collapseChatTranscriptEventsIncrementalWithContext(nextEvents, prevEvents, prev.rows, prev.context);
+      prevEvents = nextEvents;
+      expect(prev.rows).toEqual(collapseChatTranscriptEvents(nextEvents));
+    };
+    for (let index = 1; index <= stream.length; index += 1) advance(stream.slice(0, index));
+
+    // Index 3 is older than every checkpoint; 388 is newer than most of them.
+    advance(rewrite(prevEvents, 3));
+    advance(rewrite(prevEvents, 388));
+    advance(rewrite(prevEvents, 199));
+    advance([...prevEvents, env(second(prevEvents.length), { type: "done", turnId: "turn-1", status: "completed" })]);
+    expect(prev.rows.length).toBeGreaterThan(1);
+  });
+
   it("reuses previous rows and only processes new events", () => {
     const events1: AgentChatEventEnvelope[] = [
       {

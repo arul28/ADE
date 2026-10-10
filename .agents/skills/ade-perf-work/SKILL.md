@@ -954,7 +954,7 @@ number below looked fine.
 - A watch is one reference and a stop releases one. A page that goes away
   without its cleanup never sends the stop. `fileWatchLedger.ts` keeps the
   outstanding references in two places: the desktop main process sends the
-  missing stops when a page starts a new document, loses its renderer or is
+  missing stops when a page commits a new document, loses its renderer or is
   destroyed (`trackPageFileWatch`), and the brain releases a connection's
   watches when the connection closes (`adeRpcServer` `handler.dispose`). Keep
   both: the first covers a reload, the second covers the app quitting.

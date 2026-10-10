@@ -83,7 +83,12 @@ const ops: Record<string, () => void | Promise<void>> = {
     w(path.join(d, `b${n}-${i}.txt`)); n++; },
 };
 const names = Object.keys(ops).filter((name) => name !== "fileToDir" || process.env.FILE_TO_DIR === "1");
+if (process.env.ONLY && !(process.env.ONLY in ops)) {
+  console.error(`unknown operation ${process.env.ONLY}; one of: ${Object.keys(ops).join(", ")}`);
+  process.exit(1);
+}
 let mismatches = 0;
+let failedOps = 0;
 const counts: Record<string, number> = {};
 for (let step = 0; step < STEPS; step++) {
   const name = process.env.ONLY ?? names[step % names.length]!;
@@ -94,6 +99,7 @@ for (let step = 0; step < STEPS; step++) {
   }
   catch (e) {
     console.log("op failed", name, String(e).slice(0, 80));
+    failedOps++;
   }
   await sleep(Number(process.env.WAIT ?? 2600));
   // A `change` right after the `add` of the same file is a matter of timing on both sides: the
@@ -108,8 +114,8 @@ for (let step = 0; step < STEPS; step++) {
     console.log(`STEP ${step} ${name}: chokidar-only ${JSON.stringify(onlyA.slice(0, 6))} native-only ${JSON.stringify(onlyB.slice(0, 6))} (sizes ${log.a.size}/${log.b.size})`);
   }
 }
-console.log(JSON.stringify({ steps: STEPS, mismatches, eventsPerOp: counts }));
+console.log(JSON.stringify({ steps: STEPS, mismatches, failedOps, eventsPerOp: counts }));
 await a.close();
 await b.close();
 fs.rmSync(base, { recursive: true, force: true });
-process.exit(mismatches ? 1 : 0);
+process.exit(mismatches || failedOps ? 1 : 0);

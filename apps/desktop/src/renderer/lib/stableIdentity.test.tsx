@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
-import { memoWithLatestHandlers, useLatestCallback } from "./stableIdentity";
+import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { memoWithLatestHandlers, useLatestCallback, useStateSkippingSameValue } from "./stableIdentity";
 
 afterEach(() => cleanup());
 
@@ -62,5 +62,31 @@ describe("useLatestCallback", () => {
     expect(result.current).toBeUndefined();
     rerender({ fn: first });
     expect(result.current).toBe(stable);
+  });
+});
+
+describe("useStateSkippingSameValue", () => {
+  it("applies every real change, including a plain write queued behind a functional update", () => {
+    const hook = renderHook(() => useStateSkippingSameValue<string | null>("chat-a"));
+    const set = (next: Parameters<(typeof hook.result.current)[1]>[0]) => hook.result.current[1](next);
+    expect(hook.result.current[0]).toBe("chat-a");
+
+    act(() => set("chat-a"));
+    expect(hook.result.current[0]).toBe("chat-a");
+    act(() => set("chat-b"));
+    expect(hook.result.current[0]).toBe("chat-b");
+
+    // In one batch a functional update moves the value away, then a plain
+    // write names the value the hook held before. That write is a real change.
+    act(() => {
+      set(() => "chat-a");
+      set("chat-b");
+    });
+    expect(hook.result.current[0]).toBe("chat-b");
+
+    act(() => set((current) => (current === "chat-b" ? null : current)));
+    expect(hook.result.current[0]).toBeNull();
+    act(() => set("chat-b"));
+    expect(hook.result.current[0]).toBe("chat-b");
   });
 });
