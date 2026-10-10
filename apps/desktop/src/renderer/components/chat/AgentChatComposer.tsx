@@ -7169,7 +7169,12 @@ export function AgentChatComposer({
             // rather than a separate panel appearing from nowhere.
             const anchor = document.querySelector<HTMLButtonElement>(
               '[data-testid="composer-send-mode-button"]',
-            ) ?? document.querySelector<HTMLElement>('[data-chat-composer-wrapper]');
+            )
+              // The idle send caret does not exist during a running turn, and
+              // the wrapper only exists in the empty-state hero. The dock is
+              // present in the active-chat surface the drafts list is used from.
+              ?? document.querySelector<HTMLElement>('[data-chat-composer-dock]')
+              ?? document.querySelector<HTMLElement>('[data-chat-composer-wrapper]');
             if (!anchor) return null;
             return (
               <ViewportOverlayPortal layer="popover">

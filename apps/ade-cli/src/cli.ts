@@ -11223,12 +11223,12 @@ function buildDraftsUpdatePlan(args: string[]): CliPlan {
     kind: "execute",
     label: "drafts update",
     steps: [
-      draftsActionStep("listDrafts", {}),
+      // The list publishes under "existing" for the step after it: a step's
+      // result is stored under its own key only once its params have run, so a
+      // step reads the keys of the steps before it, never its own.
+      actionStep("existing", "chat", "listDrafts", {}),
       {
-        // Keyed "existing", not the usual "result": the next step reads
-        // `values.existing`, and the default key left it undefined so every
-        // retime failed with "No draft <id> on this machine".
-        key: "existing",
+        key: "result",
         method: "ade/actions/call",
         params: (values) => {
           const existing = findDraftById(draftEntriesFromResult(values.existing), id);

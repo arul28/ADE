@@ -8921,15 +8921,22 @@ describe("ADE CLI", () => {
     });
     const retimeStep = retime.steps[1]?.params;
     expect(typeof retimeStep).toBe("function");
+    // The key is read off the first step rather than written again here. The
+    // executor publishes a step's result under that step's OWN key after its
+    // params run, so a plan whose two steps disagree about the name fails with
+    // "No draft <id> on this machine" — and a test that spells the key itself
+    // passes under either wiring.
+    const listedKey = retime.steps[0]?.key as string;
+    expect(listedKey).toBeTruthy();
     const retimeParams = (retimeStep as (values: any) => any)({
-      existing: { domain: "chat", action: "listDrafts", result: [entries[0]] },
+      [listedKey]: { domain: "chat", action: "listDrafts", result: [entries[0]] },
     });
     expect(retimeParams.arguments.args).toMatchObject({
       id: "draft-1",
       schedule: { targetKind: "existing", targetSessionId: "chat-9", deliveryPolicy: "wait" },
     });
     expect(() => (retimeStep as (values: any) => any)({
-      existing: { domain: "chat", action: "listDrafts", result: [] },
+      [listedKey]: { domain: "chat", action: "listDrafts", result: [] },
     })).toThrow(/No draft draft-1/);
 
     const del = expectExecutePlan(buildCliPlan(["drafts", "delete", "draft-1"]));

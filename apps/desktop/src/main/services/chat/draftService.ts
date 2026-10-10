@@ -304,12 +304,14 @@ export function listDrafts(
   db: DraftDb,
   // The whole retained set, not the plain-draft cap: a caller listing drafts
   // is showing them to someone, and an armed send that fell past the newest
-  // twenty plain drafts would otherwise be invisible while still firing.
-  limit = MAX_DRAFTS + MAX_SCHEDULED_DRAFTS,
+  // twenty plain drafts would otherwise be invisible while still firing. The
+  // ceiling covers both the pending sends (which are never pruned) and the
+  // finished ones that count against the same cap.
+  limit = MAX_DRAFTS + (2 * MAX_SCHEDULED_DRAFTS),
 ): DraftEntry[] {
   pruneDraftRetention(db);
   const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : MAX_DRAFTS;
-  const safeLimit = Math.max(1, Math.min(MAX_DRAFTS + MAX_SCHEDULED_DRAFTS, normalizedLimit));
+  const safeLimit = Math.max(1, Math.min(MAX_DRAFTS + (2 * MAX_SCHEDULED_DRAFTS), normalizedLimit));
   return db.all<DraftRow>(
     `
       select ${DRAFT_COLUMNS}
@@ -745,12 +747,14 @@ export function claimScheduledDraft(db: DraftDb, id: string): boolean {
 }
 
 /**
- * Record an outcome only while this runtime still owns the row.
+ * Record an outcome only while the row is still claimed.
  *
- * A claim can be lost between taking it and finishing: the stale sweep returns
- * a row to the queue after ten minutes, and a second runtime can then claim it.
- * Writing this delivery's result over that one would report a send that did
- * not happen. Returns false when the write was refused.
+ * This closes the stale-claim path: the sweep returns a row to the queue after
+ * ten minutes, and once it is back to `scheduled` this write is refused rather
+ * than reporting a send that did not happen. It is a status check, not an
+ * ownership check — a row re-claimed by another runtime is `sending` again and
+ * this would accept the write — so it narrows the window rather than closing
+ * it. Returns false when the write was refused.
  */
 export function setDraftStatusIfSending(
   db: DraftDb,
