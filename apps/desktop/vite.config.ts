@@ -1,14 +1,43 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * `browserMock.ts` imports the generated snapshot of the project database
+ * (`browser-mock-ade-snapshot.generated.json`, tens of MB when it exists) for
+ * the browser preview. The dev Electron window loads the same modules from this
+ * server and never installs the mock, yet it parsed that file on every launch
+ * and held it for the life of the window: about 350 MB of renderer heap and a
+ * multi-second stall at startup with a 60 MB snapshot. Electron gets an empty
+ * module instead. Dev server only; builds are untouched.
+ */
+function skipBrowserMockSnapshotInElectron(): Plugin {
+  return {
+    name: "ade-skip-browser-mock-snapshot-in-electron",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const pathname = (req.url ?? "").split("?")[0];
+        const fromElectron = /\bElectron\//.test(String(req.headers["user-agent"] ?? ""));
+        if (fromElectron && pathname.endsWith("/browser-mock-ade-snapshot.generated.json")) {
+          res.setHeader("Content-Type", "text/javascript");
+          res.setHeader("Cache-Control", "no-store");
+          res.end("export default null;\n");
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
   root: "src/renderer",
   base: "./",
-  plugins: [react()],
+  plugins: [react(), skipBrowserMockSnapshotInElectron()],
   optimizeDeps: {
     // Loaded lazily by the first terminal, so the dep scan misses it; found at
     // runtime, Vite re-optimizes and the open page's import fails with

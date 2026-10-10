@@ -399,7 +399,24 @@ function plainInlineMarkdown(line: string): string {
  * Returns null for empty input. Presentation only; the report is unchanged.
  */
 export function subagentSummaryPlainText(value: string | null | undefined): string | null {
-  const source = value?.replace(/\r\n?/g, "\n").trim();
+  if (!value) return null;
+  // A card asks for the same report on every render, and a whole report costs
+  // a dozen regex passes per line.
+  const known = subagentSummaryPlainTextCache.get(value);
+  if (known !== undefined) return known;
+  const plain = reduceSubagentSummaryToPlainText(value);
+  if (subagentSummaryPlainTextCache.size >= SUBAGENT_SUMMARY_PLAIN_TEXT_CACHE_LIMIT) {
+    subagentSummaryPlainTextCache.clear();
+  }
+  subagentSummaryPlainTextCache.set(value, plain);
+  return plain;
+}
+
+const SUBAGENT_SUMMARY_PLAIN_TEXT_CACHE_LIMIT = 256;
+const subagentSummaryPlainTextCache = new Map<string, string | null>();
+
+function reduceSubagentSummaryToPlainText(value: string): string | null {
+  const source = value.replace(/\r\n?/g, "\n").trim();
   if (!source) return null;
   const parts: string[] = [];
   let pendingSeparator: string | null = null;

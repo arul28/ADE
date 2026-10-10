@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import { useAppStore } from "../state/appStore";
+import { getAppearanceState, useAppearanceStore } from "../state/appearanceStore";
 import { DEFAULT_SCENE_PREFERENCES, type ScenePreferences, type SceneTexture } from "./scenePreferences";
 import { BUNDLED_SCENES, findBundledScene, isUserSceneId } from "./sceneLibrary";
 import { extractScenePalette, type ScenePalette } from "./scenePalette";
@@ -154,7 +154,7 @@ function currentShufflePick(prefs: ScenePreferences): string {
 
 /** Picks another picture for shuffle mode right now. */
 export function reshuffleScene(): void {
-  const prefs = useAppStore.getState().interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES;
+  const prefs = getAppearanceState().interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES;
   shufflePick = pickShuffle(shufflePick, prefs.shuffleExclude);
   remember(shufflePick);
   emit();
@@ -175,7 +175,7 @@ function shuffleTick(): void {
   const now = Date.now();
   const slept = now - lastTick > WAKE_GAP_MS;
   lastTick = now;
-  const prefs = useAppStore.getState().interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES;
+  const prefs = getAppearanceState().interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES;
   if (prefs.mode !== "shuffle") return;
   if (prefs.shuffleEvery === "wake" && slept) {
     reshuffleScene();
@@ -209,7 +209,7 @@ export function sceneIdFor(prefs: ScenePreferences): string | null {
 }
 
 export function useActiveScene(): ActiveScene {
-  const prefs = useAppStore((s) => s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES);
+  const prefs = useAppearanceStore((s) => s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES);
   useSyncExternalStore(subscribe, () => snapshotVersion);
   const usesUserLibrary = prefs.mode === "shuffle" || isUserSceneId(prefs.imageId);
 
@@ -254,10 +254,10 @@ export function useUserScenes(): UserSceneSummary[] {
 
 /** Merges a partial scene change into the interface preferences. */
 export function useSetScene(): (next: Partial<ScenePreferences>) => void {
-  const setInterfacePreferences = useAppStore((s) => s.setInterfacePreferences);
+  const setInterfacePreferences = useAppearanceStore((s) => s.setInterfacePreferences);
   return useCallback(
     (next) => {
-      const current = useAppStore.getState().interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES;
+      const current = getAppearanceState().interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES;
       setInterfacePreferences({ scene: { ...current, ...next, choiceMade: true } });
     },
     [setInterfacePreferences],
@@ -272,7 +272,7 @@ export function useSetScene(): (next: Partial<ScenePreferences>) => void {
 export function useSceneDocumentSync(): ActiveScene {
   const scene = useActiveScene();
   const showingImage = scene.kind === "image" && scene.showImage;
-  const shuffleOn = useAppStore((s) => (s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES).mode === "shuffle");
+  const shuffleOn = useAppearanceStore((s) => (s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES).mode === "shuffle");
   // Mounted once at the root, so the shuffle timer has exactly one owner.
   useEffect(() => {
     setShuffleTimer(shuffleOn);

@@ -121,7 +121,6 @@ import { formatLegacyProviderRetryActivityDetail } from "../../../shared/provide
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import { isClaudeContextCategoryKind } from "../../../shared/claudeContextUsage";
-import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import {
   ChatToolActivityDetails,
   ChatTurnWorkSummary,
@@ -2176,9 +2175,13 @@ export function deriveTurnModelState(
       || previous.lastProcessedEnvelope === events[previous.processedLength - 1]
     );
 
-  const map = canIncrementallyAppend && previous
-    ? new Map(previous.map)
-    : new Map<string, TurnModelDescriptor>();
+  // The map is copied only when a turn end changes it, and a descriptor that
+  // reads the same as the previous one for its turn is that same object. Every
+  // mounted row takes its turn's descriptor as a prop; a provider resend of the
+  // newest tool call breaks the append check above, and a rebuilt map of equal
+  // descriptors re-rendered every row.
+  let map = canIncrementallyAppend && previous ? previous.map : new Map<string, TurnModelDescriptor>();
+  let ownsMap = map !== previous?.map;
   let lastModel = canIncrementallyAppend ? (previous?.lastModel ?? null) : null;
   const startIndex = canIncrementallyAppend && previous ? previous.processedLength : 0;
 
@@ -2187,12 +2190,21 @@ export function deriveTurnModelState(
     if (!evt || evt.type !== "done") continue;
     const modelLabel = resolveModelLabel(evt.modelId, evt.model);
     if (!evt.turnId || !modelLabel) continue;
-    const model = {
-      label: modelLabel,
-      ...(evt.modelId ? { modelId: evt.modelId } : {}),
-      ...(evt.model ? { model: evt.model } : {}),
-    };
-    map.set(evt.turnId, model);
+    const known = previous?.map.get(evt.turnId);
+    const model = known && known.label === modelLabel && known.modelId === (evt.modelId || undefined) && known.model === (evt.model || undefined)
+      ? known
+      : {
+          label: modelLabel,
+          ...(evt.modelId ? { modelId: evt.modelId } : {}),
+          ...(evt.model ? { model: evt.model } : {}),
+        };
+    if (map.get(evt.turnId) !== model) {
+      if (!ownsMap) {
+        map = new Map(map);
+        ownsMap = true;
+      }
+      map.set(evt.turnId, model);
+    }
     lastModel = model;
   }
 
@@ -4208,132 +4220,6 @@ function TurnSourcesChip({
   ) : (
     <span className={className} data-testid="turn-sources-chip">{body}</span>
   );
-}
-
-type TurnSummary = {
-  turnId: string;
-  taskCount: number;
-  completedTaskCount: number;
-  changedFileCount: number;
-  backgroundAgentCount: number;
-  activeBackgroundAgentCount: number;
-  turnModel: { label: string; modelId?: string; model?: string } | null;
-  durationMs: number | null;
-  ended: boolean;
-};
-
-function deriveTurnSummary(
-  events: AgentChatEventEnvelope[],
-  turnModelState: DerivedTurnModelState | null,
-): TurnSummary | null {
-  let latestTurnId: string | null = null;
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    latestTurnId = getEventTurnId(events[i]!.event);
-    if (latestTurnId) break;
-  }
-  if (!latestTurnId) return null;
-
-  let latestTodoUpdate: Extract<AgentChatEvent, { type: "todo_update" }> | null = null;
-  let latestPlan: Extract<AgentChatEvent, { type: "plan" }> | null = null;
-  let turnStartedAt: number | null = null;
-  let turnEndedAt: number | null = null;
-  let ended = false;
-  const changedFilePaths = new Set<string>();
-  const subagents = new Map<string, { background: boolean; status: ChatSubagentSnapshot["status"] }>();
-
-  for (const envelope of events) {
-    const event = envelope.event;
-    if (getEventTurnId(event) !== latestTurnId) continue;
-
-    const ts = Date.parse(envelope.timestamp);
-    if (Number.isFinite(ts)) {
-      if (turnStartedAt === null || ts < turnStartedAt) turnStartedAt = ts;
-      if (turnEndedAt === null || ts > turnEndedAt) turnEndedAt = ts;
-    }
-    if (event.type === "done" || (event.type === "status" && event.turnStatus !== "started")) {
-      ended = true;
-    }
-
-    if (event.type === "todo_update") {
-      latestTodoUpdate = event;
-      continue;
-    }
-
-    if (event.type === "plan") {
-      latestPlan = event;
-      continue;
-    }
-
-    if (event.type === "file_change") {
-      changedFilePaths.add(event.path);
-      continue;
-    }
-
-    if (event.type === "subagent_started") {
-      const existing = subagents.get(event.taskId);
-      subagents.set(event.taskId, {
-        background: event.background ?? existing?.background ?? false,
-        status: "running",
-      });
-      continue;
-    }
-
-    if (event.type === "subagent_progress") {
-      const existing = subagents.get(event.taskId);
-      subagents.set(event.taskId, {
-        background: existing?.background ?? false,
-        status: "running",
-      });
-      continue;
-    }
-
-    if (event.type === "subagent_result") {
-      const existing = subagents.get(event.taskId);
-      subagents.set(event.taskId, {
-        background: existing?.background ?? false,
-        status: event.status,
-      });
-    }
-  }
-
-  let taskCount = 0;
-  let completedTaskCount = 0;
-  const taskSource = latestTodoUpdate?.items ?? latestPlan?.steps ?? [];
-  for (const task of taskSource) {
-    taskCount += 1;
-    if (task.status === "completed") completedTaskCount += 1;
-  }
-  const changedFileCount = changedFilePaths.size;
-  let backgroundAgentCount = 0;
-  let activeBackgroundAgentCount = 0;
-  for (const entry of subagents.values()) {
-    if (!entry.background) continue;
-    backgroundAgentCount += 1;
-    if (entry.status === "running") {
-      activeBackgroundAgentCount += 1;
-    }
-  }
-
-  if (!taskCount && !changedFileCount && !backgroundAgentCount) {
-    return null;
-  }
-
-  const durationMs =
-    turnStartedAt !== null && turnEndedAt !== null && turnEndedAt > turnStartedAt
-      ? turnEndedAt - turnStartedAt
-      : null;
-
-  return {
-    turnId: latestTurnId,
-    taskCount,
-    completedTaskCount,
-    changedFileCount,
-    durationMs,
-    ended,
-    backgroundAgentCount,
-    activeBackgroundAgentCount,
-    turnModel: turnModelState?.map.get(latestTurnId) ?? null,
-  };
 }
 
 /** `<1s`, `4.2s`, `12s`, `3m 32s`. Sub-second turns read `<1s`, never milliseconds. */
@@ -6686,7 +6572,6 @@ function AgentChatMessageListMain({
     turnModelStateRef.current = nextState;
     return nextState;
   }, [events]);
-  const turnSummary = useMemo(() => deriveTurnSummary(events, turnModelState), [events, turnModelState]);
   // Per-turn worked-for duration, keyed by grouped-row index, derived from the
   // universal `done` event (runtime-agnostic — no reliance on turnId).
   const turnEndDurationByRowKey = useMemo(

@@ -91,7 +91,7 @@ The file watcher deliberately did **not** move with it: that effect refreshes
 the tree *and* reloads open editor tabs, so it is coordination between two
 layers rather than part of either. Callback identities in the hook are
 preserved exactly as they were inline, because the watcher subscription is
-keyed on them — a widened dependency there costs a real chokidar tear-down and
+keyed on them — a widened dependency there costs a real watcher tear-down and
 re-subscribe, not just a re-render.
 
 Module-level caches in `v2/filesTreeCache.ts` keep workspaces and root

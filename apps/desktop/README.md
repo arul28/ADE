@@ -75,6 +75,8 @@ The export runs automatically (best-effort) before `dev:vite` via `predev:vite`.
 
 That file is gitignored. It seeds **read-only** mock data from `.ade/ade.db` at export time. It does **not** include secrets (Linear tokens, API keys).
 
+The snapshot can be tens of MB. The dev Electron window loads the same modules from the Vite server and never installs the mock, so the dev server (`skipBrowserMockSnapshotInElectron` in `vite.config.ts`) sends it an empty module in place of the snapshot. A browser tab still gets the real file.
+
 ### Live bridge (real Linear, sync, lanes)
 
 From `apps/desktop`:

@@ -1679,6 +1679,40 @@ controls are withheld for the one-frame interval where the incoming transcript
 id and internal selected-session id differ; an outgoing Stop button or pending
 input can therefore never appear over a settled incoming transcript.
 
+### What one streamed event costs
+
+A streamed event must cost that event, not the transcript. Four mechanisms
+keep it so; each falls back to the full computation when its shortcut does
+not apply, and the full computation is the definition of the result.
+
+- **The live merge carries its indexes.** `mergeAgentChatLiveEvents` hands
+  the list it returns the set of identity keys and the position of every tool
+  call (`liveMergeIndexByList`), and the next merge takes them. A provider
+  resend of a tool call (Claude sends each call twice) updates the stored
+  envelope in place through that index.
+- **A merged list knows what it extended.** `agentChatLiveAppendOf(list)`
+  names the list an append extended, where the new events start, and which
+  positions a resend replaced. Folds that keep their answer per list
+  (`deriveRuntimeState`, the active turn, its start time, the turn-start map)
+  read only the appended events, and fold again only when one of them can
+  change the answer.
+- **The display filter extends its previous answer** (`chatDisplayEvents` in
+  `chatHistoryWindow.ts`) and records the same relation for the filtered list
+  (`recordAgentChatLiveAppend`), so the folds above work on it too. A batch
+  that shows nothing new (dotted `subagent.*` twins) returns the previous
+  list and the transcript does not render.
+- **The row builder replays from a checkpoint.** A replaced envelope used to
+  mean a full pass over the transcript. The collapse context keeps its two
+  most recent checkpoints (one each 128 events, and two left behind by every
+  full pass) and replays from the newest one that ends before the replaced
+  event. Its row indexes are complete after a full pass
+  (`rowIndexesComplete`), so a key with no entry means no such row and no
+  scan. `cloneCollapseTranscriptContext` copies the context field by field;
+  a new field does not compile until it is copied.
+
+`scripts/perf/service/chat-transcript.bench.mts` runs this pipeline on real
+transcripts and checks the incremental rows against a full pass.
+
 ### `unavailable` — "could not reach the runtime", not "no such session"
 
 `sessionFound: false` is an authoritative answer: this project runtime has no

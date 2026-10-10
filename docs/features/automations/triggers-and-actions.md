@@ -51,7 +51,7 @@ GitHub triggers are emitted by three ingress paths: a real webhook (`github-webh
 
 ### File-change
 
-- `file.change` — path-matched changes inside the watched lane worktree. Uses `chokidar`. Matches `paths: string[]` via `globToRegExp` + `matchesGlob`.
+- `file.change` — path-matched changes inside the watched lane worktree. Uses `watchTree` (chokidar off macOS, a recursive native watch on macOS). Matches `paths: string[]` via `globToRegExp` + `matchesGlob`.
 
 ### Chat-lifecycle
 

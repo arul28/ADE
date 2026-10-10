@@ -1,5 +1,6 @@
 import { useMemo, useRef } from "react";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types/chat";
+import { agentChatLiveAppendOf, type AgentChatLiveAppend } from "../../../shared/chatHistoryMerge";
 import type { ChatTranscriptGroupedEnvelope, ChatWorkLogEntry } from "./chatTranscriptRows";
 import { dedupeChatToolActivityEntries } from "./ChatWorkLogBlock";
 import {
@@ -241,7 +242,51 @@ function deriveActiveProviderRetryActivity(
   return null;
 }
 
+/**
+ * A value folded from a whole transcript, kept per event list. A list the live
+ * merge appended to asks `carry` first: given the answer for the list before
+ * it and the appended events, either the new answer or null for "fold again".
+ * One streamed event then costs that event, not the transcript.
+ */
+function foldedOverAppends<T>(
+  cache: WeakMap<readonly AgentChatEventEnvelope[], { value: T }>,
+  events: AgentChatEventEnvelope[],
+  carry: (before: T, append: AgentChatLiveAppend) => { value: T } | null,
+  fold: () => T,
+): T {
+  const known = cache.get(events);
+  if (known) return known.value;
+  const append = agentChatLiveAppendOf(events);
+  const before = append ? cache.get(append.base) : undefined;
+  const next = (append && before ? carry(before.value, append) : null) ?? { value: fold() };
+  cache.set(events, next);
+  return next.value;
+}
+
+const activeTurnIdByEvents = new WeakMap<readonly AgentChatEventEnvelope[], { value: string | null }>();
+
 function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
+  return foldedOverAppends(
+    activeTurnIdByEvents,
+    events,
+    (before, append) => {
+      // No new `done`: the completed turns are the same, so the newest
+      // appended event of the turn that was active keeps it active. An event
+      // of any other turn needs the completed set, which only the fold has.
+      let newestTurnId: string | null = null;
+      for (let index = events.length - 1; index >= append.appendedFrom; index -= 1) {
+        const evt = events[index]!.event;
+        if (evt.type === "done") return null;
+        newestTurnId ??= getEventTurnId(evt);
+      }
+      if (newestTurnId === null) return { value: before };
+      return newestTurnId === before ? { value: before } : null;
+    },
+    () => foldActiveTurnId(events),
+  );
+}
+
+function foldActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
   // Collected over every event first: a finished turn can still receive an
   // event after its `done` (a detached WebFetch's late result settles its row
   // under the turn that called it), and that must not make it active again.
@@ -263,19 +308,58 @@ function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
 // Wall-clock start time (ms) of the given turn — the earliest event timestamp
 // tagged with that turnId. Used to anchor the working-indicator elapsed timer
 // so it survives remounts (leaving/returning to the chat).
+const turnStartedAtByEvents = new WeakMap<
+  readonly AgentChatEventEnvelope[],
+  { value: { turnId: string; startedAt: number | null } }
+>();
+
 function deriveTurnStartedAt(events: AgentChatEventEnvelope[], turnId: string | null): number | null {
   if (!turnId) return null;
-  let startedAt: number | null = null;
-  for (const envelope of events) {
-    if (getEventTurnId(envelope.event) !== turnId) continue;
-    const ts = Date.parse(envelope.timestamp);
-    if (!Number.isFinite(ts)) continue;
-    if (startedAt === null || ts < startedAt) startedAt = ts;
-  }
+  const earliest = (from: number, startedAt: number | null): number | null => {
+    for (let index = from; index < events.length; index += 1) {
+      const envelope = events[index]!;
+      if (getEventTurnId(envelope.event) !== turnId) continue;
+      const ts = Date.parse(envelope.timestamp);
+      if (!Number.isFinite(ts)) continue;
+      if (startedAt === null || ts < startedAt) startedAt = ts;
+    }
+    return startedAt;
+  };
+  const known = turnStartedAtByEvents.get(events);
+  if (known?.value.turnId === turnId) return known.value.startedAt;
+  // A resend can move a stored tool call to an earlier timestamp, so only a
+  // plain append carries the earlier answer forward.
+  const append = agentChatLiveAppendOf(events);
+  const before = append && !append.replacedIndexes.length ? turnStartedAtByEvents.get(append.base)?.value : undefined;
+  const startedAt = append && before?.turnId === turnId
+    ? earliest(append.appendedFrom, before.startedAt)
+    : earliest(0, null);
+  turnStartedAtByEvents.set(events, { value: { turnId, startedAt } });
   return startedAt;
 }
 
 /** When each turn started: its first `status: started` event. */
+const turnStartedAtMsByEvents = new WeakMap<readonly AgentChatEventEnvelope[], { value: Map<string, number> }>();
+
+/**
+ * {@link deriveTurnStartedAtMs} for the live transcript: the same map object
+ * until an appended event starts a turn, so what is derived from it keeps too.
+ */
+function deriveTurnStartedAtMsOverAppends(events: AgentChatEventEnvelope[]): Map<string, number> {
+  return foldedOverAppends(
+    turnStartedAtMsByEvents,
+    events,
+    (before, append) => {
+      for (let index = append.appendedFrom; index < events.length; index += 1) {
+        const { event } = events[index]!;
+        if (event.type === "status" && event.turnStatus === "started") return null;
+      }
+      return { value: before };
+    },
+    () => deriveTurnStartedAtMs(events),
+  );
+}
+
 export function deriveTurnStartedAtMs(events: readonly AgentChatEventEnvelope[]): Map<string, number> {
   const map = new Map<string, number>();
   for (const envelope of events) {
@@ -330,7 +414,7 @@ export function useTranscriptPresentation({
     () => (livePresentation ? deriveActiveProviderRetryActivity(events, activeTurnId) : null),
     [events, livePresentation, activeTurnId],
   );
-  const turnStartedAtMs = useMemo(() => deriveTurnStartedAtMs(events), [events]);
+  const turnStartedAtMs = useMemo(() => deriveTurnStartedAtMsOverAppends(events), [events]);
   return {
     activeTurnId,
     activeTurnStartedAt,

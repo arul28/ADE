@@ -40,8 +40,20 @@ async function loadFederatedAdapter(
   });
 }
 
+/**
+ * Loads the app's full stylesheet. The entry ships only `gate.css` (the boot
+ * screens and the sign-in card), so the workspace waits for this before its
+ * first render. Callers start it before the app's own modules: stylesheets
+ * apply in the order their links are added, and the app's stylesheet came
+ * ahead of every chunk stylesheet when the entry carried it.
+ */
+function loadAppStylesheet(): Promise<unknown> {
+  return import("../../index.css");
+}
+
 async function loadAppRoot(): Promise<React.ComponentType> {
-  const [{ App }, { RendererErrorBoundary }, { useAppStore }] = await Promise.all([
+  const [, { App }, { RendererErrorBoundary }, { useAppStore }] = await Promise.all([
+    loadAppStylesheet(),
     import("../../components/app/App"),
     import("../../components/app/RendererErrorBoundary"),
     import("../../state/appStore"),
@@ -67,6 +79,7 @@ async function loadAppRoot(): Promise<React.ComponentType> {
  */
 function preloadWorkspaceModules(): void {
   void Promise.all([
+    loadAppStylesheet(),
     import("../adapter/federated"),
     import("../../components/app/App"),
     import("../../components/app/RendererErrorBoundary"),

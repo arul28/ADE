@@ -1,6 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import "../index.css";
+import "./gate.css";
 import jetbrainsMonoUrl from "../../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url";
 import geistVariableUrl from "../../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2?url";
 import geistMonoVariableUrl from "../../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2?url";

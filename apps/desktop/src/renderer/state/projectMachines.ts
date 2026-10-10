@@ -167,10 +167,7 @@ export function useProjectMachines(active = true): ProjectMachinesState {
   };
 }
 
-/** Stable identity for a pin, for keying caches. `bound` for the tab's binding. */
-export function pinKey(pin: OpenProjectBinding | null | undefined): string {
-  return pin ? pin.key : "bound";
-}
+export { pinKey } from "./pinKey";
 
 /** Upper bound on one machine's read, so a wedged machine never holds a list. */
 export const MACHINE_READ_TIMEOUT_MS = 8_000;

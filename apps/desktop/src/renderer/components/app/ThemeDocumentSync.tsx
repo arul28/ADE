@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { selectEffectiveThemeId, useAppStore } from "../../state/appStore";
+import { selectEffectiveThemeId, useAppearanceStore } from "../../state/appearanceStore";
 import { resolveTheme, resolveThemeById } from "../../../shared/theme";
 import { themeTintedByScene } from "../../scene/sceneTheme";
 import { useSceneDocumentSync } from "../../scene/useScene";
@@ -18,8 +18,8 @@ import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
  * before the app shell exists.
  */
 export function ThemeDocumentSync() {
-  const themeId = useAppStore(selectEffectiveThemeId);
-  const customThemes = useAppStore((s) => s.customThemes);
+  const themeId = useAppearanceStore(selectEffectiveThemeId);
+  const customThemes = useAppearanceStore((s) => s.customThemes);
   const scene = useSceneDocumentSync();
   const tint = scene.kind === "image" && scene.matchTheme ? scene.palette : null;
   useEffect(() => {

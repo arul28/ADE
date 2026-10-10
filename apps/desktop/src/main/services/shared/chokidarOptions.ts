@@ -8,8 +8,11 @@ const MACOS_SAFE_WATCH_OPTIONS: ChokidarOptions = {
 
 export function withMacosSafeChokidarOptions(options: ChokidarOptions): ChokidarOptions {
   if (process.platform !== "darwin") return options;
-  // Electron's native fs.watch/FSEvents path can block Node's main loop when a
-  // watcher is closed while macOS is still registering the stream.
+  // chokidar's native mode opens one watch per directory, and closing a few
+  // thousand of them blocks Node's main loop (13 s measured on this repo).
+  // Polling costs a check of every path each second, so it is only for a
+  // handful of files. A directory tree goes through `watchTree`
+  // (`treeWatcher.ts`), which uses one recursive watch on macOS.
   return {
     ...options,
     ...MACOS_SAFE_WATCH_OPTIONS,

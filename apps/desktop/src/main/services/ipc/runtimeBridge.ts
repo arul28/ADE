@@ -58,6 +58,7 @@ import {
   MAX_CHAT_ATTACHMENT_BYTES,
 } from "../../../shared/chatAttachmentLimits";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
+import { createFileWatchLedger, type FileWatchLedger } from "../files/fileWatchLedger";
 import { matchRemoteProjectByRootPath } from "../attention/remoteProjectIdentity";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
 import type { RemoteArtifactRangeReader } from "../computerUse/artifactStreamProtocol";
@@ -111,6 +112,76 @@ type RuntimeBridgeArgs = {
 };
 
 const RUNTIME_ACTION_CLIENT_ID_FIELD = "__adeRuntimeClientId";
+
+/**
+ * File watches each page still holds on each runtime, so the stops a page
+ * never sent can be sent for it (see `fileWatchLedger.ts`). Keyed by the
+ * page's sender id, then by runtime.
+ */
+type PageFileWatches = Map<string, {
+  ledger: FileWatchLedger;
+  stop: (request: RemoteRuntimeActionRequest) => Promise<unknown>;
+}>;
+const fileWatchesBySender = new Map<number, PageFileWatches>();
+
+function releasePageFileWatches(senderId: number): void {
+  const runtimes = fileWatchesBySender.get(senderId);
+  if (!runtimes) return;
+  for (const { ledger, stop } of runtimes.values()) {
+    for (const ref of ledger.drain()) {
+      void stop({
+        domain: "file",
+        action: "stopWatching",
+        args: { ...ref.args, [RUNTIME_ACTION_CLIENT_ID_FIELD]: senderId },
+      }).catch(() => {
+        // The runtime is gone or unreachable; its own connection cleanup covers it.
+      });
+    }
+  }
+  runtimes.clear();
+}
+
+/**
+ * Record a file watch or stop that a runtime accepted for `sender`. The first
+ * watch also ties the page's lifetime to its watches: a new document in the
+ * main frame (a reload), a dead renderer and a destroyed window all end the
+ * page without its cleanup running.
+ */
+function trackPageFileWatch(
+  sender: WebContents,
+  runtimeKey: string,
+  request: RemoteRuntimeActionRequest,
+  stop: (request: RemoteRuntimeActionRequest) => Promise<unknown>,
+): void {
+  if (request.domain !== "file") return;
+  if (request.action !== "watchWorkspace" && request.action !== "stopWatching") return;
+  const senderId = sender.id;
+  const { [RUNTIME_ACTION_CLIENT_ID_FIELD]: _clientId, ...args } = isObjectRecord(request.args) ? request.args : {};
+  let runtimes = fileWatchesBySender.get(senderId);
+  if (!runtimes) {
+    if (request.action === "stopWatching") return;
+    runtimes = new Map();
+    fileWatchesBySender.set(senderId, runtimes);
+    const release = () => releasePageFileWatches(senderId);
+    sender.on("did-start-navigation", (details) => {
+      if (details.isMainFrame && !details.isSameDocument) release();
+    });
+    sender.on("render-process-gone", release);
+    sender.once("destroyed", () => {
+      release();
+      fileWatchesBySender.delete(senderId);
+    });
+  }
+  let entry = runtimes.get(runtimeKey);
+  if (!entry) {
+    if (request.action === "stopWatching") return;
+    entry = { ledger: createFileWatchLedger(), stop };
+    runtimes.set(runtimeKey, entry);
+  }
+  entry.stop = stop;
+  if (request.action === "watchWorkspace") entry.ledger.noteWatch(args, senderId);
+  else entry.ledger.noteStop(args, senderId);
+}
 /**
  * A machine update downloads a full build before it restarts, so the normal
  * call timeout is far too short. Fifteen minutes covers a slow link without
@@ -1243,6 +1314,8 @@ export function registerRuntimeBridge({
         projectId,
         actionRequest,
       );
+      trackPageFileWatch(event.sender, `remote:${target.id}:${projectId}`, actionRequest, (stopRequest) =>
+        remoteConnectionService.callAction(target.id, projectId, stopRequest));
       return result;
     },
   );
@@ -1472,6 +1545,9 @@ export function registerRuntimeBridge({
         rootPath,
         actionRequest,
       );
+      const pool = localRuntimeConnectionPool;
+      trackPageFileWatch(event.sender, `local:${localRuntimeRootKey(rootPath)}`, actionRequest, (stopRequest) =>
+        pool.callActionForRoot(rootPath, stopRequest));
       return result;
     },
   );

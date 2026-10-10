@@ -1,4 +1,4 @@
-import { useAppStore } from "../../state/appStore";
+import { useAppearanceStore } from "../../state/appearanceStore";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 
 /**
@@ -7,7 +7,7 @@ import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
  * image scene on its own.
  */
 export function GateBackdrop() {
-  const theme = useAppStore((s) => s.theme);
+  const theme = useAppearanceStore((s) => s.theme);
   return (
     <>
       <WorkToolPickerBackdrop theme={theme} field="window" />

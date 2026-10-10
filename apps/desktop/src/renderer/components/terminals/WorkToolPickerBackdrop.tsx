@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { selectEffectiveThemeId, useAppStore, type ThemeId } from "../../state/appStore";
+import { selectEffectiveThemeId, useAppearanceStore, type ThemeId } from "../../state/appearanceStore";
 import { resolveTheme, resolveThemeById, STYLESHEET_THEME_IDS } from "../../../shared/theme";
 import { cn } from "../ui/cn";
 import { createBackdropRenderer, type BackdropRenderer } from "./workToolPickerBackdropRenderer";
@@ -73,11 +73,11 @@ export function WorkToolPickerBackdrop({
   // The two stylesheet themes keep their hand-tuned ramps; every other theme
   // paints the mesh from its own accent, so the header and the start screen
   // change with the theme instead of staying violet.
-  const themeId = useAppStore(selectEffectiveThemeId);
-  const customThemes = useAppStore((s) => s.customThemes);
+  const themeId = useAppearanceStore(selectEffectiveThemeId);
+  const customThemes = useAppearanceStore((s) => s.customThemes);
   // The app's own Reduce-motion preference, so it stops this mesh too and not
   // only the CSS the `data-motion` attribute covers.
-  const reduceMotion = useAppStore((s) => s.interfacePreferences.reduceMotion);
+  const reduceMotion = useAppearanceStore((s) => s.interfacePreferences.reduceMotion);
   const palette = useMemo(() => {
     const resolved = resolveThemeById(themeId, customThemes);
     if (resolved.source === "builtin" && STYLESHEET_THEME_IDS.includes(resolved.id)) return undefined;

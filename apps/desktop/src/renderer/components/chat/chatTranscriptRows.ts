@@ -798,9 +798,44 @@ type CollapseTranscriptContext = {
   foreignTurnEndKeys: Set<string>;
   /** Position of the one `task_list` row, or null while the chat has none. */
   taskListRowIndex: number | null;
+  /**
+   * `work_log_entry` rows keyed by `collapseKey`. A tool call, its resend and
+   * its result all land on one row; without this every first sighting of a
+   * tool scanned the whole transcript for a row that is not there.
+   */
+  workLogRowIndexByCollapseKey: Map<string, number>;
+  /**
+   * True when this context has seen every row since the list was empty. Only
+   * then does a key missing from one of the row-index maps prove the row does
+   * not exist; a context made for rows it did not build keeps the full scan.
+   */
+  rowIndexesComplete: boolean;
+  /**
+   * The two most recent {@link CollapseCheckpoint}s, oldest first. See
+   * {@link collapseChatTranscriptEventsIncrementalWithContext}.
+   */
+  checkpoints: CollapseCheckpoint[];
 };
 
-export function createCollapseTranscriptContext(): CollapseTranscriptContext {
+/**
+ * The collapse state as it was after the first `eventCount` events. A provider
+ * resend replaces an envelope a few events back, and the rows after it depend
+ * on everything before it, so the only exact answer is a replay. A checkpoint
+ * lets that replay start a few hundred events back instead of at the first
+ * event of the chat. Never mutated: a resume works on a clone.
+ */
+type CollapseCheckpoint = {
+  eventCount: number;
+  firstEvent: AgentChatEventEnvelope;
+  lastEvent: AgentChatEventEnvelope;
+  rows: ChatTranscriptRenderEnvelope[];
+  context: CollapseTranscriptContext;
+};
+
+/** A checkpoint is taken each time this many events have passed the newest one. */
+const COLLAPSE_CHECKPOINT_INTERVAL = 128;
+
+export function createCollapseTranscriptContext(rowIndexesComplete = false): CollapseTranscriptContext {
   return {
     latestTodoItemsByTurn: new Map(),
     subagentAnchors: new Map(),
@@ -818,7 +853,71 @@ export function createCollapseTranscriptContext(): CollapseTranscriptContext {
     eventRowKeyOrdinals: new Map(),
     foreignTurnEndKeys: new Set(),
     taskListRowIndex: null,
+    workLogRowIndexByCollapseKey: new Map(),
+    rowIndexesComplete,
+    checkpoints: [],
   };
+}
+
+/**
+ * An independent copy of a collapse context, without its checkpoints. Every
+ * field is copied by name so a field added to the context fails to compile
+ * here until it is copied too. Values are primitives, immutable events, or
+ * snapshots written once; only the subagent states are mutated in place, and
+ * several map keys alias one state, so the copy keeps that aliasing.
+ */
+function cloneCollapseTranscriptContext(context: CollapseTranscriptContext): CollapseTranscriptContext {
+  const stateCopies = new Map<SubagentAnchorState, SubagentAnchorState>();
+  const subagentAnchors = new Map<string, SubagentAnchorState>();
+  for (const [key, state] of context.subagentAnchors) {
+    let copy = stateCopies.get(state);
+    if (!copy) {
+      copy = { ...state };
+      stateCopies.set(state, copy);
+    }
+    subagentAnchors.set(key, copy);
+  }
+  return {
+    latestTodoItemsByTurn: new Map(context.latestTodoItemsByTurn),
+    subagentAnchors,
+    errorKeysByTurn: new Set(context.errorKeysByTurn),
+    userMessageRowIndexBySteer: new Map(context.userMessageRowIndexBySteer),
+    unmatchedUserMessageResolutionsBySteer: new Map(context.unmatchedUserMessageResolutionsBySteer),
+    turnDetailsRowIndexByTurn: new Map(context.turnDetailsRowIndexByTurn),
+    turnDetailsWindowRowIndex: context.turnDetailsWindowRowIndex,
+    stalledRowIndexByTurn: new Map(context.stalledRowIndexByTurn),
+    adeCardRowIndexById: new Map(context.adeCardRowIndexById),
+    backgroundJobRowIndexByKey: new Map(context.backgroundJobRowIndexByKey),
+    systemNoticeSignatures: new Set(context.systemNoticeSignatures),
+    resolvedInputItemIds: new Set(context.resolvedInputItemIds),
+    turnEndSnapshots: new Map(context.turnEndSnapshots),
+    eventRowKeyOrdinals: new Map(context.eventRowKeyOrdinals),
+    foreignTurnEndKeys: new Set(context.foreignTurnEndKeys),
+    taskListRowIndex: context.taskListRowIndex,
+    workLogRowIndexByCollapseKey: new Map(context.workLogRowIndexByCollapseKey),
+    rowIndexesComplete: context.rowIndexesComplete,
+    checkpoints: [],
+  };
+}
+
+/** Record the state after `eventCount` events; keeps the two newest. */
+function recordCollapseCheckpoint(
+  context: CollapseTranscriptContext,
+  rows: ChatTranscriptRenderEnvelope[],
+  events: readonly AgentChatEventEnvelope[],
+  eventCount: number,
+): void {
+  if (eventCount <= 0) return;
+  context.checkpoints = [
+    ...context.checkpoints.slice(-1),
+    {
+      eventCount,
+      firstEvent: events[0]!,
+      lastEvent: events[eventCount - 1]!,
+      rows: rows.slice(),
+      context: cloneCollapseTranscriptContext(context),
+    },
+  ];
 }
 
 /** Turn-end snapshots recorded by a collapse pass; empty without a context. */
@@ -1755,8 +1854,16 @@ function mergeWorkLogEntries(previous: ChatWorkLogEntry, next: ChatWorkLogEntry)
 function findMatchingWorkLogEntryIndex(
   rows: ChatTranscriptRenderEnvelope[],
   collapseKey: string | undefined,
+  context: CollapseTranscriptContext | undefined,
 ): number {
   if (!collapseKey) return -1;
+  const stored = context?.workLogRowIndexByCollapseKey.get(collapseKey);
+  if (stored != null) {
+    const candidate = rows[stored];
+    if (candidate?.event.type === "work_log_entry" && candidate.event.collapseKey === collapseKey) return stored;
+  } else if (context?.rowIndexesComplete) {
+    return -1;
+  }
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const candidate = rows[index];
     if (!candidate || candidate.event.type !== "work_log_entry") continue;
@@ -1770,11 +1877,13 @@ function appendWorkLogRow(
   envelope: AgentChatEventEnvelope,
   rowKey: string,
   nextEvent: WorkLogRenderEvent,
+  context: CollapseTranscriptContext | undefined,
 ): void {
-  const matchIndex = findMatchingWorkLogEntryIndex(rows, nextEvent.collapseKey);
+  const matchIndex = findMatchingWorkLogEntryIndex(rows, nextEvent.collapseKey, context);
   if (matchIndex >= 0) {
     const existing = rows[matchIndex];
     if (existing?.event.type === "work_log_entry") {
+      if (nextEvent.collapseKey) context?.workLogRowIndexByCollapseKey.set(nextEvent.collapseKey, matchIndex);
       rows[matchIndex] = {
         ...existing,
         timestamp: envelope.timestamp,
@@ -1787,6 +1896,7 @@ function appendWorkLogRow(
     }
   }
 
+  if (nextEvent.collapseKey) context?.workLogRowIndexByCollapseKey.set(nextEvent.collapseKey, rows.length);
   rows.push({
     key: rowKey,
     timestamp: envelope.timestamp,
@@ -1909,6 +2019,7 @@ function repairIndexedTranscriptRowsAfterSplice(
     context.stalledRowIndexByTurn,
     context.adeCardRowIndexById,
     context.backgroundJobRowIndexByKey,
+    context.workLogRowIndexByCollapseKey,
   ]) {
     for (const [key, storedIndex] of rowIndexes) {
       if (storedIndex === removedIndex) rowIndexes.delete(key);
@@ -1929,9 +2040,13 @@ function resolveKeyedRowIndex(
   rowIndexes: Map<string, number> | undefined,
   lookupKey: string,
   expectedKey: string,
+  rowIndexesComplete = false,
 ): number | null {
   const stored = rowIndexes?.get(lookupKey);
   if (stored != null && rows[stored]?.key === expectedKey) return stored;
+  // No entry in a complete index: the row was never added. A subagent's every
+  // progress tick asks for a background-job line it never had.
+  if (stored == null && rowIndexes && rowIndexesComplete) return null;
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     if (rows[index]?.key === expectedKey) return index;
   }
@@ -1944,7 +2059,7 @@ function resolveAdeCardRowIndex(
   cardId: string,
   expectedKey: string,
 ): number | null {
-  return resolveKeyedRowIndex(rows, context?.adeCardRowIndexById, cardId, expectedKey);
+  return resolveKeyedRowIndex(rows, context?.adeCardRowIndexById, cardId, expectedKey, context?.rowIndexesComplete);
 }
 
 type AdeCardEvent = Extract<AgentChatEvent, { type: "ade_card" }>;
@@ -2047,7 +2162,13 @@ function resolveBackgroundJobRowIndex(
   context: CollapseTranscriptContext | undefined,
   expectedKey: string,
 ): number | null {
-  return resolveKeyedRowIndex(rows, context?.backgroundJobRowIndexByKey, expectedKey, expectedKey);
+  return resolveKeyedRowIndex(
+    rows,
+    context?.backgroundJobRowIndexByKey,
+    expectedKey,
+    expectedKey,
+    context?.rowIndexesComplete,
+  );
 }
 
 /**
@@ -2873,6 +2994,7 @@ export function appendCollapsedChatTranscriptEvent(
         envelope,
         rowKey,
         buildHookErrorWorkLogEvent(event, envelope.timestamp, rowKey, preToolUseHookError),
+        context,
       );
       return;
     }
@@ -3212,22 +3334,22 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "tool_call" || event.type === "tool_result") {
-    appendWorkLogRow(rows, envelope, rowKey, buildToolWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildToolWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
   if (event.type === "command") {
-    appendWorkLogRow(rows, envelope, rowKey, buildCommandWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildCommandWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
   if (event.type === "file_change") {
-    appendWorkLogRow(rows, envelope, rowKey, buildFileWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildFileWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
   if (event.type === "web_search") {
-    appendWorkLogRow(rows, envelope, rowKey, buildWebSearchWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildWebSearchWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
@@ -3408,9 +3530,16 @@ export function collapseChatTranscriptEventsWithContext(
   events: AgentChatEventEnvelope[],
 ): CollapseTranscriptResult {
   const rows: ChatTranscriptRenderEnvelope[] = [];
-  const context = createCollapseTranscriptContext();
-  for (const envelope of events) {
-    appendCollapsedEventWithStamp(rows, envelope, context);
+  const context = createCollapseTranscriptContext(true);
+  // Leave the pass with checkpoints one and two intervals behind the end, so
+  // the first resend after opening a long chat replays a tail, not the chat.
+  const olderCheckpointAt = events.length - 2 * COLLAPSE_CHECKPOINT_INTERVAL;
+  const newerCheckpointAt = events.length - COLLAPSE_CHECKPOINT_INTERVAL;
+  for (let index = 0; index < events.length; index += 1) {
+    if (index > 0 && (index === olderCheckpointAt || index === newerCheckpointAt)) {
+      recordCollapseCheckpoint(context, rows, events, index);
+    }
+    appendCollapsedEventWithStamp(rows, events[index]!, context);
   }
   return { rows, context };
 }
@@ -3445,16 +3574,48 @@ export function collapseChatTranscriptEventsIncrementalWithContext(
   // again with the command), and the live merge replaces the earlier envelope
   // in place (`upsertRepeatedToolCalls`). When another event arrived between
   // the two, the last event is unchanged, so only a scan finds the
-  // replacement. Reference compares only; a replaced event means a full pass.
-  for (let index = previousEvents.length - 1; index >= 0; index -= 1) {
+  // replacement. Reference compares only.
+  let firstChangedIndex = -1;
+  for (let index = 0; index < previousEvents.length; index += 1) {
     if (events[index] !== previousEvents[index]) {
-      return collapseChatTranscriptEventsWithContext(events);
+      firstChangedIndex = index;
+      break;
     }
+  }
+
+  if (firstChangedIndex >= 0) {
+    // Replay from the newest checkpoint that ends at or before the replaced
+    // event. Everything before a checkpoint is unchanged (the scan above), so
+    // the result is the one a full pass produces; without a usable checkpoint
+    // (the replacement is older than both) it is a full pass.
+    const checkpoints = previousContext.checkpoints;
+    for (let pick = checkpoints.length - 1; pick >= 0; pick -= 1) {
+      const checkpoint = checkpoints[pick]!;
+      if (
+        checkpoint.eventCount > firstChangedIndex
+        || events[0] !== checkpoint.firstEvent
+        || events[checkpoint.eventCount - 1] !== checkpoint.lastEvent
+      ) {
+        continue;
+      }
+      const rows = checkpoint.rows.slice();
+      const context = cloneCollapseTranscriptContext(checkpoint.context);
+      context.checkpoints = checkpoints.slice(0, pick + 1);
+      for (let index = checkpoint.eventCount; index < events.length; index += 1) {
+        appendCollapsedEventWithStamp(rows, events[index]!, context);
+      }
+      return { rows, context };
+    }
+    return collapseChatTranscriptEventsWithContext(events);
   }
 
   const rows = previousRows.slice();
   for (let index = previousEvents.length; index < events.length; index += 1) {
     appendCollapsedEventWithStamp(rows, events[index]!, previousContext);
+  }
+  const newestCheckpoint = previousContext.checkpoints[previousContext.checkpoints.length - 1];
+  if (events.length - (newestCheckpoint?.eventCount ?? 0) >= COLLAPSE_CHECKPOINT_INTERVAL) {
+    recordCollapseCheckpoint(previousContext, rows, events, events.length);
   }
   return { rows, context: previousContext };
 }

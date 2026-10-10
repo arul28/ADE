@@ -8,7 +8,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 describe("ADE_ACCENT_COLOR", () => {
   it("still matches the renderer's --color-accent", () => {
-    const css = readFileSync(resolve(here, "../renderer/index.css"), "utf8");
+    // The token blocks live in the foundation stylesheet that index.css imports.
+    const css = readFileSync(resolve(here, "../renderer/styles/foundation.css"), "utf8");
     // The first declaration is the default (dark) theme's.
     const match = /--color-accent:\s*(#[0-9A-Fa-f]{6})\s*;/.exec(css);
     expect(match?.[1]?.toUpperCase()).toBe(ADE_ACCENT_COLOR.toUpperCase());

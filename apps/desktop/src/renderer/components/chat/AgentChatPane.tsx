@@ -103,6 +103,7 @@ import {
 import { isChatMentionTokenBody } from "../../../shared/chatMentions";
 import { isSettledSteerDeliveryState, parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
+  agentChatLiveAppendOf,
   captureAgentChatHistoryArrivalWatermark,
   mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot,
   mergeAgentChatLiveEvents,
@@ -201,6 +202,7 @@ import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachin
 import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
+  chatDisplayEvents,
   chatEventDedupKey,
   estimatedChatEventResidentBytes,
   INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
@@ -1400,11 +1402,77 @@ function reorderSteerMap(steerMap: Map<string, PendingSteerEntry>, steerIds: rea
   for (const [id, entry] of ordered) steerMap.set(id, entry);
 }
 
-export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
+/** `{ ...record, ...patch }`, or `record` itself when the patch changes nothing. */
+function patchRecord<T>(record: Record<string, T>, patch: Record<string, T>): Record<string, T> {
+  for (const key in patch) {
+    if (!(key in record) || record[key] !== patch[key]) return { ...record, ...patch };
+  }
+  return record;
+}
+
+type DerivedRuntimeState = {
   turnActive: boolean;
   pendingInputs: DerivedPendingInput[];
   pendingSteers: PendingSteerEntry[];
-} {
+};
+
+const derivedRuntimeStateByEvents = new WeakMap<readonly AgentChatEventEnvelope[], DerivedRuntimeState>();
+
+/**
+ * Whether an appended event can change {@link deriveRuntimeState}'s answer,
+ * given the answer for the events before it. Mirrors the branches of that
+ * fold and of `derivePendingInputRequests`; keep the three in step.
+ */
+function eventAffectsRuntimeState(event: AgentChatEvent, before: DerivedRuntimeState): boolean {
+  switch (event.type) {
+    case "status":
+    case "done":
+    case "queue_reordered":
+    case "queue_recovery":
+    case "approval_request":
+    case "structured_question":
+    case "pending_input_resolved":
+      return true;
+    case "user_message":
+    case "system_notice":
+    case "command_lifecycle":
+      return Boolean(event.steerId);
+    // A tool settling only moots an approval that is still listed.
+    case "tool_result":
+    case "command":
+    case "file_change":
+      return before.pendingInputs.length > 0;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Turn, approval and queued-steer state of a transcript. A streamed turn is
+ * almost all text, reasoning and tool traffic that cannot change any of it, so
+ * a list the live merge appended to reuses the answer of the list before it
+ * unless one of the new events can.
+ */
+export function deriveRuntimeState(events: AgentChatEventEnvelope[]): DerivedRuntimeState {
+  const known = derivedRuntimeStateByEvents.get(events);
+  if (known) return known;
+  const append = agentChatLiveAppendOf(events);
+  const before = append ? derivedRuntimeStateByEvents.get(append.base) : undefined;
+  let derived = before;
+  if (append && before) {
+    for (let index = append.appendedFrom; index < events.length; index += 1) {
+      if (eventAffectsRuntimeState(events[index]!.event, before)) {
+        derived = undefined;
+        break;
+      }
+    }
+  }
+  derived ??= foldRuntimeState(events);
+  derivedRuntimeStateByEvents.set(events, derived);
+  return derived;
+}
+
+function foldRuntimeState(events: AgentChatEventEnvelope[]): DerivedRuntimeState {
   let turnActive = false;
 
   // Track pending steers: added on queued user_message, removed on cancel/deliver notices
@@ -4056,7 +4124,26 @@ export function AgentChatPane({
       : laneId ? `draft:${laneId}` : "draft");
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
+  const [selectedSessionId, setSelectedSessionIdState] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
+  // The selection most recently asked for, or `undefined` while a functional
+  // update is pending. A locked pane re-selects its own chat on every streamed
+  // event; React cannot drop that same-value write early while the pane has
+  // other updates queued, so each one ran the whole pane a second time.
+  const requestedSelectedSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
+  const setSelectedSessionId = useCallback((next: React.SetStateAction<string | null>) => {
+    if (typeof next === "function") {
+      requestedSelectedSessionIdRef.current = undefined;
+    } else {
+      if (requestedSelectedSessionIdRef.current === next) return;
+      requestedSelectedSessionIdRef.current = next;
+    }
+    setSelectedSessionIdState(next);
+  }, []);
+  // Every commit: a functional update that kept the selection must still
+  // clear the "pending" mark.
+  useLayoutEffect(() => {
+    requestedSelectedSessionIdRef.current = selectedSessionId;
+  });
   const [draftLaunchTargetId, setDraftLaunchTargetId] = useState<string | null>(null);
   const isWorkCliLaunchDraft =
     !lockSessionId
@@ -5195,40 +5282,7 @@ export function AgentChatPane({
     const baseEvents = shouldRenderOptimistic
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
       : selectedEvents;
-    const settledSteerIds = new Set(baseEvents.flatMap((envelope) => {
-      const event = envelope.event;
-      if (
-        event.type === "user_message"
-        && event.steerId
-        && event.deliveryState !== "queued"
-      ) {
-        return [event.steerId];
-      }
-      if (
-        event.type === "system_notice"
-        && event.steerId
-        && /\b(?:cancelled|delivering)\b/i.test(event.message)
-      ) {
-        return [event.steerId];
-      }
-      return [];
-    }));
-    const displayEvents = baseEvents.filter((envelope) => {
-      const event = envelope.event;
-      if (event.type.startsWith("subagent.")) return false;
-      // Historical immediate sends were first persisted as queued and then
-      // resolved under the same steer id. Once resolved, hide the obsolete
-      // queue notice so the transcript cannot contradict the delivered bubble.
-      if (
-        event.type === "system_notice"
-        && event.steerId
-        && settledSteerIds.has(event.steerId)
-        && /^Message queued\b/i.test(event.message)
-      ) {
-        return false;
-      }
-      return true;
-    });
+    const displayEvents = chatDisplayEvents(baseEvents);
     // A launching chat shows its prompt, setup card and queued messages until
     // the real transcript carries them (each stand-in yields to its real row).
     // Queued messages the host has not delivered yet outlive the launch.
@@ -7498,7 +7552,7 @@ export function AgentChatPane({
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
     return summary;
-  }, [initialSessionSummary, lockSessionId]);
+  }, [initialSessionSummary, lockSessionId, setSelectedSessionId]);
 
   const refreshSessions = useCallback(async (options?: { force?: boolean }) => {
     if (lockedSingleSessionMode && lockSessionId) {
@@ -7622,7 +7676,7 @@ export function AgentChatPane({
       }
       return nextSelectedSessionId;
     });
-  }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary]);
+  }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary, setSelectedSessionId]);
 
   useEffect(() => {
     if (!isTileActive) return;
@@ -8176,14 +8230,14 @@ export function AgentChatPane({
       draftSelectionLockedRef.current = false;
       setSelectedSessionId(lockSessionId);
     }
-  }, [lockSessionId]);
+  }, [lockSessionId, setSelectedSessionId]);
 
   useLayoutEffect(() => {
     if (!lockedSingleSessionMode || !lockSessionId || initialSessionSummary?.sessionId !== lockSessionId) return;
     setSessions([initialSessionSummary]);
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
-  }, [initialSessionSummary, lockSessionId, lockedSingleSessionMode]);
+  }, [initialSessionSummary, lockSessionId, lockedSingleSessionMode, setSelectedSessionId]);
 
   useLayoutEffect(() => {
     const nextInitialSessionId = initialSessionId ?? null;
@@ -8197,7 +8251,7 @@ export function AgentChatPane({
     pendingSelectedSessionIdRef.current = null;
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(nextInitialSessionId);
-  }, [initialSessionId, lockSessionId]);
+  }, [initialSessionId, lockSessionId, setSelectedSessionId]);
 
   useEffect(() => {
     draftSelectionLockedRef.current = false;
@@ -8211,14 +8265,14 @@ export function AgentChatPane({
       draftSelectionLockedRef.current = true;
       setSelectedSessionId(null);
     }
-  }, [forceDraft, laneId, lockSessionId]);
+  }, [forceDraft, laneId, lockSessionId, setSelectedSessionId]);
 
   useEffect(() => {
     if (!forceDraft || lockSessionId) return;
     pendingSelectedSessionIdRef.current = null;
     draftSelectionLockedRef.current = true;
     setSelectedSessionId(null);
-  }, [forceDraft, lockSessionId]);
+  }, [forceDraft, lockSessionId, setSelectedSessionId]);
 
   useLayoutEffect(() => {
     syncComposerToSession(selectedSession);
@@ -9119,10 +9173,13 @@ export function AgentChatPane({
     }
 
     // All setters fire synchronously — React 18 batches them into one render.
+    // The three derived maps keep their identity while a turn streams: most
+    // events change none of them, and a new object would re-run every hook
+    // that reads one.
     setEventsBySession(next);
-    setTurnActiveBySession((activePrev) => ({ ...activePrev, ...activePatch }));
-    setPendingInputsBySession((pendingPrev) => ({ ...pendingPrev, ...pendingInputPatch }));
-    setPendingSteersBySession((steerPrev) => ({ ...steerPrev, ...pendingSteerPatch }));
+    setTurnActiveBySession((activePrev) => patchRecord(activePrev, activePatch));
+    setPendingInputsBySession((pendingPrev) => patchRecord(pendingPrev, pendingInputPatch));
+    setPendingSteersBySession((steerPrev) => patchRecord(steerPrev, pendingSteerPatch));
   }, [initialSessionSummary, lockSessionId]);
 
   const returnHistoryToLatest = useCallback((sessionId: string, pin: OpenProjectBinding | null) => {
@@ -9486,7 +9543,7 @@ export function AgentChatPane({
       }
     }, chatRuntimePin);
     return unsubscribe;
-  }, [isPersonalPane, applyCrossMachineHandoffRecord, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [isPersonalPane, applyCrossMachineHandoffRecord, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession, setSelectedSessionId]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -10639,7 +10696,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId && canRefreshPinnedProject(options.pin)) void refreshSessions({ force: true }).catch(() => {});
       return created;
-  }, [buildChatCreateArgs, canRefreshPinnedProject, constrainedModelSelectionError, initialNativeControls, laneId, lastLaunchConfigStorageKey, notifySessionCreated, refreshSessions, touchSession]);
+  }, [buildChatCreateArgs, canRefreshPinnedProject, constrainedModelSelectionError, initialNativeControls, laneId, lastLaunchConfigStorageKey, notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -11877,6 +11934,7 @@ export function AgentChatPane({
     startDraftChatLaunch,
     startDraftCliLaunch,
     workDraftKind,
+    setSelectedSessionId,
   ]);
 
   const launchDraftChat = useCallback((mode: DraftLaunchMode) => launchDraftSession("chat", mode), [launchDraftSession]);
@@ -11899,7 +11957,7 @@ export function AgentChatPane({
     if (session) notifySessionCreated(session);
     setSelectedSessionId(sessionId);
     void refreshSessions().catch(() => undefined);
-  }, [notifySessionCreated, refreshSessions, touchSession]);
+  }, [notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
 
   // Identical adoption path for a Devin Cloud chat: select the session the
   // ACP relay is bound to and let the transcript hydrate.
@@ -11915,7 +11973,7 @@ export function AgentChatPane({
     if (session) notifySessionCreated(session);
     setSelectedSessionId(sessionId);
     void refreshSessions().catch(() => undefined);
-  }, [notifySessionCreated, refreshSessions, touchSession]);
+  }, [notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
 
   useEffect(() => {
     const session = selectedSession;
@@ -12725,7 +12783,7 @@ export function AgentChatPane({
         const message = err instanceof Error ? err.message : String(err);
         setError(`Archive failed: ${message}`);
       });
-  }, [invalidateCurrentChatSessionList, refreshSessions]);
+  }, [invalidateCurrentChatSessionList, refreshSessions, setSelectedSessionId]);
 
   const requestArchiveChat = useCallback(
     async (sessionId: string, title: string) => {
@@ -13884,7 +13942,9 @@ export function AgentChatPane({
     subagentView,
     turnActive,
   ]);
-  const retryCompaction = useCallback(() => { void compactContext(); }, [compactContext]);
+  // Stable: `compactContext` is rebuilt on every pane render, and this handler
+  // reaches every transcript row.
+  const retryCompaction = useLatestCallback(() => { void compactContext(); });
 
   // Staged-row dispatch/edit remain fire-and-forget IPC. New active-turn sends
   // are atomic through steer({ dispatchMode }) and never enter the staged queue.

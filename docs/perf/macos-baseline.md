@@ -116,7 +116,17 @@ Run without the app (`scripts/perf/service/`).
   (network) and dominate the Lanes and PRs IPC totals.
 - **Prewarmed Claude processes:** 150–420 MB each until they are reaped
   after 5 minutes.
-- **Typing:** each keystroke still re-renders the whole chat pane.
+- **Typing:** each keystroke still re-renders the whole chat pane (about 150
+  component renders and 3 ms of script per key in the dev build). The pane's
+  header, composer and closed dialogs render with it; the same chrome renders
+  once per streamed event.
+- **A chat at its resident cap** (60,000 events or 32 MB) drops one event from
+  the front on every flush. Each flush is then a new list, and the live merge
+  and the row builder fall back to full passes. Not reached by any local chat
+  (the largest is at about half the byte cap); trim in steps to fix it.
+- **PRs tab:** the only tab with a long task on a warm visit (54-61 ms on the
+  Mac Studio): the PR body's markdown parse and the mount of about 2,300
+  elements.
 
 ## How to measure
 
@@ -164,14 +174,20 @@ UI, against a running dev app (`scripts/perf/ui/`):
 | `gpu-trace.mjs <secs>` | Frames drawn, GPU swap time and rendering phases, for the whole browser |
 | `render-count.mjs <secs> reload` | React commits and which components re-render, and why (changed props or hooks) |
 | `chat-switch.mjs [rounds]` | Clicks through the chat list; time until each transcript settles, and long tasks |
+| `interaction.mjs tabs\|chats\|projects [rounds]` | Per tab, chat or project switch: time to the first frame that shows a change, time until the page stops changing, and long frames in between. Finer than long tasks, which miss every frame under 50 ms |
 | `typing.mjs <keys>` | Types into the composer; keystroke events slower than 16 ms |
 | `keystroke-trace.mjs <keys>` | Renderer work per keystroke, split into style, layout, paint and script |
 | `cdp.mjs eval\|metrics\|profile\|shot\|anim` | One-off probes: evaluate, metrics delta, CPU profile with top functions, screenshot, running animations |
 
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
-`file-index`, `registry-read`, `roster`, `rpc-read`, `shell-path`. They read
-temp copies of state and never write to `~/.ade`.
+`file-index`, `registry-read`, `roster`, `rpc-read`, `shell-path`,
+`chat-transcript`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
+comparison and not a timing). They read temp copies of state and never write
+to `~/.ade`.
+`chat-transcript` is the chat renderer's own pipeline (live merge, display
+filter, row builder) run on real transcripts: one full pass as a chat opens,
+then 500 events one at a time as a turn streams.
 
 Production-build chat streaming and typing:
 `scripts/perf-chat-stream.mjs` (headless Chromium against `vite preview`).
@@ -223,3 +239,168 @@ interleaved A/B on this same machine under load; compare like conditions.
 The zero-baseline long-task row has a small absolute ceiling rather than a
 percentage margin; hidden-tab reads have a strict zero ceiling. These rows do
 not change any desktop ceiling.
+
+## Mac Studio (M4 Max), ADE-175 pass
+
+A second machine, so a second set of columns and not new values for the tables
+above. Every "before" and "after" here was measured on this machine, one after
+the other, on main at `36aab9e76` and on the ADE-175 branch.
+
+| | |
+|---|---|
+| Machine | Mac Studio (Mac16,9), Apple M4 Max, 14 cores, 36 GB, 5120x1440 display at 240 Hz |
+| OS | macOS 27.0 (26A428) |
+| Node | 22.22.2 |
+| Build | dev build, `npm run dev:desktop` with its own runtime socket, sync OFF; headless Chrome 153 for the web client and the stream bench |
+| Project | the ADE repository, three chats in the Work list |
+| Background | other agents and test runs on the machine; 1-minute load average 4-9 during the timed runs |
+| Measured | 2026-10-10 |
+
+### Chat streaming and the transcript pipeline
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Streaming: script per event (9,741-event chat, 400 events at 30/s) | `npm run bench:webclient`, interleaved A/B, 3 runs | 8.0 ms | 5.7 ms | 7.5 ms |
+| Streaming: main-thread task time per event | same | 10.7 ms | 8.3 ms | 10 ms |
+| Streaming: renderer CPU | same | 38.4% | 30.7% | 38% |
+| Streaming: React commits per event | same | 2.8 | 2.3 | 2.8 |
+| Streaming: transcript row renders per event | `scripts/perf-chat-stream.mjs --render-hook` | 24 | 0.12 | 1 |
+| Streaming: chat pane renders per event | same | 1.73 | 1.0 | 1.1 |
+| Streaming: component renders per event | same | 452 | 154 | 200 |
+| Streaming: renderer busy time for 400 events (CPU profile) | `scripts/perf-chat-stream.mjs --profile` | 3,890 ms | 2,200 ms | 2,800 ms |
+| Transcript rows: cost per streamed event (five largest chats) | `chat-transcript.bench.mts` | 2.95 ms | 0.08 ms | 0.3 ms |
+| Live merge: cost per streamed event | same | 0.94 ms | 0.04 ms | 0.15 ms |
+| Streamed events that cost more than one 240 Hz frame (4 ms), of 2,500 | same | 340 | 4-5 | 15 |
+| Transcript rows: full pass as a chat opens (7,000-13,000 events) | same | 22.0 ms | 12.1 ms | 18 ms |
+| Open a long chat to its first rows (fresh Chrome profile) | `npm run bench:webclient` | 287 ms | 285 ms | 360 ms |
+| Composer keystroke to paint, idle, p50 (headless, 60 Hz) | same | 28.0 ms | 28.5 ms | 35 ms |
+
+The row and merge numbers are a production-style Node run; the streaming
+numbers are the dev build, where React's own work is two to three times what a
+packaged build pays.
+
+### Desktop dev app
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Renderer JS heap after GC, fresh launch, with a 60 MB browser-mock snapshot in the checkout | CDP `HeapProfiler.collectGarbage` + `Performance.getMetrics` | 477 MB | 129 MB | 220 MB |
+| Renderer JS heap while sweeping the tabs | `route-sweep.mjs` | 481-505 MB | 159-177 MB | 220 MB |
+| Launch: longest event-loop stall logged by the renderer watchdog | dev log, `renderer.event_loop_stall` | 6,077 ms | none | 1,500 ms |
+| Tab switch: long tasks, warm | `route-sweep.mjs` | 0 ms; PRs 58 ms | 0 ms; PRs 54-61 ms | 100 ms |
+| Tab switch: first changed frame, warm | `interaction.mjs tabs` | 24-44 ms; PRs 80 ms | 24-45 ms; PRs 77-86 ms | 60 ms; PRs 110 ms |
+| Tab switch: page settled, warm | `interaction.mjs tabs` | 35-205 ms | 33-195 ms | 250 ms |
+| Chat switch: first changed frame, warm | `interaction.mjs chats` | 37-41 ms | 38-58 ms | 60 ms |
+| Chat switch: time until settled, warm rounds | `chat-switch.mjs` | 15-122 ms | 16-63 ms | 250 ms |
+| Renderer script per keystroke (same app session, alternating A/B, 360 keys each) | CDP `Performance.getMetrics` around typed keys | 3.05 ms | 3.18 ms | 4 ms |
+| Frames drawn at idle, any tab, DevTools window closed | `gpu-trace.mjs` | 0-2/s | 0-2/s | 5/s |
+
+Tab switches, chat switches and typing did not move: they are bound by React
+mounting the tab, not by anything this pass changed. The heap rows need the
+snapshot file to show a difference; without it both columns read about 130 MB.
+A DevTools window draws 240 frames a second on this display by itself, so
+close it before any idle or GPU number (see the gotchas above).
+
+### Hosted web client
+
+Cold signed-out load of the production build, interleaved A/B, 5 runs each
+(`npm run bench:webclient -- --root <before> --compare <after>`).
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| Entry stylesheet (KB, raw) | 656.7 | 57.1 | 75 |
+| Cold signed-out transfer (KB) | 1,555.8 | 736.0 | 900 |
+| Cold signed-out CSS (KB) | 666.0 | 66.6 | 85 |
+| Cold signed-out JS (KB) | 739.0 | 518.4 | 650 |
+| Cold signed-out requests | 47 | 46 | 60 |
+| Cold signed-out heap after GC (MB) | 2.7 | 2.3 | 3.0 |
+| First contentful paint (ms) | 72 | 44 | 60 |
+| React mounted (ms) | 51.1 | 37.8 | 48 |
+| Sign-in card visible (ms) | 99.1 | 86.1 | 100 |
+| DOMContentLoaded (ms) | 34.7 | 21.6 | 28 |
+
+The sign-in screen is checked for sameness with computed styles, not by eye:
+every standard property of every element (and `::before`/`::after`), old build
+against new, with no difference in either set:
+
+- 548,550 properties in ten interaction states (dark and light; default,
+  hover, focus-visible, active, and a real pointer over the card);
+- 403,542 properties in twelve stored-appearance states (default, light,
+  follow-system in both OS modes, the legacy theme key, a retired theme id, a
+  library theme, system fonts with Reduce motion, an image scene, a gradient
+  scene with dots, and two flair themes).
+
+`appStore` is out of the signed-out graph: the appearance values live in
+`state/appearanceStore.ts`, which `appStore` registers with when it loads.
+Not measured: the signed-in client over ADE Relay. The bench cannot sign in,
+and a measurement in ADE's own browser would register a new device on the
+account, so it waits for a go-ahead.
+
+### Under load: four projects open
+
+The rows above used one project and three chats. These used four real
+projects open as tabs (ADE, Versic, crumb, fleet), every chat of the ADE
+project loaded (eight, the largest 13,240 events), measured as an alternating
+A/B in one app session (`scripts/perf/ui/interaction.mjs`, warm rounds).
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Project switch: first changed frame (median) | `interaction.mjs projects` | 173-180 ms | 53-55 ms | 75 ms |
+| Project switch: longest frame | same | 112-184 ms | 0-50 ms | 60 ms |
+| Project switch: page settled | same | 240-580 ms | 96-228 ms | 300 ms |
+| Project switch: component renders | render counter | 12,950 | 4,890 | 6,500 |
+| Tab switch: first changed frame (median) | `interaction.mjs tabs` | 59-63 ms | 28-32 ms | 45 ms |
+| Tab switch: component renders | render counter | 1,227 | 722 | 950 |
+| Chat switch: first changed frame (median) | `interaction.mjs chats` | 41-43 ms | 41-47 ms | 60 ms |
+| Renderer JS heap after GC | CDP | - | 205 MB | 260 MB |
+| Renderer at idle: main-thread work | CDP `Performance.getMetrics`, 30 s | - | 8.6 ms/s | 30 ms/s |
+
+Chat switches did not move. A real Haiku reply streaming into a short chat in
+this state drew 240 frames a second with no frame over 6 ms.
+
+### Production build streaming
+
+The dev build pays for React's development checks. The same replay against
+production builds of the old and the new renderer (`vite build`, a static
+server, headless Chrome, site data cleared before each run, interleaved):
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| Script per streamed event | 5.6 ms | 3.4 ms | 4.5 ms |
+| Main-thread task time per event | 6.7 ms | 4.4 ms | 5.8 ms |
+| Renderer CPU while streaming (30 events/s) | 23.7% | 16.8% | 22% |
+
+### Brain: file watchers
+
+On macOS every watcher polls (`withMacosSafeChokidarOptions`): each path under
+the watched root is checked once a second on the brain's worker threads.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Paths still polled one minute after the Files tab closed, when the page reloaded twice while it was open | `process.getActiveResourcesInfo()` in the brain | 6,994 | 3 | 10 |
+| Brain CPU in that state | `process-cpu.sh` | 5.7% | 0.6% | 2% |
+| Brain CPU with two leaked watchers on a large project (29,256 paths) | same | 19-20% | - | - |
+| Paths still polled 22 s after a client's connection closed with a watch open (15,958 paths) | same | never released | 3 | 10 |
+
+A watcher that is in use used to cost the same poll. On macOS a directory tree
+is now watched with one recursive native watch (`watchTree`,
+`services/shared/treeWatcher.ts`); measured on this repository's root with
+`tree-watcher.bench.mts`, and in the app with the Files tab open:
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Brain CPU, Files tab open on a lane worktree (6,994 paths), nothing changing | `process-cpu.sh` | 5.7% | 0.5% | 2% |
+| Paths polled each second in that state | `process.getActiveResourcesInfo()` | 6,994 | 3 (and one native watch) | 10 |
+| Watcher CPU at idle over 5 s, repository root | `tree-watcher.bench.mts` | 680-840 ms | 3-66 ms | 150 ms |
+| Time until the watcher is ready, repository root | same | 423-438 ms | 94-97 ms | 250 ms |
+| Longest event-loop block on open and close | same | 30 ms | 2 ms | 20 ms |
+| The same block with chokidar's own native mode (why polling was chosen) | same, `WITH_NATIVE_CHOKIDAR=1` | 13,207 ms | not used | - |
+
+The events are the same as the poller's: `tree-watcher-parity.mts` runs both
+on one temp tree through 18 kinds of file operation (create, change, delete,
+directory trees, renames, moves in and out, atomic saves, slow writes, bursts,
+symlinked directories, ignored paths) and compares what each reports. Over
+300 steps and five seeds, two things differ. A file replaced by a directory of
+the same name: the poller reports one wrong `change`, the native watcher the
+delete and the creates (on purpose). A file written in pieces: either watcher
+may report a `change` after its `add`, depending on timing; the file's final
+state is reported by both.

@@ -1,0 +1,18 @@
+/*
+ * The hosted client's first stylesheet: what the boot screens and the sign-in
+ * card need, and nothing of the app. The entry (`main.tsx`) imports this file;
+ * the full `index.css` loads with the workspace (`loadAppStylesheet` in
+ * `shell/WebClientRoot.tsx`). A signed-out visitor used to download and parse
+ * the whole app stylesheet (about 660 KB) to see one card.
+ *
+ * Tailwind scans only the files `tailwind.gate.config.cjs` lists, in place of
+ * the whole renderer. Every rule in this file is also in `index.css`, so
+ * nothing changes when the full stylesheet arrives.
+ */
+@import "tailwindcss" source(none);
+@import "../styles/surfaceKit.css";
+@import "../styles/scene.css";
+@import "../styles/foundation.css";
+@import "../styles/toolPickerBackdrop.css";
+@import "../styles/smartTooltip.css";
+@config "../../../tailwind.gate.config.cjs";
