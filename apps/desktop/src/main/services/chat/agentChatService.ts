@@ -67,6 +67,7 @@ import {
   nextScheduledDraftFireAt,
   releaseStaleSendingDrafts,
   setDraftStatus,
+  setDraftStatusIfSending,
   type DraftDb,
 } from "./draftService";
 import {
@@ -745,6 +746,7 @@ import type {
   AgentChatSwitchAccountResult,
   AgentChatUsageLimitAlternateAccount,
   DraftEntry,
+  DraftStatus,
 } from "../../../shared/types/chat";
 import type { UsageAccount, UsageSnapshot, UsageWindow } from "../../../shared/types/usage";
 import {
@@ -64377,22 +64379,39 @@ export function createAgentChatService(args: {
       : null;
   };
 
-  const recordDraftOutcome = (entry: DraftEntry, outcome: DraftDeliveryOutcome): void => {
+  /**
+   * Write a delivery's result back onto its row.
+   *
+   * `owned` says whether this runtime still holds the claim. When it does, the
+   * write is guarded on the row still being `sending`, so a claim lost to the
+   * stale sweep — and picked up by another runtime — is never overwritten with
+   * this attempt's result.
+   */
+  const recordDraftOutcome = (
+    entry: DraftEntry,
+    outcome: DraftDeliveryOutcome,
+    owned: boolean,
+  ): void => {
     const store = draftDb();
     if (!store) return;
     // A skipped send belongs to another pass; writing anything here would
     // overwrite that pass's claim.
     if (outcome.status === "skipped") return;
-    if (outcome.status === "sent") {
-      setDraftStatus(store, entry.id, { status: "sent", firedAt: outcome.firedAt, lastError: null });
+    const status: DraftStatus | null = outcome.status === "sent"
+      ? "sent"
+      : outcome.status === "retry"
+        ? "scheduled"
+        : outcome.status;
+    const patch = {
+      status,
+      firedAt: outcome.status === "sent" ? outcome.firedAt : null,
+      lastError: outcome.status === "sent" ? null : outcome.error,
+    };
+    if (owned) {
+      setDraftStatusIfSending(store, entry.id, patch);
       return;
     }
-    if (outcome.status === "retry") {
-      // Leave the row armed; record why it is waiting without unarming it.
-      setDraftStatus(store, entry.id, { status: "scheduled", lastError: outcome.error });
-      return;
-    }
-    setDraftStatus(store, entry.id, { status: outcome.status, lastError: outcome.error });
+    setDraftStatus(store, entry.id, patch);
   };
 
   const draftScheduler = createDraftScheduler({
@@ -64411,9 +64430,22 @@ export function createAgentChatService(args: {
       if (store && !claimScheduledDraft(store, entry.id)) {
         return { status: "skipped", error: "Another pass is already sending this draft." };
       }
-      return await deliverDraft(entry, draftDeliveryDeps);
+      try {
+        return await deliverDraft(entry, draftDeliveryDeps);
+      } catch (deliveryError) {
+        // deliverDraft reports failures rather than throwing, so reaching here
+        // means something outside it broke. Hand the claim back rather than
+        // leaving the row `sending` until the stale sweep notices.
+        if (store) {
+          setDraftStatus(store, entry.id, {
+            status: "scheduled",
+            lastError: deliveryError instanceof Error ? deliveryError.message : String(deliveryError),
+          });
+        }
+        throw deliveryError;
+      }
     },
-    onOutcome: recordDraftOutcome,
+    onOutcome: (entry, outcome) => recordDraftOutcome(entry, outcome, true),
     logger,
   });
   // A runtime that died mid-send left a row claimed; return it to the queue.
@@ -64446,7 +64478,7 @@ export function createAgentChatService(args: {
         { ...entry, scheduledAt: new Date().toISOString() },
         draftDeliveryDeps,
       );
-      recordDraftOutcome(entry, outcome);
+      recordDraftOutcome(entry, outcome, armed);
       return outcome.status === "sent"
         ? { ok: true }
         : { ok: false, error: outcome.error };

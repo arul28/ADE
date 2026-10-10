@@ -1644,7 +1644,7 @@ function useComposerSplitMenu(menuSelector: string) {
   return { caretRef, menuOpen, setMenuOpen };
 }
 
-function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperties {
+function composerSplitMenuPosition(anchor: HTMLElement): React.CSSProperties {
   return fixedMenuAboveAnchorStyle(anchor.getBoundingClientRect(), {
     width: COMPOSER_COMPACT_MENU_WIDTH,
     align: "end",
@@ -5997,7 +5997,8 @@ export function AgentChatComposer({
     // surface that knows a real account machine key (the phone) targets one.
     machineKey: null,
     machineName: scheduledSendContext?.machineName ?? composerMachineBinding?.displayName ?? null,
-  }), [composerMachineBinding?.displayName, scheduledSendContext, sessionId]);
+    runsHere: composerMachineBinding?.kind !== "remote",
+  }), [composerMachineBinding?.displayName, composerMachineBinding?.kind, scheduledSendContext, sessionId]);
 
   const scheduleConfig = useMemo((): DraftScheduleConfig => ({
     provider: sp ?? null,
@@ -6026,10 +6027,13 @@ export function AgentChatComposer({
     setScheduleError(null);
     try {
       if (request.mode === "draft") {
-        const updated = await window.ade.agentChat.drafts.update(
-          { id: request.entry.id, schedule: input },
-          composerMachineBinding,
-        );
+        const draftsApi = agentChatApiRef.current?.drafts;
+        const updated = draftsApi && typeof draftsApi.update === "function"
+          ? await draftsApi.update({ id: request.entry.id, schedule: input }, composerMachineBinding)
+          : await window.ade.agentChat.drafts.update(
+            { id: request.entry.id, schedule: input },
+            composerMachineBinding,
+          );
         if (!updated) throw new Error("That draft was taken on another machine.");
       } else {
         const created = await draftsRef.current?.activateScheduled(input);
@@ -7165,7 +7169,7 @@ export function AgentChatComposer({
             // rather than a separate panel appearing from nowhere.
             const anchor = document.querySelector<HTMLButtonElement>(
               '[data-testid="composer-send-mode-button"]',
-            );
+            ) ?? document.querySelector<HTMLElement>('[data-chat-composer-wrapper]');
             if (!anchor) return null;
             return (
               <ViewportOverlayPortal layer="popover">

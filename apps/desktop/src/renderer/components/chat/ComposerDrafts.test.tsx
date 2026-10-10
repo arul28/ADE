@@ -764,9 +764,12 @@ describe("ComposerDrafts", () => {
     // The row still says what it is, and that the image is not on this machine.
     const row = screen.getByRole("button", { name: /1 image elsewhere/i });
     fireEvent.click(row);
-    fireEvent.click(await screen.findByRole("button", { name: "Attach to composer" }));
 
-    expect((await screen.findByRole("alert")).textContent).toContain("machine where this draft was made");
+    // Attaching is refused up front: a button that can only fail is inert and
+    // says why, rather than inviting a click that errors.
+    const attach = (await screen.findByRole("button", { name: "Attach to composer" })) as HTMLButtonElement;
+    expect(attach.disabled).toBe(true);
+    expect(attach.getAttribute("title")).toContain("machine where this draft was made");
     expect(claim).not.toHaveBeenCalled();
     expect(onDraftChange).not.toHaveBeenCalled();
     expect(onAddAttachment).not.toHaveBeenCalled();

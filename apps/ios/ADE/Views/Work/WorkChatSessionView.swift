@@ -3214,7 +3214,9 @@ private struct WorkChatComposerDraftInput: View {
       scope: WorkDraftScope(chatSessionId: sessionId),
       provider: chatSummary.provider,
       modelId: chatSummary.currentModelId,
-      runtimeMode: workInitialRuntimeMode(chatSummary),
+      // The render context already carries this: its `runtimeMode` is
+      // `workInitialRuntimeMode` of the summary it was built from.
+      runtimeMode: chatSummary.runtimeMode,
       extraMenuContent: AnyView(stopAndSendSettingsMenu)
     )
   }

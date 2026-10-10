@@ -44,6 +44,7 @@ export function DraftDetailPanel({
   onSchedule,
 }: DraftDetailPanelProps) {
   const scheduled = isScheduledEntry(entry);
+  const attachmentsUnavailable = draftAttachmentsUnavailable(entry);
 
   return (
             <div className="flex min-h-0 flex-1 flex-col" data-draft-detail="">
@@ -158,7 +159,13 @@ export function DraftDetailPanel({
                 ) : null}
                 <button
                   type="button"
-                  disabled={busy}
+                  // A draft whose images live on another machine cannot be
+                  // attached; a live button that only ever errors is worse than
+                  // an inert one with the reason already on screen.
+                  disabled={busy || attachmentsUnavailable}
+                  title={attachmentsUnavailable
+                    ? "These images live on the machine where this draft was made."
+                    : undefined}
                   className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-violet-500/85 px-2.5 py-1.5 font-sans text-[11px] font-semibold text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
                   onClick={() => onAttach(entry)}
                 >

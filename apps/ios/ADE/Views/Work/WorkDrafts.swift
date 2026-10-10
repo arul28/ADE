@@ -466,7 +466,10 @@ final class WorkDraftController: ObservableObject {
     guard !busy else { return }
     refreshToken = UUID()
     if workComposerHasDraftableContent(text: currentText, attachments: currentAttachments) {
-      listPresented = false
+      // Closing with no explanation reads as a dead tap, which is the exact
+      // complaint this feature was meant to fix. Say why, and leave the list
+      // open so the draft is still where the user found it.
+      errorMessage = "Finish, clear, or send what is in the composer before attaching a draft."
       return
     }
     if entry.isScheduled {

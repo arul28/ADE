@@ -283,9 +283,10 @@ struct WorkDraftScheduleSheet: View {
     } header: {
       Text("When")
     } footer: {
-      // The fire time is stated in the target machine's local clock, so the
-      // user can see which machine they are anchoring it to.
-      Text("\(workDraftScheduleClockFormatter.string(from: fireDate)) on \(selectedMachineOption.name)")
+      // The clock is this phone's, so the caption names the machine that will
+      // send it rather than claiming the time is read on that machine — this
+      // device cannot know the other machine's time zone.
+      Text("\(workDraftScheduleClockFormatter.string(from: fireDate)) — \(selectedMachineOption.name) sends it then")
     }
   }
 

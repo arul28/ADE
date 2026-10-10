@@ -25,6 +25,12 @@ export type DraftScheduleTargets = {
   laneName: string | null;
   machineKey: string | null;
   machineName: string | null;
+  /**
+   * Whether the send runs on this computer. The form reads its time in this
+   * renderer's timezone, which is only the sending machine's timezone when it
+   * is; otherwise the caption has to say so rather than claim it.
+   */
+  runsHere?: boolean;
 };
 
 export type DraftScheduleLaneOption = { id: string; name: string };
@@ -145,9 +151,11 @@ export function DraftSchedulePopover({
     >
       <div className="font-sans text-[11px] font-semibold text-fg/82">Scheduled send</div>
       <div className="mt-0.5 font-sans text-[9.5px] text-muted-fg/42">
-        {targets.machineName
-          ? `Sent by ${targets.machineName} at that machine's local time`
-          : "Sent at the target machine's local time"}
+        {targets.runsHere === false && targets.machineName
+          ? `Time is this computer's; ${targets.machineName} sends it`
+          : targets.machineName
+            ? `Sent by ${targets.machineName} at that machine's local time`
+            : "Sent at the target machine's local time"}
       </div>
 
       <div className="mt-2.5 space-y-2.5">

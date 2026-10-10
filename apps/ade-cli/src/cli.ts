@@ -11120,9 +11120,6 @@ function buildDraftsListPlan(args: string[]): CliPlan {
 function buildDraftsCreatePlan(args: string[]): CliPlan {
   const prompt = readDraftPrompt(args, { fromStdinWhenOmitted: true });
   const images = readDraftImages(args);
-  const provider = readValue(args, ["--provider"]);
-  const modelId = readValue(args, ["--model-id"]);
-  const model = readValue(args, ["--model"]);
   // The chat this command ran inside, when there is one. It is a target *hint*
   // for the composer, never the send's target — the target stays explicit.
   const originSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
@@ -11139,6 +11136,12 @@ function buildDraftsCreatePlan(args: string[]): CliPlan {
         "--target/--new-chat/--machine/--if-late describe a scheduled send; add --at <iso> or --in <duration>, or drop them for a plain draft.",
       );
     }
+    // A plain draft takes its captured config straight from the flags, and only
+    // here: `readValue` consumes what it reads, so reading them before the
+    // schedule builder would leave that path with none of them.
+    const provider = readValue(args, ["--provider"]);
+    const modelId = readValue(args, ["--model-id"]);
+    const model = readValue(args, ["--model"]);
     return {
       kind: "execute",
       label: "drafts create",
@@ -11222,7 +11225,10 @@ function buildDraftsUpdatePlan(args: string[]): CliPlan {
     steps: [
       draftsActionStep("listDrafts", {}),
       {
-        key: "result",
+        // Keyed "existing", not the usual "result": the next step reads
+        // `values.existing`, and the default key left it undefined so every
+        // retime failed with "No draft <id> on this machine".
+        key: "existing",
         method: "ade/actions/call",
         params: (values) => {
           const existing = findDraftById(draftEntriesFromResult(values.existing), id);

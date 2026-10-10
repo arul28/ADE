@@ -5145,21 +5145,6 @@ export function AgentChatPane({
    * could start in. Null outside a project chat pane, which is what hides the
    * row rather than offering a send that cannot be aimed.
    */
-  // Same gate the composer uses for drafts: a scoped pane (personal chats,
-  // embedders) has no project runtime to schedule against. Called at the top
-  // level because it is a hook, not a condition.
-  const schedulePaneScope = useChatPaneScope();
-  const scheduledSendContext = useMemo(() => {
-    if (schedulePaneScope != null) return null;
-    const laneIdForChat = selectedSession?.laneId ?? laneId ?? null;
-    return {
-      laneId: laneIdForChat,
-      laneName: lanes.find((lane) => lane.id === laneIdForChat)?.name ?? null,
-      lanes: lanes.map((lane) => ({ id: lane.id, name: lane.name })),
-      machineName: chatRuntimePin?.displayName ?? null,
-    };
-  }, [chatRuntimePin?.displayName, laneId, lanes, schedulePaneScope, selectedSession?.laneId]);
-
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId ?? chatScopeLaneId;
     if (scopedLaneId) {
@@ -6923,6 +6908,25 @@ export function AgentChatPane({
   // that machine doesn't know is not read at all, rather than being sent to the
   // tab's machine, where it can only fail as "Lane not found".
   const chatMachineLanes = useLanesForPin(chatRuntimePin);
+
+  // Same gate the composer uses for drafts: a scoped pane (personal chats,
+  // embedders) has no project runtime to schedule against. Called at the top
+  // level because it is a hook, not a condition.
+  const schedulePaneScope = useChatPaneScope();
+  const scheduledSendContext = useMemo(() => {
+    if (schedulePaneScope != null) return null;
+    const laneIdForChat = selectedSession?.laneId ?? laneId ?? null;
+    // A chat pinned to another machine lives on THAT machine's lanes. Offering
+    // this computer's list would aim a new-chat send at a lane the host does
+    // not have. Falls back to the active tab's lanes when the pin has none.
+    const sourceLanes = chatMachineLanes ?? lanes;
+    return {
+      laneId: laneIdForChat,
+      laneName: sourceLanes.find((lane) => lane.id === laneIdForChat)?.name ?? null,
+      lanes: sourceLanes.map((lane) => ({ id: lane.id, name: lane.name })),
+      machineName: chatRuntimePin?.displayName ?? null,
+    };
+  }, [chatMachineLanes, chatRuntimePin?.displayName, laneId, lanes, schedulePaneScope, selectedSession?.laneId]);
   const cloudReadinessLaneId = useMemo(() => {
     const sourceLanes = chatMachineLanes ?? lanes;
     if (isAutoCreateLaneOptionId(draftLaunchTargetId)) {

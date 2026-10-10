@@ -4483,6 +4483,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
 
   const browserMockPersonalChats: any[] = [];
   const browserMockDrafts: DraftEntry[] = [];
+
+  /**
+   * Hold plain drafts at the same cap the runtime does, and never drop an
+   * armed send to make room — the real store exempts them, and a mock that
+   * spliced the whole list would hide that the exemption exists.
+   */
+  function browserMockPruneDrafts(): void {
+    const plain = browserMockDrafts.filter((entry) => entry.kind !== "scheduled");
+    const excess = plain.length - MAX_DRAFTS;
+    if (excess <= 0) return;
+    // Newest-first, so the tail of the plain entries is the oldest.
+    const doomed = new Set(plain.slice(-excess).map((entry) => entry.id));
+    for (let index = browserMockDrafts.length - 1; index >= 0; index -= 1) {
+      const candidate = browserMockDrafts[index];
+      if (candidate && doomed.has(candidate.id)) browserMockDrafts.splice(index, 1);
+    }
+  }
   const browserMockPersonalChatEvents = new Map<string, any[]>();
   let browserMockPersonalChatSequence = 0;
   /** Every personal event in order, so `streamEvents` can replay them like the runtime buffer. */
@@ -6596,7 +6613,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
               : { kind: "draft" as const, status: "draft" as const }),
           };
           browserMockDrafts.unshift(entry);
-          browserMockDrafts.splice(MAX_DRAFTS);
+          browserMockPruneDrafts();
           return entry;
         },
         update: async (
@@ -6627,6 +6644,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           };
           browserMockDrafts[index] = next;
           return next;
+        },
+        sendNow: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
+          const index = browserMockDrafts.findIndex((entry) => entry.id === id);
+          if (index < 0) return { ok: false, error: "That draft is gone." };
+          return { ok: true };
         },
         // Claim-first: the row is consumed and handed back, and a second claim
         // finds nothing — the same shape the real runtime returns.

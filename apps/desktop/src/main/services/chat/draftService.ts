@@ -302,7 +302,10 @@ function countPendingScheduledDrafts(db: DraftDb): number {
 
 export function listDrafts(
   db: DraftDb,
-  limit = MAX_DRAFTS,
+  // The whole retained set, not the plain-draft cap: a caller listing drafts
+  // is showing them to someone, and an armed send that fell past the newest
+  // twenty plain drafts would otherwise be invisible while still firing.
+  limit = MAX_DRAFTS + MAX_SCHEDULED_DRAFTS,
 ): DraftEntry[] {
   pruneDraftRetention(db);
   const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : MAX_DRAFTS;
@@ -619,6 +622,8 @@ type DraftPatchColumn =
   | "scheduled_by_session_id"
   | "armed_by_site_id"
   | "model"
+  | "provider"
+  | "model_id"
   | "last_error";
 
 /**
@@ -640,6 +645,10 @@ export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
     if (args.text.length > MAX_DRAFT_TEXT_CHARS) {
       throw new Error("This prompt is too large to save.");
     }
+    if (!args.text.trim() && parseAttachments(existing.attachments_json).length === 0) {
+      // `createDraft` refuses an empty draft; an edit must not be the way in.
+      throw new Error("A draft cannot be empty.");
+    }
     patch.text = args.text;
   }
 
@@ -654,6 +663,8 @@ export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
     patch.target_lane_id = null;
     patch.target_machine_key = null;
     patch.model = null;
+    patch.provider = null;
+    patch.model_id = null;
     patch.permission_mode = null;
     patch.thinking = null;
     patch.scheduled_by = null;
@@ -678,6 +689,10 @@ export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
     patch.target_lane_id = schedule.targetLaneId;
     patch.target_machine_key = schedule.targetMachineKey;
     patch.model = schedule.model;
+    // The retime writes the whole captured config back, not just the model:
+    // leaving the old provider behind pointed the send at a different harness.
+    patch.provider = schedule.provider;
+    patch.model_id = schedule.modelId;
     patch.permission_mode = schedule.permissionMode;
     patch.thinking = schedule.thinking;
     patch.scheduled_by = schedule.scheduledBy;
@@ -726,6 +741,47 @@ export function claimScheduledDraft(db: DraftDb, id: string): boolean {
     "update prompt_stashes set status = 'sending', updated_at = ? where id = ?",
     [now, id],
   );
+  return true;
+}
+
+/**
+ * Record an outcome only while this runtime still owns the row.
+ *
+ * A claim can be lost between taking it and finishing: the stale sweep returns
+ * a row to the queue after ten minutes, and a second runtime can then claim it.
+ * Writing this delivery's result over that one would report a send that did
+ * not happen. Returns false when the write was refused.
+ */
+export function setDraftStatusIfSending(
+  db: DraftDb,
+  id: string,
+  patch: {
+    status: DraftStatus;
+    firedAt?: string | null;
+    lastError?: string | null;
+  },
+): boolean {
+  const values: SqlValue[] = [
+    patch.status,
+    patch.firedAt ?? null,
+    patch.lastError ?? null,
+    new Date().toISOString(),
+    id,
+  ];
+  if (db.runChanged) {
+    return db.runChanged(
+      `update prompt_stashes
+       set status = ?, fired_at = coalesce(?, fired_at), last_error = ?, updated_at = ?
+       where id = ? and status = 'sending'`,
+      values,
+    ) === 1;
+  }
+  const owned = db.get<{ status: string | null }>(
+    "select status from prompt_stashes where id = ? limit 1",
+    [id],
+  )?.status === "sending";
+  if (!owned) return false;
+  setDraftStatus(db, id, patch);
   return true;
 }
 
