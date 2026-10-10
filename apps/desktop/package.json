@@ -116,7 +116,7 @@
     "@lobehub/icons": "^5.2.0",
     "@lobehub/icons-static-svg": "^1.84.0",
     "@lobehub/ui": "^5.6.3",
-    "@opencode/client": "2.0.24",
+    "@opencode/client": "2.0.26",
     "@phosphor-icons/react": "^2.1.10",
     "@pierre/diffs": "^1.1.21",
     "@radix-ui/react-context-menu": "^2.2.16",
