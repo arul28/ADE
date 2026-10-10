@@ -64387,11 +64387,16 @@ export function createAgentChatService(args: {
    * stale sweep — and picked up by another runtime — is never overwritten with
    * this attempt's result.
    */
+  /** The claim token for the send currently being delivered, if any. */
+  const draftClaimTokens = new Map<string, string>();
+
   const recordDraftOutcome = (
     entry: DraftEntry,
     outcome: DraftDeliveryOutcome,
     owned: boolean,
   ): void => {
+    const claimToken = draftClaimTokens.get(entry.id) ?? null;
+    draftClaimTokens.delete(entry.id);
     const store = draftDb();
     if (!store) return;
     // A skipped send belongs to another pass; writing anything here would
@@ -64407,8 +64412,8 @@ export function createAgentChatService(args: {
       firedAt: outcome.status === "sent" ? outcome.firedAt : null,
       lastError: outcome.status === "sent" ? null : outcome.error,
     };
-    if (owned) {
-      setDraftStatusIfSending(store, entry.id, patch);
+    if (owned && claimToken) {
+      setDraftStatusIfSending(store, entry.id, patch, claimToken);
       return;
     }
     setDraftStatus(store, entry.id, patch);
@@ -64427,9 +64432,11 @@ export function createAgentChatService(args: {
       const store = draftDb();
       // Claim before sending: only the runtime whose flip matched a row
       // delivers it, so an overlapping sweep or a restart cannot send twice.
-      if (store && !claimScheduledDraft(store, entry.id)) {
+      const claimToken = store ? claimScheduledDraft(store, entry.id) : null;
+      if (store && !claimToken) {
         return { status: "skipped", error: "Another pass is already sending this draft." };
       }
+      if (claimToken) draftClaimTokens.set(entry.id, claimToken);
       try {
         return await deliverDraft(entry, draftDeliveryDeps);
       } catch (deliveryError) {
@@ -64470,12 +64477,18 @@ export function createAgentChatService(args: {
     // already retrying — would be delivered twice.
     const armed = entry.kind === "scheduled"
       && (entry.status === "scheduled" || entry.status === "sending");
-    if (armed && !claimScheduledDraft(store, entry.id)) {
-      return { ok: false, error: "This send is already going out." };
+    if (armed) {
+      const claimToken = claimScheduledDraft(store, entry.id);
+      if (!claimToken) return { ok: false, error: "This send is already going out." };
+      draftClaimTokens.set(entry.id, claimToken);
     }
     try {
       const outcome = await deliverDraft(
-        { ...entry, scheduledAt: new Date().toISOString() },
+        // "Send now" is the user overriding the clock, so the lateness policy
+        // is neutralised rather than the fire time rewritten: with the time
+        // simply set to now, the scheduler's clock has already moved on by the
+        // time it checks, and a strict send came back `missed` without sending.
+        { ...entry, scheduledAt: new Date().toISOString(), deliveryPolicy: "wait" },
         draftDeliveryDeps,
       );
       recordDraftOutcome(entry, outcome, armed);

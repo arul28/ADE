@@ -5975,14 +5975,17 @@ export function AgentChatComposer({
    */
   const schedulePermissionMode = useMemo((): string | null => {
     switch (sp) {
-      case "claude": return cpmUse ?? null;
+      // The derived selection, not the raw mode: when the interaction mode is
+      // plan the picker shows Plan, and capturing `default` would let the send
+      // run without the restriction the user is looking at.
+      case "claude": return claudeSelectionMode;
       case "opencode": return opmUse ?? null;
       case "droid": return dpmUse ?? null;
       // Cursor's control is a whole config snapshot rather than one mode name,
       // so there is no single value to freeze here; the chat keeps its own.
       default: return null;
     }
-  }, [cpmUse, dpmUse, opmUse, sp]);
+  }, [claudeSelectionMode, dpmUse, opmUse, sp]);
 
   const scheduleTargets = useMemo((): DraftScheduleTargets => ({
     sessionId: sessionId ?? null,
@@ -6001,14 +6004,17 @@ export function AgentChatComposer({
   }), [composerMachineBinding?.displayName, composerMachineBinding?.kind, scheduledSendContext, sessionId]);
 
   const scheduleConfig = useMemo((): DraftScheduleConfig => ({
-    provider: sp ?? null,
+    // Not `sp`: that carries the composer's display default ("opencode") when
+    // no provider is known, and freezing it would name a provider the user
+    // never chose. Null lets the host use its own default.
+    provider: slot?.sessionProvider ?? sessionProvider ?? null,
     modelId: modelId ?? null,
     // The runtime-facing model string lives with the launch builder, not here;
     // the popover falls back to the model id, which the host accepts.
     model: null,
     permissionMode: schedulePermissionMode,
     thinking: reasoningEffort ?? null,
-  }), [modelId, reasoningEffort, schedulePermissionMode, sp]);
+  }), [modelId, reasoningEffort, schedulePermissionMode, sessionProvider, slot?.sessionProvider]);
 
   const openComposerSchedule = useCallback(() => {
     setScheduleError(null);

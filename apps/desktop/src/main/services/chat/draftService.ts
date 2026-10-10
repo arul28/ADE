@@ -723,38 +723,46 @@ export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
  * and it is what keeps a second brain from re-sending a row whose turn is
  * already in flight.
  */
-export function claimScheduledDraft(db: DraftDb, id: string): boolean {
-  const now = new Date().toISOString();
-  const changed = db.runChanged
-    ? db.runChanged(
-      "update prompt_stashes set status = 'sending', updated_at = ? where id = ? and status = 'scheduled'",
-      [now, id],
-    )
-    : null;
-  if (changed != null) return changed === 1;
+export function claimScheduledDraft(db: DraftDb, id: string): string | null {
+  // Strictly increasing, the way `nextCreatedAt` stamps a new row: the token
+  // identifies THIS claim, and two claims inside one millisecond would
+  // otherwise be indistinguishable, letting a superseded delivery write its
+  // outcome over the claim that replaced it. It stays a plain ISO instant so
+  // the stale sweep's `updated_at < cutoff` comparison keeps working.
+  const previous = db.get<{ updated_at: string | null }>(
+    "select updated_at from prompt_stashes where id = ? limit 1",
+    [id],
+  )?.updated_at;
+  const previousMs = previous ? Date.parse(previous) : Number.NaN;
+  const claimedAt = new Date(Math.max(
+    Date.now(),
+    Number.isFinite(previousMs) ? previousMs + 1 : 0,
+  )).toISOString();
+  const claimSql =
+    "update prompt_stashes set status = 'sending', updated_at = ? where id = ? and status = 'scheduled'";
+  if (db.runChanged) {
+    return db.runChanged(claimSql, [claimedAt, id]) === 1 ? claimedAt : null;
+  }
   // Adapters without `runChanged` (narrow test doubles) fall back to a read
   // then write, which is still atomic inside one synchronous connection.
   const row = db.get<{ status: string | null }>(
     "select status from prompt_stashes where id = ? limit 1",
     [id],
   );
-  if (!row || row.status !== "scheduled") return false;
-  db.run(
-    "update prompt_stashes set status = 'sending', updated_at = ? where id = ?",
-    [now, id],
-  );
-  return true;
+  if (!row || row.status !== "scheduled") return null;
+  db.run(claimSql, [claimedAt, id]);
+  return claimedAt;
 }
 
 /**
- * Record an outcome only while the row is still claimed.
+ * Record an outcome only while THIS claim still owns the row.
  *
- * This closes the stale-claim path: the sweep returns a row to the queue after
- * ten minutes, and once it is back to `scheduled` this write is refused rather
- * than reporting a send that did not happen. It is a status check, not an
- * ownership check — a row re-claimed by another runtime is `sending` again and
- * this would accept the write — so it narrows the window rather than closing
- * it. Returns false when the write was refused.
+ * `claimedAt` is the token `claimScheduledDraft` wrote into `updated_at`, and
+ * the write is refused unless it is still there. That is what makes it an
+ * ownership check rather than a status check: the stale sweep returns a row to
+ * the queue after ten minutes, and a runtime that re-claims it writes a new
+ * token — so the first delivery cannot report an outcome over the second's
+ * claim. Returns false when the write was refused.
  */
 export function setDraftStatusIfSending(
   db: DraftDb,
@@ -764,29 +772,30 @@ export function setDraftStatusIfSending(
     firedAt?: string | null;
     lastError?: string | null;
   },
+  claimedAt: string,
 ): boolean {
+  const now = new Date().toISOString();
+  const sql = `update prompt_stashes
+       set status = ?, fired_at = coalesce(?, fired_at), last_error = ?, updated_at = ?
+       where id = ? and status = 'sending' and updated_at = ?`;
   const values: SqlValue[] = [
     patch.status,
     patch.firedAt ?? null,
     patch.lastError ?? null,
-    new Date().toISOString(),
+    now,
     id,
+    claimedAt,
   ];
   if (db.runChanged) {
-    return db.runChanged(
-      `update prompt_stashes
-       set status = ?, fired_at = coalesce(?, fired_at), last_error = ?, updated_at = ?
-       where id = ? and status = 'sending'`,
-      values,
-    ) === 1;
+    return db.runChanged(sql, values) === 1;
   }
-  const owned = db.get<{ status: string | null }>(
-    "select status from prompt_stashes where id = ? limit 1",
+  // Without a change count, re-read: our own write is the only one that leaves
+  // this row's `updated_at` equal to the value just written.
+  db.run(sql, values);
+  return db.get<{ updated_at: string | null }>(
+    "select updated_at from prompt_stashes where id = ? limit 1",
     [id],
-  )?.status === "sending";
-  if (!owned) return false;
-  setDraftStatus(db, id, patch);
-  return true;
+  )?.updated_at === now;
 }
 
 /** Statuses/errors the scheduler writes back onto a row. */

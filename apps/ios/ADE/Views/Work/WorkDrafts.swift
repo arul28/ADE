@@ -165,7 +165,8 @@ struct WorkComposerOverflowButton: View {
             provider: provider,
             modelId: modelId,
             onDraftChange: { draft = $0 },
-            onAttachmentsChange: { attachments = $0 }
+            onAttachmentsChange: { attachments = $0 },
+            currentComposer: { (draft, attachments) }
           )
         }
       },
@@ -365,7 +366,8 @@ final class WorkDraftController: ObservableObject {
     provider: String?,
     modelId: String?,
     onDraftChange: (String) -> Void,
-    onAttachmentsChange: ([WorkChatInputAttachment]) -> Void
+    onAttachmentsChange: ([WorkChatInputAttachment]) -> Void,
+    currentComposer: (() -> (text: String, attachments: [WorkChatInputAttachment]))? = nil
   ) async {
     if workComposerHasDraftableContent(text: text, attachments: attachments) {
       await save(
@@ -376,7 +378,8 @@ final class WorkDraftController: ObservableObject {
         provider: provider,
         modelId: modelId,
         onDraftChange: onDraftChange,
-        onAttachmentsChange: onAttachmentsChange
+        onAttachmentsChange: onAttachmentsChange,
+        currentComposer: currentComposer
       )
     } else {
       await refresh(syncService: syncService, scope: scope)
@@ -392,7 +395,10 @@ final class WorkDraftController: ObservableObject {
     provider: String?,
     modelId: String?,
     onDraftChange: (String) -> Void,
-    onAttachmentsChange: ([WorkChatInputAttachment]) -> Void
+    onAttachmentsChange: ([WorkChatInputAttachment]) -> Void,
+    /// Reads the composer as it is NOW, so the clear below can tell whether
+    /// anything was typed while the save was in flight.
+    currentComposer: (() -> (text: String, attachments: [WorkChatInputAttachment]))? = nil
   ) async {
     guard !busy else { return }
     refreshToken = UUID()
@@ -437,8 +443,14 @@ final class WorkDraftController: ObservableObject {
         }
       }
       entries = [created] + entries.filter { $0.id != created.id }
-      onDraftChange("")
-      onAttachmentsChange([])
+      // Clear only the snapshot that was saved. Text or images added while the
+      // round trip was in flight belong to a newer draft; wiping them loses
+      // what the user typed. With no reader supplied, behave as before.
+      let current = currentComposer?() ?? (text, attachments)
+      if current.text == text && current.attachments.count == attachments.count {
+        onDraftChange("")
+        onAttachmentsChange([])
+      }
     } catch {
       errorMessage = error.localizedDescription
       listPresented = true
@@ -491,19 +503,33 @@ final class WorkDraftController: ObservableObject {
         errorMessage = "This draft was taken on another machine."
         return
       }
-      let restored = try await workChatInputAttachments(
-        from: claimed.resolvedAttachments,
-        syncService: syncService,
-        chatSessionId: scope.chatSessionId,
-        projectId: scope.projectId,
-        projectRootPath: scope.projectRootPath
-      )
-      guard restored.count == claimed.resolvedAttachments.count else {
-        throw NSError(
-          domain: "ADE",
-          code: 28,
-          userInfo: [NSLocalizedDescriptionKey: "Could not restore every draft image. The draft is still available on the machine that made it."]
+      // The claim already consumed the row, so a failure here must not also
+      // lose the text: put whatever arrived in the composer and say what did
+      // not, rather than claiming a draft that no longer exists is available.
+      let restored: [WorkChatInputAttachment]
+      do {
+        restored = try await workChatInputAttachments(
+          from: claimed.resolvedAttachments,
+          syncService: syncService,
+          chatSessionId: scope.chatSessionId,
+          projectId: scope.projectId,
+          projectRootPath: scope.projectRootPath
         )
+      } catch {
+        onDraftChange(claimed.text)
+        onAttachmentsChange([])
+        entries.removeAll { $0.id == claimed.id }
+        listPresented = false
+        errorMessage = "This draft's images could not be restored, so only its text was attached to the composer."
+        return
+      }
+      guard restored.count == claimed.resolvedAttachments.count else {
+        onDraftChange(claimed.text)
+        onAttachmentsChange(restored)
+        entries.removeAll { $0.id == claimed.id }
+        listPresented = false
+        errorMessage = "Only some of this draft's images could be restored; the rest are still on the machine that made it."
+        return
       }
       onDraftChange(claimed.text)
       onAttachmentsChange(restored)

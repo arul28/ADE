@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import {
   claimDraft,
+  claimScheduledDraft,
   createDraft,
   draftLaunchModel,
   deleteDraft,
@@ -17,6 +18,7 @@ import {
   MAX_DRAFTS,
   MAX_SCHEDULED_DRAFTS,
   setDraftStatus,
+  setDraftStatusIfSending,
   updateDraft,
 } from "./draftService";
 
@@ -435,6 +437,31 @@ describe("draftService", () => {
           targetLaneId: "lane-1",
         },
       })).toThrow("Choose a model");
+    });
+  
+    // The claim is a token, not a status: a row the sweep returned and another
+    // runtime re-claimed is `sending` again, and the first delivery's outcome
+    // must not be written over the second's.
+    it("refuses an outcome whose claim was superseded", () => {
+      const created = createDraft(db, { text: "send me", schedule: schedule() });
+
+      const first = claimScheduledDraft(db, created.id);
+      expect(first).toBeTruthy();
+      // The stale sweep returns it to the queue, and another runtime claims it.
+      db.run("update prompt_stashes set status = 'scheduled' where id = ?", [created.id]);
+      const second = claimScheduledDraft(db, created.id);
+      expect(second).toBeTruthy();
+      expect(second).not.toBe(first);
+
+      const firedAt = new Date().toISOString();
+      expect(setDraftStatusIfSending(db, created.id, { status: "sent", firedAt }, first!))
+        .toBe(false);
+      expect(db.get<{ status: string }>("select status from prompt_stashes where id = ?", [created.id])?.status)
+        .toBe("sending");
+      expect(setDraftStatusIfSending(db, created.id, { status: "sent", firedAt }, second!))
+        .toBe(true);
+      expect(db.get<{ status: string }>("select status from prompt_stashes where id = ?", [created.id])?.status)
+        .toBe("sent");
     });
   });
 });
