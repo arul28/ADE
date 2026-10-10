@@ -91,7 +91,7 @@
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex": "0.161.0",
-    "@opencode/cli": "2.0.24",
+    "@opencode/cli": "2.0.26",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "bonjour-service": "^1.3.0",
