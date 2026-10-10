@@ -3220,7 +3220,7 @@ struct AgentChatFileRef: Codable, Equatable, Hashable {
   var url: String? = nil
 }
 
-/// Wire form of chat attachments for `chat.send`, `chat.createPromptStash`,
+/// Wire form of chat attachments for `chat.send`, `chat.createDraft`,
 /// `chat.startLaunch` and `chat.queueLaunchMessage`: `path` + `type`, plus
 /// `url` only when it is non-empty.
 func chatAttachmentArgs(_ attachments: [AgentChatFileRef]) -> [[String: Any]] {
@@ -3304,7 +3304,105 @@ struct ChatThreadComment: Decodable, Equatable, Identifiable {
   var updatedAt: String
 }
 
-struct PromptStashEntry: Codable, Equatable, Identifiable {
+/// How a draft is armed. A plain draft is just unsent composer state; a
+/// `scheduled` draft additionally carries a fire time and is delivered as a
+/// real user turn by whichever machine owns the target chat.
+enum DraftKind: String, Codable, Equatable {
+  case draft
+  case scheduled
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    // A kind from a newer host reads as a plain draft rather than dropping the
+    // whole list that carries it.
+    self = DraftKind(rawValue: raw) ?? .draft
+  }
+}
+
+enum DraftStatus: String, Codable, Equatable {
+  /// Plain draft; nothing is armed.
+  case draft
+  /// Armed and waiting for its fire time.
+  case scheduled
+  /// Claimed by the owning machine; the send is in flight.
+  case sending
+  /// Delivered.
+  case sent
+  /// The fire time passed and the policy refused to deliver late.
+  case missed
+  /// Delivery cannot proceed until the user acts.
+  case blocked
+  /// Cancelled by the user or an agent.
+  case cancelled
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = DraftStatus(rawValue: raw) ?? .unknown
+  }
+}
+
+/// What happens when a scheduled send's fire time arrives and it cannot go out.
+enum DraftDeliveryPolicy: String, Codable, Equatable, CaseIterable, Identifiable {
+  /// Deliver as soon as a machine can, however late.
+  case wait
+  /// Skip the send once its moment has passed.
+  case strict
+  /// Deliver late, but only inside the grace window.
+  case grace
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .wait: return "Wait for me"
+    case .strict: return "Strict"
+    case .grace: return "Grace window"
+    }
+  }
+
+  var detail: String {
+    switch self {
+    case .wait: return "Send as soon as a machine can, even if that is late."
+    case .strict: return "Skip the send if the moment has passed."
+    case .grace: return "Send late, but only within the grace window."
+    }
+  }
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = DraftDeliveryPolicy(rawValue: raw) ?? .wait
+  }
+}
+
+/// Where a scheduled send goes: a chat that already exists, or a new chat.
+enum DraftTargetKind: String, Codable, Equatable {
+  case existing
+  case new
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = DraftTargetKind(rawValue: raw) ?? .existing
+  }
+}
+
+/// Who armed the send. Agents are first-class here.
+enum DraftScheduledBy: String, Codable, Equatable {
+  case user
+  case agent
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = DraftScheduledBy(rawValue: raw) ?? .user
+  }
+}
+
+/// A draft: unsent composer state that survives across machines, optionally
+/// armed as a scheduled send. Mirrors `DraftEntry` in
+/// `apps/desktop/src/shared/types/chat.ts`.
+struct DraftEntry: Codable, Equatable, Identifiable {
   var id: String
   var text: String
   var attachments: [AgentChatFileRef]?
@@ -3312,7 +3410,33 @@ struct PromptStashEntry: Codable, Equatable, Identifiable {
   var attachmentsAvailable: Bool?
   var provider: String?
   var modelId: String?
+  /// The runtime-facing model string; a new chat cannot start without one.
+  var model: String?
   var createdAt: String
+  var updatedAt: String?
+  /// Absent on a pre-scheduling ADE runtime — treat as "draft".
+  var kind: DraftKind?
+  var status: DraftStatus?
+  /// ISO fire time, meaning the target machine's local time.
+  var scheduledAt: String?
+  var deliveryPolicy: DraftDeliveryPolicy?
+  /// Only meaningful with `deliveryPolicy: "grace"`.
+  var graceSeconds: Int?
+  var targetKind: DraftTargetKind?
+  var targetSessionId: String?
+  var targetLaneId: String?
+  /// The machine whose local time and chat the send belongs to.
+  var targetMachineKey: String?
+  /// The chat this draft was written in, used as a default target hint.
+  var originSessionId: String?
+  var permissionMode: String?
+  var thinking: String?
+  var scheduledBy: DraftScheduledBy?
+  /// Set only when `scheduledBy` is "agent".
+  var scheduledBySessionId: String?
+  var firedAt: String?
+  /// Why a scheduled draft is blocked or missed, for the Needs-you row.
+  var lastError: String?
 
   var resolvedAttachments: [AgentChatFileRef] {
     attachments ?? []
@@ -3324,6 +3448,60 @@ struct PromptStashEntry: Codable, Equatable, Identifiable {
 
   var imagesUnavailable: Bool {
     attachmentsAvailable == false && resolvedAttachmentCount > 0
+  }
+
+  var resolvedKind: DraftKind { kind ?? .draft }
+
+  var resolvedStatus: DraftStatus { status ?? .draft }
+
+  var isScheduled: Bool { resolvedKind == .scheduled }
+
+  /// A send that needs the user: blocked, or a window it missed.
+  var needsYou: Bool {
+    isScheduled && (resolvedStatus == .blocked || resolvedStatus == .missed)
+  }
+
+  var scheduledDate: Date? { scheduledAt.flatMap(workParsedDate) }
+}
+
+/// The schedule a draft is armed with, as sent to `chat.createDraft` /
+/// `chat.updateDraft`. Mirrors `DraftScheduleInput` in `shared/types/chat.ts`.
+struct DraftScheduleInput: Equatable {
+  /// ISO-8601 with an explicit offset or Z. Must be in the future.
+  var scheduledAt: String
+  var targetKind: DraftTargetKind
+  var targetSessionId: String?
+  var targetLaneId: String?
+  var targetMachineKey: String?
+  var deliveryPolicy: DraftDeliveryPolicy = .wait
+  var graceSeconds: Int?
+  var provider: String?
+  var modelId: String?
+  /// The runtime-facing model string; a new chat cannot start without one.
+  var model: String?
+  var permissionMode: String?
+  var thinking: String?
+  var scheduledBy: DraftScheduledBy?
+  var scheduledBySessionId: String?
+
+  var args: [String: Any] {
+    var out: [String: Any] = [
+      "scheduledAt": scheduledAt,
+      "targetKind": targetKind.rawValue,
+      "deliveryPolicy": deliveryPolicy.rawValue,
+    ]
+    if let targetSessionId { out["targetSessionId"] = targetSessionId }
+    if let targetLaneId { out["targetLaneId"] = targetLaneId }
+    if let targetMachineKey { out["targetMachineKey"] = targetMachineKey }
+    if let graceSeconds { out["graceSeconds"] = graceSeconds }
+    if let provider { out["provider"] = provider }
+    if let modelId { out["modelId"] = modelId }
+    if let model { out["model"] = model }
+    if let permissionMode { out["permissionMode"] = permissionMode }
+    if let thinking { out["thinking"] = thinking }
+    if let scheduledBy { out["scheduledBy"] = scheduledBy.rawValue }
+    if let scheduledBySessionId { out["scheduledBySessionId"] = scheduledBySessionId }
+    return out
   }
 }
 

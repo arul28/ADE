@@ -2217,7 +2217,7 @@ describe("createSyncRemoteCommandService", () => {
     };
     const { service } = createService({ db });
 
-    await expect(service.execute(makePayload("chat.createPromptStash", {
+    await expect(service.execute(makePayload("chat.createDraft", {
       text: created.text,
       attachments: created.attachments,
       provider: created.provider,
@@ -2228,10 +2228,10 @@ describe("createSyncRemoteCommandService", () => {
       provider: created.provider,
       modelId: created.modelId,
     });
-    await expect(service.execute(makePayload("chat.listPromptStashes"))).resolves.toEqual([
+    await expect(service.execute(makePayload("chat.listDrafts"))).resolves.toEqual([
       expect.objectContaining({ id: "stash-1", text: created.text, attachmentsAvailable: true }),
     ]);
-    await expect(service.execute(makePayload("chat.deletePromptStash", { id: "stash-1" }))).resolves.toBe(true);
+    await expect(service.execute(makePayload("chat.deleteDraft", { id: "stash-1" }))).resolves.toBe(true);
   });
 
   it("routes chat.handoff with a trimmed handoff note", async () => {

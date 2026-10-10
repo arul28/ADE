@@ -19,7 +19,7 @@ vi.mock("../index", () => ({
 }));
 
 function fakeAdapter(label: string) {
-  const createPromptStash = vi.fn(async () => ({ id: label }));
+  const createDraft = vi.fn(async () => ({ id: label }));
   const onAgentChatEvent = vi.fn(() => () => {});
   // A realistic subscription: it delivers to live listeners and stops when the
   // unsubscribe it handed back is called.
@@ -51,8 +51,8 @@ function fakeAdapter(label: string) {
       terminal: { list: terminalList },
       agentChat: {
         onEvent: onAgentChatEvent,
-        promptStashes: {
-          create: createPromptStash,
+        drafts: {
+          create: createDraft,
           delete: vi.fn(async () => true),
           list: vi.fn(async () => []),
         },
@@ -64,7 +64,7 @@ function fakeAdapter(label: string) {
   };
   return {
     adapter,
-    createPromptStash,
+    createDraft,
     stageFile,
     getChanges,
     terminalList,
@@ -234,13 +234,13 @@ describe("createFederatedWebAdapter", () => {
     const bindingA = await federated.openProject("machine-a", "project-machine-a");
     await federated.openProject("machine-b", "project-machine-b");
 
-    await federated.ade.agentChat.promptStashes.create(
+    await federated.ade.agentChat.drafts.create(
       { text: "keep this on A", attachments: [] },
       bindingA,
     );
 
-    expect(fixture.targetA.createPromptStash).toHaveBeenCalledOnce();
-    expect(fixture.targetB.createPromptStash).not.toHaveBeenCalled();
+    expect(fixture.targetA.createDraft).toHaveBeenCalledOnce();
+    expect(fixture.targetB.createDraft).not.toHaveBeenCalled();
   });
 
   it("routes pinned git, diff and terminal calls to the pinned machine, not the displayed one", async () => {
@@ -311,13 +311,13 @@ describe("createFederatedWebAdapter", () => {
     adapters.set(fixture.clientA, nextProjectAdapter.adapter);
     await federated.openProject("machine-a", "project-machine-a-next");
 
-    await federated.ade.agentChat.promptStashes.create(
+    await federated.ade.agentChat.drafts.create(
       { text: "keep this on the first project", attachments: [] },
       bindingA,
     );
 
-    expect(fixture.targetA.createPromptStash).toHaveBeenCalledOnce();
-    expect(nextProjectAdapter.createPromptStash).not.toHaveBeenCalled();
+    expect(fixture.targetA.createDraft).toHaveBeenCalledOnce();
+    expect(nextProjectAdapter.createDraft).not.toHaveBeenCalled();
   });
 
   it("finds a pinned binding before trailing call options", async () => {

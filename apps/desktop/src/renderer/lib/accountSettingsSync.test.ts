@@ -157,6 +157,8 @@ describe("accountSettingsSync (renderer)", () => {
       "smartTooltipsEnabled",
       "launchPromptClipboardEnabled",
       "launchPromptClipboardNoticeEnabled",
+      // The account field keeps its pre-rename name so an already-saved value
+      // is not orphaned; the setting it maps to is the drafts button.
       "promptStashButtonEnabled",
       "voiceInputEnabled",
       "codexVoice",

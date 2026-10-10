@@ -97,7 +97,7 @@ function resetStore() {
     smartTooltipsEnabled: true,
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
-    promptStashButtonEnabled: true,
+    draftsButtonEnabled: true,
     appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     laneInspectorTabs: {},
     workViewByProject: {},
@@ -461,16 +461,16 @@ describe("appStore", () => {
     });
 
     it("shows the prompt stash button by default and persists hiding it", () => {
-      expect(useAppStore.getState().promptStashButtonEnabled).toBe(true);
-      useAppStore.getState().setPromptStashButtonEnabled(false);
-      expect(useAppStore.getState().promptStashButtonEnabled).toBe(false);
+      expect(useAppStore.getState().draftsButtonEnabled).toBe(true);
+      useAppStore.getState().setDraftsButtonEnabled(false);
+      expect(useAppStore.getState().draftsButtonEnabled).toBe(false);
       const calls = mockLocalStorage.setItem.mock.calls.filter(
         ([key]) => key === "ade.userPreferences.v1",
       );
       const latest = calls[calls.length - 1];
       expect(latest).toBeTruthy();
       expect(JSON.parse(latest![1])).toMatchObject({
-        promptStashButtonEnabled: false,
+        draftsButtonEnabled: false,
       });
     });
 

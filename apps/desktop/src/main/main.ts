@@ -4405,6 +4405,17 @@ app.whenReady().then(async () => {
     };
 
     const agentChatService = createAgentChatService({
+      // This host's account machine key, so a scheduled send that names a
+      // machine can be matched to it. Resolved lazily and defensively: the
+      // bridge may not exist yet at construction time, and a null simply means
+      // this runtime owns only machine-agnostic sends.
+      getLocalMachineKey: () => {
+        try {
+          return ipcBridge?.getLocalMachineIdentity?.().machineKey ?? null;
+        } catch {
+          return null;
+        }
+      },
       machineAdeHome: machineAdeLayout.adeDir,
       runtimeBudget: chatRuntimeBudget,
       projectRoot,

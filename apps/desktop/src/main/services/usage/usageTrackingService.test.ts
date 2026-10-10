@@ -6304,8 +6304,8 @@ describe("ADE database usage aggregation", () => {
     expect(isMeaningfulUsageAction("chat.createScheduledWork")).toBe(true);
     expect(usageActionFromIpcChannel("ade.agentChat.scheduledWork.cancel")).toBe("chat.cancelScheduledWork");
     expect(isMeaningfulUsageAction("chat.cancelScheduledWork")).toBe(true);
-    expect(usageActionFromIpcChannel("ade.agentChat.promptStashes.create")).toBe("chat.createPromptStash");
-    expect(isMeaningfulUsageAction("chat.createPromptStash")).toBe(true);
+    expect(usageActionFromIpcChannel("ade.agentChat.drafts.create")).toBe("chat.createDraft");
+    expect(isMeaningfulUsageAction("chat.createDraft")).toBe(true);
     expect(usageActionFromIpcChannel("ade.agentChat.restartSession")).toBe("chat.restartSession");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("chat", "restartSession"))).toBe(true);
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("pr", "getChatWatches"))).toBe(false);

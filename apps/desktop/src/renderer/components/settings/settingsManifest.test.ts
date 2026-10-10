@@ -61,7 +61,7 @@ describe("settings manifest", () => {
     "appearance.chat-corners": "chat",
     "appearance.code-block-copy": "chat",
     "appearance.message-minimap": "chat",
-    "appearance.prompt-stash": "chat",
+    "appearance.drafts": "chat",
     "appearance.launch-prompt": "chat",
     "appearance.preview": "chat",
     "agents.dictation": "chat",

@@ -99,9 +99,10 @@ import {
   type AgentChatSteerArgs,
   type AgentChatCancelSteerArgs,
   type AgentChatMoveSteerArgs,
-  MAX_PROMPT_STASHES,
-  type PromptStashCreateArgs,
-  type PromptStashEntry,
+  MAX_DRAFTS,
+  type DraftCreateArgs,
+  type DraftUpdateArgs,
+  type DraftEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
@@ -4481,7 +4482,24 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   };
 
   const browserMockPersonalChats: any[] = [];
-  const browserMockPromptStashes: PromptStashEntry[] = [];
+  const browserMockDrafts: DraftEntry[] = [];
+
+  /**
+   * Hold plain drafts at the same cap the runtime does, and never drop an
+   * armed send to make room — the real store exempts them, and a mock that
+   * spliced the whole list would hide that the exemption exists.
+   */
+  function browserMockPruneDrafts(): void {
+    const plain = browserMockDrafts.filter((entry) => entry.kind !== "scheduled");
+    const excess = plain.length - MAX_DRAFTS;
+    if (excess <= 0) return;
+    // Newest-first, so the tail of the plain entries is the oldest.
+    const doomed = new Set(plain.slice(-excess).map((entry) => entry.id));
+    for (let index = browserMockDrafts.length - 1; index >= 0; index -= 1) {
+      const candidate = browserMockDrafts[index];
+      if (candidate && doomed.has(candidate.id)) browserMockDrafts.splice(index, 1);
+    }
+  }
   const browserMockPersonalChatEvents = new Map<string, any[]>();
   let browserMockPersonalChatSequence = 0;
   /** Every personal event in order, so `streamEvents` can replay them like the runtime buffer. */
@@ -6564,14 +6582,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           return { deleted: current.some((comment) => comment.id === args.commentId) };
         },
       },
-      promptStashes: {
-        list: async (_pin?: OpenProjectBinding | null) => browserMockPromptStashes.map((entry) => ({
+      drafts: {
+        list: async (_pin?: OpenProjectBinding | null) => browserMockDrafts.map((entry) => ({
           ...entry,
           attachments: entry.attachments?.map((attachment) => ({ ...attachment })),
         })),
-        create: async (args: PromptStashCreateArgs, _pin?: OpenProjectBinding | null) => {
+        create: async (args: DraftCreateArgs, _pin?: OpenProjectBinding | null) => {
           const attachments = (args.attachments ?? []).map((attachment) => ({ ...attachment }));
-          const entry: PromptStashEntry = {
+          const entry: DraftEntry = {
             id: globalThis.crypto.randomUUID(),
             text: args.text,
             attachments,
@@ -6580,15 +6598,70 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             provider: args.provider ?? null,
             modelId: args.modelId ?? null,
             createdAt: new Date().toISOString(),
+            ...(args.schedule
+              ? {
+                kind: "scheduled" as const,
+                status: "scheduled" as const,
+                scheduledAt: args.schedule.scheduledAt,
+                deliveryPolicy: args.schedule.deliveryPolicy ?? "wait",
+                targetKind: args.schedule.targetKind,
+                targetSessionId: args.schedule.targetSessionId ?? null,
+                targetLaneId: args.schedule.targetLaneId ?? null,
+                targetMachineKey: args.schedule.targetMachineKey ?? null,
+                permissionMode: args.schedule.permissionMode ?? null,
+              }
+              : { kind: "draft" as const, status: "draft" as const }),
           };
-          browserMockPromptStashes.unshift(entry);
-          browserMockPromptStashes.splice(MAX_PROMPT_STASHES);
+          browserMockDrafts.unshift(entry);
+          browserMockPruneDrafts();
           return entry;
         },
+        update: async (
+          args: DraftUpdateArgs,
+          _pin?: OpenProjectBinding | null,
+        ): Promise<DraftEntry | null> => {
+          const index = browserMockDrafts.findIndex((entry) => entry.id === args.id);
+          if (index < 0) return null;
+          const current = browserMockDrafts[index]!;
+          const next: DraftEntry = {
+            ...current,
+            ...(args.text === undefined ? {} : { text: args.text }),
+            updatedAt: new Date().toISOString(),
+            ...(args.unschedule
+              ? { kind: "draft" as const, status: "draft" as const, scheduledAt: null }
+              : args.schedule
+                ? {
+                  kind: "scheduled" as const,
+                  status: "scheduled" as const,
+                  scheduledAt: args.schedule.scheduledAt,
+                  deliveryPolicy: args.schedule.deliveryPolicy ?? "wait",
+                  targetKind: args.schedule.targetKind,
+                  targetSessionId: args.schedule.targetSessionId ?? null,
+                  targetLaneId: args.schedule.targetLaneId ?? null,
+                  targetMachineKey: args.schedule.targetMachineKey ?? null,
+                }
+                : {}),
+          };
+          browserMockDrafts[index] = next;
+          return next;
+        },
+        sendNow: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
+          const index = browserMockDrafts.findIndex((entry) => entry.id === id);
+          if (index < 0) return { ok: false, error: "That draft is gone." };
+          return { ok: true };
+        },
+        // Claim-first: the row is consumed and handed back, and a second claim
+        // finds nothing — the same shape the real runtime returns.
+        claim: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
+          const index = browserMockDrafts.findIndex((entry) => entry.id === id);
+          if (index < 0) return null;
+          const [claimed] = browserMockDrafts.splice(index, 1);
+          return claimed ? { ...claimed } : null;
+        },
         delete: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
-          const index = browserMockPromptStashes.findIndex((entry) => entry.id === id);
+          const index = browserMockDrafts.findIndex((entry) => entry.id === id);
           if (index < 0) return false;
-          browserMockPromptStashes.splice(index, 1);
+          browserMockDrafts.splice(index, 1);
           return true;
         },
       },

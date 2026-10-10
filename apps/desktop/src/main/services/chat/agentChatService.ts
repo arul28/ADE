@@ -58,7 +58,25 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
-import { listPromptStashAttachmentPaths } from "./promptStashService";
+import {
+  claimScheduledDraft,
+  draftLaunchModel,
+  getDraft,
+  listDraftAttachmentPaths,
+  listDueScheduledDrafts,
+  nextScheduledDraftFireAt,
+  releaseStaleSendingDrafts,
+  setDraftStatus,
+  setDraftStatusIfSending,
+  type DraftDb,
+} from "./draftService";
+import {
+  deliverDraft,
+  draftAttachmentsReady,
+  DraftDeliveryUnsupportedError,
+  type DraftDeliveryOutcome,
+} from "./draftDelivery";
+import { createDraftScheduler } from "./draftScheduler";
 import { ClaudeInputPump } from "./claudeInputPump";
 import { createSessionActivityDetector, type SessionActivityDetector } from "./sessionActivityDetector";
 import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
@@ -256,6 +274,7 @@ import type { GithubService } from "../github/githubService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import { createChatLaunchDefaultsStore } from "./chatLaunchDefaults";
+import type { ChatLaunchArgs } from "../../../shared/types/chatLaunch";
 import { applySteerOrder, moveSteerId } from "../../../shared/steerOrder";
 import { createParentWakeBatcher } from "./parentWakeBatcher";
 import {
@@ -726,6 +745,8 @@ import type {
   AgentChatSwitchAccountArgs,
   AgentChatSwitchAccountResult,
   AgentChatUsageLimitAlternateAccount,
+  DraftEntry,
+  DraftStatus,
 } from "../../../shared/types/chat";
 import type { UsageAccount, UsageSnapshot, UsageWindow } from "../../../shared/types/usage";
 import {
@@ -10014,6 +10035,20 @@ export function createAgentChatService(args: {
       limit?: number;
     }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor: unknown }>;
   } | null;
+  /**
+   * Lazily reachable new-chat launcher, used by a scheduled send whose target
+   * is a new chat rather than an existing one. Lazy on purpose: the host builds
+   * the launch service *from* this service, so holding it directly would be a
+   * cycle. Absent (tests, embedders) means a "new chat" schedule reports itself
+   * as blocked instead of being delivered somewhere the user did not name.
+   */
+  getChatLaunchService?: () => { start: (args: ChatLaunchArgs) => Promise<unknown> } | null;
+  /**
+   * This host's account-level machine key. A scheduled send names a machine,
+   * and only the machine whose key matches delivers it, so this is what stops
+   * two synced brains from both sending the same row.
+   */
+  getLocalMachineKey?: () => string | null;
   prService?: ReturnType<typeof createPrService> | null;
   diskPressureMonitor?: DiskPressureMonitor | null;
   /**
@@ -10123,7 +10158,7 @@ export function createAgentChatService(args: {
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   db?: (
     Pick<AdeDb, "getJson" | "setJson">
-    & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync">>
+    & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync" | "runChanged">>
   ) | null;
   /**
    * Which Apple device a lane holds, for the `<ade-lane-tools>` hint. Defaults
@@ -60091,6 +60126,7 @@ export function createAgentChatService(args: {
     clearAllCursorCloudHydrationState();
     clearAllDevinCloudAttentionState();
     scheduledWorkScheduler?.dispose();
+    draftScheduler.stop();
     autoResume.forgetAll();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
@@ -64237,6 +64273,242 @@ export function createAgentChatService(args: {
     scheduledWorkLoaded = true;
   });
 
+  /**
+   * Scheduled sends. There is no schedule file: the drafts table is the only
+   * state, so a restart, a sync from another machine, or an edit in the
+   * composer all take effect on the next arm with nothing to keep in step.
+   *
+   * Only one machine delivers a send. A row that names a machine is delivered
+   * here only when this host's machine key matches; a row that names none
+   * belongs to the runtime that armed it (`armed_by_site_id`). Either way two
+   * brains holding the same synced row cannot both send it.
+   */
+  const localDraftMachineKey = (): string | null => {
+    try {
+      return args.getLocalMachineKey?.() ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const draftDeliveryDeps = {
+    now: () => Date.now(),
+    targetChatExists: (sessionId: string) => {
+      const row = sessionService.get(sessionId);
+      return Boolean(row && !row.archivedAt);
+    },
+    attachmentsReady: (draft: DraftEntry) => draftAttachmentsReady(draft, fs.existsSync),
+    sendToChat: async ({ sessionId, text, attachments }: {
+      sessionId: string;
+      text: string;
+      attachments: AgentChatFileRef[];
+    }) => {
+      // "auto" is the programmatic twin of the person pressing send: it joins
+      // a live turn where the provider supports that, and starts a new turn
+      // otherwise, so the message reads as theirs rather than as agent work.
+      await messageSession({ sessionId, text, kind: "auto", attachments });
+    },
+    createChatAndSend: async ({
+      laneId,
+      text,
+      attachments,
+      provider,
+      model,
+      modelId,
+      permissionMode,
+      thinking,
+    }: {
+      laneId: string;
+      text: string;
+      attachments: AgentChatFileRef[];
+      provider: string | null;
+      model: string | null;
+      modelId: string | null;
+      permissionMode: string | null;
+      thinking: string | null;
+    }) => {
+      const launches = args.getChatLaunchService?.() ?? null;
+      if (!launches) {
+        throw new DraftDeliveryUnsupportedError(
+          "This computer cannot start a new chat for a scheduled send. Pick an existing chat instead.",
+        );
+      }
+      // The same rule the arm-time check uses, not a restatement of it.
+      const launchModel = draftLaunchModel({ model, modelId });
+      if (!provider || !launchModel) {
+        throw new DraftDeliveryUnsupportedError(
+          "This send has no model to start its new chat with.",
+        );
+      }
+      await launches.start({
+        kind: "chat",
+        // Background: nobody is watching for the composer to hand off to.
+        mode: "background",
+        launchId: randomUUID(),
+        laneId,
+        prompt: text,
+        attachments,
+        modelId,
+        provider,
+        chat: {
+          create: {
+            provider: provider as AgentChatProvider,
+            model: launchModel,
+            ...(modelId ? { modelId } : {}),
+            ...(permissionMode ? { permissionMode: permissionMode as AgentChatPermissionMode } : {}),
+            ...(thinking ? { reasoningEffort: thinking } : {}),
+          },
+          message: { text, attachments },
+        },
+      });
+    },
+    logger,
+  };
+
+  /**
+   * The drafts store needs a real database handle, and this host's `db` is the
+   * guarded accessor whose members are optional. Narrowing once here keeps the
+   * "is there a database at all" question in one place.
+   */
+  const draftDb = (): DraftDb | null => {
+    const candidate = db;
+    return candidate
+      && typeof candidate.get === "function"
+      && typeof candidate.all === "function"
+      && typeof candidate.run === "function"
+      ? candidate as DraftDb
+      : null;
+  };
+
+  /**
+   * Write a delivery's result back onto its row.
+   *
+   * `owned` says whether this runtime still holds the claim. When it does, the
+   * write is guarded on the row still being `sending`, so a claim lost to the
+   * stale sweep — and picked up by another runtime — is never overwritten with
+   * this attempt's result.
+   */
+  const recordDraftOutcome = (
+    entry: DraftEntry,
+    outcome: DraftDeliveryOutcome,
+    claimToken: string | null,
+  ): void => {
+    const store = draftDb();
+    if (!store) return;
+    // A skipped send belongs to another pass; writing anything here would
+    // overwrite that pass's claim.
+    if (outcome.status === "skipped") return;
+    const status: DraftStatus | null = outcome.status === "sent"
+      ? "sent"
+      : outcome.status === "retry"
+        ? "scheduled"
+        : outcome.status;
+    const patch = {
+      status,
+      firedAt: outcome.status === "sent" ? outcome.firedAt : null,
+      lastError: outcome.status === "sent" ? null : outcome.error,
+    };
+    if (claimToken) {
+      setDraftStatusIfSending(store, entry.id, patch, claimToken);
+      return;
+    }
+    setDraftStatus(store, entry.id, patch);
+  };
+
+  const draftScheduler = createDraftScheduler({
+    dueNow: (nowMs) => {
+      const store = draftDb();
+      return store ? listDueScheduledDrafts(store, localDraftMachineKey(), nowMs) : [];
+    },
+    nextFireAt: () => {
+      const store = draftDb();
+      return store ? nextScheduledDraftFireAt(store, localDraftMachineKey()) : null;
+    },
+    deliver: async (entry) => {
+      const store = draftDb();
+      // Claim before sending: only the runtime whose flip matched a row
+      // delivers it, so an overlapping sweep or a restart cannot send twice.
+      const claimToken = store ? claimScheduledDraft(store, entry.id) : null;
+      if (store && !claimToken) {
+        return { status: "skipped", error: "Another pass is already sending this draft." };
+      }
+      // The claim and the write of its result are one operation, so the token
+      // never has to be kept anywhere: two deliveries of the same draft each
+      // hold their own, and neither can write the other's outcome.
+      try {
+        const outcome = await deliverDraft(entry, draftDeliveryDeps);
+        if (store) recordDraftOutcome(entry, outcome, claimToken);
+        return outcome;
+      } catch (deliveryError) {
+        // deliverDraft reports failures rather than throwing, so reaching here
+        // means something outside it broke. Hand the claim back rather than
+        // leaving the row `sending` until the stale sweep notices.
+        if (store) {
+          setDraftStatus(store, entry.id, {
+            status: "scheduled",
+            lastError: deliveryError instanceof Error ? deliveryError.message : String(deliveryError),
+          });
+        }
+        throw deliveryError;
+      }
+    },
+    // The outcome is already written by the delivery that held the claim.
+    onOutcome: () => {},
+    logger,
+  });
+  // A runtime that died mid-send left a row claimed; return it to the queue.
+  {
+    const store = draftDb();
+    if (store) releaseStaleSendingDrafts(store);
+  }
+  draftScheduler.start();
+
+  /**
+   * Deliver one draft immediately, whatever its fire time. Used by "Send now"
+   * and by resending a blocked or missed row. The row is not unarmed first: a
+   * failed manual send leaves the schedule it already had.
+   */
+  const sendDraftNow = async (draftId: string): Promise<{ ok: boolean; error?: string }> => {
+    const store = draftDb();
+    if (!store) return { ok: false, error: "Chat storage is not available." };
+    const entry = getDraft(store, draftId);
+    if (!entry) return { ok: false, error: "That draft is gone." };
+    // An armed send takes the same claim the scheduler takes. Without it, a
+    // manual send racing a scheduler tick — or an overdue row the scheduler is
+    // already retrying — would be delivered twice.
+    const armed = entry.kind === "scheduled"
+      && (entry.status === "scheduled" || entry.status === "sending");
+    let claimToken: string | null = null;
+    if (armed) {
+      claimToken = claimScheduledDraft(store, entry.id);
+      if (!claimToken) return { ok: false, error: "This send is already going out." };
+    }
+    try {
+      const outcome = await deliverDraft(
+        // "Send now" is the user overriding the clock, so the lateness policy
+        // is neutralised rather than the fire time rewritten: with the time
+        // simply set to now, the scheduler's clock has already moved on by the
+        // time it checks, and a strict send came back `missed` without sending.
+        { ...entry, scheduledAt: new Date().toISOString(), deliveryPolicy: "wait" },
+        draftDeliveryDeps,
+      );
+      recordDraftOutcome(entry, outcome, claimToken);
+      return outcome.status === "sent"
+        ? { ok: true }
+        : { ok: false, error: outcome.error };
+    } catch (deliveryError) {
+      // deliverDraft reports failures rather than throwing, so reaching here
+      // means something outside it broke. Hand the claim back instead of
+      // leaving the row `sending` until the stale sweep notices.
+      if (armed) {
+        setDraftStatus(store, entry.id, {
+          status: "scheduled",
+          lastError: deliveryError instanceof Error ? deliveryError.message : String(deliveryError),
+        });
+      }
+      throw deliveryError;
+    }
+  };
+
   const isTranscriptPathActive = (filePath: string): boolean => {
     const normalized = path.resolve(filePath);
     if (
@@ -64293,6 +64565,14 @@ export function createAgentChatService(args: {
 
   return {
     createSession,
+    /** Deliver a draft right now, whatever its fire time (the "Send now" action). */
+    sendDraftNow,
+    /**
+     * Re-arm the scheduled-send timer. Called after this machine creates,
+     * edits, or cancels a draft, so a newly armed send does not wait for the
+     * periodic sweep to be noticed.
+     */
+    refreshDraftScheduler: () => draftScheduler.refresh(),
     /**
      * Run the stale-run reconcile now instead of waiting for the 60 s timer.
      * Named on the service (rather than left to the interval) so diagnostics —
@@ -64573,13 +64853,13 @@ export function createAgentChatService(args: {
       try {
         const projectRoot = args.projectRoot;
         if (!projectRoot) return;
-        const promptStashDb = args.db;
-        const protectedAttachmentPaths = promptStashDb
-          && typeof promptStashDb.get === "function"
-          && typeof promptStashDb.all === "function"
-          && typeof promptStashDb.run === "function"
-          ? new Set(Array.from(listPromptStashAttachmentPaths(
-            promptStashDb as Pick<AdeDb, "get" | "all" | "run"> & Partial<Pick<AdeDb, "sync">>,
+        const draftDb = args.db;
+        const protectedAttachmentPaths = draftDb
+          && typeof draftDb.get === "function"
+          && typeof draftDb.all === "function"
+          && typeof draftDb.run === "function"
+          ? new Set(Array.from(listDraftAttachmentPaths(
+            draftDb as Pick<AdeDb, "get" | "all" | "run"> & Partial<Pick<AdeDb, "sync">>,
           ), (filePath) => path.resolve(filePath)))
           : new Set<string>();
         const cleanupDir = (dirPath: string) => {

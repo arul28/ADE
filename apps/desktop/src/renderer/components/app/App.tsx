@@ -673,7 +673,7 @@ function ProjectTabHost() {
     smartTooltipsEnabled: s.smartTooltipsEnabled,
     launchPromptClipboardEnabled: s.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: s.launchPromptClipboardNoticeEnabled,
-    promptStashButtonEnabled: s.promptStashButtonEnabled,
+    draftsButtonEnabled: s.draftsButtonEnabled,
     voiceInputEnabled: s.voiceInputEnabled,
     codexVoice: s.codexVoice,
     appleDevice: s.appleDevice,

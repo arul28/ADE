@@ -55,7 +55,7 @@ const appStoreState = vi.hoisted(() => ({
   setSystemColorScheme: vi.fn(),
   launchPromptClipboardEnabled: true,
   launchPromptClipboardNoticeEnabled: true,
-  promptStashButtonEnabled: true,
+  draftsButtonEnabled: true,
   voiceInputEnabled: true,
   // `App` mounts the account-settings sync, which subscribes to the Apple
   // device preferences on the ROOT store. Without the slice the selector reads
@@ -337,7 +337,7 @@ describe("App Work route keep-alive", () => {
     appStoreState.theme = "dark";
     appStoreState.launchPromptClipboardEnabled = true;
     appStoreState.launchPromptClipboardNoticeEnabled = true;
-    appStoreState.promptStashButtonEnabled = true;
+    appStoreState.draftsButtonEnabled = true;
     appStoreState.voiceInputEnabled = true;
     appStoreState.workViewByProject = {};
     appStoreState.setWorkViewState.mockClear();
@@ -519,7 +519,7 @@ describe("App Work route keep-alive", () => {
 
   it("hydrates project stores with root user preferences", async () => {
     appStoreState.launchPromptClipboardNoticeEnabled = false;
-    appStoreState.promptStashButtonEnabled = false;
+    appStoreState.draftsButtonEnabled = false;
     appStoreState.voiceInputEnabled = false;
     const { hydrateProjectAppStore } = await import("../../state/appStore");
     const { App } = await import("./App");
@@ -533,7 +533,7 @@ describe("App Work route keep-alive", () => {
         expect.objectContaining({
           launchPromptClipboardEnabled: true,
           launchPromptClipboardNoticeEnabled: false,
-          promptStashButtonEnabled: false,
+          draftsButtonEnabled: false,
           voiceInputEnabled: false,
         }),
       );

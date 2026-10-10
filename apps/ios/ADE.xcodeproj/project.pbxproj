@@ -169,7 +169,8 @@
 		E10000000000000000000053 /* LaneDetailGitActionsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000053 /* LaneDetailGitActionsPane.swift */; };
 		E10000000000000000000047 /* ADEInspectable.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000047 /* ADEInspectable.swift */; };
 		E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */; };
-		E10000000000000000000F03 /* WorkPromptStash.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F03 /* WorkPromptStash.swift */; };
+		E10000000000000000000F03 /* WorkDrafts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F03 /* WorkDrafts.swift */; };
+		E10000000000000000000F90 /* WorkDraftScheduleSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F90 /* WorkDraftScheduleSheet.swift */; };
 		7C0FFEE0000000000000A002 /* WorkThreadComments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0FFEE0000000000000A001 /* WorkThreadComments.swift */; };
 		E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F04 /* WorkContextUsageViews.swift */; };
 		E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002F /* WorkArtifactTerminalViews.swift */; };
@@ -279,7 +280,7 @@
 		D30000000000000000000F71 /* ChatLogStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F61 /* ChatLogStoreTests.swift */; };
 		D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */; };
 		D30000000000000000000F32 /* WorkChipDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F31 /* WorkChipDetectorTests.swift */; };
-		D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000000A /* WorkPromptStashTests.swift */; };
+		D31000000000000000000019 /* WorkDraftsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000000A /* WorkDraftsTests.swift */; };
 		DCF01D0000000000000002 /* WorkComposerFoldStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCF01D0000000000000001 /* WorkComposerFoldStateTests.swift */; };
 		D31000000000000000000F0D /* WorkToolsContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F0D /* WorkToolsContractTests.swift */; };
 		F10000000000000000000105 /* WorkChatToolResultCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000106 /* WorkChatToolResultCacheTests.swift */; };
@@ -572,7 +573,8 @@
 		D10000000000000000000053 /* LaneDetailGitActionsPane.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailGitActionsPane.swift; path = ADE/Views/Lanes/LaneDetailGitActionsPane.swift; sourceTree = "<group>"; };
 		D10000000000000000000047 /* ADEInspectable.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEInspectable.swift; path = ADE/Debug/ADEInspectorKit/ADEInspectable.swift; sourceTree = "<group>"; };
 		D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatComposerAndInputViews.swift; path = ADE/Views/Work/WorkChatComposerAndInputViews.swift; sourceTree = "<group>"; };
-		D10000000000000000000F03 /* WorkPromptStash.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStash.swift; path = ADE/Views/Work/WorkPromptStash.swift; sourceTree = "<group>"; };
+		D10000000000000000000F03 /* WorkDrafts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDrafts.swift; path = ADE/Views/Work/WorkDrafts.swift; sourceTree = "<group>"; };
+		D10000000000000000000F90 /* WorkDraftScheduleSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDraftScheduleSheet.swift; path = ADE/Views/Work/WorkDraftScheduleSheet.swift; sourceTree = "<group>"; };
 		7C0FFEE0000000000000A001 /* WorkThreadComments.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkThreadComments.swift; path = ADE/Views/Work/WorkThreadComments.swift; sourceTree = "<group>"; };
 		D10000000000000000000F04 /* WorkContextUsageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkContextUsageViews.swift; path = ADE/Views/Work/WorkContextUsageViews.swift; sourceTree = "<group>"; };
 		D1000000000000000000002F /* WorkArtifactTerminalViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkArtifactTerminalViews.swift; path = ADE/Views/Work/WorkArtifactTerminalViews.swift; sourceTree = "<group>"; };
@@ -696,7 +698,7 @@
 		D30000000000000000000F61 /* ChatLogStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLogStoreTests.swift; path = ADETests/ChatLogStoreTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTriggerDetectorTests.swift; path = ADETests/WorkComposerTriggerDetectorTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F31 /* WorkChipDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChipDetectorTests.swift; path = ADETests/WorkChipDetectorTests.swift; sourceTree = "<group>"; };
-		D3000000000000000000000A /* WorkPromptStashTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStashTests.swift; path = ADETests/WorkPromptStashTests.swift; sourceTree = "<group>"; };
+		D3000000000000000000000A /* WorkDraftsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDraftsTests.swift; path = ADETests/WorkDraftsTests.swift; sourceTree = "<group>"; };
 		DCF01D0000000000000001 /* WorkComposerFoldStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerFoldStateTests.swift; path = ADETests/WorkComposerFoldStateTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F0D /* WorkToolsContractTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkToolsContractTests.swift; path = ADETests/WorkToolsContractTests.swift; sourceTree = "<group>"; };
 		F10000000000000000000106 /* WorkChatToolResultCacheTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatToolResultCacheTests.swift; path = ADETests/WorkChatToolResultCacheTests.swift; sourceTree = "<group>"; };
@@ -1201,7 +1203,8 @@
 				D1000000000000000000AB02 /* AppleDeviceViewer.swift */,
 				D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
-				D10000000000000000000F03 /* WorkPromptStash.swift */,
+				D10000000000000000000F03 /* WorkDrafts.swift */,
+				D10000000000000000000F90 /* WorkDraftScheduleSheet.swift */,
 				7C0FFEE0000000000000A001 /* WorkThreadComments.swift */,
 				D10000000000000000000F04 /* WorkContextUsageViews.swift */,
 				D1000000000000000000002F /* WorkArtifactTerminalViews.swift */,
@@ -1530,7 +1533,7 @@
 				D30000000000000000000F62 /* ChatThreadEngineTests.swift */,
 				D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */,
 				D30000000000000000000F31 /* WorkChipDetectorTests.swift */,
-				D3000000000000000000000A /* WorkPromptStashTests.swift */,
+				D3000000000000000000000A /* WorkDraftsTests.swift */,
 				DCF01D0000000000000001 /* WorkComposerFoldStateTests.swift */,
 				D30000000000000000000F0D /* WorkToolsContractTests.swift */,
 				F10000000000000000000106 /* WorkChatToolResultCacheTests.swift */,
@@ -2111,7 +2114,8 @@
 				E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */,
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
-				E10000000000000000000F03 /* WorkPromptStash.swift in Sources */,
+				E10000000000000000000F03 /* WorkDrafts.swift in Sources */,
+				E10000000000000000000F90 /* WorkDraftScheduleSheet.swift in Sources */,
 				7C0FFEE0000000000000A002 /* WorkThreadComments.swift in Sources */,
 				E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */,
 				E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */,
@@ -2208,7 +2212,7 @@
 				D30000000000000000000F72 /* ChatThreadEngineTests.swift in Sources */,
 				D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */,
 				D30000000000000000000F32 /* WorkChipDetectorTests.swift in Sources */,
-				D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */,
+				D31000000000000000000019 /* WorkDraftsTests.swift in Sources */,
 				DCF01D0000000000000002 /* WorkComposerFoldStateTests.swift in Sources */,
 				D31000000000000000000F0D /* WorkToolsContractTests.swift in Sources */,
 				F10000000000000000000105 /* WorkChatToolResultCacheTests.swift in Sources */,

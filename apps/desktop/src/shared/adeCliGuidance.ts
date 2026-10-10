@@ -229,6 +229,10 @@ export function buildAdeBootstrapGuidance(
     "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up started processes.",
     "`ade chat scheduled-work create` durably resumes bound chats and tracked provider CLIs.",
+    // The distinction agents get wrong: a wake is you doing work later, a
+    // draft send is the user's message arriving later. Naming both here keeps
+    // an agent from reaching for its own cron when the user asked for a send.
+    "Use `ade drafts` to send a message later (it lands as a real user turn in the target chat and shows in the user's Drafts); use `ade chat scheduled-work create` to wake *yourself* later to do work.",
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }

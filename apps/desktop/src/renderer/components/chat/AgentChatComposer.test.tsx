@@ -116,7 +116,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  useAppStore.setState({ promptStashButtonEnabled: true });
+  useAppStore.setState({ draftsButtonEnabled: true });
   delete (window as any).ade;
 });
 
@@ -212,13 +212,13 @@ function typeIntoAnswer(text: string): void {
   fireEvent.input(editor);
 }
 
-function installPromptStashBridge(promptStashes: Record<string, unknown>) {
+function installDraftsBridge(drafts: Record<string, unknown>) {
   const previousAde = (window as any).ade ?? {};
   (window as any).ade = {
     ...previousAde,
     agentChat: {
       ...(previousAde.agentChat ?? {}),
-      promptStashes,
+      drafts,
     },
   };
 }
@@ -429,7 +429,7 @@ describe("AgentChatComposer", () => {
   });
 
   it("stashes the current prompt with Cmd+S even when its appearance button is hidden", async () => {
-    useAppStore.setState({ promptStashButtonEnabled: false });
+    useAppStore.setState({ draftsButtonEnabled: false });
     const created = {
       id: "stash-1",
       text: "Need a steer message",
@@ -438,14 +438,14 @@ describe("AgentChatComposer", () => {
       createdAt: "2026-07-28T12:00:00.000Z",
     };
     const create = vi.fn().mockResolvedValue(created);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: vi.fn().mockResolvedValue(true),
     });
     const props = renderComposer();
 
-    expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "s", metaKey: true });
 
     await waitFor(() => expect(create).toHaveBeenCalledWith({
@@ -480,7 +480,7 @@ describe("AgentChatComposer", () => {
     const saveTempAttachment = vi.fn().mockResolvedValue({
       path: storedAttachment.path,
     });
-    const createPromptStash = vi.fn().mockResolvedValue({
+    const createDraft = vi.fn().mockResolvedValue({
       id: "stash-image",
       text: "Need a steer message",
       provider: "codex",
@@ -490,9 +490,9 @@ describe("AgentChatComposer", () => {
     });
     (window as any).ade = {
       agentChat: {
-        promptStashes: {
+        drafts: {
           list: vi.fn().mockResolvedValue([]),
-          create: createPromptStash,
+          create: createDraft,
           delete: vi.fn().mockResolvedValue(true),
         },
         getImageDataUrl,
@@ -504,13 +504,13 @@ describe("AgentChatComposer", () => {
       attachments: [sourceAttachment],
       composerMachineBinding,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith(
       sourceAttachment.path,
       composerMachineBinding,
     ));
-    await waitFor(() => expect(createPromptStash).toHaveBeenCalledWith({
+    await waitFor(() => expect(createDraft).toHaveBeenCalledWith({
       text: "Need a steer message",
       provider: "codex",
       modelId: "openai/gpt-5.4",
@@ -1719,7 +1719,7 @@ describe("AgentChatComposer", () => {
       modelId: "openai/gpt-5.4",
       createdAt: "2026-08-10T12:00:00.000Z",
     });
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: vi.fn().mockResolvedValue(true),
@@ -1758,7 +1758,7 @@ describe("AgentChatComposer", () => {
       resolveCreate = resolve;
     }));
     const remove = vi.fn().mockResolvedValue(true);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: remove,
@@ -1803,7 +1803,7 @@ describe("AgentChatComposer", () => {
       resolveCreate = resolve;
     }));
     const remove = vi.fn().mockResolvedValue(true);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: remove,
@@ -1845,7 +1845,7 @@ describe("AgentChatComposer", () => {
       createdAt: "2026-08-10T12:00:00.000Z",
     });
     const remove = vi.fn().mockResolvedValue(true);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: remove,

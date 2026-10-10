@@ -96,8 +96,11 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatTurnFileDiff,
-  PromptStashCreateArgs,
-  PromptStashDeleteArgs,
+  DraftClaimArgs,
+  DraftCreateArgs,
+  DraftDeleteArgs,
+  DraftGetArgs,
+  DraftUpdateArgs,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
 import { isAcpChatProvider } from "../../../shared/types/chat";
@@ -122,10 +125,13 @@ import {
   isTrackedAgentCliToolType,
 } from "../../../shared/types";
 import {
-  createPromptStash,
-  deletePromptStash,
-  listPromptStashes,
-} from "../chat/promptStashService";
+  claimDraft,
+  createDraft,
+  deleteDraft,
+  getDraft,
+  listDrafts,
+  updateDraft,
+} from "../chat/draftService";
 import type {
   AiConfig,
   ApplyLaneTemplateArgs,
@@ -972,17 +978,45 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);
       runtime.db.setJson(key, normalizeAgentChatParallelLaunchState(args?.state ?? null, parentLaneId));
     },
-    listPromptStashes: () => listPromptStashes(runtime.db),
-    createPromptStash: (args?: PromptStashCreateArgs) => {
-      const record = readObjectActionArg(args, "chat.createPromptStash");
-      // The service owns validation for both text and attachment-only stashes.
+    listDrafts: () => listDrafts(runtime.db),
+    getDraft: (args?: DraftGetArgs) => {
+      const record = readObjectActionArg(args, "chat.getDraft");
+      return getDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+    },
+    createDraft: (args?: DraftCreateArgs) => {
+      const record = readObjectActionArg(args, "chat.createDraft");
+      // The service owns validation for both text and attachment-only drafts.
       // Keeping the full object intact is essential on the daemon path: this is
       // the path every runtime-backed desktop uses.
-      return createPromptStash(runtime.db, record);
+      const created = createDraft(runtime.db, record);
+      // A newly armed send should not wait for the periodic sweep to be seen.
+      // Optional on purpose: re-arming is an optimisation, and a service that
+      // cannot do it still picks the row up on its next sweep.
+      agentChatService.refreshDraftScheduler?.();
+      return created;
     },
-    deletePromptStash: (args?: PromptStashDeleteArgs) => {
-      const record = readObjectActionArg(args, "chat.deletePromptStash");
-      return deletePromptStash(runtime.db, requireNonEmptyString(record.id, "id"));
+    deleteDraft: (args?: DraftDeleteArgs) => {
+      const record = readObjectActionArg(args, "chat.deleteDraft");
+      const deleted = deleteDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+      agentChatService.refreshDraftScheduler?.();
+      return deleted;
+    },
+    updateDraft: (args?: DraftUpdateArgs) => {
+      const record = readObjectActionArg(args, "chat.updateDraft");
+      const updated = updateDraft(runtime.db, record);
+      agentChatService.refreshDraftScheduler?.();
+      return updated;
+    },
+    claimDraft: (args?: DraftClaimArgs) => {
+      const record = readObjectActionArg(args, "chat.claimDraft");
+      return claimDraft(runtime.db, requireNonEmptyString(record.id, "id"));
+    },
+    // Delivers the draft as a real user turn now, whatever its fire time. Owned
+    // by the chat service rather than the draft store: sending is a chat
+    // concern, and this is the same path the scheduler uses at a fire time.
+    sendDraftNow: async (args?: { id?: string }) => {
+      const record = readObjectActionArg(args, "chat.sendDraftNow");
+      return await agentChatService.sendDraftNow(requireNonEmptyString(record.id, "id"));
     },
     fileSearch: async (args?: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
       const sessionId = requireNonEmptyString(args?.sessionId, "sessionId");

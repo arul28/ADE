@@ -124,10 +124,12 @@ import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNamin
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import {
-  createPromptStash,
-  deletePromptStash,
-  listPromptStashes,
-} from "../chat/promptStashService";
+  claimDraft,
+  createDraft,
+  deleteDraft,
+  listDrafts,
+  updateDraft,
+} from "../chat/draftService";
 import type {
   ChatThreadComment,
   ChatThreadCommentCreateArgs,
@@ -515,9 +517,11 @@ import type {
   AgentChatSuggestLaneNameArgs,
   AgentChatFileRef,
   AutoLaneIdentitySuggestion,
-  PromptStashCreateArgs,
-  PromptStashDeleteArgs,
-  PromptStashEntry,
+  DraftClaimArgs,
+  DraftCreateArgs,
+  DraftDeleteArgs,
+  DraftEntry,
+  DraftUpdateArgs,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatRegenerateSessionMetadataArgs,
@@ -8845,22 +8849,43 @@ export function registerIpc({
     ctx.db.setJson(key, nextState);
   });
 
-  ipcMain.handle(IPC.agentChatPromptStashesList, async (): Promise<PromptStashEntry[]> => {
-    return listPromptStashes(ensureDbContext().db);
+  ipcMain.handle(IPC.agentChatDraftsList, async (): Promise<DraftEntry[]> => {
+    return listDrafts(ensureDbContext().db);
   });
 
-  ipcMain.handle(IPC.agentChatPromptStashesCreate, async (
+  ipcMain.handle(IPC.agentChatDraftsCreate, async (
     _event,
-    arg: PromptStashCreateArgs,
-  ): Promise<PromptStashEntry> => {
-    return createPromptStash(ensureDbContext().db, arg);
+    arg: DraftCreateArgs,
+  ): Promise<DraftEntry> => {
+    return createDraft(ensureDbContext().db, arg);
   });
 
-  ipcMain.handle(IPC.agentChatPromptStashesDelete, async (
+  ipcMain.handle(IPC.agentChatDraftsDelete, async (
     _event,
-    arg: PromptStashDeleteArgs,
+    arg: DraftDeleteArgs,
   ): Promise<boolean> => {
-    return deletePromptStash(ensureDbContext().db, arg?.id ?? "");
+    return deleteDraft(ensureDbContext().db, arg?.id ?? "");
+  });
+
+  ipcMain.handle(IPC.agentChatDraftsUpdate, async (
+    _event,
+    arg: DraftUpdateArgs,
+  ): Promise<DraftEntry | null> => {
+    return updateDraft(ensureDbContext().db, arg);
+  });
+
+  ipcMain.handle(IPC.agentChatDraftsClaim, async (
+    _event,
+    arg: DraftClaimArgs,
+  ): Promise<DraftEntry | null> => {
+    return claimDraft(ensureDbContext().db, arg?.id ?? "");
+  });
+
+  ipcMain.handle(IPC.agentChatDraftsSendNow, async (
+    _event,
+    arg: DraftDeleteArgs,
+  ): Promise<{ ok: boolean; error?: string }> => {
+    return await ensureAgentChatContext().agentChatService.sendDraftNow(arg?.id ?? "");
   });
 
   ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {

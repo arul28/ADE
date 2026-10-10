@@ -58,8 +58,8 @@ export function ChatSection() {
   const setChatShellGeometry = useAppStore((s) => s.setChatShellGeometry);
   const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
   const setChatUserMinimapEnabled = useAppStore((s) => s.setChatUserMinimapEnabled);
-  const promptStashButtonEnabled = useRootAppStore((s) => s.promptStashButtonEnabled);
-  const setPromptStashButtonEnabled = useRootAppStore((s) => s.setPromptStashButtonEnabled);
+  const draftsButtonEnabled = useRootAppStore((s) => s.draftsButtonEnabled);
+  const setDraftsButtonEnabled = useRootAppStore((s) => s.setDraftsButtonEnabled);
   const codeBlockCopyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const setCodeBlockCopyButtonPosition = useAppStore((s) => s.setCodeBlockCopyButtonPosition);
   const [previewProvider, setPreviewProvider] = useState<PreviewProviderKey>("claude");
@@ -148,14 +148,14 @@ export function ChatSection() {
                   )}
                 />
                 <ModernRow
-                  anchor="prompt-stash-button"
-                  title="Prompt stash button"
+                  anchor="drafts-button"
+                  title="Drafts button"
                   hint="The bookmark beside the context meter. ⌘S works either way."
                   control={(
                     <SettingsToggle
-                      label="Prompt stash button"
-                      checked={promptStashButtonEnabled}
-                      onChange={setPromptStashButtonEnabled}
+                      label="Drafts button"
+                      checked={draftsButtonEnabled}
+                      onChange={setDraftsButtonEnabled}
                     />
                   )}
                 />

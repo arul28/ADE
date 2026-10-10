@@ -28,9 +28,11 @@ import type {
   AgentChatSetScheduledWorkPausedResult,
   AgentChatSteerResult,
   AutoLaneIdentitySuggestion,
-  PromptStashCreateArgs,
-  PromptStashDeleteArgs,
-  PromptStashEntry,
+  DraftClaimArgs,
+  DraftCreateArgs,
+  DraftDeleteArgs,
+  DraftEntry,
+  DraftUpdateArgs,
 } from "../../../shared/types/chat";
 import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
 import type {
@@ -248,19 +250,33 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
     },
-    promptStashes: {
+    drafts: {
       list: async (pin?: RuntimePinArg) => {
-        guardPin("promptStashes.list", pin);
-        const result = await call<unknown>("chat.listPromptStashes", {}, []);
-        return Array.isArray(result) ? result as PromptStashEntry[] : [];
+        guardPin("drafts.list", pin);
+        const result = await call<unknown>("chat.listDrafts", {}, []);
+        return Array.isArray(result) ? result as DraftEntry[] : [];
       },
-      create: async (args: PromptStashCreateArgs, pin?: RuntimePinArg) => {
-        guardPin("promptStashes.create", pin);
-        return await callRequiredMutation<PromptStashEntry>("chat.createPromptStash", args);
+      create: async (args: DraftCreateArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.create", pin);
+        return await callRequiredMutation<DraftEntry>("chat.createDraft", args);
       },
-      delete: async (args: PromptStashDeleteArgs, pin?: RuntimePinArg) => {
-        guardPin("promptStashes.delete", pin);
-        return await callRequiredMutation<boolean>("chat.deletePromptStash", args);
+      delete: async (args: DraftDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.delete", pin);
+        return await callRequiredMutation<boolean>("chat.deleteDraft", args);
+      },
+      update: async (args: DraftUpdateArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.update", pin);
+        const result = await call<unknown>("chat.updateDraft", args, null);
+        return (result ?? null) as DraftEntry | null;
+      },
+      claim: async (args: DraftClaimArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.claim", pin);
+        const result = await call<unknown>("chat.claimDraft", args, null);
+        return (result ?? null) as DraftEntry | null;
+      },
+      sendNow: async (args: DraftDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.sendNow", pin);
+        return await callRequiredMutation<{ ok: boolean; error?: string }>("chat.sendDraftNow", args);
       },
     },
     threadComments: {

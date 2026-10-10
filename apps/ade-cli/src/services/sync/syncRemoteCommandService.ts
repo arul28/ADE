@@ -316,10 +316,12 @@ import type { CloudAgentsService } from "../../../../desktop/src/main/services/c
 import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
 import { getSourceFaviconService } from "../../../../desktop/src/main/services/chat/sourceFaviconService";
 import {
-  createPromptStash,
-  deletePromptStash,
-  listPromptStashes,
-} from "../../../../desktop/src/main/services/chat/promptStashService";
+  claimDraft,
+  createDraft,
+  deleteDraft,
+  listDrafts,
+  updateDraft,
+} from "../../../../desktop/src/main/services/chat/draftService";
 import { launchAgentChatCli } from "../../../../desktop/src/main/services/chat/agentChatCliLaunch";
 import { deleteApiKey } from "../../../../desktop/src/main/services/ai/apiKeyStore";
 import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
@@ -5156,14 +5158,31 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     }
     return readAttachmentChunk(filePath, payload.offset, payload.length);
   });
-  register("chat.listPromptStashes", { viewerAllowed: true }, async () =>
-    listPromptStashes(requireService(args.db, "Database not available.")));
-  register("chat.createPromptStash", { viewerAllowed: true }, async (payload) =>
-    createPromptStash(requireService(args.db, "Database not available."), payload));
-  register("chat.deletePromptStash", { viewerAllowed: true }, async (payload) => {
+  register("chat.listDrafts", { viewerAllowed: true }, async () =>
+    listDrafts(requireService(args.db, "Database not available.")));
+  register("chat.createDraft", { viewerAllowed: true }, async (payload) =>
+    createDraft(requireService(args.db, "Database not available."), payload));
+  register("chat.deleteDraft", { viewerAllowed: true }, async (payload) => {
     const id = typeof payload.id === "string" ? payload.id.trim() : "";
-    if (!id) throw new Error("Missing prompt stash id.");
-    return deletePromptStash(requireService(args.db, "Database not available."), id);
+    if (!id) throw new Error("Missing draft id.");
+    return deleteDraft(requireService(args.db, "Database not available."), id);
+  });
+  register("chat.updateDraft", { viewerAllowed: true }, async (payload) =>
+    updateDraft(requireService(args.db, "Database not available."), payload));
+  // Claim-first restore: the host deletes the row and hands back the text, and
+  // a null result is the caller's signal that another machine got there first.
+  register("chat.claimDraft", { viewerAllowed: true }, async (payload) => {
+    const id = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!id) throw new Error("Missing draft id.");
+    return claimDraft(requireService(args.db, "Database not available."), id);
+  });
+  // Delivering takes the same exactly-once claim the scheduler does, so it
+  // belongs to the chat service rather than the draft store.
+  register("chat.sendDraftNow", { viewerAllowed: true }, async (payload) => {
+    const id = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!id) throw new Error("Missing draft id.");
+    return await requireService(args.agentChatService, "Agent chat service not available.")
+      .sendDraftNow(id);
   });
   // Thread comments: the user's pending notes on parts of an agent reply. The
   // host's chat service validates every field; these only route.

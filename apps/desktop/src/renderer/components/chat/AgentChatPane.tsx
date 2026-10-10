@@ -194,7 +194,7 @@ import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
 import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
-import { AgentChatApiProvider, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
+import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
@@ -5139,6 +5139,12 @@ export function AgentChatPane({
   const handleInsertDraft = useLatestCallback(insertComposerDraft);
   const handleSetDraft = useLatestCallback(replaceComposerDraft);
 
+  /**
+   * What the composer's "Scheduled send" form needs to aim a send: the lane
+   * this chat is in (the default target) and every lane a new-chat schedule
+   * could start in. Null outside a project chat pane, which is what hides the
+   * row rather than offering a send that cannot be aimed.
+   */
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId ?? chatScopeLaneId;
     if (scopedLaneId) {
@@ -6902,6 +6908,28 @@ export function AgentChatPane({
   // that machine doesn't know is not read at all, rather than being sent to the
   // tab's machine, where it can only fail as "Lane not found".
   const chatMachineLanes = useLanesForPin(chatRuntimePin);
+
+  // Same gate the composer uses for drafts: a scoped pane (personal chats,
+  // embedders) has no project runtime to schedule against. Called at the top
+  // level because it is a hook, not a condition.
+  const schedulePaneScope = useChatPaneScope();
+  const scheduledSendContext = useMemo(() => {
+    // `useChatPaneScope()` is null both for a project pane AND for a personal
+    // pane that has no enclosing provider, so the pane's own scope is the
+    // signal that distinguishes them. Drafts are a project surface.
+    if (schedulePaneScope != null || personalScope != null) return null;
+    const laneIdForChat = selectedSession?.laneId ?? laneId ?? null;
+    // A chat pinned to another machine lives on THAT machine's lanes. Offering
+    // this computer's list would aim a new-chat send at a lane the host does
+    // not have. Falls back to the active tab's lanes when the pin has none.
+    const sourceLanes = chatMachineLanes ?? lanes;
+    return {
+      laneId: laneIdForChat,
+      laneName: sourceLanes.find((lane) => lane.id === laneIdForChat)?.name ?? null,
+      lanes: sourceLanes.map((lane) => ({ id: lane.id, name: lane.name })),
+      machineName: chatRuntimePin?.displayName ?? null,
+    };
+  }, [chatMachineLanes, chatRuntimePin?.displayName, laneId, lanes, personalScope, schedulePaneScope, selectedSession?.laneId]);
   const cloudReadinessLaneId = useMemo(() => {
     const sourceLanes = chatMachineLanes ?? lanes;
     if (isAutoCreateLaneOptionId(draftLaunchTargetId)) {
@@ -16008,6 +16036,7 @@ export function AgentChatPane({
   compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
   const composerElement = (
       <AgentChatComposer
+            scheduledSendContext={scheduledSendContext}
             caretToEndRequest={composerCaretToEndRequest}
             browserTabInsertRequest={browserTabInsertRequest}
             threadComments={threadComments}

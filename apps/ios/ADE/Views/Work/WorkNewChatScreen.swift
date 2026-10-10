@@ -1372,6 +1372,8 @@ struct WorkNewChatScreen: View {
   @ViewBuilder
   private var composerBar: some View {
     WorkNewChatComposerBar(
+      draftScopeProjectId: activeProjectId,
+      draftScopeProjectRootPath: activeProjectRootPath,
       sessionMode: sessionMode,
       provider: $provider,
       modelId: modelId,
@@ -1906,6 +1908,10 @@ private func workCliToolType(provider: String) -> String {
 }
 
 private struct WorkNewChatComposerBar: View {
+  /// The project the drafts this composer opens belong to, so a draft listed
+  /// or scheduled here targets the project the user is looking at.
+  let draftScopeProjectId: String?
+  let draftScopeProjectRootPath: String?
   let sessionMode: WorkNewSessionMode
   @Binding var provider: String
   let modelId: String
@@ -1997,10 +2003,15 @@ private struct WorkNewChatComposerBar: View {
           canCompose: !busy,
           attachmentsAvailable: attachmentsAvailable,
           onDictate: startDictation,
-          stashAvailable: syncService.canInvokeRemoteAction("chat.listPromptStashes"),
-          scope: WorkPromptStashScope(),
+          draftsAvailable: syncService.canInvokeRemoteAction("chat.listDrafts"),
+          scheduleAvailable: syncService.canInvokeRemoteAction("chat.createDraft"),
+          scope: WorkDraftScope(
+            projectId: draftScopeProjectId,
+            projectRootPath: draftScopeProjectRootPath
+          ),
           provider: provider,
           modelId: modelId,
+          runtimeMode: runtimeMode,
           extraMenuContent: AnyView(sessionSettingsMenu)
         )
       },

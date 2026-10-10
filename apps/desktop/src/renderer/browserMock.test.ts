@@ -19,7 +19,7 @@ beforeAll(async () => {
 describe("browserMock prompt stashes", () => {
   it("round-trips image URL attachments through create, list, and delete", async () => {
     const imageUrl = "https://example.com/reference.png";
-    const created = await window.ade.agentChat.promptStashes.create({
+    const created = await window.ade.agentChat.drafts.create({
       text: "Use this reference",
       attachments: [{ path: imageUrl, type: "image-url", url: imageUrl }],
       provider: "codex",
@@ -32,9 +32,9 @@ describe("browserMock prompt stashes", () => {
       attachmentCount: 1,
       attachmentsAvailable: true,
     });
-    await expect(window.ade.agentChat.promptStashes.list()).resolves.toContainEqual(created);
-    await expect(window.ade.agentChat.promptStashes.delete({ id: created.id })).resolves.toBe(true);
-    await expect(window.ade.agentChat.promptStashes.list()).resolves.not.toContainEqual(created);
+    await expect(window.ade.agentChat.drafts.list()).resolves.toContainEqual(created);
+    await expect(window.ade.agentChat.drafts.delete({ id: created.id })).resolves.toBe(true);
+    await expect(window.ade.agentChat.drafts.list()).resolves.not.toContainEqual(created);
   });
 
   it("returns valid image data and round-trips a saved local image attachment", async () => {
@@ -45,12 +45,12 @@ describe("browserMock prompt stashes", () => {
       data: dataUrl.slice(dataUrl.indexOf(",") + 1),
       filename: "reference.png",
     });
-    const created = await window.ade.agentChat.promptStashes.create({
+    const created = await window.ade.agentChat.drafts.create({
       text: "",
       attachments: [{ path: saved.path, type: "image" }],
     });
 
-    await expect(window.ade.agentChat.promptStashes.list()).resolves.toContainEqual(
+    await expect(window.ade.agentChat.drafts.list()).resolves.toContainEqual(
       expect.objectContaining({
         id: created.id,
         attachments: [{ path: saved.path, type: "image" }],
@@ -58,8 +58,8 @@ describe("browserMock prompt stashes", () => {
         attachmentsAvailable: true,
       }),
     );
-    await expect(window.ade.agentChat.promptStashes.delete({ id: created.id })).resolves.toBe(true);
-    await expect(window.ade.agentChat.promptStashes.list()).resolves.not.toContainEqual(created);
+    await expect(window.ade.agentChat.drafts.delete({ id: created.id })).resolves.toBe(true);
+    await expect(window.ade.agentChat.drafts.list()).resolves.not.toContainEqual(created);
   });
 });
 

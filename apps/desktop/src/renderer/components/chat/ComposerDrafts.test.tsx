@@ -3,27 +3,27 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, forwardRef, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OpenProjectBinding, PromptStashEntry } from "../../../shared/types";
+import type { OpenProjectBinding, DraftEntry } from "../../../shared/types";
 import {
-  ComposerPromptStash as ProductionComposerPromptStash,
-  type ComposerPromptStashHandle,
-} from "./ComposerPromptStash";
+  ComposerDrafts as ProductionComposerDrafts,
+  type ComposerDraftsHandle,
+} from "./ComposerDrafts";
 
 const noopAddAttachment = () => {};
 const noopRemoveAttachment = () => {};
-type ProductionPromptStashProps = ComponentProps<typeof ProductionComposerPromptStash>;
-type TestPromptStashProps = Omit<ProductionPromptStashProps, "onAddAttachment" | "onRemoveAttachment"> & {
-  onAddAttachment?: ProductionPromptStashProps["onAddAttachment"];
-  onRemoveAttachment?: ProductionPromptStashProps["onRemoveAttachment"];
+type ProductionDraftsProps = ComponentProps<typeof ProductionComposerDrafts>;
+type TestDraftsProps = Omit<ProductionDraftsProps, "onAddAttachment" | "onRemoveAttachment"> & {
+  onAddAttachment?: ProductionDraftsProps["onAddAttachment"];
+  onRemoveAttachment?: ProductionDraftsProps["onRemoveAttachment"];
 };
-const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, TestPromptStashProps>(
-  function TestComposerPromptStash({
+const ComposerDrafts = forwardRef<ComposerDraftsHandle, TestDraftsProps>(
+  function TestComposerDrafts({
     onAddAttachment = noopAddAttachment,
     onRemoveAttachment = noopRemoveAttachment,
     ...props
   }, ref) {
     return (
-      <ProductionComposerPromptStash
+      <ProductionComposerDrafts
         ref={ref}
         {...props}
         onAddAttachment={onAddAttachment}
@@ -33,7 +33,7 @@ const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, TestPromptStas
   },
 );
 
-const savedEntry: PromptStashEntry = {
+const savedEntry: DraftEntry = {
   id: "stash-1",
   text: "Fix the parser",
   provider: "codex",
@@ -44,19 +44,27 @@ const savedEntry: PromptStashEntry = {
 function installBridge(overrides?: {
   list?: ReturnType<typeof vi.fn>;
   create?: ReturnType<typeof vi.fn>;
+  update?: ReturnType<typeof vi.fn>;
+  claim?: ReturnType<typeof vi.fn>;
   delete?: ReturnType<typeof vi.fn>;
+  sendNow?: ReturnType<typeof vi.fn>;
   getImageDataUrl?: ReturnType<typeof vi.fn>;
   saveTempAttachment?: ReturnType<typeof vi.fn>;
   getWindowSession?: ReturnType<typeof vi.fn>;
 }) {
-  const promptStashes = {
+  const drafts = {
     list: overrides?.list ?? vi.fn().mockResolvedValue([]),
     create: overrides?.create ?? vi.fn().mockResolvedValue(savedEntry),
+    update: overrides?.update ?? vi.fn().mockResolvedValue(savedEntry),
+    // Attaching a draft is a claim, not a delete: the row is consumed and
+    // handed back, and null means another machine got there first.
+    claim: overrides?.claim ?? vi.fn().mockResolvedValue(savedEntry),
     delete: overrides?.delete ?? vi.fn().mockResolvedValue(true),
+    sendNow: overrides?.sendNow ?? vi.fn().mockResolvedValue({ ok: true }),
   };
   (window as unknown as { ade: unknown }).ade = {
     agentChat: {
-      promptStashes,
+      drafts,
       getImageDataUrl: overrides?.getImageDataUrl ?? vi.fn().mockResolvedValue({
         dataUrl: "data:image/png;base64,cHJldmlldw==",
       }),
@@ -73,7 +81,7 @@ function installBridge(overrides?: {
       }),
     },
   };
-  return promptStashes;
+  return drafts;
 }
 
 beforeEach(() => {
@@ -88,8 +96,8 @@ afterEach(() => {
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
-describe("ComposerPromptStash", () => {
-  it("ignores a prompt-stash refresh that lost its local project binding", async () => {
+describe("ComposerDrafts", () => {
+  it("ignores a drafts refresh that lost its local project binding", async () => {
     const staleBinding: OpenProjectBinding = {
       kind: "local",
       key: "local:/stale-project",
@@ -114,7 +122,7 @@ describe("ComposerPromptStash", () => {
     installBridge({ list, getWindowSession });
 
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         composerMachineBinding={staleBinding}
         active
@@ -129,7 +137,7 @@ describe("ComposerPromptStash", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("shows a prompt-stash error when the local project binding is still current", async () => {
+  it("shows a drafts error when the local project binding is still current", async () => {
     const currentBinding: OpenProjectBinding = {
       kind: "local",
       key: "local:/current-project",
@@ -149,7 +157,7 @@ describe("ComposerPromptStash", () => {
     });
 
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         composerMachineBinding={currentBinding}
         active
@@ -165,7 +173,7 @@ describe("ComposerPromptStash", () => {
   it("stays out of the toolbar when the composer and stash list are both empty", async () => {
     const bridge = installBridge();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible
@@ -176,13 +184,13 @@ describe("ComposerPromptStash", () => {
 
     await waitFor(() => expect(bridge.list).toHaveBeenCalled());
     expect(screen.queryByRole("button", { name: /stashed prompt/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
   });
 
   it("honors the appearance toggle even when shared stashes exist", async () => {
     const bridge = installBridge({ list: vi.fn().mockResolvedValue([savedEntry]) });
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible={false}
@@ -192,7 +200,7 @@ describe("ComposerPromptStash", () => {
     );
 
     await waitFor(() => expect(bridge.list).toHaveBeenCalled());
-    expect(screen.queryByRole("button", { name: "Open 1 stashed prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open 1 draft" })).toBeNull();
   });
 
   it("clears only after the runtime durably saves the prompt", async () => {
@@ -200,7 +208,7 @@ describe("ComposerPromptStash", () => {
     const bridge = installBridge({ create });
     const onDraftChange = vi.fn();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Fix the parser"
         provider="codex"
         modelId="openai/gpt-5.4"
@@ -211,7 +219,7 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(create).toHaveBeenCalledWith({
       text: "Fix the parser",
@@ -228,7 +236,7 @@ describe("ComposerPromptStash", () => {
     });
     const onDraftChange = vi.fn();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Do not lose this"
         active
         buttonVisible
@@ -237,21 +245,24 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("Runtime unavailable");
     expect(onDraftChange).not.toHaveBeenCalled();
   });
 
-  it("restores a shared stash as a take operation", async () => {
-    const remove = vi.fn().mockResolvedValue(true);
+  // The claim comes first, so the machine that loses the race never receives
+  // the text. Filling first and deleting after is what let two machines both
+  // hold the same draft.
+  it("claims a shared draft before filling the composer", async () => {
+    const claim = vi.fn().mockResolvedValue(savedEntry);
     installBridge({
       list: vi.fn().mockResolvedValue([savedEntry]),
-      delete: remove,
+      claim,
     });
     const onDraftChange = vi.fn();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible
@@ -260,12 +271,37 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
     fireEvent.click(await screen.findByRole("button", { name: /Fix the parser/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Attach to composer" }));
 
-    await waitFor(() => expect(remove).toHaveBeenCalledWith({ id: "stash-1" }, null));
+    await waitFor(() => expect(claim).toHaveBeenCalledWith({ id: "stash-1" }, null));
     expect(onDraftChange).toHaveBeenCalledWith("Fix the parser");
-    expect(screen.queryByText("Stashed prompts")).toBeNull();
+    expect(screen.queryByText("Drafts")).toBeNull();
+  });
+
+  it("explains a draft another machine already took, without filling the composer", async () => {
+    installBridge({
+      list: vi.fn().mockResolvedValue([savedEntry]),
+      claim: vi.fn().mockResolvedValue(null),
+    });
+    const onDraftChange = vi.fn();
+    render(
+      <ComposerDrafts
+        draft=""
+        active
+        buttonVisible
+        shortcutLabel="⌘+S"
+        onDraftChange={onDraftChange}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Fix the parser/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Attach to composer" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("taken on another machine");
+    expect(onDraftChange).not.toHaveBeenCalled();
   });
 
   it("deletes a listed stash through the binding that loaded it", async () => {
@@ -284,7 +320,7 @@ describe("ComposerPromptStash", () => {
       delete: remove,
     });
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         composerMachineBinding={ownerBinding}
         active
@@ -294,8 +330,8 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete stashed prompt" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete draft" }));
 
     await waitFor(() => expect(remove).toHaveBeenCalledWith(
       { id: savedEntry.id },
@@ -321,7 +357,7 @@ describe("ComposerPromptStash", () => {
       path: "/project/.ade/attachments/stashed-design.png",
       type: "image" as const,
     };
-    const imageEntry: PromptStashEntry = {
+    const imageEntry: DraftEntry = {
       ...savedEntry,
       text: "Use this design",
       attachments: [storedImageAttachment],
@@ -341,7 +377,7 @@ describe("ComposerPromptStash", () => {
     const onDraftChange = vi.fn();
     const onRemoveAttachment = vi.fn();
     const saveView = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Use this design"
         attachments={[imageAttachment]}
         composerMachineBinding={composerMachineBinding}
@@ -353,7 +389,7 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
     await waitFor(() => expect(create).toHaveBeenCalledWith({
       text: "Use this design",
       attachments: [storedImageAttachment],
@@ -373,17 +409,17 @@ describe("ComposerPromptStash", () => {
     saveView.unmount();
 
     const onAddAttachment = vi.fn();
-    const remove = vi.fn().mockResolvedValue(true);
+    const claim = vi.fn().mockResolvedValue(imageEntry);
     const getImageDataUrl = vi.fn().mockResolvedValue({
       dataUrl: "data:image/png;base64,cHJldmlldw==",
     });
     installBridge({
       list: vi.fn().mockResolvedValue([imageEntry]),
-      delete: remove,
+      claim,
       getImageDataUrl,
     });
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         composerMachineBinding={composerMachineBinding}
         active
@@ -394,16 +430,19 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith(
       storedImageAttachment.path,
       composerMachineBinding,
     ));
-    expect(document.querySelector("[data-prompt-stash-menu] img")?.getAttribute("src"))
+    expect(document.querySelector("[data-drafts-menu] img")?.getAttribute("src"))
       .toBe("data:image/png;base64,cHJldmlldw==");
     fireEvent.click(screen.getByRole("button", { name: /Use this design/i }));
-    expect(onAddAttachment).toHaveBeenCalledWith(storedImageAttachment);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith(
+    fireEvent.click(screen.getByRole("button", { name: "Attach to composer" }));
+    // The claim is awaited before the composer is filled, so the text and its
+    // images land a tick later than the click.
+    await waitFor(() => expect(onAddAttachment).toHaveBeenCalledWith(storedImageAttachment));
+    await waitFor(() => expect(claim).toHaveBeenCalledWith(
       { id: imageEntry.id },
       composerMachineBinding,
     ));
@@ -461,7 +500,7 @@ describe("ComposerPromptStash", () => {
     installBridge({ create, getImageDataUrl, saveTempAttachment });
     const onDraftChange = vi.fn();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Keep these images ordered"
         attachments={sourceAttachments}
         composerMachineBinding={originalBinding}
@@ -472,7 +511,7 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledTimes(1));
     expect(getImageDataUrl).toHaveBeenNthCalledWith(
@@ -483,7 +522,7 @@ describe("ComposerPromptStash", () => {
     expect(saveTempAttachment).not.toHaveBeenCalled();
 
     view.rerender(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Keep these images ordered"
         attachments={sourceAttachments}
         composerMachineBinding={switchedBinding}
@@ -553,7 +592,7 @@ describe("ComposerPromptStash", () => {
     (window as any).ade.app = { getImageDataUrl: localRead };
 
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Keep the remote image"
         attachments={[{
           path: "/remote/source-project/design-remote-owner.png",
@@ -567,7 +606,7 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("source runtime unavailable");
     expect(runtimeRead).toHaveBeenCalledWith(
@@ -605,7 +644,7 @@ describe("ComposerPromptStash", () => {
     (window as any).ade.app = { getImageDataUrl: localRead };
 
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Keep the local image"
         attachments={[sourceAttachment]}
         composerMachineBinding={localBinding}
@@ -616,7 +655,7 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(create).toHaveBeenCalledWith({
       text: "Keep the local image",
@@ -648,7 +687,7 @@ describe("ComposerPromptStash", () => {
     const onDraftChange = vi.fn();
     const onRemoveAttachment = vi.fn();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Keep this safe"
         attachments={[imageAttachment]}
         composerMachineBinding={localBinding}
@@ -660,7 +699,7 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
     await waitFor(() => expect(view.container.querySelector(".animate-spin")).toBeNull());
     expect(create).toHaveBeenCalledTimes(1);
     expect(bridge.delete).toHaveBeenCalledWith({ id: savedEntry.id }, localBinding);
@@ -674,7 +713,7 @@ describe("ComposerPromptStash", () => {
     const saveTempAttachment = vi.fn();
     installBridge({ create, getImageDataUrl, saveTempAttachment });
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="Too many references"
         attachments={Array.from({ length: 11 }, (_, index) => ({
           path: `/Users/me/Desktop/image-${index}.png`,
@@ -687,7 +726,7 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("up to 10 images");
     expect(create).not.toHaveBeenCalled();
@@ -696,22 +735,22 @@ describe("ComposerPromptStash", () => {
   });
 
   it("keeps a machine-bound image stash intact when viewed from another synced runtime", async () => {
-    const unavailableEntry: PromptStashEntry = {
+    const unavailableEntry: DraftEntry = {
       ...savedEntry,
       text: "",
       attachments: [],
       attachmentCount: 1,
       attachmentsAvailable: false,
     };
-    const remove = vi.fn().mockResolvedValue(true);
+    const claim = vi.fn().mockResolvedValue(unavailableEntry);
     installBridge({
       list: vi.fn().mockResolvedValue([unavailableEntry]),
-      delete: remove,
+      claim,
     });
     const onDraftChange = vi.fn();
     const onAddAttachment = vi.fn();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible
@@ -721,22 +760,29 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
-    expect(screen.getByText("1 stashed image")).toBeTruthy();
-    expect(screen.getByText("1 image on another machine")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /1 stashed image/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
+    // The row still says what it is, and that the image is not on this machine.
+    const row = screen.getByRole("button", { name: /1 image elsewhere/i });
+    fireEvent.click(row);
 
-    expect((await screen.findByRole("alert")).textContent).toContain("machine where this prompt was stashed");
-    expect(remove).not.toHaveBeenCalled();
+    // Attaching is refused up front: a button that can only fail is inert and
+    // says why, rather than inviting a click that errors.
+    const attach = (await screen.findByRole("button", { name: "Attach to composer" })) as HTMLButtonElement;
+    expect(attach.disabled).toBe(true);
+    expect(attach.getAttribute("title")).toBeTruthy();
+    expect(claim).not.toHaveBeenCalled();
     expect(onDraftChange).not.toHaveBeenCalled();
     expect(onAddAttachment).not.toHaveBeenCalled();
   });
 
-  it("renders the menu in a body portal so composer overflow cannot clip it", async () => {
+  // The contract is "outside the clipping composer", not "a direct child of
+  // body": the menu now renders inside the shared popover layer, which is
+  // still a body portal.
+  it("renders the menu outside the composer so overflow cannot clip it", async () => {
     installBridge({ list: vi.fn().mockResolvedValue([savedEntry]) });
     render(
       <div data-testid="clipping-parent" style={{ overflow: "hidden" }}>
-        <ComposerPromptStash
+        <ComposerDrafts
           draft=""
           active
           buttonVisible
@@ -746,9 +792,10 @@ describe("ComposerPromptStash", () => {
       </div>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
-    const menu = screen.getByRole("dialog", { name: "Stashed prompts" });
-    expect(menu.parentElement).toBe(document.body);
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
+    const menu = screen.getByRole("dialog", { name: "Drafts" });
+    expect(screen.getByTestId("clipping-parent").contains(menu)).toBe(false);
+    expect(document.body.contains(menu)).toBe(true);
   });
 
   it("repositions the portal when asynchronous menu content changes its height", async () => {
@@ -785,7 +832,7 @@ describe("ComposerPromptStash", () => {
     try {
       installBridge({ list: vi.fn().mockResolvedValue([savedEntry]) });
       const view = render(
-        <ComposerPromptStash
+        <ComposerDrafts
           draft=""
           active
           buttonVisible
@@ -794,7 +841,7 @@ describe("ComposerPromptStash", () => {
         />,
       );
 
-      const openButton = await screen.findByRole("button", { name: "Open 1 stashed prompt" });
+      const openButton = await screen.findByRole("button", { name: "Open 1 draft" });
       const anchor = view.container.firstElementChild as HTMLElement;
       vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue({
         bottom: 728,
@@ -809,7 +856,7 @@ describe("ComposerPromptStash", () => {
       });
       fireEvent.click(openButton);
 
-      const menu = await screen.findByRole("dialog", { name: "Stashed prompts" });
+      const menu = await screen.findByRole("dialog", { name: "Drafts" });
       expect(observedElements).toContain(menu);
       vi.spyOn(menu, "getBoundingClientRect").mockReturnValue({
         bottom: 300,
@@ -852,7 +899,7 @@ describe("ComposerPromptStash", () => {
     });
     const onDraftChange = vi.fn();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft=""
         active
         buttonVisible
@@ -861,11 +908,11 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
-    expect(screen.getByRole("dialog", { name: "Stashed prompts" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
+    expect(screen.getByRole("dialog", { name: "Drafts" })).toBeTruthy();
 
     view.rerender(
-      <ComposerPromptStash
+      <ComposerDrafts
         draft="A new prompt"
         active
         buttonVisible
@@ -874,7 +921,7 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Stashed prompts" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Drafts" })).toBeNull());
     expect(remove).not.toHaveBeenCalled();
     expect(onDraftChange).not.toHaveBeenCalled();
   });
@@ -883,9 +930,9 @@ describe("ComposerPromptStash", () => {
     const create = vi.fn().mockResolvedValue(savedEntry);
     installBridge({ create });
     const onDraftChange = vi.fn();
-    const ref = createRef<ComposerPromptStashHandle>();
+    const ref = createRef<ComposerDraftsHandle>();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Hidden button prompt"
         active
@@ -903,19 +950,19 @@ describe("ComposerPromptStash", () => {
       modelId: undefined,
     }, null));
     expect(onDraftChange).toHaveBeenCalledWith("");
-    expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
   });
 
   it("coalesces rapid shortcut presses into one durable save", async () => {
-    let resolveCreate: ((entry: PromptStashEntry) => void) | undefined;
-    const create = vi.fn().mockImplementation(() => new Promise<PromptStashEntry>((resolve) => {
+    let resolveCreate: ((entry: DraftEntry) => void) | undefined;
+    const create = vi.fn().mockImplementation(() => new Promise<DraftEntry>((resolve) => {
       resolveCreate = resolve;
     }));
     installBridge({ create });
     const onDraftChange = vi.fn();
-    const ref = createRef<ComposerPromptStashHandle>();
+    const ref = createRef<ComposerDraftsHandle>();
     render(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Save exactly once"
         active
@@ -934,15 +981,15 @@ describe("ComposerPromptStash", () => {
   });
 
   it("does not clear newer text typed while a remote save is in flight", async () => {
-    let resolveCreate: ((entry: PromptStashEntry) => void) | undefined;
-    const create = vi.fn().mockImplementation(() => new Promise<PromptStashEntry>((resolve) => {
+    let resolveCreate: ((entry: DraftEntry) => void) | undefined;
+    const create = vi.fn().mockImplementation(() => new Promise<DraftEntry>((resolve) => {
       resolveCreate = resolve;
     }));
     installBridge({ create });
     const onDraftChange = vi.fn();
-    const ref = createRef<ComposerPromptStashHandle>();
+    const ref = createRef<ComposerDraftsHandle>();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Save this version"
         active
@@ -954,7 +1001,7 @@ describe("ComposerPromptStash", () => {
 
     ref.current?.activate();
     view.rerender(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Newer typing"
         active
@@ -978,8 +1025,8 @@ describe("ComposerPromptStash", () => {
     const originalImage = { path: "/Users/me/Desktop/original.png", type: "image" as const };
     const newerImage = { path: "/Users/me/Desktop/newer.png", type: "image" as const };
     const storedImage = { path: "/project/.ade/attachments/original.png", type: "image" as const };
-    let resolveCreate: ((entry: PromptStashEntry) => void) | undefined;
-    const create = vi.fn().mockImplementation(() => new Promise<PromptStashEntry>((resolve) => {
+    let resolveCreate: ((entry: DraftEntry) => void) | undefined;
+    const create = vi.fn().mockImplementation(() => new Promise<DraftEntry>((resolve) => {
       resolveCreate = resolve;
     }));
     installBridge({
@@ -988,9 +1035,9 @@ describe("ComposerPromptStash", () => {
     });
     const onDraftChange = vi.fn();
     const onRemoveAttachment = vi.fn();
-    const ref = createRef<ComposerPromptStashHandle>();
+    const ref = createRef<ComposerDraftsHandle>();
     const view = render(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Keep the newer composer intact"
         attachments={[originalImage]}
@@ -1005,7 +1052,7 @@ describe("ComposerPromptStash", () => {
     ref.current?.activate();
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     view.rerender(
-      <ComposerPromptStash
+      <ComposerDrafts
         ref={ref}
         draft="Keep the newer composer intact"
         attachments={[originalImage, newerImage]}
@@ -1023,18 +1070,22 @@ describe("ComposerPromptStash", () => {
     expect(onRemoveAttachment).not.toHaveBeenCalled();
   });
 
-  it("never overwrites edits made while a restored stash is being consumed remotely", async () => {
-    let resolveDelete: ((deleted: boolean) => void) | undefined;
-    const remove = vi.fn().mockImplementation(() => new Promise<boolean>((resolve) => {
-      resolveDelete = resolve;
+  // Claim-first inverted the old hazard. The composer used to be filled before
+  // the remote consume resolved, so a late acknowledgement could overwrite
+  // newer edits; now nothing is written until the claim comes back, and the
+  // machine that loses the race is never handed the text at all.
+  it("writes nothing into the composer until the claim comes back", async () => {
+    let resolveClaim: ((entry: DraftEntry | null) => void) | undefined;
+    const claim = vi.fn().mockImplementation(() => new Promise<DraftEntry | null>((resolve) => {
+      resolveClaim = resolve;
     }));
     installBridge({
       list: vi.fn().mockResolvedValue([savedEntry]),
-      delete: remove,
+      claim,
     });
     const onDraftChange = vi.fn();
-    const view = render(
-      <ComposerPromptStash
+    render(
+      <ComposerDrafts
         draft=""
         active
         buttonVisible
@@ -1043,24 +1094,13 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 draft" }));
     fireEvent.click(await screen.findByRole("button", { name: /Fix the parser/i }));
-    expect(onDraftChange).toHaveBeenCalledTimes(1);
-    expect(onDraftChange).toHaveBeenCalledWith("Fix the parser");
+    fireEvent.click(await screen.findByRole("button", { name: "Attach to composer" }));
+    expect(onDraftChange).not.toHaveBeenCalled();
 
-    view.rerender(
-      <ComposerPromptStash
-        draft="Fix the parser with newer edits"
-        active
-        buttonVisible
-        shortcutLabel="⌘+S"
-        onDraftChange={onDraftChange}
-      />,
-    );
-    resolveDelete?.(true);
-
-    await waitFor(() => expect(view.container.querySelector(".animate-spin")).toBeNull());
-    expect(remove).toHaveBeenCalledWith({ id: "stash-1" }, null);
+    resolveClaim?.(savedEntry);
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith("Fix the parser"));
     expect(onDraftChange).toHaveBeenCalledTimes(1);
   });
 });

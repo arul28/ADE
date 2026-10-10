@@ -15,7 +15,7 @@ import {
   STORAGE_LEDGER,
 } from "./storageLedger";
 import { recordLastFailure } from "../runtime/lastFailureStore";
-import { createPromptStash } from "../chat/promptStashService";
+import { createDraft } from "../chat/draftService";
 
 const logger = {
   debug: vi.fn(),
@@ -395,7 +395,7 @@ describe("storageInsightsService", () => {
     const activeDraftImage = path.join(attachmentsDir, "active-draft.png");
     writeSized(stashedImage, 17);
     writeSized(activeDraftImage, 19);
-    createPromptStash(db, {
+    createDraft(db, {
       text: "Keep this image",
       attachments: [{ path: stashedImage, type: "image" }],
     });
