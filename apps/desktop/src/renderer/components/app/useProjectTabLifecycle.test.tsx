@@ -32,7 +32,10 @@ function group(bindingKey: string, displayName = bindingKey): ProjectTabGroup {
   };
 }
 
-function renderLifecycle(groups: ProjectTabGroup[]) {
+function renderLifecycle(
+  groups: ProjectTabGroup[],
+  tabSwitchRef?: { current: Promise<void> | null },
+) {
   const tabGroupsRef = { current: groups };
   const openProjectTabRootsRef = { current: groups.map((entry) => entry.machines[0]!.bindingKey) };
   const openRemoteProjectTabsRef = { current: [] as RemoteOpenProjectBinding[] };
@@ -46,6 +49,7 @@ function renderLifecycle(groups: ProjectTabGroup[]) {
       setTabOrder,
       checkForActiveWorkloads,
       isProjectBusy: false,
+      tabSwitchRef,
     }),
   );
   return { ...view, tabGroupsRef, openProjectTabRootsRef, setTabOrder, checkForActiveWorkloads };
@@ -196,5 +200,91 @@ describe("insertIndexAtClientX", () => {
     expect(insertIndexAtClientX(container, 260, "z")).toBe(3);
     // Excluding the dragged tab removes it from the count, not just its slot.
     expect(insertIndexAtClientX(container, 260, "c")).toBe(2);
+  });
+});
+
+describe("useProjectTabLifecycle: a tab torn off into its own window", () => {
+  const originalAde = window.ade;
+
+  beforeEach(() => {
+    useAppStore.setState({
+      openRemoteProjectTabs: [],
+      switchProjectToPath: vi.fn(async () => undefined),
+      switchRemoteProject: vi.fn(async () => ({}) as never),
+      closeProject: vi.fn(async () => undefined),
+      evictProjectState: vi.fn(),
+    } as never);
+    (window as unknown as { ade: unknown }).ade = {
+      ...(originalAde as object),
+      app: {
+        projectTabDragStart: vi.fn(async () => ({ windowId: 7 })),
+        projectTabDragMove: vi.fn(),
+        projectTabDragEnd: vi.fn(async () => ({ merged: false, intoSender: false })),
+        setWindowProjectTabs: vi.fn(async () => undefined),
+      },
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+    document.body.replaceChildren();
+    (window as unknown as { ade: unknown }).ade = originalAde;
+    vi.restoreAllMocks();
+  });
+
+  it("closes the tab in the source window only after the switch that its press started has its answer", async () => {
+    // A tab comes to the front on the press, so the torn tab is the active one
+    // and its switch can still be in flight when the pointer is released.
+    setActive("/b", ["/a", "/b"]);
+    let settleSwitch = () => {};
+    const tabSwitchRef = { current: new Promise<void>((resolve) => { settleSwitch = resolve; }) };
+    const torn = group("/b");
+    torn.machines[0]!.binding = { kind: "local", key: "local:/b", rootPath: "/b", displayName: "/b" } as never;
+    const lifecycle = renderLifecycle([group("/a"), torn], tabSwitchRef);
+    const switchProjectToPath = useAppStore.getState().switchProjectToPath as ReturnType<typeof vi.fn>;
+
+    const strip = document.createElement("div");
+    for (const key of ["/a", "/b"]) {
+      const tab = document.createElement("div");
+      tab.setAttribute("data-project-tab-key", key);
+      strip.appendChild(tab);
+    }
+    document.body.appendChild(strip);
+    lifecycle.result.current.tabStripRef.current = strip;
+    const tab = strip.lastElementChild as HTMLElement;
+
+    // jsdom has no PointerEvent, so a pointer event is a mouse event with a pointer id.
+    const pointer = (type: string, clientY: number) => {
+      const event = new MouseEvent(type, { bubbles: true, clientX: 10, clientY });
+      Object.defineProperty(event, "pointerId", { value: 1 });
+      window.dispatchEvent(event);
+    };
+    act(() => {
+      lifecycle.result.current.projectTabDrag.onTabPointerDown(
+        { button: 0, pointerId: 1, clientX: 10, clientY: 0, target: tab, currentTarget: tab } as never,
+        "/b",
+      );
+    });
+    // Far below the strip: the tab leaves it and gets its own window.
+    await act(async () => {
+      pointer("pointermove", 200);
+      pointer("pointerup", 200);
+      await Promise.resolve();
+    });
+    const { projectTabDragStart, projectTabDragEnd } = window.ade.app as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    expect(projectTabDragStart).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(projectTabDragEnd).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // The window is not moved to the neighbor while the press's switch waits.
+    expect(switchProjectToPath).not.toHaveBeenCalled();
+
+    await act(async () => {
+      settleSwitch();
+      await tabSwitchRef.current;
+    });
+    await vi.waitFor(() => expect(switchProjectToPath).toHaveBeenCalledWith("/a"));
   });
 });

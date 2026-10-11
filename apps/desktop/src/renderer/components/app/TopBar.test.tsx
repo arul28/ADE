@@ -709,6 +709,47 @@ describe("TopBar", () => {
     expect(useAppStore.getState().switchProjectToPath).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["a loaded background project", "/Users/arul/Loaded", 1],
+    ["a project that is not loaded", "/Users/arul/Cold", 0],
+    ["the project in front", "/Users/arul/ADE", 0],
+  ])("on the press of the tab of %s, the switches started are %i", async (_name, root, switchesOnPress) => {
+    const front = "/Users/arul/ADE";
+    const loaded = "/Users/arul/Loaded";
+    useAppStore.setState({
+      project: { rootPath: front, displayName: "ADE" },
+      projectHydrated: true,
+      showWelcome: false,
+      openProjectTabRoots: [front, loaded, "/Users/arul/Cold"],
+      projectInfoByRoot: {
+        [front]: { rootPath: front, displayName: "ADE" },
+        [loaded]: { rootPath: loaded, displayName: "Loaded" },
+      },
+    } as any);
+    render(<TopBar />);
+    const tab = await screen.findByTitle(root);
+    const switchProjectToPath = useAppStore.getState().switchProjectToPath as ReturnType<typeof vi.fn>;
+
+    // jsdom has no PointerEvent, so a pointer event is a mouse event with the two pointer fields.
+    const pointer = (type: "pointerdown" | "pointerup") => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 });
+      Object.defineProperties(event, { pointerType: { value: "mouse" }, pointerId: { value: 1 } });
+      act(() => {
+        tab.dispatchEvent(event);
+      });
+    };
+    pointer("pointerdown");
+    expect(switchProjectToPath).toHaveBeenCalledTimes(switchesOnPress);
+
+    // The release of the same press: a tab that switched on the press does
+    // nothing more, and a tab that waited switches now (the front one never).
+    pointer("pointerup");
+    fireEvent.click(tab);
+    const expected = root === front ? 0 : 1;
+    expect(switchProjectToPath).toHaveBeenCalledTimes(expected);
+    if (expected) expect(switchProjectToPath).toHaveBeenCalledWith(root);
+  });
+
   it("drops the project tab's active styling while the Chats tab is the foreground surface", () => {
     const root = "/Users/arul/ADE";
     renderChatsTopBar({

@@ -51,6 +51,7 @@ export function useProjectTabLifecycle({
   setTabOrder,
   checkForActiveWorkloads,
   isProjectBusy,
+  tabSwitchRef,
 }: {
   tabGroupsRef: MutableRefObject<ProjectTabGroup[]>;
   openProjectTabRootsRef: MutableRefObject<string[]>;
@@ -58,6 +59,12 @@ export function useProjectTabLifecycle({
   setTabOrder: Dispatch<SetStateAction<string[]>>;
   checkForActiveWorkloads: (rootPath: string) => Promise<boolean>;
   isProjectBusy: boolean;
+  /**
+   * The project switch that a press on a tab started, when one is in flight. A
+   * tab comes to the front on the press, so a tear-off can end while that
+   * switch still waits for its answer.
+   */
+  tabSwitchRef?: MutableRefObject<Promise<void> | null>;
 }) {
   const setOpenProjectTabRoots = useAppStore((s) => s.setOpenProjectTabRoots);
   const setOpenRemoteProjectTabs = useAppStore((s) => s.setOpenRemoteProjectTabs);
@@ -246,6 +253,8 @@ export function useProjectTabLifecycle({
     const tearOff = tearOffRef.current;
     tearOffRef.current = null;
     if (!tearOff) return;
+    // Taken now: a press on another tab during the waits below replaces it.
+    const pressSwitch = tabSwitchRef?.current;
     void (async () => {
       const started = await tearOff.started;
       const result = await window.ade.app
@@ -257,11 +266,14 @@ export function useProjectTabLifecycle({
       if (result.intoSender) return;
       const groupId = groupIdForBindingKey(tearOff.key);
       if (!groupId) return;
+      // Closing the tab switches this window to a neighbor. An answer to the
+      // press's own switch that came after that would put the tab back.
+      await pressSwitch;
       // The tab now lives in another window, so its work is not stopped and
       // nothing is asked: the project only moved.
       await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: false });
     })();
-  }, [closeTabGroups, groupIdForBindingKey]);
+  }, [closeTabGroups, groupIdForBindingKey, tabSwitchRef]);
 
   const projectTabDrag = useProjectTabDrag({
     stripRef: tabStripRef,
