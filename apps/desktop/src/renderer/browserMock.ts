@@ -107,6 +107,7 @@ import {
 } from "../shared/types";
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
+import type { ProviderCompactionSettings } from "../shared/compactionSettings";
 import type {
   ApiCredentialGetArgs,
   ApiCredentialListArgs,
@@ -841,7 +842,7 @@ const mockProviderInstances: Array<{
   sameLoginAs?: string;
   replacedAccount?: { email: string; plan?: string; replacedAt: string };
   subagentPromptCacheTtl?: "1h";
-  compaction?: import("../shared/compactionSettings").ProviderCompactionSettings;
+  compaction?: ProviderCompactionSettings;
 }> = [
   {
     id: "claude",
@@ -7852,7 +7853,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setSettings: async (args: {
         provider: "claude" | "codex";
         instanceId?: string;
-        settings: { smartBalance?: boolean; autoStartWindows?: boolean; subagentPromptCacheTtl?: "1h" | null; compaction?: import("../shared/compactionSettings").ProviderCompactionSettings | null };
+        settings: { smartBalance?: boolean; autoStartWindows?: boolean; subagentPromptCacheTtl?: "1h" | null; compaction?: ProviderCompactionSettings | null };
       }) => {
         const current = mockProviderInstanceSettings[args.provider];
         const account = args.instanceId ? mockProviderInstances.find((entry) => entry.id === args.instanceId) : undefined;

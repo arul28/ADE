@@ -818,8 +818,13 @@ export function claudeAccountPromptCacheEnv(
   env: NodeJS.ProcessEnv,
 ): Record<string, string> {
   if (env[CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]?.trim()) return {};
-  const ttl = getMachineProviderInstanceStore().resolve("claude", instanceId).instance.subagentPromptCacheTtl;
-  return ttl ? { [CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]: ttl } : {};
+  try {
+    const ttl = getMachineProviderInstanceStore().resolve("claude", instanceId).instance.subagentPromptCacheTtl;
+    return ttl ? { [CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]: ttl } : {};
+  } catch {
+    // An unreadable registry must not stop a launch; Claude Code's default applies.
+    return {};
+  }
 }
 
 export function providerInstanceEnvPatch(

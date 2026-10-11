@@ -137,6 +137,7 @@ export function AccountCard({
   const subviewHead = (text: string) => (
     <button
       type="button"
+      role="menuitem"
       aria-label={`Back from ${text}`}
       onClick={() => setMenuView("main")}
       style={{ ...menuItemStyle(), display: "flex", alignItems: "center", gap: 6, fontWeight: 500, color: COLORS.textPrimary }}
