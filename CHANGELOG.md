@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.100] - 2026-10-11
+
+### Desktop and web
+
+- Chats and page tabs switch on press, with less navigation rendering work (#1583).
+- Faster chat streaming, web startup, project switching, and file watching (#1576).
+- Per-account Claude subagent prompt-cache settings; one-hour caching is opt-in (#1582).
+
 ## [1.2.99] - 2026-10-10
 
 ### Desktop and web
@@ -2433,7 +2441,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.99...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.100...HEAD
+[1.2.100]: https://github.com/arul28/ADE/compare/v1.2.99...v1.2.100
 [1.2.99]: https://github.com/arul28/ADE/compare/v1.2.98...v1.2.99
 [1.2.98]: https://github.com/arul28/ADE/compare/v1.2.97...v1.2.98
 [1.2.97]: https://github.com/arul28/ADE/compare/v1.2.96...v1.2.97
