@@ -2190,14 +2190,16 @@ file, so they have exactly one identity per machine.
 - **Auto-compact.** Each provider page shows the compaction settings ADE can
   apply for that harness (`CompactionSettings.tsx`); the provider-level values
   live in project config `ai.compaction.<provider>` in `.ade/local.yaml`. With
-  more than one account, each account card has its own **Auto-compact** choice
-  ("Same as provider default" or Custom), stored as `compaction` on that account
+  more than one account, the actions menu of each account card has an
+  **Auto-compact** page ("Same as provider default" or Custom), stored as
+  `compaction` on that account
   record; it overrides the provider value field by field. See
   [Compaction per provider](../chat/agent-routing.md#compaction-per-provider).
 - **Subagent prompt cache (Claude).** The actions menu of each Claude account
-  card has a **1-hour subagent cache** item (`AccountCard.tsx`). Off is the
-  Claude Code default of 5 minutes. On, the card header shows a **1h cache**
-  tag; the card body gets nothing, so the cards stay a quick view. ADE has no
+  card has a **Subagent cache** page (`AccountCard.tsx`) that explains the two
+  choices: 5 minutes, the Claude Code default, or 1 hour. With 1 hour, the card
+  header shows a **1h cache** tag. Account settings live in the menu, never in
+  the card body, so the cards stay a quick view. ADE has no
   default of its own here: 1-hour
   cache writes cost more, and they pay off only when subagents often wait more
   than 5 minutes between requests. "1 hour" is stored as

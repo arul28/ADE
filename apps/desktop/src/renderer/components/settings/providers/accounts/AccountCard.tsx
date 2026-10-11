@@ -4,7 +4,7 @@
  * card's state and badge; the card only draws them and reports clicks.
  */
 import React, { useCallback, useRef, useState } from "react";
-import { Check, DotsThree } from "@phosphor-icons/react";
+import { CaretLeft, CaretRight, Check, DotsThree } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
 import { AnchoredMenu } from "../../../ui/AnchoredMenu";
 import { Banner } from "../../../ui/notice/Banner";
@@ -39,7 +39,7 @@ export function AccountCard({
   onSignIn,
   replacedNote,
   compactionControl,
-  onTogglePromptCache,
+  onSetPromptCache,
   renaming,
   onCommitRename,
   onCancelRename,
@@ -57,9 +57,10 @@ export function AccountCard({
   onAction: (action: RowMenuAction, instance: ProviderInstance) => void;
   onSignIn: (instance: ProviderInstance) => void;
   replacedNote: React.ReactNode;
+  /** This account's own compaction settings, shown as a page of the actions menu. */
   compactionControl?: React.ReactNode;
-  /** Claude only: turns the 1-hour subagent prompt cache on or off for this account. */
-  onTogglePromptCache?: (instance: ProviderInstance) => void;
+  /** Claude only: sets this account's subagent prompt cache; null is the Claude default. */
+  onSetPromptCache?: (instance: ProviderInstance, value: "1h" | null) => void;
   renaming: boolean;
   onCommitRename: (instance: ProviderInstance, label: string) => void;
   onCancelRename: () => void;
@@ -69,7 +70,11 @@ export function AccountCard({
   const [focusWithin, setFocusWithin] = useState(false);
   const [draftLabel, setDraftLabel] = useState(instance.label);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const [menuView, setMenuView] = useState<"main" | "compaction" | "cache">("main");
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false);
+    setMenuView("main");
+  }, []);
   const signedOut = state.kind === "signedOut";
   const isCopy = state.kind === "copy";
   const inUse = badge !== null;
@@ -105,6 +110,62 @@ export function AccountCard({
       {text}
     </button>
   );
+
+  const menuRuleStyle: React.CSSProperties = { height: 1, margin: "4px 0", background: COLORS.borderMuted };
+  const menuNoteStyle: React.CSSProperties = {
+    margin: 0,
+    padding: "4px 12px 6px",
+    fontSize: 11,
+    lineHeight: 1.45,
+    fontFamily: SANS_FONT,
+    color: COLORS.textMuted,
+  };
+  /** A main-menu row that opens one page of the menu and shows that page's current value. */
+  const subviewRow = (view: "compaction" | "cache", text: string, value: string) => (
+    <button
+      type="button"
+      role="menuitem"
+      aria-haspopup="menu"
+      onClick={() => setMenuView(view)}
+      style={{ ...menuItemStyle(), display: "flex", alignItems: "center", gap: 10 }}
+    >
+      <span style={{ flex: 1 }}>{text}</span>
+      <span style={{ fontSize: 11, color: COLORS.textDim }}>{value}</span>
+      <CaretRight size={10} weight="bold" color={COLORS.textDim} />
+    </button>
+  );
+  const subviewHead = (text: string) => (
+    <button
+      type="button"
+      aria-label={`Back from ${text}`}
+      onClick={() => setMenuView("main")}
+      style={{ ...menuItemStyle(), display: "flex", alignItems: "center", gap: 6, fontWeight: 500, color: COLORS.textPrimary }}
+    >
+      <CaretLeft size={10} weight="bold" color={COLORS.textDim} />
+      {text}
+    </button>
+  );
+  const cacheChoice = (value: "1h" | null, text: string, note: string) => {
+    const checked = longPromptCache === (value === "1h");
+    return (
+      <button
+        type="button"
+        role="menuitemradio"
+        aria-checked={checked}
+        onClick={() => {
+          closeMenu();
+          if (!checked) onSetPromptCache?.(instance, value);
+        }}
+        style={{ ...menuItemStyle(), display: "flex", alignItems: "flex-start", gap: 8 }}
+      >
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: "block", color: COLORS.textPrimary }}>{text}</span>
+          <span style={{ display: "block", marginTop: 1, fontSize: 11, lineHeight: 1.4, color: COLORS.textMuted }}>{note}</span>
+        </span>
+        {checked ? <Check size={12} weight="bold" style={{ marginTop: 2, flex: "none" }} /> : null}
+      </button>
+    );
+  };
 
   return (
     <div
@@ -239,8 +300,10 @@ export function AccountCard({
             placement="bottom-end"
             role="menu"
             aria-label={`${instance.label} account actions`}
+            remeasureKey={`${menuView}:${instance.compaction ? "custom" : "default"}`}
             style={{
               minWidth: 170,
+              width: menuView === "main" ? undefined : menuView === "cache" ? 264 : 340,
               padding: "4px 0",
               background: COLORS.cardBgSolid,
               border: `1px solid ${COLORS.outlineBorder}`,
@@ -248,26 +311,35 @@ export function AccountCard({
               boxShadow: "0 14px 36px -20px rgba(0,0,0,0.85)",
             }}
           >
-            {item("rename", "Rename")}
-            {item("signIn", signedOut ? "Sign in" : "Sign in again")}
-            {onTogglePromptCache ? (
-              <button
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={longPromptCache}
-                title="Costs more per cache write. Applies to new sessions."
-                onClick={() => {
-                  closeMenu();
-                  onTogglePromptCache(instance);
-                }}
-                style={{ ...menuItemStyle(), display: "flex", alignItems: "center", gap: 8, borderTop: `1px solid ${COLORS.borderMuted}` }}
-              >
-                <span style={{ flex: 1 }}>1-hour subagent cache</span>
-                {longPromptCache ? <Check size={12} weight="bold" /> : null}
-              </button>
-            ) : null}
-            {/* The store refuses both: the default, and the machine's own login. */}
-            {instance.isDefault || isBaseProviderInstance(instance) ? null : item("remove", "Remove", true)}
+            {menuView === "main" ? (
+              <>
+                {item("rename", "Rename")}
+                {item("signIn", signedOut ? "Sign in" : "Sign in again")}
+                {compactionControl || onSetPromptCache ? <div style={menuRuleStyle} /> : null}
+                {compactionControl ? subviewRow("compaction", "Auto-compact", instance.compaction ? "Custom" : "Default") : null}
+                {onSetPromptCache ? subviewRow("cache", "Subagent cache", longPromptCache ? "1 hour" : "5 minutes") : null}
+                {/* The store refuses both: the default, and the machine's own login. */}
+                {instance.isDefault || isBaseProviderInstance(instance) ? null : (
+                  <>
+                    <div style={menuRuleStyle} />
+                    {item("remove", "Remove", true)}
+                  </>
+                )}
+              </>
+            ) : menuView === "compaction" ? (
+              <>
+                {subviewHead("Auto-compact")}
+                <div style={{ padding: "2px 8px 6px" }}>{compactionControl}</div>
+              </>
+            ) : (
+              <>
+                {subviewHead("Subagent cache")}
+                <p style={menuNoteStyle}>How long Claude keeps a subagent's context ready between its requests.</p>
+                {cacheChoice(null, "5 minutes", "Default — lowest cost per save.")}
+                {cacheChoice("1h", "1 hour", "Each save costs more — worth it only when subagents often wait over 5 minutes.")}
+                <p style={{ ...menuNoteStyle, color: COLORS.textDim }}>Applies to new sessions.</p>
+              </>
+            )}
           </AnchoredMenu>
         </span>
       </div>
@@ -303,7 +375,6 @@ export function AccountCard({
         </span>
       )}
 
-      <div onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{compactionControl}</div>
       {replacedNote}
     </div>
   );
