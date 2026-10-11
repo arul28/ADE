@@ -477,6 +477,15 @@ configured style, and materialising a fallback onto the session record makes it
 read back as a real choice on the next launch, pinning it forever. The session's
 own cached value is therefore consulted *after* the settings files, not before.
 
+ADE states no prompt cache TTL of its own. A Claude account can choose the
+1-hour subagent prompt cache in Settings; `claudeAccountPromptCacheEnv`
+(`providerInstanceStore.ts`) then sets `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`
+for that account's SDK chats and terminal `claude` sessions (in
+`ptyService.create`, the one path every fresh launch and resume takes). It adds
+nothing when the environment already states a TTL, and a launch on a preset or
+a stored credential never gets it. See
+[Onboarding and settings](../onboarding-and-settings/README.md).
+
 The precedence walk honours `CLAUDE_CONFIG_DIR` as well, and so does the plugin
 registry (`<claudeConfigHome>/plugins/installed_plugins.json`). A lane normally
 sits under `$HOME`, so the ancestor walk would reach the real `~/.claude` and

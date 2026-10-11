@@ -644,6 +644,10 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       });
       return { ...getProviderSettings(resolved), compaction: updated.compaction };
     }
+    // An account setting with no account would be dropped and reported as saved.
+    if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+      throw new Error("The subagent cache setting needs a provider account id.");
+    }
     const file = readFile();
     const current = { ...DEFAULT_PROVIDER_INSTANCE_SETTINGS, ...(file.settings[resolved] ?? {}) };
     const next: ProviderInstanceSettings = {

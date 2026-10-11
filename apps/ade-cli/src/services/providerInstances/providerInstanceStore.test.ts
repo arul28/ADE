@@ -320,6 +320,8 @@ describe("providerInstanceStore", () => {
     expect(store.get(work.id)?.compaction).toBeUndefined();
     expect(store.get(work.id)?.subagentPromptCacheTtl).toBe("1h");
 
+    // With no account named there is nothing to set it on; saying "saved" would be a lie.
+    expect(() => store.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" })).toThrow(/account id/);
     store.setProviderSettings("codex", { subagentPromptCacheTtl: "1h" }, codex.id);
     expect(store.get(codex.id)?.subagentPromptCacheTtl).toBeUndefined();
     store.setProviderSettings("claude", { subagentPromptCacheTtl: "2h" as never }, work.id);
