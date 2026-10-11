@@ -934,6 +934,46 @@ number below looked fine.
   page loaded (`performance.getEntriesByType("resource")`): after an HMR edit
   the page uses `appStore.ts?t=...`, and a plain import is a second store.
 
+### Switches from the press (tenth pass)
+
+Measure a switch from the press, with real input: `scripts/perf/ui/press-to-paint.mjs`
+(CDP mouse move, press, a held button, release). `interaction.mjs` starts in
+the click handler and misses the 60 to 120 ms a button is held, which was two
+thirds of every switch. Four projects open, five chats, interleaved A/B:
+chat 136 to 47-51 ms, page tab 118 to 24-26 ms, project 137 to 52-55 ms.
+
+- **A switch control acts on the press** (`hooks/usePressActivation.ts`). Keep
+  its rules: only a plain mouse press (primary button, no modifier, not on a
+  nested control) acts early; touch, pen, keyboard and modified clicks keep the
+  click; the click of an acted press is dropped. A press on a draggable
+  control must be able to undo itself: a chat row returns the earlier
+  selection from `onSelect` and the native `dragstart` runs it; a project tab
+  goes back when `useProjectTabDrag` reports the drag start. Do not add press
+  activation to a control whose press has more to undo than you restore (the
+  board and the Focus grid keep the click for that reason).
+- **An unchanged transcript must reconcile to the same list.** The history
+  read after a switch gave back a new list every time, so the transcript
+  rendered twice per switch. `mergeAgentChatHistorySnapshot` now maps a
+  rebuilt tool-call envelope back to the held one. Check a change there by
+  comparing `merged === existing` for idle chats across several switches.
+- **Decode a byte stream with a `StringDecoder`.** `RuntimeRpcClient` decoded
+  each socket read alone; a multi-byte character at a read boundary became
+  U+FFFD at a different place on each read. That is wrong text on screen, and
+  it also made the same history differ on every read.
+- **The view cache is bound by bytes only** (128 MB). Its count of eight was
+  removed. Heap after a visit to 16 chats: 235 MB with the count, 246 MB
+  without.
+- Profile of a warm switch (dev build): one synchronous task of about 35 ms,
+  of which about 24 ms is React (the pane renders about 11 times per switch;
+  about 350 components mount for the new rows) and about 10 ms is the style
+  and layout that `measureNow` forces. Count it with the render hook and a
+  CDP trace before you change it.
+- Not wins: reading a chat's history when the pointer rests on its row (the
+  read takes 4 to 19 ms; a cold open waits for its first render, not for
+  data). A pool of mounted chat panes is not built: showing a pane that
+  stayed mounted (the return to the Work tab) costs 24-34 ms, close to a full
+  switch, until the pane renders fewer times.
+
 ### File watchers in the brain
 
 - Watch a directory tree with `watchTree` (`services/shared/treeWatcher.ts`),

@@ -490,11 +490,26 @@ export function mergeAgentChatHistorySnapshot(
   const merged = inFlightEvents.length
     ? orderAgentChatEventsChronologically([...baseMerged, ...inFlightEvents])
     : baseMerged;
-  const reconciled = upsertRepeatedToolCalls(
+  const upserted = upsertRepeatedToolCalls(
     merged,
     existing,
     (entry) => arrivalWatermark !== undefined && !arrivalWatermark.has(identityKey(entry)),
   );
+  // A tool call that a resend updated has the first send's time and the
+  // resend's payload, so neither snapshot row has its identity and the pass
+  // above builds it again as a new envelope. Hand back the envelope already
+  // held for it. Without this an unchanged transcript is a new list on every
+  // read, and each chat switch renders the transcript a second time.
+  let reconciled = upserted;
+  for (let index = 0; index < upserted.length; index += 1) {
+    const entry = upserted[index]!;
+    if (entry === existing[index]) continue;
+    const held = existingByKey.get(identityKey(entry));
+    if (!held || held === entry) continue;
+    if (reconciled === upserted) reconciled = [...upserted];
+    reconciled[index] = held;
+  }
+  if (reconciled !== upserted) toolCallDedupedLists.add(reconciled);
 
   if (
     reconciled.length === existing.length

@@ -4,6 +4,7 @@ import { ArrowLeft, GearSix } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { useAppStore } from "../../../state/appStore";
 import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../../lib/webClientMode";
+import { usePressActivation } from "../../../hooks/usePressActivation";
 import { readStoredProjectSettingsRoute } from "../projectRouteStorage";
 import {
   commitProjectSidebarWidth,
@@ -31,6 +32,8 @@ export { projectSidebarTabForPath };
  */
 export function ProjectSidebar({ route, heldRoute = null }: { route: string; heldRoute?: string | null }) {
   const navigate = useNavigate();
+  // A tab opens on the press. The click it replaces fires on mouse-up.
+  const press = usePressActivation();
   const { width, hidden } = useProjectSidebarPrefs();
   const setSlotTarget = useProjectSidebarSlotTarget();
   // Select scalars only: the sidebar sits beside every tab page, and a wide
@@ -127,7 +130,7 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
               aria-current={active ? "page" : undefined}
               aria-label={tab.label}
               title={`${tab.label}${attentionLabel}${shortcut ? `  ${shortcut}` : ""}`}
-              onClick={() => openTab(tab.to)}
+              {...press(() => openTab(tab.to))}
             >
               <span className="relative inline-flex shrink-0">
                 <tab.icon size={16} weight={active ? "fill" : "regular"} />
@@ -154,7 +157,9 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
           <button
             type="button"
             className="ade-project-sidebar-footer-back"
-            onClick={() => navigate(heldRoute)}
+            {...press(() => {
+              void navigate(heldRoute);
+            })}
           >
             <ArrowLeft size={15} />
             <span>Back</span>
@@ -172,7 +177,7 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
                   data-active={active ? "true" : undefined}
                   aria-current={active ? "page" : undefined}
                   title={waiting ? "The CTO is waiting on you" : undefined}
-                  onClick={() => openTab(item.to)}
+                  {...press(() => openTab(item.to))}
                 >
                   <span className="relative inline-flex shrink-0">
                     <item.icon size={15} weight={active ? "fill" : "regular"} />
@@ -192,7 +197,7 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
                 aria-current={settingsActive ? "page" : undefined}
                 aria-label="Settings"
                 title={settingsActive ? "Back" : "Settings"}
-                onClick={openSettings}
+                {...press(openSettings)}
               >
                 <GearSix size={15} weight={settingsActive ? "fill" : "regular"} />
               </button>

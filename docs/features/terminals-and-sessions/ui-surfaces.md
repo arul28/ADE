@@ -71,6 +71,18 @@ It also owns the sidebar's multi-select state:
   range from the anchor; meta/ctrl-click toggles the id in/out of the
   set; any of the three refresh the active single-selected item. The optional
   binding is the per-session runtime pin carried into the opened view.
+  A plain open runs on the **press** of the mouse button, not on its release
+  (`hooks/usePressActivation.ts`; `SessionCard` takes `selectOnPress`): the
+  release of a normal click comes 60 to 120 ms later, and that was most of
+  what a chat switch cost. Only the primary button with no modifier key acts
+  on the press. A modified click (range, toggle), a right-click, touch, pen,
+  the keyboard, and a press on a control inside the row (settle, snooze, a
+  link) keep the click. The same press can start a drag of the row, onto the
+  open chat for a grid or a mention. For that case a press hands back how to
+  restore the earlier selection, and the native `dragstart` runs it, so a drag
+  ends on the chat that was open. The acknowledgement of a woken session waits
+  for the release for the same reason. The board and the Focus grid have more
+  than a selection to restore, so there a row still opens on the click.
 - `handleSelectForeignRuntimeSession(session, binding, event, visibleSessionIds)`
   — the CLI/shell row of another machine, forwarded from `SessionListPane`.
   When the owning binding is still open (`machineRouter.isLivePin`), the page

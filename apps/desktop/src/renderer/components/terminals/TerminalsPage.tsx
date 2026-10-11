@@ -323,7 +323,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       event?: React.MouseEvent,
       visibleSessionIds?: string[],
       binding?: OpenProjectBinding | null,
-    ) => {
+    ): void | (() => void) => {
       const useRange = event?.shiftKey === true;
       const useToggle = event?.metaKey === true || event?.ctrlKey === true;
       const orderedIds = visibleSessionIds?.length ? visibleSessionIds : selectableSessions.map((session) => session.id);
@@ -358,6 +358,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         return;
       }
 
+      // A row opens on the press, before anyone knows whether the press is a
+      // click or the start of a drag of that row (onto the open chat, to make
+      // a grid or a mention). Keep what the press replaces, to give it back.
+      const before = event?.type === "pointerdown"
+        ? { selectedIds: selectedSessionIds, anchorId: selectionAnchorId, activeItemId: work.activeItemId }
+        : null;
       setSelectedSessionIds(new Set());
       setSelectionAnchorId(id);
       work.setSelectedSessionId(id);
@@ -379,9 +385,23 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // Opening the row IS the acknowledgement — the "woke" marker only exists
       // to explain an unexpected return, so it goes as soon as it is seen.
       const opened = selectableSessions.find((session) => session.id === id);
-      if (opened?.wokeAt || binding) clearSessionWokeMarker(id, binding);
+      const acknowledge = () => {
+        if (opened?.wokeAt || binding) clearSessionWokeMarker(id, binding);
+      };
+      if (!before) {
+        acknowledge();
+        return undefined;
+      }
+      // A dragged row was not opened, so its marker waits for the release.
+      window.addEventListener("pointerup", acknowledge, { capture: true, once: true });
+      return () => {
+        window.removeEventListener("pointerup", acknowledge, true);
+        setSelectedSessionIds(before.selectedIds);
+        setSelectionAnchorId(before.anchorId);
+        work.setActiveItemId(before.activeItemId);
+      };
     },
-    [focusSession, selectableSessions, selectionAnchorId, work],
+    [focusSession, selectableSessions, selectedSessionIds, selectionAnchorId, work],
   );
 
   const handleSelectForeignRuntimeSession = useCallback(
@@ -396,7 +416,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // dropdown released that checkout from the strip. Switching here used to
       // drag Lanes/PRs/Files onto a click that was only meant to focus the chat.
       machineRouter.rememberSessionPin(session, binding);
-      handleSelectSession(session.id, event, visibleSessionIds, binding);
+      return handleSelectSession(session.id, event, visibleSessionIds, binding);
     },
     [handleSelectSession, machineRouter],
   );
@@ -1905,6 +1925,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             showingDraft={work.activeItemId == null}
             onShowDraftKind={listShowDraftKind}
             onSelectSession={listSelectSession}
+            // The board and the Focus grid have more than a selection to put
+            // back when a press becomes a drag, so there a row waits for the click.
+            selectOnPress={work.workViewMode !== "board" && !focusGridMode}
             onSelectForeignRuntimeSession={listSelectForeignRuntimeSession}
             onClearSelection={listClearSelection}
             onBulkClose={listBulkClose}

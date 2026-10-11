@@ -175,6 +175,8 @@ UI, against a running dev app (`scripts/perf/ui/`):
 | `render-count.mjs <secs> reload` | React commits and which components re-render, and why (changed props or hooks) |
 | `chat-switch.mjs [rounds]` | Clicks through the chat list; time until each transcript settles, and long tasks |
 | `interaction.mjs tabs\|chats\|projects [rounds]` | Per tab, chat or project switch: time to the first frame that shows a change, time until the page stops changing, and long frames in between. Finer than long tasks, which miss every frame under 50 ms |
+| `press-to-paint.mjs chats\|tabs\|projects [rounds]` | The same switches from the hand: real mouse input (move, press, a held button, release) and the time from the press to the first frame that shows the new chat, page or project. `interaction.mjs` starts its clock in the click handler and cannot see the time the button is held |
+| `press-to-paint.mjs rapid [runs]` | Presses several chat rows a fixed interval apart: time from the last press to the last chat's content, which earlier chats painted on the way, and the main-thread work of the whole burst |
 | `typing.mjs <keys>` | Types into the composer; keystroke events slower than 16 ms |
 | `keystroke-trace.mjs <keys>` | Renderer work per keystroke, split into style, layout, paint and script |
 | `cdp.mjs eval\|metrics\|profile\|shot\|anim` | One-off probes: evaluate, metrics delta, CPU profile with top functions, screenshot, running animations |
@@ -404,3 +406,73 @@ the same name: the poller reports one wrong `change`, the native watcher the
 delete and the creates (on purpose). A file written in pieces: either watcher
 may report a `change` after its `add`, depending on timing; the file's final
 state is reported by both.
+
+## Mac Studio (M4 Max), switch pass: press to content
+
+The rows above time a switch from its click handler. A click fires on
+mouse-up, and the button of a normal click is down for 60 to 120 ms first, so
+those rows left out most of what the reader waits for. These rows start the
+clock at the press. Chat rows, project tabs and the page tabs of the project
+sidebar now switch on the press (`hooks/usePressActivation.ts`).
+
+| | |
+|---|---|
+| Machine | Mac Studio (Mac16,9), Apple M4 Max, 14 cores, 36 GB, 5120x1440 display at 240 Hz |
+| Build | dev build, `npm run dev:desktop` with its own runtime socket, sync OFF |
+| Project | four real projects open as tabs (ADE, Versic, crumb, fleet), five chats in the Work list of ADE |
+| Input | CDP `Input.dispatchMouseEvent`: 250 ms hover, press, 90 ms hold, release |
+| Background | other agents and test runs on the machine; 1-minute load average 9-19 during the timed runs |
+| Measured | 2026-10-11, main at `261940374` against the switch-pass branch, as an alternating A/B in one app session (the renderer sources swapped by hot reload), two pairs each, warm rounds |
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Chat switch: press to content (median; range over the chats) | `press-to-paint.mjs chats` | 136-137 ms (124-138) | 47-51 ms (39-51) | 70 ms |
+| Page tab switch: press to content | `press-to-paint.mjs tabs` | 118-120 ms (99-142) | 24-26 ms (7-39) | 50 ms |
+| Page tab switch: press to the first frame (the tab strip marks the tab) | same | 100-101 ms | 8 ms | 16 ms |
+| Project switch: press to content | `press-to-paint.mjs projects` | 137-143 ms (130-144) | 52-55 ms (42-57) | 75 ms |
+| Rapid chat clicks (5 chats, 120 ms apart, 40 ms hold): last press to that chat's content | `press-to-paint.mjs rapid` | 89-91 ms | 44-51 ms | 70 ms |
+| Rapid chat clicks: main-thread task time of the burst | same | 506-510 ms | 511-587 ms | 750 ms |
+| Warm chat switch: main-thread task time, script time (700 ms after the click, idle subtracted, median of 20) | CDP `Performance.getMetrics` | 118-126 ms, 55-56 ms | 114-116 ms, 51-52 ms | 150 ms, 70 ms |
+| Chat open, cold (after a page reload): press to content | `press-to-paint.mjs chats 1` | not measured as an A/B | 89-266 ms | 350 ms |
+| Renderer JS heap after GC, after a visit to all 16 chats of the four projects | CDP `HeapProfiler.collectGarbage` + `Performance.getMetrics` | 235 MB | 246 MB | 260 MB |
+
+The rows that time from the click handler did not move (`interaction.mjs`,
+same session): chats 42 ms, page tabs 26 ms, projects 48 ms to the first
+changed frame.
+
+What the profile of a warm chat switch showed (CDP trace and CPU profile, 12
+to 24 switches):
+
+- The switch is one synchronous task of about 35 ms in the dev build: about
+  24 ms of React work (the pane renders about 11 times for one switch, and
+  about 350 components mount for the new rows) and about 10 ms of style and
+  layout that the row measurement forces. The first frame follows it.
+- Until this pass every switch then rendered the transcript a second time,
+  10 to 18 ms after the first frame. The history read that follows a switch
+  gave back a new event list although nothing had changed, for two reasons:
+  a tool call that a provider sends twice was rebuilt as a new object on every
+  read (`mergeAgentChatHistorySnapshot` now hands back the held one), and the
+  desktop decoded each socket read alone, so a multi-byte character cut by a
+  read boundary became U+FFFD at a different place each time
+  (`RuntimeRpcClient` now uses a `StringDecoder`).
+- The history read itself takes 4 to 19 ms. A cold open is slow because of
+  its first render (row build, markdown parse, mounts), not because of data.
+
+Measured and not kept: a read of a chat's history when the pointer rests on
+its row. Cold opens stayed in the same range (82-512 ms with it, 89-266 ms
+without), because the read is not what a cold open waits for.
+
+Open items from this pass:
+
+- A warm chat switch is still about 45 ms from the press in the dev build.
+  The next cost to remove is the number of renders of the chat pane per switch
+  (about 11) and the mount of every row of the new chat.
+- Showing a parked chat pane is not cheap either: the return to the Work tab,
+  which shows a pane that stayed mounted, takes 24-34 ms. A pool of mounted
+  chat panes would gain little until the pane renders fewer times.
+- After the older history of a chat has loaded in idle slots, the next history
+  read removes the repeated tool calls of those pages and renders the
+  transcript once more (once per chat per session).
+- The view cache keeps a chat until 128 MB of cached events are held, not
+  until eight chats are. A session that visits many long chats can hold more
+  than before; the heap row above is 16 chats.

@@ -51,6 +51,7 @@ export function useProjectTabLifecycle({
   setTabOrder,
   checkForActiveWorkloads,
   isProjectBusy,
+  onTabDragStart,
 }: {
   tabGroupsRef: MutableRefObject<ProjectTabGroup[]>;
   openProjectTabRootsRef: MutableRefObject<string[]>;
@@ -58,6 +59,8 @@ export function useProjectTabLifecycle({
   setTabOrder: Dispatch<SetStateAction<string[]>>;
   checkForActiveWorkloads: (rootPath: string) => Promise<boolean>;
   isProjectBusy: boolean;
+  /** A press on a tab became a drag. */
+  onTabDragStart?: (key: string) => void;
 }) {
   const setOpenProjectTabRoots = useAppStore((s) => s.setOpenProjectTabRoots);
   const setOpenRemoteProjectTabs = useAppStore((s) => s.setOpenRemoteProjectTabs);
@@ -267,6 +270,7 @@ export function useProjectTabLifecycle({
     stripRef: tabStripRef,
     canTearOff: !isWebClientMode() && !isProjectBusy,
     onReorder: handleReorderTabs,
+    onDragStart: onTabDragStart,
     onTearOff: handleTearOff,
     onTearOffMove: handleTearOffMove,
     onTearOffEnd: handleTearOffEnd,
