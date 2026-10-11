@@ -4,7 +4,7 @@
  * card's state and badge; the card only draws them and reports clicks.
  */
 import React, { useCallback, useRef, useState } from "react";
-import { DotsThree } from "@phosphor-icons/react";
+import { Check, DotsThree } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
 import { AnchoredMenu } from "../../../ui/AnchoredMenu";
 import { Banner } from "../../../ui/notice/Banner";
@@ -38,7 +38,8 @@ export function AccountCard({
   onAction,
   onSignIn,
   replacedNote,
-  settingsControl,
+  compactionControl,
+  onTogglePromptCache,
   renaming,
   onCommitRename,
   onCancelRename,
@@ -56,7 +57,9 @@ export function AccountCard({
   onAction: (action: RowMenuAction, instance: ProviderInstance) => void;
   onSignIn: (instance: ProviderInstance) => void;
   replacedNote: React.ReactNode;
-  settingsControl?: React.ReactNode;
+  compactionControl?: React.ReactNode;
+  /** Claude only: turns the 1-hour subagent prompt cache on or off for this account. */
+  onTogglePromptCache?: (instance: ProviderInstance) => void;
   renaming: boolean;
   onCommitRename: (instance: ProviderInstance, label: string) => void;
   onCancelRename: () => void;
@@ -74,6 +77,19 @@ export function AccountCard({
   // The usage row carries its own "Signed out" pill when the poller saw the
   // broken login; the header says it only when the row cannot.
   const rowSaysSignedOut = limitRow?.account?.login === "signed_out";
+  const longPromptCache = instance.subagentPromptCacheTtl === "1h";
+  const menuItemStyle = (danger = false): React.CSSProperties => ({
+    display: "block",
+    width: "100%",
+    textAlign: "left",
+    padding: "7px 12px",
+    border: "none",
+    background: "transparent",
+    fontSize: 12,
+    fontFamily: SANS_FONT,
+    color: danger ? COLORS.danger : COLORS.textSecondary,
+    cursor: "pointer",
+  });
 
   const item = (action: RowMenuAction, text: string, danger = false) => (
     <button
@@ -84,18 +100,7 @@ export function AccountCard({
         closeMenu();
         onAction(action, instance);
       }}
-      style={{
-        display: "block",
-        width: "100%",
-        textAlign: "left",
-        padding: "7px 12px",
-        border: "none",
-        background: "transparent",
-        fontSize: 12,
-        fontFamily: SANS_FONT,
-        color: danger ? COLORS.danger : COLORS.textSecondary,
-        cursor: "pointer",
-      }}
+      style={menuItemStyle(danger)}
     >
       {text}
     </button>
@@ -180,6 +185,7 @@ export function AccountCard({
           {badge ? <NoticeBadge tone="accent">{badge}</NoticeBadge> : null}
           {signedOut && !rowSaysSignedOut && providerInstanceHasAccount(instance) ? <NoticeBadge tone="warning">Signed out</NoticeBadge> : null}
           {isCopy ? <NoticeBadge tone="neutral">Copy</NoticeBadge> : null}
+          {longPromptCache ? <NoticeBadge tone="neutral">1h cache</NoticeBadge> : null}
         </div>
         {signedOut ? (
           <button
@@ -244,6 +250,22 @@ export function AccountCard({
           >
             {item("rename", "Rename")}
             {item("signIn", signedOut ? "Sign in" : "Sign in again")}
+            {onTogglePromptCache ? (
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={longPromptCache}
+                title="Costs more per cache write. Applies to new sessions."
+                onClick={() => {
+                  closeMenu();
+                  onTogglePromptCache(instance);
+                }}
+                style={{ ...menuItemStyle(), display: "flex", alignItems: "center", gap: 8, borderTop: `1px solid ${COLORS.borderMuted}` }}
+              >
+                <span style={{ flex: 1 }}>1-hour subagent cache</span>
+                {longPromptCache ? <Check size={12} weight="bold" /> : null}
+              </button>
+            ) : null}
             {/* The store refuses both: the default, and the machine's own login. */}
             {instance.isDefault || isBaseProviderInstance(instance) ? null : item("remove", "Remove", true)}
           </AnchoredMenu>
@@ -281,7 +303,7 @@ export function AccountCard({
         </span>
       )}
 
-      <div onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{settingsControl}</div>
+      <div onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{compactionControl}</div>
       {replacedNote}
     </div>
   );

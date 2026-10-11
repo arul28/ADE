@@ -36,7 +36,6 @@ import { pinnedProviderInstances, useProviderInstances } from "./useProviderInst
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { providerActionMessage } from "../providerErrorMessage";
 import { CompactionSettings } from "../CompactionSettings";
-import { PromptCacheSetting } from "../PromptCacheSetting";
 
 const SMART_BALANCE_HINT =
   "On: each new chat goes to the account whose weekly room resets soonest, so no account's room expires unused. A chat that hits a usage limit moves to another account that still has room. Off: new chats use the account marked New chats. Click an account to use it.";
@@ -242,6 +241,19 @@ export function ProviderAccountsPanel({
     [openSheet, pin, providerLabel, run],
   );
 
+  const togglePromptCache = useCallback(
+    (instance: ProviderInstance) => {
+      const api = pinnedProviderInstances(pin);
+      if (!api) return;
+      void run(() => api.setSettings({
+        provider,
+        instanceId: instance.id,
+        settings: { subagentPromptCacheTtl: instance.subagentPromptCacheTtl === "1h" ? null : "1h" },
+      }));
+    },
+    [pin, provider, run],
+  );
+
   const signedOutById = useMemo(() => {
     const out = new Map<string, boolean>();
     for (const instance of instances) out.set(instance.id, accountSignedOut(snapshot, provider, instance));
@@ -428,10 +440,8 @@ export function ProviderAccountsPanel({
               <AccountCard
                 key={instance.id}
                 instance={instance}
-                settingsControl={<div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {instances.length > 1 ? <CompactionSettings provider={provider} account value={instance.compaction} onChange={async (compaction) => { await window.ade.providerInstances.setSettings({ provider, instanceId: instance.id, settings: { compaction } }, pin); await reload(); }} /> : null}
-                  {provider === "claude" ? <PromptCacheSetting value={instance.subagentPromptCacheTtl} onChange={async (subagentPromptCacheTtl) => { await window.ade.providerInstances.setSettings({ provider, instanceId: instance.id, settings: { subagentPromptCacheTtl } }, pin); await reload(); }} /> : null}
-                </div>}
+                compactionControl={instances.length > 1 ? <CompactionSettings provider={provider} account value={instance.compaction} onChange={async (compaction) => { await window.ade.providerInstances.setSettings({ provider, instanceId: instance.id, settings: { compaction } }, pin); await reload(); }} /> : null}
+                onTogglePromptCache={provider === "claude" ? togglePromptCache : undefined}
                 limitRow={accountLimitRow(snapshot, provider, instance, nowMs)}
                 state={state}
                 badge={badge}
