@@ -751,6 +751,8 @@ export function TopBar({
   const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  // Which open tabs have a loaded project: only those switch at once.
+  const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
@@ -1476,6 +1478,10 @@ export function TopBar({
     ],
   );
 
+  // The switch that the last press or click of a project tab started. A drag
+  // that takes the tab out of this window waits for it before it closes the
+  // tab here.
+  const tabSwitchRef = useRef<Promise<void> | null>(null);
   const {
     closeTabGroups,
     handleRemoveTab,
@@ -1491,13 +1497,16 @@ export function TopBar({
     setTabOrder,
     checkForActiveWorkloads,
     isProjectBusy,
+    tabSwitchRef,
   });
 
   // A project tab comes to the front on the press, as a browser tab does, so a
   // drag of a background tab also shows its project. Only from the plain
-  // state, a project in front and nothing in transition: from a machine tab, a
-  // new tab or the Settings tab a switch does more than change the project,
-  // and those keep the click.
+  // state, a project in front and nothing in transition: from a machine,
+  // account or hub page, a new tab or the Settings tab a switch does more than
+  // change the project, and those keep the click. So does a tab whose switch
+  // is not immediate (another machine's project, or a project that is not
+  // loaded): that switch is a transition, and a transition stops a tear-off.
   const tabSwitchesOnPress =
     !isProjectBusy
     && !machineRouteActive
@@ -2084,10 +2093,6 @@ export function TopBar({
                   remoteTabState === "error" || remoteTabState === "idle";
                 const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
                 const remoteTabKey = tabOrderKey(group);
-                const remoteTabPress = pressActivation(() => {
-                  if (projectTabDrag.isDragClick()) return;
-                  void handleSwitchRemoteProject(remoteTab);
-                }, tabSwitchesOnPress && !isCurrentRemote);
                 return (
                   <div
                     key={group.id}
@@ -2096,7 +2101,6 @@ export function TopBar({
                     {...{ [PROJECT_TAB_KEY_ATTR]: remoteTabKey }}
                     onPointerDown={(event) => {
                       if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
-                      remoteTabPress.onPointerDown(event);
                     }}
                     onContextMenu={(event) => openTabMenu(event, group.id)}
                     data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
@@ -2118,7 +2122,10 @@ export function TopBar({
                       } as React.CSSProperties
                     }
                     title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
-                    onClick={remoteTabPress.onClick}
+                    onClick={() => {
+                      if (projectTabDrag.isDragClick()) return;
+                      handleSwitchRemoteProject(remoteTab);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
@@ -2206,8 +2213,8 @@ export function TopBar({
               const indicator = terminalAttention?.indicator;
               const localTabPress = pressActivation(() => {
                 if (projectTabDrag.isDragClick()) return;
-                if (!isMissing) void handleSwitchProject(rp.rootPath);
-              }, tabSwitchesOnPress && canDragTab && !isCurrent);
+                if (!isMissing) tabSwitchRef.current = handleSwitchProject(rp.rootPath);
+              }, tabSwitchesOnPress && canDragTab && !isCurrent && projectInfoByRoot[rp.rootPath] != null);
               return (
                 <div
                   key={group.id}
