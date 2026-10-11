@@ -22,6 +22,7 @@ import { providerInstanceLaunchEnv } from "../../../../desktop/src/shared/cliLau
 import { resolveClaudeCodeExecutable } from "../../../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../../../desktop/src/main/services/ai/codexExecutable";
 import {
+  CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV,
   DEFAULT_PROVIDER_INSTANCE_SETTINGS,
   PROVIDER_INSTANCE_PROVIDERS,
   defaultProviderInstanceId,
@@ -34,6 +35,7 @@ import {
   type ProviderInstanceRegistry,
   type ProviderInstanceReplacedAccount,
   type ProviderInstanceSettings,
+  type ProviderInstanceSettingsPatch,
 } from "../../../../desktop/src/shared/types/providerInstances";
 
 /**
@@ -66,6 +68,7 @@ const DEFAULT_INSTANCE_CREATED_AT = new Date(0).toISOString();
 
 type StoredInstance = {
   compaction?: ProviderCompactionSettings;
+  subagentPromptCacheTtl?: "1h";
   id: string;
   provider: ProviderInstanceProvider;
   label: string;
@@ -197,6 +200,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     label,
     ...(accentColor ? { accentColor } : {}),
     ...(isRecord(value.compaction) ? { compaction: normalizeCompactionSettings(value.compaction) } : {}),
+    ...(provider === "claude" && value.subagentPromptCacheTtl === "1h" ? { subagentPromptCacheTtl: "1h" as const } : {}),
     configHome,
     createdAt: createdAt ?? DEFAULT_INSTANCE_CREATED_AT,
     ...(account && (account.email || account.plan) ? { account } : {}),
@@ -366,6 +370,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return {
       id: stored.id,
       ...(stored.compaction ? { compaction: stored.compaction } : {}),
+      ...(stored.subagentPromptCacheTtl ? { subagentPromptCacheTtl: stored.subagentPromptCacheTtl } : {}),
       provider: stored.provider,
       label: stored.label,
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
@@ -617,7 +622,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
 
   function setProviderSettings(
     provider: ProviderInstanceProvider,
-    settings: Omit<Partial<ProviderInstanceSettings>, "compaction"> & { compaction?: ProviderCompactionSettings | null },
+    settings: ProviderInstanceSettingsPatch,
     instanceId?: string,
   ): ProviderInstanceSettings {
     const resolved = requireProvider(provider);
@@ -626,11 +631,22 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       if (!account || account.provider !== resolved) throw new Error("Provider account does not match this setting.");
       const updated = mutateRecord(instanceId, "setSettings", (record) => {
         const next = { ...record };
-        if (settings.compaction == null) delete next.compaction;
-        else next.compaction = normalizeCompactionSettings(settings.compaction);
+        // A patch that names one account setting must not clear the other.
+        if (Object.hasOwn(settings, "compaction")) {
+          if (settings.compaction == null) delete next.compaction;
+          else next.compaction = normalizeCompactionSettings(settings.compaction);
+        }
+        if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+          if (resolved === "claude" && settings.subagentPromptCacheTtl === "1h") next.subagentPromptCacheTtl = "1h";
+          else delete next.subagentPromptCacheTtl;
+        }
         return next;
       });
       return { ...getProviderSettings(resolved), compaction: updated.compaction };
+    }
+    // An account setting with no account would be dropped and reported as saved.
+    if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+      throw new Error("The subagent cache setting needs a provider account id.");
     }
     const file = readFile();
     const current = { ...DEFAULT_PROVIDER_INSTANCE_SETTINGS, ...(file.settings[resolved] ?? {}) };
@@ -795,6 +811,26 @@ export type ProviderInstanceStore = ReturnType<typeof createProviderInstanceStor
  * would move every other tool's config at the same time; ADE moves exactly the
  * one directory the provider owns.
  */
+/**
+ * The env that carries one Claude account's prompt cache choice to a Claude
+ * process, or nothing: the account made no choice, or `env` already states a
+ * TTL. Only for a launch that runs on the account's own login — a preset or a
+ * stored credential bills somewhere else and must not get it.
+ */
+export function claudeAccountPromptCacheEnv(
+  instanceId: string | null | undefined,
+  env: NodeJS.ProcessEnv,
+): Record<string, string> {
+  if (env[CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]?.trim()) return {};
+  try {
+    const ttl = getMachineProviderInstanceStore().resolve("claude", instanceId).instance.subagentPromptCacheTtl;
+    return ttl ? { [CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]: ttl } : {};
+  } catch {
+    // An unreadable registry must not stop a launch; Claude Code's default applies.
+    return {};
+  }
+}
+
 export function providerInstanceEnvPatch(
   instance: { id: string; provider: ProviderInstanceProvider; configHome: string } | null | undefined,
 ): Record<string, string> {

@@ -1695,9 +1695,8 @@ describe("createAgentChatService", () => {
       // "outputStyle" key would override the user's global selection.
       expect(opts?.settings).not.toHaveProperty("outputStyle");
       expect(opts?.settings).toEqual(expect.objectContaining({
-        // ADE's own defaults, which apply only while no settings file states one.
+        // ADE's own default, which applies only while no settings file states one.
         workflowSizeGuideline: "medium",
-        subagentPromptCacheTtl: "1h",
         fastMode: false,
         dialogExpiry: "never",
         enabledPlugins: expect.objectContaining({
@@ -1721,7 +1720,7 @@ describe("createAgentChatService", () => {
       );
       fs.writeFileSync(
         path.join(userClaudeDir, "settings.json"),
-        JSON.stringify({ outputStyle: "ASD-STE100", workflowSizeGuideline: "large", subagentPromptCacheTtl: "5m" }),
+        JSON.stringify({ outputStyle: "ASD-STE100", workflowSizeGuideline: "large" }),
       );
       const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
       process.env.CLAUDE_CONFIG_DIR = userClaudeDir;
@@ -1740,9 +1739,8 @@ describe("createAgentChatService", () => {
           settings?: { outputStyle?: string; workflowSizeGuideline?: string };
         } | undefined;
         expect(opts?.settings?.outputStyle).toBe("ASD-STE100");
-        // A user-stated value replaces ADE's default rather than losing to it.
+        // A user-stated guideline replaces ADE's default rather than losing to it.
         expect(opts?.settings).not.toHaveProperty("workflowSizeGuideline");
-        expect(opts?.settings).not.toHaveProperty("subagentPromptCacheTtl");
       } finally {
         if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
         else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
@@ -3835,6 +3833,26 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(after.id))?.instanceId).toBe(work.id);
       // The chat started before the switch stays on the account it began on.
       expect((await service.getSessionSummary(before.id))?.instanceId).toBe("claude");
+    });
+
+    it("starts a Claude chat with its own account's subagent cache choice, and no other account's", async () => {
+      const accounts = getMachineProviderInstanceStore();
+      const work = accounts.create({ provider: "claude", label: "Work" }).instance;
+      accounts.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" }, work.id);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-account-cache") as any);
+      const { service } = createService();
+      const envOfLaunch = (index: number) =>
+        (vi.mocked(claudeSdkCreateSessionCompat).mock.calls[index]?.[0] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet", instanceId: work.id });
+      await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1));
+      expect(envOfLaunch(0)?.CLAUDE_CONFIG_DIR).toBe(work.configHome);
+      expect(envOfLaunch(0)?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe("1h");
+
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(2));
+      expect(envOfLaunch(1), "the default account's launch has an env").toBeTruthy();
+      expect(envOfLaunch(1)?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBeUndefined();
     });
 
     it("moves a chat onto the new provider's default account when it switches provider", async () => {

@@ -797,6 +797,7 @@ import type {
   ProviderInstanceProvider,
   ProviderInstanceRemoveResult,
   ProviderInstanceSettings,
+  ProviderInstanceSettingsPatch,
   ProviderLoginStatus,
 } from "../../../shared/types";
 import type {
@@ -6944,7 +6945,7 @@ export function registerIpc({
   ipcMain.handle(IPC.providerInstancesSetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
     const record = providerInstanceArgs(arg);
     const settings = record.settings && typeof record.settings === "object" && !Array.isArray(record.settings)
-      ? record.settings as Partial<ProviderInstanceSettings>
+      ? record.settings as ProviderInstanceSettingsPatch
       : {};
     const provider = providerInstanceProvider(record.provider);
     // An account card's compaction setting targets that account, as the runtime action does.
@@ -6955,6 +6956,9 @@ export function registerIpc({
     }
     if (typeof settings.autoStartWindows === "boolean") {
       captureProviderAccount("auto_start_changed", settings.autoStartWindows ? "enabled" : "disabled", provider);
+    }
+    if (instanceId && provider === "claude" && Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+      captureProviderAccount("subagent_cache_changed", settings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", provider);
     }
     return result;
   });

@@ -241,6 +241,15 @@ export function ProviderAccountsPanel({
     [openSheet, pin, providerLabel, run],
   );
 
+  const setPromptCache = useCallback(
+    (instance: ProviderInstance, subagentPromptCacheTtl: "1h" | null) => {
+      const api = pinnedProviderInstances(pin);
+      if (!api) return;
+      void run(() => api.setSettings({ provider, instanceId: instance.id, settings: { subagentPromptCacheTtl } }));
+    },
+    [pin, provider, run],
+  );
+
   const signedOutById = useMemo(() => {
     const out = new Map<string, boolean>();
     for (const instance of instances) out.set(instance.id, accountSignedOut(snapshot, provider, instance));
@@ -428,6 +437,7 @@ export function ProviderAccountsPanel({
                 key={instance.id}
                 instance={instance}
                 compactionControl={instances.length > 1 ? <CompactionSettings provider={provider} account value={instance.compaction} onChange={async (compaction) => { await window.ade.providerInstances.setSettings({ provider, instanceId: instance.id, settings: { compaction } }, pin); await reload(); }} /> : null}
+                onSetPromptCache={provider === "claude" ? setPromptCache : undefined}
                 limitRow={accountLimitRow(snapshot, provider, instance, nowMs)}
                 state={state}
                 badge={badge}

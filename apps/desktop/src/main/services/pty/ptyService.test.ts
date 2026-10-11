@@ -883,6 +883,59 @@ describe("ptyService", () => {
       expect(opts?.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
     });
 
+    it.each<{
+      name: string;
+      instanceId?: string;
+      presetId?: string;
+      env?: Record<string, string>;
+      expected: string | undefined;
+    }>([
+      { name: "the account that chose 1 hour", instanceId: "acct-work", expected: "1h" },
+      { name: "the default account, which chose nothing", expected: undefined },
+      { name: "that account on a preset, which bills elsewhere", instanceId: "acct-work", presetId: "hp_other_endpoint", expected: undefined },
+      {
+        name: "that account when the caller already stated a TTL",
+        instanceId: "acct-work",
+        env: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" },
+        expected: "5m",
+      },
+    ])("gives a Claude terminal the subagent cache TTL of $name", async ({ instanceId, presetId, env, expected }) => {
+      const registryPath = path.join(adeHome, "provider-instances.json");
+      const registry = JSON.parse(mocks.fileContents.get(registryPath) ?? "{}");
+      registry.instances[0].subagentPromptCacheTtl = "1h";
+      mocks.fileContents.set(registryPath, JSON.stringify(registry));
+      resetSharedProviderInstanceStoresForTests();
+      const { service, loadPty } = createHarness();
+
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        command: "claude",
+        ...(env ? { env } : {}),
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: null,
+          ...(instanceId ? { instanceId } : {}),
+          ...(presetId ? { presetId } : {}),
+          launch: {
+            permissionMode: "default",
+            ...(instanceId ? { instanceId } : {}),
+            ...(presetId ? { presetId } : {}),
+          },
+        },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.ADE_LANE_ID, "the launch env reached the spawn").toBe("lane-1");
+      expect(opts?.env?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe(expected);
+      service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
+    });
+
     it("silently falls back to the provider default when the account is gone", () => {
       const resolved = resolveProviderInstanceForLaunch("claude", "acct-deleted");
       expect(resolved?.id).toBe("claude");
@@ -951,9 +1004,6 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
       const opts = spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
       expect(opts?.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
-      // A POSIX resume is rendered as a command line, so a default that rode
-      // only the launch builder's env would be lost here.
-      expect(opts?.env?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe("1h");
     });
 
     it("resumes into the provider default when the stored account is gone", async () => {
@@ -1597,55 +1647,6 @@ describe("ptyService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: "/tmp/test-project",
       }));
-      service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
-    });
-
-    it.each<{
-      name: string;
-      toolType: "claude" | "claude-orchestrated" | "codex";
-      env?: Record<string, string>;
-      presetId?: string;
-      expected: string | undefined;
-    }>([
-      { name: "a Claude CLI", toolType: "claude", expected: "1h" },
-      { name: "an orchestrated Claude CLI", toolType: "claude-orchestrated", expected: "1h" },
-      { name: "another provider's CLI", toolType: "codex", expected: undefined },
-      { name: "a Claude CLI on a preset", toolType: "claude", presetId: "hp_other_endpoint", expected: undefined },
-      {
-        name: "a Claude CLI whose caller already chose a TTL",
-        toolType: "claude",
-        env: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" },
-        expected: "5m",
-      },
-    ])("sets the subagent prompt cache TTL for $name to $expected", async ({ toolType, env, presetId, expected }) => {
-      const { service, loadPty } = createHarness();
-      const provider = toolType === "codex" ? "codex" : "claude";
-
-      const result = await service.create({
-        laneId: "lane-1",
-        title: "CLI",
-        cols: 80,
-        rows: 24,
-        toolType,
-        command: provider,
-        ...(env ? { env } : {}),
-        ...(presetId
-          ? {
-              resumeMetadata: {
-                provider,
-                targetKind: "session",
-                targetId: null,
-                presetId,
-                launch: { permissionMode: "default", presetId },
-              },
-            }
-          : {}),
-      });
-
-      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-      expect(opts?.env?.ADE_LANE_ID, "the launch env reached the spawn").toBe("lane-1");
-      expect(opts?.env?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe(expected);
       service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
     });
 

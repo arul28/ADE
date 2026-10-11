@@ -51,7 +51,7 @@ export function CompactionSettings({ provider, value, account = false, onChange 
       }} />
   );
   return <ModernRows>
-    {account ? <ModernRow title="Auto-compact" control={<select aria-label="Account compaction setting" disabled={saving} value={value ? "custom" : "inherit"}
+    {account ? <ModernRow title="This account" control={<select aria-label="Account compaction setting" disabled={saving} value={value ? "custom" : "inherit"}
       className={FIELD_CLASS}
       onChange={(event) => void save(event.target.value === "inherit" ? null : {})}>
       <option value="inherit">Same as provider default</option><option value="custom">Custom</option>

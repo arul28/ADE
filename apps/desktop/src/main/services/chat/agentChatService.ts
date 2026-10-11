@@ -99,7 +99,6 @@ import {
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
 import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
 import {
-  defaultClaudeSubagentPromptCacheTtl,
   discoverClaudePluginPaths,
   discoverClaudePlugins,
   discoverClaudeOutputStyles,
@@ -338,6 +337,7 @@ import {
 } from "./turnDiffSummary";
 import {
   getMachineProviderInstanceStore,
+  claudeAccountPromptCacheEnv,
   providerInstanceEnvPatch,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -39275,17 +39275,17 @@ export function createAgentChatService(args: {
       // reach ADE as an exit code with no cause.
       CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1",
     };
+    // The account's own prompt cache choice. A preset or stored credential
+    // bills another endpoint, so it gets none.
+    if (!claudePresetPlan) {
+      Object.assign(claudeEnv, claudeAccountPromptCacheEnv(managed.session.instanceId, claudeEnv));
+    }
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
     // ADE's preferred default, supplied only when no settings file states one.
     const workflowSizeGuideline = readClaudeWorkflowSizeGuideline(managed.laneWorktreePath)
       ? undefined
       : "medium";
-    const subagentPromptCacheTtl = defaultClaudeSubagentPromptCacheTtl({
-      cwd: managed.laneWorktreePath,
-      env: claudeEnv,
-      usesPresetOrCredential: Boolean(claudePresetPlan),
-    });
     const bundledPluginPaths = claudeAgentSkillPluginRoots(claudeEnv);
     const pluginPaths = adeSkillCatalogFor(managed.session) === "none"
       ? []
@@ -39332,7 +39332,6 @@ export function createAgentChatService(args: {
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
         fastMode: sessionEffectiveFastMode(managed.session),
         ...(workflowSizeGuideline ? { workflowSizeGuideline } : {}),
-        ...(subagentPromptCacheTtl ? { subagentPromptCacheTtl } : {}),
         dialogExpiry: "never",
       },
       ...(pluginPaths.length

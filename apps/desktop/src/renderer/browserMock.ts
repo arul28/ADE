@@ -107,6 +107,7 @@ import {
 } from "../shared/types";
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
+import type { ProviderCompactionSettings } from "../shared/compactionSettings";
 import type {
   ApiCredentialGetArgs,
   ApiCredentialListArgs,
@@ -840,6 +841,8 @@ const mockProviderInstances: Array<{
   loginBroken?: boolean;
   sameLoginAs?: string;
   replacedAccount?: { email: string; plan?: string; replacedAt: string };
+  subagentPromptCacheTtl?: "1h";
+  compaction?: ProviderCompactionSettings;
 }> = [
   {
     id: "claude",
@@ -7849,9 +7852,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         ({ ...mockProviderInstanceSettings[args.provider] }),
       setSettings: async (args: {
         provider: "claude" | "codex";
-        settings: { smartBalance?: boolean; autoStartWindows?: boolean };
+        instanceId?: string;
+        settings: { smartBalance?: boolean; autoStartWindows?: boolean; subagentPromptCacheTtl?: "1h" | null; compaction?: ProviderCompactionSettings | null };
       }) => {
         const current = mockProviderInstanceSettings[args.provider];
+        const account = args.instanceId ? mockProviderInstances.find((entry) => entry.id === args.instanceId) : undefined;
+        if (account && args.settings && Object.hasOwn(args.settings, "compaction")) {
+          if (args.settings.compaction) account.compaction = args.settings.compaction;
+          else delete account.compaction;
+        }
+        if (account && args.settings && Object.hasOwn(args.settings, "subagentPromptCacheTtl")) {
+          if (args.settings.subagentPromptCacheTtl === "1h") account.subagentPromptCacheTtl = "1h";
+          else delete account.subagentPromptCacheTtl;
+        }
         if (typeof args.settings?.smartBalance === "boolean") current.smartBalance = args.settings.smartBalance;
         if (typeof args.settings?.autoStartWindows === "boolean") {
           current.autoStartWindows = args.settings.autoStartWindows;

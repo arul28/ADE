@@ -48,6 +48,15 @@ describe("providerAccountAnalyticsCapture", () => {
     });
   });
 
+  it("records a subagent cache choice with closed values that survive the allowlist", () => {
+    const { analytics, captured } = recorder();
+    providerAccountAnalyticsCapture(analytics, "desktop")("subagent_cache_changed", "enabled", "claude");
+    expect(captured).toHaveLength(1);
+    const properties = (captured[0] as { properties: Record<string, unknown> }).properties;
+    expect(properties).toMatchObject({ feature: "provider_accounts", action: "subagent_cache_changed", outcome: "enabled", provider: "claude" });
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", properties as never)).toEqual(properties);
+  });
+
   it("keeps the actions domain on its own surface", () => {
     const { analytics, captured } = recorder();
     providerAccountAnalyticsCapture(analytics, "api")("default_selected", "completed", "codex");

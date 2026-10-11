@@ -77,6 +77,12 @@ export type ProviderInstance = {
    * account. Absent once any account holds that email again, or once dismissed.
    */
   replacedAccount?: ProviderInstanceReplacedAccount;
+  /**
+   * Claude only. The user chose the 1-hour prompt cache for this account's
+   * subagents, workflows and helper requests. Absent means ADE states nothing
+   * and Claude Code applies its own default (5 minutes).
+   */
+  subagentPromptCacheTtl?: "1h";
 };
 
 export type ProviderInstanceReplacedAccount = {
@@ -190,8 +196,20 @@ export type ProviderInstanceSetSettingsArgs = {
   /** Account override; null compaction restores provider inheritance. */
   instanceId?: string;
   provider: ProviderInstanceProvider;
-  settings: Omit<Partial<ProviderInstanceSettings>, "compaction"> & { compaction?: ProviderCompactionSettings | null };
+  settings: ProviderInstanceSettingsPatch;
 };
+
+/**
+ * `compaction` and `subagentPromptCacheTtl` are account settings: they need an
+ * `instanceId`, a missing key leaves the stored value alone, and null clears it.
+ */
+export type ProviderInstanceSettingsPatch = Omit<Partial<ProviderInstanceSettings>, "compaction"> & {
+  compaction?: ProviderCompactionSettings | null;
+  subagentPromptCacheTtl?: "1h" | null;
+};
+
+/** The env var Claude Code reads for the prompt cache TTL outside the main conversation. */
+export const CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 
 export type ProviderInstanceLoginCommandArgs = {
   id: string;
