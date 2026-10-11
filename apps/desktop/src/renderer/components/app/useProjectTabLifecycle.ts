@@ -253,6 +253,8 @@ export function useProjectTabLifecycle({
     const tearOff = tearOffRef.current;
     tearOffRef.current = null;
     if (!tearOff) return;
+    // Taken now: a press on another tab during the waits below replaces it.
+    const pressSwitch = tabSwitchRef?.current;
     void (async () => {
       const started = await tearOff.started;
       const result = await window.ade.app
@@ -266,7 +268,7 @@ export function useProjectTabLifecycle({
       if (!groupId) return;
       // Closing the tab switches this window to a neighbor. An answer to the
       // press's own switch that came after that would put the tab back.
-      await tabSwitchRef?.current;
+      await pressSwitch;
       // The tab now lives in another window, so its work is not stopped and
       // nothing is asked: the project only moved.
       await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: false });
