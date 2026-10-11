@@ -2242,11 +2242,12 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(listSessionsCachedMock).not.toHaveBeenCalled();
   });
 
-  it("undoes a press-open: the open list, the active item, the selected item and the lane come back", async () => {
+  it("undoes a press-open: the open list, the active item, the selected item, the lane and the seen stamps come back", async () => {
     const workState = {
       openItemIds: ["chat-a", "chat-b"],
       activeItemId: "chat-a" as string | null,
       selectedItemId: "chat-a" as string | null,
+      workSeenAtBySessionId: { "chat-b": "2026-10-01T00:00:00.000Z" } as Record<string, string>,
       draftKind: "chat" as const,
       laneFilter: "all",
       search: "",
@@ -2265,12 +2266,25 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
     listSessionsCachedMock.mockResolvedValue([]);
 
-    const { result } = renderHook(() => useWorkSessions());
+    const { result, rerender } = renderHook(() => useWorkSessions());
     await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
-    const open = (sessionId: string) => act(() => {
-      result.current.setSelectedSessionId(sessionId);
-      result.current.openSessionTab(sessionId);
-    });
+    // The fake store does not notify. One render shows the change, and a
+    // second one shows what the layout effect of the first wrote.
+    const settle = () => {
+      rerender();
+      rerender();
+    };
+    const open = (sessionId: string) => {
+      act(() => {
+        result.current.setSelectedSessionId(sessionId);
+        result.current.openSessionTab(sessionId);
+      });
+      settle();
+    };
+    const undo = (restore: () => void) => {
+      act(() => restore());
+      settle();
+    };
 
     // A row that was not open: a drag of it must leave nothing opened.
     const undoNew = result.current.selectionRestorer("chat-x");
@@ -2280,25 +2294,34 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       activeItemId: "chat-x",
       selectedItemId: "chat-x",
     });
+    // Leaving chat-a stamped it as seen; the press is not known to be a drag yet.
+    expect(Object.keys(workState.workSeenAtBySessionId).sort()).toEqual(["chat-a", "chat-b"]);
     fakeAppStoreState.selectedLaneId = "lane-x";
-    act(() => undoNew());
+    undo(undoNew);
     expect(workState).toMatchObject({
       openItemIds: ["chat-a", "chat-b"],
       activeItemId: "chat-a",
       selectedItemId: "chat-a",
     });
     expect(selectLaneSpy).toHaveBeenLastCalledWith("lane-a");
+    // Neither row was visited: chat-a was not left, chat-x was not opened.
+    expect(workState.workSeenAtBySessionId).toEqual({ "chat-b": "2026-10-01T00:00:00.000Z" });
 
-    // A row that was open already stays in the open list.
+    // A row that was open already stays in the open list, with the stamp it had.
     const undoOpen = result.current.selectionRestorer("chat-b");
     open("chat-b");
     expect(workState.activeItemId).toBe("chat-b");
-    act(() => undoOpen());
+    undo(undoOpen);
     expect(workState).toMatchObject({
       openItemIds: ["chat-a", "chat-b"],
       activeItemId: "chat-a",
       selectedItemId: "chat-a",
     });
+    expect(workState.workSeenAtBySessionId).toEqual({ "chat-b": "2026-10-01T00:00:00.000Z" });
+
+    // A real visit still stamps the row that was left.
+    open("chat-b");
+    expect(Object.keys(workState.workSeenAtBySessionId).sort()).toEqual(["chat-a", "chat-b"]);
   });
 
   it("launchPtySession preserves the live optimistic pty id when a stale row has the same session id", async () => {

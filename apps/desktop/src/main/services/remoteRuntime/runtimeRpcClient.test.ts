@@ -102,7 +102,7 @@ describe("RuntimeRpcClient", () => {
     const client = new RuntimeRpcClient(transport);
     const text = "✓ 3 tests passed — 日本語 🙂";
 
-    const pending = client.call<{ text: string }>("chat/history", {});
+    const pending = client.call("chat/history", {});
     const reply = Buffer.from(
       `${JSON.stringify({ jsonrpc: "2.0", id: requestId(transport.writes[0]!), result: { text } })}\n`,
       "utf8",
@@ -113,7 +113,7 @@ describe("RuntimeRpcClient", () => {
       transport.emitBytes(reply.subarray(offset, offset + 1));
     }
 
-    const result = await pending;
+    const result = (await pending) as { text: string };
     expect(result.text).toBe(text);
     expect(result.text).not.toContain("\uFFFD");
     expect(Buffer.from(result.text, "utf8").length).toBe(Buffer.from(text, "utf8").length);

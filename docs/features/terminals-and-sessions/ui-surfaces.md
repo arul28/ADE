@@ -81,7 +81,8 @@ It also owns the sidebar's multi-select state:
   of the row, onto the open chat for a grid or a mention. For that case a press
   hands back an undo, and the native `dragstart` runs it: `selectionRestorer`
   in `useWorkSessions` puts back the active and the selected item, the lane,
-  and the open list, so a drag opens nothing. A woken session is acknowledged
+  the open list, and the seen stamps of the two rows, so a drag opens nothing
+  and marks nothing as visited. A woken session is acknowledged
   on the release of the press, so a dragged row keeps its marker. Three cases
   keep the click: the board and the Focus grid, which have more than a
   selection to restore, and a row that is a member of a grid, whose tile takes

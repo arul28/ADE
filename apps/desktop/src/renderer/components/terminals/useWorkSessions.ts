@@ -1244,12 +1244,33 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     projectStateKey: null,
     sessionId: null,
   });
+  // Set by the undo of a press-open (`selectionRestorer`): the row that the
+  // press opened, and the seen stamps of the two rows as they were before it.
+  // The press stamped the row it left, and the undo is about to leave the
+  // pressed row; neither was a visit.
+  const undonePressSeenRef = useRef<{
+    pressedId: string;
+    seenBefore: Record<string, string | undefined>;
+  } | null>(null);
   useLayoutEffect(() => {
     const previous = lastSelectionRef.current;
     lastSelectionRef.current = { projectStateKey, sessionId: selectedSessionId };
     if (!previous.sessionId || !previous.projectStateKey) return;
     if (previous.sessionId === selectedSessionId && previous.projectStateKey === projectStateKey) return;
     const leftId = previous.sessionId;
+    const undonePress = undonePressSeenRef.current;
+    undonePressSeenRef.current = null;
+    if (undonePress?.pressedId === leftId) {
+      setWorkViewState(previous.projectStateKey, (prev) => {
+        const seen = { ...(prev.workSeenAtBySessionId ?? {}) };
+        for (const [id, at] of Object.entries(undonePress.seenBefore)) {
+          if (at === undefined) delete seen[id];
+          else seen[id] = at;
+        }
+        return { ...prev, workSeenAtBySessionId: seen };
+      });
+      return;
+    }
     const at = new Date().toISOString();
     setWorkViewState(previous.projectStateKey, (prev) => ({
       ...prev,
@@ -1554,9 +1575,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   /**
    * How to put back what opening `sessionId` replaces: the active and the
-   * selected item, the lane, and the open list without `sessionId` when it was
-   * not in it. Take it before the open. A row opens on the press of the mouse,
-   * and a press that becomes a drag of that row must leave nothing opened.
+   * selected item, the lane, the open list without `sessionId` when it was not
+   * in it, and the seen stamps of the two rows. Take it before the open. A row
+   * opens on the press of the mouse, and a press that becomes a drag of that
+   * row must leave nothing opened and nothing marked as visited.
    */
   const selectionRestorer = useCallback(
     (sessionId: string): (() => void) => {
@@ -1565,8 +1587,17 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: selectedSessionId,
         wasOpen: openItemIds.includes(sessionId),
         laneId: appStore.getState().selectedLaneId,
+        seen: {
+          [sessionId]: workSeenAtBySessionId[sessionId],
+          ...(selectedSessionId ? { [selectedSessionId]: workSeenAtBySessionId[selectedSessionId] } : {}),
+        },
       };
       return () => {
+        // A press on the row that was selected already changed no selection,
+        // so no stamp was made and none is due.
+        if (sessionId !== before.selectedItemId) {
+          undonePressSeenRef.current = { pressedId: sessionId, seenBefore: before.seen };
+        }
         if (appStore.getState().selectedLaneId !== before.laneId) selectLane(before.laneId);
         setProjectViewState((prev) => ({
           ...prev,
@@ -1576,7 +1607,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         }));
       };
     },
-    [activeItemId, appStore, openItemIds, selectLane, selectedSessionId, setProjectViewState],
+    [activeItemId, appStore, openItemIds, selectLane, selectedSessionId, setProjectViewState, workSeenAtBySessionId],
   );
 
   const closeTab = useCallback(
