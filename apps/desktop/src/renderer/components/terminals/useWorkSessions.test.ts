@@ -2242,6 +2242,65 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(listSessionsCachedMock).not.toHaveBeenCalled();
   });
 
+  it("undoes a press-open: the open list, the active item, the selected item and the lane come back", async () => {
+    const workState = {
+      openItemIds: ["chat-a", "chat-b"],
+      activeItemId: "chat-a" as string | null,
+      selectedItemId: "chat-a" as string | null,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      selectedLaneId: "lane-a",
+      workViewByProject: { "/fake/project": workState },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+    listSessionsCachedMock.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
+    const open = (sessionId: string) => act(() => {
+      result.current.setSelectedSessionId(sessionId);
+      result.current.openSessionTab(sessionId);
+    });
+
+    // A row that was not open: a drag of it must leave nothing opened.
+    const undoNew = result.current.selectionRestorer("chat-x");
+    open("chat-x");
+    expect(workState).toMatchObject({
+      openItemIds: ["chat-a", "chat-b", "chat-x"],
+      activeItemId: "chat-x",
+      selectedItemId: "chat-x",
+    });
+    fakeAppStoreState.selectedLaneId = "lane-x";
+    act(() => undoNew());
+    expect(workState).toMatchObject({
+      openItemIds: ["chat-a", "chat-b"],
+      activeItemId: "chat-a",
+      selectedItemId: "chat-a",
+    });
+    expect(selectLaneSpy).toHaveBeenLastCalledWith("lane-a");
+
+    // A row that was open already stays in the open list.
+    const undoOpen = result.current.selectionRestorer("chat-b");
+    open("chat-b");
+    expect(workState.activeItemId).toBe("chat-b");
+    act(() => undoOpen());
+    expect(workState).toMatchObject({
+      openItemIds: ["chat-a", "chat-b"],
+      activeItemId: "chat-a",
+      selectedItemId: "chat-a",
+    });
+  });
+
   it("launchPtySession preserves the live optimistic pty id when a stale row has the same session id", async () => {
     const workState = {
       openItemIds: [] as string[],
