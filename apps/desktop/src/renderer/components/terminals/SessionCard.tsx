@@ -53,6 +53,7 @@ import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { useSessionDelta } from "./useSessionDelta";
+import { pressActivation, type PressUndo } from "../../lib/pressActivation";
 import { cn } from "../ui/cn";
 import { MONO_FONT, toneText } from "../lanes/laneDesignTokens";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
@@ -470,6 +471,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   isSelected,
   isMultiSelected,
   onSelect,
+  selectOnPress = false,
   onContextMenu,
   compact = false,
   gridBadge = null,
@@ -502,7 +504,14 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   lane: LaneSummary | null;
   isSelected: boolean;
   isMultiSelected?: boolean;
-  onSelect: (id: string, event: React.MouseEvent) => void;
+  /**
+   * May return how to go back to what was open before. A row opens on the
+   * press (`selectOnPress`), and the same press can start a drag of the row;
+   * the drag then puts the previous chat back.
+   */
+  onSelect: (id: string, event: React.MouseEvent) => void | PressUndo;
+  /** Open on the press, not on the release. Off where a press has more to undo. */
+  selectOnPress?: boolean;
   onContextMenu: (e: React.MouseEvent) => void;
   compact?: boolean;
   /** Grid membership indicator: "active" = in the currently-viewed grid, "inactive" = in another grid, null = not gridded. */
@@ -618,6 +627,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   // The row id lets the hook re-find this row if React swaps the wrapper node
   // during the one-second wait — see `resolveTriggerElement`.
   const hoverCard = useSessionHoverCard({ rowId: session.id });
+  // A grid tile takes the keyboard focus when it becomes the active one. On a
+  // press that would happen before the browser moves the focus to this row,
+  // and the row would take it back. A grid member waits for the click, which
+  // comes after the focus has moved.
+  const opensOnPress = selectOnPress && gridBadge == null;
   const sessionAttentionInput = canonicalInputFromSummary(session);
   const canonicalUiState = sessionCanonicalUiState(sessionAttentionInput);
   const canonicalPhase = canonicalUiState.phase;
@@ -1538,13 +1552,13 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       {...(disabledReason
         ? { "aria-label": `${primaryText}: ${disabledReason}` }
         : { "aria-label": primaryText })}
-      onClick={(event) => {
+      {...pressActivation((event) => {
         // Selecting loads this session into the very area the card floats over,
         // so the card gets out of the way the moment the row is acted on.
         hoverCard.close();
-        if (disabledReason) return;
-        onSelect(session.id, event);
-      }}
+        if (disabledReason) return undefined;
+        return onSelect(session.id, event);
+      }, opensOnPress)}
       onKeyDown={(event) => {
         // Only the row itself — a key pressed inside a nested control (settle,
         // snooze, a preview link) belongs to that control.

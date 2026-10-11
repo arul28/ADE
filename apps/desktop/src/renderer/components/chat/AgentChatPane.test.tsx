@@ -12111,25 +12111,29 @@ describe("selectDepartedChatSessionViewCacheSessions", () => {
 describe("selectAgentChatSessionViewEvictions", () => {
   const MB = 1024 * 1024;
 
-  it("keeps everything under both ceilings", () => {
+  it("keeps every view under the byte ceiling, however many chats there are", () => {
     expect(selectAgentChatSessionViewEvictions([
       { sessionId: "a", estimatedBytes: 10 * MB },
       { sessionId: "b", estimatedBytes: 10 * MB },
     ])).toEqual([]);
+    const manySmallChats = Array.from({ length: 200 }, (_, index) => ({
+      sessionId: `s${index}`,
+      estimatedBytes: 256 * 1_024,
+    }));
+    expect(selectAgentChatSessionViewEvictions(manySmallChats)).toEqual([]);
+    // 600 of them are 150MB: the oldest go until the rest fit in 128MB.
+    const tooMany = Array.from({ length: 600 }, (_, index) => ({
+      sessionId: `s${index}`,
+      estimatedBytes: 256 * 1_024,
+    }));
+    const evicted = selectAgentChatSessionViewEvictions(tooMany);
+    expect(evicted).toEqual(tooMany.slice(0, 88).map((entry) => entry.sessionId));
   });
 
   it("evicts oldest-first until the 128MB total is respected", () => {
     // 4 x 45MB = 180MB: dropping the two oldest brings the total to 90MB.
     const entries = ["a", "b", "c", "d"].map((sessionId) => ({ sessionId, estimatedBytes: 45 * MB }));
     expect(selectAgentChatSessionViewEvictions(entries)).toEqual(["a", "b"]);
-  });
-
-  it("evicts oldest-first until the entry ceiling is respected", () => {
-    const entries = Array.from({ length: 10 }, (_, index) => ({
-      sessionId: `s${index}`,
-      estimatedBytes: 1_024,
-    }));
-    expect(selectAgentChatSessionViewEvictions(entries)).toEqual(["s0", "s1"]);
   });
 });
 

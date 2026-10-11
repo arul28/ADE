@@ -39,6 +39,7 @@ import type { DesktopSeatKind } from "../../../shared/types/macDesktop";
 import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
 import { LANE_APP_CONTROL_LABEL, laneBrowserLabel, useLaneWorkToolUse } from "./useLaneWorkToolUse";
 import { SessionCard } from "./SessionCard";
+import type { PressUndo } from "../../lib/pressActivation";
 import { ToolLogo } from "./ToolLogos";
 import { LaneNamingLabel } from "./LaneNamingLabel";
 import {
@@ -968,6 +969,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   showingDraft: _showingDraft,
   onShowDraftKind,
   onSelectSession,
+  selectOnPress = false,
   onSelectForeignRuntimeSession,
   onClearSelection,
   onBulkClose,
@@ -1041,7 +1043,9 @@ export const SessionListPane = React.memo(function SessionListPane({
     event: React.MouseEvent | undefined,
     visibleSessionIds: string[],
     binding?: OpenProjectBinding | null,
-  ) => void;
+  ) => void | PressUndo;
+  /** Rows open on the press. See `SessionCard`'s `selectOnPress`. */
+  selectOnPress?: boolean;
   /**
    * A CLI/shell row on another machine. Same in-place open as a chat — the page
    * carries `binding` as a per-session runtime pin and leaves the project tab
@@ -1054,7 +1058,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     binding: OpenProjectBinding,
     event: React.MouseEvent,
     visibleSessionIds: string[],
-  ) => void;
+  ) => void | PressUndo;
   onClearSelection?: () => void;
   onBulkClose?: () => void;
   onBulkDelete?: () => void;
@@ -2548,18 +2552,22 @@ export const SessionListPane = React.memo(function SessionListPane({
           // foreign-runtime handler (which also owns the not-open-binding
           // fallback). The machine chip on the card is untouched either way.
           if (!foreignRow) {
-            onSelectSession(id, event, options?.visibleSessionIds ?? renderedSessionIds);
-          } else if (isChatToolType(session.toolType)) {
-            onSelectSession(id, event, options?.visibleSessionIds ?? [], foreignRow.binding);
-          } else if (foreignRow.binding && onSelectForeignRuntimeSession) {
-            onSelectForeignRuntimeSession(
+            return onSelectSession(id, event, options?.visibleSessionIds ?? renderedSessionIds);
+          }
+          if (isChatToolType(session.toolType)) {
+            return onSelectSession(id, event, options?.visibleSessionIds ?? [], foreignRow.binding);
+          }
+          if (foreignRow.binding && onSelectForeignRuntimeSession) {
+            return onSelectForeignRuntimeSession(
               session,
               foreignRow.binding,
               event,
               options?.visibleSessionIds ?? [],
             );
           }
+          return undefined;
         }}
+        selectOnPress={selectOnPress}
         onContextMenu={(e) => {
           e.preventDefault();
           const openIn = resolveOpenInTarget({

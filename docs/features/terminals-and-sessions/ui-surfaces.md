@@ -71,6 +71,22 @@ It also owns the sidebar's multi-select state:
   range from the anchor; meta/ctrl-click toggles the id in/out of the
   set; any of the three refresh the active single-selected item. The optional
   binding is the per-session runtime pin carried into the opened view.
+  A plain open runs on the **press** of the mouse button, not on its release
+  (`lib/pressActivation.ts`; `SessionCard` takes `selectOnPress`): the release
+  of a normal click comes 60 to 120 ms later, and that was most of what a chat
+  switch cost. Only the primary button with no modifier key acts on the press.
+  A modified click (range, toggle), touch, pen, the keyboard, and a press on a
+  control inside the row or in a menu of it (settle, snooze, a link) open
+  nothing on the press and keep their click. The same press can start a drag
+  of the row, onto the open chat for a grid or a mention. For that case a press
+  hands back an undo, and the native `dragstart` runs it: `selectionRestorer`
+  in `useWorkSessions` puts back the active and the selected item, the lane,
+  the open list, and the seen stamps of the two rows, so a drag opens nothing
+  and marks nothing as visited. A woken session is acknowledged
+  on the release of the press, so a dragged row keeps its marker. Three cases
+  keep the click: the board and the Focus grid, which have more than a
+  selection to restore, and a row that is a member of a grid, whose tile takes
+  the keyboard focus when it becomes active.
 - `handleSelectForeignRuntimeSession(session, binding, event, visibleSessionIds)`
   — the CLI/shell row of another machine, forwarded from `SessionListPane`.
   When the owning binding is still open (`machineRouter.isLivePin`), the page

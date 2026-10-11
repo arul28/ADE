@@ -2523,3 +2523,43 @@ describe("SessionCard Cursor Cloud link", () => {
     expect(container.textContent).not.toContain("Live view");
   });
 });
+
+describe("SessionCard: open on the press", () => {
+  /** jsdom has no PointerEvent, so a pointer event is a mouse event with the two pointer fields. */
+  function pointer(element: Element, type: "pointerdown" | "pointerup") {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 });
+    Object.defineProperties(event, { pointerType: { value: "mouse" }, pointerId: { value: 1 } });
+    act(() => {
+      element.dispatchEvent(event);
+    });
+  }
+
+  it.each([
+    ["opens on the press when the list asks for it", { selectOnPress: true }, 1],
+    ["waits for the click by default", {}, 0],
+    ["waits for the click when the chat is a member of a grid", { selectOnPress: true, gridBadge: "active" as const }, 0],
+  ])("%s", (_name, props, opensOnPress) => {
+    const onSelect = vi.fn();
+    const { container } = render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        isSelected={false}
+        onSelect={onSelect}
+        onContextMenu={vi.fn()}
+        {...props}
+      />,
+    );
+    const row = rowWrapper(container).querySelector('[role="button"]') as HTMLElement;
+    expect(row, "the row of the card").toBeTruthy();
+
+    pointer(row, "pointerdown");
+    expect(onSelect).toHaveBeenCalledTimes(opensOnPress);
+
+    // The release of the same press: one open in total, on the press or on the click.
+    pointer(row, "pointerup");
+    fireEvent.click(row);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.calls[0]![0]).toBe("session-1");
+  });
+});

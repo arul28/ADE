@@ -1314,6 +1314,8 @@ Cross-cutting interaction behaviour lives in `apps/desktop/src/renderer/hooks/` 
 
 The pre-existing `hooks/usePrefersReducedMotion.ts` remains for controls that need to change *what* renders under reduced motion. For animation itself, the policy is global rather than per-site: `main.tsx` wraps the root in `<MotionConfig reducedMotion="user">`, so every `motion` element honours the OS setting without opting in — transform and layout animations are skipped while opacity still animates, meaning the information still arrives and only the trip is dropped.
 
+**Controls that act on the press.** `renderer/lib/pressActivation.ts` gives a control that only changes what is on screen its `onPointerDown` and `onClick`: `pressActivation(action, actOnPress?)`. A plain mouse press (primary button, no modifier key, on the control itself and not on a nested control or a portal of it) acts at once, and the click of that press is dropped. Touch, pen, the keyboard, assistive technology and modified clicks act on the click as before. `action` may return an undo, which runs when the press becomes a native drag of the control. It is on the chat rows of the Work list, the page tabs and footer items of the project sidebar, and the machine tabs of the top bar (`ShellNavTab`: Chats, Browser, Music, Settings, New Tab). Project tabs keep the click: a project switch writes the recent-project order and resets per-project state, so a press that becomes a drag of the tab could not be undone. Measured with `scripts/perf/ui/press-to-paint.mjs`; numbers in `docs/perf/macos-baseline.md`.
+
 ### 7.8 Cross-surface shared models
 
 Some UI vocabulary has to be identical on four clients that do not share a

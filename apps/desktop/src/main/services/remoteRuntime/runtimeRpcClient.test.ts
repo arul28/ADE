@@ -44,6 +44,11 @@ class MockTransport implements RuntimeRpcTransport {
     }
   }
 
+  /** One raw read from the socket, which can end anywhere in the byte stream. */
+  emitBytes(chunk: Buffer): void {
+    for (const callback of this.dataCallbacks) callback(chunk);
+  }
+
   emitClose(info?: RuntimeRpcTransportCloseInfo): void {
     for (const callback of this.closeCallbacks) {
       callback(info);
@@ -90,6 +95,28 @@ describe("RuntimeRpcClient", () => {
     transport.emitData({ jsonrpc: "2.0", id: requestId(transport.writes[0]!), result: ["project"] });
 
     await expect(pending).resolves.toEqual(["project"]);
+  });
+
+  it("decodes a reply whose multi-byte characters are cut by the read boundaries", async () => {
+    const transport = new MockTransport();
+    const client = new RuntimeRpcClient(transport);
+    const text = "✓ 3 tests passed — 日本語 🙂";
+
+    const pending = client.call("chat/history", {});
+    const reply = Buffer.from(
+      `${JSON.stringify({ jsonrpc: "2.0", id: requestId(transport.writes[0]!), result: { text } })}\n`,
+      "utf8",
+    );
+    // Every character of the text above is two to four bytes, so one byte per
+    // read cuts each of them.
+    for (let offset = 0; offset < reply.length; offset += 1) {
+      transport.emitBytes(reply.subarray(offset, offset + 1));
+    }
+
+    const result = (await pending) as { text: string };
+    expect(result.text).toBe(text);
+    expect(result.text).not.toContain("\uFFFD");
+    expect(Buffer.from(result.text, "utf8").length).toBe(Buffer.from(text, "utf8").length);
   });
 
   it("rejects pending and future calls when the transport closes", async () => {

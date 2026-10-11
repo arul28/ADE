@@ -6,6 +6,7 @@ import type { PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { useChatLaunchCliDriver } from "./useChatLaunchCliDriver";
 import { SessionListPane } from "./SessionListPane";
+import type { PressUndo } from "../../lib/pressActivation";
 import { SessionSurface, WorkViewArea } from "./WorkViewArea";
 import { WorkGridView } from "./WorkGridView";
 import { WorkFocusGridEmpty, WorkFocusRoster } from "./WorkFocusGrid";
@@ -323,7 +324,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       event?: React.MouseEvent,
       visibleSessionIds?: string[],
       binding?: OpenProjectBinding | null,
-    ) => {
+    ): void | PressUndo => {
       const useRange = event?.shiftKey === true;
       const useToggle = event?.metaKey === true || event?.ctrlKey === true;
       const orderedIds = visibleSessionIds?.length ? visibleSessionIds : selectableSessions.map((session) => session.id);
@@ -358,6 +359,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         return;
       }
 
+      // A row opens on the press, before anyone knows whether the press is a
+      // click or the start of a drag of that row (onto the open chat, to make
+      // a grid or a mention). Keep what the press replaces, to give it back.
+      const before = event?.type === "pointerdown"
+        ? { selectedIds: selectedSessionIds, anchorId: selectionAnchorId, restoreWork: work.selectionRestorer(id) }
+        : null;
       setSelectedSessionIds(new Set());
       setSelectionAnchorId(id);
       work.setSelectedSessionId(id);
@@ -373,15 +380,31 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       if (work.workViewMode === "board") work.setWorkViewMode("list");
       // In the Focus grid a row click focuses that chat's tile. A chat with no
       // tile (it is working, or the grid is full) opens in the normal view.
-      if (work.workFocusGrid && work.workFoldBusyLanes && work.workViewMode !== "board") {
+      if (focusGridMode) {
         if (!focusSession(id)) work.setWorkFocusGrid(false);
       }
       // Opening the row IS the acknowledgement — the "woke" marker only exists
       // to explain an unexpected return, so it goes as soon as it is seen.
       const opened = selectableSessions.find((session) => session.id === id);
-      if (opened?.wokeAt || binding) clearSessionWokeMarker(id, binding);
+      const acknowledge = () => {
+        if (opened?.wokeAt || binding) clearSessionWokeMarker(id, binding);
+      };
+      if (!before) {
+        acknowledge();
+        return;
+      }
+      // The release of the press acknowledges. A press that becomes a drag has
+      // no release (the browser cancels the pointer), and its undo takes the
+      // listener away: a dragged row was not opened, so its marker stays.
+      window.addEventListener("pointerup", acknowledge, { capture: true, once: true });
+      return () => {
+        window.removeEventListener("pointerup", acknowledge, true);
+        setSelectedSessionIds(before.selectedIds);
+        setSelectionAnchorId(before.anchorId);
+        before.restoreWork();
+      };
     },
-    [focusSession, selectableSessions, selectionAnchorId, work],
+    [focusGridMode, focusSession, selectableSessions, selectedSessionIds, selectionAnchorId, work],
   );
 
   const handleSelectForeignRuntimeSession = useCallback(
@@ -396,7 +419,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // dropdown released that checkout from the strip. Switching here used to
       // drag Lanes/PRs/Files onto a click that was only meant to focus the chat.
       machineRouter.rememberSessionPin(session, binding);
-      handleSelectSession(session.id, event, visibleSessionIds, binding);
+      return handleSelectSession(session.id, event, visibleSessionIds, binding);
     },
     [handleSelectSession, machineRouter],
   );
@@ -1905,6 +1928,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             showingDraft={work.activeItemId == null}
             onShowDraftKind={listShowDraftKind}
             onSelectSession={listSelectSession}
+            // The board and the Focus grid have more than a selection to put
+            // back when a press becomes a drag, so there a row waits for the click.
+            selectOnPress={work.workViewMode !== "board" && !focusGridMode}
             onSelectForeignRuntimeSession={listSelectForeignRuntimeSession}
             onClearSelection={listClearSelection}
             onBulkClose={listBulkClose}

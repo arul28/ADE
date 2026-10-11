@@ -218,6 +218,33 @@ describe("chat history ordering", () => {
     });
   });
 
+  it("hands back the held list when a snapshot with a resent tool call changed nothing", () => {
+    const say = envelope("2026-07-29T09:59:59.000Z", "running the tests");
+    const call = toolEnvelope("2026-07-29T10:00:00.000Z", {
+      type: "tool_call", tool: "bash", args: {}, itemId: "call-first", logicalItemId: "logical-first", turnId: "turn-first",
+    });
+    const resend = toolEnvelope("2026-07-29T10:00:01.000Z", {
+      type: "tool_call", tool: "bash", args: { command: "npm test" }, itemId: "call-first",
+      logicalItemId: "logical-first", turnId: "turn-first",
+    });
+    const done = envelope("2026-07-29T10:00:02.000Z", "all green");
+    // A history read parses fresh objects every time.
+    const read = () => structuredClone([say, call, resend, done]);
+
+    const held = mergeAgentChatHistorySnapshot(read(), []);
+    expect(held).toHaveLength(3);
+
+    // The pane renders again for a new list, so an unchanged read must be the same one.
+    expect(mergeAgentChatHistorySnapshot(read(), held)).toBe(held);
+
+    const later = envelope("2026-07-29T10:00:03.000Z", "one more line");
+    const grown = mergeAgentChatHistorySnapshot([...read(), later], held);
+    expect(grown).not.toBe(held);
+    expect(grown.slice(0, 3)).toEqual(held);
+    expect(grown.slice(0, 3).every((entry, index) => entry === held[index])).toBe(true);
+    expect(grown[3]).toEqual(later);
+  });
+
   it("inserts a delayed old envelope before the completed tail", () => {
     const prompt = envelope("2026-07-29T10:00:00.000Z", "prompt");
     const done = envelope("2026-07-29T10:00:03.000Z", "done");

@@ -1670,7 +1670,9 @@ chronologically. iOS continues to sort and dedupe its materialized event set by
 the same lifecycle contract.
 
 The renderer keeps a bounded per-session view cache so switching back can paint
-immediately. A hidden chat's retention subscription captures the concrete
+immediately. Its bound is bytes (128 MB of cached events, 32 MB for one chat)
+and not a number of chats, so a return to any recent chat is warm while the
+cache has room. A hidden chat's retention subscription captures the concrete
 outgoing project binding, even when that binding was the active unpinned path,
 so a later project switch cannot silently retarget the retained stream.
 Returning adopts that subscription synchronously, renders the cached tail, and
@@ -1678,6 +1680,17 @@ reconciles against authoritative history without blanking the list. Composer
 controls are withheld for the one-frame interval where the incoming transcript
 id and internal selected-session id differ; an outgoing Stop button or pending
 input can therefore never appear over a settled incoming transcript.
+
+An unchanged transcript reconciles to the same list. The history read that
+follows a switch must hand back the event list the pane already holds when
+nothing changed, or the transcript renders a second time after every switch.
+Two things used to break that. A tool call that a provider sends twice is
+stored as one envelope with the first send's time and the resend's payload;
+neither snapshot row has that identity, so `mergeAgentChatHistorySnapshot`
+maps the envelope it rebuilds back to the held one. And the desktop's
+`RuntimeRpcClient` decodes the reply stream with a `StringDecoder`: decoding
+each socket read alone turned a multi-byte character at a read boundary into
+U+FFFD, at a different place on every read of the same history.
 
 ### What one streamed event costs
 
