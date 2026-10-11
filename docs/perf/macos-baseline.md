@@ -412,12 +412,10 @@ state is reported by both.
 The rows above time a switch from its click handler. A click fires on
 mouse-up, and the button of a normal click is down for 60 to 120 ms first, so
 those rows left out most of what the reader waits for. These rows start the
-clock at the press. Chat rows, the page tabs of the project sidebar and the
-machine tabs of the top bar now switch on the press
-(`lib/pressActivation.ts`). Project tabs followed in a second change, with
-its own measurement (see the row). A project tab acts on the press, and a
-drag of a background tab brings its project to the front, as a browser tab
-does.
+clock at the press. Chat rows, the page tabs of the project sidebar, and the
+machine tabs and project tabs of the top bar switch on the press
+(`lib/pressActivation.ts`). A drag of a background project tab brings its
+project to the front, as a browser tab does.
 
 | | |
 |---|---|
@@ -426,7 +424,7 @@ does.
 | Project | four real projects open as tabs (ADE, Versic, crumb, fleet), five chats in the Work list of ADE |
 | Input | CDP `Input.dispatchMouseEvent`: 250 ms hover, press, 90 ms hold, release |
 | Background | other agents and test runs on the machine; 1-minute load average 9-19 during the timed runs |
-| Measured | 2026-10-11, main at `261940374` against the switch-pass branch, as an alternating A/B in one app session (the renderer sources swapped by hot reload), two pairs each, warm rounds |
+| Measured | 2026-10-11, main at `261940374` against the switch pass (on main as `38fad326d`; the project-tab row is `bbfe4e739`), as an alternating A/B in one app session (the renderer sources swapped by hot reload), two pairs each, warm rounds |
 
 | Metric | How | Before | Baseline | Ceiling |
 |---|---|---:|---:|---:|
@@ -451,14 +449,13 @@ to 24 switches):
   24 ms of React work (the pane renders about 11 times for one switch, and
   about 350 components mount for the new rows) and about 10 ms of style and
   layout that the row measurement forces. The first frame follows it.
-- Until this pass every switch then rendered the transcript a second time,
-  10 to 18 ms after the first frame. The history read that follows a switch
-  gave back a new event list although nothing had changed, for two reasons:
-  a tool call that a provider sends twice was rebuilt as a new object on every
-  read (`mergeAgentChatHistorySnapshot` now hands back the held one), and the
-  desktop decoded each socket read alone, so a multi-byte character cut by a
-  read boundary became U+FFFD at a different place each time
-  (`RuntimeRpcClient` now uses a `StringDecoder`).
+- The history read that follows a switch must give back the event list that
+  the pane holds when nothing changed, or the transcript renders a second
+  time, 10 to 18 ms after the first frame. Two things keep it so:
+  `mergeAgentChatHistorySnapshot` hands back the held envelope of a tool call
+  that a provider sent twice, and `RuntimeRpcClient` decodes its stream with
+  a `StringDecoder` (a read that is decoded alone turns a multi-byte
+  character at its boundary into U+FFFD, at a different place each time).
 - The history read itself takes 4 to 19 ms. A cold open is slow because of
   its first render (row build, markdown parse, mounts), not because of data.
 
@@ -472,8 +469,7 @@ Measured and not kept:
   recent-project order in the main process and resets per-project state), so
   the way back was a second full switch.
 
-The ceiling of the project row is 70 ms, the same as the chat row. It was
-175 ms for the one day that project tabs stayed on the click.
+The ceiling of the project row is 70 ms, the same as the chat row.
 
 Not measured: the machine tabs of the top bar (Chats, Browser, Music), which
 use the same press path as the page tabs.
@@ -489,6 +485,6 @@ Open items from this pass:
 - After the older history of a chat has loaded in idle slots, the next history
   read removes the repeated tool calls of those pages and renders the
   transcript once more (once per chat per session).
-- The view cache keeps a chat until 128 MB of cached events are held, not
-  until eight chats are. A session that visits many long chats can hold more
-  than before; the heap row above is 16 chats.
+- The view cache keeps a chat until 128 MB of cached events are held. A
+  session that visits many long chats holds all of them up to that limit; the
+  heap row above is 16 chats.

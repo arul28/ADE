@@ -974,8 +974,9 @@ chat 136 to 47-51 ms, page tab 118 to 24-26 ms, project 137 to 44-51 ms.
   it also made the same history differ on every read. Other readers in the
   main process still decode per read (child-process output in `prService`,
   `agentChatService`, the SDK pools, `localRuntimeConnectionPool`).
-- **The view cache is bound by bytes only** (128 MB). Heap after a visit to 16
-  chats: 235 MB with the old limit of eight chats, 246 MB without.
+- **The view cache is bound by bytes only** (128 MB), not by a number of
+  chats. Heap after a visit to 16 chats: 246 MB (235 MB when only eight
+  chats were kept).
 - Profile of a warm switch (dev build): one synchronous task of about 35 ms,
   of which about 24 ms is React (the pane renders about 11 times per switch;
   about 350 components mount for the new rows) and about 10 ms is the style
