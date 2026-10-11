@@ -3882,6 +3882,9 @@ export function buildProviderInstancesDomainService(
       if (typeof requestedSettings.autoStartWindows === "boolean") {
         capture("auto_start_changed", requestedSettings.autoStartWindows ? "enabled" : "disabled", input.provider);
       }
+      if (typeof input.instanceId === "string" && input.provider === "claude" && Object.hasOwn(requestedSettings, "subagentPromptCacheTtl")) {
+        capture("subagent_cache_changed", requestedSettings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", input.provider);
+      }
       return { settings };
     },
     loginCommand(args: unknown) {

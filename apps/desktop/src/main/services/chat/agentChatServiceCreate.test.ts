@@ -3835,6 +3835,26 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(before.id))?.instanceId).toBe("claude");
     });
 
+    it("starts a Claude chat with its own account's subagent cache choice, and no other account's", async () => {
+      const accounts = getMachineProviderInstanceStore();
+      const work = accounts.create({ provider: "claude", label: "Work" }).instance;
+      accounts.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" }, work.id);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-account-cache") as any);
+      const { service } = createService();
+      const envOfLaunch = (index: number) =>
+        (vi.mocked(claudeSdkCreateSessionCompat).mock.calls[index]?.[0] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet", instanceId: work.id });
+      await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1));
+      expect(envOfLaunch(0)?.CLAUDE_CONFIG_DIR).toBe(work.configHome);
+      expect(envOfLaunch(0)?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe("1h");
+
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(2));
+      expect(envOfLaunch(1), "the default account's launch has an env").toBeTruthy();
+      expect(envOfLaunch(1)?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBeUndefined();
+    });
+
     it("moves a chat onto the new provider's default account when it switches provider", async () => {
       const accounts = getMachineProviderInstanceStore();
       const work = accounts.create({ provider: "claude", label: "Work" }).instance;

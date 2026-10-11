@@ -276,6 +276,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | --- | --- | --- | --- |
 | `provider_accounts` | `account_created`, `account_removed`, `default_selected` | `completed` | Claude/Codex family |
 | `provider_accounts` | `balance_changed`, `auto_start_changed` | `enabled`, `disabled` | Claude/Codex family |
+| `provider_accounts` | `subagent_cache_changed` | `enabled` (1 hour), `disabled` (the Claude default) | Claude only |
 | `api_credentials` | `credential_stored`, `credential_removed` | `completed` | coarse provider family |
 | `presets` | `preset_created`, `preset_deleted` | `completed` | coarse harness/provider family |
 | `proxy` | `sign_in` | `success` | Claude/Codex family |
@@ -531,7 +532,10 @@ machine-local registry write succeeds. `create`, `remove`, and `setDefault`
 use `provider_accounts` with `account_created`, `account_removed`, or
 `default_selected` and `outcome: "completed"`. The two settings carried by
 `setSettings` are split into `balance_changed` and `auto_start_changed`, with
-`outcome: "enabled"` or `"disabled"`. The only other property is the Claude or
+`outcome: "enabled"` or `"disabled"`. A Claude account's subagent prompt cache
+choice, also carried by `setSettings`, is `subagent_cache_changed`: `enabled`
+for 1 hour, `disabled` for the Claude default. It adds two one-hour-key slots
+(48 a day at most) under the same ceilings. The only other property is the Claude or
 Codex family. A per-action/per-outcome/per-family key with a one-hour minimum
 interval admits at most 336 events in a theoretical two-provider day before
 the event budget applies; the event-level `ade_feature_used` ceiling accepts

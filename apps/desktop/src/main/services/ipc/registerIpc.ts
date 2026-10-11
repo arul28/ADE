@@ -6957,6 +6957,9 @@ export function registerIpc({
     if (typeof settings.autoStartWindows === "boolean") {
       captureProviderAccount("auto_start_changed", settings.autoStartWindows ? "enabled" : "disabled", provider);
     }
+    if (instanceId && provider === "claude" && Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+      captureProviderAccount("subagent_cache_changed", settings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", provider);
+    }
     return result;
   });
 

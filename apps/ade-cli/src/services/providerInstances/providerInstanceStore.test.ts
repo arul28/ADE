@@ -303,6 +303,29 @@ describe("providerInstanceStore", () => {
     expect(changes.at(-1)).toEqual({ reason: "setSettings", provider: "claude" });
   });
 
+  it("keeps each account's own settings apart and takes only a Claude 1-hour subagent cache", () => {
+    const { store, adeDir } = makeStore();
+    const work = store.create({ provider: "claude", label: "Work" }).instance;
+    const codex = store.getDefault("codex");
+
+    store.setProviderSettings("claude", { compaction: { enabled: false } }, work.id);
+    store.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" }, work.id);
+    // A patch that names one account setting leaves the other alone.
+    expect(store.get(work.id)).toMatchObject({ subagentPromptCacheTtl: "1h", compaction: { enabled: false } });
+    expect(store.getDefault("claude").subagentPromptCacheTtl).toBeUndefined();
+    // The choice survives a new store over the same file.
+    expect(createProviderInstanceStore({ adeDir, env: {} }).get(work.id)?.subagentPromptCacheTtl).toBe("1h");
+
+    store.setProviderSettings("claude", { compaction: null }, work.id);
+    expect(store.get(work.id)?.compaction).toBeUndefined();
+    expect(store.get(work.id)?.subagentPromptCacheTtl).toBe("1h");
+
+    store.setProviderSettings("codex", { subagentPromptCacheTtl: "1h" }, codex.id);
+    expect(store.get(codex.id)?.subagentPromptCacheTtl).toBeUndefined();
+    store.setProviderSettings("claude", { subagentPromptCacheTtl: "2h" as never }, work.id);
+    expect(store.get(work.id)?.subagentPromptCacheTtl).toBeUndefined();
+  });
+
   it("records each account's identity from its own config home", async () => {
     const homes: string[] = [];
     const { store } = makeStore({

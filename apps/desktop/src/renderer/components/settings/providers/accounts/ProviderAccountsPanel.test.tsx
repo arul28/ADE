@@ -439,6 +439,35 @@ describe("ProviderAccountsPanel", () => {
     });
   });
 
+  it("sets one account's subagent cache and Auto-compact from its row menu", async () => {
+    const harness = installBridge();
+    const sentSettings = () => harness.providerInstances.setSettings.mock.calls.map((call) => call[0]);
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Subagent cache/ }));
+    // The page says which choice is active before the user picks.
+    expect(screen.getByRole("menuitemradio", { name: /^5 minutes/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^1 hour/ }));
+
+    await waitFor(() => {
+      expect(sentSettings()).toContainEqual(
+        { provider: "claude", instanceId: "claude-work", settings: { subagentPromptCacheTtl: "1h" } },
+      );
+    });
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Auto-compact/ }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Account compaction setting" }), { target: { value: "custom" } });
+
+    await waitFor(() => {
+      expect(sentSettings()).toContainEqual(
+        { provider: "claude", instanceId: "claude-work", settings: { compaction: {} } },
+      );
+    });
+  });
+
   it("confirms before removing, and removes nothing when the confirm is cancelled", async () => {
     const harness = installBridge();
     renderPanel();

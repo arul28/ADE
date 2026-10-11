@@ -883,6 +883,59 @@ describe("ptyService", () => {
       expect(opts?.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
     });
 
+    it.each<{
+      name: string;
+      instanceId?: string;
+      presetId?: string;
+      env?: Record<string, string>;
+      expected: string | undefined;
+    }>([
+      { name: "the account that chose 1 hour", instanceId: "acct-work", expected: "1h" },
+      { name: "the default account, which chose nothing", expected: undefined },
+      { name: "that account on a preset, which bills elsewhere", instanceId: "acct-work", presetId: "hp_other_endpoint", expected: undefined },
+      {
+        name: "that account when the caller already stated a TTL",
+        instanceId: "acct-work",
+        env: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" },
+        expected: "5m",
+      },
+    ])("gives a Claude terminal the subagent cache TTL of $name", async ({ instanceId, presetId, env, expected }) => {
+      const registryPath = path.join(adeHome, "provider-instances.json");
+      const registry = JSON.parse(mocks.fileContents.get(registryPath) ?? "{}");
+      registry.instances[0].subagentPromptCacheTtl = "1h";
+      mocks.fileContents.set(registryPath, JSON.stringify(registry));
+      resetSharedProviderInstanceStoresForTests();
+      const { service, loadPty } = createHarness();
+
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        command: "claude",
+        ...(env ? { env } : {}),
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: null,
+          ...(instanceId ? { instanceId } : {}),
+          ...(presetId ? { presetId } : {}),
+          launch: {
+            permissionMode: "default",
+            ...(instanceId ? { instanceId } : {}),
+            ...(presetId ? { presetId } : {}),
+          },
+        },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.ADE_LANE_ID, "the launch env reached the spawn").toBe("lane-1");
+      expect(opts?.env?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe(expected);
+      service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
+    });
+
     it("silently falls back to the provider default when the account is gone", () => {
       const resolved = resolveProviderInstanceForLaunch("claude", "acct-deleted");
       expect(resolved?.id).toBe("claude");
