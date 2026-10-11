@@ -840,6 +840,7 @@ const mockProviderInstances: Array<{
   loginBroken?: boolean;
   sameLoginAs?: string;
   replacedAccount?: { email: string; plan?: string; replacedAt: string };
+  subagentPromptCacheTtl?: "1h";
 }> = [
   {
     id: "claude",
@@ -7849,9 +7850,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         ({ ...mockProviderInstanceSettings[args.provider] }),
       setSettings: async (args: {
         provider: "claude" | "codex";
-        settings: { smartBalance?: boolean; autoStartWindows?: boolean };
+        instanceId?: string;
+        settings: { smartBalance?: boolean; autoStartWindows?: boolean; subagentPromptCacheTtl?: "1h" | null };
       }) => {
         const current = mockProviderInstanceSettings[args.provider];
+        const account = args.instanceId ? mockProviderInstances.find((entry) => entry.id === args.instanceId) : undefined;
+        if (account && args.settings && Object.hasOwn(args.settings, "subagentPromptCacheTtl")) {
+          if (args.settings.subagentPromptCacheTtl === "1h") account.subagentPromptCacheTtl = "1h";
+          else delete account.subagentPromptCacheTtl;
+        }
         if (typeof args.settings?.smartBalance === "boolean") current.smartBalance = args.settings.smartBalance;
         if (typeof args.settings?.autoStartWindows === "boolean") {
           current.autoStartWindows = args.settings.autoStartWindows;

@@ -337,6 +337,7 @@ import {
 } from "./turnDiffSummary";
 import {
   getMachineProviderInstanceStore,
+  claudeAccountPromptCacheEnv,
   providerInstanceEnvPatch,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -39274,6 +39275,11 @@ export function createAgentChatService(args: {
       // reach ADE as an exit code with no cause.
       CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1",
     };
+    // The account's own prompt cache choice. A preset or stored credential
+    // bills another endpoint, so it gets none.
+    if (!claudePresetPlan) {
+      Object.assign(claudeEnv, claudeAccountPromptCacheEnv(managed.session.instanceId, claudeEnv));
+    }
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
     // ADE's preferred default, supplied only when no settings file states one.

@@ -108,6 +108,7 @@ import {
 } from "../../../shared/backgroundUtilityModel";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
+  claudeAccountPromptCacheEnv,
   providerInstanceEnvPatch,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -6305,6 +6306,21 @@ export function createPtyService({
         else delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
       } else {
         delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
+      }
+      // The account's own prompt cache choice, on the one path every fresh
+      // launch and resume takes. A preset or stored credential bills another
+      // endpoint, so it gets none.
+      if (
+        isClaudeTrackedCliToolType(toolTypeHint)
+        && !runtimeLaunchPresetId
+        && !runtimeLaunchCredentialId
+        && !trackedCliResumePresetId(initialResumeMetadata)
+        && !trackedCliResumeCredentialId(initialResumeMetadata)
+      ) {
+        Object.assign(launchEnv, claudeAccountPromptCacheEnv(
+          runtimeLaunchInstance?.id ?? trackedCliResumeInstanceId(initialResumeMetadata),
+          launchEnv,
+        ));
       }
       launchEnv = withResolvedCliLaunchPath(launchEnv, {
         includeInteractiveShell: Boolean(directCommand || startupCommand),

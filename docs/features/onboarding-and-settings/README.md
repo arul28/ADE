@@ -2194,6 +2194,17 @@ file, so they have exactly one identity per machine.
   ("Same as provider default" or Custom), stored as `compaction` on that account
   record; it overrides the provider value field by field. See
   [Compaction per provider](../chat/agent-routing.md#compaction-per-provider).
+- **Subagent prompt cache (Claude).** Each Claude account card has a
+  **Subagent prompt cache** choice (`PromptCacheSetting.tsx`): 5 minutes, the
+  Claude Code default, or 1 hour. ADE has no default of its own here: 1-hour
+  cache writes cost more, and they pay off only when subagents often wait more
+  than 5 minutes between requests. "1 hour" is stored as
+  `subagentPromptCacheTtl` on the account record; the default stores nothing.
+  `claudeAccountPromptCacheEnv` (`providerInstanceStore.ts`) turns the choice
+  into `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` for SDK chats and terminal
+  `claude` sessions on that account. It adds nothing when the environment
+  already states a TTL, and a launch on a preset or a stored credential never
+  gets it, because that endpoint bills separately.
 - **AI settings save to `.ade/local.yaml`.** `ai.updateConfig` (IPC, the `ai`
   action domain, and the brain's remote command) merges its partial config into
   the local layer through `projectConfigService.updateAiConfig`. The shared

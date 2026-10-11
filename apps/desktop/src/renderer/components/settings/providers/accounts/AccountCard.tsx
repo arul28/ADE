@@ -38,7 +38,7 @@ export function AccountCard({
   onAction,
   onSignIn,
   replacedNote,
-  compactionControl,
+  settingsControl,
   renaming,
   onCommitRename,
   onCancelRename,
@@ -56,7 +56,7 @@ export function AccountCard({
   onAction: (action: RowMenuAction, instance: ProviderInstance) => void;
   onSignIn: (instance: ProviderInstance) => void;
   replacedNote: React.ReactNode;
-  compactionControl?: React.ReactNode;
+  settingsControl?: React.ReactNode;
   renaming: boolean;
   onCommitRename: (instance: ProviderInstance, label: string) => void;
   onCancelRename: () => void;
@@ -281,7 +281,7 @@ export function AccountCard({
         </span>
       )}
 
-      <div onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{compactionControl}</div>
+      <div onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{settingsControl}</div>
       {replacedNote}
     </div>
   );
