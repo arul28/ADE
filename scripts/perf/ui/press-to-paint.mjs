@@ -6,12 +6,13 @@
 // and the time from the PRESS to the first frame that shows the new content.
 // interaction.mjs starts its clock inside the click handler, so it cannot see
 // the 60-120 ms a button is held. See docs/perf/macos-baseline.md.
-//   chats     round-robin over the visible Work chat rows
+//   chats     round-robin over the visible Work chat rows (opens the Work tab)
 //   tabs      round-robin over the project sidebar tabs
 //   projects  round-robin over the open project tabs in the top bar
-//   rapid     presses CHATS rows INTERVAL_MS apart; reports the time from the
-//             last press to the last chat's content, which earlier chats
-//             painted on the way, and the main-thread work of the whole burst
+//   rapid     presses CHATS rows INTERVAL_MS apart (opens the Work tab);
+//             reports the time from the last press to the last chat's content,
+//             which earlier chats painted on the way, and the main-thread work
+//             of the whole burst
 // Env: CDP_PORT (9222), CDP_TARGET_URL, HOVER_MS (250), HOLD_MS (90),
 //      CHATS (6), INTERVAL_MS (120), RAPID_HOLD_MS (40), GAP_MS (700)
 // Round 1 is the cold visit; the summary reports the warm rounds.
@@ -42,26 +43,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const mouse = (type, x, y, extra = {}) => { void send("Input.dispatchMouseEvent", { type, x, y, pointerType: "mouse", ...extra }); };
 const load1 = () => os.loadavg()[0].toFixed(1);
 
-// In the page: `__adePressArm(contentSource)` starts watching and resolves once
-// the page has been quiet after the content showed. The clock starts at the
+// In the page: `__adePressArm(isContent)` starts watching and resolves once the
+// page has been quiet after `isContent()` turned true. The clock starts at the
 // first pointerdown (its event timestamp, so time the event spent queued behind
 // a busy main thread counts). A frame counts once the rAF after a mutation
 // batch has run and a task posted from it has started.
 await ev(`(() => {
-  window.__adePressArm = (contentSource, opts = {}) => {
-    const isContent = new Function("return (" + contentSource + ")")();
+  window.__adePressArm = (isContent, opts = {}) => {
     const quietMs = opts.quietMs ?? 150, capMs = opts.capMs ?? 5000, presses = opts.presses ?? 1;
     const busy = [];
     let po = null;
     try { po = new PerformanceObserver((l) => { for (const e of l.getEntries()) busy.push([e.startTime, e.duration]); }); po.observe({ type: "long-animation-frame" }); } catch {}
     const downs = [];
-    let handlerAt = null, upAt = null, clickAt = null, firstFrameAt = null, contentAt = null, lastChangeAt = null, pendingFrame = false;
+    let handlerAt = null, clickAt = null, firstFrameAt = null, contentAt = null, lastChangeAt = null, pendingFrame = false;
     const seen = [];
     const onDown = (e) => { downs.push(e.timeStamp); if (handlerAt === null) handlerAt = performance.now(); };
-    const onUp = (e) => { upAt = e.timeStamp; };
     const onClick = () => { clickAt = performance.now(); };
     addEventListener("pointerdown", onDown, true);
-    addEventListener("pointerup", onUp, true);
     addEventListener("click", onClick, true);
     const mo = new MutationObserver(() => {
       if (!downs.length || pendingFrame) return;
@@ -89,12 +87,11 @@ await ev(`(() => {
           mo.disconnect();
           try { po?.disconnect(); } catch {}
           removeEventListener("pointerdown", onDown, true);
-          removeEventListener("pointerup", onUp, true);
           removeEventListener("click", onClick, true);
           const t0 = downs[0] ?? null, tLast = downs.at(-1) ?? null, end = lastChangeAt ?? now;
           const rel = (t, from = t0) => (t === null || from === null ? null : t - from);
           resolve({
-            presses: downs.length, inputDelayMs: rel(handlerAt), holdMs: rel(upAt, tLast), pressToClickMs: rel(clickAt, tLast),
+            presses: downs.length, inputDelayMs: rel(handlerAt), pressToClickMs: rel(clickAt, tLast),
             pressToFirstFrameMs: rel(firstFrameAt), pressToContentMs: rel(contentAt, tLast), clickToContentMs: clickAt === null || contentAt === null ? null : contentAt - clickAt,
             firstPressToContentMs: rel(contentAt), settledMs: rel(end, tLast),
             longFrameMs: t0 === null ? 0 : busy.filter(([s]) => s >= t0 - 1 && s <= end).reduce((a, [, d]) => a + d, 0),
@@ -150,15 +147,15 @@ async function chatIds() {
   return JSON.parse(await ev(`JSON.stringify([...new Set([...document.querySelectorAll("[data-session-row]")].filter((e) => e.offsetParent && !e.closest("[data-ade-surface-hidden]")).map((e) => e.getAttribute("data-session-id")))].slice(0, ${CHATS}))`));
 }
 
-/** One real press on `locate` (a page expression for the element). */
-async function press(locate, contentSource, { hoverMs = HOVER_MS, holdMs = HOLD_MS } = {}) {
+/** One real press on `locate`; `isContent` is the page function that sees the result. Both are page expressions. */
+async function press(locate, isContent) {
   const at = await ev(`window.__adeCenter(${locate})`);
   if (!at?.ok) return null;
   mouse("mouseMoved", at.x, at.y);
-  await sleep(hoverMs);
-  await ev(`window.__adePressArm(${JSON.stringify(contentSource)})`);
+  await sleep(HOVER_MS);
+  await ev(`window.__adePressArm(${isContent})`);
   mouse("mousePressed", at.x, at.y, { button: "left", buttons: 1, clickCount: 1 });
-  await sleep(holdMs);
+  await sleep(HOLD_MS);
   mouse("mouseReleased", at.x, at.y, { button: "left", buttons: 0, clickCount: 1 });
   return ev("window.__adePressResult");
 }
@@ -179,7 +176,7 @@ if (mode === "rapid") {
     for (const sid of order) points.push(await ev(`window.__adeCenter(${chatRow(sid)})`));
     if (points.some((p) => !p?.ok)) { console.error("a chat row is not clickable"); process.exit(1); }
     const before = await metrics();
-    await ev(`window.__adePressArm(${JSON.stringify(chatContent(last))}, { presses: ${order.length}, track: window.__adeShownChat, capMs: 8000 })`);
+    await ev(`window.__adePressArm(${chatContent(last)}, { presses: ${order.length}, track: window.__adeShownChat, capMs: 8000 })`);
     for (const p of points) {
       mouse("mouseMoved", p.x, p.y);
       mouse("mousePressed", p.x, p.y, { button: "left", buttons: 1, clickCount: 1 });
@@ -234,7 +231,8 @@ const rows = [];
 for (let round = 0; round < rounds; round++) {
   for (const target of targets) {
     const r = await press(target.locate, target.content);
-    if (r) rows.push({ round, name: target.name, load1: load1(), ...r });
+    // A target that could not be pressed counts as a miss, not as nothing.
+    rows.push({ round, name: target.name, load1: load1(), ...(r ?? { pressToContentMs: null }) });
     await sleep(GAP_MS);
   }
 }

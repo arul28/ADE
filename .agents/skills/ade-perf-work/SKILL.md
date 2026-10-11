@@ -940,17 +940,23 @@ Measure a switch from the press, with real input: `scripts/perf/ui/press-to-pain
 (CDP mouse move, press, a held button, release). `interaction.mjs` starts in
 the click handler and misses the 60 to 120 ms a button is held, which was two
 thirds of every switch. Four projects open, five chats, interleaved A/B:
-chat 136 to 47-51 ms, page tab 118 to 24-26 ms, project 137 to 52-55 ms.
+chat 136 to 47-51 ms, page tab 118 to 24-26 ms.
 
-- **A switch control acts on the press** (`hooks/usePressActivation.ts`). Keep
-  its rules: only a plain mouse press (primary button, no modifier, not on a
-  nested control) acts early; touch, pen, keyboard and modified clicks keep the
-  click; the click of an acted press is dropped. A press on a draggable
-  control must be able to undo itself: a chat row returns the earlier
-  selection from `onSelect` and the native `dragstart` runs it; a project tab
-  goes back when `useProjectTabDrag` reports the drag start. Do not add press
-  activation to a control whose press has more to undo than you restore (the
-  board and the Focus grid keep the click for that reason).
+- **A switch control acts on the press** (`lib/pressActivation.ts`): chat
+  rows, the page tabs of the project sidebar, the machine tabs of the top bar.
+  Keep its rules: only a plain mouse press (primary button, no modifier, on
+  the control and not on a nested control or a portal of it) acts early;
+  touch, pen, keyboard and modified clicks keep the click; the click of an
+  acted press is dropped.
+- **A press must be able to undo itself, or it keeps the click.** A chat row
+  is draggable, so `onSelect` returns an undo (`selectionRestorer` in
+  `useWorkSessions`) and the native `dragstart` runs it. Restore everything
+  the press wrote, not only what shows: the first version left the dragged
+  chat in the open list. Project tabs stayed on the click for this reason (a
+  project switch writes main-process state), as did the board, the Focus grid
+  and rows that are members of a grid. A React portal sends its events to the
+  component that rendered it: a press on a menu backdrop reached the row
+  under it until the press checked that its target is inside its own element.
 - **An unchanged transcript must reconcile to the same list.** The history
   read after a switch gave back a new list every time, so the transcript
   rendered twice per switch. `mergeAgentChatHistorySnapshot` now maps a
@@ -959,10 +965,11 @@ chat 136 to 47-51 ms, page tab 118 to 24-26 ms, project 137 to 52-55 ms.
 - **Decode a byte stream with a `StringDecoder`.** `RuntimeRpcClient` decoded
   each socket read alone; a multi-byte character at a read boundary became
   U+FFFD at a different place on each read. That is wrong text on screen, and
-  it also made the same history differ on every read.
-- **The view cache is bound by bytes only** (128 MB). Its count of eight was
-  removed. Heap after a visit to 16 chats: 235 MB with the count, 246 MB
-  without.
+  it also made the same history differ on every read. Other readers in the
+  main process still decode per read (child-process output in `prService`,
+  `agentChatService`, the SDK pools, `localRuntimeConnectionPool`).
+- **The view cache is bound by bytes only** (128 MB). Heap after a visit to 16
+  chats: 235 MB with the old limit of eight chats, 246 MB without.
 - Profile of a warm switch (dev build): one synchronous task of about 35 ms,
   of which about 24 ms is React (the pane renders about 11 times per switch;
   about 350 components mount for the new rows) and about 10 ms is the style

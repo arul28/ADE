@@ -412,8 +412,9 @@ state is reported by both.
 The rows above time a switch from its click handler. A click fires on
 mouse-up, and the button of a normal click is down for 60 to 120 ms first, so
 those rows left out most of what the reader waits for. These rows start the
-clock at the press. Chat rows, project tabs and the page tabs of the project
-sidebar now switch on the press (`hooks/usePressActivation.ts`).
+clock at the press. Chat rows, the page tabs of the project sidebar and the
+machine tabs of the top bar now switch on the press
+(`lib/pressActivation.ts`). Project tabs keep the click; see below.
 
 | | |
 |---|---|
@@ -429,7 +430,7 @@ sidebar now switch on the press (`hooks/usePressActivation.ts`).
 | Chat switch: press to content (median; range over the chats) | `press-to-paint.mjs chats` | 136-137 ms (124-138) | 47-51 ms (39-51) | 70 ms |
 | Page tab switch: press to content | `press-to-paint.mjs tabs` | 118-120 ms (99-142) | 24-26 ms (7-39) | 50 ms |
 | Page tab switch: press to the first frame (the tab strip marks the tab) | same | 100-101 ms | 8 ms | 16 ms |
-| Project switch: press to content | `press-to-paint.mjs projects` | 137-143 ms (130-144) | 52-55 ms (42-57) | 75 ms |
+| Project switch: press to content (not moved to the press) | `press-to-paint.mjs projects` | 137-143 ms (130-144) | 137-143 ms | 175 ms |
 | Rapid chat clicks (5 chats, 120 ms apart, 40 ms hold): last press to that chat's content | `press-to-paint.mjs rapid` | 89-91 ms | 44-51 ms | 70 ms |
 | Rapid chat clicks: main-thread task time of the burst | same | 506-510 ms | 511-587 ms | 750 ms |
 | Warm chat switch: main-thread task time, script time (700 ms after the click, idle subtracted, median of 20) | CDP `Performance.getMetrics` | 118-126 ms, 55-56 ms | 114-116 ms, 51-52 ms | 150 ms, 70 ms |
@@ -458,9 +459,20 @@ to 24 switches):
 - The history read itself takes 4 to 19 ms. A cold open is slow because of
   its first render (row build, markdown parse, mounts), not because of data.
 
-Measured and not kept: a read of a chat's history when the pointer rests on
-its row. Cold opens stayed in the same range (82-512 ms with it, 89-266 ms
-without), because the read is not what a cold open waits for.
+Measured and not kept:
+
+- A read of a chat's history when the pointer rests on its row. Cold opens
+  stayed in the same range (82-512 ms with it, 89-266 ms without), because
+  the read is not what a cold open waits for.
+- Project tabs on the press: 52-55 ms from the press (42-57), against 137-143.
+  A press that becomes a drag of the tab then had to switch back, and a
+  project switch is not a view change only: it writes the recent-project
+  order in the main process and resets per-project state. Until a drag of a
+  tab is allowed to activate it (as a browser does), project tabs act on the
+  click.
+
+Not measured: the machine tabs of the top bar (Chats, Browser, Music), which
+use the same press path as the page tabs.
 
 Open items from this pass:
 

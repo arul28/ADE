@@ -6,6 +6,7 @@ import type { PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { useChatLaunchCliDriver } from "./useChatLaunchCliDriver";
 import { SessionListPane } from "./SessionListPane";
+import type { PressUndo } from "../../lib/pressActivation";
 import { SessionSurface, WorkViewArea } from "./WorkViewArea";
 import { WorkGridView } from "./WorkGridView";
 import { WorkFocusGridEmpty, WorkFocusRoster } from "./WorkFocusGrid";
@@ -323,7 +324,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       event?: React.MouseEvent,
       visibleSessionIds?: string[],
       binding?: OpenProjectBinding | null,
-    ): void | (() => void) => {
+    ): void | PressUndo => {
       const useRange = event?.shiftKey === true;
       const useToggle = event?.metaKey === true || event?.ctrlKey === true;
       const orderedIds = visibleSessionIds?.length ? visibleSessionIds : selectableSessions.map((session) => session.id);
@@ -362,7 +363,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // click or the start of a drag of that row (onto the open chat, to make
       // a grid or a mention). Keep what the press replaces, to give it back.
       const before = event?.type === "pointerdown"
-        ? { selectedIds: selectedSessionIds, anchorId: selectionAnchorId, activeItemId: work.activeItemId }
+        ? { selectedIds: selectedSessionIds, anchorId: selectionAnchorId, restoreWork: work.selectionRestorer(id) }
         : null;
       setSelectedSessionIds(new Set());
       setSelectionAnchorId(id);
@@ -379,7 +380,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       if (work.workViewMode === "board") work.setWorkViewMode("list");
       // In the Focus grid a row click focuses that chat's tile. A chat with no
       // tile (it is working, or the grid is full) opens in the normal view.
-      if (work.workFocusGrid && work.workFoldBusyLanes && work.workViewMode !== "board") {
+      if (focusGridMode) {
         if (!focusSession(id)) work.setWorkFocusGrid(false);
       }
       // Opening the row IS the acknowledgement — the "woke" marker only exists
@@ -390,18 +391,20 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       };
       if (!before) {
         acknowledge();
-        return undefined;
+        return;
       }
-      // A dragged row was not opened, so its marker waits for the release.
+      // The release of the press acknowledges. A press that becomes a drag has
+      // no release (the browser cancels the pointer), and its undo takes the
+      // listener away: a dragged row was not opened, so its marker stays.
       window.addEventListener("pointerup", acknowledge, { capture: true, once: true });
       return () => {
         window.removeEventListener("pointerup", acknowledge, true);
         setSelectedSessionIds(before.selectedIds);
         setSelectionAnchorId(before.anchorId);
-        work.setActiveItemId(before.activeItemId);
+        before.restoreWork();
       };
     },
-    [focusSession, selectableSessions, selectedSessionIds, selectionAnchorId, work],
+    [focusGridMode, focusSession, selectableSessions, selectedSessionIds, selectionAnchorId, work],
   );
 
   const handleSelectForeignRuntimeSession = useCallback(

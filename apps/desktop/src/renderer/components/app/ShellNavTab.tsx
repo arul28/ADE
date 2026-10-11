@@ -2,7 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { X } from "@phosphor-icons/react";
 
 import { cn } from "../ui/cn";
-import { usePressActivation } from "../../hooks/usePressActivation";
+import { pressActivation } from "../../lib/pressActivation";
 
 type ShellNavTabProps = {
   active: boolean;
@@ -25,7 +25,6 @@ export function ShellNavTab({
   children,
   className,
 }: ShellNavTabProps) {
-  const press = usePressActivation();
   return (
     <div
       role="button"
@@ -38,7 +37,7 @@ export function ShellNavTab({
       )}
       data-state={active ? "active" : undefined}
       style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
-      {...(onActivate ? press(onActivate) : {})}
+      {...(onActivate ? pressActivation(onActivate) : {})}
       onKeyDown={(event) => {
         if (
           onActivate &&

@@ -53,7 +53,7 @@ import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { useSessionDelta } from "./useSessionDelta";
-import { usePressActivation } from "../../hooks/usePressActivation";
+import { pressActivation, type PressUndo } from "../../lib/pressActivation";
 import { cn } from "../ui/cn";
 import { MONO_FONT, toneText } from "../lanes/laneDesignTokens";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
@@ -509,7 +509,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
    * press (`selectOnPress`), and the same press can start a drag of the row;
    * the drag then puts the previous chat back.
    */
-  onSelect: (id: string, event: React.MouseEvent) => void | (() => void);
+  onSelect: (id: string, event: React.MouseEvent) => void | PressUndo;
   /** Open on the press, not on the release. Off where a press has more to undo. */
   selectOnPress?: boolean;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -627,7 +627,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   // The row id lets the hook re-find this row if React swaps the wrapper node
   // during the one-second wait — see `resolveTriggerElement`.
   const hoverCard = useSessionHoverCard({ rowId: session.id });
-  const press = usePressActivation();
+  // A grid tile takes the keyboard focus when it becomes the active one. On a
+  // press that would happen before the browser moves the focus to this row,
+  // and the row would take it back. A grid member waits for the click, which
+  // comes after the focus has moved.
+  const opensOnPress = selectOnPress && gridBadge == null;
   const sessionAttentionInput = canonicalInputFromSummary(session);
   const canonicalUiState = sessionCanonicalUiState(sessionAttentionInput);
   const canonicalPhase = canonicalUiState.phase;
@@ -1548,13 +1552,13 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       {...(disabledReason
         ? { "aria-label": `${primaryText}: ${disabledReason}` }
         : { "aria-label": primaryText })}
-      {...press((event) => {
+      {...pressActivation((event) => {
         // Selecting loads this session into the very area the card floats over,
         // so the card gets out of the way the moment the row is acted on.
         hoverCard.close();
         if (disabledReason) return undefined;
         return onSelect(session.id, event);
-      }, selectOnPress)}
+      }, opensOnPress)}
       onKeyDown={(event) => {
         // Only the row itself — a key pressed inside a nested control (settle,
         // snooze, a preview link) belongs to that control.

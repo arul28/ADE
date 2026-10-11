@@ -72,8 +72,6 @@ import {
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
-import { usePressActivation } from "../../hooks/usePressActivation";
-import { useLatestCallback } from "../../lib/stableIdentity";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
 import { usePreferLocalCheckout } from "./usePreferLocalCheckout";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1477,48 +1475,6 @@ export function TopBar({
     ],
   );
 
-  // A project tab switches on the press. That is done only from one plain
-  // state, a project in front and nothing in transition, so that the press has
-  // one thing to undo: every other state keeps the click.
-  const pressTab = usePressActivation();
-  const tabPressSwitches =
-    !isProjectBusy
-    && !machineRouteActive
-    && !accountRouteActive
-    && !hubRouteActive
-    && !isNewTabOpen
-    && !isSettingsTabOpen
-    && (remoteBinding != null || project?.rootPath != null);
-  // The project that a tab press left. A press that becomes a drag returns to
-  // it, so that a drag of a tab does not also switch to that tab.
-  const tabPressReturnRef = useRef<{ key: string; back: () => void } | null>(null);
-  const returnToProject = useLatestCallback(
-    (previous: { remote: RemoteOpenProjectBinding | null; rootPath: string | null }) => {
-      if (previous.remote) void handleSwitchRemoteProject(previous.remote);
-      else if (previous.rootPath) void handleSwitchProject(previous.rootPath);
-    },
-  );
-  const switchFromTab = (
-    event: { type: string },
-    key: string,
-    run: () => Promise<void>,
-  ): void => {
-    const previous = { remote: remoteBinding ?? null, rootPath: project?.rootPath ?? null };
-    const switching = run();
-    if (event.type !== "pointerdown") return;
-    tabPressReturnRef.current = {
-      key,
-      back: () => {
-        void switching.then(() => returnToProject(previous));
-      },
-    };
-  };
-  const handleTabDragStart = useCallback((key: string) => {
-    const held = tabPressReturnRef.current;
-    tabPressReturnRef.current = null;
-    if (held?.key === key) held.back();
-  }, []);
-
   const {
     closeTabGroups,
     handleRemoveTab,
@@ -1534,7 +1490,6 @@ export function TopBar({
     setTabOrder,
     checkForActiveWorkloads,
     isProjectBusy,
-    onTabDragStart: handleTabDragStart,
   });
 
   const confirmAndCloseRemoteTargetTabs = useCallback(
@@ -2114,10 +2069,6 @@ export function TopBar({
                   remoteTabState === "error" || remoteTabState === "idle";
                 const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
                 const remoteTabKey = tabOrderKey(group);
-                const remoteTabPress = pressTab((event) => {
-                  if (projectTabDrag.isDragClick()) return;
-                  switchFromTab(event, remoteTabKey, () => handleSwitchRemoteProject(remoteTab));
-                }, tabPressSwitches && !isCurrentRemote);
                 return (
                   <div
                     key={group.id}
@@ -2125,9 +2076,7 @@ export function TopBar({
                     tabIndex={0}
                     {...{ [PROJECT_TAB_KEY_ATTR]: remoteTabKey }}
                     onPointerDown={(event) => {
-                      tabPressReturnRef.current = null;
                       if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
-                      remoteTabPress.onPointerDown(event);
                     }}
                     onContextMenu={(event) => openTabMenu(event, group.id)}
                     data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
@@ -2149,7 +2098,10 @@ export function TopBar({
                       } as React.CSSProperties
                     }
                     title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
-                    onClick={remoteTabPress.onClick}
+                    onClick={() => {
+                      if (projectTabDrag.isDragClick()) return;
+                      handleSwitchRemoteProject(remoteTab);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
@@ -2235,11 +2187,6 @@ export function TopBar({
               // bound project tab stays rendered but must not also read active.
               else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
               const indicator = terminalAttention?.indicator;
-              const localTabPress = pressTab((event) => {
-                if (projectTabDrag.isDragClick()) return;
-                if (isMissing) return;
-                switchFromTab(event, localTabKey, () => handleSwitchProject(rp.rootPath));
-              }, tabPressSwitches && canDragTab && !isCurrent);
               return (
                 <div
                   key={group.id}
@@ -2257,9 +2204,7 @@ export function TopBar({
                   }
                   {...{ [PROJECT_TAB_KEY_ATTR]: localTabKey }}
                   onPointerDown={(event) => {
-                    tabPressReturnRef.current = null;
                     if (canDragTab) projectTabDrag.onTabPointerDown(event, localTabKey);
-                    localTabPress.onPointerDown(event);
                   }}
                   onContextMenu={(event) => openTabMenu(event, group.id)}
                   className={cn(
@@ -2272,7 +2217,10 @@ export function TopBar({
                       "pointer-events-none opacity-80",
                   )}
                   style={{ ...projectTabStyle, ...projectTabDrag.tabDragStyle(localTabKey) }}
-                  onClick={localTabPress.onClick}
+                  onClick={() => {
+                    if (projectTabDrag.isDragClick()) return;
+                    if (!isMissing) handleSwitchProject(rp.rootPath);
+                  }}
                   onKeyDown={(event) => {
                     if (isMissing) return;
                     if (event.key === "Enter" || event.key === " ") {

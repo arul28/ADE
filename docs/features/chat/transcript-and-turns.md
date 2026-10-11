@@ -1670,9 +1670,9 @@ chronologically. iOS continues to sort and dedupe its materialized event set by
 the same lifecycle contract.
 
 The renderer keeps a bounded per-session view cache so switching back can paint
-immediately. Its bound is bytes (128 MB of cached events, 32 MB for one chat),
-not a number of chats: a count limit made the ninth chat of a session a cold
-open while the cache held a few megabytes. A hidden chat's retention subscription captures the concrete
+immediately. Its bound is bytes (128 MB of cached events, 32 MB for one chat)
+and not a number of chats, so a return to any recent chat is warm while the
+cache has room. A hidden chat's retention subscription captures the concrete
 outgoing project binding, even when that binding was the active unpinned path,
 so a later project switch cannot silently retarget the retained stream.
 Returning adopts that subscription synchronously, renders the cached tail, and

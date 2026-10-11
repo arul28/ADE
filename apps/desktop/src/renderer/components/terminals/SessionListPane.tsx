@@ -39,6 +39,7 @@ import type { DesktopSeatKind } from "../../../shared/types/macDesktop";
 import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
 import { LANE_APP_CONTROL_LABEL, laneBrowserLabel, useLaneWorkToolUse } from "./useLaneWorkToolUse";
 import { SessionCard } from "./SessionCard";
+import type { PressUndo } from "../../lib/pressActivation";
 import { ToolLogo } from "./ToolLogos";
 import { LaneNamingLabel } from "./LaneNamingLabel";
 import {
@@ -1042,7 +1043,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     event: React.MouseEvent | undefined,
     visibleSessionIds: string[],
     binding?: OpenProjectBinding | null,
-  ) => void | (() => void);
+  ) => void | PressUndo;
   /** Rows open on the press. See `SessionCard`'s `selectOnPress`. */
   selectOnPress?: boolean;
   /**
@@ -1057,7 +1058,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     binding: OpenProjectBinding,
     event: React.MouseEvent,
     visibleSessionIds: string[],
-  ) => void | (() => void);
+  ) => void | PressUndo;
   onClearSelection?: () => void;
   onBulkClose?: () => void;
   onBulkDelete?: () => void;

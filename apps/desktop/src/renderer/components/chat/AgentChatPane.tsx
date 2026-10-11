@@ -1527,7 +1527,12 @@ function writeAgentChatSessionViewCache(
     estimatedBytes,
   });
   // Total bytes are recomputed from the live entries on each write (one number
-  // per cached chat), so no running counter can drift.
+  // per cached chat), so no running counter can drift. The list of entries is
+  // built only when the cache is over its limit: this runs on every flush of a
+  // retained chat.
+  let totalBytes = 0;
+  for (const entry of agentChatSessionViewCacheBySessionId.values()) totalBytes += entry.estimatedBytes;
+  if (totalBytes <= MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL) return;
   const evictions = selectAgentChatSessionViewEvictions(
     [...agentChatSessionViewCacheBySessionId].map(([id, entry]) => ({
       sessionId: id,
@@ -1539,20 +1544,19 @@ function writeAgentChatSessionViewCache(
 
 /**
  * Choose which cached views to drop so the cache stays under the total byte
- * ceiling. Bytes are the only limit: a count limit (it was eight) made the
- * ninth chat of a session a cold open while the cache held a few megabytes.
+ * ceiling. Bytes are the only limit: a limit on the number of chats makes a
+ * return to a small chat a cold open while the cache holds a few megabytes.
  * The cache map is insertion-ordered by recency (see
  * `readAgentChatSessionViewCache`), so `entriesOldestFirst` is simply its
  * iteration order and eviction is oldest-first.
  */
 export function selectAgentChatSessionViewEvictions(
   entriesOldestFirst: readonly { sessionId: string; estimatedBytes: number }[],
-  maxBytes: number = MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL,
 ): string[] {
   let totalBytes = entriesOldestFirst.reduce((sum, entry) => sum + entry.estimatedBytes, 0);
   const evicted: string[] = [];
   for (const entry of entriesOldestFirst) {
-    if (totalBytes <= maxBytes) break;
+    if (totalBytes <= MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL) break;
     evicted.push(entry.sessionId);
     totalBytes -= entry.estimatedBytes;
   }
@@ -1588,8 +1592,9 @@ function deleteAgentChatSessionViewCache(sessionId: string): void {
  *
  * The cache is module-level and outlives any single pane, so without this a
  * closed project's transcripts sit resident until newer chats fill the byte
- * ceiling and push them out. Deliberately explicit rather than tied to project teardown: the entries
- * carry no project key, so the only honest signal is "this session is gone".
+ * ceiling. Deliberately explicit rather than tied to project teardown: the
+ * entries carry no project key, so the only honest signal is "this session is
+ * gone".
  */
 export function clearAgentChatSessionViewCacheForSessions(
   sessionIds: Iterable<string>,

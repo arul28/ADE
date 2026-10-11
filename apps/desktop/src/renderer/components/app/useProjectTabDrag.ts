@@ -92,8 +92,6 @@ export function useProjectTabDrag(args: {
   stripRef: RefObject<HTMLElement | null>;
   canTearOff: boolean;
   onReorder: (orderedKeys: string[]) => void;
-  /** The press on this tab moved far enough to be a drag. */
-  onDragStart?: (key: string) => void;
   onTearOff: (tearOff: TearOffStart) => void;
   onTearOffMove: (point: ScreenPoint) => void;
   /** `point` is null when the drag was cancelled; nothing may merge then. */
@@ -153,7 +151,6 @@ export function useProjectTabDrag(args: {
         if (Math.hypot(dx, dy) < DRAG_START_PX) return;
         session.started = true;
         session.element.setPointerCapture?.(session.pointerId);
-        latest.current.onDragStart?.(session.key);
       }
 
       const strip = stripRef.current?.getBoundingClientRect() ?? null;

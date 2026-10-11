@@ -1552,6 +1552,33 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     [selectLaneForActiveTab, setProjectViewState],
   );
 
+  /**
+   * How to put back what opening `sessionId` replaces: the active and the
+   * selected item, the lane, and the open list without `sessionId` when it was
+   * not in it. Take it before the open. A row opens on the press of the mouse,
+   * and a press that becomes a drag of that row must leave nothing opened.
+   */
+  const selectionRestorer = useCallback(
+    (sessionId: string): (() => void) => {
+      const before = {
+        activeItemId,
+        selectedItemId: selectedSessionId,
+        wasOpen: openItemIds.includes(sessionId),
+        laneId: appStore.getState().selectedLaneId,
+      };
+      return () => {
+        if (appStore.getState().selectedLaneId !== before.laneId) selectLane(before.laneId);
+        setProjectViewState((prev) => ({
+          ...prev,
+          openItemIds: before.wasOpen ? prev.openItemIds : prev.openItemIds.filter((id) => id !== sessionId),
+          activeItemId: before.activeItemId,
+          selectedItemId: before.selectedItemId,
+        }));
+      };
+    },
+    [activeItemId, appStore, openItemIds, selectLane, selectedSessionId, setProjectViewState],
+  );
+
   const closeTab = useCallback(
     (sessionId: string) => {
       setProjectViewState((prev) => {
@@ -2807,6 +2834,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     setDraftMachineId,
     showDraftKind,
     openSessionTab,
+    selectionRestorer,
     closeTab,
 
     closingPtyIds,

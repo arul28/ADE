@@ -4,7 +4,7 @@ import { ArrowLeft, GearSix } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { useAppStore } from "../../../state/appStore";
 import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../../lib/webClientMode";
-import { usePressActivation } from "../../../hooks/usePressActivation";
+import { pressActivation } from "../../../lib/pressActivation";
 import { readStoredProjectSettingsRoute } from "../projectRouteStorage";
 import {
   commitProjectSidebarWidth,
@@ -32,8 +32,6 @@ export { projectSidebarTabForPath };
  */
 export function ProjectSidebar({ route, heldRoute = null }: { route: string; heldRoute?: string | null }) {
   const navigate = useNavigate();
-  // A tab opens on the press. The click it replaces fires on mouse-up.
-  const press = usePressActivation();
   const { width, hidden } = useProjectSidebarPrefs();
   const setSlotTarget = useProjectSidebarSlotTarget();
   // Select scalars only: the sidebar sits beside every tab page, and a wide
@@ -130,7 +128,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
               aria-current={active ? "page" : undefined}
               aria-label={tab.label}
               title={`${tab.label}${attentionLabel}${shortcut ? `  ${shortcut}` : ""}`}
-              {...press(() => openTab(tab.to))}
+              // A tab opens on the press. The click it replaces fires on mouse-up.
+              {...pressActivation(() => openTab(tab.to))}
             >
               <span className="relative inline-flex shrink-0">
                 <tab.icon size={16} weight={active ? "fill" : "regular"} />
@@ -157,7 +156,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
           <button
             type="button"
             className="ade-project-sidebar-footer-back"
-            {...press(() => {
+            {...pressActivation(() => {
+              // `navigate` can return a promise, and a press action returns its undo.
               void navigate(heldRoute);
             })}
           >
@@ -177,7 +177,7 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
                   data-active={active ? "true" : undefined}
                   aria-current={active ? "page" : undefined}
                   title={waiting ? "The CTO is waiting on you" : undefined}
-                  {...press(() => openTab(item.to))}
+                  {...pressActivation(() => openTab(item.to))}
                 >
                   <span className="relative inline-flex shrink-0">
                     <item.icon size={15} weight={active ? "fill" : "regular"} />
@@ -197,7 +197,7 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
                 aria-current={settingsActive ? "page" : undefined}
                 aria-label="Settings"
                 title={settingsActive ? "Back" : "Settings"}
-                {...press(openSettings)}
+                {...pressActivation(openSettings)}
               >
                 <GearSix size={15} weight={settingsActive ? "fill" : "regular"} />
               </button>

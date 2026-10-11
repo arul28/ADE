@@ -83,8 +83,9 @@ function logicalToolItemKey(entry: AgentChatEventEnvelope): string | null {
 }
 
 /**
- * Lists this module produced through {@link upsertRepeatedToolCalls}: no two
- * tool calls in them share a logical item key. Appending events that are not
+ * Lists this module produced through {@link upsertRepeatedToolCalls}, or a
+ * copy of one with the same tool calls: no two tool calls in them share a
+ * logical item key. Appending events that are not
  * tool calls or results to such a list cannot create a duplicate, so the live
  * merge skips the full-history pass for them (two scans of the whole transcript
  * per streamed event otherwise).
@@ -420,11 +421,16 @@ export function mergeAgentChatHistorySnapshot(
     if (!existingIndexByKey.has(key)) existingIndexByKey.set(key, index);
   }
 
+  // The envelope already held for an identity, so that an event the pane has
+  // keeps its object. Safe because the identity covers the whole payload: the
+  // two envelopes differ in nothing a reader can see.
+  const heldOrSelf = (entry: AgentChatEventEnvelope): AgentChatEventEnvelope => (
+    existingByKey.get(identityKey(entry)) ?? entry
+  );
   const snapshotKeys = new Set<string>();
   const normalizedSnapshot = snapshot.map((entry) => {
-    const key = identityKey(entry);
-    snapshotKeys.add(key);
-    return existingByKey.get(key) ?? entry;
+    snapshotKeys.add(identityKey(entry));
+    return heldOrSelf(entry);
   });
 
   let firstOverlapIndex = -1;
@@ -503,9 +509,10 @@ export function mergeAgentChatHistorySnapshot(
   let reconciled = upserted;
   for (let index = 0; index < upserted.length; index += 1) {
     const entry = upserted[index]!;
+    // Already the held envelope, in place: the common case, with no key to build.
     if (entry === existing[index]) continue;
-    const held = existingByKey.get(identityKey(entry));
-    if (!held || held === entry) continue;
+    const held = heldOrSelf(entry);
+    if (held === entry) continue;
     if (reconciled === upserted) reconciled = [...upserted];
     reconciled[index] = held;
   }
