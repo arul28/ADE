@@ -72,6 +72,7 @@ import {
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
+import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
 import { usePreferLocalCheckout } from "./usePreferLocalCheckout";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1492,6 +1493,20 @@ export function TopBar({
     isProjectBusy,
   });
 
+  // A project tab comes to the front on the press, as a browser tab does, so a
+  // drag of a background tab also shows its project. Only from the plain
+  // state, a project in front and nothing in transition: from a machine tab, a
+  // new tab or the Settings tab a switch does more than change the project,
+  // and those keep the click.
+  const tabSwitchesOnPress =
+    !isProjectBusy
+    && !machineRouteActive
+    && !accountRouteActive
+    && !hubRouteActive
+    && !isNewTabOpen
+    && !isSettingsTabOpen
+    && (remoteBinding != null || project?.rootPath != null);
+
   const confirmAndCloseRemoteTargetTabs = useCallback(
     async (
       target: RemoteRuntimeTarget,
@@ -2069,6 +2084,10 @@ export function TopBar({
                   remoteTabState === "error" || remoteTabState === "idle";
                 const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
                 const remoteTabKey = tabOrderKey(group);
+                const remoteTabPress = pressActivation(() => {
+                  if (projectTabDrag.isDragClick()) return;
+                  void handleSwitchRemoteProject(remoteTab);
+                }, tabSwitchesOnPress && !isCurrentRemote);
                 return (
                   <div
                     key={group.id}
@@ -2077,6 +2096,7 @@ export function TopBar({
                     {...{ [PROJECT_TAB_KEY_ATTR]: remoteTabKey }}
                     onPointerDown={(event) => {
                       if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
+                      remoteTabPress.onPointerDown(event);
                     }}
                     onContextMenu={(event) => openTabMenu(event, group.id)}
                     data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
@@ -2098,10 +2118,7 @@ export function TopBar({
                       } as React.CSSProperties
                     }
                     title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
-                    onClick={() => {
-                      if (projectTabDrag.isDragClick()) return;
-                      handleSwitchRemoteProject(remoteTab);
-                    }}
+                    onClick={remoteTabPress.onClick}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
@@ -2187,6 +2204,10 @@ export function TopBar({
               // bound project tab stays rendered but must not also read active.
               else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
               const indicator = terminalAttention?.indicator;
+              const localTabPress = pressActivation(() => {
+                if (projectTabDrag.isDragClick()) return;
+                if (!isMissing) void handleSwitchProject(rp.rootPath);
+              }, tabSwitchesOnPress && canDragTab && !isCurrent);
               return (
                 <div
                   key={group.id}
@@ -2205,6 +2226,7 @@ export function TopBar({
                   {...{ [PROJECT_TAB_KEY_ATTR]: localTabKey }}
                   onPointerDown={(event) => {
                     if (canDragTab) projectTabDrag.onTabPointerDown(event, localTabKey);
+                    localTabPress.onPointerDown(event);
                   }}
                   onContextMenu={(event) => openTabMenu(event, group.id)}
                   className={cn(
@@ -2217,10 +2239,7 @@ export function TopBar({
                       "pointer-events-none opacity-80",
                   )}
                   style={{ ...projectTabStyle, ...projectTabDrag.tabDragStyle(localTabKey) }}
-                  onClick={() => {
-                    if (projectTabDrag.isDragClick()) return;
-                    if (!isMissing) handleSwitchProject(rp.rootPath);
-                  }}
+                  onClick={localTabPress.onClick}
                   onKeyDown={(event) => {
                     if (isMissing) return;
                     if (event.key === "Enter" || event.key === " ") {
