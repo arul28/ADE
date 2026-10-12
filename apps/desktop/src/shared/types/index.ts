@@ -56,3 +56,4 @@ export * from "./power";
 export * from "./keepAwake";
 export * from "../appleDeviceSettings";
 export * from "./subscriptionProxy";
+export * from "./quitPrompt";

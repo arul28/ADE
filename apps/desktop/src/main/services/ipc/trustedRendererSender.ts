@@ -21,8 +21,19 @@ export function isTrustedAdeRendererUrl(rawUrl: string | null | undefined): bool
 }
 
 /** True when an IPC call comes from ADE's own renderer in a live ADE window. */
-export function isTrustedAdeRendererSender(event: IpcMainInvokeEvent): boolean {
+export function isTrustedAdeRendererSender(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">): boolean {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return false;
   return isTrustedAdeRendererUrl(event.senderFrame?.url || event.sender.getURL());
+}
+
+/** `isTrustedAdeRendererSender`, logging the refusal so a blocked caller is visible. */
+export function isTrustedAdeRendererSenderOrWarn(
+  event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">,
+  logger: { warn: (event: string, data: Record<string, unknown>) => void },
+  channel: string,
+): boolean {
+  if (isTrustedAdeRendererSender(event)) return true;
+  logger.warn("ipc.untrusted_sender", { channel, senderUrl: event.senderFrame?.url || event.sender.getURL() });
+  return false;
 }
