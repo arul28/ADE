@@ -5,7 +5,7 @@ import { agentsAre } from "../../../shared/quitPromptModel";
 import { confirmDialog } from "../ui/dialog";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 
-const OTHER_PROJECTS_NOTE = "Agents may also be working in projects that aren't open in ADE.";
+const OTHER_PROJECTS_NOTE = "Other work may also be running, such as agents in projects that aren't open in ADE.";
 
 function statusLine(summary: BackgroundServiceSummary | null): string {
   if (!summary) return "Checking…";

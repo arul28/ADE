@@ -50,8 +50,9 @@ export type BackgroundServiceActivity = {
   /** Chats with a live turn in projects open in ADE; stopping ends them. */
   runningChats: UpdateInterruptedChat[];
   /**
-   * The service reports work in more projects than the open ones account
-   * for. It counts busy projects, not agents, so the UI says "may".
+   * The service reports busy projects (agents, shells, active sessions)
+   * beyond the ones the listed chats account for. A flag per project, not an
+   * agent count, so the UI says "may".
    */
   otherProjectsBusy: boolean;
 };
