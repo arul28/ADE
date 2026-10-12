@@ -2729,6 +2729,59 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("ends a Claude turn while a mod keeps sending UI messages after the result", async () => {
+      // `performance` too: the drain window for mod messages reads a monotonic clock.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        let ticksRead = 0;
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          yield { type: "result", session_id: "sdk-session-mod-ticker", usage: { input_tokens: 1, output_tokens: 1 } };
+          // The harness drains one stream to warm the session up; the turn reads the next one.
+          if (streamCall === 1) return;
+          // A real tail message, so the test also sees a turn that drops one.
+          yield { type: "prompt_suggestion", session_id: "sdk-session-mod-ticker", uuid: "tail-1", suggestion: "Audit the Work tab" };
+          // A mod that redraws on a timer: each message lands inside the
+          // one-second drain window that waits for a tail message.
+          for (let tick = 0; tick < 200; tick += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            ticksRead += 1;
+            yield { type: "system", subtype: "ui_status", session_id: "sdk-session-mod-ticker", plugin: "ticker", text: `tick ${tick}` };
+          }
+        })());
+        const sdkSession = { send: vi.fn().mockResolvedValue(undefined), stream, close: vi.fn(), sessionId: "sdk-session-mod-ticker" };
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkSession as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkSession as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+        let settled = false;
+        const turn = service.runSessionTurn({ sessionId: session.id, text: "answer while the mod ticks", timeoutMs: 60_000 })
+          .finally(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(4_000);
+
+        // The turn ended on the shared window, long before the mod stopped.
+        expect(settled).toBe(true);
+        await turn;
+        // The mod did send messages during the turn; the idle reader takes the later ones.
+        expect(ticksRead).toBeGreaterThan(0);
+        expect(events.filter((event) => event.event.type === "done")).toHaveLength(1);
+        const eventTypes = events.map((event) => event.event.type);
+        expect(eventTypes).toContain("prompt_suggestion");
+        expect(eventTypes.indexOf("prompt_suggestion")).toBeLessThan(eventTypes.indexOf("done"));
+        // What a mod draws is not transcript content.
+        expect((await service.getChatEventHistory(session.id, { maxEvents: 50 })).events
+          .some((event) => JSON.stringify(event.event).includes("tick "))).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("keeps completed Claude turns successful when the post-result drain rejects", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {

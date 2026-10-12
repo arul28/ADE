@@ -1968,6 +1968,13 @@ export type AiChatConfig = {
    * either way.
    */
   piExtensionsEnabled?: boolean;
+  /**
+   * Draw what Claude Code mods show (status lines, toasts, a band above the
+   * prompt, panes) in ADE chat. Off unless set to true: the channel is
+   * private to Claude Code. The mods' hooks run either way; this only
+   * controls the drawing.
+   */
+  claudePluginUiEnabled?: boolean;
   /** Global kill switch for durable Claude wakeups, cron tasks, and loops. */
   scheduledWorkPaused?: boolean;
   /**

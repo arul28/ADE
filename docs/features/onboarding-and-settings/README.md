@@ -41,6 +41,21 @@ per project root on first project-scoped JSON-RPC call, and is the
 single runtime through which desktop, `ade code`, and SSH-attached
 desktops see live lanes, agent chats, and work sessions.
 
+Each local project this machine has opened gets an identity file at
+`~/.ade/project-data/<projectId>.json` holding its database file's device and
+inode. The desktop, the brain's project scope and the CLI record it when they
+open the database. It lives outside `projects.json` because an
+older ADE that rewrites that file drops fields it does not know. If a
+registered project's folder or its `.ade` folder disappears, or a database the
+identity file records is missing, registration and open stop with
+`project_data_missing` before creating replacement state, and the desktop shows
+the project recovery screen (`data_missing`): Restore from Trash (when the
+folder is there), steps to put it back by hand (the screen reopens the project
+when it returns), or Start fresh. When the project folder itself is gone it
+offers neither, and says to plug the drive in or move the folder back. Start
+fresh and removing a project from recents forget the identity. Fresh project
+registration still creates its first database normally.
+
 ## Source file map
 
 Main process:
@@ -130,6 +145,21 @@ Main process:
 - `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
   radiogroup, the "This Mac can still sleep" recovery alert, and the
   system-sleep fix card.
+- `apps/desktop/src/renderer/components/settings/BackgroundServiceSection.tsx`
+  — General → ADE → Background service: whether the service or the desktop is
+  running agents, the working chats in open projects (and a "may also be
+  running" note when the service reports busy projects that are not open),
+  "Stop and quit ADE", and the "Ask before quitting" toggle that undoes the quit
+  prompt's "Don't ask again". Stop confirms with the chat list and fails
+  closed in `services/runtime/backgroundServiceControls.ts`: it refuses when
+  ADE cannot read what is running, when an agent started after the
+  confirmation, during a lane delete, and during any Repair. Packaged builds
+  only; a dev build shows the status without the button.
+- `apps/desktop/src/main/services/runtime/quitPrompt.ts` +
+  `apps/desktop/src/renderer/components/app/QuitPromptHost.tsx` +
+  `apps/desktop/src/shared/quitPromptModel.ts` — the quit and restart
+  confirmation, in ADE's own dialog with a native fallback built from the same
+  model. See `docs/ARCHITECTURE.md` (shutdown pipeline).
 - `apps/desktop/src/main/services/archive/archiveService.ts` — the archive:
   `list`/`summary` read archived lanes (from `laneService.list`) and archived
   chats/shells (from `terminal_sessions.archived_at`), and `restore`/`delete`
@@ -608,7 +638,10 @@ Renderer — settings:
   the current `systemColorScheme`. **Appearance is per computer**: the theme
   id, the custom theme list, `themeFollowsSystem`, `interfacePreferences` and
   `terminalPreferences` are not in `ACCOUNT_SYNCED_SETTINGS`, so they live in
-  this machine's localStorage and never reach the account. The families are
+  this machine's localStorage and never reach the account. That includes
+  `interfacePreferences.focusGridMaxChats`, the Focus grid's **Chats per
+  page** (null for Automatic), which `useWorkFocusGrid` reads: it follows the
+  screen. The families are
   built in `family.ts` and written in three files: `library.ts` (the ADE
   families), `libraryOriginals.ts` (themes with their own shape, type and
   backdrop) and `libraryClassics.ts` (editor colour schemes). A theme may also
@@ -2000,7 +2033,7 @@ The pages themselves:
 | Tab | Section file | What lives here |
 |---|---|---|
 | General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx`, `ResetAdeSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). **Reset ADE** (`#reset-ade`, local machine only) is its own section, last on the page; the old `#about.reset` hash still lands on it. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
-| Appearance (Machines → This computer) | `AppearanceSection.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, terminal text, and the **Background** (`#background`) scene picker — plain, gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
+| Appearance (Machines → This computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, the Focus grid's chats per page, terminal text, and the **Background** (`#background`) scene picker — plain, gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
 | Apple devices (Machines → This computer) | `AppleDevicesSection.tsx` | This computer's own simulator and preview choices — the 3D device body, recording overlays (tap rings, typed-text badges), the remote streaming bitrate cap, and the recordings storage warning — drawn in the Appearance language. Per computer, because every Mac has its own simulators, and it sits beside Appearance under This computer rather than on the Account group. It still files through the account store so the brain on this computer can read the remote streaming cap and the recording overlays: each computer's copy lives under the account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`). |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
 | Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
@@ -2267,21 +2300,38 @@ not carry the install command.
   creation runs); clicking a card turns balance off and selects it.
 - **Signed out**: a `Signed out` pill (the usage row's own when the poller saw
   it, else a header badge), dimmed meters, and **Sign in**.
-- **Same login twice**: when two config homes hold one email the later card
+- **Same login twice**: when two config homes hold one email, one card owns it
+  (`sameLoginOwner`): the default account when it holds that email and its
+  login works, else the first working login in list order. Every other card
   (`ProviderInstance.sameLoginAs`, computed by the store) is badged `Copy` and
   says which account it copies, with **Sign in to another account**; it adds no
-  quota and smart balance skips it.
+  quota and smart balance skips it. The usage snapshot keeps only the owner's
+  reading by the same rule, so the account that balance counts is the one
+  with numbers.
+- **Machine scope**: the panel reads accounts and usage from the machine the
+  Settings page names (`useUsageSnapshot({ pin })`), never usage from the tab's
+  own machine under another machine's accounts.
 - **Replaced login**: when a config home's email changes to another email — a
   `claude /login` in a shell for the default account — the store records the old
   one as `replacedAccount`. The card says it was replaced outside ADE, with
   **Sign it back in** (into a `Copy` slot when there is one, so the accounts
-  shift instead of doubling; otherwise a new account named after the email) and
+  shift instead of doubling; otherwise, or when the only copy is the machine's
+  own login, a new account named after the email) and
   **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own
   once any account holds that email again.
-- **The card menu (⋯)** carries Rename, Sign in / Sign in again, and Remove.
-  Remove is not offered
-  on the default or the machine's own login, which the store refuses; it asks
-  for confirmation, and any other refusal shows the store's own sentence.
+- **The card menu (⋯)** carries Rename, Sign in / Sign in again, Sign out, and
+  Remove. Every card but the default offers **Sign out**
+  (`provider_instances.signOut` → `signOutProviderAccount`), which runs the
+  provider CLI's own `claude auth logout` / `codex logout` in that account's
+  config home and keeps the card; on the machine's own login the confirm says
+  the terminal's CLI is signed out too. **Remove** is not offered on the default
+  or the machine's own login, which the store refuses; it signs a signed-in
+  account out first (`removeProviderAccount`, shared by every surface), so
+  adding it again starts from a fresh sign-in. A sign-out that fails does not
+  block the removal; the card's error says the login was left in place. Both
+  ask for confirmation in Settings, and any refusal shows the store's own
+  sentence. Agents may call both too (account management is theirs by design);
+  the default account is refused either way.
 - **Panels fold.** `ProviderPanel` takes `autoCollapsed` and `summary`: a panel
   with nothing to show folds to its header (API keys with none saved reads
   `API keys · 0 None saved`), and a click on the title flips any panel. Sheets

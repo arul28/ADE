@@ -22,7 +22,7 @@ import { TerminalView } from "../../terminals/TerminalView";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice/Banner";
-import { useSettingsMachineScope } from "../SettingsMachineScope";
+import type { OpenProjectBinding } from "../../../../shared/types";
 
 /**
  * Poll cadence for "are we signed in yet".
@@ -67,6 +67,11 @@ export type ProviderSignInModalProps = {
   onClose: () => void;
   /** Called once, after a successful sign-in, so the caller can refresh its own view. */
   onSignedIn?: () => void;
+  /**
+   * The machine to sign in on: the machine the Settings page is showing, or a
+   * chat's machine for its sign-in card. Null is the tab's bound machine.
+   */
+  runtimePin: OpenProjectBinding | null;
 };
 
 export function ProviderSignInModal({
@@ -77,10 +82,15 @@ export function ProviderSignInModal({
   checkSignedIn,
   onClose,
   onSignedIn,
+  // The login runs on the caller's machine: its lane, its shell, its
+  // credential store.
+  runtimePin: pin,
 }: ProviderSignInModalProps) {
-  // The login runs on the machine the Settings page is showing: its lane, its
-  // shell, its credential store.
-  const { pin } = useSettingsMachineScope();
+  // Effects key on the pin's identity, not the object: a chat's pin can be
+  // rebuilt with the same key, which must not restart the login shell.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinIdentity = pin?.key ?? null;
   const [terminal, setTerminal] = useState<{ ptyId: string; sessionId: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
@@ -93,6 +103,10 @@ export function ProviderSignInModal({
   // ── Open the PTY ──
   useEffect(() => {
     let cancelled = false;
+    const pin = pinRef.current;
+    // A new machine gets a new login shell; the old one's terminal is gone.
+    setTerminal(null);
+    openedUrlRef.current = null;
     void (async () => {
       try {
         if (!window.ade?.pty?.create) throw new Error("Terminals are not available in this window.");
@@ -128,18 +142,22 @@ export function ProviderSignInModal({
     return () => {
       cancelled = true;
     };
-  }, [command, laneId, pin, title]);
+  }, [command, laneId, pinIdentity, title]);
 
   // ── Dispose on unmount, always ──
-  useEffect(() => () => {
-    const open = terminalRef.current;
-    terminalRef.current = null;
-    if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId }, pin);
-  }, [pin]);
+  useEffect(() => {
+    const pin = pinRef.current;
+    return () => {
+      const open = terminalRef.current;
+      terminalRef.current = null;
+      if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId }, pin);
+    };
+  }, [pinIdentity]);
 
   // ── Open the first sign-in URL we see, once ──
   useEffect(() => {
     if (!terminal || !window.ade?.pty?.onData) return;
+    const pin = pinRef.current;
     const unsubscribe = window.ade.pty.onData((event) => {
       if (event.ptyId !== terminal.ptyId) return;
       if (openedUrlRef.current) return;
@@ -149,7 +167,7 @@ export function ProviderSignInModal({
       openExternalUrl(url);
     }, pin);
     return unsubscribe;
-  }, [pin, terminal]);
+  }, [pinIdentity, terminal]);
 
   // ── Watch for the auth status flipping green ──
   useEffect(() => {

@@ -186,6 +186,26 @@ cleanup and a per-paste failure, so they stay local: the connection flaps and
 the sweeps have no user action behind them, and a paste failure's reason is
 free text that cannot cross the analytics boundary.
 
+Claude mod UI (what Claude Code plugins draw in a chat) writes three local
+debug lines and no PostHog event: `agent_chat.claude_plugin_ui_render_failed`
+(session id, render site, error message), `agent_chat.claude_plugin_ui_action_failed`
+(session id, action kind, error message) and
+`agent_chat.claude_plugin_ui_ingest_failed` (session id, message subtype, error
+message). They exist because the channel is private to Claude Code and a
+failure in it never reaches a turn; without them a blank dock has nothing to
+read. (A press that got no answer also shows a toast in the window.)
+
+**No product-analytics event accompanies the feature, deliberately.** What a
+mod draws is a third party's text and controls, so a press, a typed value, a
+status line or a toast is plugin content that cannot cross the boundary, and a
+redraw is a high-frequency mechanic. The one user decision is the setting
+(`ai.chat.claudePluginUiEnabled`), and it is saved through the generic
+`ai.updateConfig` write, which has no per-key owner: the same reason the
+compaction-point setting is not instrumented. The one-time offer banner is a
+prompt, not an outcome. If a dashboard later needs to know how many
+installations turn mod UI on, add one `ade_feature_used` fact at a per-key
+owner then.
+
 The capture gesture writes its own local structured line family, and it is not
 a PostHog event. `capture.*` is the helper supervisor's family
 (`helper_started`, `helper_spawn_failed`, `helper_exited`, `helper_error`,
@@ -274,7 +294,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 
 | feature | action | outcome | provider property |
 | --- | --- | --- | --- |
-| `provider_accounts` | `account_created`, `account_removed`, `default_selected` | `completed` | Claude/Codex family |
+| `provider_accounts` | `account_created`, `account_removed`, `account_signed_out`, `default_selected` | `completed` | Claude/Codex family |
 | `provider_accounts` | `balance_changed`, `auto_start_changed` | `enabled`, `disabled` | Claude/Codex family |
 | `provider_accounts` | `subagent_cache_changed` | `enabled` (1 hour), `disabled` (the Claude default) | Claude only |
 | `api_credentials` | `credential_stored`, `credential_removed` | `completed` | coarse provider family |
@@ -294,6 +314,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
+| `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -528,9 +549,11 @@ which carry session and handoff ids, are not PostHog events.
 
 Provider-account mutations are captured at the `provider_instances` action
 domain in `apps/desktop/src/main/services/adeActions/registry.ts`, after the
-machine-local registry write succeeds. `create`, `remove`, and `setDefault`
-use `provider_accounts` with `account_created`, `account_removed`, or
-`default_selected` and `outcome: "completed"`. The two settings carried by
+machine-local registry write succeeds. `create`, `remove`, `signOut`, and
+`setDefault` use `provider_accounts` with `account_created`, `account_removed`,
+`account_signed_out`, or `default_selected` and `outcome: "completed"` (a
+sign-out is captured after the provider CLI's logout succeeds; a Remove of a
+signed-in account records both, at most a handful per cleanup). The two settings carried by
 `setSettings` are split into `balance_changed` and `auto_start_changed`, with
 `outcome: "enabled"` or `"disabled"`. A Claude account's subagent prompt cache
 choice, also carried by `setSettings`, is `subagent_cache_changed`: `enabled`
@@ -658,6 +681,23 @@ raised. The local `agent_chat.claude_hooks_ignored` and
 `agent_chat.claude_plugins_ignored` warn lines are the operational half. The
 dashboard spec is deliberately untouched: no card asks this question yet.
 
+Settings → Background service → "Stop and quit ADE" records the same
+`ade_feature_used` event in the main process, where the stop is decided
+(`services/runtime/backgroundServiceControls.ts`), with `feature:
+"connections"`, `action: "background_service_stop"`, and a coarse `outcome`:
+`completed` (the login service was removed and ADE is quitting), `rejected` (a
+guard refused: ADE could not read what is running, an agent started after the
+confirmation, a lane delete or a repair is running, or ADE is already quitting),
+or `failed` (the service manager could not remove it). The product question is
+whether people turn the always-on service off at all, and whether the guards get
+in their way. It carries no chat titles, project names, counts, or error text.
+A per-outcome one-hour deduplication key bounds a retry loop to at most 24
+accepted events per outcome (72 total) per installation per UTC day, inside the
+existing `ade_feature_used` limits; no ceiling was raised. The quit prompt itself
+is not tracked: its answer is an app-lifecycle moment, not a product decision,
+and the Repair it offers is already counted as `brain_repair` through the shared
+`restartBrainForRepair` helper. The dashboard spec is untouched.
+
 These facts intentionally remain out of `scripts/posthog/dashboard-spec.mjs`:
 there is no concrete dashboard question or card for them yet. The existing
 surface/feature volume views continue to include the shared event without a
@@ -723,6 +763,33 @@ the shared 200-event ceiling. No ceiling was raised, and the dashboard spec is
 deliberately untouched: no card asks this yet. Widget use after it is added
 (renders, polling, clipboard reads, weather and machine reads, playback
 commands) stays untracked by the high-frequency rule.
+
+Opening find (⌘F) in a chat or a diff, and the ⌘K "Find … in this chat" hand-off,
+records the existing `ade_feature_used` event with `feature: "find"`,
+`action: "find_opened"`, `source: "renderer_route"`, and a closed `outcome` that
+says where the bar opened: `chat_shortcut` (⌘F opened a chat's bar),
+`chat_palette` (the ⌘K "Find … in this chat" row), `chat_palette_hit` (a chat
+opened from a ⌘K message hit, taking the words the palette handed off), or
+`diff_shortcut` (⌘F opened a diff's bar). It is emitted from the renderer
+(`renderer/lib/findAnalytics.ts`) for the same reason `tool_opened` is: opening a
+find bar has no durable backend mutation, because the bar, its query and its
+matches live in one window. The shortcut outcomes are captured where ⌘F claims
+the bar (`useFindSession`), and only when the claim opens it, not when ⌘F lands on
+a bar that is already open. The palette outcome is captured in the chat's
+palette target, and the hand-off outcome when the chat takes the words left for
+it, so a hand-off that expires unpicked emits nothing. The product question is
+whether installations use find at all, on which surface, and whether the palette
+hand-off gets used: `chat_palette_hit` set against `chat_palette` says whether
+the palette's words are carried on. Nothing finer crosses the boundary: no query
+or words, no chat or diff, no file, lane, or match count, no selected match, and
+no scroll position. Typing, stepping through matches, closing the bar, and
+Escape are high-frequency and stay untracked. A per-outcome `find_opened:<outcome>`
+deduplication key with a 24-hour minimum interval (hashed locally, never sent)
+means each outcome counts at most once per installation per UTC day, so the worst
+case is four accepted events per installation per day, inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling. No ceiling was raised. The dashboard spec is deliberately untouched: no
+card asks this yet.
 
 Which live view an installation watches an iOS simulator through records the
 same `ade_feature_used` event from the drawer's single start path, with
@@ -897,6 +964,20 @@ renderer. A per-outcome one-hour deduplication key bounds a click-loop to at mos
 day, inside the existing `ade_feature_used` 140-per-day / 30-per-minute limits
 and the shared 200-event ceiling; no ceiling was raised. The dashboard spec is
 deliberately untouched: no card asks this question yet.
+
+When a project's ADE data went missing or was swapped, the project recovery
+screen's choices record the existing `ade_feature_used` event at the IPC owner
+boundary (`registerIpc.ts`, where the outcome is known) with
+`feature: "storage_doctor"`, `action: "project_data_restore"` (Restore from
+Trash) or `action: "project_data_start_fresh"` (Start fresh and Use this copy,
+which are the same operation), and `outcome: "completed" | "failed"`. They
+answer how often project data goes missing and which way people recover. They
+carry no path, project identity, Trash location or error text. A per-action,
+per-outcome one-hour deduplication key bounds a retry loop to 24 accepted
+events per key, 96 across the four, per installation per UTC day, inside the
+existing `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was
+raised. The diagnosis itself is not reported: a folder the person moved or
+deleted is their action, not a fault in ADE. The dashboard spec is untouched.
 
 Pressing "Report issue" on any of ADE's error surfaces — the project recovery
 screen, the renderer error boundary, the project transition alert, the update

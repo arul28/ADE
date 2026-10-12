@@ -940,21 +940,27 @@ Measure a switch from the press, with real input: `scripts/perf/ui/press-to-pain
 (CDP mouse move, press, a held button, release). `interaction.mjs` starts in
 the click handler and misses the 60 to 120 ms a button is held, which was two
 thirds of every switch. Four projects open, five chats, interleaved A/B:
-chat 136 to 47-51 ms, page tab 118 to 24-26 ms.
+chat 136 to 47-51 ms, page tab 118 to 24-26 ms, project 137 to 44-51 ms.
 
 - **A switch control acts on the press** (`lib/pressActivation.ts`): chat
-  rows, the page tabs of the project sidebar, the machine tabs of the top bar.
+  rows, the page tabs of the project sidebar, the machine tabs and the project
+  tabs of the top bar.
   Keep its rules: only a plain mouse press (primary button, no modifier, on
   the control and not on a nested control or a portal of it) acts early;
   touch, pen, keyboard and modified clicks keep the click; the click of an
   acted press is dropped.
-- **A press must be able to undo itself, or it keeps the click.** A chat row
+- **A press must be able to undo itself, or it keeps the click** (project
+  tabs are the one approved exception; see the end of this item). A chat row
   is draggable, so `onSelect` returns an undo (`selectionRestorer` in
   `useWorkSessions`) and the native `dragstart` runs it. Restore everything
   the press wrote, not only what shows: the first version left the dragged
-  chat in the open list. Project tabs stayed on the click for this reason (a
-  project switch writes main-process state), as did the board, the Focus grid
-  and rows that are members of a grid. A React portal sends its events to the
+  chat in the open list. The board, the Focus grid and rows that are members
+  of a grid keep the click for this reason. A project tab cannot undo (a
+  project switch writes main-process state), so the product rule changed
+  instead: a drag of a background tab brings its project to the front, as a
+  browser tab does. Do not add a switch back. Only a loaded local tab acts on
+  the press; a remote or unloaded tab switches through a transition, which
+  would stop a tear-off, so it keeps the click. A React portal sends its events to the
   component that rendered it: a press on a menu backdrop reached the row
   under it until the press checked that its target is inside its own element.
 - **An unchanged transcript must reconcile to the same list.** The history
@@ -968,8 +974,9 @@ chat 136 to 47-51 ms, page tab 118 to 24-26 ms.
   it also made the same history differ on every read. Other readers in the
   main process still decode per read (child-process output in `prService`,
   `agentChatService`, the SDK pools, `localRuntimeConnectionPool`).
-- **The view cache is bound by bytes only** (128 MB). Heap after a visit to 16
-  chats: 235 MB with the old limit of eight chats, 246 MB without.
+- **The view cache is bound by bytes only** (128 MB), not by a number of
+  chats. Heap after a visit to 16 chats: 246 MB (235 MB when only eight
+  chats were kept).
 - Profile of a warm switch (dev build): one synchronous task of about 35 ms,
   of which about 24 ms is React (the pane renders about 11 times per switch;
   about 350 components mount for the new rows) and about 10 ms is the style

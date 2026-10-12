@@ -4,6 +4,7 @@ import type { FileChangeEvent, FileContent, FilesWorkspace } from "../../../../s
 import type { OpenProjectBinding } from "../../../../shared/types/core";
 import { useAppStore, useRootAppStore } from "../../../state/appStore";
 import type { CrossMachineLaneMarker } from "../../../state/crossMachineLanes";
+import { INERT_ATTR } from "../../shared/inertAttr";
 import { createMonacoModelRegistry } from "../monacoModelRegistry";
 import { MonochromeFileIconsContext, resolveLanguageId } from "../filePresentation";
 import { FilesExplorer, type FilesExplorerContextMenuEvent } from "../FilesExplorer";
@@ -93,15 +94,6 @@ import { ProjectSidebarSlot, useHasProjectSidebar } from "../../app/projectSideb
  * Two unusable columns are worse than one usable screen.
  */
 const EMBEDDED_SINGLE_SURFACE_PX = 520;
-
-/**
- * `inert` for React 18, which has no boolean prop for it.
- *
- * React 19 types `inert` as a boolean; on 18 the only way through is the raw
- * attribute, and `inert=""` is what the HTML spec asks for. Spread rather than
- * written inline so the cast lives in exactly one place.
- */
-const INERT_ATTR = { inert: "" } as Record<string, string>;
 
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 // Open-request keys remembered for dedup. Far above any real burst; exists so a

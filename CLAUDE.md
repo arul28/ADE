@@ -4,6 +4,47 @@ If you are Fable 5.1, you are always the PM/coordinator. You research, decide, a
 
 If you are any other Claude model, do the work yourself, and use Opus 5 subagents when you need parallelism or an independent second opinion.
 
+## Built for remote machines
+
+Claude Code does not load `AGENTS.md`, so this is a copy of its **Built for
+remote machines** section. Keep the two the same.
+
+ADE is built around remote connections. One window drives several machines: a
+laptop works on lanes that live on a desktop, a phone drives the brain at home,
+and the Work tab lists chats, CLIs and shells from every connected machine at
+once. A lane owns its machine, and its chats and terminals live there and only
+there.
+
+So every action that can be done for something on another machine (a chat, a
+session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
+
+1. **Pass the scope.** Renderer calls take an optional `pin` (an
+   `OpenProjectBinding`). Leave it out and the call silently goes to the
+   machine the project tab is bound to. That works in local testing and fails
+   whenever the chat's machine is a different one, with errors like
+   "Chat session '…' was not found". In a chat subtree,
+   read `useChatRuntimeScope().pin`; on the Work page, the row's
+   `foreignRow.binding` or `useWorkSessions().resolveSessionRuntimePin`; in Settings,
+   `useSettingsMachineScope().pin`. These are null when the target is the
+   tab's own machine, which keeps the unpinned route; do not substitute the
+   tab binding. Keep the pin for the whole flow: a start, its stop, and its
+   status reads go to the same machine.
+2. **Make the contract carry it.** A new IPC/preload method that acts on a
+   chat, session, lane or terminal takes `pin?: OpenProjectBinding | null` and
+   routes a pin through `callPinnedRuntimeAction` (or
+   `callPinnedOrBoundRuntimeActionOr`, which does both), and its runtime
+   action is reachable remotely (action domain + `actionPolicy`). Inside a
+   component, prefer a required `pin` prop over an optional one that quietly
+   defaults to the tab's machine.
+3. **Key effects on `pin?.key`, not the pin object.** A pin can be rebuilt with
+   the same key; an effect keyed on the object restarts (a login shell, a voice
+   call) for nothing.
+4. **Check it remotely before calling it done.** Ask "what happens if this chat
+   is on another machine?" for every new action, and in `/quality` name which
+   new calls are scoped and how. When something can genuinely only run on this
+   computer, guard it with a clear message (as Cursor Cloud launch does), never
+   by letting the call misroute.
+
 ## Subagents
 
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Subagents**

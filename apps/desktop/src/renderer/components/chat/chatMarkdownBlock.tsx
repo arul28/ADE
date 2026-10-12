@@ -110,7 +110,8 @@ function WorkspacePathLink({
       {content}
     </span>
   ) : (
-    <button type="button" className={className} onClick={onOpen} title={title}>
+    // The label is reply text: find (⌘F) searches it.
+    <button type="button" data-ade-find-include="" className={className} onClick={onOpen} title={title}>
       {content}
     </button>
   );

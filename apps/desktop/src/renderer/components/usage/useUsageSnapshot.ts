@@ -12,7 +12,7 @@
  * down.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { UsageSnapshot } from "../../../shared/types";
+import type { OpenProjectBinding, UsageSnapshot } from "../../../shared/types";
 import { shouldApplyUsageSnapshot } from "./usageSnapshotOrdering";
 
 /** What a refresh actually did, so a Retry can report an outcome. */
@@ -36,9 +36,13 @@ export type UsageSnapshotSource = {
   refreshNow: () => Promise<UsageRefreshOutcome>;
 };
 
+/** How often a pinned reader re-reads the machine's cached snapshot while visible. */
+const PINNED_SNAPSHOT_REREAD_MS = 60_000;
+
 export function useUsageSnapshot({
   readSnapshot = true,
   noteDemand = false,
+  pin = null,
 }: {
   /** Perform the initial cached read. False keeps a closed surface silent. */
   readSnapshot?: boolean;
@@ -48,6 +52,13 @@ export function useUsageSnapshot({
    * it is safe to raise whenever the surface is genuinely visible.
    */
   noteDemand?: boolean;
+  /**
+   * Read ONE machine's snapshot instead of the tab's binding: a Settings page
+   * for that machine shows its accounts, so its numbers must come from the
+   * same machine. Pushes follow the tab's binding, so a pinned reader ignores
+   * them and re-reads the machine's cached snapshot instead.
+   */
+  pin?: OpenProjectBinding | null;
 } = {}): UsageSnapshotSource {
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [bridgeMissing, setBridgeMissing] = useState(false);
@@ -55,6 +66,7 @@ export function useUsageSnapshot({
   const [bindingRevision, setBindingRevision] = useState(0);
   const snapshotRef = useRef<UsageSnapshot | null>(null);
   const bindingGenerationRef = useRef(0);
+  const pinRef = useRef(pin);
 
   const applySnapshot = useCallback((next: UsageSnapshot | null) => {
     if (!shouldApplyUsageSnapshot(next, snapshotRef.current)) return;
@@ -71,7 +83,18 @@ export function useUsageSnapshot({
     }
     const bridge = window.ade.usage;
     let cancelled = false;
-    const unsubscribe = bridge.onUpdate?.((next) => {
+    // Reads in flight for the previous machine or binding are discarded.
+    const dropSnapshot = () => {
+      bindingGenerationRef.current += 1;
+      snapshotRef.current = null;
+      setSnapshot(null);
+    };
+    if (pinRef.current !== pin) {
+      // Another machine's numbers must not stay up under this one's accounts.
+      pinRef.current = pin;
+      dropSnapshot();
+    }
+    const unsubscribe = pin ? undefined : bridge.onUpdate?.((next) => {
       if (!cancelled) applySnapshot(next);
     });
 
@@ -84,7 +107,7 @@ export function useUsageSnapshot({
       const requestedGeneration = bindingGenerationRef.current;
       let current: UsageSnapshot | null = null;
       try {
-        current = await bridge.getSnapshot();
+        current = await bridge.getSnapshot(pin);
       } catch {
         // Keep whatever is already on screen: a read that threw is not news
         // that the numbers went away.
@@ -98,7 +121,8 @@ export function useUsageSnapshot({
       const requestedGeneration = bindingGenerationRef.current;
       await readCached();
       if (cancelled || requestedGeneration !== bindingGenerationRef.current) return;
-      if (!noteDemand) return;
+      // Demand answers with the tab's machine, not the pinned one.
+      if (!noteDemand || pin) return;
       try {
         const demanded = await bridge.noteDemand?.();
         if (!cancelled && requestedGeneration === bindingGenerationRef.current && demanded) {
@@ -110,10 +134,8 @@ export function useUsageSnapshot({
     };
     if (readSnapshot) void load();
 
-    const unsubscribeBinding = window.ade?.app?.onProjectBindingChanged?.(() => {
-      bindingGenerationRef.current += 1;
-      snapshotRef.current = null;
-      setSnapshot(null);
+    const unsubscribeBinding = pin ? undefined : window.ade?.app?.onProjectBindingChanged?.(() => {
+      dropSnapshot();
       setBindingRevision((revision) => revision + 1);
       if (readSnapshot) void load();
     });
@@ -128,7 +150,8 @@ export function useUsageSnapshot({
      * the one showing the older figure. Waking re-reads the host's cached
      * snapshot; the ordering guard drops it if it is not newer.
      *
-     * A read, never a poll — no interval is added here. Coalesced on the read
+     * A read, never a provider poll; only a pinned reader, which gets no
+     * pushes, repeats it on an interval (below). Coalesced on the read
      * itself, because a single wake fires `visibilitychange` and `focus`
      * together.
      */
@@ -145,15 +168,18 @@ export function useUsageSnapshot({
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", readOnWake);
+    // A cached read, never a provider poll, and only while the page is shown.
+    const pinnedReread = pin ? window.setInterval(onVisibilityChange, PINNED_SNAPSHOT_REREAD_MS) : null;
 
     return () => {
       cancelled = true;
+      if (pinnedReread !== null) window.clearInterval(pinnedReread);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", readOnWake);
       unsubscribe?.();
       unsubscribeBinding?.();
     };
-  }, [applySnapshot, noteDemand, readSnapshot]);
+  }, [applySnapshot, noteDemand, pin, readSnapshot]);
 
   /**
    * Force a provider poll and say what came back.
@@ -173,7 +199,7 @@ export function useUsageSnapshot({
     const requestedGeneration = bindingGenerationRef.current;
     setRefreshing(true);
     try {
-      const next = await bridgeRefresh();
+      const next = await bridgeRefresh(pin);
       if (requestedGeneration !== bindingGenerationRef.current) {
         return { ok: false, snapshot: null, error: null };
       }
@@ -190,7 +216,7 @@ export function useUsageSnapshot({
     } finally {
       setRefreshing(false);
     }
-  }, [applySnapshot]);
+  }, [applySnapshot, pin]);
 
   return { snapshot, bridgeMissing, refreshing, bindingRevision, refreshNow };
 }

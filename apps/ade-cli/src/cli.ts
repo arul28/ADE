@@ -3463,8 +3463,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   listed here.
 
   ADE never drives a provider's sign-in: \`add\` prints the exact command and env
-  var to run so the login lands in the new directory. \`remove\` forgets the
-  account and deletes nothing — the directory (and the login inside it) stays.
+  var to run so the login lands in the new directory. \`remove\` signs a
+  signed-in account out with the provider CLI's own logout, then forgets it; the
+  directory stays, and so does the login when that sign-out fails.
   The machine's own pre-existing login is always present, is always removable-
   proof, and starts out as the default.
 
@@ -3479,7 +3480,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade providers accounts default --instance work --text
                                                     Make an account the provider's default
     $ ade providers accounts remove --instance work --text
-                                                    Forget an account (nothing on disk is deleted)
+                                                    Sign an account out and forget it
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
     $ ade providers actions --text                  List raw provider-account service actions
 
@@ -17170,8 +17171,8 @@ function buildProxyPlan(args: string[]): CliPlan {
  * An account is a label plus a provider config directory (`CLAUDE_CONFIG_DIR` /
  * `CODEX_HOME`), never a credential: ADE does not drive the provider's OAuth
  * flow, so `add` prints the exact command and env var a shell must run for the
- * login to land in the new directory, and `remove` forgets the entry without
- * deleting anything on disk.
+ * login to land in the new directory, and `remove` signs the account out, then
+ * forgets the entry; the directory itself is never deleted.
  */
 function buildProvidersPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
@@ -29955,6 +29956,12 @@ function formatBrowserStatus(value: unknown): string {
     const profile = asString(tab.isolatedProfile);
     return profile ? `isolated profile "${profile}"` : "shared (the user's)";
   };
+  // A failed main-frame load shows as a plain white page, which a screenshot
+  // cannot explain; the status names the failure instead.
+  const loadFailureForTab = (tab: Record<string, unknown> | null | undefined): string | null => {
+    const failure = isRecord(tab?.loadError) ? tab.loadError : null;
+    return failure ? asString(failure.description) ?? "the page did not load" : null;
+  };
   // `open` / `new-tab` name the tab they drove in one line, so the agent does
   // not have to pick it out of the table (an agent's tab is not the active
   // one: agent opens do not take the human's focus).
@@ -29976,6 +29983,7 @@ function formatBrowserStatus(value: unknown): string {
       renderKeyValues("ADE browser", [
         ["title", targetTab?.title],
         ["loading", targetTab?.isLoading ?? targetTab?.loading],
+        ["load failed", loadFailureForTab(targetTab)],
         ["owner", targetTab ? ownerForTab(targetTab) : null],
         ["sign-in", targetTab ? signInForTab(targetTab) : null],
         ["other tabs", otherTabs > 0 ? `${otherTabs} (ade browser status lists them)` : null],
@@ -29990,6 +29998,7 @@ function formatBrowserStatus(value: unknown): string {
       ["url", status.url],
       ["title", status.title],
       ["loading", status.isLoading ?? status.loading],
+      ["load failed", loadFailureForTab(tabs.find((tab) => asString(tab.id) === activeTabId))],
       ["back", status.canGoBack],
       ["forward", status.canGoForward],
       ["inspecting", status.isInspecting ?? status.inspecting],

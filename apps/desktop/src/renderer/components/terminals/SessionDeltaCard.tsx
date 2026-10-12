@@ -1,9 +1,21 @@
-import { useEffect, useState } from "react";
-import type { SessionDeltaSummary, TerminalSessionDetail } from "../../../shared/types";
+import { useEffect, useRef, useState } from "react";
+import type { OpenProjectBinding, SessionDeltaSummary, TerminalSessionDetail } from "../../../shared/types";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 
-export function SessionDeltaCard({ sessionId, className }: { sessionId: string; className?: string }) {
+export function SessionDeltaCard({
+  sessionId,
+  runtimePin,
+  className,
+}: {
+  sessionId: string;
+  /** The session's machine; null is the tab's bound machine. */
+  runtimePin: OpenProjectBinding | null;
+  className?: string;
+}) {
+  const runtimePinRef = useRef(runtimePin);
+  runtimePinRef.current = runtimePin;
+  const runtimePinKey = runtimePin?.key ?? null;
   const [delta, setDelta] = useState<SessionDeltaSummary | null>(null);
   const [session, setSession] = useState<TerminalSessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -14,7 +26,8 @@ export function SessionDeltaCard({ sessionId, className }: { sessionId: string; 
     setDelta(null);
     setSession(null);
 
-    Promise.allSettled([window.ade.sessions.getDelta(sessionId), window.ade.sessions.get(sessionId)]).then((results) => {
+    const pin = runtimePinRef.current;
+    Promise.allSettled([window.ade.sessions.getDelta(sessionId, pin), window.ade.sessions.get(sessionId, pin)]).then((results) => {
       if (cancelled) return;
       const [deltaResult, sessionResult] = results;
       if (deltaResult.status === "fulfilled") setDelta(deltaResult.value);
@@ -25,7 +38,7 @@ export function SessionDeltaCard({ sessionId, className }: { sessionId: string; 
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [sessionId, runtimePinKey]);
 
   return (
     <div

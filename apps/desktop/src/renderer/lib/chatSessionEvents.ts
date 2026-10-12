@@ -1,4 +1,5 @@
 import type { AgentChatEventEnvelope, AgentChatSession, AgentChatSessionSummary } from "../../shared/types";
+import { isClaudePluginUiOnlyMetaEvent } from "../../shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../shared/threadComments";
 import { invalidateAgentChatSessionListCache } from "./agentChatSessionListCache";
 import { invalidateSessionListCache } from "./sessionListCache";
@@ -94,9 +95,11 @@ export function getChatSessionLocalTouchTimestampForEvent(
 ): string | null {
   switch (envelope.event.type) {
     case "session_meta_updated":
-      // A comment edit is not chat activity: it must not move the chat up
-      // the list or refetch it.
-      return isThreadCommentsOnlyMetaEvent(envelope.event) ? null : envelope.timestamp;
+      // A comment edit, or what a mod draws, is not chat activity: it must
+      // not move the chat up the list or refetch it.
+      return isThreadCommentsOnlyMetaEvent(envelope.event) || isClaudePluginUiOnlyMetaEvent(envelope.event)
+        ? null
+        : envelope.timestamp;
     case "approval_request":
     case "pending_input_resolved":
     case "done":

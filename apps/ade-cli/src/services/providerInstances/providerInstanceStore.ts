@@ -214,6 +214,25 @@ function sameEmail(a: string | undefined, b: string | undefined): boolean {
   return Boolean(a && b && a.trim().toLowerCase() === b.trim().toLowerCase());
 }
 
+/**
+ * Which of several accounts signed in to one login owns it; the rest are
+ * copies that add no quota and that smart balance skips.
+ *
+ * The default account owns it when it is one of them and its login works, else
+ * the first working login in `holders` order (the base identity, then creation
+ * order): a broken login has no quota to share. With no working login, the
+ * first holder owns it. The registry's `sameLoginAs` and the usage poller's
+ * duplicate filter both use this, so balance counts the account with numbers.
+ */
+export function sameLoginOwner<T extends { id: string }>(
+  holders: readonly T[],
+  defaultId: string,
+  isBroken: (id: string) => boolean,
+): T | undefined {
+  const working = holders.filter((holder) => !isBroken(holder.id));
+  return working.find((holder) => holder.id === defaultId) ?? working[0] ?? holders[0];
+}
+
 function emptyFile(): RegistryFile {
   return {
     version: REGISTRY_VERSION,
@@ -355,14 +374,11 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const loginBroken = known && brokenLogins.has(stored.id);
     const signedIn = known && !loginBroken;
     const siblings = allRecords(file).filter((record) => record.provider === stored.provider);
-    // Two config homes signed in to one email are one login and one quota. The
-    // first working login in list order (the base identity, then creation
-    // order) owns it: a broken login has no quota to share. With no working
-    // login, the first in list order owns it.
+    // Two config homes signed in to one email are one login and one quota.
     const holders = stored.account?.email
       ? siblings.filter((record) => sameEmail(record.account?.email, stored.account?.email))
       : [];
-    const owner = holders.find((record) => !brokenLogins.has(record.id)) ?? holders[0];
+    const owner = sameLoginOwner(holders, defaultIdFor(stored.provider, file), (id) => brokenLogins.has(id));
     const sameLoginAs = owner && owner.id !== stored.id ? owner.id : undefined;
     // A replaced login another account holds again is not lost.
     const replacedAccount = stored.replacedAccount
@@ -477,6 +493,15 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     };
   }
 
+  /** The provider CLI's own sign-out; the default is refused like `remove`. */
+  function logoutCommandFor(id: string): { instance: ProviderInstance; command: ProviderInstanceLoginCommand } {
+    const instance = get(id);
+    if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
+    if (instance.isDefault) throw new Error("This account is the default. Make another account the default first.");
+    const args = instance.provider === "claude" ? ["auth", "logout"] : ["logout"];
+    return { instance, command: { ...loginCommandFor(instance), args } };
+  }
+
   function uniqueInstanceId(provider: ProviderInstanceProvider, label: string, file: RegistryFile): string {
     const taken = new Set<string>([
       ...PROVIDER_INSTANCE_PROVIDERS,
@@ -564,9 +589,16 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     });
   }
 
+  /**
+   * Accounts whose provider CLI logout is running. The logout takes seconds,
+   * and an account made the default meanwhile would come out signed out.
+   */
+  const signingOut = new Set<string>();
+
   function setDefault(id: string): ProviderInstance {
     const trimmed = typeof id === "string" ? id.trim() : "";
     if (!trimmed) throw new Error("A provider account id is required.");
+    if (signingOut.has(trimmed)) throw new Error("This account is being signed out. Try again in a moment.");
     const file = readFile();
     const record = allRecords(file).find((entry) => entry.id === trimmed);
     if (!record) throw new Error(`No provider account with id ${JSON.stringify(trimmed)}.`);
@@ -593,6 +625,8 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const file = readFile();
     const record = allRecords(file).find((entry) => entry.id === trimmed);
     if (!record) throw new Error(`No provider account with id ${JSON.stringify(trimmed)}.`);
+    // A second removal racing the first one's sign-out must not report success.
+    if (signingOut.has(trimmed)) throw new Error("This account is already being signed out.");
     if (isDefaultProviderInstanceId(trimmed)) {
       throw new Error("The machine's own provider login cannot be removed; it is where the provider reads its config.");
     }
@@ -800,6 +834,27 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       const instance = get(id);
       if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
       return loginCommandFor(instance);
+    },
+    /**
+     * The provider CLI's own sign-out for one account, run against that
+     * account's config home. The default is refused like `remove`: new chats
+     * go to it, so it has to stay signed in until another account is the
+     * default.
+     */
+    logoutCommand: (id: string): ProviderInstanceLoginCommand => logoutCommandFor(id).command,
+    /**
+     * Runs one account's logout with `setDefault` refused for it meanwhile.
+     * The default check and the mark happen together, before any await.
+     */
+    async whileSigningOut<T>(id: string, run: (command: ProviderInstanceLoginCommand) => Promise<T>): Promise<T> {
+      const { instance, command } = logoutCommandFor(id);
+      if (signingOut.has(instance.id)) throw new Error("This account is already being signed out.");
+      signingOut.add(instance.id);
+      try {
+        return await run(command);
+      } finally {
+        signingOut.delete(instance.id);
+      }
     },
     refreshAccounts,
     setLoginBroken,

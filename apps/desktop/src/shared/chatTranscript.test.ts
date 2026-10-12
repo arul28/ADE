@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalSteerRows, parseAgentChatTranscript } from "./chatTranscript";
+import { canonicalSteerRows, parseAgentChatTranscript, userMessageStartsTurn } from "./chatTranscript";
 import type { AgentChatEventEnvelope, AgentChatUserMessageDeliveryState } from "./types";
 
 function line(payload: Record<string, unknown>): string {
@@ -333,5 +333,29 @@ describe("canonicalSteerRows", () => {
     expect(plan.get(2)).toBeNull();
     expect(plan.has(3)).toBe(false);
     expect(plan.has(4)).toBe(false);
+  });
+});
+
+describe("userMessageStartsTurn", () => {
+  // Whether a sent message cuts a live turn's tool activity. Each row is how one
+  // provider writes a message that arrives while a turn runs.
+  it.each<[string, { steerId?: string; deliveryState?: AgentChatUserMessageDeliveryState; turnId?: string }, boolean]>([
+    ["a plain message starts a turn", { turnId: "turn-2" }, true],
+    ["a plain message with no turn id starts a turn", {}, true],
+    ["Claude's inline steer stays in the live turn", { steerId: "s1", deliveryState: "inline", turnId: "turn-2" }, false],
+    ["a steer offered to the live turn stays in it", { steerId: "s1", deliveryState: "accepted" }, false],
+    ["a Codex steer the model read stays in the live turn", { steerId: "s1", deliveryState: "processed" }, false],
+    ["a Codex steer the turn ended before reading stays in it", { steerId: "s1", deliveryState: "unprocessed" }, false],
+    ["a steer that went nowhere starts nothing", { steerId: "s1", deliveryState: "failed" }, false],
+    ["a steer delivered as its own turn starts one", { steerId: "s1", deliveryState: "delivered", turnId: "turn-2" }, true],
+    ["a Codex `!` command carrying the open turn's id stays in it", { turnId: "turn-1" }, false],
+    ["a delivered steer carrying the open turn's id stays in it", { steerId: "s1", deliveryState: "delivered", turnId: "turn-1" }, false],
+  ])("%s", (_name, message, startsTurn) => {
+    expect(userMessageStartsTurn(message, "turn-1")).toBe(startsTurn);
+  });
+
+  it("without an open turn, only a steer the live turn took in stays out of a new turn", () => {
+    expect(userMessageStartsTurn({ turnId: "turn-1" }, null)).toBe(true);
+    expect(userMessageStartsTurn({ steerId: "s1", deliveryState: "inline", turnId: "turn-1" }, null)).toBe(false);
   });
 });

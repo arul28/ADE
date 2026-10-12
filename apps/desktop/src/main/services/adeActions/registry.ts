@@ -213,6 +213,7 @@ import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNamin
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
+import { removeProviderAccount, signOutProviderAccount } from "../providerAccounts/signOutProviderAccount";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
   getSessionLifecycleSettings,
@@ -2552,6 +2553,11 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       aiIntegrationService.deleteCursorCloudAgent(requireNonEmptyString(args?.agentId, "agentId")),
     getCursorCloudAgent: (args?: { agentId?: string }) =>
       aiIntegrationService.getCursorCloudAgent(requireNonEmptyString(args?.agentId, "agentId")),
+    getCursorAgentUsage: (args?: { agentId?: string; runId?: string | null }) =>
+      aiIntegrationService.getCursorAgentUsage({
+        agentId: requireNonEmptyString(args?.agentId, "agentId"),
+        ...(typeof args?.runId === "string" ? { runId: args.runId } : {}),
+      }),
     listCursorCloudArtifacts: async (args?: { agentId?: string }) => {
       const items = await aiIntegrationService.listCursorCloudArtifacts(requireNonEmptyString(args?.agentId, "agentId"));
       return items.map((entry) => ({
@@ -3809,12 +3815,18 @@ export function buildProviderInstancesDomainService(
       capture("account_created", "completed", result.instance.provider);
       return result;
     },
-    remove(args: unknown) {
+    async remove(args: unknown) {
       const id = String((isRecord(args) ? args.id : "") ?? "");
       const provider = store.get(id)?.provider;
-      const result = store.remove(id);
+      const result = await removeProviderAccount(id);
       capture("account_removed", "completed", provider);
       return result;
+    },
+    async signOut(args: unknown) {
+      const id = String((isRecord(args) ? args.id : "") ?? "");
+      const instance = await signOutProviderAccount(id, runtime.usageTrackingService);
+      capture("account_signed_out", "completed", instance?.provider);
+      return { instance };
     },
     rename(args: unknown) {
       const input = isRecord(args) ? args : {};

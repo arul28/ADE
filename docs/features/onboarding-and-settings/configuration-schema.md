@@ -409,6 +409,13 @@ load — the worker pins Pi's `projectTrusted: false`, so a checked-out
 repository's `.pi/extensions` never executes. See
 [Chat › Pi UI bridge](../chat/README.md#pi-ui-bridge-ask_user-and-extensions).
 
+`AiChatConfig.claudePluginUiEnabled?: boolean` draws what Claude Code mods show
+in ADE chat: status lines, toasts, a band above the prompt and panes. It
+**defaults to false**; only an explicit `true` turns it on, because the channel
+is private to Claude Code. The mods' hooks
+run in the Claude process either way, so this controls the drawing only. See
+[Chat › Claude mod UI](../chat/README.md#claude-mod-ui).
+
 `sessionIntelligence` controls background session naming and
 end-of-session summaries:
 

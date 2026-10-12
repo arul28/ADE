@@ -30,6 +30,7 @@ import {
 import { DictationSection } from "./DictationSection";
 import { VoiceConversationSection } from "./VoiceConversationSection";
 import { LaunchPromptSection } from "./LaunchPromptSection";
+import { ClaudeModsSection } from "./ClaudeModsSection";
 import { ModernRow, ModernRows, ModernSection, SettingsColumn, SettingsToggle } from "./primitives";
 import "./ChatSection.css";
 
@@ -163,6 +164,8 @@ export function ChatSection() {
             </ModernSection>
 
             <LaunchPromptSection />
+
+            <ClaudeModsSection />
 
             {/* Voice input is chat dictation, so it lives with chat. */}
             <DictationSection />

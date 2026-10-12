@@ -28,7 +28,11 @@ import { confirmDialog } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
 import { useUsageSnapshot } from "../../../usage/useUsageSnapshot";
 import { usePrefersReducedMotion } from "../../../../hooks/usePrefersReducedMotion";
-import type { ProviderInstance, ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
+import {
+  isBaseProviderInstance,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
+} from "../../../../../shared/types/providerInstances";
 import { accountLimitRow, accountSignedOut, providerHasFiveHourWindow } from "./accountPresentation";
 import { AccountCard, type CardState, type RowMenuAction } from "./AccountCard";
 import { useAccountSignInSheet } from "./AddProviderAccountSheet";
@@ -184,7 +188,8 @@ export function ProviderAccountsPanel({
   const { pin } = useSettingsMachineScope();
   const { instances, settings, loading, bridgeMissing, error, reload, saveSettings } =
     useProviderInstances(provider);
-  const { snapshot } = useUsageSnapshot();
+  // The usage numbers come from the same machine as the accounts.
+  const { snapshot } = useUsageSnapshot({ pin });
   const signInSheet = useAccountSignInSheet({ provider, providerLabel, onChanged: () => void reload() });
   const openSheet = signInSheet.open;
   const reducedMotion = usePrefersReducedMotion();
@@ -229,13 +234,35 @@ export function ProviderAccountsPanel({
         openSheet({ existing: instance });
         return;
       }
+      if (action === "signOut") {
+        void confirmDialog({
+          title: "Sign out",
+          message: isBaseProviderInstance(instance)
+            ? `Sign ${instance.label} out of ${providerLabel}? This is this computer's own login, so the ${providerLabel} command in your terminal is signed out too.`
+            : `Sign ${instance.label} out of ${providerLabel}? The card stays; Sign in puts a login back.`,
+          confirmLabel: "SIGN OUT",
+          destructive: true,
+        }).then((ok) => {
+          if (ok) void run(() => api.signOut({ id: instance.id }));
+        });
+        return;
+      }
+      const signedIn = instance.signedIn || instance.loginBroken === true;
       void confirmDialog({
         title: "Remove account",
-        message: `Remove ${instance.label} from ${providerLabel}? Its sign-in stays on disk — only ADE forgets the account.`,
+        message: signedIn
+          ? `Remove ${instance.label} from ${providerLabel}? It is signed out first, so adding it again starts from a fresh sign-in.`
+          : `Remove ${instance.label} from ${providerLabel}?`,
         confirmLabel: "REMOVE",
         destructive: true,
       }).then((ok) => {
-        if (ok) void run(() => api.remove({ id: instance.id }));
+        if (!ok) return;
+        let signOutError: string | undefined;
+        void run(async () => {
+          signOutError = (await api.remove({ id: instance.id })).signOutError;
+        }).then(() => {
+          if (signOutError) setActionError(`${instance.label} was removed, but its sign-in could not be cleared. ${signOutError}`);
+        });
       });
     },
     [openSheet, pin, providerLabel, run],
@@ -295,12 +322,15 @@ export function ProviderAccountsPanel({
   /**
    * Bring a replaced login back. A copy of THIS account is the natural slot:
    * signing it in to the replaced email turns two cards of one login back into
-   * two accounts. A copy of a different login is not that slot, so without one
-   * a new account is added, named after the email.
+   * two accounts. A copy of a different login is not that slot, and neither is
+   * the machine's own login (re-signing it would move the terminal's `claude`
+   * too), so without one a new account is added, named after the email.
    */
   const restoreReplaced = useCallback(
     (instance: ProviderInstance, email: string) => {
-      const slot = instances.find((candidate) => candidate.sameLoginAs === instance.id);
+      const slot = instances.find((candidate) => (
+        candidate.sameLoginAs === instance.id && !isBaseProviderInstance(candidate)
+      ));
       if (slot) openSheet({ existing: slot });
       else openSheet({ existing: null, label: labelFromEmail(email) });
     },

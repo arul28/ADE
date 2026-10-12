@@ -47,7 +47,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
-import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
+import { consumeAppMenuCommand, installFindKeyBridge } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { cn } from "../ui/cn";
 import {
@@ -72,6 +72,7 @@ import {
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
+import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
 import { usePreferLocalCheckout } from "./usePreferLocalCheckout";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -750,6 +751,8 @@ export function TopBar({
   const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  // Which open tabs have a loaded project: only those switch at once.
+  const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
@@ -930,7 +933,10 @@ export function TopBar({
    */
   useEffect(() => {
     const onMenuCommand = window.ade?.app?.onMenuCommand;
-    if (typeof onMenuCommand !== "function") return;
+    if (typeof onMenuCommand !== "function") {
+      // No native menu (the web client): ⌘F arrives as a keydown.
+      return installFindKeyBridge();
+    }
     return onMenuCommand((command) => {
       if (consumeAppMenuCommand(command)) return;
       if (command === "close-tab") {
@@ -1475,6 +1481,10 @@ export function TopBar({
     ],
   );
 
+  // The switch that the last press or click of a project tab started. A drag
+  // that takes the tab out of this window waits for it before it closes the
+  // tab here.
+  const tabSwitchRef = useRef<Promise<void> | null>(null);
   const {
     closeTabGroups,
     handleRemoveTab,
@@ -1490,7 +1500,24 @@ export function TopBar({
     setTabOrder,
     checkForActiveWorkloads,
     isProjectBusy,
+    tabSwitchRef,
   });
+
+  // A project tab comes to the front on the press, as a browser tab does, so a
+  // drag of a background tab also shows its project. Only from the plain
+  // state, a project in front and nothing in transition: from a machine,
+  // account or hub page, a new tab or the Settings tab a switch does more than
+  // change the project, and those keep the click. So does a tab whose switch
+  // is not immediate (another machine's project, or a project that is not
+  // loaded): that switch is a transition, and a transition stops a tear-off.
+  const tabSwitchesOnPress =
+    !isProjectBusy
+    && !machineRouteActive
+    && !accountRouteActive
+    && !hubRouteActive
+    && !isNewTabOpen
+    && !isSettingsTabOpen
+    && (remoteBinding != null || project?.rootPath != null);
 
   const confirmAndCloseRemoteTargetTabs = useCallback(
     async (
@@ -2187,6 +2214,10 @@ export function TopBar({
               // bound project tab stays rendered but must not also read active.
               else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
               const indicator = terminalAttention?.indicator;
+              const localTabPress = pressActivation(() => {
+                if (projectTabDrag.isDragClick()) return;
+                if (!isMissing) tabSwitchRef.current = handleSwitchProject(rp.rootPath);
+              }, tabSwitchesOnPress && canDragTab && !isCurrent && projectInfoByRoot[rp.rootPath] != null);
               return (
                 <div
                   key={group.id}
@@ -2205,6 +2236,7 @@ export function TopBar({
                   {...{ [PROJECT_TAB_KEY_ATTR]: localTabKey }}
                   onPointerDown={(event) => {
                     if (canDragTab) projectTabDrag.onTabPointerDown(event, localTabKey);
+                    localTabPress.onPointerDown(event);
                   }}
                   onContextMenu={(event) => openTabMenu(event, group.id)}
                   className={cn(
@@ -2217,10 +2249,7 @@ export function TopBar({
                       "pointer-events-none opacity-80",
                   )}
                   style={{ ...projectTabStyle, ...projectTabDrag.tabDragStyle(localTabKey) }}
-                  onClick={() => {
-                    if (projectTabDrag.isDragClick()) return;
-                    if (!isMissing) handleSwitchProject(rp.rootPath);
-                  }}
+                  onClick={localTabPress.onClick}
                   onKeyDown={(event) => {
                     if (isMissing) return;
                     if (event.key === "Enter" || event.key === " ") {

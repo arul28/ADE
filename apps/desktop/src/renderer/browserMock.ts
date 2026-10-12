@@ -7838,6 +7838,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         login.state = "cancelled";
         return { ...login };
       },
+      signOut: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        delete instance.account;
+        instance.signedIn = false;
+        return instance;
+      },
       dismissReplaced: async (args: { id: string }) => {
         const instance = mockProviderInstanceById(args.id);
         delete instance.replacedAccount;

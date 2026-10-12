@@ -122,6 +122,38 @@ describe("computer-use command summary", () => {
       ),
       { text: "Filed proof “Server log”", surface: "proof", outcome: "not_checked" },
     ],
+    // Redirections belong to the shell, not to the command's flags; quoted
+    // text that only looks like one is still an argument.
+    [
+      "a redirect after a value-less flag is not its value",
+      ok("ade browser click --x 537 --y 411 --text 2>&1 | grep ok"),
+      { text: "Clicked at 537, 411 using ADE browser", surface: "ade_browser", outcome: "not_checked" },
+    ],
+    [
+      "a quoted target that starts like a redirect is still the target",
+      ok('ade browser click --text "<Submit>" 2>&1'),
+      { text: "Clicked “<Submit>” using ADE browser", surface: "ade_browser", outcome: "not_checked" },
+    ],
+    [
+      "a quoted `>` does not swallow the flag after it",
+      ok('ade screen type ">" --app Notes'),
+      { text: "Typed “>” in Notes", surface: "lane_screen", outcome: "not_checked" },
+    ],
+    [
+      "a PowerShell `*>` redirect is not typed text",
+      ok("ade screen type hello *>$null"),
+      { text: "Typed “hello” on the lane screen", surface: "lane_screen", outcome: "not_checked" },
+    ],
+    [
+      "stdout sent to a file, even glued to the last word, cannot confirm the proof",
+      ok("ade proof capture --caption Login --text>proof.txt", "Attached"),
+      {
+        text: "Filed proof “Login”",
+        surface: "proof",
+        outcome: "unconfirmed",
+        reason: "Its output was cut off, so ADE could not see the proof filed.",
+      },
+    ],
   ])("%s", (_name, input, expected) => {
     const summary = summarizeComputerUseCommand(input);
     if (expected === null) {

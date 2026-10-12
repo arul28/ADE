@@ -58,6 +58,33 @@ describe("appearance before the app store loads", () => {
     });
   });
 
+  it.each([
+    // [stored value, value read]: a whole number from 1 to the grid cap, else Automatic (null).
+    [4, 4],
+    [1, 1],
+    [6, 6],
+    ["4", null],
+    [0, null],
+    [7, null],
+    [4.5, null],
+    [undefined, null],
+  ])("reads a stored Focus grid chats-per-page of %j as %j", async (stored, read) => {
+    window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify({
+      theme: "dark",
+      themeId: DEFAULT_THEME_ID,
+      interfacePreferences: { focusGridMaxChats: stored },
+    }));
+    const { getAppearanceState } = await loadWithoutAppStore();
+    expect(getAppearanceState().interfacePreferences.focusGridMaxChats).toBe(read);
+
+    // A write goes through the same rule, and the other preferences keep their values.
+    getAppearanceState().setInterfacePreferences({ focusGridMaxChats: 3 });
+    expect(getAppearanceState().interfacePreferences).toMatchObject({ focusGridMaxChats: 3, sansFont: "geist" });
+    getAppearanceState().setInterfacePreferences({ focusGridMaxChats: 99 });
+    expect(getAppearanceState().interfacePreferences.focusGridMaxChats).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem(PREFERENCES_KEY)!).interfacePreferences.focusGridMaxChats).toBeNull();
+  });
+
   it("falls back to the legacy keys and writes no partial record that would hide them from the app's migration", async () => {
     window.localStorage.setItem("ade.theme", "light");
     window.localStorage.setItem("ade.smartTooltips", "false");

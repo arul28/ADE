@@ -8,6 +8,7 @@ import {
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
+import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../desktop/src/shared/claudePluginUi";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -263,12 +264,15 @@ type SessionState = {
   };
 };
 
-/**
- * Thread comments are the user's unsent review of an agent's reply. Only a
- * user client may read or change them, or send them (`includeThreadComments`);
- * an agent that could would be editing what the user is about to tell it.
- */
-const THREAD_COMMENT_ACTIONS: ReadonlySet<string> = new Set(THREAD_COMMENT_ACTION_NAMES);
+/** Chat actions only a user client may call; an agent caller is refused. */
+const USER_ONLY_CHAT_ACTIONS: ReadonlySet<string> = new Set([
+  // Thread comments are the user's unsent review of an agent's reply. Only a
+  // user client may read or change them, or send them (`includeThreadComments`);
+  // an agent that could would be editing what the user is about to tell it.
+  ...THREAD_COMMENT_ACTION_NAMES,
+  // What a mod draws is for the person at the chat; a press runs plugin code on the host.
+  ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
+]);
 const THREAD_COMMENT_SEND_ACTIONS = new Set(["sendMessage", "steer", "messageSession"]);
 
 function withoutIncludeThreadComments(args: Record<string, unknown>): Record<string, unknown> {
@@ -5552,7 +5556,7 @@ async function runTool(args: {
       );
     }
     const agentCaller = !isUserClientSession(session);
-    if (domain === "chat" && agentCaller && THREAD_COMMENT_ACTIONS.has(action)) {
+    if (domain === "chat" && agentCaller && USER_ONLY_CHAT_ACTIONS.has(action)) {
       scopeAccessDenied(`chat.${action} is limited to user clients`, `run_ade_action:chat.${action}`);
     }
     // Stripped here, at the source, because the chat scoping below rebuilds

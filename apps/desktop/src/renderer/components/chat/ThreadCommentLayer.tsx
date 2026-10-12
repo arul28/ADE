@@ -9,6 +9,7 @@ import { cn } from "../ui/cn";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
 import type { AssistantOutputSelection } from "./assistantOutputSelection";
+import { createHighlightGroup } from "../../lib/highlightRegistry";
 import {
   THREAD_COMMENT_MESSAGE_SELECTOR,
   captureTableRowAnchor,
@@ -49,36 +50,15 @@ type Resolved = {
   range: Range;
 };
 
-type HighlightRegistry = {
-  set: (name: string, highlight: unknown) => void;
-  delete: (name: string) => void;
-};
-
-function highlightRegistry(): HighlightRegistry | null {
-  const css = (globalThis as { CSS?: { highlights?: HighlightRegistry } }).CSS;
-  const HighlightCtor = (globalThis as { Highlight?: unknown }).Highlight;
-  return css?.highlights && typeof HighlightCtor === "function" ? css.highlights : null;
-}
-
 /**
- * `CSS.highlights` is one registry for the whole document, and a grid can
- * show several chats at once. Each layer files its ranges here under its own
- * id, and the three named highlights are rebuilt from all of them.
+ * A grid can show several chats at once; each layer publishes its ranges under
+ * its own id (`lib/highlightRegistry`).
  */
 type LayerHighlights = Record<typeof HIGHLIGHT_PENDING | typeof HIGHLIGHT_HELD | typeof HIGHLIGHT_ACTIVE, Range[]>;
-const highlightsByLayer = new Map<string, LayerHighlights>();
+const commentHighlights = createHighlightGroup([HIGHLIGHT_PENDING, HIGHLIGHT_HELD, HIGHLIGHT_ACTIVE] as const);
 
 function publishLayerHighlights(layerId: string, next: LayerHighlights | null): void {
-  if (next) highlightsByLayer.set(layerId, next);
-  else highlightsByLayer.delete(layerId);
-  const registry = highlightRegistry();
-  if (!registry) return;
-  const HighlightCtor = (globalThis as unknown as { Highlight: new (...ranges: Range[]) => unknown }).Highlight;
-  for (const name of [HIGHLIGHT_PENDING, HIGHLIGHT_HELD, HIGHLIGHT_ACTIVE] as const) {
-    const ranges = [...highlightsByLayer.values()].flatMap((entry) => entry[name]);
-    if (ranges.length) registry.set(name, new HighlightCtor(...ranges));
-    else registry.delete(name);
-  }
+  commentHighlights.publish(layerId, next);
 }
 
 function messageElement(root: HTMLElement, messageKey: string): HTMLElement | null {

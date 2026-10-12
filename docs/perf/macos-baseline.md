@@ -57,6 +57,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 |---|---|---|---|
 | Static tabs (Lanes, CTO, History, Settings, Automations, Chats): main-thread work | 3–18 ms/s | 3–26 ms/s | 30 ms/s |
 | Work with a chat streaming: main-thread work | — | 39–43 ms/s, 36–40 style recalcs/s | 60 ms/s |
+| Work, idle Claude chat with mod UI on screen (dock with the band of three mods, 116 elements): main-thread work | — | 11–17 ms/s; 10–15 ms/s with the setting off, which is the default (Mac Studio M4 Max, 2026-10-12, not the baseline machine) | 30 ms/s |
 | Settings, nothing animating: frames drawn | — | 0/s | 0/s |
 | PRs with running checks (3 spinners): frames drawn | 63/s | 30/s | 40/s |
 | PRs with running checks: GPU swap time | 118 ms/s | 57 ms/s | 80 ms/s |
@@ -281,6 +282,28 @@ The row and merge numbers are a production-style Node run; the streaming
 numbers are the dev build, where React's own work is two to three times what a
 packaged build pays.
 
+### Find in a chat and in a diff (⌘F)
+
+Measured 2026-10-12 on the dev build in an App Control session: the 5,031-event
+"Mac Desktop Tool Planning" chat and the 1,100-event "Quit Dialog Redesign"
+chat, query `the`. The A/B streaming rows are `npm run bench:webclient
+--skip-build --skip-load`, before = the tree without find, 3 interleaved runs,
+1-minute load average 9-11 (other agents running), so treat ±0.2 ms as noise.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Streaming: script per event, find closed | `bench:webclient` A/B | 5.8 ms | 5.9 ms | 7.5 ms |
+| Streaming: main-thread task per event, find closed | same | 8.7 ms | 8.8 ms | 10 ms |
+| Streaming: React commits per event, find closed | same | 2.3 | 2.3 | 2.8 |
+| Open a long chat to its first rows | same | 340 ms | 350 ms | 360 ms |
+| Find: first count after typing, 5,031-event chat, cold index | in-page timer | — | 114 ms | 200 ms |
+| Find: final count, same chat, cold index (3 ms slices + 300 ms recount) | same | — | 492 ms | 800 ms |
+| Find: next match to painted highlight, p50 / max of 20 | same | — | 4 / 7 ms | 8 / 33 ms |
+
+Closed, find does no work: its layer is memoized on stable props and
+subscribes to rows only while open. Indexing parses markdown in 3 ms slices, so
+it never holds a 240 Hz frame.
+
 ### Desktop dev app
 
 | Metric | How | Before | Baseline | Ceiling |
@@ -412,9 +435,10 @@ state is reported by both.
 The rows above time a switch from its click handler. A click fires on
 mouse-up, and the button of a normal click is down for 60 to 120 ms first, so
 those rows left out most of what the reader waits for. These rows start the
-clock at the press. Chat rows, the page tabs of the project sidebar and the
-machine tabs of the top bar now switch on the press
-(`lib/pressActivation.ts`). Project tabs keep the click; see below.
+clock at the press. Chat rows, the page tabs of the project sidebar, and the
+machine tabs and project tabs of the top bar switch on the press
+(`lib/pressActivation.ts`). A drag of a background project tab brings its
+project to the front, as a browser tab does.
 
 | | |
 |---|---|
@@ -423,14 +447,14 @@ machine tabs of the top bar now switch on the press
 | Project | four real projects open as tabs (ADE, Versic, crumb, fleet), five chats in the Work list of ADE |
 | Input | CDP `Input.dispatchMouseEvent`: 250 ms hover, press, 90 ms hold, release |
 | Background | other agents and test runs on the machine; 1-minute load average 9-19 during the timed runs |
-| Measured | 2026-10-11, main at `261940374` against the switch-pass branch, as an alternating A/B in one app session (the renderer sources swapped by hot reload), two pairs each, warm rounds |
+| Measured | 2026-10-11, main at `261940374` against the switch pass (on main as `38fad326d`; the project-tab row is `bbfe4e739`), as an alternating A/B in one app session (the renderer sources swapped by hot reload), two pairs each, warm rounds |
 
 | Metric | How | Before | Baseline | Ceiling |
 |---|---|---:|---:|---:|
 | Chat switch: press to content (median; range over the chats) | `press-to-paint.mjs chats` | 136-137 ms (124-138) | 47-51 ms (39-51) | 70 ms |
 | Page tab switch: press to content | `press-to-paint.mjs tabs` | 118-120 ms (99-142) | 24-26 ms (7-39) | 50 ms |
 | Page tab switch: press to the first frame (the tab strip marks the tab) | same | 100-101 ms | 8 ms | 16 ms |
-| Project switch: press to content (not moved to the press) | `press-to-paint.mjs projects` | 137-143 ms (130-144) | 137-143 ms | 175 ms |
+| Project switch: press to content (its own alternating A/B, 2026-10-11: before is main at `2981421d5`, baseline is the project-tab change on top of it, load average 8-17) | `press-to-paint.mjs projects` | 136-137 ms (134-142) | 44-51 ms (40-54) | 70 ms |
 | Rapid chat clicks (5 chats, 120 ms apart, 40 ms hold): last press to that chat's content | `press-to-paint.mjs rapid` | 89-91 ms | 44-51 ms | 70 ms |
 | Rapid chat clicks: main-thread task time of the burst | same | 506-510 ms | 511-587 ms | 750 ms |
 | Warm chat switch: main-thread task time, script time (700 ms after the click, idle subtracted, median of 20) | CDP `Performance.getMetrics` | 118-126 ms, 55-56 ms | 114-116 ms, 51-52 ms | 150 ms, 70 ms |
@@ -448,14 +472,13 @@ to 24 switches):
   24 ms of React work (the pane renders about 11 times for one switch, and
   about 350 components mount for the new rows) and about 10 ms of style and
   layout that the row measurement forces. The first frame follows it.
-- Until this pass every switch then rendered the transcript a second time,
-  10 to 18 ms after the first frame. The history read that follows a switch
-  gave back a new event list although nothing had changed, for two reasons:
-  a tool call that a provider sends twice was rebuilt as a new object on every
-  read (`mergeAgentChatHistorySnapshot` now hands back the held one), and the
-  desktop decoded each socket read alone, so a multi-byte character cut by a
-  read boundary became U+FFFD at a different place each time
-  (`RuntimeRpcClient` now uses a `StringDecoder`).
+- The history read that follows a switch must give back the event list that
+  the pane holds when nothing changed, or the transcript renders a second
+  time, 10 to 18 ms after the first frame. Two things keep it so:
+  `mergeAgentChatHistorySnapshot` hands back the held envelope of a tool call
+  that a provider sent twice, and `RuntimeRpcClient` decodes its stream with
+  a `StringDecoder` (a read that is decoded alone turns a multi-byte
+  character at its boundary into U+FFFD, at a different place each time).
 - The history read itself takes 4 to 19 ms. A cold open is slow because of
   its first render (row build, markdown parse, mounts), not because of data.
 
@@ -464,12 +487,12 @@ Measured and not kept:
 - A read of a chat's history when the pointer rests on its row. Cold opens
   stayed in the same range (82-512 ms with it, 89-266 ms without), because
   the read is not what a cold open waits for.
-- Project tabs on the press: 52-55 ms from the press (42-57), against 137-143.
-  A press that becomes a drag of the tab then had to switch back, and a
-  project switch is not a view change only: it writes the recent-project
-  order in the main process and resets per-project state. Until a drag of a
-  tab is allowed to activate it (as a browser does), project tabs act on the
-  click.
+- A project tab press that switches back when the press becomes a drag of
+  the tab. A project switch is not a view change only (it writes the
+  recent-project order in the main process and resets per-project state), so
+  the way back was a second full switch.
+
+The ceiling of the project row is 70 ms, the same as the chat row.
 
 Not measured: the machine tabs of the top bar (Chats, Browser, Music), which
 use the same press path as the page tabs.
@@ -485,6 +508,34 @@ Open items from this pass:
 - After the older history of a chat has loaded in idle slots, the next history
   read removes the repeated tool calls of those pages and renders the
   transcript once more (once per chat per session).
-- The view cache keeps a chat until 128 MB of cached events are held, not
-  until eight chats are. A session that visits many long chats can hold more
-  than before; the heap row above is 16 chats.
+- The view cache keeps a chat until 128 MB of cached events are held. A
+  session that visits many long chats holds all of them up to that limit; the
+  heap row above is 16 chats.
+
+### Project database identity guard
+
+Measured on macOS arm64, Node 26.7.0, warm interleaved medians across seven
+runs of 20,000 SQLite operations; implementation commit `b34127f77`
+(baseline `96e4a0de6`):
+
+| Metric | Before | After | Budget |
+|---|---|---|---|
+| 100-row KV list query | 32.64 μs | 35.17 μs | Existing 25% regression rule |
+| Device/inode guard incremental cost per operation | — | 2.53 μs | 5 μs |
+
+The representative query increases 7.75%. A trivial one-row KV read increases
+5.48 → 8.34 μs (+2.86 μs); this small query pays the full identity-check cost.
+Checks run per operation to avoid a polling window that can write to a moved
+file. These service measurements do not establish Electron idle, GPU, typing,
+or memory numbers. Full desktop scenarios were not measured for this change.
+
+The desktop main process also checks each open project's `ade.db` every
+5 seconds (`openProjectDataWatch.ts`); no renderer work until it fires. While
+the recovery screen waits on missing data it diagnoses every 2 seconds; the
+Trash lookup inside is cached for 5 seconds per project. Measured with an
+ad-hoc Node loop (`fs.promises.stat(…, { bigint: true })`, 200 warm-up calls,
+then the mean of 2,000) on the same machine, commit `9ee2c4ae0`:
+
+| Metric | Before | After | Budget |
+|---|---|---|---|
+| Open-project data watch, per open project per 5 s tick | — | 10 μs | 100 μs |

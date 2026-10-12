@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
+import { encodeClipboardImageWithinCap } from "../chat/clipboardImageEncoding";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import { execFile } from "node:child_process";
@@ -137,6 +138,12 @@ import type {
   ChatThreadCommentListArgs,
   ChatThreadCommentUpdateArgs,
 } from "../../../shared/threadComments";
+import type {
+  ClaudePluginUiActArgs,
+  ClaudePluginUiActResult,
+  ClaudePluginUiGetArgs,
+  ClaudePluginUiSnapshot,
+} from "../../../shared/claudePluginUi";
 import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
 import { createAccountRollupFetcher } from "../usage/accountUsageLiveRefresh";
 import {
@@ -146,6 +153,7 @@ import {
 import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
+import { removeProviderAccount, signOutProviderAccount } from "../providerAccounts/signOutProviderAccount";
 import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
 import { readGithubContributionCalendar } from "../usage/githubActivityStats";
 import {
@@ -991,8 +999,9 @@ import type { createLinearCredentialService } from "../cto/linearCredentialServi
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { LOCAL_RUNTIME_SYNC_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
-import { createProjectRecoveryService, ProjectRecoveryService } from "../runtime/projectRecoveryService";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
+import { createProjectRecoveryService, ProjectRecoveryService, restartBrainForRepair } from "../runtime/projectRecoveryService";
+import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
+import { forgetLocalProjectDatabaseIdentity } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
@@ -4049,15 +4058,12 @@ export function registerIpc({
   ipcMain.handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
     const image = clipboard.readImage();
     if (image.isEmpty()) return null;
-    const png = image.toPNG();
-    if (!png.byteLength) return null;
-    if (png.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-      throw new Error(legacyAttachmentCapMessage("Clipboard image"));
-    }
+    const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
+    if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
     return {
-      data: png.toString("base64"),
-      filename: "clipboard.png",
-      mimeType: "image/png",
+      data: encoded.data.toString("base64"),
+      filename: encoded.filename,
+      mimeType: encoded.mimeType,
     };
   });
 
@@ -4107,16 +4113,13 @@ export function registerIpc({
   ipcMain.handle(IPC.appSaveClipboardImageAttachment, async (): Promise<{ path: string; mimeType: string; previewDataUrl: string | null } | null> => {
     const image = clipboard.readImage();
     if (image.isEmpty()) return null;
-    const png = image.toPNG();
-    if (!png.byteLength) return null;
-    if (png.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-      throw new Error(legacyAttachmentCapMessage("Clipboard image"));
-    }
-    const saved = await saveAgentChatTempAttachmentBuffer(png, "clipboard.png");
+    const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
+    if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
+    const saved = await saveAgentChatTempAttachmentBuffer(encoded.data, encoded.filename);
     const previewImage = image.resize({ width: 96, height: 96, quality: "best" });
     return {
       path: saved.path,
-      mimeType: "image/png",
+      mimeType: encoded.mimeType,
       previewDataUrl: previewImage.isEmpty() ? null : previewImage.toDataURL(),
     };
   });
@@ -4338,25 +4341,7 @@ export function registerIpc({
     if (!projectRecoveryService) {
       throw new Error("This window does not manage the ADE background service.");
     }
-    // One coarse fact per Repair click, captured where the outcome is known.
-    // The 1 h dedupe bounds a frustrated click-loop to ≤24 accepted events/day.
-    const captureRepairOutcome = (outcome: "completed" | "failed") => {
-      productAnalyticsService?.capture({
-        event: "ade_feature_used",
-        surface: "desktop",
-        properties: { feature: "connections", action: "brain_repair", outcome },
-        projectId: null,
-        dedupeKey: `brain_repair:${outcome}`,
-        minimumIntervalMs: 60 * 60 * 1_000,
-      });
-    };
-    try {
-      await projectRecoveryService.restartBrain();
-    } catch (error) {
-      captureRepairOutcome("failed");
-      throw error;
-    }
-    captureRepairOutcome("completed");
+    await restartBrainForRepair(projectRecoveryService, productAnalyticsService);
   });
 
   ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
@@ -4841,6 +4826,15 @@ export function registerIpc({
     writeGlobalState(globalStatePath, next);
     clearRecentProjectSummaryCache();
     if (removed && !removed.remote) {
+      // Removing a project is the person's way to start over with it: adding
+      // it back no longer expects the old database. A project whose whole
+      // .ade folder is gone still opens on the recovery screen, where Start
+      // fresh is one click.
+      try {
+        forgetLocalProjectDatabaseIdentity(removed.rootPath);
+      } catch {
+        // Best effort; the recovery screen still offers Start fresh.
+      }
       const catalogPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
       if (catalogPool) {
         try {
@@ -4939,13 +4933,20 @@ export function registerIpc({
     });
   };
 
-  ipcMain.handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
+  // Every recovery call names a project this window has open or ADE has opened
+  // before, and needs the recovery service.
+  const recoveryTarget = (arg: { projectRoot?: unknown } | undefined): { projectRoot: string; service: ProjectRecoveryService } => {
     const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
     if (!requested) throw new Error("Project root path is required.");
     const projectRoot = resolveRequestedProjectRoot(requested);
     if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
     if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
-    return await projectRecoveryService.diagnose(projectRoot);
+    return { projectRoot, service: projectRecoveryService };
+  };
+
+  ipcMain.handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
+    const { projectRoot, service } = recoveryTarget(arg);
+    return await service.diagnose(projectRoot);
   });
 
   // The complete ordered step array comes back with the final report; each
@@ -4953,17 +4954,68 @@ export function registerIpc({
   // legitimately wait a minute or more for the background service to answer,
   // and a spinner with no steps for that long reads as a hang.
   ipcMain.handle(IPC.recoveryRepair, async (event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
-    const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    if (!requested) throw new Error("Project root path is required.");
-    const projectRoot = resolveRequestedProjectRoot(requested);
-    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
-    if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
-    return await projectRecoveryService.repair(projectRoot, {
+    const { projectRoot, service } = recoveryTarget(arg);
+    return await service.repair(projectRoot, {
       onStep: (step) => {
         if (event.sender.isDestroyed()) return;
         event.sender.send(IPC.recoveryRepairStep, { projectRoot, step });
       },
     });
+  });
+
+  // One coarse fact per choice and outcome: how often project data goes
+  // missing and which way people recover. Nothing about the project. The 1 h
+  // dedupe bounds a retry loop to 24 events per key per day.
+  const captureProjectDataRecovery = (
+    action: "project_data_restore" | "project_data_start_fresh",
+    outcome: "completed" | "failed",
+  ) => {
+    try {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "storage_doctor", action, outcome },
+        projectId: null,
+        dedupeKey: `${action}:${outcome}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+    } catch {
+      // Counting a choice must never change its result.
+    }
+  };
+
+  ipcMain.handle(IPC.recoveryRestoreProjectData, async (_event, arg: { projectRoot: string }): Promise<ProjectDataRestoreResult> => {
+    const { projectRoot, service } = recoveryTarget(arg);
+    let result: ProjectDataRestoreResult;
+    try {
+      result = await service.restoreProjectData(projectRoot);
+    } catch (error) {
+      captureProjectDataRecovery("project_data_restore", "failed");
+      throw error;
+    }
+    captureProjectDataRecovery("project_data_restore", result.restored ? "completed" : "failed");
+    return result;
+  });
+
+  ipcMain.handle(IPC.recoveryStartFresh, async (_event, arg: { projectRoot: string }): Promise<void> => {
+    const { projectRoot, service } = recoveryTarget(arg);
+    try {
+      await service.startFresh(projectRoot);
+    } catch (error) {
+      captureProjectDataRecovery("project_data_start_fresh", "failed");
+      throw error;
+    }
+    captureProjectDataRecovery("project_data_start_fresh", "completed");
+  });
+
+  // With no root: the project that failed to reopen at launch. A window asks
+  // when it loads and whenever its project changes, so a reload or a second
+  // window still shows the recovery screen.
+  ipcMain.handle(IPC.recoveryProjectDataStatus, async (_event, arg?: { projectRoot?: string }): Promise<ProjectDataStatus | null> => {
+    if (!projectRecoveryService) return null;
+    if (typeof arg?.projectRoot !== "string" || !arg.projectRoot.trim()) return projectRecoveryService.startupProjectDataStatus();
+    const projectRoot = resolveRequestedProjectRoot(arg.projectRoot.trim());
+    return projectRoot ? projectRecoveryService.projectDataStatus(projectRoot) : null;
   });
 
   // The one place "Allow in the Background" can be switched back on. Apple's
@@ -6887,7 +6939,7 @@ export function registerIpc({
     const id = providerInstanceId(arg);
     // Read the provider before the removal: afterwards the record is gone.
     const provider = store.get(id)?.provider;
-    const result = store.remove(id);
+    const result = await removeProviderAccount(id);
     captureProviderAccount("account_removed", "completed", provider);
     return result;
   });
@@ -6909,6 +6961,12 @@ export function registerIpc({
     // only accepts `string | null`.
     const accentColor = typeof raw === "string" ? raw : null;
     return getMachineProviderInstanceStore().setAccent(providerInstanceId(arg), accentColor);
+  });
+
+  ipcMain.handle(IPC.providerInstancesSignOut, async (_event, arg: unknown): Promise<ProviderInstance | null> => {
+    const instance = await signOutProviderAccount(providerInstanceId(arg), getCtx().usageTrackingService);
+    captureProviderAccount("account_signed_out", "completed", instance?.provider);
+    return instance;
   });
 
   ipcMain.handle(IPC.providerInstancesDismissReplaced, async (_event, arg: unknown): Promise<ProviderInstance> => {
@@ -9193,6 +9251,14 @@ export function registerIpc({
 
   ipcMain.handle(IPC.archiveDelete, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
     ensureArchiveService().delete(arg));
+
+  ipcMain.handle(IPC.agentChatClaudePluginUiGet, async (_event, arg: ClaudePluginUiGetArgs): Promise<ClaudePluginUiSnapshot> => {
+    return ensureAgentChatContext().agentChatService.getClaudePluginUi(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatClaudePluginUiAct, async (_event, arg: ClaudePluginUiActArgs): Promise<ClaudePluginUiActResult> => {
+    return ensureAgentChatContext().agentChatService.actOnClaudePluginUi(arg);
+  });
 
   ipcMain.handle(IPC.agentChatThreadCommentsList, async (_event, arg: ChatThreadCommentListArgs): Promise<ChatThreadComment[]> => {
     return ensureAgentChatContext().agentChatService.listThreadComments(arg);

@@ -254,6 +254,28 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Command line",
   },
   {
+    id: "general.background-service",
+    label: "Background service",
+    keywords: ["background", "service", "brain", "stop", "quit", "agents", "login item", "daemon", "runtime"],
+    tab: "general",
+    anchor: "background-service",
+    scope: "machine",
+    // Stopping the service is a desktop action on this computer.
+    web: "hidden",
+    group: "Background service",
+  },
+  {
+    id: "general.quit-confirmation",
+    label: "Ask before quitting",
+    keywords: ["quit", "close", "exit", "confirm", "background", "agents", "don't ask again"],
+    tab: "general",
+    anchor: "quit-confirmation",
+    scope: "machine",
+    // The question is asked by the desktop app when it quits.
+    web: "hidden",
+    group: "Background service",
+  },
+  {
     id: "general.auto-updates",
     label: "Automatic updates",
     keywords: ["update", "upgrade", "release", "channel", "version"],
@@ -460,6 +482,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Composer",
   },
   {
+    id: "chat.claude-mods",
+    label: "Show what Claude mods draw",
+    keywords: ["mods", "plugins", "claude code", "band", "status line", "pane", "toast"],
+    tab: "chat",
+    anchor: "claude-mods",
+    scope: "account",
+    // The setting is the host's project configuration, which the hosted client cannot write.
+    web: "hidden",
+    group: "Claude mods",
+  },
+  {
     id: "appearance.preview",
     label: "Chat preview",
     keywords: ["preview", "sample", "example", "what it looks like"],
@@ -495,6 +528,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["animation", "motion", "transitions", "accessibility"],
     tab: "appearance",
     anchor: "reduce-motion",
+    scope: "machine",
+    web: "browser",
+    group: "Interface",
+  },
+  {
+    id: "appearance.focus-grid-chats",
+    label: "Focus grid chats per page",
+    keywords: ["focus", "grid", "tiles", "columns", "layout", "work", "screen size"],
+    tab: "appearance",
+    anchor: "focus-grid-chats",
     scope: "machine",
     web: "browser",
     group: "Interface",
