@@ -18,6 +18,10 @@ import { SCENE_CONTENT_SECURITY_POLICY } from "../../../shared/chatScene";
  */
 
 export const SCENE_PROTOCOL_SCHEME = "ade-scene";
+/** `ade-scene://view/<id>`: a scene the agent wrote. */
+export const SCENE_VIEW_HOST = "view";
+/** `ade-scene://app/<id>`: an MCP App's page, each with a policy of its own. */
+export const MCP_APP_VIEW_HOST = "app";
 
 /**
  * A long chat can prepare a scene per streamed revision, so the map has to be
@@ -40,8 +44,14 @@ export type PreparedScene = {
 };
 
 export type SceneDocumentStore = {
-  /** Store a document and return the URL a frame can load it from. */
-  put(html: string): PreparedScene;
+  /**
+   * Store a document and return the URL a frame can load it from.
+   *
+   * `policy` is the Content-Security-Policy the document is served with. Only
+   * a store made with `policy: "per-document"` reads it (and requires it); the
+   * scene store ignores it and serves every document with the scene policy.
+   */
+  put(html: string, policy?: string): PreparedScene;
   get(id: string): string | null;
   respond(requestUrl: string): SceneResponseDescriptor;
   size(): number;
@@ -63,7 +73,7 @@ const NOT_FOUND: SceneResponseDescriptor = {
  * written, not on anything the caller controls. Anything else is rejected
  * rather than guessed at.
  */
-export function parseSceneRequestId(requestUrl: string): string | null {
+export function parseSceneRequestId(requestUrl: string, host: string = SCENE_VIEW_HOST): string | null {
   let url: URL;
   try {
     url = new URL(requestUrl);
@@ -81,8 +91,8 @@ export function parseSceneRequestId(requestUrl: string): string | null {
     return null;
   }
 
-  if (url.hostname === "view") return segments.length === 1 ? segments[0]! : null;
-  if (!url.hostname && segments.length === 2 && segments[0] === "view") return segments[1]!;
+  if (url.hostname === host) return segments.length === 1 ? segments[0]! : null;
+  if (!url.hostname && segments.length === 2 && segments[0] === host) return segments[1]!;
   return null;
 }
 
@@ -90,47 +100,61 @@ export function createSceneDocumentStore(options: {
   capacity?: number;
   /** Injectable only so tests can assert eviction order deterministically. */
   makeId?: () => string;
+  /** The URL host this store's documents are served under. */
+  host?: string;
+  /**
+   * `"scene"` (the default): every document gets the scene policy, whatever a
+   * caller passes. `"per-document"`: each document carries the policy it was
+   * stored with, and storing one without a policy is refused.
+   */
+  policy?: "scene" | "per-document";
 } = {}): SceneDocumentStore {
+  const host = options.host ?? SCENE_VIEW_HOST;
+  const perDocumentPolicy = options.policy === "per-document";
   const capacity = Math.max(1, Math.floor(options.capacity ?? SCENE_STORE_CAPACITY));
   const makeId = options.makeId ?? (() => randomUUID().replace(/-/g, ""));
   // Insertion-ordered, so the first key is always the oldest document.
-  const documents = new Map<string, string>();
+  const documents = new Map<string, { html: string; policy: string }>();
 
-  const put = (html: string): PreparedScene => {
+  const put = (html: string, policy?: string): PreparedScene => {
+    if (perDocumentPolicy && !policy?.trim().length) throw new Error("A document in this store needs its own policy.");
     const id = makeId();
     // Re-inserting a colliding id would keep its original position in the map
     // and make it evict out of order; delete first so insertion order is real.
     documents.delete(id);
-    documents.set(id, String(html ?? ""));
+    documents.set(id, {
+      html: String(html ?? ""),
+      policy: perDocumentPolicy ? policy!.trim() : SCENE_CONTENT_SECURITY_POLICY,
+    });
     while (documents.size > capacity) {
       const oldest = documents.keys().next();
       if (oldest.done) break;
       documents.delete(oldest.value);
     }
-    return { id, url: `${SCENE_PROTOCOL_SCHEME}://view/${id}` };
+    return { id, url: `${SCENE_PROTOCOL_SCHEME}://${host}/${id}` };
   };
 
-  const get = (id: string): string | null => documents.get(id) ?? null;
+  const get = (id: string): string | null => documents.get(id)?.html ?? null;
 
   const respond = (requestUrl: string): SceneResponseDescriptor => {
-    const id = parseSceneRequestId(requestUrl);
+    const id = parseSceneRequestId(requestUrl, host);
     if (!id) return NOT_FOUND;
-    const html = documents.get(id);
-    if (html === undefined) return NOT_FOUND;
+    const document = documents.get(id);
+    if (document === undefined) return NOT_FOUND;
     // A read refreshes the document's place: the renderer reuses a prepared
     // URL for every remount of a scene, so eviction must take the documents
     // nobody has loaded lately, not the ones still on screen.
     documents.delete(id);
-    documents.set(id, html);
+    documents.set(id, document);
     return {
       status: 200,
-      body: html,
+      body: document.html,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         // Sent as a header as well as the in-document meta tag. Neither half is
         // load bearing alone: the meta survives a blob fallback, the header
         // survives a document whose <head> was mangled.
-        "Content-Security-Policy": SCENE_CONTENT_SECURITY_POLICY,
+        "Content-Security-Policy": document.policy,
         "Referrer-Policy": "no-referrer",
       },
     };
@@ -151,3 +175,25 @@ export function createSceneDocumentStore(options: {
  * singleton is the whole wiring.
  */
 export const sceneDocumentStore = createSceneDocumentStore();
+
+/**
+ * The store behind `ade-scene://app/<id>`: the pages of MCP Apps.
+ *
+ * Separate from the scene store on purpose. An app's page is third-party HTML
+ * served with a policy built from what its server declared
+ * (`buildMcpAppContentSecurityPolicy`), so it must never be reachable under a
+ * URL the scene store answers, and a scene must never be stored here. Twelve
+ * documents: a page can be a few megabytes, and one evicted is prepared again
+ * the next time its frame mounts.
+ */
+export const mcpAppDocumentStore = createSceneDocumentStore({
+  host: MCP_APP_VIEW_HOST,
+  policy: "per-document",
+  capacity: 12,
+});
+
+/** Answer an `ade-scene:` request from whichever store its host names. */
+export function respondToSceneProtocolRequest(requestUrl: string): SceneResponseDescriptor {
+  const app = mcpAppDocumentStore.respond(requestUrl);
+  return app.status === 200 ? app : sceneDocumentStore.respond(requestUrl);
+}

@@ -76,6 +76,8 @@ import { citedProofArtifactIds, PROOF_COMPARE_FENCE_LANGUAGE } from "../../../sh
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { SceneAnswerContext } from "./SceneFrame";
+import { canHostMcpApps, McpAppCard } from "./McpAppFrame";
+import { MCP_APP_CARD_VARIANT } from "../../../shared/mcpApp";
 import { latestScenePreviewOutput, readScenePreviewPath, ScenePreviewThumb } from "./ScenePreviewThumb";
 import { MarkdownBlock } from "./chatMarkdownBlock";
 import { splitChatOutputContextSegments } from "../../../shared/chatOutputContext";
@@ -4028,6 +4030,12 @@ function renderEvent(
     // while setup runs; afterwards it is a one-line summary that expands.
     if (event.variant === "lane_setup") {
       return <LaneSetupTranscriptCard card={event} />;
+    }
+    // An MCP App: the page a server ships with a tool, run in the scene
+    // sandbox. Where this build cannot host one (the web client) the card
+    // falls through to its fallback text, which says where apps do run.
+    if (event.variant === MCP_APP_CARD_VARIANT && canHostMcpApps()) {
+      return <McpAppCard card={event} />;
     }
     // Without a dispatcher the card filters out every non-`open` action, so the
     // schema's action row could never be used. `retry`/`refresh` re-enter the

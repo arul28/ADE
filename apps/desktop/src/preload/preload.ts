@@ -14,6 +14,13 @@ import { isUnsupportedAdeActionError } from "../shared/codedError";
 import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
 import type { SceneStillRecord } from "../shared/chatScene";
+import type {
+  McpAppCsp,
+  McpAppGetArgs,
+  McpAppGetResult,
+  McpAppRequestArgs,
+  McpAppRequestResult,
+} from "../shared/mcpApp";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
@@ -8613,6 +8620,22 @@ const adeBridge = {
       callProjectRuntimeActionOr("chat", "resolveSmartLinkPreview", { args }, async () =>
         deriveSmartLinkPreview(args.url),
       ),
+    // MCP Apps. Both go to the machine that owns the chat: the page is filed
+    // with the chat there, and a call can only reach the chat's live session.
+    getMcpApp: async (
+      args: McpAppGetArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<McpAppGetResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getMcpApp", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetMcpApp, args),
+      ),
+    mcpAppRequest: async (
+      args: McpAppRequestArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<McpAppRequestResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "mcpAppRequest", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatMcpAppRequest, args),
+      ),
     // No runtime bound: no favicons, and every Sources row keeps its initial.
     resolveSourceFavicons: async (args: { domains: string[] }): Promise<{ icons: Record<string, string | null> }> =>
       callProjectRuntimeActionOr("chat", "resolveSourceFavicons", { args }, async () => ({ icons: {} })),
@@ -8812,6 +8835,12 @@ const adeBridge = {
         scopeKey?: string | null;
       },
     ): Promise<SceneStillRecord | null> => ipcRenderer.invoke(IPC.sceneStoreStill, args),
+    /**
+     * An MCP App's page, as a URL its frame can load. The declared network
+     * origins go along; the main process builds the policy from them.
+     */
+    prepareApp: (args: { html: string; csp: McpAppCsp }): Promise<string> =>
+      ipcRenderer.invoke(IPC.mcpAppPrepare, args),
   },
   computerUse: {
     listArtifacts: async (

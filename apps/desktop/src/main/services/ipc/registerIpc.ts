@@ -1031,7 +1031,15 @@ import type { createProjectScaffoldService } from "../projects/projectScaffoldSe
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { createComputerUseArtifactPath, toProjectArtifactUri } from "../computerUse/localComputerUse";
-import { sceneDocumentStore } from "../scenes/sceneDocumentStore";
+import { mcpAppDocumentStore, sceneDocumentStore } from "../scenes/sceneDocumentStore";
+import {
+  buildMcpAppContentSecurityPolicy,
+  MCP_APP_LIMITS,
+  type McpAppGetArgs,
+  type McpAppGetResult,
+  type McpAppRequestArgs,
+  type McpAppRequestResult,
+} from "../../../shared/mcpApp";
 import {
   resolveSceneCaptureRect,
   decodeScenePngDataUrl,
@@ -9142,6 +9150,16 @@ export function registerIpc({
     await ctx.agentChatService.respondToInput(arg);
   });
 
+  ipcMain.handle(IPC.agentChatGetMcpApp, async (_event, arg: McpAppGetArgs): Promise<McpAppGetResult> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.getMcpApp(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatMcpAppRequest, async (_event, arg: McpAppRequestArgs): Promise<McpAppRequestResult> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.mcpAppRequest(arg);
+  });
+
   ipcMain.handle(
     IPC.agentChatDismissPendingInput,
     async (_event, arg: AgentChatDismissPendingInputArgs): Promise<void> => {
@@ -9657,6 +9675,24 @@ export function registerIpc({
       throw new Error("This scene is too large to render.");
     }
     return sceneDocumentStore.put(html).url;
+  });
+
+  /**
+   * Store an MCP App's page and hand back the URL its frame loads it from.
+   *
+   * The page is third-party HTML. Its policy is built HERE, in the main
+   * process, from the origins the resource declared: the renderer passes the
+   * declaration, never a policy string, and `buildMcpAppContentSecurityPolicy`
+   * sanitizes it again. The page lives in its own store, under its own URL
+   * host, so no scene URL can ever answer with it.
+   */
+  ipcMain.handle(IPC.mcpAppPrepare, async (_event, arg: { html?: unknown; csp?: unknown }): Promise<string> => {
+    const html = typeof arg?.html === "string" ? arg.html : "";
+    if (!html.length) throw new Error("An app document is required.");
+    if (Buffer.byteLength(html, "utf8") > MCP_APP_LIMITS.maxDocumentBytes) {
+      throw new Error("This app is too large to show.");
+    }
+    return mcpAppDocumentStore.put(html, buildMcpAppContentSecurityPolicy(arg?.csp)).url;
   });
 
   /**

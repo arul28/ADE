@@ -920,6 +920,19 @@ import {
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { buildDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import {
+  claudeMcpToolName,
+  MCP_APP_RESOURCE_MIME_TYPE,
+  readMcpToolUiMeta,
+  toMcpAppToolResult,
+  type McpAppGetArgs,
+  type McpAppGetResult,
+  type McpAppRequestArgs,
+  type McpAppRequestResult,
+  type McpAppToolDescriptor,
+} from "../../../shared/mcpApp";
+import { createMcpAppHost, type McpAppProviderLink } from "./mcpAppHost";
+import { createMcpAppStore } from "./mcpAppStore";
+import {
   adeCardFallbackText,
   adeCardFingerprint,
   type AdeCardPayload,
@@ -11477,6 +11490,123 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+
+  /*
+   * MCP Apps (`shared/mcpApp.ts`, `mcpAppHost.ts`). A link is a chat's LIVE
+   * provider session and nothing else: these two builders read a runtime that
+   * already exists and never start one, so an app in a chat that has stopped
+   * gets "not running" instead of waking its agent.
+   */
+  const MCP_APP_PROVIDER_TIMEOUT_MS = 60_000;
+  const claudeMcpAppLink = (managed: ManagedChatSession, runtime: ClaudeRuntime): McpAppProviderLink | null => {
+    const query = runtime.query;
+    // Reading a `ui://` resource is a capability the CLI has to advertise.
+    if (!query || !managed.session.protocolCapabilities?.includes("mcp_read_resource_v1")) return null;
+    return {
+      provider: "claude",
+      listTools: async () => {
+        const servers = await withTimeout(query.mcpServerStatus(), MCP_APP_PROVIDER_TIMEOUT_MS, "Claude did not list its MCP tools in time.");
+        return servers.flatMap((server): McpAppToolDescriptor[] => server.status !== "connected"
+          ? []
+          : (server.tools ?? []).map((tool) => ({
+              server: server.name,
+              name: tool.name,
+              ...(tool.description ? { description: tool.description } : {}),
+              readOnly: tool.annotations?.readOnly === true,
+              ui: readMcpToolUiMeta(tool._meta),
+            })));
+      },
+      readResource: (server, uri) =>
+        withTimeout(query.readMcpResource(server, uri), MCP_APP_PROVIDER_TIMEOUT_MS, "Claude did not read the resource in time."),
+      callTool: async (server, tool, args) => {
+        // `mcp_call` is a control request the SDK types but gives no method
+        // for; `request` is the channel every typed method uses. Recheck on an
+        // SDK bump: without it an app's tool calls are refused, nothing else.
+        const control = query as unknown as { request?: (request: Record<string, unknown>) => Promise<{ response?: unknown }> };
+        if (typeof control.request !== "function") throw new Error("This version of Claude Code cannot run a tool for an app.");
+        const reply = await withTimeout(
+          control.request({ subtype: "mcp_call", tool: claudeMcpToolName(server, tool), arguments: args }),
+          MCP_APP_PROVIDER_TIMEOUT_MS,
+          "Claude did not finish the tool call in time.",
+        );
+        return toMcpAppToolResult(reply?.response);
+      },
+    };
+  };
+  const codexMcpAppLink = (managed: ManagedChatSession, runtime: CodexRuntime): McpAppProviderLink | null => {
+    const threadId = managed.session.threadId;
+    if (!threadId || runtime.process.exitCode !== null || runtime.process.killed) return null;
+    const options = { timeoutMs: MCP_APP_PROVIDER_TIMEOUT_MS };
+    return {
+      provider: "codex",
+      listTools: async () => {
+        const tools: McpAppToolDescriptor[] = [];
+        let cursor: string | null = null;
+        for (let page = 0; page < 20; page += 1) {
+          const listed: { data?: unknown; nextCursor?: unknown } = await runtime.request(
+            "mcpServerStatus/list",
+            // Tools only: the list is read for annotations and `_meta`, and
+            // Codex starts a second copy of each server to answer it.
+            { threadId, limit: 100, detail: "toolsAndAuthOnly", ...(cursor ? { cursor } : {}) },
+            options,
+          );
+          for (const entry of Array.isArray(listed?.data) ? listed.data : []) {
+            const server = asRecord(entry);
+            const serverName = stringOrNull(server?.name);
+            if (!serverName) continue;
+            for (const raw of Object.values(asRecord(server?.tools) ?? {})) {
+              const tool = asRecord(raw);
+              const name = stringOrNull(tool?.name);
+              if (!tool || !name) continue;
+              const annotations = asRecord(tool.annotations);
+              const title = stringOrNull(tool.title) ?? stringOrNull(annotations?.title);
+              const description = stringOrNull(tool.description);
+              tools.push({
+                server: serverName,
+                name,
+                ...(title ? { title } : {}),
+                ...(description ? { description } : {}),
+                ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
+                readOnly: annotations?.readOnlyHint === true,
+                ui: readMcpToolUiMeta(tool._meta),
+              });
+            }
+          }
+          cursor = stringOrNull(listed?.nextCursor);
+          if (!cursor) break;
+        }
+        return tools;
+      },
+      readResource: (server, uri) => runtime.request("mcpServer/resource/read", { threadId, server, uri }, options),
+      callTool: async (server, tool, args) =>
+        toMcpAppToolResult(await runtime.request("mcpServer/tool/call", { threadId, server, tool, arguments: args }, options)),
+    };
+  };
+  const mcpApps = createMcpAppHost({
+    store: createMcpAppStore({
+      rootDir: path.join(transcriptsDir, "chat-apps"),
+      onError: (event, detail) => logger.warn(event, detail),
+    }),
+    linkFor: (sessionId) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed || managed.closed || managed.deleted || managed.session.status === "ended") return null;
+      const runtime = managed.runtime;
+      if (runtime?.kind === "claude") return claudeMcpAppLink(managed, runtime);
+      if (runtime?.kind === "codex") return codexMcpAppLink(managed, runtime);
+      // Every other provider: no way to read a tool's page or to call back.
+      return null;
+    },
+    emitCard: (sessionId, card) => {
+      void emitAdeCard({ sessionId, card }).catch((error) => {
+        logger.warn("agent_chat.mcp_app_card_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+      });
+    },
+    requestChatInput: (input) => requestChatInput(input),
+    log: (level, event, detail) => logger[level](event, detail),
+  });
+  const getMcpApp = (args: McpAppGetArgs): Promise<McpAppGetResult> => mcpApps.get(args);
+  const mcpAppRequest = (args: McpAppRequestArgs): Promise<McpAppRequestResult> => mcpApps.request(args);
+
   /** Assigned once the handoff helpers below exist; hooks before that no-op. */
   let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
   let crossMachineHandoffSweepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -20786,6 +20916,9 @@ export function createAgentChatService(args: {
       }
     })();
     turnEndQuestion.onEvent(managed.session.id, normalizedEvent);
+    if (normalizedEvent.type === "tool_call" || normalizedEvent.type === "tool_result") {
+      mcpApps.observe(managed.session.id, managed.session.provider, normalizedEvent);
+    }
     if (
       (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started")
       || normalizedEvent.type === "done"
@@ -38655,6 +38788,9 @@ export function createAgentChatService(args: {
       capabilities: {
         experimentalApi: true,
         optOutNotificationMethods,
+        // ADE renders MCP Apps, so a server that asks before it registers a
+        // tool with a page is told so.
+        extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [MCP_APP_RESOURCE_MIME_TYPE] } },
       }
     });
     runtime.serverVersion = parseCodexServerVersion(initializeResponse?.userAgent);
@@ -39328,6 +39464,12 @@ export function createAgentChatService(args: {
       // exits, instead of ending with stderr alone. Without it those failures
       // reach ADE as an exit code with no cause.
       CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1",
+      // ADE renders MCP Apps. With this the CLI declares the
+      // `io.modelcontextprotocol/ui` extension to each MCP server, so a server
+      // that asks before it registers a tool with a page is told so. Read in
+      // the CLI (2.1.293), not documented: recheck on a bump. Without it apps
+      // still work for servers that do not ask.
+      CLAUDE_CODE_MCP_APPS_HOST: "1",
     };
     // The account's own prompt cache choice. A preset or stored credential
     // bills another endpoint, so it gets none.
@@ -60113,6 +60255,7 @@ export function createAgentChatService(args: {
     for (const filePath of transcriptPaths) {
       deletePersistedChatFile(filePath);
     }
+    mcpApps.deleteSession(trimmedSessionId);
 
     sessionService.deleteSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
@@ -64801,6 +64944,8 @@ export function createAgentChatService(args: {
     isUserOnlyPendingInput,
     listPendingInputs,
     respondToInput,
+    getMcpApp,
+    mcpAppRequest,
     dismissPendingInputForSettlement,
     requestChatInput,
     getAvailableModels,

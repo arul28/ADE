@@ -386,6 +386,12 @@ export const IPC = {
   agentChatApprove: "ade.agentChat.approve",
   agentChatRespondToInput: "ade.agentChat.respondToInput",
   agentChatDismissPendingInput: "ade.agentChat.dismissPendingInput",
+  // MCP Apps (`shared/mcpApp.ts`). `get` reads the page a tool call produced,
+  // `request` passes one call from the app's frame to its own server, and
+  // `prepare` mints the ade-scene://app/ URL the frame loads the page from.
+  agentChatGetMcpApp: "ade.agentChat.getMcpApp",
+  agentChatMcpAppRequest: "ade.agentChat.mcpAppRequest",
+  mcpAppPrepare: "ade.mcpApp.prepare",
   agentChatModels: "ade.agentChat.models",
   agentChatLaunchDefaults: "ade.agentChat.launchDefaults",
   agentChatModelCatalog: "ade.agentChat.modelCatalog",

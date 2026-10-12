@@ -2569,6 +2569,16 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<{ dataUrl: string }>;
         resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
+        /** The MCP App a tool call produced, from the machine that owns the chat. */
+        getMcpApp: (
+          args: import("../shared/mcpApp").McpAppGetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGetResult>;
+        /** One call from an MCP App's frame, to the server the app came from. */
+        mcpAppRequest: (
+          args: import("../shared/mcpApp").McpAppRequestArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppRequestResult>;
         /** Sources favicons as data URLs (null: the site has none), keyed by each domain as given. */
         resolveSourceFavicons: (args: { domains: string[] }) => Promise<{ icons: Record<string, string | null> }>;
         getEventHistory: (
@@ -2668,6 +2678,8 @@ declare global {
            */
           scopeKey?: string | null;
         }) => Promise<import("../shared/chatScene").SceneStillRecord | null>;
+        /** The URL an MCP App's frame loads its page from; main builds the page's policy. */
+        prepareApp: (args: { html: string; csp: import("../shared/mcpApp").McpAppCsp }) => Promise<string>;
       };
       computerUse: {
         listArtifacts: (

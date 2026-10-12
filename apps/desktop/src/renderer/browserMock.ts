@@ -7101,6 +7101,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getImageDataUrl: resolvedArg({ dataUrl: BROWSER_MOCK_IMAGE_DATA_URL }),
       resolveSmartLinkPreview: async ({ url }: { url: string }) => deriveSmartLinkPreview(url),
       resolveSourceFavicons: async () => ({ icons: {} }),
+      getMcpApp: async () => ({ status: "unavailable" as const, reason: "Apps do not run in the browser preview." }),
+      mcpAppRequest: async () => ({ ok: false as const, error: { code: -32000, message: "Apps do not run in the browser preview." } }),
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;
