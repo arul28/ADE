@@ -1901,12 +1901,16 @@ async function callLocalProjectActionStrictIfBound<T>(
   if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
     return { handled: false };
   }
+  const generation = currentProjectBinding ? projectBindingGeneration : null;
   const binding = await getLocalProjectBinding();
+  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   if (!binding) return { handled: false };
+  const requestGeneration = projectBindingGeneration;
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
     rootPath: binding.rootPath,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
+  if (requestGeneration !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   return { handled: true, result: response.result as T };
 }
 

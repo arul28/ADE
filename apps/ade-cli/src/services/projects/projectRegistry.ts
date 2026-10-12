@@ -456,3 +456,24 @@ export function assertRegisteredProjectDataAvailable(record: ProjectRecord | nul
 export function assertLocalProjectDataAvailable(projectRoot: string): void {
   assertRegisteredProjectDataAvailable(new ProjectRegistry().findByRootPath(projectRoot));
 }
+
+/**
+ * Remember that this machine opened the project's database, so a later open
+ * that finds it missing asks for restoration. Desktop opens it in-process and
+ * its brain mirror is best-effort, so it records this itself.
+ */
+export function markLocalProjectDatabaseInitialized(
+  projectRoot: string,
+  logger?: { warn: (event: string, data: Record<string, unknown>) => void },
+): void {
+  try {
+    const registry = new ProjectRegistry();
+    const record = registry.findByRootPath(projectRoot);
+    if (record) registry.markDatabaseInitialized(record.projectId);
+  } catch (error) {
+    logger?.warn("project.database_initialized_mark_failed", {
+      projectRoot,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}

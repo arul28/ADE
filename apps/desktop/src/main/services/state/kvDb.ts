@@ -261,12 +261,20 @@ function ensureParentDir(filePath: string) {
 function openRawDatabase(dbPath: string): DatabaseSyncType {
   ensureParentDir(dbPath);
   const db = new DatabaseSync(dbPath, { allowExtension: true });
-  const identity = fs.statSync(dbPath, { bigint: true });
+  let identity: fs.BigIntStats;
+  try {
+    identity = fs.statSync(dbPath, { bigint: true });
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   const assertDatabasePath = () => {
     let current: fs.BigIntStats;
     try {
       current = fs.statSync(dbPath, { bigint: true });
-    } catch {
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
       throw codedError(
         "The project database is no longer available at its original location. Restore the project's .ade folder to resume; ADE has paused database operations to protect your data.",
         "db_path_changed",
