@@ -141,7 +141,7 @@ export function isDroppedSteerDeliveryState(
  * when the turn ended first), or it went nowhere (`failed`). A `delivered`
  * steer ran as its own turn, and a `queued` one is still staging.
  */
-export function steerStayedInLiveTurn(
+function steerStayedInLiveTurn(
   state: AgentChatUserMessageDeliveryState | undefined,
 ): boolean {
   switch (state) {
@@ -161,6 +161,27 @@ export function steerStayedInLiveTurn(
       return false;
     }
   }
+}
+
+/**
+ * Whether a sent user message starts a new turn for tool activity: the line
+ * that says what a live turn is running, and the turn's tool list. A message
+ * that carries the open turn's id ran inside it: Codex writes a `!` shell
+ * command sent mid-turn that way, as a plain message or a `delivered` steer.
+ * Otherwise a plain message starts a turn, and a steer does only when it ran
+ * as its own turn. A steer the live turn took in (or one that went nowhere)
+ * lands mid-turn, and cutting the activity there hid every tool the turn ran
+ * before it. Desktop's transcript and the `ade code` TUI both group by this.
+ *
+ * @param openTurnId the turn id of the newest work since the last boundary.
+ */
+export function userMessageStartsTurn(
+  message: { steerId?: string; deliveryState?: AgentChatUserMessageDeliveryState; turnId?: string },
+  openTurnId: string | null,
+): boolean {
+  if (openTurnId && message.turnId === openTurnId) return false;
+  if (!message.steerId) return true;
+  return !steerStayedInLiveTurn(message.deliveryState);
 }
 
 /**

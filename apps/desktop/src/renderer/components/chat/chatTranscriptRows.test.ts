@@ -18,6 +18,7 @@ import {
   collapseChatTranscriptEventsIncremental,
   collapseChatTranscriptEventsIncrementalWithContext,
   collapseChatTranscriptEventsWithContext,
+  filterVisibleTranscriptRows,
   collapseGroupedActivityPhaseRows,
   countRowsAppendedSince,
   countVisibleRowsAppendedSince,
@@ -3001,6 +3002,45 @@ describe("spawn_completed notice folding", () => {
       undefined,
       undefined,
     ]);
+  });
+
+  it("draws each child once, at its newest notice, and puts neighbouring children on one line", () => {
+    // What the reader sees: an older notice is out of date once a newer one
+    // for the same child lands, wherever it sits, and its turns still count.
+    const legacy = {
+      type: "system_notice",
+      noticeKind: "info",
+      status: "spawn_completed",
+      message: 'Peer "Old lane" turn finished',
+    } satisfies AgentChatEventEnvelope["event"];
+    const rows = filterVisibleTranscriptRows(collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:01.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:02.000Z", completion("child-2", "Docs")),
+      env("2026-06-01T10:00:03.000Z", { type: "text", text: "Thanks.", messageId: "m-1" }),
+      env("2026-06-01T10:00:04.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:05.000Z", completion("child-2", "Docs")),
+      env("2026-06-01T10:00:06.000Z", completion("child-2", "Docs")),
+      // A notice that lost its child id cannot be matched, so it keeps its row.
+      env("2026-06-01T10:00:07.000Z", legacy),
+    ]));
+
+    const childOf = (event: (typeof rows)[number]["event"]) =>
+      event.type === "system_notice" && event.detail && typeof event.detail === "object"
+        ? event.detail.spawnCompletion?.childSessionId ?? null
+        : null;
+    expect(rows.map((row) => ({
+      type: row.event.type,
+      child: childOf(row.event),
+      turns: row.repeatCount ?? 1,
+      sharedWith: (row.spawnCompletionSiblings ?? []).map((sibling) => [sibling.notice.childSessionId, sibling.repeatCount]),
+    }))).toEqual([
+      { type: "text", child: null, turns: 1, sharedWith: [] },
+      { type: "system_notice", child: "child-1", turns: 3, sharedWith: [["child-2", 3]] },
+      { type: "system_notice", child: null, turns: 1, sharedWith: [] },
+    ]);
+    // The line sorts with its newest notice, not the out-of-date ones.
+    expect(rows[1]!.timestamp).toBe("2026-06-01T10:00:04.000Z");
   });
 
   it("keeps the incremental collapse byte-identical to a full recompute", () => {

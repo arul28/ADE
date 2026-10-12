@@ -2,7 +2,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 
 /**
  * Canonical navigation to a spawned child chat. Every spawn surface (inline
- * cards, completion chips, the lineage breadcrumb, the actions-pane row) routes
+ * cards, completion lines, the lineage breadcrumb, the actions-pane row) routes
  * through this one helper so the `ade:work:select-session` contract — and its
  * try/catch guard — stays consistent. A no-op when `sessionId` is falsy.
  *

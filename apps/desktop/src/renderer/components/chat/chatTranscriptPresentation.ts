@@ -3,7 +3,7 @@ import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/typ
 import { agentChatLiveAppendOf, foldedOverAppends } from "../../../shared/chatHistoryMerge";
 import type { ChatTranscriptGroupedEnvelope, ChatWorkLogEntry } from "./chatTranscriptRows";
 import { dedupeChatToolActivityEntries } from "./ChatWorkLogBlock";
-import { steerStayedInLiveTurn } from "../../../shared/chatTranscript";
+import { userMessageStartsTurn } from "../../../shared/chatTranscript";
 import {
   classifyProviderRetryCause,
   formatLegacyProviderRetryActivityDetail,
@@ -114,25 +114,6 @@ export function stabilizeTranscriptToolActivity(
     return previous;
   }
   return { byDoneRowKey, activeEntries, fileEntriesByDoneRowKey, activeFileEntries };
-}
-
-/**
- * Whether a sent user message starts a new turn for tool activity. A message
- * that carries the open turn's id ran inside it: Codex writes a `!` shell
- * command sent mid-turn that way, as a plain message or a `delivered` steer.
- * Otherwise a plain message starts a turn, and a steer does only when it ran
- * as its own turn. A steer the live turn took in (or one that went nowhere)
- * lands mid-turn, and cutting the activity there hid every tool the turn ran
- * before it: the working line fell back to a bare "Calling tool" with nothing
- * to open.
- */
-function userMessageStartsTurn(
-  event: Extract<ChatTranscriptGroupedEnvelope["event"], { type: "user_message" }>,
-  openTurnId: string | null,
-): boolean {
-  if (openTurnId && event.turnId === openTurnId) return false;
-  if (!event.steerId) return true;
-  return !steerStayedInLiveTurn(event.deliveryState);
 }
 
 /**

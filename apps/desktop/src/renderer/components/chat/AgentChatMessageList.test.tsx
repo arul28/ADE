@@ -9,6 +9,7 @@ import type {
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
   ComputerUseArtifactView,
+  OpenProjectBinding,
 } from "../../../shared/types";
 import * as modelRegistry from "../../../shared/modelRegistry";
 import {
@@ -95,6 +96,7 @@ import { resetChatTaskListCardStateForTests } from "./ChatTaskListCard";
 import {
   buildTranscriptEventRowKeys,
   collapseChatTranscriptEvents,
+  filterVisibleTranscriptRows,
   groupChatTranscriptRows,
   groupConsecutiveWorkLogRows,
 } from "./chatTranscriptRows";
@@ -169,6 +171,7 @@ function renderMessageList(
     usageLimitResumeTurnId?: string | null;
     sessionProvider?: string | null;
     resolveSpawnedChatProvider?: (sessionId: string) => string | null;
+    runtimePin?: OpenProjectBinding | null;
     /** Mount the list inside a host, e.g. a chat shell with a floating composer. */
     wrapList?: (list: ReactElement) => ReactElement;
   },
@@ -186,6 +189,7 @@ function renderMessageList(
         sessionId={options?.sessionId}
         sessionProvider={options?.sessionProvider}
         resolveSpawnedChatProvider={options?.resolveSpawnedChatProvider}
+        runtimePin={options?.runtimePin}
         scrollMemoryKey={options?.scrollMemoryKey}
         transcriptCollapseCacheKey={options?.transcriptCollapseCacheKey}
         laneId={options?.laneId}
@@ -1994,38 +1998,57 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(navEvent?.detail).toMatchObject({ sessionId: "child-subagent-1" });
   });
 
-  it("renders a spawn_completed peer notice as a quiet chip that navigates to the child", () => {
-    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
-    renderMessageList([
-      {
-        sessionId: "parent-session",
-        timestamp: "2026-07-14T10:00:00.000Z",
-        event: {
-          type: "system_notice",
-          noticeKind: "info",
-          status: "spawn_completed",
-          message: 'Peer "Docs" finished',
-          detail: {
-            spawnCompletion: {
-              childSessionId: "child-peer-1",
-              childTitle: "Docs",
-              spawnKind: "peer",
-              status: "completed",
-              summary: "Wrote the docs.",
-            },
+  it("opens each finished child from a shared line on the machine it ran on", () => {
+    // The parent chat lives on another machine. A child that ran there too is
+    // opened with the parent's pin; one that ran elsewhere is left to the Work
+    // list. Neither is sent to the parent's lane, which need not be its own.
+    const parentPin: OpenProjectBinding = {
+      kind: "remote",
+      key: "studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/repo",
+      displayName: "repo",
+    };
+    const completion = (childSessionId: string, childTitle: string, childMachineName?: string) => ({
+      sessionId: "parent-session",
+      timestamp: "2026-07-14T10:00:00.000Z",
+      event: {
+        type: "system_notice" as const,
+        noticeKind: "info" as const,
+        status: "spawn_completed",
+        message: `Chat "${childTitle}" finished its turn`,
+        detail: {
+          spawnCompletion: {
+            childSessionId,
+            childTitle,
+            spawnKind: "peer" as const,
+            status: "completed" as const,
+            ...(childMachineName ? { childMachineName } : {}),
           },
         },
       },
-    ], { sessionId: "parent-session" });
+    });
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    renderMessageList([
+      completion("child-docs", "Docs"),
+      completion("child-ios", "iOS build", "Mac mini"),
+    ], { sessionId: "parent-session", laneId: "parent-lane", runtimePin: parentPin });
 
-    const chip = screen.getByRole("button", { name: /Docs.*finished/i });
-    fireEvent.click(chip);
-
-    const navEvent = dispatchSpy.mock.calls
-      .map(([evt]) => evt)
-      .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
-    expect(navEvent).toBeTruthy();
-    expect((navEvent!.detail as { sessionId?: string }).sessionId).toBe("child-peer-1");
+    const openedWith = (name: RegExp) => {
+      dispatchSpy.mockClear();
+      fireEvent.click(screen.getByRole("button", { name }));
+      const navEvent = dispatchSpy.mock.calls
+        .map(([evt]) => evt)
+        .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
+      expect(navEvent, `opening ${name}`).toBeTruthy();
+      return navEvent!.detail as { sessionId?: string; laneId?: string | null; binding?: OpenProjectBinding };
+    };
+    expect(openedWith(/Docs/)).toEqual({ sessionId: "child-docs", laneId: null, binding: parentPin });
+    expect(openedWith(/iOS build/)).toEqual({ sessionId: "child-ios", laneId: null });
+    // Both children share one line rather than a pill each.
+    expect(screen.getAllByTestId("spawn-completed-line")).toHaveLength(1);
   });
 
   it("titles a legacy spawn_completed notice from its old message when the detail carries no completion", () => {
@@ -3643,6 +3666,40 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 43, hasFullHistory: false })).toBe(1);
   });
 
+  it("resolves an anchor on an out-of-date finished-turn notice to its child's current line", () => {
+    // A child's older notice folds into its newest one further down the
+    // thread; a deep link to the older one lands where that child is shown.
+    const notice = (sequence: number, second: number, childSessionId: string, childTitle: string): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:00:0${second}.000Z`,
+      sequence,
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "spawn_completed",
+        message: `Chat "${childTitle}" finished its turn`,
+        // One notice per child TURN, as the host writes them.
+        detail: { spawnCompletion: { childSessionId, childTitle, spawnKind: "peer", childTurnId: `turn-${sequence}`, status: "completed" } },
+      },
+    });
+    const events: AgentChatEventEnvelope[] = [
+      notice(10, 0, "child-engine", "Engine"),
+      notice(11, 1, "child-docs", "Docs"),
+      { sessionId: "session-1", timestamp: "2026-03-17T10:00:02.000Z", sequence: 12, event: { type: "text", text: "Thanks.", messageId: "m-1" } },
+      notice(13, 3, "child-engine", "Engine"),
+    ];
+    const groupedRows = groupChatTranscriptRows(filterVisibleTranscriptRows(collapseChatTranscriptEvents(events)));
+    const lineOf = (childSessionId: string) => groupedRows.findIndex((row) => (
+      row.event.type === "system_notice"
+      && typeof row.event.detail === "object"
+      && row.event.detail?.spawnCompletion?.childSessionId === childSessionId
+    ));
+    expect(lineOf("child-engine"), "Engine's current line").toBeGreaterThan(lineOf("child-docs"));
+
+    expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 10, hasFullHistory: false })).toBe(lineOf("child-engine"));
+    expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 11, hasFullHistory: false })).toBe(lineOf("child-docs"));
+  });
+
   it("formats turn elapsed time as working-for seconds then minutes", () => {
     expect(formatElapsedSeconds(0)).toBe("0s");
     expect(formatElapsedSeconds(42)).toBe("42s");
@@ -3919,6 +3976,37 @@ describe("AgentChatMessageList transcript rendering", () => {
       expect(view.container.textContent).toContain("working for 10s");
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  // A steer lands inside the running turn. The working line must keep naming
+  // the tool still running from before it, with the turn's activity to open.
+  // Which messages stay in a turn is `userMessageStartsTurn`'s table; these two
+  // rows prove the working line follows it.
+  it.each<[string, AgentChatEventEnvelope["event"], boolean]>([
+    ["Claude inline steer", { type: "user_message", text: "also check iOS", steerId: "s1", deliveryState: "inline", turnId: "turn-1" }, true],
+    ["steer delivered as its own new turn", { type: "user_message", text: "also check iOS", steerId: "s1", deliveryState: "delivered", turnId: "turn-2" }, false],
+  ])("the working line after a %s keeps (or rightly drops) the running tool", (_name, steer, keepsTools) => {
+    const at = (second: number) => `2026-03-17T10:00:${String(second).padStart(2, "0")}.000Z`;
+    renderMessageList([
+      { sessionId: "session-1", timestamp: at(0), event: { type: "user_message", text: "run the tests", turnId: "turn-1" } },
+      {
+        sessionId: "session-1",
+        timestamp: at(1),
+        event: { type: "command", command: "pnpm test", cwd: "/repo", output: "", itemId: "cmd-1", turnId: "turn-1", status: "running" },
+      },
+      { sessionId: "session-1", timestamp: at(2), event: { type: "activity", activity: "running_command", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: at(3), event: steer },
+    ], { showStreamingIndicator: true });
+
+    const expander = screen.queryByRole("button", { name: "Show activity from the active turn" });
+    if (keepsTools) {
+      expect(expander, "the turn's activity can still be opened").not.toBeNull();
+      expect(expander!.textContent, "the line names the running command").toContain("pnpm test");
+    } else {
+      // A new turn has run nothing yet; the old turn's tool is not its work.
+      expect(expander).toBeNull();
+      expect(document.body.textContent).not.toContain("pnpm test");
     }
   });
 

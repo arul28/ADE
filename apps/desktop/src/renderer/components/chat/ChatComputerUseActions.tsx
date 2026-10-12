@@ -5,9 +5,10 @@
  * `ade browser fill …`). Those calls used to show only in the tools list as
  * shell commands. Here each one becomes a sentence naming what it acted on —
  * "Clicked “Checkout” on localhost:5173", "Pressed “Escape” in ADE" — in a
- * quiet run of rows on one grid: [action icon] [text] [status]. The latest
- * action of a run is drawn in full (bigger icon, failure reason); earlier ones
- * are one muted line with a status dot. Identical actions in a row merge into
+ * quiet run of rows on one grid: [action icon] [text] [status], all one small
+ * size since this is background work. The latest action of a run stands out by
+ * colour, its status icon and any failure reason; earlier ones are one muted
+ * line with a status dot. Identical actions in a row merge into
  * one line with a count ("Looked at ADE ×3"). A filed proof shows its picture
  * small under its line; a click enlarges it in place. No row opens: the line
  * is all there is to say.

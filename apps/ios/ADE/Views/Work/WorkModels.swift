@@ -2019,14 +2019,20 @@ struct WorkEventCardModel: Identifiable, Hashable {
   /// config notice — still folds with the diagnostics beside it.
   let noticeKind: String?
   /// Child chat a `spawn_completed` peer notice reports on, resolved once at
-  /// card-build time out of the notice's `detail` JSON. Only the adjacency fold
-  /// in `collapseConsecutiveSpawnCompletionEntries` reads it — a parent that
-  /// spawned a peer gets one notice per sibling turn, and this is the key that
-  /// tells two runs apart. `nil` for every other card, including a completion
+  /// card-build time out of the notice's `detail` JSON. The spawn-completion
+  /// folds read it (`collapseConsecutiveSpawnCompletionEntries`, then
+  /// `workFoldStaleSpawnCompletionEntries`) — a parent that spawned a peer gets
+  /// one notice per sibling turn, and this is the key that tells the child's
+  /// notices apart from another child's. `nil` for every other card, including a completion
   /// notice whose detail lost its `spawnCompletion` (old or truncated
   /// transcript): an unidentified completion folds into nothing and keeps its
   /// own row rather than silently absorbing a different child's.
   let spawnCompletionChildId: String?
+  /// Child turns a `spawn_completed` row stands for. The adjacency fold sets it
+  /// to its run length; `workFoldStaleSpawnCompletionEntries` sums a child's
+  /// whole transcript into its newest row and stamps the `×N` from it. `1` for
+  /// every other card.
+  let spawnCompletionTurns: Int
   let technicalDetail: String?
   let nextAction: String?
   let taskList: WorkChatTaskListSnapshot?
@@ -2062,6 +2068,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     diagnosticWarnings: [WorkTurnDiagnosticWarning] = [],
     noticeKind: String? = nil,
     spawnCompletionChildId: String? = nil,
+    spawnCompletionTurns: Int = 1,
     technicalDetail: String? = nil,
     nextAction: String? = nil,
     taskList: WorkChatTaskListSnapshot? = nil
@@ -2091,6 +2098,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     self.diagnosticWarnings = diagnosticWarnings
     self.noticeKind = noticeKind
     self.spawnCompletionChildId = spawnCompletionChildId
+    self.spawnCompletionTurns = spawnCompletionTurns
     self.technicalDetail = technicalDetail
     self.nextAction = nextAction
     self.taskList = taskList
