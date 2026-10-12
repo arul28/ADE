@@ -2156,8 +2156,10 @@ with Claude Code 2.1.293 (SDK 0.3.293).
   drawn in, and only a pane this process lists can be closed. The arguments arrive as untyped JSON and each one is checked. Claude Code issues new
   handles on every render, so an old control is also refused there.
 - **User clients only.** Both actions are in `CLAUDE_PLUGIN_UI_ACTION_NAMES`,
-  which the action policy, the preload runtime-only list and the RPC guard
-  share with thread comments: an agent cannot read or press what a mod drew.
+  which the action policy and the RPC guard share with thread comments: an
+  agent cannot read or press what a mod drew. `adeActionAccess.ts` declares
+  the read and the write, and the preload lists `getClaudePluginUi` among the
+  chat-host reads, so during a project switch it waits for the chat's host.
   The actions are not sync remote commands, so a phone or the hosted client
   cannot call them.
 
