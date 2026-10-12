@@ -903,6 +903,16 @@ import {
   createBrainRefreshBroker,
 } from "../account/accountBridge";
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
+import { createMcpRegistryService } from "../mcp/mcpRegistryService";
+import type { McpRegistryServer } from "../../../shared/mcpRegistry";
+import type {
+  McpRegistryCheck,
+  McpRegistryContext,
+  McpRegistryImportResult,
+  McpRegistryResult,
+  McpRegistryScan,
+  McpRegistrySecretRef,
+} from "../../../shared/types/mcpRegistry";
 import {
   createAccountMigrationRunner,
   createAccountMigrationStartRetry,
@@ -11983,6 +11993,46 @@ export function registerIpc({
     getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null,
     logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
   });
+
+  const mcpRegistryService = createMcpRegistryService({
+    vault: accountVaultBridge,
+    adeHome: harnessPresetsAdeDir,
+  });
+  ipcMain.handle(
+    IPC.mcpRegistryContext,
+    (_event, args?: { projectRoot?: string | null }): McpRegistryContext =>
+      mcpRegistryService.context(args?.projectRoot ?? null),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryCheck,
+    async (_event, args?: { servers?: unknown }): Promise<McpRegistryResult<McpRegistryCheck>> =>
+      await mcpRegistryService.check(args?.servers),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistrySetSecret,
+    async (_event, args: McpRegistrySecretRef & { value: string }): Promise<McpRegistryResult<null>> =>
+      await mcpRegistryService.setSecret(args, args?.value),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryRemoveSecret,
+    async (_event, args: McpRegistrySecretRef): Promise<McpRegistryResult<null>> =>
+      await mcpRegistryService.removeSecret(args),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryPruneSecrets,
+    async (_event, args: { server: string; keep?: McpRegistryServer | null }): Promise<McpRegistryResult<null>> =>
+      await mcpRegistryService.pruneSecrets(String(args?.server ?? ""), args?.keep ?? null),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryScan,
+    (_event, args?: { projectRoot?: string | null }): McpRegistryScan =>
+      mcpRegistryService.scan(args?.projectRoot ?? null),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryImport,
+    async (_event, args: { name: string; projectRoot?: string | null }): Promise<McpRegistryImportResult> =>
+      await mcpRegistryService.importServer(String(args?.name ?? ""), args?.projectRoot ?? null),
+  );
 
   const accountMigrationRunner = createAccountMigrationRunner({
     accountBridge,

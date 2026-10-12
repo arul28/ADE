@@ -2,6 +2,7 @@ import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { MusicBridge } from "../shared/types/music";
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
   ChatThreadComment,
@@ -550,6 +551,12 @@ import type {
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
+  McpRegistryCheck,
+  McpRegistryContext,
+  McpRegistryImportResult,
+  McpRegistryResult,
+  McpRegistryScan,
+  McpRegistrySecretRef,
   AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -4158,6 +4165,24 @@ declare global {
           args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
         ) => Promise<AccountSettingsResult<null>>;
         sync: () => Promise<AccountSettingsResult<null>>;
+      };
+      /**
+       * Settings > MCP servers: this computer's view of the registry, and the
+       * one path that writes a registry secret to the account vault. No call
+       * returns a secret value.
+       *
+       * Optional because the hosted web client does not expose it; the page
+       * is hidden there.
+       */
+      mcpRegistry?: {
+        context: (args: { projectRoot: string | null }) => Promise<McpRegistryContext>;
+        check: (args: { servers: McpRegistryServer[] }) => Promise<McpRegistryResult<McpRegistryCheck>>;
+        setSecret: (args: McpRegistrySecretRef & { value: string }) => Promise<McpRegistryResult<null>>;
+        removeSecret: (args: McpRegistrySecretRef) => Promise<McpRegistryResult<null>>;
+        /** Drops the vault items `server` no longer names; all of them when `keep` is null. */
+        pruneSecrets: (args: { server: string; keep: McpRegistryServer | null }) => Promise<McpRegistryResult<null>>;
+        scan: (args: { projectRoot: string | null }) => Promise<McpRegistryScan>;
+        import: (args: { name: string; projectRoot: string | null }) => Promise<McpRegistryImportResult>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

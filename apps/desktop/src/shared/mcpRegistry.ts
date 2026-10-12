@@ -33,6 +33,7 @@ export const MCP_SECRET_VAULT_KIND = "secret";
 export const MCP_REGISTRY_LIMITS = {
   maxServers: 32,
   maxNameLength: 64,
+  maxFieldNameLength: 128,
   maxArgs: 64,
   maxFieldNames: 32,
   maxStringLength: 2_000,
@@ -75,13 +76,18 @@ export function isValidMcpRegistryName(name: string): boolean {
   return name.length <= MCP_REGISTRY_LIMITS.maxNameLength && NAME_PATTERN.test(name);
 }
 
+/** True for a name an env variable or a header can be stored under. */
+export function isValidMcpFieldName(name: string): boolean {
+  return name.length <= MCP_REGISTRY_LIMITS.maxFieldNameLength && FIELD_NAME_PATTERN.test(name);
+}
+
 function fieldNames(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const names: string[] = [];
   for (const entry of value) {
     if (typeof entry !== "string") continue;
     const name = entry.trim();
-    if (!FIELD_NAME_PATTERN.test(name) || names.includes(name)) continue;
+    if (!isValidMcpFieldName(name) || names.includes(name)) continue;
     names.push(name);
     if (names.length >= MCP_REGISTRY_LIMITS.maxFieldNames) break;
   }
@@ -137,9 +143,25 @@ export function normalizeMcpOffList(value: unknown): string[] {
   return names;
 }
 
+/** Which of a server's two name lists a secret value belongs to. */
+export type McpSecretField = "env" | "header";
+
 /** Where one secret value of one server lives in the vault. */
-export function mcpSecretVaultKey(serverName: string, field: "env" | "header", fieldName: string): string {
+export function mcpSecretVaultKey(serverName: string, field: McpSecretField, fieldName: string): string {
   return `mcp/${serverName}/${field}/${fieldName}`;
+}
+
+/** The start of every vault key one server owns. Removing a server removes these. */
+export function mcpSecretVaultKeyPrefix(serverName: string): string {
+  return `mcp/${serverName}/`;
+}
+
+/** Every vault key a server reads at launch, in the order its names are listed. */
+export function mcpSecretVaultKeys(server: McpRegistryServer): string[] {
+  return [
+    ...server.envNames.map((name) => mcpSecretVaultKey(server.name, "env", name)),
+    ...server.headerNames.map((name) => mcpSecretVaultKey(server.name, "header", name)),
+  ];
 }
 
 /** Why a server is or is not handed to chats in one place. */

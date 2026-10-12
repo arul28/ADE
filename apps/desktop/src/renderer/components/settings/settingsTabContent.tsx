@@ -30,6 +30,7 @@ import { LaneBehaviorSection } from "./LaneBehaviorSection";
 import { LaneTemplatesSection } from "./LaneTemplatesSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
 import { NotificationsSection } from "./NotificationsSection";
+import { McpServersSection } from "./mcp/McpServersSection";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { BrowserLinksSection } from "./BrowserLinksSection";
 import { BrowserAgentAccessSection } from "./BrowserAgentAccessSection";
@@ -426,6 +427,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "routed", linksToTabMachine: true, title: "Linear", group: "linear" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
+  mcp: [{ entryIds: "tab", render: () => <McpServersSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
   storage: [
     {

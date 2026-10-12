@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import {
   type AppOpenSystemSettingsPaneArgs,
@@ -453,6 +454,12 @@ import type {
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
+  McpRegistryCheck,
+  McpRegistryContext,
+  McpRegistryImportResult,
+  McpRegistryResult,
+  McpRegistryScan,
+  McpRegistrySecretRef,
   AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -12139,6 +12146,27 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.accountSettingsSet, args),
     sync: (): Promise<AccountSettingsResult<null>> =>
       ipcRenderer.invoke(IPC.accountSettingsSync),
+  },
+  /**
+   * Settings > MCP servers. Secret values go in; none come out. Each call
+   * that reaches the vault resolves to an `ok: false` result rather than
+   * rejecting when no brain is reachable.
+   */
+  mcpRegistry: {
+    context: (args: { projectRoot: string | null }): Promise<McpRegistryContext> =>
+      ipcRenderer.invoke(IPC.mcpRegistryContext, args),
+    check: (args: { servers: McpRegistryServer[] }): Promise<McpRegistryResult<McpRegistryCheck>> =>
+      ipcRenderer.invoke(IPC.mcpRegistryCheck, args),
+    setSecret: (args: McpRegistrySecretRef & { value: string }): Promise<McpRegistryResult<null>> =>
+      ipcRenderer.invoke(IPC.mcpRegistrySetSecret, args),
+    removeSecret: (args: McpRegistrySecretRef): Promise<McpRegistryResult<null>> =>
+      ipcRenderer.invoke(IPC.mcpRegistryRemoveSecret, args),
+    pruneSecrets: (args: { server: string; keep: McpRegistryServer | null }): Promise<McpRegistryResult<null>> =>
+      ipcRenderer.invoke(IPC.mcpRegistryPruneSecrets, args),
+    scan: (args: { projectRoot: string | null }): Promise<McpRegistryScan> =>
+      ipcRenderer.invoke(IPC.mcpRegistryScan, args),
+    import: (args: { name: string; projectRoot: string | null }): Promise<McpRegistryImportResult> =>
+      ipcRenderer.invoke(IPC.mcpRegistryImport, args),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

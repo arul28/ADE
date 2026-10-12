@@ -23,7 +23,7 @@ import { accountSettingsCacheValue, readAccountSettingsCacheRows } from "../acco
 import { readGitOriginUrl } from "../projects/recentProjectSummary";
 
 /** This computer's sync device id, or null when it has none yet. */
-function readLocalDeviceId(adeHome: string): string | null {
+export function readLocalDeviceId(adeHome: string): string | null {
   try {
     const value = fs.readFileSync(path.join(adeHome, "secrets", "sync-device-id"), "utf8").trim();
     return value.length ? value : null;

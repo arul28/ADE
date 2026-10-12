@@ -981,6 +981,20 @@ export const IPC = {
   accountSettingsGet: "ade.accountSettings.get",
   accountSettingsSet: "ade.accountSettings.set",
   accountSettingsSync: "ade.accountSettings.sync",
+
+  /**
+   * Settings > MCP servers: what the renderer cannot do itself. It reads and
+   * writes the registry's settings rows through `accountSettings`; these look
+   * at this computer and put secret values in the account vault. None of them
+   * returns a secret value.
+   */
+  mcpRegistryContext: "ade.mcpRegistry.context",
+  mcpRegistryCheck: "ade.mcpRegistry.check",
+  mcpRegistrySetSecret: "ade.mcpRegistry.setSecret",
+  mcpRegistryRemoveSecret: "ade.mcpRegistry.removeSecret",
+  mcpRegistryPruneSecrets: "ade.mcpRegistry.pruneSecrets",
+  mcpRegistryScan: "ade.mcpRegistry.scan",
+  mcpRegistryImport: "ade.mcpRegistry.import",
   prsCreateFromLane: "ade.prs.createFromLane",
   prsLinkToLane: "ade.prs.linkToLane",
   prsPreflightCreateLaneFromPrBranch: "ade.prs.preflightCreateLaneFromPrBranch",
