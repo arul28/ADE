@@ -1043,7 +1043,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     }));
 
     await waitFor(() => {
-      expect(globalThis.window.ade.terminal.activeForChat).toHaveBeenCalledWith({
+      expect(vi.mocked(globalThis.window.ade.terminal.activeForChat).mock.calls[0]?.[0]).toEqual({
         chatSessionId: "session-1",
       });
       expect(onRevealChatTerminal).toHaveBeenCalledWith({

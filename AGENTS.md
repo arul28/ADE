@@ -84,6 +84,47 @@ the app from unusable to smooth. Do not let them climb back.
 
 Numbers drift as ADE grows, and that is expected. A spike is not.
 
+## Built for remote machines
+
+Claude Code does not load this file, so `CLAUDE.md` has a copy of this
+section. Keep the two the same.
+
+ADE is built around remote connections. One window drives several machines: a
+laptop works on lanes that live on a desktop, a phone drives the brain at home,
+and the Work tab lists chats, CLIs and shells from every connected machine at
+once. A lane owns its machine, and its chats and terminals live there and only
+there.
+
+So every action that can be done for something on another machine (a chat, a
+session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
+
+1. **Pass the scope.** Renderer calls take an optional `pin` (an
+   `OpenProjectBinding`). Leave it out and the call silently goes to the
+   machine the project tab is bound to. That works in local testing and fails
+   whenever the chat's machine is a different one, with errors like
+   "Chat session '…' was not found". In a chat subtree,
+   read `useChatRuntimeScope().pin`; on the Work page, the row's
+   `foreignRow.binding` or `useWorkSessions().resolveSessionRuntimePin`; in Settings,
+   `useSettingsMachineScope().pin`. These are null when the target is the
+   tab's own machine, which keeps the unpinned route; do not substitute the
+   tab binding. Keep the pin for the whole flow: a start, its stop, and its
+   status reads go to the same machine.
+2. **Make the contract carry it.** A new IPC/preload method that acts on a
+   chat, session, lane or terminal takes `pin?: OpenProjectBinding | null` and
+   routes a pin through `callPinnedRuntimeAction` (or
+   `callPinnedOrBoundRuntimeActionOr`, which does both), and its runtime
+   action is reachable remotely (action domain + `actionPolicy`). Inside a
+   component, prefer a required `pin` prop over an optional one that quietly
+   defaults to the tab's machine.
+3. **Key effects on `pin?.key`, not the pin object.** A pin can be rebuilt with
+   the same key; an effect keyed on the object restarts (a login shell, a voice
+   call) for nothing.
+4. **Check it remotely before calling it done.** Ask "what happens if this chat
+   is on another machine?" for every new action, and in `/quality` name which
+   new calls are scoped and how. When something can genuinely only run on this
+   computer, guard it with a clear message (as Cursor Cloud launch does), never
+   by letting the call misroute.
+
 ## Playbooks
 
 - `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge), plus the **Early PR and harvests** procedure that `/quality` and `/test` run. Baseline `/quality` and `/test` run before ship; delta-only commit-bound quality revalidation runs inside it. Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
@@ -98,7 +139,7 @@ The most common defect class in this repo is a change that works on the path you
 - **Providers.** Claude, Codex, Cursor, OpenCode, and Droid each have an adapter with different capabilities. A provider-shaped feature needs a decision per adapter, even when the decision is "not supported here" — record it in the capability gate, not by silence.
 - **Contracts.** Anything crossing a boundary is typed once: main-process handler, `src/shared` types, preload exposure, renderer caller, daemon action domain, tests/mocks. Change the contract and all of them move together.
 - **Reverse states.** If you add a way in, add the way out and the way to see it. Snooze needs unsnooze; settle needs unsettle; a link needs unlink. A one-way door is a bug.
-- **Connection modes.** Local runtime, remote runtime, and relay behave differently. Multi-device and offline cases are real; the phone can be newer than the host.
+- **Connection modes.** Local runtime, remote runtime, and relay behave differently. Multi-device and offline cases are real; the phone can be newer than the host. Anything that acts on a chat, session or lane must reach the machine that owns it; see **Built for remote machines**.
 - **Windows.** Parity is part of "done" for all new code, never a follow-up.
 - **Docs.** User-visible behavior changes update the matching `docs/features/` doc in present tense.
 
