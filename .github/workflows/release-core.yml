@@ -878,12 +878,21 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/ade-cli/package-lock.json
 
       # The validator needs only plain JS packages; skipping install scripts
       # skips the Electron download and the native builds it does not use.
       - name: Install validator dependencies
         run: cd apps/desktop && npm ci --ignore-scripts
+
+      # The validator compares the bundled ADE CLI against the CLI built from
+      # this commit, so build it the same way the release job does.
+      - name: Build the ADE CLI
+        run: |
+          cd apps/ade-cli && npm ci
+          cd ../desktop && npm run ade:build
 
       - name: Download x64 release artifacts
         uses: actions/download-artifact@v4
