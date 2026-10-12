@@ -1931,9 +1931,12 @@ describe("createAgentChatService", () => {
       });
 
       it.each([
-        { onExtraUsage: "stop" as const, interrupts: 1, turnStatus: "failed", parked: true },
-        { onExtraUsage: null, interrupts: 0, turnStatus: "completed", parked: false },
-      ])("ends a turn on extra usage only for an account set to stop (onExtraUsage: $onExtraUsage)", async (row) => {
+        { onExtraUsage: "stop" as const, status: "allowed", interrupts: 1, turnStatus: "failed", parked: true },
+        { onExtraUsage: null, status: "allowed", interrupts: 0, turnStatus: "completed", parked: false },
+        // A plan rejection is the plan limit, not an extra-usage stop: Claude
+        // ends the turn itself, and ADE sends no interrupt.
+        { onExtraUsage: "stop" as const, status: "rejected", interrupts: 0, turnStatus: "failed", parked: true },
+      ])("ends a turn on extra usage only for an account set to stop (onExtraUsage: $onExtraUsage, event: $status)", async (row) => {
         const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
         const send = vi.fn().mockResolvedValue(undefined);
         const close = vi.fn();
@@ -1949,7 +1952,7 @@ describe("createAgentChatService", () => {
           yield {
             type: "rate_limit_event",
             session_id: "sdk-session-extra-usage",
-            rate_limit_info: { status: "allowed", rateLimitType: "five_hour", resetsAt, isUsingOverage: true },
+            rate_limit_info: { status: row.status, rateLimitType: "five_hour", resetsAt, isUsingOverage: true },
           };
           yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
         })());
