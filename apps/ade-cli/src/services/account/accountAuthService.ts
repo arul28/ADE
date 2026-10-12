@@ -1844,12 +1844,15 @@ export function createAccountAuthService(args: {
         || session.expiresAtMs <= now()
       ) {
         // `signed_in` here means another sign-in completed during the
-        // exchange and closed this one as done; that answer stands. (The cast
-        // widens the type: the compiler still believes "exchanging".)
-        if ((session.phase as PendingLoginSession["phase"]) !== "signed_in") {
+        // exchange and closed this one as done. That answer stands, and the
+        // tab says so: the machine is signed in, so "failed, try again" would
+        // send the person to a sign-in nobody needs. (The cast widens the
+        // type: the compiler still believes "exchanging".)
+        const closedAsDone = (session.phase as PendingLoginSession["phase"]) === "signed_in";
+        if (!closedAsDone) {
           finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
         }
-        respondHtml(response, 409, FAILURE_HTML);
+        respondHtml(response, 409, closedAsDone ? SUCCESS_HTML : FAILURE_HTML);
         return;
       }
       persistSession(record, "loopback_login_completed");

@@ -1392,7 +1392,9 @@ describe("AccountAuthService device authorization", () => {
         });
       }
       if (input.endsWith("/oauth/userinfo")) return jsonResponse({}, 503);
-      // The browser sign-in's code exchange at the issuer.
+      // The browser sign-in's code exchange at the issuer. One exchange can be
+      // held open, to catch a browser sign-in in its last step.
+      if (holdBrowserExchange) await holdBrowserExchange;
       return jsonResponse({
         access_token: jwt({ sub: "browser-user", email: "browser@example.com" }),
         refresh_token: "browser-refresh-token",
@@ -1400,6 +1402,7 @@ describe("AccountAuthService device authorization", () => {
         expires_in: 3600,
       });
     });
+    let holdBrowserExchange: Promise<void> | null = null;
     let sessions = 0;
     const service = createAccountAuthService({
       credentialStore: store,
@@ -1443,6 +1446,29 @@ describe("AccountAuthService device authorization", () => {
     expect(service.getStatus()).toMatchObject({ signedIn: true, email: "browser@example.com", source: "loopback" });
     await expect(service.pollDeviceLogin(latePhone.sessionId)).resolves.toMatchObject({ status: "error" });
     expect(service.getStatus()).toMatchObject({ signedIn: true, email: "browser@example.com", source: "loopback" });
+    const donePage = await completed.text();
+
+    // A browser sign-in caught in its last step: the code is at the issuer
+    // when a phone finishes. The phone's session stays, and the browser tab is
+    // told the same thing as a tab whose own sign-in completed, because the
+    // machine is signed in and there is nothing to try again.
+    const slowBrowser = await service.startLogin();
+    const winningPhone = await service.startDeviceLogin();
+    let releaseBrowserExchange: () => void = () => {};
+    holdBrowserExchange = new Promise<void>((resolve) => {
+      releaseBrowserExchange = resolve;
+    });
+    const slowCallback = fetch(callbackUrl(slowBrowser.authorizeUrl, "slow-browser-code"));
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledWith(
+      expect.stringContaining("/oauth/token"),
+      expect.objectContaining({ body: expect.stringContaining("slow-browser-code") }),
+    ));
+    holdBrowserExchange = null;
+    await expect(service.pollDeviceLogin(winningPhone.sessionId)).resolves.toMatchObject({ status: "signed_in" });
+    releaseBrowserExchange();
+    const slowTab = await slowCallback;
+    expect(await slowTab.text()).toBe(donePage);
+    expect(service.getStatus()).toMatchObject({ signedIn: true, email: "phone@example.com", source: "device" });
   });
 
   it("keeps an explicit device identity active instead of reverting to inherited env auth", async () => {

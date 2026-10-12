@@ -32537,6 +32537,12 @@ async function runAccountLogin(
       } catch {
         // Fixed fallback only: the browser sign-in below needs none of this.
       }
+      // Said, so nobody waits for a QR code that is not coming.
+      if (!otherDevice) {
+        process.stderr.write(
+          "Sign-in from another device is not available right now; use the browser on this machine.\n",
+        );
+      }
     }
     process.stderr.write(
       `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n` +
