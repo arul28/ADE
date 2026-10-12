@@ -492,7 +492,8 @@ Open items from this pass:
 ### Project database identity guard
 
 Measured on macOS arm64, Node 26.7.0, warm interleaved medians across seven
-runs of 20,000 SQLite operations (project relocation protection branch):
+runs of 20,000 SQLite operations; implementation commit `b34127f77`
+(baseline `96e4a0de6`):
 
 | Metric | Before | After | Budget |
 |---|---|---|---|
