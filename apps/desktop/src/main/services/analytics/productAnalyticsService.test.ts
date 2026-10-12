@@ -225,6 +225,30 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it.each(["completed", "rejected", "failed"])("accepts the connections background_service_stop fact (%s) with only the coarse enums", (outcome) => {
+    const harness = makeHarness();
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "background_service_stop",
+        outcome,
+        error_text: "launchctl bootout failed for /Users/someone/Library/LaunchAgents",
+      },
+      projectId: null,
+      dedupeKey: `background_service_stop:${outcome}`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "connections",
+      action: "background_service_stop",
+      outcome,
+    });
+    expect(harness.messages[0]?.properties).not.toHaveProperty("error_text");
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("accepts the connections machine_reconnect fact with only the coarse enums", () => {
     const harness = makeHarness();
     // A "Reconnect this computer" click that worked. The extra keys are exactly

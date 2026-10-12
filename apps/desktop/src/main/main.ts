@@ -8162,6 +8162,7 @@ app.whenReady().then(async () => {
   });
   registerBackgroundServiceControls({
     logger: localRuntimeLogger,
+    analytics: productAnalyticsService,
     manageService: shouldRepairRuntimeServiceOnFallback,
     pool: localRuntimePool,
     collectLiveChats: () => collectLiveChatsOrNull(),

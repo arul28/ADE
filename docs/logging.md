@@ -658,6 +658,23 @@ raised. The local `agent_chat.claude_hooks_ignored` and
 `agent_chat.claude_plugins_ignored` warn lines are the operational half. The
 dashboard spec is deliberately untouched: no card asks this question yet.
 
+Settings → Background service → "Stop and quit ADE" records the same
+`ade_feature_used` event in the main process, where the stop is decided
+(`services/runtime/backgroundServiceControls.ts`), with `feature:
+"connections"`, `action: "background_service_stop"`, and a coarse `outcome`:
+`completed` (the login service was removed and ADE is quitting), `rejected` (a
+guard refused: ADE could not read what is running, an agent started after the
+confirmation, a lane delete or a repair is running, or ADE is already quitting),
+or `failed` (the service manager could not remove it). The product question is
+whether people turn the always-on service off at all, and whether the guards get
+in their way. It carries no chat titles, project names, counts, or error text.
+A per-outcome one-hour deduplication key bounds a retry loop to at most 24
+accepted events per outcome (72 total) per installation per UTC day, inside the
+existing `ade_feature_used` limits; no ceiling was raised. The quit prompt itself
+is not tracked: its answer is an app-lifecycle moment, not a product decision,
+and the Repair it offers is already counted as `brain_repair` through the shared
+`restartBrainForRepair` helper. The dashboard spec is untouched.
+
 These facts intentionally remain out of `scripts/posthog/dashboard-spec.mjs`:
 there is no concrete dashboard question or card for them yet. The existing
 surface/feature volume views continue to include the shared event without a

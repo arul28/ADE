@@ -8,6 +8,7 @@ import type {
   StopBackgroundServiceResult,
   UpdateInterruptedChat,
 } from "../../../shared/types";
+import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import type { Logger } from "../logging/logger";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
@@ -16,6 +17,7 @@ const STOP_REASON = "stop_background_service";
 
 export type BackgroundServiceControlsDeps = {
   logger: Logger;
+  analytics: Pick<ProductAnalyticsService, "capture"> | null;
   /** Packaged builds that install the login service; a dev app never stops it. */
   manageService: boolean;
   pool: Pick<
@@ -90,13 +92,19 @@ export function registerBackgroundServiceControls(deps: BackgroundServiceControl
    * brain, and it installs the service again on its next launch, so stopping
    * lasts until ADE is opened again.
    */
-  ipcMain.handle(IPC.appStopBackgroundServiceAndQuit, async (event, raw: unknown): Promise<StopBackgroundServiceResult> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, deps.logger, IPC.appStopBackgroundServiceAndQuit)) {
-      return { ok: false, message: "Only an ADE window can stop the background service." };
-    }
-    if (!deps.manageService) {
-      return { ok: false, message: "This build of ADE does not manage the background service." };
-    }
+  /** One coarse fact per Stop; the 1 h dedupe bounds a retry loop to ≤24 per outcome per day. */
+  const recordStop = (outcome: "completed" | "rejected" | "failed"): void => {
+    deps.analytics?.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "connections", action: "background_service_stop", outcome },
+      projectId: null,
+      dedupeKey: `background_service_stop:${outcome}`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    });
+  };
+
+  const stop = async (raw: unknown): Promise<StopBackgroundServiceResult & { failed?: true }> => {
     const confirmed = parseStopRequest(raw);
     if (!confirmed) return { ok: false, message: "ADE did not get the list you confirmed. Press Stop again." };
     // An agent may have started while the confirmation was open; the person
@@ -120,9 +128,23 @@ export function registerBackgroundServiceControls(deps: BackgroundServiceControl
       await deps.pool.uninstallServiceBestEffort();
     } catch (error) {
       deps.pool.endUpdateWindow(`${STOP_REASON}_failed`);
-      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      recordStop("failed");
+      return { ok: false, failed: true, message: error instanceof Error ? error.message : String(error) };
     }
+    recordStop("completed");
     deps.shutdown(STOP_REASON);
     return { ok: true };
+  };
+
+  ipcMain.handle(IPC.appStopBackgroundServiceAndQuit, async (event, raw: unknown): Promise<StopBackgroundServiceResult> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, deps.logger, IPC.appStopBackgroundServiceAndQuit)) {
+      return { ok: false, message: "Only an ADE window can stop the background service." };
+    }
+    if (!deps.manageService) {
+      return { ok: false, message: "This build of ADE does not manage the background service." };
+    }
+    const { failed, ...result } = await stop(raw);
+    if (!result.ok && !failed) recordStop("rejected");
+    return result;
   });
 }

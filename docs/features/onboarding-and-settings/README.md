@@ -130,6 +130,21 @@ Main process:
 - `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
   radiogroup, the "This Mac can still sleep" recovery alert, and the
   system-sleep fix card.
+- `apps/desktop/src/renderer/components/settings/BackgroundServiceSection.tsx`
+  — General → ADE → Background service: whether the service or the desktop is
+  running agents, the working chats in open projects (and a "may also be
+  running" note when the service reports busy projects that are not open),
+  "Stop and quit ADE", and the "Ask before quitting" toggle that undoes the quit
+  prompt's "Don't ask again". Stop confirms with the chat list and fails
+  closed in `services/runtime/backgroundServiceControls.ts`: it refuses when
+  ADE cannot read what is running, when an agent started after the
+  confirmation, during a lane delete, and during any Repair. Packaged builds
+  only; a dev build shows the status without the button.
+- `apps/desktop/src/main/services/runtime/quitPrompt.ts` +
+  `apps/desktop/src/renderer/components/app/QuitPromptHost.tsx` +
+  `apps/desktop/src/shared/quitPromptModel.ts` — the quit and restart
+  confirmation, in ADE's own dialog with a native fallback built from the same
+  model. See `docs/ARCHITECTURE.md` (shutdown pipeline).
 - `apps/desktop/src/main/services/archive/archiveService.ts` — the archive:
   `list`/`summary` read archived lanes (from `laneService.list`) and archived
   chats/shells (from `terminal_sessions.archived_at`), and `restore`/`delete`

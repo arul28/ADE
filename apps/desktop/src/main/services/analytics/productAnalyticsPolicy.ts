@@ -128,6 +128,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "header_opened",
   "preferences_changed",
   "brain_repair",
+  // Settings → Background service → "Stop and quit ADE": whether people turn
+  // the always-on service off at all. completed | rejected (a guard refused) | failed.
+  "background_service_stop",
   "machine_reconnect",
   "mention_expanded",
   "hooks_ignored",
