@@ -349,6 +349,13 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
+      # electron-builder downloads Electron once and fails the build on a network
+      # error. Fetch it into the cache it reads, with retries, first.
+      - name: Prefetch Electron for ${{ matrix.arch }}
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron
+        run: cd apps/desktop && node scripts/prefetch-electron.mjs --platform=darwin --arch=${{ matrix.arch }}
+
       - name: Build signed ${{ matrix.arch }} macOS release
         env:
           # These archives were signed and notarized by their native
@@ -485,6 +492,11 @@ jobs:
         run: |
           Remove-Item -Recurse -Force apps/desktop/release, apps/desktop/.cache -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path apps/desktop/.cache | Out-Null
+
+      - name: Prefetch Electron for Windows
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
+        run: cd apps/desktop && node scripts/prefetch-electron.mjs --platform=win32 --arch=x64
 
       - name: Build and validate Windows release
         env:
