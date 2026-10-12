@@ -177,23 +177,28 @@ const REVEAL_SIDEWAYS_ANCHOR = 1 / 3;
 /**
  * Scroll `range` into the reading band of `scroller`, vertically and (for a
  * long code line) sideways; no scroll when it is already comfortably visible.
- * Rect deltas are divided by the CSS zoom the hosted web client applies to
+ * `covered` is chrome floating over the scroller's edges (a find bar at the
+ * top, a chat composer at the bottom), in viewport pixels; the band excludes
+ * it. Rect deltas are divided by the CSS zoom the hosted web client applies to
  * `body`, because `scrollTop` is in layout pixels.
  */
 export function scrollRangeIntoView(
   scroller: HTMLElement,
   range: Range,
-  scrollTo: (top: number) => void = (top) => {
-    scroller.scrollTop = top;
-  },
+  options: { scrollTo?: (top: number) => void; covered?: { top: number; bottom: number } } = {},
 ): void {
   const rect = range.getBoundingClientRect();
   if (!rect.width && !rect.height) return;
   const zoom = cssZoomOf(scroller) || 1;
-  const box = scroller.getBoundingClientRect();
-  const margin = Math.min(REVEAL_EDGE_MARGIN_PX, box.height * REVEAL_EDGE_MARGIN_MAX_FRACTION);
-  if (rect.top < box.top + margin || rect.bottom > box.bottom - margin) {
-    scrollTo(scroller.scrollTop + (rect.top - box.top - box.height * REVEAL_ANCHOR) / zoom);
+  const scrollerBox = scroller.getBoundingClientRect();
+  const top = scrollerBox.top + (options.covered?.top ?? 0);
+  const bottom = Math.max(top + 1, scrollerBox.bottom - (options.covered?.bottom ?? 0));
+  const height = bottom - top;
+  const margin = Math.min(REVEAL_EDGE_MARGIN_PX, height * REVEAL_EDGE_MARGIN_MAX_FRACTION);
+  if (rect.top < top + margin || rect.bottom > bottom - margin) {
+    const target = scroller.scrollTop + (rect.top - top - height * REVEAL_ANCHOR) / zoom;
+    if (options.scrollTo) options.scrollTo(target);
+    else scroller.scrollTop = target;
   }
   // Long lines scroll sideways inside their own column.
   const host = range.startContainer.parentElement;

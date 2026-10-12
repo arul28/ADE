@@ -125,7 +125,12 @@ export function useDiffFind({
 
   // The session owns ⌘F, the bar, Escape, focus and the paint frame. These
   // callbacks need the surface id it returns, so it reaches them through refs.
-  const handlers = useRef({ step: (_direction: 1 | -1) => {}, clearMatches: () => {}, recompute: () => {} });
+  const handlers = useRef({
+    step: (_direction: 1 | -1) => {},
+    clearMatches: () => {},
+    recompute: () => {},
+    reveal: (_range: Range) => {},
+  });
   const session = useFindSession({
     ownsFind,
     onStep: (direction) => handlers.current.step(direction),
@@ -135,6 +140,15 @@ export function useDiffFind({
     openedByShortcut: () => captureFindOpened("diff_shortcut"),
   });
   const { open, openRef, inputRef, surfaceId, closeBar, schedulePaint: scheduleRecompute } = session;
+
+  /** Reveal a match below the floating bar, which covers the diff's top while scrolled. */
+  handlers.current.reveal = (range: Range) => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const bar = inputRef.current?.closest("form")?.getBoundingClientRect();
+    const top = bar ? Math.max(0, bar.bottom - scroller.getBoundingClientRect().top) : 0;
+    scrollRangeIntoView(scroller, range, { covered: { top, bottom: 0 } });
+  };
 
   const recompute = useCallback(() => {
     const root = rootRef.current;
@@ -181,8 +195,7 @@ export function useDiffFind({
     setActiveIndex(next);
     const active = next != null ? ranges[next] ?? null : null;
     publishFindHighlights(surfaceId, { all: ranges, active });
-    const scroller = scrollRef.current;
-    if (active && revealActive && scroller) scrollRangeIntoView(scroller, active);
+    if (active && revealActive) handlers.current.reveal(active);
   }, [openRef, rootRef, scrollRef, surfaceId]);
   handlers.current.recompute = recompute;
 
@@ -195,9 +208,8 @@ export function useDiffFind({
     activeRef.current = next;
     setActiveIndex(next);
     publishFindHighlights(surfaceId, { all: ranges, active });
-    const scroller = scrollRef.current;
-    if (scroller) scrollRangeIntoView(scroller, active);
-  }, [scrollRef, surfaceId]);
+    handlers.current.reveal(active);
+  }, [surfaceId]);
   handlers.current.step = step;
 
   const clearMatches = useCallback(() => {

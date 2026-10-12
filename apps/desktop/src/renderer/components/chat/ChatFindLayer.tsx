@@ -132,10 +132,24 @@ export const ChatFindLayer = memo(function ChatFindLayer({
     }));
   }, [contentRef, matchesRef, rowOrder, scrollRef, select]);
 
+  /**
+   * Reveal `range` in the part of the transcript a reader can see: below the
+   * find bar, and above the composer when the composer floats over the list.
+   */
   const revealRange = useCallback((range: Range) => {
     const scroll = scrollRef.current;
-    if (scroll) scrollRangeIntoView(scroll, range, scrollContainerTo);
-  }, [scrollContainerTo, scrollRef]);
+    if (!scroll) return;
+    const box = scroll.getBoundingClientRect();
+    const bar = session.inputRef.current?.closest("form")?.getBoundingClientRect();
+    const composer = chatPaneOf(rootRef.current)?.querySelector("[data-chat-composer-overlay]")?.getBoundingClientRect();
+    scrollRangeIntoView(scroll, range, {
+      scrollTo: scrollContainerTo,
+      covered: {
+        top: bar ? Math.max(0, bar.bottom - box.top) : 0,
+        bottom: composer ? Math.max(0, box.bottom - composer.top) : 0,
+      },
+    });
+  }, [rootRef, scrollContainerTo, scrollRef, session.inputRef]);
 
   // ── Paint ──
   handlers.current.paint = () => {

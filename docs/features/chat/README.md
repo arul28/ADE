@@ -305,7 +305,10 @@ ends, and closes on Escape without moving the reading position.
 - **Moving to a match reuses the list's own jump.** The layer asks
   `scrollToRowKey`, which opens the fold or wake chain hiding the row, then finds
   the words in the mounted row and scrolls them into the reading band (only when
-  they are not already on screen, so a visible match never jumps). A new query
+  they are not already on screen, so a visible match never jumps). The band
+  excludes what floats over the list: the find bar at the top and the composer
+  at the bottom (`data-chat-composer-overlay`), so a match never lands behind
+  either. A new query
   starts at the first match in or below the view — inside a long reply that
   begins above the view, at the first occurrence on screen.
 - **Painting never touches the reply's DOM.** Mounted rows are searched again in
