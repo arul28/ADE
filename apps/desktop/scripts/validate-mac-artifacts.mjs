@@ -10,6 +10,7 @@ import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
 import runtimeResourceTargets from "./runtime-resource-targets.cjs";
 import { RUNTIME_FETCHED_TOOL_EXPLANATION } from "./runtime-fetched-tool-packages.mjs";
 import { createPackagedTreeAssertions, findNodePtyAddon } from "./validate-packaged-tree.mjs";
+import { APPLE_NETWORK_ERROR, retryTransient } from "./mac-release-retry.mjs";
 
 const { RUNTIME_TARGETS, runtimeBinaryNameForTarget } = runtimeResourceTargets;
 
@@ -33,6 +34,17 @@ const {
 } = createPackagedTreeAssertions({ fail });
 
 const execFileAsync = promisify(execFile);
+
+// `stapler validate` asks Apple's ticket service (CloudKit) about the ticket, so
+// a dropped connection fails it just as a missing ticket would. Retry only the
+// network failures; a ticket that is really absent still fails at once.
+function staplerValidate(targetPath) {
+  return retryTransient(
+    `stapler validate for ${path.basename(targetPath)}`,
+    () => execFileAsync("xcrun", ["stapler", "validate", targetPath]),
+    { attempts: 5, delayMs: 15_000, isTransient: APPLE_NETWORK_ERROR },
+  );
+}
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(scriptDir, "..");
@@ -388,7 +400,7 @@ async function findArtifact(regex, description) {
 async function validateSignedApp(appPath, description) {
   console.log(`[release:mac] Validating ${description}: ${appPath}`);
   await execFileAsync("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath]);
-  await execFileAsync("xcrun", ["stapler", "validate", appPath]);
+  await staplerValidate(appPath);
   await execFileAsync("spctl", ["-a", "-vvv", "--type", "execute", appPath]);
 }
 
@@ -675,7 +687,7 @@ async function validateLatestMacFeed(latestMacPath) {
 // wraps is already validated directly).
 async function validateDmgStapled(dmgPath, description) {
   await assertPathExists(dmgPath, description);
-  await execFileAsync("xcrun", ["stapler", "validate", dmgPath]);
+  await staplerValidate(dmgPath);
   try {
     await execFileAsync("spctl", ["-a", "-vvv", "--type", "open", dmgPath]);
   } catch (error) {

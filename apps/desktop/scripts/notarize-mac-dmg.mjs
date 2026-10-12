@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { APPLE_NETWORK_ERROR } from "./mac-release-retry.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -211,7 +212,7 @@ for (const dmgPath of dmgPaths) {
   // Apple's notary service + the runner's network are flaky — a transient
   // -1009 "offline" / timeout / 5xx must NOT sink a 40-minute release. Retry the
   // submit on transient errors; a real Invalid/Rejected verdict throws immediately.
-  const maxNotaryAttempts = 4;
+  const maxNotaryAttempts = 6;
   let notaryResult = null;
   let lastNotaryError = null;
   for (let attempt = 1; attempt <= maxNotaryAttempts; attempt += 1) {
@@ -232,12 +233,11 @@ for (const dmgPath of dmgPaths) {
     } catch (error) {
       lastNotaryError = error;
       const message = `${error?.message ?? ""}\n${error?.stderr ?? ""}`;
-      const isTransient =
-        /-1009|offline|No network route|timed out|timeout|ECONNRESET|ETIMEDOUT|EAI_AGAIN|connection (?:reset|refused)|temporarily unavailable|HTTP(?:Error)?.*(?:nil|5\d\d)/i.test(message);
+      const isTransient = APPLE_NETWORK_ERROR.test(message);
       if (!isTransient || attempt === maxNotaryAttempts) {
         throw error;
       }
-      const backoffMs = Math.min(60_000, 5_000 * 2 ** (attempt - 1));
+      const backoffMs = Math.min(120_000, 10_000 * 2 ** (attempt - 1));
       console.warn(
         `[release:mac] Notarization submit attempt ${attempt}/${maxNotaryAttempts} hit a transient error ` +
           `for ${path.basename(dmgPath)}; retrying in ${Math.round(backoffMs / 1000)}s.`

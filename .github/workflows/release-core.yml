@@ -100,29 +100,64 @@ jobs:
         run: |
           set -euo pipefail
 
-          ci_pass_json="$(
-            gh api "repos/$GH_REPO/commits/$TARGET_REF/check-runs" \
+          ci_pass_for() {
+            gh api "repos/$GH_REPO/commits/$1/check-runs" \
               --method GET \
               -H "Accept: application/vnd.github+json" \
               -f per_page=100 \
               --paginate \
               --jq '[.check_runs[] | select(.name == "ci-pass")] | sort_by(.completed_at // "") | last // empty'
-          )"
+          }
 
-          if [ -z "$ci_pass_json" ] || [ "$ci_pass_json" = "null" ]; then
-            echo "::error::No ci-pass check run was found for $TARGET_REF. Run CI before releasing."
-            exit 1
-          fi
+          # A release commit that only adds release notes cannot change what
+          # ships: none of these files reaches a build. Waiting 15-50 minutes
+          # for CI on it is what used to hold every tag, so a commit whose CI
+          # has not finished may borrow the green ci-pass of the nearest
+          # ancestor, provided every commit in between touches only these
+          # paths. A failed ci-pass is never overridden: if CI already failed on
+          # the release commit (validate-docs, say), it blocks. A cancelled one
+          # (superseded by the next notes commit) counts as unfinished.
+          release_notes_only() {
+            local files
+            files="$(git diff-tree --no-commit-id --name-only -r --root "$1")"
+            [ -n "$files" ] || return 1
+            ! printf '%s\n' "$files" | grep -qvE '^(CHANGELOG\.md|docs\.json|changelog/[^/]+\.mdx)$'
+          }
 
-          status="$(printf '%s' "$ci_pass_json" | jq -r '.status // ""')"
-          conclusion="$(printf '%s' "$ci_pass_json" | jq -r '.conclusion // ""')"
-          url="$(printf '%s' "$ci_pass_json" | jq -r '.html_url // ""')"
-          if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
-            echo "::error::ci-pass for $TARGET_REF is $status/$conclusion. Release packaging requires green CI. $url"
-            exit 1
-          fi
+          target_sha="$(git rev-parse "$TARGET_REF^{commit}")"
+          candidate="$target_sha"
+          for _ in 1 2 3 4 5; do
+            ci_pass_json="$(ci_pass_for "$candidate")"
+            status="$(printf '%s' "${ci_pass_json:-null}" | jq -r '.status // ""')"
+            conclusion="$(printf '%s' "${ci_pass_json:-null}" | jq -r '.conclusion // ""')"
+            url="$(printf '%s' "${ci_pass_json:-null}" | jq -r '.html_url // ""')"
 
-          echo "ci-pass succeeded for $TARGET_REF: $url"
+            if [ "$status" = "completed" ] && [ "$conclusion" = "success" ]; then
+              if [ "$candidate" = "$target_sha" ]; then
+                echo "ci-pass succeeded for $TARGET_REF: $url"
+              else
+                echo "ci-pass succeeded for $candidate, and every commit from there to $TARGET_REF only changes release notes: $url"
+              fi
+              exit 0
+            fi
+            if [ "$status" = "completed" ] && [ "$conclusion" != "cancelled" ]; then
+              echo "::error::ci-pass for $candidate is $status/$conclusion. Release packaging requires green CI. $url"
+              exit 1
+            fi
+            if ! release_notes_only "$candidate"; then
+              if [ -z "$ci_pass_json" ]; then
+                echo "::error::No ci-pass check run was found for $candidate. Run CI before releasing."
+              else
+                echo "::error::ci-pass for $candidate is still $status. Release packaging requires green CI. $url"
+              fi
+              exit 1
+            fi
+            echo "$candidate only changes release notes and its CI has not finished (${status:-not started}${conclusion:+/$conclusion}); checking its parent."
+            candidate="$(git rev-parse "$candidate^")"
+          done
+
+          echo "::error::No green ci-pass within five release-notes-only commits of $TARGET_REF."
+          exit 1
 
       # Windows builds fresh on the tag, the same way macOS does. There is one
       # maintainer-facing switch, ADE_WINDOWS_PUBLIC_RELEASE_ENABLED, plus the
@@ -165,19 +200,27 @@ jobs:
     needs:
       - verify
       - build-runtime-binaries
-    # One job per arch, in parallel on native runners (arm64 -> macos-15,
-    # x64 -> macos-15-intel). Wall-clock ~= one arch's build+notarize instead of
-    # both serialized. Each job signs+notarizes+staples its own arch; the
-    # per-arch updater manifests are merged by the publish-release job in
+    # One job per arch, in parallel. Wall-clock ~= one arch's build+notarize
+    # instead of both serialized. Each job signs+notarizes+staples its own arch;
+    # the per-arch updater manifests are merged by the publish-release job in
     # release-publish.yml.
+    #
+    # Both arches build on Apple Silicon. The Intel runner took 24-30 minutes for
+    # the signed x64 build against 11-13 on arm64, and it was every release's
+    # critical path. The x64 job runs an x64 Node under Rosetta, so npm selects
+    # the darwin-x64 optional packages (codex, opencode, cursor, msgpackr) and
+    # x64 native prebuilds exactly as the Intel runner did, and the validators
+    # execute the x64 binaries under Rosetta. The Swift helpers are universal.
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
             runner: macos-15
+            node-arch: arm64
           - arch: x64
-            runner: macos-15-intel
+            runner: macos-15
+            node-arch: x64
     runs-on: ${{ matrix.runner }}
     concurrency:
       group: release-${{ inputs.release_tag }}-mac-${{ matrix.arch }}
@@ -196,6 +239,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          architecture: ${{ matrix.node-arch }}
           cache: npm
           cache-dependency-path: |
             apps/desktop/package-lock.json
