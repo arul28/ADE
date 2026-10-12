@@ -187,13 +187,13 @@ export const RECOVERY_COPY: Record<RecoveryState, {
     ],
   },
   data_missing: {
-    headline: "ADE's data for this project is missing",
-    body: "Your code is safe. ADE keeps this project's lanes and chat history in a hidden folder named .ade, and it was moved or deleted.",
+    headline: "This project's ADE data is missing",
+    body: "Your code is safe. Only ADE's lanes and chat history for it are gone.",
     canAutoRepair: false,
   },
   data_replaced: {
-    headline: "ADE's data for this project was swapped out",
-    body: "Your code is safe. The hidden .ade folder ADE was using was replaced by another copy while ADE was open.",
+    headline: "This project's ADE data changed",
+    body: "Your code is safe. A different copy of ADE's data appeared while the project was open.",
     canAutoRepair: false,
   },
   brain_not_installed: {

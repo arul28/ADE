@@ -18,6 +18,7 @@ import { confirmDialog } from "../ui/dialog";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import {
   ERROR_BODY,
+  ERROR_DISCLOSURE_CARET,
   ERROR_HEADLINE,
   ERROR_PRIMARY_BUTTON,
   ERROR_SECONDARY_BUTTON,
@@ -62,15 +63,71 @@ const WATCHED_STATES: ReadonlySet<DiagnosisState> = new Set([
 function putBackSteps(windows: boolean): readonly string[] {
   return windows
     ? [
-        "Open the Recycle Bin, find the folder named .ade, and choose Restore.",
-        "If you moved it, move it back into the project folder.",
-        "ADE notices and opens the project.",
+        "In the Recycle Bin, find the folder named .ade and choose Restore.",
+        "Or, if you moved it, move it back into the project folder.",
       ]
     : [
-        "Open the Trash, find the folder named .ade, and choose Put Back. It's hidden: press Command-Shift-Period in the Trash to see it.",
-        "If you moved it, move it back into the project folder.",
-        "ADE notices and opens the project.",
+        "In the Trash, press Command-Shift-Period to show hidden files, then Put Back the folder named .ade.",
+        "Or, if you moved it, move it back into the project folder.",
       ];
+}
+
+/**
+ * The missing-data screen: two choices and nothing to read past. Restart,
+ * Reset and Report don't help when the folder is gone, so they stay off it.
+ */
+function DataRecoveryChoices({
+  restore,
+  startFresh,
+  manualSteps,
+  watching,
+}: {
+  restore: { label: string; onClick: () => void } | null;
+  startFresh: { label: string; onClick: () => void; primary?: boolean } | null;
+  manualSteps: readonly string[] | null;
+  watching: boolean;
+}) {
+  return (
+    <>
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        {restore ? (
+          <button type="button" onClick={restore.onClick} className={ERROR_PRIMARY_BUTTON}>
+            {restore.label}
+          </button>
+        ) : null}
+        {startFresh ? (
+          // Start fresh is never the filled button: it is the one choice that
+          // leaves the old lanes and history behind.
+          <button
+            type="button"
+            onClick={startFresh.onClick}
+            className={startFresh.primary ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON}
+          >
+            {startFresh.label}
+          </button>
+        ) : null}
+      </div>
+      {manualSteps ? (
+        <details className="group mt-4">
+          <summary className="inline-flex cursor-pointer select-none items-center gap-1.5 text-[12px] font-medium text-(color:--kit-text-2) transition-colors hover:text-fg">
+            {ERROR_DISCLOSURE_CARET}
+            How do I put it back?
+          </summary>
+          <ul className="mt-2 flex list-disc flex-col gap-1 pl-5 text-[12px] leading-relaxed text-(color:--kit-text-2) marker:text-(color:--kit-text-3)">
+            {manualSteps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+      {watching ? (
+        <p className="mt-4 flex items-center gap-2 text-[12px] text-(color:--kit-text-3)">
+          {SPINNER}
+          ADE opens the project as soon as the folder is back.
+        </p>
+      ) : null}
+    </>
+  );
 }
 
 /** Without Restart ADE, two failed fixes in a row hand the lead to Reset. */
@@ -90,9 +147,6 @@ const RUNG_HINT = {
   restart: "Quits and reopens ADE.",
   reset: "Removes everything ADE put on this computer. Your code stays.",
   report: "Sends ADE what went wrong and gives you a reference.",
-  restore: "Moves this project's .ade folder back from the Trash.",
-  startFresh: "Opens the project with new ADE data. The old lanes and chat history won't come back.",
-  useCopy: "Reopens the project with the .ade folder that's there now.",
 } as const;
 
 /**
@@ -456,7 +510,7 @@ export function ProjectRecoveryScreen() {
     if (!rootPath || !start) return;
     if (confirm && !(await confirmDialog({
       title: "Start fresh?",
-      message: "ADE opens this project with new ADE data. Your code and git history stay as they are, but the lanes and chat history ADE had for this project won't come back.",
+      message: "Your code stays as it is. The old lanes and chat history won't come back.",
       confirmLabel: "Start fresh",
       destructive: true,
     }))) return;
@@ -555,20 +609,7 @@ export function ProjectRecoveryScreen() {
 
   // The state's own first rung: what fixes this particular problem.
   let firstRung: { label: string; hint: string; onClick: () => void } | null = null;
-  // The data states' own second rung: start over without the old data.
-  let freshRung: { label: string; hint: string; onClick: () => void } | null = null;
-  if (dataState) {
-    if (restoreAvailable) {
-      firstRung = { label: isFailure ? "Try again" : "Restore it", hint: RUNG_HINT.restore, onClick: restoreData };
-    } else if (dataMissing && rootPath) {
-      firstRung = { label: "Try again", hint: RUNG_HINT.retry, onClick: reopenProject };
-    }
-    if (startFreshAvailable) {
-      freshRung = dataReplaced
-        ? { label: "Use this copy", hint: RUNG_HINT.useCopy, onClick: () => void startFresh(false) }
-        : { label: "Start fresh", hint: RUNG_HINT.startFresh, onClick: () => void startFresh(true) };
-    }
-  } else if (backgroundBlocked) {
+  if (backgroundBlocked) {
     firstRung = { label: "Open System Settings", hint: RUNG_HINT.settings, onClick: openBackgroundSettings };
   } else if (repairOffered) {
     firstRung = { label: isFailure ? "Try again" : "Fix it", hint: RUNG_HINT.fix, onClick: () => void runRepair() };
@@ -613,9 +654,6 @@ export function ProjectRecoveryScreen() {
           {!isSuccess && !isRepairing && !isFailure && !starting && copy.steps ? (
             <DoTheseSteps steps={copy.steps} />
           ) : null}
-          {dataMissing && !restoreAvailable && !isSuccess && !isRepairing ? (
-            <DoTheseSteps steps={putBackSteps(isWindowsPlatform())} />
-          ) : null}
 
           {/* Fix progress, or the checklist of a fix that did not work. */}
           {isRepairing || (isFailure && report) ? (
@@ -636,8 +674,21 @@ export function ProjectRecoveryScreen() {
             </div>
           ) : null}
 
+          {dataState && !isRepairing && !isSuccess ? (
+            <DataRecoveryChoices
+              restore={restoreAvailable ? { label: isFailure ? "Try again" : "Restore from Trash", onClick: restoreData } : null}
+              startFresh={startFreshAvailable
+                ? dataReplaced
+                  ? { label: "Use this copy", onClick: () => void startFresh(false), primary: true }
+                  : { label: "Start fresh", onClick: () => void startFresh(true) }
+                : null}
+              manualSteps={dataMissing && !restoreAvailable ? putBackSteps(isWindowsPlatform()) : null}
+              watching={dataMissing && !isFailure}
+            />
+          ) : null}
+
           {/* The ladder. Hidden while a fix runs and once it worked. */}
-          {!isRepairing && !isSuccess ? (
+          {!dataState && !isRepairing && !isSuccess ? (
             <>
               <ul className="mt-5 grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-4 gap-y-2.5">
                 {starting ? (
@@ -662,20 +713,6 @@ export function ProjectRecoveryScreen() {
                     )}
                     hint={firstRung.hint}
                     failed={isFailure && repairOffered}
-                  />
-                ) : null}
-                {freshRung ? (
-                  <Rung
-                    control={(
-                      <button
-                        type="button"
-                        onClick={freshRung.onClick}
-                        className={!firstRung && firstRungLeads ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON}
-                      >
-                        {freshRung.label}
-                      </button>
-                    )}
-                    hint={freshRung.hint}
                   />
                 ) : null}
                 {storageRelevant && !isFailure ? (
@@ -714,13 +751,6 @@ export function ProjectRecoveryScreen() {
                   hint={RUNG_HINT.reset}
                 />
               </ul>
-
-              {dataMissing && !isFailure ? (
-                <p className="mt-4 flex items-center gap-2 text-[12px] text-(color:--kit-text-3)">
-                  {SPINNER}
-                  Watching for the folder. ADE opens the project as soon as it's back.
-                </p>
-              ) : null}
 
               {backgroundBlocked ? (
                 <p className="mt-4 flex items-center gap-2 text-[12px] text-(color:--kit-text-3)">
