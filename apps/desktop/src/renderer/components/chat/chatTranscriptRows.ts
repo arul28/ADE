@@ -39,6 +39,7 @@ import {
 import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
 import { groupStoppedSubagentResultCards, subagentResultKey, subagentSpawnKey } from "./chatSubagentCardGrid";
 import { groupedEnvelopeTurnId } from "./chatTranscriptTurnFolds";
+import { foldSpawnCompletionLines, readSpawnCompletionChildId, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import {
   isChatTaskListEvent,
   reduceChatTaskList,
@@ -579,20 +580,14 @@ export type ChatTranscriptRenderEvent =
   | TurnDetailsRenderEvent
   | TaskListRenderEvent;
 
-/** One child's finished-turn notice folded onto another child's line. */
-export type SpawnCompletionSibling = {
-  key: string;
-  event: ChatTranscriptRenderEvent;
-  repeatCount: number;
-};
-
 export type ChatTranscriptRenderEnvelope = {
   key: string;
   timestamp: string;
   event: ChatTranscriptRenderEvent;
   /**
-   * How many folded events this row stands for. Set only by the adjacency fold
-   * for `spawn_completed` notices, which the chip renders as a trailing `×N`.
+   * How many folded events this row stands for. Set only for `spawn_completed`
+   * notices (the adjacency fold, then `foldSpawnCompletionLines`), which the
+   * line renders as a trailing `×N`.
    * Render-side only: nothing persists it and no emitter produces it.
    */
   repeatCount?: number;
@@ -604,7 +599,7 @@ export type ChatTranscriptRenderEnvelope = {
   imageViewSiblings?: CodexImageViewRenderEvent[];
   /**
    * Other children's `spawn_completed` rows drawn on this one's line, in
-   * transcript order. Set only by `filterVisibleTranscriptRows`. Render-side
+   * transcript order. Set only by `foldSpawnCompletionLines`. Render-side
    * only, like `repeatCount`.
    */
   spawnCompletionSiblings?: SpawnCompletionSibling[];
@@ -1984,26 +1979,6 @@ function resolveSubagentCardRowIndex(
 
   state.rowIndex = null;
   return null;
-}
-
-/**
- * The child a `spawn_completed` system notice reports on, or `null` for
- * anything else — including a notice whose detail lost its `spawnCompletion`
- * (an old or truncated transcript). An unidentified completion folds into
- * nothing, so it keeps its own row rather than silently absorbing a different
- * child's.
- *
- * Takes the RENDER event type, not `AgentChatEvent`: the fold compares an
- * incoming event against one already stored on a row, and a row holds the
- * render union. Narrowing on `type` rejects the synthetic render-only members
- * anyway, so widening the parameter costs nothing and removes a cast.
- */
-function readSpawnCompletionChildId(event: ChatTranscriptRenderEvent): string | null {
-  if (event.type !== "system_notice") return null;
-  if (event.noticeKind !== "info" || event.status !== "spawn_completed") return null;
-  const detail = event.detail;
-  if (!detail || typeof detail === "string") return null;
-  return detail.spawnCompletion?.childSessionId?.trim() || null;
 }
 
 function repairSubagentRowPositionsAfterSplice(
@@ -3439,14 +3414,15 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
-  // ── Spawned-chat turn completions: ONE chip per adjacent run ──
+  // ── Spawned-chat turn completions: ONE row per adjacent run ──
   // A parent that spawned a peer gets one `spawn_completed` notice per sibling
   // TURN, which stacks identical rows. Fold an incoming notice into the LAST
   // row when that row is a completion for the SAME child, carrying a
-  // `repeatCount` the chip renders as `×N`. Adjacency-only on purpose:
-  // anything the parent said or did in between separates the runs, and
+  // `repeatCount` the line renders as `×N`. Adjacency-only on purpose:
   // consulting only the row just appended is what keeps the incremental and
-  // full collapses byte-identical.
+  // full collapses byte-identical. Folding across other rows (and dropping a
+  // child's out-of-date notices) happens later, on the visible rows, in
+  // `foldSpawnCompletionLines`.
   const spawnCompletionChildId = readSpawnCompletionChildId(event);
   if (spawnCompletionChildId) {
     const last = rows[rows.length - 1];
@@ -4024,93 +4000,15 @@ function rowDrawsVisibleItem({ event }: ChatTranscriptRenderEnvelope): boolean {
 }
 
 /**
- * A completion row as drawn, cached on its source row so an unchanged line
- * keeps its identity across streaming deltas (and `React.memo` holds).
- */
-const spawnCompletionLineCache = new WeakMap<
-  ChatTranscriptRenderEnvelope,
-  { signature: string; row: ChatTranscriptRenderEnvelope }
->();
-
-function spawnCompletionLine(
-  source: ChatTranscriptRenderEnvelope,
-  repeatCount: number,
-  siblings: SpawnCompletionSibling[],
-): ChatTranscriptRenderEnvelope {
-  if (repeatCount === (source.repeatCount ?? 1) && siblings.length === 0) return source;
-  const signature = `${repeatCount}|${siblings.map((sibling) => `${sibling.key}:${sibling.repeatCount}`).join(",")}`;
-  const cached = spawnCompletionLineCache.get(source);
-  if (cached?.signature === signature) return cached.row;
-  const row: ChatTranscriptRenderEnvelope = {
-    ...source,
-    repeatCount,
-    ...(siblings.length ? { spawnCompletionSiblings: siblings } : {}),
-  };
-  spawnCompletionLineCache.set(source, { signature, row });
-  return row;
-}
-
-/**
- * Rows that never mount a visible transcript item are dropped before grouping.
- * Anchor lookup must use the same filter so stable row keys agree with the
- * rendered transcript.
- *
- * "Chat X finished its turn" notices are tidied here too. Only a child's
- * newest notice stays, carrying the count of every turn it stands for: an
- * older one is out of date the moment a newer one lands, wherever it sits.
- * Notices left next to each other share one line.
+ * Rows that never mount a visible transcript item are dropped before grouping,
+ * and "finished its turn" notices are folded to one line per run (see
+ * `foldSpawnCompletionLines`). Anchor lookup must use the same filter so
+ * stable row keys agree with the rendered transcript.
  */
 export function filterVisibleTranscriptRows(
   rows: readonly ChatTranscriptRenderEnvelope[],
 ): ChatTranscriptRenderEnvelope[] {
-  // Newest first: the first row seen per child is the one that stays.
-  let turnsByChild: Map<string, number> | null = null;
-  let staleRows: Set<ChatTranscriptRenderEnvelope> | null = null;
-  for (let index = rows.length - 1; index >= 0; index -= 1) {
-    const row = rows[index]!;
-    const childId = readSpawnCompletionChildId(row.event);
-    if (!childId) continue;
-    turnsByChild ??= new Map();
-    const turns = row.repeatCount ?? 1;
-    const seen = turnsByChild.get(childId);
-    if (seen !== undefined) {
-      (staleRows ??= new Set()).add(row);
-      turnsByChild.set(childId, seen + turns);
-    } else {
-      turnsByChild.set(childId, turns);
-    }
-  }
-  if (!turnsByChild) return rows.filter(rowDrawsVisibleItem);
-
-  const visible: ChatTranscriptRenderEnvelope[] = [];
-  let lineIndex = -1;
-  let lineSource: ChatTranscriptRenderEnvelope | null = null;
-  let lineSiblings: SpawnCompletionSibling[] = [];
-  const closeLine = () => {
-    if (!lineSource) return;
-    const childId = readSpawnCompletionChildId(lineSource.event)!;
-    visible[lineIndex] = spawnCompletionLine(lineSource, turnsByChild!.get(childId)!, lineSiblings);
-    lineSource = null;
-    lineSiblings = [];
-  };
-  for (const row of rows) {
-    if (staleRows?.has(row) || !rowDrawsVisibleItem(row)) continue;
-    const childId = readSpawnCompletionChildId(row.event);
-    if (!childId) {
-      closeLine();
-      visible.push(row);
-      continue;
-    }
-    if (lineSource) {
-      lineSiblings.push({ key: row.key, event: row.event, repeatCount: turnsByChild.get(childId)! });
-      continue;
-    }
-    lineSource = row;
-    lineIndex = visible.length;
-    visible.push(row);
-  }
-  closeLine();
-  return visible;
+  return foldSpawnCompletionLines(rows.filter(rowDrawsVisibleItem));
 }
 
 type TerminusDoneEvent = Extract<AgentChatEvent, { type: "done" }>;

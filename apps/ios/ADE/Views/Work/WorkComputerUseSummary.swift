@@ -175,9 +175,12 @@ private enum CUShellConditional { case or, and }
 private enum CUOutputFilter { case none, cite, other }
 
 /// One simple command, whether a `||` or `&&` makes it conditional, and the
-/// command its output is piped into.
+/// command its output is piped into. `redirections` are what the shell
+/// consumes itself (`2>&1`, `>out`, `2> err` with its target), kept apart from
+/// `tokens` so `click --text 2>&1` has no click target.
 private struct CUShellCommand {
   let tokens: [String]
+  let redirections: [String]
   let conditional: CUShellConditional?
   var pipedInto: [String]? = nil
 }
@@ -188,36 +191,75 @@ private enum CUParseResult {
   case invocation(CUInvocation)
 }
 
+/// An unquoted redirection: `2>&1`, `>out`, `2>/dev/null`, `&>log`, `<in`,
+/// PowerShell `*>$null`. Desktop `REDIRECTION`.
+private let cuRedirection = #"^(?:\d+|&|\*)?(?:>>?|<)"#
+/// A redirection whose target is the next word: `> out`, `2> err`, `>& log`. Desktop `BARE_REDIRECTION`.
+private let cuBareRedirection = #"^(?:\d+|&|\*)?(?:>>?|<)&?$"#
+/// What may sit before a redirection's `>` in the same word. Desktop `REDIRECTION_PREFIX`.
+private let cuRedirectionPrefix = #"^(?:\d+|&|\*)?>?$"#
+
+/// The character before `index` is an unquoted `<` / `>`: one inside quotes
+/// would sit before the closing quote, and an escaped one after a backslash.
+private func cuAfterRedirectOperator(_ chars: [Character], _ index: Int) -> Bool {
+  guard index >= 1, chars[index - 1] == "<" || chars[index - 1] == ">" else { return false }
+  return index < 2 || chars[index - 2] != "\\"
+}
+
+/// Stdout sent to a file or `/dev/null`, not `2>&1`. Desktop `STDOUT_REDIRECT`.
+private let cuStdoutRedirect = #"^(?:1|&|\*)?>>?(?!&)"#
+
 /// Quote-aware split into simple commands on `&&`, `||`, `;`, `|`, `&`,
 /// newlines; each notes whether a `||` or `&&` makes it conditional.
 private func cuSplitShellCommands(_ source: String) -> [CUShellCommand] {
   var commands: [CUShellCommand] = []
   var tokens: [String] = []
+  var redirections: [String] = []
   var current = ""
   var hasToken = false
+  // The word is literal, never a redirection: quoting or an escape came before
+  // any `<` / `>` in it (`"x">`, `2"">`, `\>`).
+  var literal = false
+  // The previous word was a bare redirection, so this one is its target.
+  var redirectionTarget = false
   var quote: Character? = nil
-  // The operator before the command being read; a newline after `||` / `&&`
-  // continues it.
+  // The operator before the command being read; a newline right after an
+  // operator continues it.
   var before: String? = nil
-  let chars = Array(source)
+  // `\r\n` is ONE Character in Swift, so it would never match the newline
+  // separator; desktop reads it as whitespace then a newline.
+  let chars = Array(source.replacingOccurrences(of: "\r\n", with: "\n"))
   func pushToken() {
-    if hasToken { tokens.append(current) }
+    if hasToken {
+      if redirectionTarget {
+        redirections.append(current)
+        redirectionTarget = false
+      } else if !literal, cuTests(cuRedirection, current) {
+        redirections.append(current)
+        redirectionTarget = cuTests(cuBareRedirection, current)
+      } else {
+        tokens.append(current)
+      }
+    }
     current = ""
     hasToken = false
+    literal = false
   }
   func pushCommand(_ after: String?) {
     pushToken()
-    if !tokens.isEmpty {
+    if !tokens.isEmpty || !redirections.isEmpty {
       let conditional: CUShellConditional? = before == "||" || after == "||"
         ? .or
         : before == "&&" ? .and : nil
       if before == "|", !commands.isEmpty { commands[commands.count - 1].pipedInto = tokens }
-      commands.append(CUShellCommand(tokens: tokens, conditional: conditional))
+      commands.append(CUShellCommand(tokens: tokens, redirections: redirections, conditional: conditional))
       tokens = []
       before = after
-    } else if after != "\n" || before == nil {
+    } else if after != "\n" {
       before = after
     }
+    redirections = []
+    redirectionTarget = false
   }
   var index = 0
   while index < chars.count {
@@ -240,19 +282,31 @@ private func cuSplitShellCommands(_ source: String) -> [CUShellCommand] {
       continue
     }
     if char == "'" || char == "\"" {
+      if !current.contains(where: { $0 == "<" || $0 == ">" }) { literal = true }
       quote = char
       hasToken = true
     } else if char == "\\", index + 1 < chars.count {
       let next = chars[index + 1]
       if next != "\n" {
+        if !current.contains(where: { $0 == "<" || $0 == ">" }) { literal = true }
         current.append(next)
         hasToken = true
       }
       index += 1
-    } else if char == "&", current.hasSuffix(">") || current.hasSuffix("<")
+    } else if char == "&", cuAfterRedirectOperator(chars, index)
                 || (index + 1 < chars.count && chars[index + 1] == ">") {
       // `2>&1` and `&>file` are redirections, not the background operator: a
-      // split there would cut `ade … 2>&1 || true` off from its `||`.
+      // split there would cut `ade … 2>&1 || true` off from its `||`. Only an
+      // unquoted `<` / `>` right before counts: in `echo ">"&` the `&` is the
+      // background operator.
+      if !cuAfterRedirectOperator(chars, index), hasToken { pushToken() }
+      current.append(char)
+      hasToken = true
+    } else if char == "<" || char == ">" {
+      // An unquoted `<` / `>` ends the word before it, the shell's own rule:
+      // `snapshot>out` is `snapshot` then `>out`. `2>`, `&>`, `*>` and `>>`
+      // stay one word.
+      if hasToken, literal || !cuTests(cuRedirectionPrefix, current) { pushToken() }
       current.append(char)
       hasToken = true
     } else if char == "\n" || char == ";" || char == "|" || char == "&" {
@@ -292,26 +346,7 @@ private func cuIsSubcommandWord(domain: String, words: [String], token: String) 
   return false
 }
 
-/// The command's words without its redirections (`2>&1`, `>out`, `2> err`):
-/// the shell consumes those, so `click --text 2>&1` has no click target.
-/// Mirrors `withoutRedirections` in `computerUseActionSummary.ts`.
-private func cuWithoutRedirections(_ tokens: [String]) -> [String] {
-  var words: [String] = []
-  var index = 0
-  while index < tokens.count {
-    let token = tokens[index]
-    index += 1
-    guard cuTests(#"^(?:\d+|&)?(?:>>?|<)"#, token) else {
-      words.append(token)
-      continue
-    }
-    if cuTests(#"^(?:\d+|&)?(?:>>?|<)$"#, token) { index += 1 }
-  }
-  return words
-}
-
-private func cuParseInvocation(_ allTokens: [String], aliasVars: Set<String>) -> CUParseResult {
-  let tokens = cuWithoutRedirections(allTokens)
+private func cuParseInvocation(_ tokens: [String], aliasVars: Set<String>) -> CUParseResult {
   var index = 0
   while index < tokens.count {
     let token = tokens[index]
@@ -536,10 +571,10 @@ private func cuFindInvocations(_ source: String, depth: Int = 0) -> [CUInvocatio
 /// Line filters, POSIX and Windows (`findstr`, PowerShell's `Select-String`).
 private let cuTextFilters: Set<String> = ["grep", "egrep", "rg", "findstr", "select-string", "sls"]
 
-/// Desktop `outputFilterOf`: stdout sent to a file (`>out`, `&>/dev/null`, not
-/// `2>&1`), or piped into a filter.
+/// Desktop `outputFilterOf`: stdout sent to a file (`>out`, `&>/dev/null`,
+/// `*>$null`, not `2>&1`), or piped into a filter.
 private func cuOutputFilter(_ command: CUShellCommand) -> CUOutputFilter {
-  if command.tokens.contains(where: { cuTests(#"^(?:1|&)?>>?(?!&)"#, $0) }) { return .other }
+  if command.redirections.contains(where: { cuTests(cuStdoutRedirect, $0) }) { return .other }
   guard let pipe = command.pipedInto else { return .none }
   let head = cuBasename(pipe.first ?? "").replacingOccurrences(of: #"\.exe$"#, with: "", options: .regularExpression)
   let keepsCites = cuTextFilters.contains(head)

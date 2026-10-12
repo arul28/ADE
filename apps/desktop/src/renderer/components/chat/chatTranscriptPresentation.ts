@@ -3,6 +3,7 @@ import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/typ
 import { agentChatLiveAppendOf, foldedOverAppends } from "../../../shared/chatHistoryMerge";
 import type { ChatTranscriptGroupedEnvelope, ChatWorkLogEntry } from "./chatTranscriptRows";
 import { dedupeChatToolActivityEntries } from "./ChatWorkLogBlock";
+import { steerStayedInLiveTurn } from "../../../shared/chatTranscript";
 import {
   classifyProviderRetryCause,
   formatLegacyProviderRetryActivityDetail,
@@ -116,25 +117,22 @@ export function stabilizeTranscriptToolActivity(
 }
 
 /**
- * Where one turn's tool activity ends and the next begins. A sent user message
- * starts a new turn, but a steer the live turn took in (`accepted`, then
- * `inline`/`processed`/`unprocessed`) does not: it lands mid-turn, and cutting
- * the activity there hid every tool the turn ran before it — the working line
- * fell back to a bare "Calling tool" with nothing to open.
+ * Whether a sent user message starts a new turn for tool activity. A message
+ * that carries the open turn's id ran inside it: Codex writes a `!` shell
+ * command sent mid-turn that way, as a plain message or a `delivered` steer.
+ * Otherwise a plain message starts a turn, and a steer does only when it ran
+ * as its own turn. A steer the live turn took in (or one that went nowhere)
+ * lands mid-turn, and cutting the activity there hid every tool the turn ran
+ * before it: the working line fell back to a bare "Calling tool" with nothing
+ * to open.
  */
-function isTurnActivityBoundary(event: ChatTranscriptGroupedEnvelope["event"]): boolean {
-  if (event.type === "done") return true;
-  if (event.type !== "user_message" || event.deliveryState === "queued") return false;
+function userMessageStartsTurn(
+  event: Extract<ChatTranscriptGroupedEnvelope["event"], { type: "user_message" }>,
+  openTurnId: string | null,
+): boolean {
+  if (openTurnId && event.turnId === openTurnId) return false;
   if (!event.steerId) return true;
-  switch (event.deliveryState) {
-    case "accepted":
-    case "inline":
-    case "processed":
-    case "unprocessed":
-      return false;
-    default:
-      return true;
-  }
+  return !steerStayedInLiveTurn(event.deliveryState);
 }
 
 /**
@@ -170,7 +168,10 @@ export function deriveTranscriptToolActivity(rows: ChatTranscriptGroupedEnvelope
       continue;
     }
     if (row.event.type === "user_message") {
-      if (isTurnActivityBoundary(row.event)) pendingSegment = [];
+      // Queued steers live in the composer's staging area, not the turn.
+      if (row.event.deliveryState === "queued") continue;
+      const openTurnId = pendingSegment.findLast((group) => group.turnId)?.turnId ?? null;
+      if (userMessageStartsTurn(row.event, openTurnId)) pendingSegment = [];
       continue;
     }
     if (row.event.type !== "done") continue;
@@ -186,10 +187,8 @@ export function deriveTranscriptToolActivity(rows: ChatTranscriptGroupedEnvelope
     pendingSegment = [];
   }
 
-  const lastBoundaryIndex = rows.findLastIndex((row) => isTurnActivityBoundary(row.event));
-  const activeEntries = rows
-    .slice(lastBoundaryIndex + 1)
-    .flatMap((row) => row.event.type === "work_log_group" ? row.event.entries : []);
+  // What is left open after the last turn boundary is the live turn's work.
+  const activeEntries = pendingSegment.flatMap((group) => group.entries);
   return {
     byDoneRowKey,
     activeEntries: dedupeChatToolActivityEntries(activeEntries),

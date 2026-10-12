@@ -47,7 +47,6 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatNoticeDetail,
-  AgentChatSpawnCompletion,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
   AgentChatRecoverContinuityArgs,
@@ -190,6 +189,7 @@ import { renderSubagentTimelineRow, type SpawnedChatProviderProps } from "./chat
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
@@ -313,50 +313,6 @@ const EMPTY_WORK_LOG_ENTRIES: ChatWorkLogEntry[] = [];
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 
-/**
- * Recovers the child chat's title from a `spawn_completed` notice whose detail
- * lost its `spawnCompletion`. Matches both the current
- * `spawnCompletedNoticeMessage` sentence and the pre-rename `Peer "<title>"
- * turn finished`, which persisted transcripts still hold. Not global, so `exec`
- * has no `lastIndex` to carry between calls.
- */
-const SPAWN_COMPLETED_TITLE_PATTERN = /^(?:Peer|Chat)\s+"?(.*?)"?\s+(?:turn finished|finished its turn)$/;
-
-type SpawnCompletionChip = {
-  key: string;
-  childTitle: string;
-  childSessionId: string | null;
-  childMachineName: string | null;
-  repeatCount: number;
-};
-
-/** What a `spawn_completed` notice names: its child chat, and where it ran. */
-function readSpawnCompletionChip(key: string, event: AgentChatEvent | { type: string }, repeatCount: number): SpawnCompletionChip {
-  const notice = event.type === "system_notice" ? event as Extract<AgentChatEvent, { type: "system_notice" }> : null;
-  const completion: AgentChatSpawnCompletion | undefined =
-    notice?.detail && typeof notice.detail === "object" ? notice.detail.spawnCompletion : undefined;
-  // Fallback title parse for a notice whose detail lost its completion —
-  // which happens to notices in EITHER wording, so both are handled here:
-  // the current `spawnCompletedNoticeMessage` sentence, and the pre-rename
-  // `Peer "<title>" turn finished` that persisted transcripts still hold
-  // and are never re-emitted.
-  //
-  // One anchored match with a capture group rather than subtracting the
-  // two ends with a /g replace: a message that is not a completion notice
-  // at all now fails to match and falls through to "Chat", instead of
-  // being handed back mangled.
-  const parsedChildTitle = notice ? SPAWN_COMPLETED_TITLE_PATTERN.exec(notice.message)?.[1]?.trim() : undefined;
-  const childSessionId = typeof completion?.childSessionId === "string" && completion.childSessionId.length
-    ? completion.childSessionId
-    : null;
-  return {
-    key,
-    childTitle: completion?.childTitle?.trim() || parsedChildTitle || "Chat",
-    childSessionId,
-    childMachineName: completion?.childMachineName?.trim() || null,
-    repeatCount: Number.isFinite(repeatCount) && repeatCount > 1 ? Math.floor(repeatCount) : 1,
-  };
-}
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
 type CodexTurnStalledEvent = Extract<AgentChatEvent, { type: "codex_turn_stalled" }>;
 type CodexTurnRecoveryEvent = Extract<
@@ -1281,7 +1237,7 @@ type RenderEnvelope = {
   /** Image views folded into this row by adjacency; see ChatTranscriptRenderEnvelope. */
   imageViewSiblings?: Array<Extract<AgentChatEvent, { type: "codex_image_view" }>>;
   /** Other children's finished-turn notices on this line; see ChatTranscriptRenderEnvelope. */
-  spawnCompletionSiblings?: Array<{ key: string; event: AgentChatEvent | { type: string }; repeatCount: number }>;
+  spawnCompletionSiblings?: SpawnCompletionSibling[];
   /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
   timestampSynthetic?: boolean;
   /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
@@ -2576,6 +2532,19 @@ function renderEvent(
   // One rule for "this row draws nothing", shared with Thought-run merging.
   if (transcriptEventDrawsNothing(event, options)) return null;
 
+  // A jump to a spawned chat. A child that ran on this chat's machine lives
+  // there too, so the jump carries this chat's pin; without it a chat on
+  // another machine is focused against the tab's machine and resolves to
+  // nothing. A child that ran elsewhere (`childMachineName`) is left to the
+  // Work list, which knows every machine's sessions. Its lane is passed only
+  // when known: the listener otherwise resolves the child's own lane, where
+  // this chat's lane would open the wrong one.
+  const openSpawnedChat = (
+    childSessionId: string | null | undefined,
+    childLaneId: string | null,
+    childMachineName?: string | null,
+  ) => navigateToSpawnedChat(childSessionId, childLaneId, childMachineName ? null : options?.runtimePin ?? null);
+
   if (event.type === "model_handoff") {
     // Same-provider handoffs never reach here: they are dropped upstream by
     // `isSameProviderModelHandoffEvent` so they do not mount an empty row.
@@ -2643,7 +2612,7 @@ function renderEvent(
         </div>
         <button
           type="button"
-          onClick={() => navigateToSpawnedChat(event.childSessionId, options?.laneId ?? null)}
+          onClick={() => openSpawnedChat(event.childSessionId, null, event.childMachineName)}
           className="mx-auto inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-1.5 rounded-full border border-violet-300/18 bg-violet-400/[0.06] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/70 transition-colors hover:border-violet-300/30 hover:text-fg/90"
           title="Open the spawned chat"
         >
@@ -3400,8 +3369,8 @@ function renderEvent(
     }
     // Spawn notices. The "spawned" announcement is now carried by the unified,
     // navigable spawn-anchor card (SubagentSpawnCard) — do NOT render a second
-    // quiet pill here. A `peer` child that finishes emits a `spawn_completed`
-    // notice; render a single quiet steel chip that navigates to the child.
+    // quiet pill here. A child that finishes a turn emits a `spawn_completed`
+    // notice, drawn below as one quiet line that navigates to the child.
     if (event.noticeKind === "info" && event.status === "subagent_spawned") {
       const detail = (event.detail && typeof event.detail === "object" ? event.detail : {}) as {
         spawnKind?: "subagent" | "peer";
@@ -3415,7 +3384,7 @@ function renderEvent(
         <button
           type="button"
           disabled={!childSessionId}
-          onClick={() => navigateToSpawnedChat(childSessionId, spawned?.laneId ?? options?.laneId ?? null)}
+          onClick={() => openSpawnedChat(childSessionId, spawned?.laneId ?? null)}
           className={cn(
             "inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] transition-colors",
             isPeer
@@ -3443,7 +3412,7 @@ function renderEvent(
         <button
           type="button"
           disabled={!childSessionId}
-          onClick={() => navigateToSpawnedChat(childSessionId, options?.laneId ?? null)}
+          onClick={() => openSpawnedChat(childSessionId, null)}
           className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70 transition-colors enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
           title={childSessionId ? "Open the chat the user took over" : undefined}
         >
@@ -3463,32 +3432,32 @@ function renderEvent(
         </div>
       );
     }
-    if (event.noticeKind === "info" && event.status === "spawn_completed") {
+    const spawnCompletion = spawnCompletionNoticeOf(event);
+    if (spawnCompletion) {
       // One quiet line, not a pill: background news about other chats. The
       // row pipeline keeps only each child's newest notice (with the count of
       // turns it stands for) and puts neighbours on the same line.
       const entries = [
-        { key: envelope.key, event, repeatCount: envelope.repeatCount ?? 1 },
+        { key: envelope.key, notice: spawnCompletion, repeatCount: envelope.repeatCount ?? 1 },
         ...(envelope.spawnCompletionSiblings ?? []),
-      ].map((entry) => readSpawnCompletionChip(entry.key, entry.event, entry.repeatCount));
-      const single = entries.length === 1 ? entries[0]! : null;
-      const chip = (entry: SpawnCompletionChip, label: string) => (
+      ];
+      const single = entries.length === 1 ? entries[0] : null;
+      const chip = (entry: (typeof entries)[number], label: string) => (
         <button
-          key={entry.key}
           type="button"
-          disabled={!entry.childSessionId}
-          onClick={() => navigateToSpawnedChat(entry.childSessionId, options?.laneId ?? null)}
+          disabled={!entry.notice.childSessionId}
+          onClick={() => openSpawnedChat(entry.notice.childSessionId, null, entry.notice.childMachineName)}
           className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-sm text-left transition-colors enabled:hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20"
-          title={entry.childSessionId ? "Open the chat" : undefined}
+          title={entry.notice.childSessionId ? "Open the chat" : undefined}
         >
           <span className="min-w-0 truncate">{label}</span>
-          {entry.childMachineName ? (
-            <span className="shrink-0 text-fg/30">· on {entry.childMachineName}</span>
+          {entry.notice.childMachineName ? (
+            <span className="shrink-0 text-fg/30">· on {entry.notice.childMachineName}</span>
           ) : null}
           {entry.repeatCount > 1 ? (
-            <span className="shrink-0 tabular-nums text-fg/30" aria-label={`${entry.repeatCount} turns`}>×{entry.repeatCount}</span>
+            <span className="shrink-0 tabular-nums text-fg/30" title={`${entry.repeatCount} turns`}>×{entry.repeatCount}</span>
           ) : null}
-          {entry.childSessionId ? <CaretRight size={9} className="shrink-0 text-fg/30" aria-hidden /> : null}
+          {entry.notice.childSessionId ? <CaretRight size={9} className="shrink-0 text-fg/30" aria-hidden /> : null}
         </button>
       );
       return (
@@ -3498,13 +3467,13 @@ function renderEvent(
         >
           <CheckCircle size={11} className="mt-[0.3em] shrink-0 text-fg/30" aria-hidden />
           <span className="flex min-w-0 flex-wrap items-center gap-x-1.5">
-            {single ? chip(single, spawnCompletedNoticeMessage(single.childTitle)) : (
+            {single ? chip(single, spawnCompletedNoticeMessage(single.notice.childTitle)) : (
               <>
                 <span className="shrink-0">{entries.length} chats finished their turns:</span>
                 {entries.map((entry, index) => (
                   <React.Fragment key={entry.key}>
                     {index > 0 ? <span aria-hidden className="text-fg/25">·</span> : null}
-                    {chip(entry, entry.childTitle)}
+                    {chip(entry, entry.notice.childTitle)}
                   </React.Fragment>
                 ))}
               </>

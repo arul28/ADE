@@ -136,6 +136,34 @@ export function isDroppedSteerDeliveryState(
 }
 
 /**
+ * True when a steer row never started a turn of its own: the live turn took
+ * it in (`accepted`, then `inline` / `processed`, or Codex's `unprocessed`
+ * when the turn ended first), or it went nowhere (`failed`). A `delivered`
+ * steer ran as its own turn, and a `queued` one is still staging.
+ */
+export function steerStayedInLiveTurn(
+  state: AgentChatUserMessageDeliveryState | undefined,
+): boolean {
+  switch (state) {
+    case "accepted":
+    case "inline":
+    case "processed":
+    case "unprocessed":
+    case "failed":
+      return true;
+    case "queued":
+    case "delivered":
+    case undefined:
+      return false;
+    default: {
+      const _exhaustive: never = state;
+      void _exhaustive;
+      return false;
+    }
+  }
+}
+
+/**
  * True when a steer settled on a row the model read: settled, and not
  * dropped. An `accepted` row alone never counts — the live turn may still
  * refuse it.

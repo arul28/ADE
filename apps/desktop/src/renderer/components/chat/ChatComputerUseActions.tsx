@@ -221,6 +221,9 @@ function ComputerUseAppIcon({
 // [action icon] [the line] [status]. The line is only as wide as its words, so
 // the status sits right after it, not at the far edge of a wide column.
 const ROW_GRID = "grid grid-cols-[18px_minmax(0,max-content)_auto] items-center justify-start gap-x-2.5";
+// Background work: every line is one small size, newest or not.
+const ACTION_TEXT = "text-[length:calc(var(--chat-font-size)*11/14)]";
+const ACTION_LINE = `inline-flex min-w-0 items-center ${ACTION_TEXT}`;
 
 /** The icon for what the action did: a click, typing, a look, a proof. */
 function actionGlyph(summary: ComputerUseActionSummary): Icon {
@@ -302,12 +305,12 @@ function ActionLine({ summary, emphasize }: { summary: ComputerUseActionSummary;
     <span className={running ? undefined : className}>{text}</span>
   );
   const iconSize = 12;
-  // Background work: every line is the same small size. The newest one stands
-  // out by colour and its status icon, never by size.
+  // The newest line stands out by colour and its status icon, never by size.
   return (
     <span
       className={cn(
-        "min-w-0 truncate text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5]",
+        "min-w-0 truncate leading-[1.5]",
+        ACTION_TEXT,
         running && "ade-thinking-shimmer [&_svg]:text-muted-fg",
         emphasize ? "text-fg/80" : "text-muted-fg",
       )}
@@ -437,7 +440,7 @@ function FullActionRow({ summary, count }: { summary: ComputerUseActionSummary; 
       data-outcome={summary.outcome}
     >
       <ActionGlyph summary={summary} emphasize />
-      <span className="inline-flex min-w-0 items-center text-[length:calc(var(--chat-font-size)*11/14)]">
+      <span className={ACTION_LINE}>
         <ActionLine summary={summary} emphasize />
         <RepeatCount count={count} />
       </span>
@@ -462,7 +465,7 @@ function CompactActionRow({ summary, count }: { summary: ComputerUseActionSummar
   return (
     <div className={cn(ROW_GRID, "py-0.5")} data-testid="computer-use-action-compact">
       <ActionGlyph summary={summary} emphasize={false} />
-      <span className="inline-flex min-w-0 items-center text-[length:calc(var(--chat-font-size)*11/14)]">
+      <span className={ACTION_LINE}>
         <ActionLine summary={summary} emphasize={false} />
         <RepeatCount count={count} />
       </span>
