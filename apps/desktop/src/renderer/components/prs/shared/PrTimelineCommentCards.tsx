@@ -4,6 +4,7 @@ import { CaretRight } from "@phosphor-icons/react";
 import type { PrTimelineEvent } from "../../../../shared/types/prs";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
+import { PrDescriptionBody } from "./PrBrief";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrReactionBar } from "./PrReactionBar";
 import { PrUserAvatar } from "./PrUserAvatar";
@@ -126,9 +127,7 @@ export function DescriptionContent({
     return (
       <article data-testid="pr-description" className="px-1 pb-4 pt-1" style={{ borderBottom: `1px solid ${COLORS.borderMuted}` }}>
         {event.body?.trim() ? (
-          <PrMarkdown repoOwner={repoOwner} repoName={repoName} variant="document">
-            {event.body}
-          </PrMarkdown>
+          <PrDescriptionBody body={event.body} repoOwner={repoOwner} repoName={repoName} />
         ) : (
           <p className="text-[13px] italic" style={{ color: COLORS.textMuted }}>No description provided.</p>
         )}

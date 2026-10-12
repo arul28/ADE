@@ -10995,6 +10995,34 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("uploads the proof a PR text cites after the PR is made, and only then", () => {
+    const steps = (argv: string[]) => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind, "an executable plan").toBe("execute");
+      return plan.kind === "execute" ? plan.steps.map((step) => [step.key, Boolean(step.optional)]) : [];
+    };
+    const cited = "## Evidence\n![The list](ade-proof://pic-1)";
+    // The upload is optional on both commands: a PR that was made or a text
+    // that was replaced stays a success when GitHub refuses the pictures.
+    expect(steps(["prs", "create", "--lane", "lane-1", "--body", cited])).toEqual([
+      ["result", false],
+      ["proofList", true],
+      ["proofLink", true],
+    ]);
+    expect(steps(["prs", "body", "12", "--body", cited])).toEqual([
+      ["result", false],
+      ["proofList", true],
+      ["proofLink", true],
+    ]);
+    expect(steps(["prs", "create", "--lane", "lane-1", "--body", "No pictures here."])).toEqual([["result", false]]);
+    // The explicit command fails loudly when it cannot read the proof.
+    expect(steps(["proof", "publish", "--pr", "12", "--in-body"])).toEqual([["proofList", false], ["proofLink", true]]);
+    expect(() => buildCliPlan(["proof", "publish", "--pr", "12", "--in-body", "pic-1"])).toThrow(/takes no ids/);
+    // A missing flag must not replace the PR text with nothing; an explicit empty text may.
+    expect(() => buildCliPlan(["prs", "body", "12"])).toThrow(/needs --body/);
+    expect(steps(["prs", "body", "12", "--body", ""])).toEqual([["result", false]]);
+  });
+
   it("summarizes PR create output with GitHub and ADE links", () => {
     const connection = {
       mode: "headless" as const,

@@ -470,8 +470,10 @@ The timeline for an ordinary lane:
 3. If no PR exists, open one with the **Discovery protocol** (ADE CLI first,
    `gh` fallback) against `main`, or against the resolved direct parent in stack
    mode. Open it **ready for review, not as a draft** — review bots can skip
-   drafts, and a skipped round 1 defeats the purpose. Use the PR body house
-   style, with Verification reading `pending /quality and /test`.
+   drafts, and a skipped round 1 defeats the purpose. Write the PR text as a
+   Brief. Its Evidence part lists what you already checked and names the
+   checks still to run (`/quality`, `/test`); those phases replace that line
+   with their results.
 4. Post the Phase 4 pings only for a >250-file diff.
 5. Write the state file. The checkpoint was not reviewed, so it binds nothing.
    - **No state file yet:** write `status: "prepping"`, `mode`, `baseBranch`,
@@ -672,15 +674,18 @@ revalidate again.
 
 **PR creation: prefer the ADE CLI.** Opening the PR via `ade` registers it in ADE's PR tracking (lane ↔ PR link, check/comment inventory, review-thread state). `gh pr create` is the fallback, not the default. Falling back too eagerly defeats the purpose — do it only after you've genuinely confirmed the ADE path is broken.
 
-**PR body house style (both creation paths — never rely on `--fill` alone).** Write the body in this order, per the AGENTS.md "Pull requests" section:
+**PR text (both creation paths — never rely on `--fill` alone).** Write the text as a Brief, per the AGENTS.md "Pull requests" section and the **ade-pr-workflows** skill:
 
-1. **Problem** — one or two sentences.
-2. **Cause** — when known; omit the heading otherwise.
-3. **Change and boundary** — what moved, and what deliberately did not.
-4. **Verification** — the exact focused tests/typechecks run and their counts (mirror the quality/test summaries).
-5. Final line — the model and harness that did the work (e.g. `Authored with <model> via <harness>.`).
+1. **Why** — the problem, one or two plain sentences.
+2. **What changed** — what is different for the person who uses it, and what deliberately did not move.
+3. **Evidence** — how you checked it and what you saw: the exact focused tests/typechecks and their counts (mirror the quality/test summaries), and the checks in the running app.
+4. **Not checked** — what you could not check, or "Nothing".
+5. **Choices I made** — only when you settled a trade-off alone.
+6. Final line — the model and harness that did the work (e.g. `Authored with <model> via <harness>.`).
 
-UI changes attach before/after images; motion attaches a short video. Upload evidence to GitHub — never commit it to the repo.
+Cite proof in the text (`![caption](ade-proof://<id>)`, or a `proof-compare` block for before and after); `ade prs create` and `ade prs body` upload it into the text. Never commit evidence to the repo.
+
+The Evidence part must be true when a person reads it. The early PR opens before `/quality` and `/test` finish, so it says so; **the phase that finishes a check replaces that line** with the result (`ade prs body <pr> --body-file <file>`). A PR never merges with a placeholder in its text.
 
 ### Discovery protocol (for the agent — not a script)
 

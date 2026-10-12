@@ -205,10 +205,13 @@ These are the operational hazards of developing ADE from inside ADE. Each one ha
 
 ## Pull requests
 
+- Open the PR with `ade prs create` (the **ade-pr-workflows** skill holds the full writing guide and the commands). `gh pr create` is the fallback.
 - Conventional commit titles in plain language: `fix(desktop): new chats no longer spike CPU`.
-- Body house style, in order: **Problem** (a sentence or two), **Cause** (when known), **Change and boundary** (what moved, what deliberately did not), **Verification** (the exact focused tests/typechecks run and their counts). End with the model and harness that did the work.
-- UI changes need before/after images. Motion or timing needs a short video. Upload evidence to GitHub; never commit screenshots or PR-only assets to the repo.
+- The text is a Brief, written for a person who has two minutes and did not see the work. Parts, in order: **Why** (the problem, a sentence or two), **What changed** (what is different for the person who uses it, and what was left alone on purpose), **Evidence** (how you checked it and what you saw: the focused tests and their counts, the checks in the running app), **Not checked** (what you could not check, or "Nothing"), and **Choices I made** only when you settled a trade-off alone. End with the model and harness that did the work.
+- Plain words. Explain a technical term in the sentence where it first appears. Keep code names out of Why and What changed.
+- Match the evidence to the change: a picture for a layout change, a short video for motion or timing, numbers for speed. Cite proof in the text (`![caption](ade-proof://<id>)`, or a `proof-compare` block for before and after); `ade prs create` uploads it. Never commit screenshots or PR-only assets to the repo.
 - One concern per PR. If the description says "also", consider splitting it.
+- Close out every review thread you handle, in the same turn: reply with what changed or why you did not change it, then resolve it (`ade prs reply`, `ade prs resolve-thread`). ADE lists each open thread as work that waits for a person, so a handled thread left open is a false alarm. Leave a thread open only when a person must decide.
 
 ## Validation
 

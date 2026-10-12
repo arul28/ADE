@@ -18,9 +18,28 @@ export type PrMarkdownEnv = {
   /** State of other PRs in this repo, for `#123` pills. */
   prStateByNumber?: ReadonlyMap<number, PrState>;
   onOpenPr?: (number: number) => void;
+  /**
+   * Quote something from this PR in the chat that works on it. Absent when the
+   * PR has no lane to hold a chat; the "Add to chat" controls then stay hidden.
+   */
+  onAddToChat?: (quote: PrChatQuote) => void;
+};
+
+/** One thing a reader hands to the chat: its text, and where in the PR it is from. */
+export type PrChatQuote = {
+  /** Markdown. A picture is its `![caption](url)`. */
+  text: string;
+  /** "the description", "a review thread on prService.ts:40 by alice". */
+  from: string;
 };
 
 export const PrMarkdownEnvContext = React.createContext<PrMarkdownEnv | null>(null);
+
+/**
+ * Which part of the PR the markdown below belongs to, for a quote's `from`.
+ * Set by the row that renders the part; "the pull request" where none is set.
+ */
+export const PrQuoteSourceContext = React.createContext<string>("the pull request");
 
 const FILE_LIKE = /^[\w@~.\-/]+\.[A-Za-z0-9]{1,8}(?::\d+(?:-\d+)?)?$/;
 
