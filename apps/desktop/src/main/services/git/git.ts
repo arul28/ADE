@@ -290,17 +290,22 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
   }
   const executable = await resolveGitExecutable();
   return await new Promise<GitRunResult>((resolve) => {
-    const hasEnvOverrides = opts.env !== undefined && Object.keys(opts.env).length > 0;
+    // ADE reads status beside the user's own git commands. Without this, a
+    // read such as `git status` takes `.git/index.lock` to save its refreshed
+    // index, and a commit or checkout the user runs at that moment fails with
+    // "Unable to create index.lock". It changes only locks git calls optional;
+    // a command that must write the index still locks it. A caller's env wins.
+    const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...(opts.env ?? {}) };
     // On Windows, CreateProcess runs on the calling thread, so a git spawned
     // here blocks the event loop for 5-1,000 ms. See offThreadSpawn.ts.
     const child: GitChild = offThreadSpawnEnabled()
       ? spawnOffThread(executable, args, {
         cwd: opts.cwd,
-        env: hasEnvOverrides ? { ...process.env, ...opts.env } : undefined,
+        env,
       })
       : spawn(executable, args, {
         cwd: opts.cwd,
-        env: { ...process.env, ...(opts.env ?? {}) },
+        env,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });
