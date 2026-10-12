@@ -91,6 +91,7 @@ vi.mock("./appleRecording", async (importOriginal) => ({
 const { AppleDevicePane } = await import("./AppleDevicePane");
 const { APPLE_LOADING_RECHECK_MS, APPLE_START_GIVE_UP_MS } = await import("./useAppleDeviceStartTracker");
 const { expectNoHorizontalOverflow } = await import("./testLayout");
+const { useAppStore } = await import("../../state/appStore");
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
 
@@ -432,6 +433,45 @@ describe("AppleDevicePane states", () => {
     renderPane();
     expect(await screen.findByText("Something went wrong with the simulator.")).toBeTruthy();
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
+  });
+
+  it("says a list that failed to load failed, and reads it again on Retry and when a project switch ends", async () => {
+    const { iosSimulator } = setup({ lane: null, installed: [] });
+    const switching = new Error(
+      "Error invoking remote method 'ade.iosSimulator.deviceList': Error: Project is switching. Wait for the current project to finish loading before changing project state.",
+    );
+    iosSimulator.deviceList = vi.fn(async () => {
+      throw switching;
+    });
+    renderPane();
+
+    expect(await screen.findByText("Couldn't load this lane's simulators.")).toBeTruthy();
+    expect(screen.getByText("ADE was switching projects. Try again.")).toBeTruthy();
+    // The picker's empty card is a claim about the machine; a failed read makes none.
+    expect(screen.queryByText("No Apple simulators are installed.")).toBeNull();
+    // Said once, in place of the picker, not again in the banner above it.
+    expect(screen.queryByText("Something went wrong with the simulator.")).toBeNull();
+
+    iosSimulator.deviceList = vi.fn(async () => ({ installed: [PRO, MAX], lane: null }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("iPhone 17 Pro Max")).toBeTruthy();
+    expect(screen.queryByText("Couldn't load this lane's simulators.")).toBeNull();
+
+    // A read refused mid-switch is retried as soon as the switch ends.
+    cleanup();
+    iosSimulator.deviceList = vi.fn(async () => {
+      throw switching;
+    });
+    act(() => {
+      useAppStore.setState({ projectTransition: { kind: "switching", rootPath: "/next", startedAtMs: 0 } });
+    });
+    renderPane();
+    expect(await screen.findByText("Couldn't load this lane's simulators.")).toBeTruthy();
+    iosSimulator.deviceList = vi.fn(async () => ({ installed: [PRO, MAX], lane: null }));
+    act(() => {
+      useAppStore.setState({ projectTransition: null });
+    });
+    expect(await screen.findByText("iPhone 17 Pro Max")).toBeTruthy();
   });
 
   it("switching device asks inline, never in a modal", async () => {

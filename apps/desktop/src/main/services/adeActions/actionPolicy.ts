@@ -820,6 +820,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "openCursorCloudChat",
     "watchCursorCloudMirror",
     "getCursorCloudFleet",
+    "getCursorAgentUsage",
     "resolveCursorCloudAgentLane",
     "pullCursorCloudAgentIntoLane",
     "stopCursorCloudAgentRun",

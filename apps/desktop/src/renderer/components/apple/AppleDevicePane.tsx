@@ -203,6 +203,8 @@ export function AppleDevicePane({
     runtimes,
     defaultNewDevice,
     refreshing,
+    listLoaded,
+    listError,
     bootedRead,
     refreshList,
     dropLaneDevice,
@@ -804,6 +806,19 @@ export function AppleDevicePane({
           />
         );
       case "no-device":
+        // Until a list read answers, "no device" only means "not known yet":
+        // the picker's empty card would claim no simulators are installed.
+        if (!listLoaded) {
+          return listError != null ? (
+            <PaneMessage
+              title="Couldn't load this lane's simulators."
+              description={describeAppleError(listError).sentence}
+              action={{ label: "Retry", busy: refreshing, onClick: refreshList }}
+            />
+          ) : (
+            <PaneMessage title="Loading simulators…" description={null} />
+          );
+        }
         return (
           <AppleDevicePicker
             installed={installed}
@@ -1181,7 +1196,15 @@ export function AppleDevicePane({
   );
 }
 
-function PaneMessage({ title, description }: { title: string; description: string | null }) {
+function PaneMessage({
+  title,
+  description,
+  action,
+}: {
+  title: string;
+  description: string | null;
+  action?: { label: string; busy: boolean; onClick: () => void };
+}) {
   return (
     <div
       data-apple-pane-message=""
@@ -1192,6 +1215,11 @@ function PaneMessage({ title, description }: { title: string; description: strin
         <p className="min-w-0 break-words font-sans text-sm font-medium leading-5 text-fg">{title}</p>
         {description ? (
           <p className="min-w-0 break-words font-sans text-xs leading-5 text-muted-fg">{description}</p>
+        ) : null}
+        {action ? (
+          <Button variant="outline" size="sm" disabled={action.busy} onClick={action.onClick} className="mt-1 shrink-0">
+            {action.label}
+          </Button>
         ) : null}
       </div>
     </div>
