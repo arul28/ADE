@@ -1457,7 +1457,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     // two operations that used to release the page's keyboard focus. Reachable
     // only in the window between the panel hiding and the card's stop landing —
     // kept because the guard has to hold if a second `startPreviewStream`
-    // caller (mobile, CLI, Mosaic) is ever added.
+    // caller (mobile, CLI) is ever added.
     const { service, win, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
     expect(win.webContents.focusCalls).toBe(1);
 

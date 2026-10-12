@@ -87,6 +87,101 @@ const SCENE_SDK_SOURCE = `
     }
   }
 
+  var replySeq = 0;
+  var pendingReplies = Object.create(null);
+
+  function userActive() {
+    try { return !navigator.userActivation || navigator.userActivation.isActive; } catch (e) { return true; }
+  }
+
+  function replyTextOf(control) {
+    return String(control.getAttribute("data-reply") || control.textContent || "").trim();
+  }
+
+  // Mark the reply controls whose text matches. A picked reply matches
+  // exactly; the reader's sent message may have more words around it.
+  function markChosen(matches) {
+    var chosen = false;
+    try {
+      var singles = document.querySelectorAll("[data-reply]:not(form)");
+      for (var i = 0; i < singles.length; i++) {
+        var own = replyTextOf(singles[i]);
+        var hit = !!own && matches(own);
+        if (hit) { singles[i].setAttribute("aria-pressed", "true"); chosen = true; }
+        else singles[i].removeAttribute("aria-pressed");
+      }
+    } catch (e) {}
+    return chosen;
+  }
+
+  function onPicked(payload) {
+    var p = payload && typeof payload === "object" ? payload : {};
+    var pending = typeof p.id === "string" ? pendingReplies[p.id] : null;
+    if (!pending) return;
+    delete pendingReplies[p.id];
+    if (p.ok !== true) {
+      pending.reject(new Error(typeof p.error === "string" && p.error ? p.error : "The reply was not added."));
+      return;
+    }
+    markChosen(function (own) { return own === pending.text; });
+    pending.resolve();
+    emitLocal("picked", pending.text);
+  }
+
+  // The reader sent a message after this scene: it is done asking. Every
+  // reply control goes inert, and the ones their message names stay marked.
+  function onAnswered(payload) {
+    var text = payload && typeof payload.text === "string" ? payload.text : "";
+    ade.answered = text;
+    try {
+      document.documentElement.setAttribute("data-ade-answered", "");
+      var controls = document.querySelectorAll("[data-reply], form[data-reply] button, form[data-reply] input, form[data-reply] select, form[data-reply] textarea");
+      for (var i = 0; i < controls.length; i++) controls[i].disabled = true;
+    } catch (e) {}
+    markChosen(function (own) { return text.indexOf(own) !== -1; });
+    emitLocal("answered", text);
+  }
+
+  function fieldLabel(form, field, name) {
+    try {
+      var label = field.id ? form.querySelector('label[for="' + field.id + '"]') : null;
+      if (!label && typeof field.closest === "function") label = field.closest("label");
+      if (!label) return name;
+      // The label's own words only: a label wrapped around a select would
+      // otherwise read out every option.
+      var text = String(label.getAttribute("data-label") || "");
+      for (var i = 0; !text && i < label.childNodes.length; i++) {
+        var node = label.childNodes[i];
+        if (node.nodeType === 3 && String(node.nodeValue).trim()) text = String(node.nodeValue);
+      }
+      return text.replace(/\\s+/g, " ").trim() || name;
+    } catch (e) { return name; }
+  }
+
+  // A data-reply form becomes readable lines: the form's own data-reply text
+  // first, then one "- Label: value" line per named field.
+  function formText(form) {
+    var lines = [];
+    var head = String(form.getAttribute("data-reply") || "").trim();
+    if (head) lines.push(head);
+    var order = [];
+    var values = Object.create(null);
+    var labels = Object.create(null);
+    var fields = form.elements;
+    for (var i = 0; i < fields.length; i++) {
+      var field = fields[i];
+      var name = field.name;
+      if (!name || field.type === "submit" || field.type === "button") continue;
+      if ((field.type === "checkbox" || field.type === "radio") && !field.checked) continue;
+      var value = String(field.value == null ? "" : field.value).trim();
+      if (!value) continue;
+      if (!values[name]) { values[name] = []; order.push(name); labels[name] = field.type === "checkbox" || field.type === "radio" ? name : fieldLabel(form, field, name); }
+      values[name].push(value);
+    }
+    for (var j = 0; j < order.length; j++) lines.push("- " + labels[order[j]] + ": " + values[order[j]].join(", "));
+    return lines.join("\\n");
+  }
+
   var ade = {
     data: window.__ADE_SCENE_DATA__ || null,
     theme: window.__ADE_SCENE_THEME__ || null,
@@ -109,6 +204,26 @@ const SCENE_SDK_SOURCE = `
       };
     },
     emit: function (name, payload) { post("emit", { name: String(name), payload: payload }); },
+    /** The reader's message that followed this scene, or null while it is still open. */
+    answered: null,
+    /**
+     * Put text in the chat's prompt box as the reader's draft reply. Nothing
+     * is sent: the reader can add to it and sends it themselves. Works only
+     * in answer to a click or a key press in the scene, and only until the
+     * reader has answered. Resolves when the text is in the prompt box.
+     */
+    reply: function (text) {
+      return new Promise(function (resolve, reject) {
+        var value = String(text == null ? "" : text).trim();
+        if (!value) { reject(new Error("ade.reply needs text.")); return; }
+        if (ade.answered !== null) { reject(new Error("The reader already answered this scene.")); return; }
+        if (!userActive()) { reject(new Error("ade.reply works only in answer to a click or a key press.")); return; }
+        replySeq += 1;
+        var id = "r" + replySeq;
+        pendingReplies[id] = { resolve: resolve, reject: reject, text: value };
+        post("reply", { id: id, text: value });
+      });
+    },
     /** Open an ade:// link in ADE or an http(s) page in ADE's browser. Needs a click in the scene. */
     open: function (url) { post("open", { url: String(url) }); },
     ready: function () { post("ready", { height: measure() }); },
@@ -173,6 +288,8 @@ const SCENE_SDK_SOURCE = `
       emitLocal("theme", ade.theme);
       return;
     }
+    if (msg.type === "picked") { onPicked(msg.payload); wake(1500); return; }
+    if (msg.type === "answered") { onAnswered(msg.payload); wake(1500); return; }
     if (msg.type === "data") { ade.data = msg.payload; wake(1500); }
     emitLocal(msg.type, msg.payload);
   });
@@ -188,6 +305,28 @@ const SCENE_SDK_SOURCE = `
     event.preventDefault();
     post("open", { url: href });
   }, true);
+
+  // Asking without script: a click on a data-reply control puts its
+  // data-reply text (or its label) in the prompt box, and the submit button of
+  // a data-reply form puts the form's named fields there. The form is read on
+  // the button's click, not on "submit": the sandbox has no allow-forms, so a
+  // submit event never fires here. Enter in a field clicks the form's default
+  // button, so it works too.
+  document.addEventListener("click", function (event) {
+    var target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+    var submitter = target.closest("button, input[type=submit]");
+    var form = submitter && submitter.type === "submit" ? submitter.form : null;
+    if (form && form.hasAttribute("data-reply")) {
+      event.preventDefault();
+      if (typeof form.reportValidity === "function" && !form.reportValidity()) return;
+      ade.reply(formText(form)).then(function () {}, function () {});
+      return;
+    }
+    var control = target.closest("[data-reply]");
+    if (!control || control.tagName === "FORM" || control.disabled) return;
+    ade.reply(replyTextOf(control)).then(function () {}, function () {});
+  });
 
   // Blocked requests are the most common silent failure; say what was blocked.
   var policyReports = 0;
@@ -496,6 +635,20 @@ ${variables}
 }
 a { color: var(--accent); }
 code, pre, kbd, samp { font-family: var(--font-mono); }
+button, input, select, textarea {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+}
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--fg) 32%, transparent); }
+button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 0.5; }
+:is(button, input, select, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input[type="checkbox"], input[type="radio"], input[type="range"] { padding: 0; accent-color: var(--accent); }
+[aria-pressed="true"], [aria-pressed="true"]:disabled { opacity: 1; border-color: var(--accent); color: var(--accent); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg) 18%, transparent); border-radius: 999px; }
 ::-webkit-scrollbar-track { background: transparent; }

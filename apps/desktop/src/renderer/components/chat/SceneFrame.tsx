@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowsOutSimple, Camera, Sparkle, WarningCircle } from "@phosphor-icons/react";
 
 import { buildSceneDocument } from "../../../shared/chatSceneDocument";
@@ -76,6 +76,8 @@ const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 960;
 /** The least time between two links a scene may open. */
 const SCENE_OPEN_MIN_INTERVAL_MS = 800;
+/** A floor between replies, so a scene that loops cannot churn the prompt box. */
+const SCENE_REPLY_MIN_INTERVAL_MS = 150;
 
 /** Every whole http(s) URL written in a scene's source. */
 function webUrlsIn(source: string): Set<string> {
@@ -123,6 +125,11 @@ export type SceneFrameProps = {
    * omitting a prop.
    */
   scopeKey: string | null;
+  /**
+   * The reader's message that followed this scene's row, when there is one:
+   * the scene is answered and its reply controls go inert.
+   */
+  answeredText?: string | null;
   onEmit?: (name: string, payload: unknown) => void;
   /**
    * `expanded` fills its container, always runs, and takes no still: it is the
@@ -131,11 +138,28 @@ export type SceneFrameProps = {
   variant?: "inline" | "expanded";
 };
 
+/**
+ * How a scene's `ade.reply` reaches the prompt box: the pane that owns the
+ * composer provides it, and a scene with none above it (a subagent's
+ * transcript, a preview) cannot reply. Context rather than a prop, so the
+ * transcript's row memos never see it.
+ */
+export const SceneReplyContext = createContext<((text: string) => void) | null>(null);
+
+/**
+ * The reader's message that followed each scene row, by row identity (the
+ * `sceneScopeKey` a row carries). A scene with an entry has been answered and
+ * stops asking. Read from the transcript, so it holds across reloads, windows
+ * and machines.
+ */
+export const SceneAnswerContext = createContext<ReadonlyMap<string, string> | null>(null);
+
 export function SceneFrame({
   source,
   live = false,
   streaming = false,
   scopeKey,
+  answeredText = null,
   onEmit,
   variant = "inline",
 }: SceneFrameProps) {
@@ -345,17 +369,22 @@ export function SceneFrame({
    * ADE navigates, or the page opens in ADE's browser.
    */
   const lastOpenRef = useRef(0);
+  const lastReplyRef = useRef(0);
+  const replyToComposer = useContext(SceneReplyContext);
+  /** The user just clicked or pressed a key inside this frame. */
+  const framePressed = useCallback(() => {
+    const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+    return frameRef.current !== null
+      && document.activeElement === frameRef.current
+      && (activation ? activation.isActive : true);
+  }, []);
   const latestDataRef = useRef<SceneDataPayload | null>(null);
   // Whole URLs only: a substring match would let a scene open any prefix of a
   // URL it was written with, and pick which one, to spell out its data.
   const writtenUrls = useMemo(() => webUrlsIn(source), [source]);
   const openFromScene = useCallback((url: string) => {
     const now = Date.now();
-    const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
-    const pressed = frameRef.current !== null
-      && document.activeElement === frameRef.current
-      && (activation ? activation.isActive : true);
-    if (!pressed || now - lastOpenRef.current < SCENE_OPEN_MIN_INTERVAL_MS) return;
+    if (!framePressed() || now - lastOpenRef.current < SCENE_OPEN_MIN_INTERVAL_MS) return;
     lastOpenRef.current = now;
     const deeplink = parseDeeplink(url);
     if (deeplink.ok) {
@@ -375,7 +404,26 @@ export function SceneFrame({
       return;
     }
     setSceneError("A scene can open ADE links (ade://) and web pages only.");
-  }, [failed, parsed, writtenUrls, pin, laneId]);
+  }, [failed, parsed, writtenUrls, pin, laneId, framePressed]);
+
+  /**
+   * A scene's reply goes into the prompt box as a draft, under the rule links
+   * follow: only right after a click or a key press inside the frame. Nothing
+   * is sent to the agent here; the reader sends the draft themselves.
+   */
+  const replyFromScene = useCallback((id: string, text: string) => {
+    const refuse = (error: string) => postToFrame({ type: "picked", payload: { id, ok: false, error } });
+    if (!replyToComposer) { refuse("This view has no prompt box to reply in."); return; }
+    if (answeredText !== null) { refuse("The reader already answered this scene."); return; }
+    const now = Date.now();
+    if (!framePressed() || now - lastReplyRef.current < SCENE_REPLY_MIN_INTERVAL_MS) {
+      refuse("A scene replies only in answer to a click or a key press.");
+      return;
+    }
+    lastReplyRef.current = now;
+    replyToComposer(text);
+    postToFrame({ type: "picked", payload: { id, ok: true } });
+  }, [replyToComposer, answeredText, framePressed, postToFrame]);
 
   // Only messages from this frame's own contentWindow are considered, every one
   // is shape-checked before it reaches state, and every one must name the
@@ -401,6 +449,10 @@ export function SceneFrame({
         openFromScene(message.payload.url);
         return;
       }
+      if (message.type === "reply") {
+        replyFromScene(message.payload.id, message.payload.text);
+        return;
+      }
       if (message.payload.height) {
         const next = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, message.payload.height));
         setHeight(next);
@@ -416,7 +468,7 @@ export function SceneFrame({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [onEmit, scopeKey, openFromScene, advanceStage]);
+  }, [onEmit, scopeKey, openFromScene, replyFromScene, advanceStage]);
 
   // Live ADE data, for a scene that asked for it, while its frame is up.
   const sendData = useCallback((payload: SceneDataPayload) => {
@@ -440,6 +492,11 @@ export function SceneFrame({
   useEffect(() => {
     if (ready && latestDataRef.current) postToFrame({ type: "data", payload: latestDataRef.current });
   }, [ready, postToFrame]);
+  // The reader's message follows this scene in the transcript: tell the frame
+  // each time it comes up, and the moment the message arrives.
+  useEffect(() => {
+    if (ready && answeredText !== null) postToFrame({ type: "answered", payload: { text: answeredText } });
+  }, [ready, answeredText, postToFrame]);
 
   // A different scene in the same mounted frame (its source swapped) owns none
   // of the previous scene's picture or failure.
@@ -822,7 +879,7 @@ export function SceneFrame({
           scrollBody={false}
           testId="chat-scene-dialog"
         >
-          <SceneFrame source={source} scopeKey={null} onEmit={onEmit} variant="expanded" />
+          <SceneFrame source={source} scopeKey={null} answeredText={answeredText} onEmit={onEmit} variant="expanded" />
         </Dialog>
       ) : null}
     </div>

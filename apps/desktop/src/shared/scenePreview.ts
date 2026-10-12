@@ -107,7 +107,7 @@ export function lintSceneSource(source: string): ScenePreviewProblem[] {
     add("Storage and cookies throw in a sandboxed scene. Keep state in variables.");
   }
   if (/\b(?:alert|confirm|prompt)\s*\(/.test(source)) {
-    add("alert/confirm/prompt are blocked. A scene shows; it never asks (use a mosaic card to ask).");
+    add("alert/confirm/prompt are blocked. To ask, use a data-reply button or form, or ade.reply(text).");
   }
   // `var` anywhere in a top-level script is global; let/const only at the top.
   const shadow = /\bvar\s+(top|parent|opener|frames|self)\b/.exec(source)

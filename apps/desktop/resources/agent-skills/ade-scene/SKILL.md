@@ -1,6 +1,6 @@
 ---
 name: ade-scene
-description: Use this skill when showing something would beat describing it — status across many items, a number that changed, a comparison, a timeline, a pipeline, a distribution, ADE's own lanes, chats or PRs. Emit a fenced `scene` block of ordinary HTML, CSS and JS and ADE renders it as a live, interactive view inside the transcript. Check it first with `ade scene preview`. Use ade-mosaic instead when you need an ANSWER from the user.
+description: Use this skill when showing something would beat describing it — status across many items, a number that changed, a comparison, a timeline, a pipeline, a distribution, ADE's own lanes, chats or PRs — or when you want the user to pick an option or fill a small form. Emit a fenced `scene` block of ordinary HTML, CSS and JS and ADE renders it as a live, interactive view inside the transcript; its buttons and forms can put a ready reply in the user's prompt box. Check it first with `ade scene preview`.
 ---
 
 # ADE scenes
@@ -11,9 +11,10 @@ inline in your reply, on the reply's own text column and in ADE's font and
 colors. You write real HTML, CSS and JavaScript — there is no schema and no
 component list to stay inside.
 
-A scene **shows**. A mosaic **asks**. Never draw your own Approve button: ADE has
-native surfaces for permission, and a card that approves itself is not a
-confirmation. Reach for `ade-mosaic` whenever you need a decision back.
+A scene **shows**, and it can **ask**: a button or a small form in it puts a
+ready reply in the user's prompt box (see "Asking"). The user can add to it,
+and sends it themselves. That reply is a chat message, never a permission. ADE
+has native surfaces for approvals, and a scene never stands in for one.
 
 ## Decide first: does this reply need one?
 
@@ -26,7 +27,7 @@ comparison of many items; a trend or distribution; anything a reader would
 want to hover, zoom or click through.
 
 Bad: one number or one fact (say it), a short answer, a paragraph (write it),
-a list a bullet list handles, anything you need answered (use `ade-mosaic`),
+a list a bullet list handles, a yes/no question (ask it in a sentence),
 or a wall of text in a box (that is just text, further away). When unsure,
 skip it.
 
@@ -81,6 +82,55 @@ No padding is added around your markup: content starts on the reply's left
 edge. Draw your own card (`background: var(--surface); border: 1px solid
 var(--border); border-radius: 10px`) when you want one.
 
+## Asking
+
+Give the user buttons or a small form when the choice is clearer seen than
+described: a few options with a picture or a table next to them, several
+settings at once. A click writes a reply into the user's prompt box. Nothing
+is sent: the user can add detail, change it, pick another option, and then
+send. Their message is your answer, so read it as written.
+
+A button: `data-reply` holds the reply it writes (without a value, the
+button's own label is used).
+
+```html
+<button data-reply="Use option A: one table per tenant">Option A</button>
+<button data-reply="Use option B: a shared table">Option B</button>
+```
+
+A form: every named field becomes a `- Label: value` line under the form's
+`data-reply` text.
+
+```html
+<form data-reply="Release settings">
+  <label>Channel <select name="channel"><option>beta</option><option>stable</option></select></label>
+  <label>Rollout % <input name="rollout" type="number" value="25" min="5" max="100"></label>
+  <label><input type="checkbox" name="targets" value="mac" checked> mac</label>
+  <label><input type="checkbox" name="targets" value="ios"> ios</label>
+  <button>Use these</button>
+</form>
+```
+
+From script: `ade.reply(text)` returns a promise that resolves when the text
+is in the prompt box.
+
+- A reply works only in answer to the user's click or key press in the scene.
+  A timer, a load handler or a loop cannot write to the prompt box.
+- The picked button is marked, and picking another one swaps the reply. Write
+  each `data-reply` as a full sentence that reads well as the user's message.
+- Once the user sends a message after the scene, the scene is **answered**:
+  every reply control is disabled, the options their message names stay
+  marked, `ade.answered` holds their message, and `ade.on("answered", fn)`
+  fires, so you can redraw.
+- `button`, `input`, `select` and `textarea` already look like ADE. Add layout,
+  not a restyle.
+- Say the question in your reply text too. The terminal and the phone show the
+  scene's title only, and the user can always answer by typing.
+- Do not ask for a secret in a scene, and do not present a button as an
+  approval of a tool call or a command. It writes words, nothing else.
+- `ade scene preview` cannot click, so check the layout there and keep the
+  reply logic to `data-reply`.
+
 ## What the frame gives you
 
 `window.ade` is injected before your code runs:
@@ -92,6 +142,10 @@ var(--border); border-radius: 10px`) when you want one.
 | `ade.on("theme", fn)` | Called when the user switches ADE's theme. The CSS variables already changed. |
 | `ade.theme` | ADE's resolved palette. Also available as CSS variables. |
 | `ade.open(url)` | Opens an `ade://` deeplink in ADE, or an http(s) page in ADE's browser. Plain `<a href>` links do the same. Works only in answer to a click in the scene. |
+| `ade.reply(text)` | Puts `text` in the user's prompt box as a draft reply. Only in answer to a click or key press; nothing is sent. Returns a promise. |
+| `ade.answered` | The user's message that followed this scene, or `null` while it is open. |
+| `ade.on("picked", fn)` | Called with the text each time a reply lands in the prompt box. |
+| `ade.on("answered", fn)` | Called with the user's message once they answered. |
 | `ade.reducedMotion` | True when the user asked for less motion. |
 | `ade.restored` | True when the scene already played once and is being brought back; `ade.animate` and `ade.countUp` skip to their end state then. |
 | `ade.animate(target, keyframes, options)` | Web Animations, collapsed to the end state under reduced motion or restore. |
@@ -172,7 +226,7 @@ so the preview shows real lanes, chats and PRs.
   sandboxed frame those are the window's own, and touching them throws.
   `var top = []` breaks the whole script. Rename them.
 - **No access to ADE beyond the above.** Different origin, sandboxed without
-  `allow-same-origin`. `ade.open` and the data feed are the only bridges.
+  `allow-same-origin`. `ade.open`, `ade.reply` and the data feed are the only bridges.
 - **No external libraries.** They cannot be fetched. Native CSS animations,
   SVG, canvas and the Web Animations API are what you have, and they are enough.
 

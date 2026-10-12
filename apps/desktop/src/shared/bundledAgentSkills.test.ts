@@ -4,9 +4,9 @@
 // `adeBundledAgentSkills` had 11 — it omitted `ade-scene`, and since that array
 // is what renders the `Skills: ...` line in every provider's prompt, `ade-scene`
 // existed on disk and was invisible to every agent ADE has ever run. The
-// packaging roster had 9 — it omitted `ade-scene`, `ade-search` and
-// `ade-mosaic`, so three skills were never checked to exist in a packaged
-// build and could have stopped shipping without any gate noticing.
+// packaging roster omitted `ade-scene` and `ade-search`, so those skills were
+// never checked to exist in a packaged build and could have stopped shipping
+// without any gate noticing.
 //
 // Neither list can be derived from the directory at its own call site: the
 // guidance module is bundled into the renderer and has no filesystem, and the

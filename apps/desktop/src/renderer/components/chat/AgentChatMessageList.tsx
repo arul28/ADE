@@ -75,8 +75,9 @@ import { computerUseShownProofIds } from "../../../shared/computerUseActionPrese
 import { citedProofArtifactIds, PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
+import { SceneAnswerContext } from "./SceneFrame";
 import { latestScenePreviewOutput, readScenePreviewPath, ScenePreviewThumb } from "./ScenePreviewThumb";
-import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
+import { MarkdownBlock } from "./chatMarkdownBlock";
 import { splitChatOutputContextSegments } from "../../../shared/chatOutputContext";
 import {
   ChatContextSegments,
@@ -2469,6 +2470,20 @@ function dispatchAdeCardAction(
   }
 }
 
+/**
+ * Whether a text event holds a ```scene fence. Remembered per event object and
+ * text length, so a settled row is scanned once and a row still growing is
+ * scanned again.
+ */
+const sceneFenceByTextEvent = new WeakMap<object, { length: number; has: boolean }>();
+function textHasSceneFence(event: { text: string }): boolean {
+  const known = sceneFenceByTextEvent.get(event);
+  if (known && known.length === event.text.length) return known.has;
+  const has = event.text.includes("```scene");
+  sceneFenceByTextEvent.set(event, { length: event.text.length, has });
+  return has;
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: SpawnedChatProviderProps & {
@@ -2504,7 +2519,6 @@ function renderEvent(
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
     turnDiffSummaries?: TurnDiffSummary[];
-    mosaic?: MosaicRenderContext;
     /** Scroll a row into view by its stable render key (subagent jump affordances). */
     onScrollToRowKey?: (rowKey: string) => void;
     assistantTurnCopy?: { text: string } | null;
@@ -2848,8 +2862,6 @@ function renderEvent(
             text={event.text}
             paced={options?.pacedTextReveal === true}
             onOpenWorkspacePath={options?.onOpenWorkspacePath}
-            mosaic={options?.mosaic}
-            mosaicScopeKey={envelope.key}
             // NOT the render key. A scene's still is filed on disk under this
             // and looked up again on every reopen, and the render key carries
             // the event's index in the events array — so prepending an older
@@ -4739,7 +4751,6 @@ type EventRowProps = SpawnedChatProviderProps & {
   laneId?: string | null;
   sessionId?: string | null;
   runtimeName?: string | null;
-  mosaic?: MosaicRenderContext;
   anchored?: boolean;
   onScrollToRowKey?: (rowKey: string) => void;
   assistantTurnCopy?: { text: string } | null;
@@ -4821,7 +4832,6 @@ const EventRow = React.memo(function EventRow({
   sessionId,
   runtimeName,
   runtimePin,
-  mosaic,
   anchored,
   onScrollToRowKey,
   assistantTurnCopy,
@@ -4940,7 +4950,6 @@ const EventRow = React.memo(function EventRow({
             chatInfoHostAvailable,
             onRewindFiles,
             turnDiffSummaries,
-            mosaic,
             onScrollToRowKey,
             assistantTurnCopy,
             interimText,
@@ -5464,7 +5473,6 @@ function AgentChatMessageListMain({
   backfillOlderHistory = false,
   onRetryOlderHistory,
   onReturnToLatest,
-  mosaic,
   scrollToRowKeyRequest,
   unreadSince = null,
   scrollToPromptHistoryRequest,
@@ -5566,8 +5574,6 @@ function AgentChatMessageListMain({
   onRetryOlderHistory?: () => void;
   /** Called when a detached historical window returns to the live transcript tail. */
   onReturnToLatest?: () => void;
-  /** Present only for Claude-family sessions; enables interactive mosaic cards. */
-  mosaic?: MosaicRenderContext;
   /** Imperative jump to a row key: reveals the folds hiding it, then scrolls to it. */
   scrollToRowKeyRequest?: { key: string; requestId: number } | null;
   /**
@@ -6125,6 +6131,30 @@ function AgentChatMessageListMain({
     },
     [scheduledWorkAtTurnEnd, turnEndLiveRowKeys],
   );
+  // Which scene rows the reader has answered: the message of theirs that
+  // follows the row. Walked from the end so a row after the last user message
+  // costs nothing, and equal contents keep one identity, so a streaming delta
+  // never re-renders a scene.
+  const sceneAnswers = useStableIdentity(useMemo(() => {
+    const answers = new Map<string, string>();
+    let nextUserText: string | null = null;
+    for (let index = presentedRows.length - 1; index >= 0; index -= 1) {
+      const row = presentedRows[index]!;
+      const event = row.event;
+      if (event.type === "user_message") {
+        // A message ADE wrote for the user (a board move, a PR watch wake) is
+        // not the reader answering.
+        if (!event.metadata?.boardMove && !event.metadata?.prWatchWake) {
+          nextUserText = event.displayText?.trim() || event.text;
+        }
+        continue;
+      }
+      if (nextUserText !== null && event.type === "text" && row.sceneScopeKey && textHasSceneFence(event)) {
+        answers.set(row.sceneScopeKey, nextUserText);
+      }
+    }
+    return answers;
+  }, [presentedRows]), sameMapContents);
   // A card drawn inside a grid row answers to that row: jumps, highlights, and
   // event anchors that name the card land on its grid.
   const subagentGridKeyByMemberKey = useMemo(
@@ -8048,7 +8078,6 @@ function AgentChatMessageListMain({
           sessionId={sessionId}
           runtimeName={runtimeName}
           runtimePin={runtimePin}
-          mosaic={mosaic}
           anchored={anchored}
           onScrollToRowKey={rowScrollToRowKey}
           assistantTurnCopy={assistantTurnCopy}
@@ -8123,7 +8152,6 @@ function AgentChatMessageListMain({
         sessionId={sessionId}
         runtimeName={runtimeName}
           runtimePin={runtimePin}
-        mosaic={mosaic}
         anchored={anchored}
         onScrollToRowKey={rowScrollToRowKey}
         assistantTurnCopy={assistantTurnCopy}
@@ -8140,7 +8168,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -8205,6 +8233,7 @@ function AgentChatMessageListMain({
   return (
     <ChatWorkspacePathProvider value={workspacePaths}>
     <ProofCitationProvider artifacts={proofArtifacts} allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}>
+    <SceneAnswerContext.Provider value={sceneAnswers}>
     <div
       ref={listRootRef}
       data-chat-message-list-root=""
@@ -8317,6 +8346,7 @@ function AgentChatMessageListMain({
         <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} onCreateIssue={createIssueFromSelection} />
       )}
     </div>
+    </SceneAnswerContext.Provider>
     </ProofCitationProvider>
     </ChatWorkspacePathProvider>
   );
