@@ -126,6 +126,31 @@ describe("discoverClaudePlugins", () => {
     ]);
   });
 
+  it.each([
+    ["a hooks module", JSON.stringify({ modules: ["./register.tsx"] }), true],
+    ["settings hooks only", JSON.stringify({ hooks: { PostToolUse: [] } }), undefined],
+    ["an empty module list", JSON.stringify({ modules: [] }), undefined],
+    ["a module list of non-paths", JSON.stringify({ modules: [null, ""] }), undefined],
+    ["a hooks file that is not JSON", "{ modules: [", undefined],
+    ["no hooks file", null, undefined],
+  ])("marks a plugin as a mod only when it names a hooks module: %s", (_name, hooksJson, isMod) => {
+    const pluginRoot = path.join(tmpRoot, ".claude", "plugins", "team-tools", "meter");
+    fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "meter" }));
+    if (hooksJson !== null) {
+      fs.mkdirSync(path.join(pluginRoot, "hooks"), { recursive: true });
+      fs.writeFileSync(path.join(pluginRoot, "hooks", "hooks.json"), hooksJson);
+    }
+    fs.writeFileSync(path.join(tmpRoot, ".claude", "settings.json"), JSON.stringify({
+      enabledPlugins: { "meter@local": true },
+    }));
+
+    const [plugin, ...others] = discoverClaudePlugins(tmpRoot);
+    expect(others).toEqual([]);
+    expect(plugin?.name).toBe("meter");
+    expect(plugin?.isMod).toBe(isMod);
+  });
+
   it("ignores plugins that are only present in the user marketplace cache", () => {
     const pluginRoot = path.join(
       homeRoot,

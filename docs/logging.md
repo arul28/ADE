@@ -186,6 +186,25 @@ cleanup and a per-paste failure, so they stay local: the connection flaps and
 the sweeps have no user action behind them, and a paste failure's reason is
 free text that cannot cross the analytics boundary.
 
+Claude mod UI (what Claude Code plugins draw in a chat) writes three local
+debug lines and no PostHog event: `agent_chat.claude_plugin_ui_render_failed`
+(session id, render site, error message), `agent_chat.claude_plugin_ui_action_failed`
+(session id, action kind, error message) and
+`agent_chat.claude_plugin_ui_ingest_failed` (session id, message subtype, error
+message). They exist because the channel is private to Claude Code and every
+failure in it is swallowed; without them a blank dock has nothing to read.
+
+**No product-analytics event accompanies the feature, deliberately.** What a
+mod draws is a third party's text and controls, so a press, a typed value, a
+status line or a toast is plugin content that cannot cross the boundary, and a
+redraw is a high-frequency mechanic. The one user decision is the setting
+(`ai.chat.claudePluginUiEnabled`), and it is saved through the generic
+`ai.updateConfig` write, which has no per-key owner: the same reason the
+compaction-point setting is not instrumented. The one-time offer banner is a
+prompt, not an outcome. If a dashboard later needs to know how many
+installations turn mod UI on, add one `ade_feature_used` fact at a per-key
+owner then.
+
 The capture gesture writes its own local structured line family, and it is not
 a PostHog event. `capture.*` is the helper supervisor's family
 (`helper_started`, `helper_spawn_failed`, `helper_exited`, `helper_error`,
