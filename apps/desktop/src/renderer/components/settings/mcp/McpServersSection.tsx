@@ -16,6 +16,7 @@ import { Banner } from "../../ui/notice";
 import { SettingsToggle } from "../primitives/SettingsControls";
 import { ModernPage, ModernRow, ModernRows, ModernSection } from "../primitives/SettingsModern";
 import { SettingsColumn } from "../primitives/SettingsRows";
+import { McpSecretWarnings, mcpServerHoldsPlainSecret } from "./McpSecretWarnings";
 import { McpServerDialog } from "./McpServerDialog";
 import { missingMcpSecrets, useMcpRegistry, type McpRegistryApi, type McpRegistryLevel } from "./useMcpRegistry";
 import "./mcpServers.css";
@@ -99,7 +100,13 @@ export function McpServersSection() {
 
   const handleImport = useCallback(async (server: McpFoundServer) => {
     if (await run(`found:${server.name}`, `Could not import ${server.name}`, () => registry.importFound(server.name))) {
-      showToast({ tone: "success", title: `Imported ${server.name}`, message: "New chats get it from now on." });
+      showToast(mcpServerHoldsPlainSecret(server)
+        ? {
+            tone: "warning",
+            title: `Imported ${server.name}`,
+            message: "Its arguments or URL look like they hold a secret. That part syncs as plain text. Edit it to move the secret.",
+          }
+        : { tone: "success", title: `Imported ${server.name}`, message: "New chats get it from now on." });
     }
   }, [registry, run]);
 
@@ -156,7 +163,7 @@ export function McpServersSection() {
                   server={server}
                   registry={registry}
                   projectName={projectName}
-                  busy={busy === server.name || !ready}
+                  busy={busy === server.name}
                   readOnly={!ready}
                   onLevel={(level, on) => void run(server.name, `Could not change ${server.name}`, () => registry.setLevel(server.name, level, on))}
                   onSecret={(field, name, value) => run(server.name, `Could not save ${name}`, () => registry.setSecret(server.name, field, name, value))}
@@ -204,6 +211,7 @@ export function McpServersSection() {
                     </span>
                   </div>
                   <div className="ade-mcp-target" title={targetLine(server)}>{targetLine(server)}</div>
+                  <McpSecretWarnings server={server} />
                 </div>
               ))}
             </div>
@@ -303,21 +311,24 @@ function ServerRow({
           label="Your account"
           hint="Every computer you sign in on"
           checked={server.enabled}
-          disabled={busy}
+          busy={busy}
+          unavailable={readOnly}
           onChange={(on) => onLevel("account", on)}
         />
         <LevelSwitch
           label="This computer"
           hint={hasComputer ? "Only this computer" : "This computer has no sync identity yet"}
           checked={!registry.off.machine.includes(server.name)}
-          disabled={busy || !hasComputer}
+          busy={busy}
+          unavailable={readOnly || !hasComputer}
           onChange={(on) => onLevel("machine", on)}
         />
         <LevelSwitch
           label={projectName ? `This project (${projectName})` : "This project"}
           hint={hasProject ? "This repository, on every computer" : "Needs an open project with a git remote"}
           checked={hasProject && !registry.off.project.includes(server.name)}
-          disabled={busy || !hasProject}
+          busy={busy}
+          unavailable={readOnly || !hasProject}
           onChange={(on) => onLevel("project", on)}
         />
       </div>
@@ -334,7 +345,7 @@ function ServerRow({
         <MissingSecret
           key={`${secret.field}:${secret.name}`}
           name={secret.name}
-          disabled={busy}
+          disabled={busy || readOnly}
           onSave={(value) => onSecret(secret.field, secret.name, value)}
         />
       ))}
@@ -346,18 +357,22 @@ function LevelSwitch({
   label,
   hint,
   checked,
-  disabled,
+  busy,
+  unavailable,
   onChange,
 }: {
   label: string;
   hint: string;
   checked: boolean;
-  disabled: boolean;
+  /** A change to this row is being saved: not pressable, but not dimmed, so the row does not flicker. */
+  busy: boolean;
+  /** This level cannot be changed here at all. Dimmed, label included. */
+  unavailable: boolean;
   onChange: (on: boolean) => void;
 }) {
   return (
-    <span className="ade-mcp-level" title={hint}>
-      <SettingsToggle checked={checked} disabled={disabled} onChange={onChange} label={label} />
+    <span className="ade-mcp-level" title={hint} data-disabled={unavailable ? "true" : undefined}>
+      <SettingsToggle checked={checked} disabled={unavailable} onChange={(on) => { if (!busy) onChange(on); }} label={label} />
       {label}
     </span>
   );

@@ -117,3 +117,99 @@ export function parseMcpServerSnippet(text: string): McpServerDefinition[] {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Secrets in the wrong place
+// ---------------------------------------------------------------------------
+
+/**
+ * Something in a server's arguments or URL that looks like a secret.
+ *
+ * The registry keeps env and header VALUES in the vault, but arguments and the
+ * URL are part of the list and sync as plain text. A token passed as
+ * `--api-key sk-…` or `?token=…` therefore lands in the readable row. This is a
+ * guess from the text's shape, so it only ever warns; it never blocks a save.
+ *
+ * - `value`: it looks like the secret itself.
+ * - `reference`: a `${NAME}` placeholder. Some provider CLIs fill those in
+ *   from the environment; ADE hands the text over as written.
+ */
+export type McpPlainTextSecretFinding = {
+  where: "args" | "url";
+  kind: "value" | "reference";
+  /** For a `reference`, the placeholder as written (`${NAME}`). Never a secret value. */
+  reference?: string;
+};
+
+const ENV_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}/;
+const SECRET_WORD = /(?:^|[-_.])(?:api[-_]?key|key|token|secret|password|passwd|pwd|auth|authorization|bearer|signature|sig|credential|credentials)$/i;
+const KNOWN_TOKEN_PREFIX = /^(?:sk-|sk_|pk_|rk_|ghp_|gho_|ghu_|ghs_|github_pat_|glpat-|xox[abprs]-|eyJ|AKIA|AIza|ya29\.|lin_api_|phc_|phx_)[A-Za-z0-9_\-.]{8,}/;
+
+/** A long run of letters and digits with no word shape: what a generated token looks like. */
+function looksLikeToken(text: string): boolean {
+  const value = text.trim();
+  if (KNOWN_TOKEN_PREFIX.test(value)) return true;
+  if (value.length < 24 || !/^[A-Za-z0-9_\-+=.]+$/.test(value)) return false;
+  // A file name, a package name or a version has dots and few digits; a token
+  // mixes letters and digits throughout.
+  const digits = value.replace(/[^0-9]/g, "").length;
+  const letters = value.replace(/[^A-Za-z]/g, "").length;
+  return digits >= 4 && letters >= 4;
+}
+
+function urlHoldsSecret(text: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return false;
+  }
+  if (!/^https?:$/i.test(url.protocol)) return false;
+  if (url.password || (url.username && looksLikeToken(url.username))) return true;
+  for (const [name, value] of url.searchParams) {
+    if (!value || ENV_REFERENCE.test(value)) continue;
+    if (SECRET_WORD.test(name) || looksLikeToken(value)) return true;
+  }
+  return url.pathname.split("/").some((segment) => looksLikeToken(decodeURIComponent(segment)));
+}
+
+/**
+ * What in this server's arguments and URL looks like a secret. Empty when
+ * nothing does. At most one finding per place and kind, so the page shows one
+ * line each.
+ */
+export function mcpPlainTextSecretFindings(
+  server: { args?: readonly string[]; url?: string },
+): McpPlainTextSecretFinding[] {
+  const findings: McpPlainTextSecretFinding[] = [];
+  const add = (finding: McpPlainTextSecretFinding): void => {
+    if (!findings.some((entry) => entry.where === finding.where && entry.kind === finding.kind)) findings.push(finding);
+  };
+  const args = server.args ?? [];
+  args.forEach((arg, index) => {
+    const reference = arg.match(ENV_REFERENCE);
+    if (reference) add({ where: "args", kind: "reference", reference: reference[0] });
+    const withoutReferences = arg.replace(new RegExp(ENV_REFERENCE.source, "g"), "");
+    // `Authorization: Bearer abc…`, with the token in this argument.
+    if (/\bBearer\s+[^\s$]{8,}/i.test(withoutReferences)) add({ where: "args", kind: "value" });
+    // `--api-key=abc…`, or `--api-key` followed by its value.
+    const flag = arg.match(/^--?([A-Za-z][A-Za-z0-9_-]*)(?:=(.*))?$/);
+    if (flag && SECRET_WORD.test(flag[1]!)) {
+      const value = flag[2] ?? args[index + 1] ?? "";
+      if (value && !value.startsWith("-") && !ENV_REFERENCE.test(value)) add({ where: "args", kind: "value" });
+    }
+    if (/^https?:\/\//i.test(arg) ? urlHoldsSecret(arg) : looksLikeToken(withoutReferences)) add({ where: "args", kind: "value" });
+    // `Header: value` and `NAME=value` pairs passed as one argument.
+    const pair = withoutReferences.match(/^([A-Za-z][A-Za-z0-9_-]*)\s*[:=]\s*(.+)$/);
+    if (pair && (looksLikeToken(pair[2]!) || (SECRET_WORD.test(pair[1]!) && pair[2]!.trim().length >= 8))) {
+      add({ where: "args", kind: "value" });
+    }
+  });
+  const url = server.url?.trim() ?? "";
+  if (url) {
+    const reference = url.match(ENV_REFERENCE);
+    if (reference) add({ where: "url", kind: "reference", reference: reference[0] });
+    if (urlHoldsSecret(url)) add({ where: "url", kind: "value" });
+  }
+  return findings;
+}

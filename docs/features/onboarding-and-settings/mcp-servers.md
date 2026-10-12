@@ -31,9 +31,17 @@ Two things are not secrets in this model and do sync in the list as written: a
 command's arguments, and a URL. A token passed as an argument or in a query
 string is stored in the list. Put it in an env variable or a header instead.
 
+The page warns about this, and never blocks: the add and edit dialog and each
+found server show a line when an argument or the URL looks like it holds a
+secret (a long token-like string, `Bearer ...`, a `--token`-style flag with a
+value, `key=` or `token=` in a query string), and when one holds a `${NAME}`
+reference, which ADE hands over as written and does not fill in. The check is
+`mcpPlainTextSecretFindings` in `shared/mcpServerImport.ts`; it reads the
+text's shape, so it can miss a secret and can flag a harmless id.
+
 A server's name is its key. The vault items, the off lists and the tool names
 agents see all hang off it, so the name is set when the server is added and is
-not editable afterwards.
+not editable afterwards. The dialog says so; renaming is remove and add again.
 
 ## The page
 
@@ -68,6 +76,7 @@ When the background service cannot be asked (it is restarting, or a dev brain
 runs with `--no-sync` and has no account store), the page shows this
 computer's last saved copy of the list, read off the same settings cache a
 chat launch reads, with a banner. Nothing can be changed until it answers.
+The switches and their labels are dimmed while they cannot be used.
 
 ### Add and edit
 

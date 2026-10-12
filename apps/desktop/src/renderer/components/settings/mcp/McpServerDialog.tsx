@@ -13,6 +13,7 @@ import {
 import { parseMcpServerSnippet, type McpServerDefinition } from "../../../../shared/mcpServerImport";
 import { Dialog } from "../../ui/dialog";
 import { SettingsSegmented } from "../primitives/SettingsControls";
+import { McpSecretWarnings } from "./McpSecretWarnings";
 import type { McpSecretValue } from "./useMcpRegistry";
 
 /**
@@ -108,6 +109,10 @@ export function McpServerDialog({
   const isCommand = form.transport === "stdio";
   const secretField: McpSecretField = isCommand ? "env" : "header";
   const name = form.name.trim();
+  const argList = useMemo(
+    () => form.argsText.split("\n").map((arg) => arg.trim()).filter(Boolean),
+    [form.argsText],
+  );
 
   const savedHere = (fieldName: string): boolean =>
     editing != null
@@ -152,7 +157,7 @@ export function McpServerDialog({
       name,
       transport: form.transport,
       command: form.command,
-      args: form.argsText.split("\n").map((arg) => arg.trim()).filter(Boolean),
+      args: argList,
       url: form.url,
       envNames: isCommand ? fields.map((field) => field.name) : [],
       headerNames: isCommand ? [] : fields.map((field) => field.name),
@@ -229,6 +234,11 @@ export function McpServerDialog({
             autoCorrect="off"
             onChange={(event) => patch({ name: event.target.value })}
           />
+          <p className="ade-modern-muted">
+            {editing
+              ? "The name can't be changed. To rename it, remove the server and add it again."
+              : "Agents see its tools under this name. It can't be changed later."}
+          </p>
         </div>
 
         <div className="ade-ap-field">
@@ -275,6 +285,7 @@ export function McpServerDialog({
                 value={form.argsText}
                 onChange={(event) => patch({ argsText: event.target.value })}
               />
+              <McpSecretWarnings server={{ transport: "stdio", args: argList }} where="args" />
             </div>
           </>
         ) : (
@@ -294,6 +305,7 @@ export function McpServerDialog({
             <p className="ade-modern-muted">
               If it asks you to sign in with a browser, each provider signs in itself on each computer.
             </p>
+            <McpSecretWarnings server={{ transport: form.transport, url: form.url }} where="url" />
           </div>
         )}
 

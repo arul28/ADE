@@ -37,6 +37,9 @@
 /* The three places a server can be switched off, side by side. */
 .ade-mcp-levels { display: flex; flex-wrap: wrap; gap: 8px 22px; }
 .ade-mcp-level { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--kit-text-2); }
+/* A switch that cannot be used right now: the shared toggle already halves its
+   own opacity, and dimming the pair takes the label with it. */
+.ade-mcp-level[data-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
 
 .ade-mcp-secret { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ade-mcp-secret > .ade-modern-field { flex: 1 1 160px; }
