@@ -105,5 +105,6 @@ export function findTargetIsElsewhere(scope: Element): boolean {
   const target = currentFindTarget();
   if (!target || scope.contains(target)) return false;
   const owner = closestFindScope(target);
-  return owner != null && owner !== scope && !scope.contains(owner);
+  // A parked owner is off screen: the user is nowhere, not elsewhere.
+  return owner != null && isLiveFindScope(owner) && owner !== scope && !scope.contains(owner);
 }

@@ -164,7 +164,8 @@ type DiffViewInput = {
 function resolveDiffView(input: DiffViewInput): DiffView {
   if (input.binary) return { kind: "binary", path: input.activePath };
   if (input.usesPatch) {
-    if (input.findExpandAll && input.patchFullFiles) {
+    // Not while Ignore whitespace hides a whitespace-only patch: the full files would show what the toggle hid.
+    if (input.findExpandAll && input.patchFullFiles && !input.filteredPatch?.whitespaceOnly) {
       return { kind: "files", oldFile: input.patchFullFiles.old, newFile: input.patchFullFiles.new };
     }
     if (input.filteredPatch) {

@@ -263,11 +263,16 @@ export const ChatFindLayer = memo(function ChatFindLayer({
   // A navigation asked for while the first count was still coming.
   useEffect(() => {
     const pendingStep = pendingStepRef.current;
-    if (pendingStep == null || matches.total === 0) return;
+    if (pendingStep == null) return;
+    if (matches.total === 0) {
+      // Counting finished with nothing: a match streamed in later must not move the view.
+      if (!partial) pendingStepRef.current = null;
+      return;
+    }
     pendingStepRef.current = null;
     if (pendingStep === "start") selectStart();
     else step(pendingStep);
-  }, [matches, selectStart, step]);
+  }, [matches, partial, selectStart, step]);
 
   // Keep the selection on the same words when matches move under it
   // (streaming, a retracted reply); drop it when its row lost every match.
