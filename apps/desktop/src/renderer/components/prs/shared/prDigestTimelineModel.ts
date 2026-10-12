@@ -12,8 +12,8 @@ import {
 } from "../../../../shared/prConversationDigest";
 
 /**
- * The Overview thread as triage: the description, a pinned Needs-attention
- * block, then one section per push. Inside a section each bot is one folded
+ * The Overview thread as triage: what needs the reader first (failing checks
+ * and open review threads), the description, then one section per push. Inside a section each bot is one folded
  * row; people and lifecycle events stay as full rows in time order.
  *
  * Built from the same `PrTimelineEvent[]` the old replay thread used, so every
@@ -24,7 +24,7 @@ type CommitPushEvent = Extract<PrTimelineEvent, { type: "commit_push" }>;
 
 export type DigestRenderItem =
   | { kind: "event"; id: string; event: PrTimelineEvent }
-  | { kind: "attention"; id: string; items: PrNeedsAttentionItem[] }
+  | { kind: "attention"; id: string; items: PrNeedsAttentionItem[]; failingChecks: string[] }
   | { kind: "push"; id: string; push: PrDigestPush; commits: CommitPushEvent[] }
   | { kind: "bot-group"; id: string; group: PrDigestBotGroup; events: PrTimelineEvent[] };
 
@@ -146,7 +146,10 @@ function isStoryEvent(event: PrTimelineEvent): boolean {
   }
 }
 
-export function buildDigestTimelineModel(events: PrTimelineEvent[]): DigestTimelineModel {
+export function buildDigestTimelineModel(
+  events: PrTimelineEvent[],
+  options: { /** Names of the checks that fail now. */ failingChecks?: readonly string[] } = {},
+): DigestTimelineModel {
   const sorted = [...events].sort((a, b) => ts(a.timestamp) - ts(b.timestamp));
   const eventsById = new Map(sorted.map((event) => [event.id, event] as const));
   const pushGroups = groupPushes(sorted);
@@ -154,11 +157,13 @@ export function buildDigestTimelineModel(events: PrTimelineEvent[]): DigestTimel
   const digest = buildPrConversationDigest({ pushes: pushGroups.map((group) => group.push), entries });
 
   const items: DigestRenderItem[] = [];
+  const failingChecks = [...(options.failingChecks ?? [])];
+  // What the reader must act on goes above what they read.
+  if (digest.needsAttention.length > 0 || failingChecks.length > 0) {
+    items.push({ kind: "attention", id: "digest:attention", items: digest.needsAttention, failingChecks });
+  }
   const description = sorted.find((event) => event.type === "description");
   if (description) items.push({ kind: "event", id: description.id, event: description });
-  if (digest.needsAttention.length > 0) {
-    items.push({ kind: "attention", id: "digest:attention", items: digest.needsAttention });
-  }
 
   const pushStarts = pushGroups.map((group) => ts(group.push.at));
   const storyBySection = new Map<number, PrTimelineEvent[]>();

@@ -27,7 +27,13 @@ import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef, type PrStateAction } from "./PrDetailTimelineRails";
 import { PrDetailHeader, type PrHeaderChecksNote, type UnmappedAffordance } from "./PrDetailHeader";
 import type { PrSwitcher } from "../shared/PrSwitcher";
+import { formatChatOutputContextBlock } from "../../../../shared/chatOutputContext";
+import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
+import { showToast } from "../../app/toast/toastStore";
+import { useChatRuntimeScope } from "../../chat/ChatRuntimeScope";
+import type { PrChatQuote } from "../shared/prMarkdownContext";
 import {
+  chatLabel,
   usePrChatHandoff,
   linkedPrChats,
   newestWorkChat,
@@ -1415,6 +1421,40 @@ export function PrDetailPane({
     chatHandoff({ laneId: pr.laneId, sessionId: linkedChats[0]?.sessionId ?? null, prompt });
   }, [chatHandoff, linkedChats, pr.laneId]);
 
+  /**
+   * "Add to chat" on a part of the PR: the quote waits in the chat's composer
+   * and the reader stays here, so they can collect several before they write.
+   * Inside a chat's tools panel that chat takes it; else the newest linked
+   * chat, the same rule the prompt hand-off uses. With no chat yet, a new lane
+   * chat opens with the quote in it.
+   */
+  const hostChatSessionId = useChatRuntimeScope().sessionId;
+  const addQuoteToChat = React.useCallback((quote: PrChatQuote) => {
+    if (!pr.laneId) return;
+    const block = formatChatOutputContextBlock(
+      quote.text,
+      `${quote.from} in pull request #${pr.githubPrNumber} "${pr.title}" (${pr.githubUrl})`,
+    );
+    if (!block) return;
+    const target = linkedChats.find((chat) => chat.sessionId === hostChatSessionId) ?? linkedChats[0] ?? null;
+    const sessionId = hostChatSessionId ?? target?.sessionId ?? null;
+    if (!sessionId) {
+      chatHandoff({ laneId: pr.laneId, sessionId: null, prompt: block });
+      return;
+    }
+    queueAgentChatDraftHandoff({ sessionId }, block, { collect: true });
+    // The chat beside this pane shows the quote arrive; no notice needed.
+    if (sessionId === hostChatSessionId) return;
+    const laneId = target?.laneId ?? pr.laneId;
+    showToast({
+      id: `pr-add-to-chat:${pr.id}`,
+      tone: "success",
+      title: `Added to ${target ? chatLabel(target) : "the chat"}`,
+      message: "It waits in the chat's message box.",
+      actions: [{ label: "Open chat", onClick: () => chatHandoff({ laneId, sessionId }) }],
+    });
+  }, [chatHandoff, hostChatSessionId, linkedChats, pr.githubPrNumber, pr.githubUrl, pr.id, pr.laneId, pr.title]);
+
   const handlePrStateAction = React.useCallback(async (action: PrStateAction) => {
     try {
       if (action === "ready_for_review") await window.ade.prs.setDraft({ prId: pr.id, draft: false }, ...onPin);
@@ -1569,6 +1609,7 @@ export function PrDetailPane({
             onReopen={handleReopenPr}
             onSubmitReview={handleSubmitReview}
             onHandPrompt={pr.laneId ? handPrPrompt : undefined}
+            onAddToChat={pr.laneId ? addQuoteToChat : undefined}
             onOpenPrFile={(path) => {
               setExpandedFile(path);
               setActiveTab("files");

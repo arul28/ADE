@@ -47,7 +47,7 @@ import { resolvePrNextStepFromStatus, type PrNextStepAction } from "../../../../
 import { isPrBotAuthor } from "../../../../shared/prBotIdentity";
 import { PR_DESCRIPTION_BOT_EVENT_PREFIX, splitPrBodyBotSections } from "../../../../shared/prBodyBotSections";
 import type { PrNeedsAttentionItem } from "../../../../shared/prConversationDigest";
-import { PrMarkdownEnvContext, type PrMarkdownEnv } from "../shared/prMarkdownContext";
+import { PrMarkdownEnvContext, type PrChatQuote, type PrMarkdownEnv } from "../shared/prMarkdownContext";
 import { usePrs } from "../state/PrsContext";
 
 /**
@@ -141,6 +141,8 @@ type Props = {
   onSubmitReview: (event: PrReviewEvent, body: string) => void;
   /** Put a prompt in the PR's chat (linked, else a new lane chat). Omitted without a lane. */
   onHandPrompt?: (prompt: string) => void;
+  /** Quote a part of this PR in its chat. Omitted without a lane. */
+  onAddToChat?: (quote: PrChatQuote) => void;
   /** Draft and auto-merge toggles from the Merge card. */
   onPrStateAction?: (action: PrStateAction) => Promise<void>;
   /** A file chip in the description: open that file's diff in the Files tab. */
@@ -683,6 +685,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       onReopen,
       onSubmitReview,
       onHandPrompt,
+      onAddToChat,
       onPrStateAction,
       onOpenPrFile,
     } = props;
@@ -854,7 +857,13 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       />
     );
 
-    const digestModel = useMemo(() => buildDigestTimelineModel(events), [events]);
+    const unifiedChecks = useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
+    // Checks of a merged or closed PR need nobody; the strip is for open work.
+    const failingChecks = useMemo(
+      () => (pr.state === "open" || pr.state === "draft" ? prFailingCheckNames(unifiedChecks) : []),
+      [pr.state, unifiedChecks],
+    );
+    const digestModel = useMemo(() => buildDigestTimelineModel(events, { failingChecks }), [events, failingChecks]);
 
     // Which push section the reader is in: the last push at or above the
     // top-most visible row. Drives the rail's active tick.
@@ -881,7 +890,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
     }, []);
 
     // ── The next step and the Merge card ────────────────────────────────
-    const unifiedChecks = useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
     const checkBuckets = useMemo(() => summarizePipelineStates(unifiedChecks), [unifiedChecks]);
     const reviewers = useMemo(() => collectPrReviewers(detail, reviews), [detail, reviews]);
     const openFindings = useMemo(() => prOpenFindings(reviewThreads), [reviewThreads]);
@@ -1027,6 +1035,9 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       });
     }, [onMerge]);
 
+    const handleFixChecksInChat = useCallback(() => {
+      onHandPrompt?.(buildPrChatPrompt("fix_checks", pr, { failingChecks }));
+    }, [failingChecks, onHandPrompt, pr]);
     const handleFixInChat = useCallback((item: PrNeedsAttentionItem) => {
       if (!onHandPrompt) return;
       onHandPrompt(buildPrChatPrompt("fix_findings", pr, {
@@ -1048,6 +1059,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       return {
         prFiles: files.map((file) => file.filename),
         prStateByNumber,
+        onAddToChat,
         onOpenFile: (path, inPr) => {
           if (inPr && onOpenPrFile) {
             onOpenPrFile(path);
@@ -1069,7 +1081,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           });
         },
       };
-    }, [files, navigate, onOpenPrFile, pr.laneId, pr.repoName, pr.repoOwner, repoPrs]);
+    }, [files, navigate, onAddToChat, onOpenPrFile, pr.laneId, pr.repoName, pr.repoOwner, repoPrs]);
 
     const closeDock = useCallback(() => setDockOpen(null), []);
     const dockItems = useMemo<PrDockItem[]>(() => {
@@ -1160,6 +1172,8 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
               writeViewerLogin={writeViewerLogin}
               onVisibleEventChange={handleVisible}
               onFixInChat={onHandPrompt ? handleFixInChat : undefined}
+              onFixChecksInChat={onHandPrompt ? handleFixChecksInChat : undefined}
+              onOpenChecks={onOpenChecksTab}
               bottomInset={dockOpen ? 300 : 120}
             />
             </PrMarkdownEnvContext.Provider>

@@ -17,6 +17,9 @@ let workChatContextPreambles = [
   "The user highlighted the following text from your previous output and added it as context:",
 ]
 
+let workChatContextSourcedPrefix = "The user quoted this from "
+let workChatContextReplyClause = "The text that follows this block, up to the next quote, is their reply to it:"
+
 func workThreadCommentsHaveSendable(_ comments: [ChatThreadComment]) -> Bool {
   comments.contains { $0.includeInNextSend }
 }
@@ -149,9 +152,19 @@ private func workChatContextQuote(fromInner rawInner: String) -> String {
   var inner = Substring(rawInner)
   if inner.hasPrefix("\n") { inner = inner.dropFirst() }
   if inner.hasSuffix("\n") { inner = inner.dropLast() }
+  var stripped = false
   for preamble in workChatContextPreambles where inner.hasPrefix(preamble) {
     inner = inner.dropFirst(preamble.count).drop(while: { $0 == "\n" })
+    stripped = true
     break
+  }
+  // A quote from a pull request names its source in the same sentence:
+  // "The user quoted this from <source>. The text that follows … reply to it:".
+  if !stripped,
+     inner.hasPrefix(workChatContextSourcedPrefix),
+     let firstLine = inner.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first,
+     firstLine.hasSuffix(workChatContextReplyClause) {
+    inner = inner.dropFirst(firstLine.count).drop(while: { $0 == "\n" })
   }
   return String(inner)
     .replacingOccurrences(of: "ade-chat-context\u{200B}", with: "ade-chat-context")

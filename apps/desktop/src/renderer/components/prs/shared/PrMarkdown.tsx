@@ -30,11 +30,21 @@ import {
   PrAlertCallout,
   PrFileChip,
   PrMarkdownEnvContext,
+  PrQuoteSourceContext,
   PrRefPill,
   resolveInlineFile,
   type GithubAlertKind,
 } from "./prMarkdownContext";
 import { getFileIcon } from "../../files/filePresentation";
+import {
+  PR_COMPARE_FENCE_LANGUAGE,
+  PR_PROOF_PLACEHOLDER_HOST,
+  PR_PROOF_TITLE_PREFIX,
+  parsePrCompareFence,
+  preparePrBodyProofForAde,
+  type PrCompareFigure,
+} from "../../../../shared/prBodyProof";
+import { PrAddToChatButton, PrCompare, PrProofMedia } from "./PrProofMedia";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 
 type PrMarkdownTone = "neutral" | "sky" | "amber";
@@ -305,6 +315,8 @@ function PrImage({
   title?: string;
 }) {
   const [errored, setErrored] = useState(false);
+  const env = useContext(PrMarkdownEnvContext);
+  const from = useContext(PrQuoteSourceContext);
   // react-markdown reuses img instances positionally, so reset the error flag
   // when the source changes (e.g. a corrected URL in the editor preview).
   useEffect(() => {
@@ -358,6 +370,21 @@ function PrImage({
       </span>
     );
   }
+  // A picture the author uploaded as proof carries its proof id in the title
+  // (see prBodyProof.ts): this machine's copy when it has one, else GitHub's.
+  const proofId = title?.startsWith(PR_PROOF_TITLE_PREFIX) ? title.slice(PR_PROOF_TITLE_PREFIX.length) : null;
+  const addToChat = env?.onAddToChat;
+  const quote = addToChat && !src.includes(PR_PROOF_PLACEHOLDER_HOST)
+    ? () => addToChat({ text: `![${altText}](${src})`, from: `a picture in ${from}` })
+    : null;
+  if (proofId) {
+    return (
+      <span className="group/media relative block">
+        <PrProofMedia artifactId={proofId} url={src.includes(PR_PROOF_PLACEHOLDER_HOST) ? null : src} alt={altText} />
+        {quote ? <PrAddToChatButton onClick={quote} className="absolute right-2 top-2 opacity-0 group-hover/media:opacity-100 focus-visible:opacity-100" /> : null}
+      </span>
+    );
+  }
   // A broken/blocked image degrades to its alt text (or nothing) instead of the
   // browser's broken-image glyph.
   if (errored) {
@@ -365,7 +392,7 @@ function PrImage({
       ? <span className="text-[11px]" style={{ color: COLORS.textMuted }}>{altText}</span>
       : null;
   }
-  return (
+  const picture = (
     <img
       src={src}
       alt={altText}
@@ -382,6 +409,30 @@ function PrImage({
       style={{ borderColor: COLORS.border, maxHeight: 520 }}
     />
   );
+  if (!quote) return picture;
+  return (
+    <span className="group/media relative inline-block max-w-full align-top">
+      {picture}
+      <PrAddToChatButton onClick={quote} className="absolute right-2 top-4 opacity-0 group-hover/media:opacity-100 focus-visible:opacity-100" />
+    </span>
+  );
+}
+
+/** A ```pr-compare fence: the figure, quotable as a whole. */
+function PrCompareBlock({ figure }: { figure: PrCompareFigure }) {
+  const env = useContext(PrMarkdownEnvContext);
+  const from = useContext(PrQuoteSourceContext);
+  const addToChat = env?.onAddToChat;
+  const quote = addToChat
+    ? () => addToChat({
+      text: [
+        ...figure.sides.map((side) => `${side.title}: ${side.url ? `![${side.label ?? side.title}](${side.url})` : side.label ?? "(not uploaded)"}${side.artifactId ? ` (ADE proof ${side.artifactId})` : ""}`),
+        ...(figure.caption ? [figure.caption] : []),
+      ].join("\n"),
+      from: `a before and after comparison in ${from}`,
+    })
+    : undefined;
+  return <PrCompare figure={figure} onAddToChat={quote} />;
 }
 
 /* ── Link with external-open handling ─────────────────────────────── */
@@ -716,6 +767,10 @@ function buildPrOverrides({
         if (language === "mermaid") {
           return <MermaidDiagram source={codeText} variant="pr" renderCode={(code) => <HighlightedCode code={code} language="mermaid" />} />;
         }
+        if (language === PR_COMPARE_FENCE_LANGUAGE) {
+          const figure = parsePrCompareFence(codeText);
+          if (figure) return <PrCompareBlock figure={figure} />;
+        }
         // ```ts apps/desktop/src/foo.ts — the info string after the language
         // names the file, so the block gets a file header and a copy button.
         const meta = typeof props?.["data-meta"] === "string" ? props["data-meta"].trim() : "";
@@ -848,7 +903,7 @@ export const PrMarkdown = memo(function PrMarkdown({
   );
 
   const markdown = useMemo(
-    () => normalizeEscapedMarkdownNewlines(children),
+    () => preparePrBodyProofForAde(normalizeEscapedMarkdownNewlines(children)),
     [children],
   );
 

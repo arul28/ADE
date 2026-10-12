@@ -207,12 +207,19 @@ function CitedProofMedia({
   );
 }
 
-function CitedProofSlot({ artifactId, caption, compact }: {
+/**
+ * One cited artifact. `fallback` is another copy of the same proof (a pull
+ * request's uploaded picture): it shows while the record is read and when this
+ * machine does not hold it, instead of the spinner and the "no proof" note.
+ */
+export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
   artifactId: string;
   caption: string | null;
   compact?: boolean;
+  fallback?: React.ReactNode;
 }) {
   const state = useCitedProofArtifact(artifactId);
+  if (fallback != null && state.status !== "ready") return <>{fallback}</>;
   if (state.status === "loading") {
     return (
       <CitationPlaceholder>

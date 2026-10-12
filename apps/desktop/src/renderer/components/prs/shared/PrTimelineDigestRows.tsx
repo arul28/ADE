@@ -4,6 +4,7 @@ import {
   CaretRight,
   ChatCircle,
   CheckCircle,
+  XCircle,
   Clock,
   Eye,
   GitCommit,
@@ -121,10 +122,15 @@ export function NeedsAttentionBlock({
   item,
   onOpen,
   onFixInChat,
+  onFixChecksInChat,
+  onOpenChecks,
 }: {
   item: Extract<DigestRenderItem, { kind: "attention" }>;
   onOpen: (eventId: string) => void;
   onFixInChat?: (item: PrNeedsAttentionItem) => void;
+  /** Hands the failing checks to the chat. Omitted hides the button. */
+  onFixChecksInChat?: () => void;
+  onOpenChecks?: () => void;
 }) {
   const [showAll, setShowAll] = useState(false);
   const visible = showAll ? item.items : item.items.slice(0, ATTENTION_VISIBLE_ROWS);
@@ -142,9 +148,53 @@ export function NeedsAttentionBlock({
         <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em]" style={{ color: ATTENTION_TONE }}>
           Needs attention
         </span>
-        <span className="font-mono text-[10.5px]" style={{ color: COLORS.textMuted }}>{item.items.length}</span>
+        <span className="font-mono text-[10.5px]" style={{ color: COLORS.textMuted }}>{item.items.length + (item.failingChecks.length ? 1 : 0)}</span>
       </header>
       <ul className="flex flex-col pb-1.5">
+        {item.failingChecks.length > 0 ? (
+          <li>
+            <div
+              role="button"
+              tabIndex={0}
+              data-testid="pr-digest-attention-checks"
+              onClick={() => onOpenChecks?.()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onOpenChecks?.();
+                }
+              }}
+              className="group flex cursor-pointer items-center gap-2.5 px-4 py-1.5 transition-colors hover:bg-fg/[0.035]"
+            >
+              <XCircle size={16} weight="fill" style={{ color: COLORS.danger, flexShrink: 0 }} />
+              <span className="shrink-0 text-[12px] font-medium" style={{ color: COLORS.textPrimary }}>
+                {item.failingChecks.length === 1 ? "1 check fails" : `${item.failingChecks.length} checks fail`}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: COLORS.textSecondary }} title={item.failingChecks.join(", ")}>
+                {item.failingChecks.join(", ")}
+              </span>
+              {onFixChecksInChat ? (
+                <button
+                  type="button"
+                  data-testid="pr-digest-fix-checks-in-chat"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onFixChecksInChat();
+                  }}
+                  className="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium opacity-80 transition-opacity group-hover:opacity-100"
+                  style={{
+                    color: COLORS.accent,
+                    background: `color-mix(in srgb, ${COLORS.accent} 14%, transparent)`,
+                    border: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  Fix in chat
+                </button>
+              ) : null}
+            </div>
+          </li>
+        ) : null}
         {visible.map((entry) => {
           const where = threadLocation(entry.entry.path, entry.entry.line);
           return (
