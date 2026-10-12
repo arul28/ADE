@@ -2940,7 +2940,8 @@ export function AgentChatComposer({
   // the full composer only, not grid tiles or parallel launches. Desktop only
   // for now: the web client has no path to the brain's voice host.
   const codexVoicePreferences = useAppStore((s) => s.codexVoice);
-  const codexAuth = useProviderAuthStatus().status.openai;
+  // Voice runs on the chat machine's brain and Codex sign-in, not this window's.
+  const codexAuth = useProviderAuthStatus({ runtimePin: modelRuntimePin }).status.openai;
   const codexVoiceOffered = Boolean(
     sessionId
     && projectChatPane
@@ -2952,6 +2953,7 @@ export function AgentChatComposer({
   );
   const codexVoice = useCodexVoice({
     sessionId: codexVoiceOffered ? sessionId ?? null : null,
+    runtimePin: modelRuntimePin,
     preferences: codexVoicePreferences,
     onError: setVoiceError,
   });
@@ -3131,7 +3133,7 @@ export function AgentChatComposer({
   useEffect(() => {
     if (!sessionId) return;
     try {
-      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" })?.catch?.(() => {});
+      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, modelRuntimePinRef.current)?.catch?.(() => {});
     } catch {
       // warming is best-effort
     }

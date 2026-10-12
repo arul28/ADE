@@ -8,7 +8,7 @@ import {
   Trash,
   X,
 } from "@phosphor-icons/react";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import {
   canonicalInputFromSummary,
   sanitizeTerminalInlineText,
@@ -90,6 +90,8 @@ export type SessionInfoAnchorRect = {
 export type InfoPopoverState = {
   session: TerminalSessionSummary;
   anchor: SessionInfoAnchorRect;
+  /** The session's machine; null means this window's project runtime. */
+  runtimePin?: OpenProjectBinding | null;
 } | null;
 
 export function SessionInfoPopover({
@@ -311,7 +313,7 @@ export function SessionInfoPopover({
           })
           : null}
 
-        {session.status !== "running" ? <SessionDeltaCard sessionId={session.id} className="border-0 bg-fg/[0.02]" /> : null}
+        {session.status !== "running" ? <SessionDeltaCard sessionId={session.id} runtimePin={popover.runtimePin ?? null} className="border-0 bg-fg/[0.02]" /> : null}
 
         {health && !isChat
           ? sectionShell({

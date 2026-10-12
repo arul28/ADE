@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Microphone, MicrophoneSlash, PhoneDisconnect, Waveform } from "@phosphor-icons/react";
-import type { AgentChatCodexRealtimeCaption } from "../../../shared/types";
+import type { AgentChatCodexRealtimeCaption, OpenProjectBinding } from "../../../shared/types";
 import { formatCodexVoiceDuration, type CodexVoicePreferences } from "../../../shared/codexVoice";
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -14,6 +14,10 @@ import { microphonePermissionGuidance } from "./microphonePermissionGuidance";
  * to a Codex app server (`thread/realtime/start`) and returns the answer. The
  * session runs on the user's ChatGPT sign-in: on a Codex chat's own thread, or
  * on a private voice host for any other chat (see codexVoiceSession.ts).
+ *
+ * The brain is the one on the chat's machine, not this window's: a chat on a
+ * remote lane exists only in that machine's database, so every voice call
+ * carries the chat's runtime pin. Audio still flows from this computer.
  *
  * Live state has two sources. Audio levels come from the local and remote
  * tracks, so the meter needs no IPC. Captions and "Codex is working" come from
@@ -32,6 +36,8 @@ type Phase = "idle" | "connecting" | "live";
 
 type VoiceConnection = {
   sessionId: string;
+  /** The chat's machine at start; stop and state reads go to the same brain. */
+  pin: OpenProjectBinding | null;
   token: string | null;
   pc: RTCPeerConnection;
   stream: MediaStream;
@@ -78,10 +84,13 @@ function cleanError(error: unknown): string {
  */
 export function useCodexVoice({
   sessionId,
+  runtimePin = null,
   preferences,
   onError,
 }: {
   sessionId: string | null;
+  /** The machine that owns the chat; `null` uses this window's project runtime. */
+  runtimePin?: OpenProjectBinding | null;
   preferences: CodexVoicePreferences;
   onError?: (message: string) => void;
 }): CodexVoiceController {
@@ -102,6 +111,8 @@ export function useCodexVoice({
   // Read at start time; a settings change applies to the next conversation.
   const preferencesRef = useRef(preferences);
   preferencesRef.current = preferences;
+  const runtimePinRef = useRef(runtimePin);
+  runtimePinRef.current = runtimePin;
 
   const teardown = useCallback((notifyBrain: boolean) => {
     attemptRef.current += 1;
@@ -118,7 +129,7 @@ export function useCodexVoice({
       // window just started on the same chat.
       if (notifyBrain && connection.token) {
         void window.ade.agentChat.codex
-          .realtimeStop({ sessionId: connection.sessionId, token: connection.token })
+          .realtimeStop({ sessionId: connection.sessionId, token: connection.token }, connection.pin)
           .catch((error: unknown) => logVoice("stop failed", error));
       }
     }
@@ -134,7 +145,9 @@ export function useCodexVoice({
   // Switching chats, leaving voice-capable chats, or unmounting ends the call:
   // audio must not outlive the chat it belongs to.
   // Teardown also cancels a start that has no connection yet.
-  useEffect(() => () => teardown(true), [sessionId, teardown]);
+  // A chat moving to another machine ends it too.
+  const runtimePinKey = runtimePin?.key ?? null;
+  useEffect(() => () => teardown(true), [sessionId, runtimePinKey, teardown]);
 
   // A closing window cannot run React cleanup; end the call on the way out.
   useEffect(() => {
@@ -196,6 +209,7 @@ export function useCodexVoice({
     }
     const connection: VoiceConnection = {
       sessionId,
+      pin: runtimePinRef.current,
       token: null,
       pc,
       stream,
@@ -236,10 +250,12 @@ export function useCodexVoice({
         sessionId,
         sdp: offer.sdp ?? "",
         preferences: preferencesRef.current,
-      });
+      }, connection.pin);
       if (connectionRef.current !== connection) {
         // Stopped while connecting: the brain session exists now, so end it.
-        void window.ade.agentChat.codex.realtimeStop({ sessionId, token: result.token }).catch(() => {});
+        void window.ade.agentChat.codex
+          .realtimeStop({ sessionId, token: result.token }, connection.pin)
+          .catch(() => {});
         return;
       }
       connection.token = result.token;
@@ -303,7 +319,7 @@ export function useCodexVoice({
         const state = await window.ade.agentChat.codex.realtimeState({
           sessionId: connection.sessionId,
           token: connection.token,
-        });
+        }, connection.pin);
         if (cancelled || connectionRef.current !== connection) return;
         if (state.status === "ended") {
           teardown(false);

@@ -456,9 +456,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       setInfoPopover({
         session,
         anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
+        runtimePin: resolveSessionRuntimePin(session),
       });
     },
-    [],
+    [resolveSessionRuntimePin],
   );
 
   const handleContextMenu = useLatestCallback(
