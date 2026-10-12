@@ -11,7 +11,8 @@ The Worker also hosts ADE's device-authorization bridge for headless sign-in:
   `<DEVICE_PAGE_ORIGIN>/device` when that var is set. Production sets it to
   `https://ade-app.dev`: that link opens ADE Mobile as a universal link, and
   the website redirects a browser to this worker's `/device`. Deploy the
-  website before a worker that sets it.
+  website before a worker that sets it: the deploy preflight probes the page
+  and refuses to publish when it does not redirect.
   An optional `machine_key` names the machine signing in, which is what a pairing
   grant (below) can later be spent on. An optional `machine_name` (cleaned, at
   most 80 characters) is display text only.
@@ -42,7 +43,7 @@ The Worker also hosts ADE's device-authorization bridge for headless sign-in:
   the approver's own session. Errors are JSON: 401 `unauthorized`, 404
   `not_found`, 410 `expired`, 409 `already_used`, 429 `rate_limited`, and
   503/502 `unavailable` (no `CLERK_SECRET_KEY`, or Clerk refused). On
-  `unavailable` the app opens the `/device` page instead.
+  `unavailable` the app offers a button that opens the `/device` page.
 - `GET /device/callback` exchanges the Clerk code and holds the token pair briefly.
 - `POST /device/token` lets the initiating daemon redeem the pair once, and returns
   a `pairing_grant` alongside it when the request declared a `machine_key`.

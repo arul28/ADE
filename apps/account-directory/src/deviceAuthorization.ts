@@ -4,33 +4,35 @@ import { boundedDisplayText } from "./displayText";
 const DEVICE_CODE_TTL_SECONDS = 10 * 60;
 const DEVICE_POLL_INTERVAL_SECONDS = 5;
 const DEVICE_SLOW_DOWN_INCREMENT_SECONDS = 5;
-const DEVICE_RATE_LIMIT_WINDOW_MS = 60_000;
+export const DEVICE_RATE_LIMIT_WINDOW_MS = 60_000;
 const DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS = 10;
 const APPROVAL_RATE_LIMIT_MAX_ATTEMPTS = 10;
 const DEVICE_AUTHORIZATION_RETENTION_MS = 60 * 60_000;
+// The same 32 characters are spelled out in `apps/web/api/device.ts` (the
+// website redirect) and `apps/ios/ADE/Services/DeviceSignInApproval.swift`
+// (the phone app). Change all three together.
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_MACHINE_KEY_CHARS = 128;
 const MAX_MACHINE_NAME_CHARS = 80;
-const CLERK_BACKEND_API_URL = "https://api.clerk.com/v1";
-/** Long enough to open the sheet on the phone; the ticket is spent at once. */
-const APP_APPROVAL_TICKET_TTL_SECONDS = 120;
 
 export interface DeviceAuthorizationEnv {
   DB: D1Database;
   CLERK_ISSUER: string;
   CLERK_OAUTH_CLIENT_ID: string;
   /**
-   * Clerk Backend API key. Optional: only `/device/approve` needs it, to mint
+   * Clerk Backend API key. Optional: only `/device/approve`
+   * (`deviceAppApproval.ts`) needs it, to mint
    * the one-time sign-in ticket for a user who approved from a signed-in ADE
-   * app. Without it that route answers 503 and the app falls back to the
-   * browser page, which needs no key.
+   * app. Without it that route answers 503 and the app offers the browser
+   * page, which needs no key.
    */
   CLERK_SECRET_KEY?: string;
   /**
    * Origin of the page a person opens to confirm a sign-in, when it is not
    * this worker: `https://ade-app.dev`, whose `/device` opens the ADE phone
    * app as a universal link and otherwise redirects a browser here. Optional;
-   * unset, the link points at this worker's own `/device`.
+   * unset, or anything but an exact https origin, the link points at this
+   * worker's own `/device`. The deploy preflight refuses such a value.
    */
   DEVICE_PAGE_ORIGIN?: string;
 }
@@ -54,18 +56,9 @@ export type DeviceAuthorizationRequestOptions = {
     accessToken: string;
     machineKey: string;
   }) => Promise<string | null>;
-  /**
-   * Verifies the bearer of a `/device/approve` request and names its user.
-   * Injected for the same reason as `mintPairingGrant`: Clerk token
-   * verification stays in `callerToken.ts`. Without it the route refuses
-   * every caller.
-   */
-  authenticateCaller?: (request: Request) => Promise<
-    { ok: true; userId: string } | { ok: false; reason: string }
-  >;
 };
 
-type DeviceAuthorizationRow = {
+export type DeviceAuthorizationRow = {
   device_code: string;
   user_code: string;
   device_secret_hash: string;
@@ -93,7 +86,7 @@ type DeviceAuthorizationRow = {
   consumed_at: number | null;
 };
 
-function json(value: unknown, init: ResponseInit = {}): Response {
+export function json(value: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(value), {
     ...init,
     headers: {
@@ -121,11 +114,11 @@ function html(value: string, status = 200): Response {
   });
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function nonEmptyString(value: unknown): string | null {
+export function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
@@ -173,7 +166,7 @@ function randomUserCode(randomBytes: (size: number) => Uint8Array): string {
   return `${characters.slice(0, 4).join("")}-${characters.slice(4).join("")}`;
 }
 
-function normalizeUserCode(value: string): string | null {
+export function normalizeUserCode(value: string): string | null {
   const compact = value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (compact.length !== 8) return null;
   for (const character of compact) {
@@ -285,7 +278,7 @@ function approvalMessage(title: string, message: string, status = 200): Response
   return page({ title, status, body: `<h1>${title}</h1><p>${message}</p>` });
 }
 
-async function parseJsonBody(request: Request): Promise<Record<string, unknown> | null> {
+export async function parseJsonBody(request: Request): Promise<Record<string, unknown> | null> {
   try {
     const value = await request.json();
     return isRecord(value) ? value : null;
@@ -324,7 +317,7 @@ async function findByDeviceCode(env: DeviceAuthorizationEnv, deviceCode: string)
     .first<DeviceAuthorizationRow>();
 }
 
-async function findByUserCode(env: DeviceAuthorizationEnv, userCode: string): Promise<DeviceAuthorizationRow | null> {
+export async function findByUserCode(env: DeviceAuthorizationEnv, userCode: string): Promise<DeviceAuthorizationRow | null> {
   return env.DB.prepare("select * from device_authorizations where user_code = ?")
     .bind(userCode)
     .first<DeviceAuthorizationRow>();
@@ -364,6 +357,18 @@ async function checkDeviceRateLimit(
     maxAttempts,
   ).run();
   return changes(admitted) === 1;
+}
+
+/**
+ * Counts one approval attempt against this client's budget, and says whether
+ * it is within it. The browser page and the app route share the budget.
+ */
+export function admitApprovalAttempt(
+  request: Request,
+  env: DeviceAuthorizationEnv,
+  now: number,
+): Promise<boolean> {
+  return checkDeviceRateLimit(request, env, now, "approval", APPROVAL_RATE_LIMIT_MAX_ATTEMPTS);
 }
 
 async function handleDeviceCode(
@@ -424,7 +429,8 @@ async function handleDeviceCode(
     }
   }
 
-  const origin = trustedHttpsOrigin(env.DEVICE_PAGE_ORIGIN) ?? new URL(request.url).origin;
+  const origin = trustedHttpsOrigin(env.DEVICE_PAGE_ORIGIN, { requireExactOrigin: true })
+    ?? new URL(request.url).origin;
   const verificationUri = `${origin}/device`;
   return json({
     device_code: deviceCode,
@@ -492,7 +498,7 @@ async function handleDeviceApproval(
   if (!userCode) return approvalForm("");
 
   const now = options.now();
-  if (!(await checkDeviceRateLimit(request, env, now, "approval", APPROVAL_RATE_LIMIT_MAX_ATTEMPTS))) {
+  if (!(await admitApprovalAttempt(request, env, now))) {
     return approvalMessage("Try again shortly", "Too many device-code attempts were made from this browser.", 429);
   }
   const row = await findByUserCode(env, userCode);
@@ -515,36 +521,39 @@ async function handleDeviceApproval(
     return approvalMessage("Sign-in already started", "Finish the Clerk sign-in already open in this browser.", 409);
   }
 
-  const start = await startClerkAuthorization(env, row.device_code, url.origin, options);
-  if (start === "unconfigured") {
-    return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
+  const oauth = clerkOAuthConfig(env);
+  if (!oauth) return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
+  const authorizeUrl = await claimForClerkSignIn(env, oauth, row.device_code, url.origin, options);
+  if (!authorizeUrl) return approvalMessage("Code unavailable", "Return to ADE and start sign-in again.", 409);
+  return continueToSignIn(authorizeUrl);
+}
+
+export type ClerkOAuthConfig = { issuer: string; clientId: string };
+
+/** This worker's Clerk OAuth application, or `null` when it is not configured. */
+export function clerkOAuthConfig(env: DeviceAuthorizationEnv): ClerkOAuthConfig | null {
+  const clientId = env.CLERK_OAUTH_CLIENT_ID.trim();
+  if (!clientId) return null;
+  try {
+    return { issuer: normalizeIssuer(env.CLERK_ISSUER), clientId };
+  } catch {
+    return null;
   }
-  if (start === "unavailable") {
-    return approvalMessage("Code unavailable", "Return to ADE and start sign-in again.", 409);
-  }
-  return continueToSignIn(start.authorizeUrl);
 }
 
 /**
- * Claim a pending device authorization for one Clerk sign-in and build its
- * authorize URL. The claim is atomic, so a code confirmed twice (two tabs, or
- * the browser page and the app) starts exactly one sign-in.
+ * Claim a pending device authorization for one Clerk sign-in and return its
+ * authorize URL, or `null` when the code cannot be claimed any more. The claim
+ * is atomic, so a code confirmed twice (two tabs, or the browser page and the
+ * app) starts exactly one sign-in.
  */
-async function startClerkAuthorization(
+export async function claimForClerkSignIn(
   env: DeviceAuthorizationEnv,
+  oauth: ClerkOAuthConfig,
   deviceCode: string,
   origin: string,
   options: Required<Pick<DeviceAuthorizationRequestOptions, "now" | "randomBytes">>,
-): Promise<{ authorizeUrl: string } | "unconfigured" | "unavailable"> {
-  let issuer: string;
-  try {
-    issuer = normalizeIssuer(env.CLERK_ISSUER);
-  } catch {
-    return "unconfigured";
-  }
-  const clientId = env.CLERK_OAUTH_CLIENT_ID.trim();
-  if (!clientId) return "unconfigured";
-
+): Promise<string | null> {
   const codeVerifier = bytesToBase64Url(options.randomBytes(32));
   const codeChallenge = await sha256(codeVerifier);
   const oauthState = bytesToBase64Url(options.randomBytes(32));
@@ -555,125 +564,17 @@ async function startClerkAuthorization(
      where device_code = ? and status = 'pending' and expires_at > ?
        and code_verifier is null and oauth_state_hash is null
   `).bind(codeVerifier, oauthStateHash, deviceCode, options.now()).run();
-  if (changes(updated) < 1) return "unavailable";
+  if (changes(updated) < 1) return null;
 
-  return {
-    authorizeUrl: `${issuer}/oauth/authorize?${encodeQuery([
-      ["response_type", "code"],
-      ["client_id", clientId],
-      ["redirect_uri", `${origin}/device/callback`],
-      ["code_challenge", codeChallenge],
-      ["code_challenge_method", "S256"],
-      ["state", oauthState],
-      ["scope", "openid profile email offline_access"],
-    ])}`,
-  };
-}
-
-/**
- * Approval from a signed-in ADE app, for a person who scanned the sign-in QR
- * code with a phone that already has their account.
- *
- * `GET /device/approve?user_code=` names the computer, so the app can ask
- * before anything changes, and reports `status`, so the app can tell when the
- * sign-in it opened has finished. `POST /device/approve` answers with one URL for the
- * app to open in a web sheet: a one-time Clerk sign-in ticket for the caller,
- * which continues to this sign-in's authorize URL. The person types no
- * password, and the session the computer receives is the caller's own, because
- * the ticket is minted for the user the bearer was verified as.
- *
- * The browser page (`/device`) stays the path for everything else, and the
- * path the app falls back to when this route answers 503.
- */
-async function handleDeviceAppApproval(
-  request: Request,
-  env: DeviceAuthorizationEnv,
-  options: Required<Pick<DeviceAuthorizationRequestOptions, "fetchImpl" | "now" | "randomBytes">>
-    & Pick<DeviceAuthorizationRequestOptions, "authenticateCaller">,
-): Promise<Response> {
-  if (request.method !== "GET" && request.method !== "POST") {
-    return new Response("method not allowed", { status: 405 });
-  }
-  const caller = await options.authenticateCaller?.(request);
-  if (!caller?.ok) {
-    return caller?.reason === "authentication unavailable"
-      ? json({ error: "unavailable" }, { status: 503 })
-      : json({ error: "unauthorized" }, { status: 401 });
-  }
-
-  const url = new URL(request.url);
-  const rawUserCode = request.method === "GET"
-    ? url.searchParams.get("user_code")
-    : nonEmptyString((await parseJsonBody(request))?.user_code);
-  const userCode = rawUserCode ? normalizeUserCode(rawUserCode) : null;
-  if (!userCode) {
-    return json({ error: "invalid_request", error_description: "user_code is required" }, { status: 400 });
-  }
-
-  const now = options.now();
-  // Only the POST is rate limited, like the browser page: the read changes
-  // nothing, and the app repeats it while its sign-in sheet is open.
-  if (
-    request.method === "POST"
-    && !(await checkDeviceRateLimit(request, env, now, "approval", APPROVAL_RATE_LIMIT_MAX_ATTEMPTS))
-  ) {
-    return json(
-      { error: "rate_limited" },
-      { status: 429, headers: { "retry-after": String(DEVICE_RATE_LIMIT_WINDOW_MS / 1000) } },
-    );
-  }
-  const row = await findByUserCode(env, userCode);
-  if (!row) return json({ error: "not_found" }, { status: 404 });
-  if (row.status === "approved" || row.status === "consumed") {
-    return request.method === "GET"
-      ? json({ status: "approved", machine_name: null })
-      : json({ error: "already_used" }, { status: 409 });
-  }
-  if (row.expires_at <= now || row.status === "expired") return json({ error: "expired" }, { status: 410 });
-  const started = row.status !== "pending" || Boolean(row.code_verifier || row.oauth_state_hash);
-  if (request.method === "GET") {
-    return json({
-      status: row.status === "error" ? "failed" : started ? "started" : "pending",
-      // The client-chosen name is shown only while the code can be confirmed.
-      machine_name: started ? null : row.machine_name,
-    });
-  }
-  if (started) return json({ error: "already_used" }, { status: 409 });
-
-  const secretKey = env.CLERK_SECRET_KEY?.trim();
-  if (!secretKey) return json({ error: "unavailable" }, { status: 503 });
-
-  // Ticket first, claim second: a ticket that is never handed out expires on
-  // its own, but a claim with no ticket would leave the code unusable in the
-  // browser too.
-  let ticketUrl: URL;
-  try {
-    const response = await options.fetchImpl(`${CLERK_BACKEND_API_URL}/sign_in_tokens`, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${secretKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        user_id: caller.userId,
-        expires_in_seconds: APP_APPROVAL_TICKET_TTL_SECONDS,
-      }),
-    });
-    const body: unknown = await response.json().catch(() => ({}));
-    const rawUrl = response.ok && isRecord(body) ? nonEmptyString(body.url) : null;
-    if (!rawUrl) return json({ error: "unavailable" }, { status: 502 });
-    ticketUrl = new URL(rawUrl);
-    if (ticketUrl.protocol !== "https:") return json({ error: "unavailable" }, { status: 502 });
-  } catch {
-    return json({ error: "unavailable" }, { status: 502 });
-  }
-
-  const start = await startClerkAuthorization(env, row.device_code, url.origin, options);
-  if (start === "unconfigured") return json({ error: "unavailable" }, { status: 503 });
-  if (start === "unavailable") return json({ error: "already_used" }, { status: 409 });
-  ticketUrl.searchParams.set("redirect_url", start.authorizeUrl);
-  return json({ url: ticketUrl.toString(), machine_name: row.machine_name });
+  return `${oauth.issuer}/oauth/authorize?${encodeQuery([
+    ["response_type", "code"],
+    ["client_id", oauth.clientId],
+    ["redirect_uri", `${origin}/device/callback`],
+    ["code_challenge", codeChallenge],
+    ["code_challenge_method", "S256"],
+    ["state", oauthState],
+    ["scope", "openid profile email offline_access"],
+  ])}`;
 }
 
 async function handleDeviceCallback(
@@ -726,16 +627,14 @@ async function handleDeviceCallback(
     return approvalMessage("Sign-in cancelled", "Return to ADE and try again.", 400);
   }
 
-  let issuer: string;
-  try {
-    issuer = normalizeIssuer(env.CLERK_ISSUER);
-  } catch {
+  const oauth = clerkOAuthConfig(env);
+  if (!oauth) {
     await env.DB.prepare("update device_authorizations set status = 'error', error_message = ? where device_code = ? and status = 'pending'")
       .bind("ADE account login is not configured.", row.device_code)
       .run();
     return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
   }
-  const clientId = env.CLERK_OAUTH_CLIENT_ID.trim();
+  const { issuer, clientId } = oauth;
   const redirectUri = `${url.origin}/device/callback`;
   let tokenResponse: Response;
   try {
@@ -846,14 +745,8 @@ async function handleDeviceToken(
     return json({ error: "server_error" }, { status: 500 });
   }
 
-  let oauthIssuer: string;
-  try {
-    oauthIssuer = normalizeIssuer(env.CLERK_ISSUER);
-  } catch {
-    return json({ error: "server_error" }, { status: 500 });
-  }
-  const oauthClientId = env.CLERK_OAUTH_CLIENT_ID.trim();
-  if (!oauthClientId) return json({ error: "server_error" }, { status: 500 });
+  const oauth = clerkOAuthConfig(env);
+  if (!oauth) return json({ error: "server_error" }, { status: 500 });
 
   const approvedToken = {
     access_token: row.access_token,
@@ -862,8 +755,8 @@ async function handleDeviceToken(
     expires_in: row.approved_at == null
       ? row.expires_in
       : Math.max(1, Math.ceil((row.approved_at + row.expires_in * 1000 - now) / 1000)),
-    oauth_issuer: oauthIssuer,
-    oauth_client_id: oauthClientId,
+    oauth_issuer: oauth.issuer,
+    oauth_client_id: oauth.clientId,
   };
 
   const consumed = await env.DB.prepare(`
@@ -887,27 +780,30 @@ async function handleDeviceToken(
   return json(pairingGrant ? { ...approvedToken, pairing_grant: pairingGrant } : approvedToken);
 }
 
+/** The request options with their production defaults filled in. */
+export function resolveDeviceRequestOptions(options: DeviceAuthorizationRequestOptions) {
+  return {
+    // Wrapped, never stored bare: the callback calls this as
+    // `options.fetchImpl(...)`, and the Workers runtime refuses a `fetch`
+    // whose `this` is not the global scope ("Illegal invocation"). Stored bare,
+    // every token exchange threw, and every "Confirm it's you" ended as
+    // "Sign-in failed" with "OAuth token exchange failed." in the row.
+    fetchImpl: options.fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init)),
+    now: options.now ?? Date.now,
+    randomBytes: options.randomBytes ?? defaultRandomBytes,
+    mintPairingGrant: options.mintPairingGrant,
+  };
+}
+
 export async function handleDeviceAuthorizationRequest(
   request: Request,
   env: DeviceAuthorizationEnv,
   options: DeviceAuthorizationRequestOptions = {},
 ): Promise<Response | null> {
   const pathname = new URL(request.url).pathname;
-  const resolved = {
-    // Wrapped, never stored bare: the callback calls this as
-    // `options.fetchImpl(...)`, and the Workers runtime refuses a `fetch`
-    // whose `this` is not the global scope ("Illegal invocation"). Stored bare,
-    // every token exchange threw, and every "Confirm it's you" ended as
-    // "Sign-in failed" with "OAuth token exchange failed." in the row.
-    fetchImpl: options.fetchImpl ?? ((input, init) => fetch(input, init)),
-    now: options.now ?? Date.now,
-    randomBytes: options.randomBytes ?? defaultRandomBytes,
-    mintPairingGrant: options.mintPairingGrant,
-    authenticateCaller: options.authenticateCaller,
-  };
+  const resolved = resolveDeviceRequestOptions(options);
   if (pathname === "/device/code") return handleDeviceCode(request, env, resolved);
   if (pathname === "/device") return handleDeviceApproval(request, env, resolved);
-  if (pathname === "/device/approve") return handleDeviceAppApproval(request, env, resolved);
   if (pathname === "/device/callback") return handleDeviceCallback(request, env, resolved);
   if (pathname === "/device/token") return handleDeviceToken(request, env, resolved);
   return null;

@@ -45,6 +45,14 @@ vi.mock("../../lib/accountLogin", () => ({
     onPrompt?: (prompt: { userCode: string; verificationUri: string; verificationUriComplete: string | null }) => void;
     isCancelled?: () => boolean;
   }) => runAccountDeviceLogin(options),
+  accountDeviceLoginAvailable: () => false,
+  useAccountDeviceLogin: () => ({
+    phase: "idle",
+    prompt: null,
+    error: null,
+    begin: vi.fn(),
+    cancel: vi.fn(),
+  }),
 }));
 
 vi.mock("../../lib/account", async () => {

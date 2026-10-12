@@ -93,6 +93,9 @@ function writeDismissed(key: string): void {
 // Signed-out: the rich sign-in card.
 // ---------------------------------------------------------------------------
 
+/** Buttons on a card inside a draggable window region must opt out of the drag. */
+const NO_DRAG = { WebkitAppRegion: "no-drag" } as CSSProperties;
+
 export function SignInCard({
   configured,
   onSignedIn,
@@ -198,19 +201,11 @@ export function SignInCard({
             )}
             <button
               type="button"
+              className="ade-acct-btn"
+              data-variant="ghost"
               disabled={busy || !configured}
               onClick={() => void beginLogin()}
-              style={{
-                border: 0,
-                padding: "6px 8px",
-                background: "transparent",
-                color: COLORS.textMuted,
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                cursor: busy || !configured ? "not-allowed" : "pointer",
-                opacity: busy || !configured ? 0.55 : 1,
-                WebkitAppRegion: "no-drag",
-              } as CSSProperties}
+              style={NO_DRAG}
             >
               Sign in anyway
             </button>
@@ -241,21 +236,11 @@ export function SignInCard({
             {otherDevice.available ? (
               <button
                 type="button"
+                className="ade-acct-btn"
+                data-variant="ghost"
                 disabled={!configured || otherDevice.starting}
                 onClick={() => void otherDevice.begin()}
-                style={{
-                  display: "block",
-                  margin: "10px auto 0",
-                  border: 0,
-                  padding: "6px 8px",
-                  background: "transparent",
-                  color: COLORS.textSecondary,
-                  fontFamily: SANS_FONT,
-                  fontSize: 12.5,
-                  cursor: !configured || otherDevice.starting ? "not-allowed" : "pointer",
-                  opacity: !configured || otherDevice.starting ? 0.55 : 1,
-                  WebkitAppRegion: "no-drag",
-                } as CSSProperties}
+                style={{ ...NO_DRAG, display: "flex", margin: "10px auto 0" }}
               >
                 Sign in with your phone or another device
               </button>

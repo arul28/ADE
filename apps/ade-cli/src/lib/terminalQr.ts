@@ -71,7 +71,7 @@ function reedSolomonDivisor(degree: number): number[] {
 function reedSolomonRemainder(data: number[], divisor: number[]): number[] {
   const remainder = new Array<number>(divisor.length).fill(0);
   for (const byte of data) {
-    const factor = byte ^ (remainder.shift() as number);
+    const factor = byte ^ (remainder.shift() ?? 0);
     remainder.push(0);
     divisor.forEach((coefficient, index) => {
       remainder[index] ^= gfMultiply(coefficient, factor);
@@ -91,6 +91,7 @@ function dataCodewords(bytes: Uint8Array, version: number): number[] {
   for (const byte of bytes) append(byte, 8);
   append(0, Math.min(4, capacityBits - bits.length));
   append(0, (8 - (bits.length % 8)) % 8);
+  // The standard's two pad bytes, 0xEC and 0x11, in turn.
   for (let pad = 0xec; bits.length < capacityBits; pad ^= 0xec ^ 0x11) append(pad, 8);
 
   const codewords: number[] = [];
@@ -189,7 +190,7 @@ function maskPenalty(modules: boolean[][]): number {
  * The QR code for `text` as rows of modules (`true` is dark), with no quiet
  * zone, or `null` when the text does not fit in a version 10 code.
  */
-export function encodeQrModules(text: string): boolean[][] | null {
+function encodeQrModules(text: string): boolean[][] | null {
   const bytes = new TextEncoder().encode(text);
   let version = 1;
   while (4 + characterCountBits(version) + bytes.length * 8 > dataCodewordCount(version) * 8) {
@@ -263,6 +264,7 @@ export function encodeQrModules(text: string): boolean[][] | null {
   const codewords = withErrorCorrection(dataCodewords(bytes, version), version);
   let bitIndex = 0;
   for (let right = size - 1; right >= 1; right -= 2) {
+    // Column 6 is the vertical timing pattern; the column pairs step over it.
     if (right === 6) right = 5;
     for (let vertical = 0; vertical < size; vertical += 1) {
       for (let column = 0; column < 2; column += 1) {
@@ -305,7 +307,10 @@ export function encodeQrModules(text: string): boolean[][] | null {
  * `null` when the text does not fit or the code is wider than `maxColumns`.
  *
  * With `color`, the code is drawn black on white whatever the terminal theme
- * is. Without it, the code assumes light text on a dark background.
+ * is. Without it (`NO_COLOR`, for example) nothing can be painted, and the
+ * background cannot be read, so the code is drawn for light text on a dark
+ * background, the common case. On a light terminal that code is inverted and
+ * some scanners refuse it, which is why the caller always prints the link too.
  */
 export function renderTerminalQr(
   text: string,

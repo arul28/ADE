@@ -1,6 +1,10 @@
+import type { AdeAccountStatus } from "../../../shared/types";
 import { accountSessionNotice, fetchAccountStatus, type AdeAccountSessionState } from "../../lib/account";
-import { accountDeviceLoginAvailable, useAccountDeviceLogin } from "../../lib/accountDeviceLogin";
-import { useAccountLogin } from "../../lib/accountLogin";
+import {
+  accountDeviceLoginAvailable,
+  useAccountDeviceLogin,
+  useAccountLogin,
+} from "../../lib/accountLogin";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 
 /**
@@ -13,13 +17,11 @@ export function useSignInFlow({
   onSignedIn,
   sessionState,
 }: {
-  onSignedIn: () => void;
+  onSignedIn: (status: AdeAccountStatus) => void;
   sessionState: AdeAccountSessionState;
 }) {
-  const { phase, error, beginLogin, cancel } = useAccountLogin({
-    onSignedIn: () => onSignedIn(),
-  });
-  const otherDevice = useAccountDeviceLogin({ onSignedIn: () => onSignedIn() });
+  const { phase, error, beginLogin, cancel } = useAccountLogin({ onSignedIn });
+  const otherDevice = useAccountDeviceLogin({ onSignedIn });
   const otherDeviceActive = otherDevice.phase === "starting" || otherDevice.phase === "awaiting";
   const busy = phase === "starting" || phase === "awaiting" || otherDeviceActive;
   const unreadable = sessionState === "unreadable";

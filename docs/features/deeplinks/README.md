@@ -259,9 +259,9 @@ Send-to-Mac:
   account directory (`GET /device/approve`), and **Approve** opens the
   directory's one-time Clerk sign-in in an ephemeral web sheet, where the
   person taps **Allow** and types no password. The sheet polls the directory
-  and closes itself when the computer is signed in. A phone that is signed
-  out, or a directory that cannot approve from an app, hands off to the
-  browser page. In a browser, `apps/web/api/device.ts` redirects the same link
+  and closes the web sheet when the sign-in is approved. While the approval is
+  in flight the sheet cannot be dismissed. A phone that is signed out, or a
+  directory that cannot approve from an app, offers the browser page. In a browser, `apps/web/api/device.ts` redirects the same link
   to the directory's `/device` page.
 - `apps/ios/ADE/Views/Deeplinks/SendToMacCard.swift` — SwiftUI sheet
   bound to `.adeSendToMacRequested`. Parses the URL (including the portable

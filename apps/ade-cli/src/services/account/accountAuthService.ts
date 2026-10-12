@@ -2198,11 +2198,17 @@ export function createAccountAuthService(args: {
         authStatus: currentStatus(readSession()),
       };
     }
-    if (
-      authEpoch !== epochAtPoll
-      || pendingDeviceSessions.get(normalizedSessionId) !== session
-      || session.expiresAtMs <= now()
-    ) {
+    // Checked twice: after the directory answered, and again after the profile
+    // lookup below. Both are awaits, and a sign-in the person cancelled during
+    // either one must not be saved.
+    const cancelled = (): AccountDeviceLoginPollResult | null => {
+      if (
+        authEpoch === epochAtPoll
+        && pendingDeviceSessions.get(normalizedSessionId) === session
+        && session.expiresAtMs > now()
+      ) {
+        return null;
+      }
       pendingDeviceSessions.delete(normalizedSessionId);
       return {
         status: "error",
@@ -2210,7 +2216,9 @@ export function createAccountAuthService(args: {
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
-    }
+    };
+    const cancelledBeforeProfile = cancelled();
+    if (cancelledBeforeProfile) return cancelledBeforeProfile;
     let baseRecord: AccountSessionRecord;
     try {
       baseRecord = await buildSessionRecord({
@@ -2228,6 +2236,8 @@ export function createAccountAuthService(args: {
         authStatus: currentStatus(readSession()),
       };
     }
+    const cancelledBeforeSave = cancelled();
+    if (cancelledBeforeSave) return cancelledBeforeSave;
     // The directory's proof that a human just signed in on THIS machine, for
     // the case where the access token carries no authentication-time claim the
     // directory could check instead. Kept in memory only: it is a bearer secret
@@ -2241,6 +2251,14 @@ export function createAccountAuthService(args: {
       : baseRecord;
     persistSession(record, "device_login_completed");
     authEpoch += 1;
+    // One sign-in wins. A browser sign-in that is still open on this machine
+    // (`ade login` runs both at once) would otherwise complete a moment later
+    // and replace this session, possibly with another account.
+    for (const pending of pendingSessions.values()) {
+      if (pending.phase === "pending" || pending.phase === "exchanging") {
+        finishPendingSession(pending, "error", "ADE account sign-in was completed on another device.");
+      }
+    }
     notifySignedIn();
     pendingDeviceSessions.delete(normalizedSessionId);
     logger.info("account.device_login_completed");

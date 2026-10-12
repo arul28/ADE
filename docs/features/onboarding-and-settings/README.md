@@ -447,7 +447,8 @@ Renderer — onboarding:
   computer completes the sign-in and the password is never typed here (a VM, a
   shared machine). It is absent in the hosted web client, which is a browser
   already. `useSignInFlow` owns the shared sign-in state — the browser login,
-  the sign-in from another device (`lib/accountDeviceLogin.ts`), the four
+  the sign-in from another device (`useAccountDeviceLogin` in
+  `lib/accountLogin.ts`), the four
   session-state words, and the brain repair offered when a stored session
   cannot be read — and the Account page's
   `SignInCard` draws that same state its own way, so the two surfaces cannot

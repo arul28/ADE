@@ -108,7 +108,8 @@
         // opens the ADE phone app as a universal link, and redirects a browser
         // to this worker's `/device`. Production only: that page redirects to
         // the production worker. Deploy the website before this worker, or
-        // every sign-in link is a 404.
+        // every sign-in link is a 404; the deploy preflight checks the page
+        // is live (`scripts/verify-deployment-config.mjs`).
         "DEVICE_PAGE_ORIGIN": "https://ade-app.dev",
         "ONLINE_WINDOW_MS": "90000",
         "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",

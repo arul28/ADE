@@ -39,6 +39,15 @@ import { dirname, resolve } from "node:path";
  * They warn instead, including when they are set to something the Worker cannot
  * parse, because that silently falls back to the default rather than erroring.
  *
+ * `DEVICE_PAGE_ORIGIN` moves every sign-in link the Worker hands out to another
+ * site (`https://ade-app.dev/device`), so that site is checked live before the
+ * deploy: it must already redirect `/device` to a `/device` page elsewhere and
+ * keep the code. A Worker published ahead of the website turns every sign-in
+ * link, including the ones older CLIs print, into a 404. A value the Worker
+ * cannot use (a path, a query, plain http) fails too, because the Worker would
+ * ignore it without saying so. `CLERK_SECRET_KEY` only warns: without it the
+ * phone approval route answers 503 and the browser page still works.
+ *
  * Secrets are read from `wrangler secret list` BY NAME ONLY — this never reads,
  * prints, or logs a secret value. Vars are read from the committed
  * `wrangler.jsonc`. The deploy entry point passes the exact environment it is
@@ -64,7 +73,16 @@ export const DEFAULTED_VARS = [
   { name: "USAGE_RESEARCH_STORAGE_CEILING_MB", codeDefault: "4096" },
   { name: "MODEL_REGISTRY_REFRESH", codeDefault: "1" },
 ];
+/** Optional: missing only turns one route off, so it is a warning. */
+export const OPTIONAL_SECRETS = [
+  {
+    name: "CLERK_SECRET_KEY",
+    effect: "approving a sign-in from the ADE phone app answers 503, and the app offers the browser page",
+  },
+];
 export const ENVIRONMENTS = ["default", "production"];
+/** A well-formed code that no sign-in holds; the page must carry it through. */
+const DEVICE_PAGE_PROBE_CODE = "ABCD-EFGH";
 
 export class DeploymentConfigError extends Error {
   constructor(message) {
@@ -120,7 +138,8 @@ function environmentSection(config, environment) {
  * @param {object} args
  * @param {(environment: string) => Iterable<string>} args.listSecretNames
  * @param {() => object} args.readConfig
- * @returns {{ warnings: string[] }} Non-blocking notes about defaulted vars.
+ * @returns {{ warnings: string[], devicePageOrigins: { environment: string, origin: string }[] }}
+ *   Non-blocking notes, and the sign-in pages `verifyDevicePage` must find live.
  */
 export function verifyDirectoryDeploymentConfig(args) {
   const environments = args.environments ?? ENVIRONMENTS;
@@ -132,6 +151,7 @@ export function verifyDirectoryDeploymentConfig(args) {
       `unknown Worker environment(s): ${unknownEnvironments.join(", ")}`,
     );
   }
+  const optionalSecretWarnings = [];
   for (const environment of environments) {
     const secretNames = new Set(args.listSecretNames(environment));
     const missingSecrets = REQUIRED_SECRETS.filter((name) => !secretNames.has(name));
@@ -140,9 +160,15 @@ export function verifyDirectoryDeploymentConfig(args) {
         `missing Worker secret bindings for the ${environment} environment: ${missingSecrets.join(", ")}`,
       );
     }
+    for (const { name, effect } of OPTIONAL_SECRETS) {
+      if (!secretNames.has(name)) {
+        optionalSecretWarnings.push(`${name} is not set for the ${environment} environment; ${effect}.`);
+      }
+    }
   }
   const config = args.readConfig();
-  const warnings = [];
+  const warnings = [...optionalSecretWarnings];
+  const devicePageOrigins = [];
   for (const environment of environments) {
     const section = environmentSection(config, environment);
     const vars = section.vars && typeof section.vars === "object" ? section.vars : {};
@@ -161,6 +187,15 @@ export function verifyDirectoryDeploymentConfig(args) {
         `missing Worker service bindings for the ${environment} environment: ${missingServices.map(({ binding, service }) => `${binding} → ${service}`).join(", ")}`,
       );
     }
+    if (isConfiguredVar(vars.DEVICE_PAGE_ORIGIN)) {
+      const origin = exactHttpsOrigin(vars.DEVICE_PAGE_ORIGIN);
+      if (!origin) {
+        throw new DeploymentConfigError(
+          `DEVICE_PAGE_ORIGIN for the ${environment} environment must be an https origin with no path or query; the Worker would ignore "${vars.DEVICE_PAGE_ORIGIN}"`,
+        );
+      }
+      devicePageOrigins.push({ environment, origin });
+    }
     for (const { name, codeDefault } of DEFAULTED_VARS) {
       if (!isConfiguredVar(vars[name])) {
         warnings.push(
@@ -175,7 +210,64 @@ export function verifyDirectoryDeploymentConfig(args) {
       }
     }
   }
-  return { warnings };
+  return { warnings, devicePageOrigins };
+}
+
+function exactHttpsOrigin(value) {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:" && url.origin === value.trim() ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `ade-app.dev` and `www.ade-app.dev` are one site; the apex redirects to `www`. */
+function sameSite(left, right) {
+  const bare = (host) => host.replace(/^www\./, "");
+  return bare(left.hostname) === bare(right.hostname);
+}
+
+/**
+ * Is the sign-in page at `origin` live? `/device` must redirect to a `/device`
+ * page on another site and keep the code. A hop inside the site (the apex to
+ * `www`) is followed first, because that hop alone proves nothing: the site
+ * makes it for every path, deployed or not.
+ *
+ * @param {string} origin
+ * @param {typeof fetch} [fetchImpl]
+ */
+export async function verifyDevicePage(origin, fetchImpl = fetch) {
+  const start = new URL(`${origin}/device?user_code=${DEVICE_PAGE_PROBE_CODE}`);
+  let current = start;
+  let status = 0;
+  for (let hop = 0; hop < 4; hop += 1) {
+    let response;
+    try {
+      response = await fetchImpl(current.href, { redirect: "manual" });
+    } catch {
+      throw new DeploymentConfigError(
+        `${current.origin}/device could not be reached, so the sign-in page could not be checked; check the network, and that the website is deployed`,
+      );
+    }
+    status = response.status;
+    let target = null;
+    try {
+      target = new URL(response.headers.get("location") ?? "", current);
+    } catch {
+      // No usable Location: reported below with the status.
+    }
+    if (status < 300 || status >= 400 || !target || target.protocol !== "https:") break;
+    if (sameSite(target, start)) {
+      current = target;
+      continue;
+    }
+    if (target.pathname === "/device" && target.searchParams.get("user_code") === DEVICE_PAGE_PROBE_CODE) return;
+    break;
+  }
+  throw new DeploymentConfigError(
+    `${current.origin}/device answered ${status} and does not redirect to a sign-in page; deploy the website first, or every sign-in link is a dead end`,
+  );
 }
 
 function isConfiguredVar(value) {
@@ -254,7 +346,7 @@ export function wranglerSecretNames(environment, overrides = {}) {
     .filter(Boolean);
 }
 
-function main() {
+async function main() {
   const requestedEnvironment = process.argv[2];
   const environments = requestedEnvironment ? [requestedEnvironment] : ENVIRONMENTS;
   const configPath = resolve(
@@ -264,11 +356,13 @@ function main() {
   );
   let warnings = [];
   try {
-    ({ warnings } = verifyDirectoryDeploymentConfig({
+    const result = verifyDirectoryDeploymentConfig({
       environments,
       listSecretNames: wranglerSecretNames,
       readConfig: () => parseJsonc(readFileSync(configPath, "utf8")),
-    }));
+    });
+    warnings = result.warnings;
+    for (const { origin } of result.devicePageOrigins) await verifyDevicePage(origin);
   } catch (error) {
     console.error(
       `Account directory deployment preflight failed: ${
@@ -284,5 +378,5 @@ function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main();
+  await main();
 }

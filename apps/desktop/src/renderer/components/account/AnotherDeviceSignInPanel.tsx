@@ -1,8 +1,9 @@
-import { useState, type CSSProperties } from "react";
+import type { CSSProperties } from "react";
 import { CircleNotch } from "@phosphor-icons/react";
-import { QRCodeSVG } from "qrcode.react";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import type { AccountDeviceLoginPrompt } from "../../lib/accountLogin";
 import { MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { AdeQrCodeTile } from "../ui/AdeQrCode";
 
 /**
  * "Sign in with another device", once it has a code to show: the link as a QR
@@ -19,14 +20,16 @@ export function AnotherDeviceSignInPanel({
   prompt: AccountDeviceLoginPrompt;
   onCancel: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
   const link = prompt.verificationUriComplete ?? prompt.verificationUri;
-  const copyLink = () => {
-    void navigator.clipboard?.writeText(link).then(
-      () => setCopied(true),
-      () => setCopied(false),
-    );
-  };
+  const { copy, copied } = useCopyToClipboard({
+    // Through the main process: `navigator.clipboard` is not reliable here.
+    write: async (value) => {
+      const writeClipboardText = window.ade?.app?.writeClipboardText;
+      if (!writeClipboardText) return false;
+      await writeClipboardText(value);
+      return true;
+    },
+  });
   const quiet: CSSProperties = { opacity: 0.72 };
   const textButton: CSSProperties = {
     border: 0,
@@ -54,17 +57,7 @@ export function AnotherDeviceSignInPanel({
         textAlign: "center",
       }}
     >
-      <div style={{ padding: 10, borderRadius: 12, background: "#FFFFFF", lineHeight: 0 }}>
-        <QRCodeSVG
-          value={link}
-          size={156}
-          level="M"
-          marginSize={0}
-          bgColor="#FFFFFF"
-          fgColor="#111827"
-          title="Sign-in link for another device"
-        />
-      </div>
+      <AdeQrCodeTile value={link} title="Sign-in link for another device" size={156} style={{ lineHeight: 0 }} />
       <div style={{ fontSize: 14, fontWeight: 650 }}>Scan with your phone</div>
       <div style={quiet}>
         Sign in there and this computer signs in too. Your password is never typed on this computer.
@@ -84,7 +77,7 @@ export function AnotherDeviceSignInPanel({
           <CircleNotch size={13} weight="bold" className="animate-spin" />
           Waiting for you to sign in…
         </span>
-        <button type="button" style={textButton} onClick={copyLink}>
+        <button type="button" style={textButton} onClick={() => void copy(link)}>
           {copied ? "Link copied" : "Copy link"}
         </button>
         <button type="button" style={textButton} onClick={onCancel}>

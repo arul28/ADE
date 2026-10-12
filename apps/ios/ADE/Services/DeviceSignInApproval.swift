@@ -19,13 +19,14 @@ struct DeviceSignInRequest: Equatable, Identifiable {
     let isCustomLink = scheme == "ade" && url.host?.lowercased() == "device"
     guard isWebLink || isCustomLink,
           let userCode = Self.normalizedUserCode(
-            components.queryItems?.first { $0.name == "user_code" }?.value
+            ADEDeepLinkURLParsing.adeQueryValues(from: components)["user_code"]
           ) else { return nil }
     self.userCode = userCode
   }
 
   /// The directory's code shape: eight characters from an alphabet without
-  /// `0`, `1`, `I` or `O`, shown as `ABCD-EFGH`.
+  /// `0`, `1`, `I` or `O`, shown as `ABCD-EFGH`. The alphabet must stay equal
+  /// to `USER_CODE_ALPHABET` in `apps/account-directory/src/deviceAuthorization.ts`.
   static func normalizedUserCode(_ raw: String?) -> String? {
     guard let raw else { return nil }
     let alphabet = Set("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
@@ -61,7 +62,10 @@ enum DeviceSignInApprovalError: Error, Equatable {
   case alreadyUsed
   /// The directory cannot approve from an app; the browser page still can.
   case unavailable
+  /// Too many approvals from this network in the last minute.
   case rateLimited
+  /// The person closed the sign-in before the computer was signed in.
+  case unfinished
   /// The network, or an answer this build does not understand.
   case failed
 }
@@ -73,25 +77,24 @@ struct DeviceSignInApprovalClient {
   var session: URLSession = .shared
 
   /// The page a browser uses for the same code. It needs nothing from this
-  /// app, so it is where every "cannot do it here" case hands off to.
+  /// app, so the sheet offers it when this phone is signed out or the
+  /// directory cannot approve from an app.
   func browserPageURL(userCode: String) -> URL {
-    var components = URLComponents(
-      url: baseURL.appendingPathComponent("device"),
-      resolvingAgainstBaseURL: false
-    )
-    components?.queryItems = [URLQueryItem(name: "user_code", value: userCode)]
-    return components?.url ?? baseURL.appendingPathComponent("device")
+    url(path: "device", userCode: userCode)
   }
 
   func preview(userCode: String, token: String) async throws -> DeviceSignInPreview {
-    var components = URLComponents(
-      url: baseURL.appendingPathComponent("device/approve"),
-      resolvingAgainstBaseURL: false
-    )
+    let request = URLRequest(url: url(path: "device/approve", userCode: userCode))
+    let body = try await send(request, token: token, as: PreviewBody.self)
+    let name = body.machineName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return DeviceSignInPreview(status: body.status, machineName: name?.isEmpty == false ? name : nil)
+  }
+
+  private func url(path: String, userCode: String) -> URL {
+    let endpoint = baseURL.appendingPathComponent(path)
+    var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
     components?.queryItems = [URLQueryItem(name: "user_code", value: userCode)]
-    guard let url = components?.url else { throw DeviceSignInApprovalError.failed }
-    let body = try await send(URLRequest(url: url), token: token, as: PreviewBody.self)
-    return DeviceSignInPreview(status: body.status, machineName: body.machineName?.nilIfBlank)
+    return components?.url ?? endpoint
   }
 
   /// Approves the code and returns the one-time link that finishes it: Clerk
@@ -153,12 +156,5 @@ struct DeviceSignInApprovalClient {
     case 502, 503: throw DeviceSignInApprovalError.unavailable
     default: throw DeviceSignInApprovalError.failed
     }
-  }
-}
-
-private extension String {
-  var nilIfBlank: String? {
-    let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? nil : trimmed
   }
 }
