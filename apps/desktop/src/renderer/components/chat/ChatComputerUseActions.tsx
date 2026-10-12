@@ -301,15 +301,15 @@ function ActionLine({ summary, emphasize }: { summary: ComputerUseActionSummary;
   const words = (text: string, className?: string) => (
     <span className={running ? undefined : className}>{text}</span>
   );
-  const iconSize = emphasize ? 13 : 12;
+  const iconSize = 12;
+  // Background work: every line is the same small size. The newest one stands
+  // out by colour and its status icon, never by size.
   return (
     <span
       className={cn(
-        "min-w-0 truncate",
+        "min-w-0 truncate text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5]",
         running && "ade-thinking-shimmer [&_svg]:text-muted-fg",
-        emphasize
-          ? "text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.45] text-fg/90"
-          : "text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-muted-fg",
+        emphasize ? "text-fg/80" : "text-muted-fg",
       )}
       title={computerUseActionText(summary)}
     >
@@ -323,7 +323,7 @@ function ActionLine({ summary, emphasize }: { summary: ComputerUseActionSummary;
           ) : null}
           {words(
             parts.targetQuoted ? `“${parts.target}”` : parts.target,
-            cn(emphasize && "font-medium", emphasize && (failed ? "text-error" : "text-fg")),
+            cn(emphasize && (failed ? "text-error" : "text-fg/90")),
           )}
         </>
       ) : null}
@@ -379,8 +379,8 @@ const OUTCOME_STATUS: Record<ComputerUseActionOutcome, {
 function StatusIcon({ summary }: { summary: ComputerUseActionSummary }) {
   const status = OUTCOME_STATUS[summary.outcome];
   const StatusGlyph = status.icon;
-  if (!StatusGlyph) return <span aria-hidden className="size-[14px]" />;
-  return <StatusGlyph size={14} weight="regular" className={status.iconClass} aria-label={status.label} />;
+  if (!StatusGlyph) return <span aria-hidden className="size-[12px]" />;
+  return <StatusGlyph size={12} weight="regular" className={status.iconClass} aria-label={status.label} />;
 }
 
 function Dot({ outcome }: { outcome: ComputerUseActionOutcome }) {
@@ -398,7 +398,7 @@ function ActionGlyph({ summary, emphasize }: { summary: ComputerUseActionSummary
         emphasize ? "text-fg/75" : "text-muted-fg",
       )}
     >
-      <Glyph size={emphasize ? 15 : 13} weight="regular" />
+      <Glyph size={13} weight="regular" />
     </span>
   );
 }
@@ -432,12 +432,12 @@ function FullActionRow({ summary, count }: { summary: ComputerUseActionSummary; 
   const note = computerUseOutcomeNote(summary);
   return (
     <div
-      className={cn(ROW_GRID, "py-1")}
+      className={cn(ROW_GRID, "py-0.5")}
       data-testid="computer-use-action-full"
       data-outcome={summary.outcome}
     >
       <ActionGlyph summary={summary} emphasize />
-      <span className="inline-flex min-w-0 items-center text-[length:calc(var(--chat-font-size)*12/14)]">
+      <span className="inline-flex min-w-0 items-center text-[length:calc(var(--chat-font-size)*11/14)]">
         <ActionLine summary={summary} emphasize />
         <RepeatCount count={count} />
       </span>
@@ -445,7 +445,7 @@ function FullActionRow({ summary, count }: { summary: ComputerUseActionSummary; 
       {note ? (
         <span
           className={cn(
-            "col-start-2 col-end-4 mt-0.5 min-w-0 text-[length:calc(var(--chat-font-size)*11.5/14)] leading-[1.45]",
+            "col-start-2 col-end-4 mt-0.5 min-w-0 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-[1.45]",
             note.tone === "danger" ? "text-error" : "text-warning",
           )}
           data-testid="computer-use-action-note"
@@ -462,7 +462,7 @@ function CompactActionRow({ summary, count }: { summary: ComputerUseActionSummar
   return (
     <div className={cn(ROW_GRID, "py-0.5")} data-testid="computer-use-action-compact">
       <ActionGlyph summary={summary} emphasize={false} />
-      <span className="inline-flex min-w-0 items-center text-[length:calc(var(--chat-font-size)*12/14)]">
+      <span className="inline-flex min-w-0 items-center text-[length:calc(var(--chat-font-size)*11/14)]">
         <ActionLine summary={summary} emphasize={false} />
         <RepeatCount count={count} />
       </span>

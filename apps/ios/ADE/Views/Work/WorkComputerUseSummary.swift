@@ -292,7 +292,26 @@ private func cuIsSubcommandWord(domain: String, words: [String], token: String) 
   return false
 }
 
-private func cuParseInvocation(_ tokens: [String], aliasVars: Set<String>) -> CUParseResult {
+/// The command's words without its redirections (`2>&1`, `>out`, `2> err`):
+/// the shell consumes those, so `click --text 2>&1` has no click target.
+/// Mirrors `withoutRedirections` in `computerUseActionSummary.ts`.
+private func cuWithoutRedirections(_ tokens: [String]) -> [String] {
+  var words: [String] = []
+  var index = 0
+  while index < tokens.count {
+    let token = tokens[index]
+    index += 1
+    guard cuTests(#"^(?:\d+|&)?(?:>>?|<)"#, token) else {
+      words.append(token)
+      continue
+    }
+    if cuTests(#"^(?:\d+|&)?(?:>>?|<)$"#, token) { index += 1 }
+  }
+  return words
+}
+
+private func cuParseInvocation(_ allTokens: [String], aliasVars: Set<String>) -> CUParseResult {
+  let tokens = cuWithoutRedirections(allTokens)
   var index = 0
   while index < tokens.count {
     let token = tokens[index]

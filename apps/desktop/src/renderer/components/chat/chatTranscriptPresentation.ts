@@ -116,6 +116,28 @@ export function stabilizeTranscriptToolActivity(
 }
 
 /**
+ * Where one turn's tool activity ends and the next begins. A sent user message
+ * starts a new turn, but a steer the live turn took in (`accepted`, then
+ * `inline`/`processed`/`unprocessed`) does not: it lands mid-turn, and cutting
+ * the activity there hid every tool the turn ran before it — the working line
+ * fell back to a bare "Calling tool" with nothing to open.
+ */
+function isTurnActivityBoundary(event: ChatTranscriptGroupedEnvelope["event"]): boolean {
+  if (event.type === "done") return true;
+  if (event.type !== "user_message" || event.deliveryState === "queued") return false;
+  if (!event.steerId) return true;
+  switch (event.deliveryState) {
+    case "accepted":
+    case "inline":
+    case "processed":
+    case "unprocessed":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
  * Element-wise identity reuse for the small derived collections the transcript
  * memoizes on `events`.
  *
@@ -147,8 +169,8 @@ export function deriveTranscriptToolActivity(rows: ChatTranscriptGroupedEnvelope
       }
       continue;
     }
-    if (row.event.type === "user_message" && row.event.deliveryState !== "queued") {
-      pendingSegment = [];
+    if (row.event.type === "user_message") {
+      if (isTurnActivityBoundary(row.event)) pendingSegment = [];
       continue;
     }
     if (row.event.type !== "done") continue;
@@ -164,10 +186,7 @@ export function deriveTranscriptToolActivity(rows: ChatTranscriptGroupedEnvelope
     pendingSegment = [];
   }
 
-  const lastBoundaryIndex = rows.findLastIndex((row) => (
-    row.event.type === "done"
-    || (row.event.type === "user_message" && row.event.deliveryState !== "queued")
-  ));
+  const lastBoundaryIndex = rows.findLastIndex((row) => isTurnActivityBoundary(row.event));
   const activeEntries = rows
     .slice(lastBoundaryIndex + 1)
     .flatMap((row) => row.event.type === "work_log_group" ? row.event.entries : []);

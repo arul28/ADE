@@ -321,6 +321,42 @@ const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
  * has no `lastIndex` to carry between calls.
  */
 const SPAWN_COMPLETED_TITLE_PATTERN = /^(?:Peer|Chat)\s+"?(.*?)"?\s+(?:turn finished|finished its turn)$/;
+
+type SpawnCompletionChip = {
+  key: string;
+  childTitle: string;
+  childSessionId: string | null;
+  childMachineName: string | null;
+  repeatCount: number;
+};
+
+/** What a `spawn_completed` notice names: its child chat, and where it ran. */
+function readSpawnCompletionChip(key: string, event: AgentChatEvent | { type: string }, repeatCount: number): SpawnCompletionChip {
+  const notice = event.type === "system_notice" ? event as Extract<AgentChatEvent, { type: "system_notice" }> : null;
+  const completion: AgentChatSpawnCompletion | undefined =
+    notice?.detail && typeof notice.detail === "object" ? notice.detail.spawnCompletion : undefined;
+  // Fallback title parse for a notice whose detail lost its completion —
+  // which happens to notices in EITHER wording, so both are handled here:
+  // the current `spawnCompletedNoticeMessage` sentence, and the pre-rename
+  // `Peer "<title>" turn finished` that persisted transcripts still hold
+  // and are never re-emitted.
+  //
+  // One anchored match with a capture group rather than subtracting the
+  // two ends with a /g replace: a message that is not a completion notice
+  // at all now fails to match and falls through to "Chat", instead of
+  // being handed back mangled.
+  const parsedChildTitle = notice ? SPAWN_COMPLETED_TITLE_PATTERN.exec(notice.message)?.[1]?.trim() : undefined;
+  const childSessionId = typeof completion?.childSessionId === "string" && completion.childSessionId.length
+    ? completion.childSessionId
+    : null;
+  return {
+    key,
+    childTitle: completion?.childTitle?.trim() || parsedChildTitle || "Chat",
+    childSessionId,
+    childMachineName: completion?.childMachineName?.trim() || null,
+    repeatCount: Number.isFinite(repeatCount) && repeatCount > 1 ? Math.floor(repeatCount) : 1,
+  };
+}
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
 type CodexTurnStalledEvent = Extract<AgentChatEvent, { type: "codex_turn_stalled" }>;
 type CodexTurnRecoveryEvent = Extract<
@@ -1244,6 +1280,8 @@ type RenderEnvelope = {
   repeatCount?: number;
   /** Image views folded into this row by adjacency; see ChatTranscriptRenderEnvelope. */
   imageViewSiblings?: Array<Extract<AgentChatEvent, { type: "codex_image_view" }>>;
+  /** Other children's finished-turn notices on this line; see ChatTranscriptRenderEnvelope. */
+  spawnCompletionSiblings?: Array<{ key: string; event: AgentChatEvent | { type: string }; repeatCount: number }>;
   /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
   timestampSynthetic?: boolean;
   /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
@@ -3426,45 +3464,53 @@ function renderEvent(
       );
     }
     if (event.noticeKind === "info" && event.status === "spawn_completed") {
-      const completion: AgentChatSpawnCompletion | undefined =
-        event.detail && typeof event.detail === "object" ? event.detail.spawnCompletion : undefined;
-      // Fallback title parse for a notice whose detail lost its completion —
-      // which happens to notices in EITHER wording, so both are handled here:
-      // the current `spawnCompletedNoticeMessage` sentence, and the pre-rename
-      // `Peer "<title>" turn finished` that persisted transcripts still hold
-      // and are never re-emitted.
-      //
-      // One anchored match with a capture group rather than subtracting the
-      // two ends with a /g replace: a message that is not a completion notice
-      // at all now fails to match and falls through to "Chat", instead of
-      // being handed back mangled.
-      const parsedChildTitle = SPAWN_COMPLETED_TITLE_PATTERN.exec(event.message)?.[1]?.trim();
-      const childTitle = completion?.childTitle?.trim() || parsedChildTitle || "Chat";
-      const childSessionId = typeof completion?.childSessionId === "string" && completion.childSessionId.length
-        ? completion.childSessionId
-        : null;
-      const repeatCountRaw = envelope.repeatCount;
-      const repeatCount = typeof repeatCountRaw === "number" && Number.isFinite(repeatCountRaw) && repeatCountRaw > 1
-        ? Math.floor(repeatCountRaw)
-        : null;
-      return (
+      // One quiet line, not a pill: background news about other chats. The
+      // row pipeline keeps only each child's newest notice (with the count of
+      // turns it stands for) and puts neighbours on the same line.
+      const entries = [
+        { key: envelope.key, event, repeatCount: envelope.repeatCount ?? 1 },
+        ...(envelope.spawnCompletionSiblings ?? []),
+      ].map((entry) => readSpawnCompletionChip(entry.key, entry.event, entry.repeatCount));
+      const single = entries.length === 1 ? entries[0]! : null;
+      const chip = (entry: SpawnCompletionChip, label: string) => (
         <button
+          key={entry.key}
           type="button"
-          disabled={!childSessionId}
-          onClick={() => navigateToSpawnedChat(childSessionId, options?.laneId ?? null)}
-          className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70 transition-colors enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
-          title={childSessionId ? "Open the chat" : undefined}
+          disabled={!entry.childSessionId}
+          onClick={() => navigateToSpawnedChat(entry.childSessionId, options?.laneId ?? null)}
+          className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-sm text-left transition-colors enabled:hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20"
+          title={entry.childSessionId ? "Open the chat" : undefined}
         >
-          <span aria-hidden className="shrink-0 text-slate-300/60">◦</span>
-          <span className="min-w-0 truncate">{spawnCompletedNoticeMessage(childTitle)}</span>
-          {completion?.childMachineName ? (
-            <span className="shrink-0 text-slate-300/50">· on {completion.childMachineName}</span>
+          <span className="min-w-0 truncate">{label}</span>
+          {entry.childMachineName ? (
+            <span className="shrink-0 text-fg/30">· on {entry.childMachineName}</span>
           ) : null}
-          {repeatCount ? (
-            <span className="shrink-0 tabular-nums text-slate-300/45">×{repeatCount}</span>
+          {entry.repeatCount > 1 ? (
+            <span className="shrink-0 tabular-nums text-fg/30" aria-label={`${entry.repeatCount} turns`}>×{entry.repeatCount}</span>
           ) : null}
-          {childSessionId ? <CaretRight size={10} className="shrink-0 text-slate-300/55" /> : null}
+          {entry.childSessionId ? <CaretRight size={9} className="shrink-0 text-fg/30" aria-hidden /> : null}
         </button>
+      );
+      return (
+        <div
+          className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-start gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-[1.6] text-fg/45"
+          data-testid="spawn-completed-line"
+        >
+          <CheckCircle size={11} className="mt-[0.3em] shrink-0 text-fg/30" aria-hidden />
+          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+            {single ? chip(single, spawnCompletedNoticeMessage(single.childTitle)) : (
+              <>
+                <span className="shrink-0">{entries.length} chats finished their turns:</span>
+                {entries.map((entry, index) => (
+                  <React.Fragment key={entry.key}>
+                    {index > 0 ? <span aria-hidden className="text-fg/25">·</span> : null}
+                    {chip(entry, entry.childTitle)}
+                  </React.Fragment>
+                ))}
+              </>
+            )}
+          </span>
+        </div>
       );
     }
     // ── Host sleep ──

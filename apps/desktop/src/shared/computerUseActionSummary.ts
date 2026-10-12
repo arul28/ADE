@@ -307,7 +307,31 @@ function isAdeExecutable(token: string, aliasVars: ReadonlySet<string>): boolean
   return Boolean(variable && aliasVars.has(variable));
 }
 
-function parseInvocation(tokens: readonly string[], aliasVars: ReadonlySet<string>): ParsedInvocation | null | "control" {
+/** A shell redirection: `2>&1`, `>out`, `2>/dev/null`, `&>log`, `<in`. */
+const REDIRECTION = /^(?:\d+|&)?(?:>>?|<)/;
+/** A redirection whose target is the next word: `> out`, `2> err`. */
+const BARE_REDIRECTION = /^(?:\d+|&)?(?:>>?|<)$/;
+
+/**
+ * The command's words without its redirections. The shell consumes those
+ * itself, so `click --text 2>&1` has no click target: the `2>&1` read as one
+ * named the action `Clicked “2>&1”`.
+ */
+function withoutRedirections(tokens: readonly string[]): string[] {
+  const words: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (!REDIRECTION.test(token)) {
+      words.push(token);
+      continue;
+    }
+    if (BARE_REDIRECTION.test(token)) index += 1;
+  }
+  return words;
+}
+
+function parseInvocation(allTokens: readonly string[], aliasVars: ReadonlySet<string>): ParsedInvocation | null | "control" {
+  const tokens = withoutRedirections(allTokens);
   let index = 0;
   // Leading assignments and wrappers: `FOO=1 env timeout 30 ade …`.
   while (index < tokens.length) {
