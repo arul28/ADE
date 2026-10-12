@@ -108,6 +108,7 @@
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",
+    "@electron/notarize": "2.5.0",
     "@electron/rebuild": "^4.0.1",
     "@floating-ui/react": "^0.27.19",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
@@ -352,6 +353,7 @@
       }
     ],
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",
+    "afterSign": "./scripts/after-sign-notarize.cjs",
     "publish": {
       "provider": "github",
       "owner": "arul28",
@@ -468,7 +470,7 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "provisioningProfile": "build/ade-desktop.provisionprofile",
-      "notarize": true,
+      "notarize": false,
       "mergeASARs": false,
       "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64,transcribe-cli}{,/**}",
       "artifactName": "ADE-${version}-${arch}.${ext}",

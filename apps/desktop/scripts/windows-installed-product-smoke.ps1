@@ -29,9 +29,41 @@ $cliPathDir = Split-Path $cliShim -Parent
 $runKey = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run"
 $uninstallRoot = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall"
 
+# 0xC0000005 (access violation). On GitHub's Windows runners the very first
+# silent install crashes with it within seconds in roughly a third of releases,
+# before it writes anything, and a rerun of the same job passes. It predates the
+# custom NSIS hooks, so the cause is not known yet. Retry that one code once,
+# and print the Windows Error Reporting record so the faulting module is in the
+# log the next time it happens.
+$installerAccessViolation = -1073741819
+
+function Write-InstallerCrashReport([datetime]$Since) {
+  try {
+    $events = @(Get-WinEvent -FilterHashtable @{ LogName = "Application"; Id = @(1000, 1001, 1026); StartTime = $Since } -ErrorAction Stop)
+    if ($events.Count -eq 0) {
+      Write-Warning "No Application crash events were recorded for the installer."
+      return
+    }
+    foreach ($crashEvent in $events) {
+      Write-Warning "Crash event $($crashEvent.Id) from $($crashEvent.ProviderName):`n$($crashEvent.Message)"
+    }
+  } catch {
+    Write-Warning "Could not read Application crash events: $($_.Exception.Message)"
+  }
+}
+
 function Invoke-Installer {
-  $process = Start-Process -FilePath $installer -ArgumentList @("/S") -Wait -PassThru -WindowStyle Hidden
-  if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode)." }
+  for ($attempt = 1; ; $attempt++) {
+    $startedAt = Get-Date
+    $process = Start-Process -FilePath $installer -ArgumentList @("/S") -Wait -PassThru -WindowStyle Hidden
+    if ($process.ExitCode -eq 0) { return }
+    if ($process.ExitCode -eq $installerAccessViolation) { Write-InstallerCrashReport $startedAt }
+    if ($process.ExitCode -ne $installerAccessViolation -or $attempt -ge 2) {
+      throw "Installer exited with code $($process.ExitCode)."
+    }
+    Write-Warning "Installer crashed with an access violation; retrying once."
+    Start-Sleep -Seconds 5
+  }
 }
 
 function Invoke-Uninstaller([bool]$BestEffort = $false) {

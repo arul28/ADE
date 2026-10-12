@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { exitIfCachedHelper } from "./native-helper-cache.mjs";
 
 /**
  * Build the macOS half of the global capture helper.
@@ -18,6 +19,8 @@ const desktopRoot = path.resolve(scriptDir, "..");
 const packageRoot = path.join(desktopRoot, "native", "ADECaptureHelper");
 const outputRoot = path.join(desktopRoot, "resources", "native");
 const outputPath = path.join(outputRoot, "ade-capture-helper");
+
+exitIfCachedHelper(outputPath);
 
 if (process.platform !== "darwin") {
   console.log("[capture-helper] Skipping macOS capture helper build outside macOS.");
