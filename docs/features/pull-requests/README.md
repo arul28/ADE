@@ -227,11 +227,12 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `detail/prChecksGraphCache.ts` | Module-scoped graph cache keyed `prId@headSha`, with a longer TTL for a charted graph than an uncharted one, plus in-flight de-duplication. A rejected read is never cached — storing it as "no graph here" is the failed-read-that-looks-empty bug. |
 | `detail/prChecksListModel.ts` | Pure grouping for the List view: workflow sections, worst-state-first ordering, and per-section counts. Shares `workflowNameOf`/`stripWorkflowPrefix` with `prChecksModel.ts` and the rank table with `shared/prPipelineState.ts`. |
 | `detail/prChecksVisuals.tsx` | The one status vocabulary for the CI surface — `STATE_COLOR`, `STATE_LABEL`, `STATE_BORDER_STYLE`, `StateIcon`, `tint`, `fmtMs` — plus `OpenOnGitHubButton`. Colour is never the only channel: every state also carries a distinct glyph shape, a distinct border style, and a written word. Imported by both the eager tab and the lazy canvas, so it stays free of heavy imports. |
-| `shared/PrTimeline.tsx` | The virtualized thread. It renders the `digest` model (a required prop) in the triage layout: the description as a document, the pinned "Needs attention" block (open, not outdated threads; six rows, then "Show N more"), a divider per push, and one folded row per bot per push. A bot row expands into one line per item, and a line opens the full card (reply, resolve, react, edit stay the same components). There are no thread filters. Resolved and outdated threads stay in the thread (in a bot row, or as their own row), so a deep link can always focus them. `n` / `p` step through the unresolved threads. Comment/reaction/edit identity is `writeViewerLogin` when that prop is present (including explicit `null`), else `viewerLogin`. |
+| `shared/PrTimeline.tsx` | The virtualized thread. It renders the `digest` model (a required prop) in the triage layout: the pinned "Needs attention" block (the checks that fail now, then open, not outdated threads; three rows, then "Show N more"), the description (a Brief when it is one), a divider per push, and one folded row per bot per push. A bot row expands into one line per item, and a line opens the full card (reply, resolve, react, edit stay the same components). There are no thread filters. Resolved and outdated threads stay in the thread (in a bot row, or as their own row), so a deep link can always focus them. `n` / `p` step through the unresolved threads. Comment/reaction/edit identity is `writeViewerLogin` when that prop is present (including explicit `null`), else `viewerLogin`. |
 | `shared/prDigestTimelineModel.ts` | Turns `PrTimelineEvent[]` into the triage render items (`attention`, `push`, `bot-group`, `event`) and the push ticks. Consecutive commits with no conversation between them are one push; a force-push starts its own. Uses the shared `buildPrConversationDigest`. |
 | `shared/PrTimelineDigestRows.tsx` | The digest row components that `PrTimeline` renders: `DigestRowShell` (the measured, absolutely positioned row), `NeedsAttentionBlock`, `PushDivider`, and `BotGroupRow`. A bot row opens by itself when the focused event is inside it. Bot blocks split out of the PR body show a note that the PR author wrote them. |
 | `shared/PrFloatingDock.tsx`, `shared/PrFloatingDock.css` | The bubble column and its cards: Merge (open by default, ring in the next-step tone that pulses once when the step changes, off under Reduce Motion), Comment (comment or review), Reviewers (requested reviewers plus everyone who reviewed, split into People and Agents), Labels, and Assignees. One card is open at a time; Escape closes it. `PrMergeCard` renders the next step: headline, detail, main action, secondary action, "Merge anyway" or "Bypass & merge", and the requirement chips. The Overview resolves the two buttons before it renders the card: `PrMergeCardActions` holds `primary` and `secondary` as `{ action, label, busy }` or `null` (null when the host cannot run that action), plus `run` and `onChip`. On a merged PR the card shows `PrShippedSummary`. |
 | `shared/PrPushTickRail.tsx` | One tick per push on the thread's right edge. A tick is amber when its push has open threads and carries a dot when it drew comments. Hover shows the commit, time, and comment count; a click scrolls to that push. |
+| `shared/PrBrief.tsx`, `shared/PrProofMedia.tsx`, `shared/PrSelectionToolbar.tsx` | The description as a Brief, proof in the PR text (this machine's copy or GitHub's, and the side-by-side figure), and "Add to chat" for selected text. See [The Brief](#the-brief). |
 | `shared/PrActionsMenu.tsx`, `shared/prChatActions.ts` | The `⋯` menu model and its two renderers: the header dropdown and the sidebar row's right-click menu (`GitHubTabPrRow`). Chat actions (Ask, Explain, Fix open review findings, Fix failing checks, Resolve conflicts, Update the description) put a prompt in a chat composer and never send it. One linked chat is used directly; several give a submenu; none starts a chat in the PR's lane (a lane-owned PR is in every lane chat's PR scope). A PR with no lane has no chat actions. The rest: Convert to draft / Ready for review, Enable or Turn off auto-merge, Refresh, Open on GitHub, Copy link / PR number / branch / checkout command, Manage lane… (only for a PR with a lane; opens `PrManageLaneDialogHost`), and Close (with a confirm) or Reopen. |
 | `shared/PrShippedSummary.tsx` | The record of how a PR shipped, in the Merge card after a merge: who merged it and when, its size, and the ADE lane that produced it. Each group is omitted when its data is missing. The lane counts are frozen at detach time, so they stay after the lane is deleted. |
 | `shared/PrAgentAvatar.tsx` | Agent and bot marks, keyed on `classifyPrAuthor` from `apps/desktop/src/shared/prBotIdentity.ts`. A bundled logo when ADE ships one (single-color SVGs are drawn as a CSS mask in the brand color, quoted because Vite inlines them as `data:` URLs), else the GitHub app avatar, which is the app's real logo, else a brand-colored monogram. A person gets `PrUserAvatar`. |
@@ -2157,7 +2158,7 @@ cards can display the same state.
 
 `PrDetailPane` renders `PrDetailTimelineRails` for Overview in the PRs tab and in the chat tools panel. It is one column; nothing resizes.
 
-- **The thread:** `PrTimeline` with the digest model. The description comes first and renders as a document (`PrMarkdown` `variant="document"`). The "Needs attention" block follows with the open review threads, people first, then bots. Then one section per push, with each bot folded into one row. People, lifecycle events, labels, and deployments stay as full rows in the section where they happened.
+- **The thread:** `PrTimeline` with the digest model. The "Needs attention" block comes first: one row for the checks that fail now (open and draft PRs only), then the open review threads, people first, then bots. It pins three rows and folds the rest under "Show more", so the description stays on the first screen. The description follows (see [The Brief](#the-brief)). Then one section per push, with each bot folded into one row. People, lifecycle events, labels, and deployments stay as full rows in the section where they happened.
 - **The push tick rail:** `PrPushTickRail` on the right edge. It replaces the floating commit pill.
 - **The floating dock:** `PrFloatingDock` at the bottom right. The thread reserves bottom padding so its last row scrolls clear of the dock.
 
@@ -2208,6 +2209,61 @@ metadata survives — and render as a full-width "commit divider" between
 review / comment activity bands. The reconciler also derefs
 comments/reviews seen in both review-thread and activity sources by
 comment / review id so the timeline never double-renders a thread reply.
+
+### The Brief
+
+A description is drawn as a Brief when it answers a reader's questions under
+headings: **Why**, **What changed**, **Evidence**, **Not checked**, and the
+optional **Choices I made**. `shared/prBrief.ts` (`parsePrBrief`) splits the
+markdown at its top headings. Other templates use other names for the same
+parts (Problem, Change, Verification, Test plan), and those headings map to the
+same parts. A heading the parser does not know stays in place as its own part,
+and text before the first heading is the lead. A description with fewer than
+two known parts renders as the plain document it is.
+
+`PrDescriptionBody` (`prs/shared/PrBrief.tsx`) draws each part with a small
+label and its markdown. Only the "Not checked" part is tinted. The Evidence
+label says what kind of evidence the part holds ("2 pictures · 3 commands"),
+and shows "Not final" when the text still holds a placeholder such as
+`pending /test`. A Brief with no Evidence part says so in one quiet line.
+
+The Brief is plain markdown in the PR's own text. ADE stores nothing beside
+it, so GitHub, the phone and another machine all read the same words.
+`prBriefHints` in the same file is the checker `ade prs create` and
+`ade prs body` print under "For the reader". It guides and never refuses, and
+a text of 60 words or fewer with no headings gets no hints.
+
+### Proof in the PR text
+
+An author cites proof in the text as in a chat answer:
+`![caption](ade-proof://<id>)` and the `proof-compare` fence. `ade prs create`,
+`ade prs body` and `ade proof publish --pr <n> --in-body` upload the cited
+files with `gh pr edit --attach` and rewrite each citation
+(`shared/prBodyProof.ts`): a picture becomes an ordinary image, a comparison
+becomes a `| Before | After |` table (two stacked videos when a side is a
+video, because GitHub plays a video only on its own line). Each uploaded item
+keeps its proof id in an HTML comment that GitHub does not show.
+
+`PrMarkdown` reads the same text back (`preparePrBodyProofForAde`). A picture
+with a proof id shows this machine's copy when it holds one (`PrProofMedia`,
+the chat's proof figure, so a video has its chapters), else GitHub's copy. A
+Before/After table whose one row holds one picture per cell becomes a
+side-by-side figure (`PrCompare`), whoever wrote the table. A citation that
+was never uploaded still shows on the machine that holds the proof.
+
+### Add to chat
+
+Every part of the PR can be quoted in the chat that works on it: a Brief part,
+a comment, a review, a review thread, a picture, a comparison, or any selected
+text (`PrSelectionToolbar`). The control shows on hover and only when the PR
+has a lane. `PrDetailPane.addQuoteToChat` formats the quote as an
+`<ade-chat-context>` block whose first line names its source ("a review thread
+on prService.ts:40 in pull request #12 …", `formatChatOutputContextBlock`'s
+`source`), and queues it for the composer with
+`queueAgentChatDraftHandoff(…, { collect: true })`. The reader stays on the
+PR: quotes collect for up to 15 minutes and a toast offers "Open chat". The
+target is the chat whose tools panel holds the pane, else the newest linked
+chat; with no chat, a new lane chat opens with the quote in it.
 
 ### Timeline comment identity
 

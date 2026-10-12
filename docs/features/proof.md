@@ -267,6 +267,21 @@ ade proof publish --pr <number|url> <artifact-id> [<artifact-id>...] [--heading 
   the command still reports the comment and prints a warning.
 - Exit codes: `0` when the comment posted; `1` when nothing posted.
 
+#### In the PR's own text
+
+```
+ade proof publish --pr <number|url> --in-body
+```
+
+Takes no ids. It reads the PR text from GitHub, uploads each proof item the
+text cites (`![caption](ade-proof://<id>)` or a `proof-compare` fence) with
+`gh pr edit --attach`, and rewrites the citations in place
+(`publishProofIntoPullRequestBody`, `shared/prBodyProof.ts`). `ade prs create`
+and `ade prs body` run the same upload when the text they send cites proof.
+An item that cannot go up keeps its citation and is listed as not uploaded.
+The same `gh` version, size limits and `github_pr` link apply. How ADE draws
+the result: `docs/features/pull-requests/README.md` ("Proof in the PR text").
+
 ### `ade proof list`
 
 Print the proof set for the current session as JSON, or as a table with `--text`.
