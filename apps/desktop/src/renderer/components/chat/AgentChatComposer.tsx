@@ -4,6 +4,8 @@ import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { linearIssueRef } from "../../../shared/issueRefs";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import type { CompactFirstOffer } from "../../../shared/compactFirst";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
@@ -3487,9 +3489,12 @@ export function AgentChatComposer({
       rememberPreviewUrl(tempPath, `data:${image.mimeType};base64,${image.data}`);
       onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, image.mimeType) });
       dropPendingImageAttachment(pendingImage.id);
-    } catch {
+    } catch (error) {
       dropPendingImageAttachment(pendingImage.id);
-      setAttachError("Unable to attach clipboard image.");
+      // The host's reason (a clipboard image it could not fit under the
+      // ceiling, say) is the useful part; a bare "Unable to attach" hid it.
+      const reason = error instanceof Error ? stripElectronErrorWrapper(error.message) : "";
+      setAttachError(reason || "Unable to attach clipboard image.");
     } finally {
       fileAddInProgressRef.current = false;
     }
@@ -5700,6 +5705,20 @@ export function AgentChatComposer({
     event.preventDefault();
     if (fallbackAlreadyAttached) return;
     clipboardImagePasteHandledRef.current += 1;
+    // A photo copied out of Messages or Photos arrives as a PNG the browser
+    // re-encoded from the bitmap, often 3–10x the file that was sent, and over
+    // the pasted-bytes ceiling. The desktop clipboard reader fits it under the
+    // ceiling instead of refusing it, so an oversized pasted image goes there.
+    // The web adapter's reader does no fitting, so the web keeps the old path.
+    const oversizedClipboardImage = collected.length === 1
+      && collected[0]!.type.startsWith("image/")
+      && collected[0]!.size > LEGACY_MAX_CHAT_ATTACHMENT_BYTES
+      && !isWebClientMode()
+      && typeof window.ade?.app?.readClipboardImage === "function";
+    if (oversizedClipboardImage) {
+      void addNativeClipboardImageAttachment();
+      return;
+    }
     void addFileAttachments(collected);
   };
 

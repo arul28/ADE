@@ -58,6 +58,7 @@ import type {
   BuiltInBrowserAgentAccessSnapshot,
   BuiltInBrowserStatus,
   BuiltInBrowserTab,
+  BuiltInBrowserTabLoadError,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   BuiltInBrowserTraceArgs,
@@ -395,6 +396,8 @@ export type BrowserTabState = {
    * launchpad rather than a page. Cleared the moment it navigates anywhere.
    */
   isLaunchpad: boolean;
+  /** The current page's main-frame load failure; cleared when the next navigation starts. */
+  loadError: BuiltInBrowserTabLoadError | null;
   /**
    * The favicon the renderer draws, and the origin it belongs to.
    *
@@ -3259,6 +3262,7 @@ function createBuiltInBrowserWindowService(args: {
     wc.on("will-redirect", (event, url) => enforceAgentNavigation(event, url, "redirect"));
     wc.on("did-start-loading", () => {
       const tab = tabForWebContents(wc);
+      if (tab) tab.loadError = null;
       noteNetworkActivity(tab);
       if (tab) demoTrackRegistry.noteLoad(builtInBrowserRecordingKey(tab.id), "start");
       emitStatus();
@@ -3367,6 +3371,14 @@ function createBuiltInBrowserWindowService(args: {
       if (!isMainFrame || errorCode === -3) return;
       const tab = tabForWebContents(wc);
       if (tab) {
+        // Chromium paints a failed main-frame load as a plain white page, which
+        // is all a preview of the tab could show. Record why, so surfaces can
+        // say the page did not load instead of showing a white box.
+        tab.loadError = {
+          code: errorCode,
+          description: errorDescription || `Load failed (${errorCode})`,
+          url: stringOrNull(validatedURL) ?? emptyToNull(wc.getURL()),
+        };
         noteNetworkActivity(tab);
         pushNetworkDiagnostic(tab, {
           url: stringOrNull(validatedURL) ?? emptyToNull(wc.getURL()) ?? "about:blank",
@@ -3433,6 +3445,7 @@ function createBuiltInBrowserWindowService(args: {
       zoomFactor: BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
       emulation: null,
       isLaunchpad: false,
+      loadError: null,
       faviconUrl: null,
       faviconSourceUrl: null,
       faviconOrigin: null,
@@ -3578,6 +3591,20 @@ function createBuiltInBrowserWindowService(args: {
         height: BUILT_IN_BROWSER_AGENT_VIEWPORT.height,
       };
     }
+    // A device preset draws the device at the pane's letterbox scale, pinned
+    // to the view's top-left corner. Parked in the default box, a 390×844
+    // phone became a strip down the left of a white 960×600 picture, and that
+    // whole picture is what the corner card showed. Parked at the device's own
+    // drawn size, every frame is the device and nothing else.
+    if (tab.emulation && tab.emulation.width > 0 && tab.emulation.height > 0) {
+      const scale = tabCapabilities.emulationInputScale(tab);
+      return {
+        x: Math.max(0, right - content.x) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+        y: Math.max(0, bottom - content.y) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+        width: Math.max(1, Math.round(tab.emulation.width * scale)),
+        height: Math.max(1, Math.round(tab.emulation.height * scale)),
+      };
+    }
     // Window-relative, because `WebContentsView.setBounds` is.
     // A pane squeezed to a sliver is not a page size worth keeping: a tab
     // parked at 167 px wide laid the page out as a strip, and every
@@ -3689,6 +3716,21 @@ function createBuiltInBrowserWindowService(args: {
    */
   const surfacedTabIds = new Set<string>();
   /**
+   * The size each surfaced view was last laid out at while it overlapped the
+   * window. Chromium does not re-lay out a view whose bounds lie wholly off the
+   * window, so a park at a different size keeps the old layout: closing the
+   * Work tools pane recorded the panel mid-animation (18×661) and the page
+   * stayed a sliver inside a 960×600 park box, which the corner card then
+   * showed as a thin strip. A park whose size differs from this re-warms, so
+   * the resize lands while the view still overlaps the window by one pixel.
+   */
+  const surfacedSizes = new Map<string, { width: number; height: number }>();
+  const noteSurfacedSize = (tab: BrowserTabState): void => {
+    if (!tab.view || typeof tab.view.getBounds !== "function") return;
+    const { width, height } = tab.view.getBounds();
+    if (width > 0 && height > 0) surfacedSizes.set(tab.id, { width, height });
+  };
+  /**
    * Per tab, not one shared handle: two watched tabs warm independently, and a
    * single timer meant the second one cancelled the first — leaving that view
    * sitting on its warming rect, with its one pixel showing, for good.
@@ -3722,7 +3764,11 @@ function createBuiltInBrowserWindowService(args: {
     if (warmingTimers.has(tabId)) return;
     const handle = setTimeout(() => {
       warmingTimers.delete(tabId);
-      if (hostWindowIsOnScreen()) surfacedTabIds.add(tabId);
+      if (hostWindowIsOnScreen()) {
+        surfacedTabIds.add(tabId);
+        const warmedTab = tabById(tabId);
+        if (warmedTab) noteSurfacedSize(warmedTab);
+      }
       attachViewsToCurrentWindow();
       resolveWarmWaiters(tabId);
     }, BUILT_IN_BROWSER_PREVIEW_WARM_MS);
@@ -3870,6 +3916,23 @@ function createBuiltInBrowserWindowService(args: {
           const wasAttached = win.contentView.children.includes(tab.view);
           const wasParked = parkedTabIds.has(tab.id);
           if (!wasAttached) win.contentView.addChildView(tab.view);
+          // A grace park keeps the page exactly as it was on screen: same size,
+          // no agent viewport, so the way back is a move and not a relayout.
+          const graceRect = graceOnly && tab.lastPanelRect
+            ? { ...parkedPreviewRect(tab), width: tab.lastPanelRect.width, height: tab.lastPanelRect.height }
+            : null;
+          const targetRect = graceRect ?? parkedPreviewRect(tab);
+          // A surface laid out at another size cannot be resized from off the
+          // window (see `surfacedSizes`), so it is warmed again at the new one.
+          const surfacedSize = surfacedSizes.get(tab.id);
+          if (
+            surfacedTabIds.has(tab.id)
+            && !warmingTimers.has(tab.id)
+            && surfacedSize
+            && (surfacedSize.width !== targetRect.width || surfacedSize.height !== targetRect.height)
+          ) {
+            surfacedTabIds.delete(tab.id);
+          }
           // Warm first if this view has no surface yet; the timer moves it to
           // the real park point two frames later.
           const warming = surfacedTabIds.has(tab.id) ? null : warmingPreviewRect(tab);
@@ -3879,12 +3942,7 @@ function createBuiltInBrowserWindowService(args: {
           // warm, where the radius exists to clip the pixel that overlaps the
           // UI rather than to decorate anything.
           applyTabViewCornerRadius(tab, warming ? warmingCornerRadius : 0);
-          // A grace park keeps the page exactly as it was on screen: same size,
-          // no agent viewport, so the way back is a move and not a relayout.
-          const graceRect = graceOnly && tab.lastPanelRect
-            ? { ...parkedPreviewRect(tab), width: tab.lastPanelRect.width, height: tab.lastPanelRect.height }
-            : null;
-          const parkedRect = warming ?? graceRect ?? parkedPreviewRect(tab);
+          const parkedRect = warming ?? targetRect;
           tab.view.setBounds(parkedRect);
           if (graceRect) syncAgentViewport(tab);
           else syncAgentViewport(tab, parkedRect);
@@ -3922,6 +3980,7 @@ function createBuiltInBrowserWindowService(args: {
       // On screen at real bounds: whatever else happens, this view has a surface.
       surfacedTabIds.add(tab.id);
       tab.view.setBounds(electronRect);
+      noteSurfacedSize(tab);
       syncAgentViewport(tab, electronRect);
       tab.view.setVisible(true);
       applyTabLifecycle(tab, true);
@@ -5027,6 +5086,7 @@ function createBuiltInBrowserWindowService(args: {
       // `surfacedTabIds` and runs a pointless attach pass, and both collections
       // then grow with every closed tab for the life of the window.
       surfacedTabIds.delete(removed.id);
+      surfacedSizes.delete(removed.id);
       clearWarmingTimer(removed.id);
       tabCapabilities.stopPreviewStreamsForTab(removed.id);
       teardownTabCapabilities(removed);
@@ -6417,6 +6477,8 @@ function createBuiltInBrowserWindowService(args: {
       }
       attachViewsToCurrentWindow();
     },
+    // A parked tab is boxed at its device's size (see `parkedPreviewRect`).
+    onTabEmulationChanged: () => attachViewsToCurrentWindow(),
     isTabSurfaced: (tabId) => surfacedTabIds.has(tabId),
     holdCaptureSurface: async (tabId) => {
       const release = acquireCaptureHold(tabId);
@@ -6697,6 +6759,7 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     url,
     title: isLaunchpad ? "New tab" : (wc.isDestroyed() ? null : emptyToNull(wc.getTitle())),
     isLaunchpad,
+    loadError: tab.loadError ? { ...tab.loadError } : null,
     isolatedProfile: tab.isolation?.profile ?? null,
     faviconUrl: tab.faviconUrl,
     isLoading: wc.isDestroyed() ? false : wc.isLoading(),

@@ -772,16 +772,16 @@ export function workLiveCardAspect(
   sourceAspect?: number | null,
 ): number {
   if (typeof sourceAspect === "number" && Number.isFinite(sourceAspect) && sourceAspect > 0) {
-    // A parked browser tab can keep the size of a narrow, tall Work pane, and
-    // a card of that shape is a sliver down the column. The card stays a
-    // landscape box, and the page is shrunk to fit inside it.
-    return tool === "browser" ? Math.max(sourceAspect, WORK_LIVE_BROWSER_MIN_ASPECT) : sourceAspect;
+    // The card takes the picture's own shape, browser included. A browser
+    // card used to be held at 4:3 or wider so a tab parked at a sliver of a
+    // pane would not become a sliver of a card, but parking now lays a hidden
+    // tab out at a usable size, so a tall picture is a real page — a phone
+    // preset, a tall pane — and a landscape box showed it as a strip using a
+    // third of the card. `workLiveCardSize` keeps a tall card inside the column.
+    return sourceAspect;
   }
   return tool ? WORK_LIVE_TOOL_ASPECT[tool] : WORK_LIVE_CARD_DEFAULT_ASPECT;
 }
-
-/** The narrowest box the browser card takes: 4:3. */
-export const WORK_LIVE_BROWSER_MIN_ASPECT = 4 / 3;
 
 /**
  * The width range available in a column of this width.
@@ -843,6 +843,14 @@ export function workLiveCardSize(args: {
   if (width < bounds.min) {
     width = bounds.min;
     height = width / aspect;
+    // ...unless the column is too short for that card at all. A phone preset
+    // at the 200px floor is ~430px tall, and a card that cannot fit is not
+    // shown, so in a short window the preview vanished. Narrower than the
+    // floor but on screen beats the floor and gone.
+    if (height > availableHeight) {
+      height = Math.max(1, availableHeight);
+      width = height * aspect;
+    }
   }
   return { width: Math.round(width), height: Math.round(height) };
 }

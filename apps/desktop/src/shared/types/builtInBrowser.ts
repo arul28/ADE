@@ -79,6 +79,13 @@ export type BuiltInBrowserNavigateArgs = BuiltInBrowserClaimArgs & BuiltInBrowse
   openPanel?: boolean;
 };
 
+export type BuiltInBrowserTabLoadError = {
+  /** Chromium's net error code, e.g. -102 for a refused connection. */
+  code: number;
+  description: string;
+  url: string | null;
+};
+
 export type BuiltInBrowserTab = {
   id: string;
   url: string | null;
@@ -90,6 +97,13 @@ export type BuiltInBrowserTab = {
    * title reads "New tab" rather than the empty document title.
    */
   isLaunchpad: boolean;
+  /**
+   * Why the current page failed to load (connection refused, DNS, timeout), or
+   * null. Chromium shows such a page as plain white, so a preview of the tab
+   * says this instead. Cleared when the tab starts loading again. Absent on a
+   * main process that predates it, which reads as null.
+   */
+  loadError?: BuiltInBrowserTabLoadError | null;
   /**
    * The isolated profile this tab signs in with, or null for the shared
    * profile. Fixed for the tab's life. Absent on a main process that predates

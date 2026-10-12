@@ -2215,6 +2215,9 @@ function readLastUsedModelId(): string | null {
   return migrateOldPrefs();
 }
 
+/** Backoff for re-reading a locked chat's summary; bounded, so a deleted chat stops asking. */
+const LOCKED_SUMMARY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000] as const;
+
 /** Last-used model, then the app-wide default, then whatever is listed first. */
 function pickFallbackChatModelId(selectableModelIds: readonly string[]): string {
   const preferred = readLastUsedModelId();
@@ -4693,6 +4696,12 @@ export function AgentChatPane({
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
   const seededInitialSummaryRef = useRef(false);
+  /** Pending re-read of a locked chat's summary after a failed or empty read. */
+  const lockedSummaryRetryRef = useRef<{ sessionId: string | null; attempt: number; timer: number | null }>({
+    sessionId: null,
+    attempt: 0,
+    timer: null,
+  });
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
   const draftLaunchConfigHydratedRef = useRef<string | null>(null);
@@ -7374,10 +7383,45 @@ export function AgentChatPane({
       summary = initialSessionSummary;
       seededInitialSummaryRef.current = true;
     } else {
-      summary = await agentChatApiRef.current.getSummary({ sessionId: lockSessionId }, chatRuntimePinRef.current);
+      try {
+        summary = await agentChatApiRef.current.getSummary({ sessionId: lockSessionId }, chatRuntimePinRef.current);
+      } catch {
+        summary = null;
+      }
     }
 
-    setSessions(summary ? [summary] : []);
+    // The summary is the only source of this chat's title and model. A read
+    // that fails or comes back empty (the brain restarting, a slow warm-up)
+    // used to clear it, and nothing asked again: a finished chat gets no more
+    // events, so it sat on "New chat" with "Select model" until somebody
+    // re-picked a model. Keep the summary already held, and retry a missing one.
+    const retry = lockedSummaryRetryRef.current;
+    if (retry.timer != null) {
+      window.clearTimeout(retry.timer);
+      retry.timer = null;
+    }
+    if (summary) {
+      retry.sessionId = null;
+      retry.attempt = 0;
+    } else {
+      if (retry.sessionId !== lockSessionId) {
+        retry.sessionId = lockSessionId;
+        retry.attempt = 0;
+      }
+      if (retry.attempt < LOCKED_SUMMARY_RETRY_DELAYS_MS.length) {
+        const delay = LOCKED_SUMMARY_RETRY_DELAYS_MS[retry.attempt]!;
+        retry.attempt += 1;
+        retry.timer = window.setTimeout(() => {
+          retry.timer = null;
+          void refreshLockedSessionSummaryRef.current().catch(() => undefined);
+        }, delay);
+      }
+    }
+
+    setSessions((prev) => {
+      if (summary) return [summary];
+      return prev.length === 1 && prev[0]!.sessionId === lockSessionId ? prev : [];
+    });
     setTurnActiveBySession((prev) => {
       const residentEvents = eventsBySessionRef.current[lockSessionId] ?? [];
       const nextRunning = residentEvents.length > 0
@@ -7391,6 +7435,13 @@ export function AgentChatPane({
     setSelectedSessionId(lockSessionId);
     return summary;
   }, [initialSessionSummary, lockSessionId, setSelectedSessionId]);
+  const refreshLockedSessionSummaryRef = useRef(refreshLockedSessionSummary);
+  refreshLockedSessionSummaryRef.current = refreshLockedSessionSummary;
+  useEffect(() => () => {
+    const retry = lockedSummaryRetryRef.current;
+    if (retry.timer != null) window.clearTimeout(retry.timer);
+    retry.timer = null;
+  }, []);
 
   const refreshSessions = useCallback(async (options?: { force?: boolean }) => {
     if (lockedSingleSessionMode && lockSessionId) {

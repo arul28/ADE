@@ -305,6 +305,8 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * attach pass rather than this module reaching into the view.
    */
   onPreviewWatchersChanged?: (tabId: string) => void;
+  /** A device preset changed the size this tab is drawn at, so a parked view must be re-placed. */
+  onTabEmulationChanged?: (tabId: string) => void;
   /**
    * Whether this tab's view currently holds a compositor surface.
    *
@@ -555,6 +557,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       }
       tab.emulation = next;
     });
+    deps.onTabEmulationChanged?.(tab.id);
     emitStatus();
     return {
       tabId: tab.id,
