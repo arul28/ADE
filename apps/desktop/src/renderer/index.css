@@ -3206,6 +3206,18 @@ button, [role="button"] {
   text-underline-offset: 3px;
 }
 
+/* Find (⌘F) in a chat or a diff: every match amber, the current one gold with
+   dark text, so neither reads as a code tint or a comment highlight. Diffs
+   repeat these two rules inside their shadow roots (AdeDiffViewer). */
+::highlight(ade-find) {
+  background-color: rgba(253, 184, 51, 0.3);
+}
+
+::highlight(ade-find-active) {
+  background-color: #eea52b;
+  color: #1a1206;
+}
+
 .ade-liquid-glass-menu {
   border-radius: var(--radius-xl);
   border: 1px solid var(--work-popover-border, var(--chat-panel-border));

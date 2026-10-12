@@ -8,6 +8,8 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesign
 import { cn } from "../ui/cn";
 import { isWhitespaceOnlyTextDiff, stripWhitespaceOnlyPatchChanges } from "./diffWhitespace";
 import { readPersistedFlag, writePersistedFlag } from "./persistedFlag";
+import { FindBar } from "./FindBar";
+import { useDiffFind } from "./useDiffFind";
 
 export type AdeDiffViewerHandle = MonacoDiffHandle;
 
@@ -50,6 +52,15 @@ const DIFF_UNSAFE_CSS = `
   [data-diff],
   [data-file] {
     border-radius: 0;
+  }
+  /* Find (⌘F) matches; the same colours as index.css, which cannot reach
+     into this shadow root. */
+  ::highlight(ade-find) {
+    background-color: rgba(253, 184, 51, 0.3);
+  }
+  ::highlight(ade-find-active) {
+    background-color: #eea52b;
+    color: #1a1206;
   }
 `;
 
@@ -130,6 +141,8 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
   ref,
 ) {
   const monacoRef = useRef<MonacoDiffHandle | null>(null);
+  const findRootRef = useRef<HTMLDivElement | null>(null);
+  const findScrollRef = useRef<HTMLDivElement | null>(null);
   const [layout, setLayout] = useState<DiffLayout>("split");
   const [overflow, setOverflow] = useState<DiffOverflow>("scroll");
   const [lineNumbers, setLineNumbers] = useState(true);
@@ -153,6 +166,26 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
   const normalizedPatch = patch ? normalizePatchForRenderer(patch) : "";
   const oldFile = diff && !patch ? makeFileContents(diff.path, diff.original.text ?? "", "old") : null;
   const newFile = diff && !patch ? makeFileContents(diff.path, diff.modified.text ?? "", "new") : null;
+  // Both sides in full, when the caller has them (a patch view often does
+  // too). Find draws from these while it has a match in collapsed lines,
+  // which a patch does not carry.
+  const fullFilesAvailable = Boolean(
+    diff
+    && !diff.isBinary
+    && !diff.original.isTruncated
+    && !diff.modified.isTruncated
+    && typeof diff.original.text === "string"
+    && typeof diff.modified.text === "string",
+  );
+  const fullOldFile = oldFile ?? (fullFilesAvailable && diff ? makeFileContents(diff.path, diff.original.text ?? "", "old") : null);
+  const fullNewFile = newFile ?? (fullFilesAvailable && diff ? makeFileContents(diff.path, diff.modified.text ?? "", "new") : null);
+  const find = useDiffFind({
+    rootRef: findRootRef,
+    scrollRef: findScrollRef,
+    fullText: fullOldFile && fullNewFile ? { old: fullOldFile.contents, new: fullNewFile.contents } : null,
+  });
+  /** A patch view switched to the full files so find can show collapsed lines. */
+  const findShowsFullFiles = find.expandAll && Boolean(patch) && Boolean(fullOldFile && fullNewFile);
   const hasInlineDiffContent = Boolean(
     oldFile
     && newFile
@@ -172,12 +205,14 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
       lineDiffType: "word",
       collapsedContextThreshold: 12,
       expansionLineCount: 20,
+      // Find draws collapsed unchanged lines while it has a match in them.
+      ...(find.expandAll ? { expandUnchanged: true } : {}),
       unsafeCSS: DIFF_UNSAFE_CSS,
       // Applies only when Pierre computes the diff from oldFile/newFile (the
       // chat turn diff panel); pre-parsed patches are filtered below.
       ...(ignoreWhitespace ? { parseDiffOptions: { ignoreWhitespace: true } } : {}),
     }) as const,
-    [ignoreWhitespace, layout, lineNumbers, overflow, theme],
+    [find.expandAll, ignoreWhitespace, layout, lineNumbers, overflow, theme],
   );
   const filteredPatch = useMemo(
     () => (ignoreWhitespace && normalizedPatch ? stripWhitespaceOnlyPatchChanges(normalizedPatch) : null),
@@ -196,6 +231,8 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
 
   return (
     <div
+      ref={findRootRef}
+      data-ade-find-scope="diff"
       className={cn("flex h-full min-h-0 w-full flex-col overflow-hidden rounded-lg border border-border bg-card/60", className)}
       style={{
         ["--diffs-font-family" as string]: MONO_FONT,
@@ -256,9 +293,18 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
           Preview is truncated.
         </div>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      {find.open ? (
+        <div className="pointer-events-none absolute inset-x-0 top-1.5 z-20 flex justify-end px-2">
+          <FindBar {...find.bar} placeholder="Find in diff" className="pointer-events-auto w-[min(340px,100%)]" />
+        </div>
+      ) : null}
+      {/* While find is open the bar floats over the top: room for it, so it never covers line 1. */}
+      <div ref={findScrollRef} className={cn("min-h-0 flex-1 overflow-auto", find.open && "pt-11")}>
         {binary ? (
           <ViewerState title="Binary diff preview unavailable" detail={activePath} />
+        ) : findShowsFullFiles && fullOldFile && fullNewFile ? (
+          <MultiFileDiff oldFile={fullOldFile} newFile={fullNewFile} options={options} />
         ) : patch ? (
           ignoreWhitespace && filteredPatch ? (
             filteredPatch.whitespaceOnly ? (
@@ -282,6 +328,7 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
         ) : (
           <ViewerState title="No diff selected" />
         )}
+      </div>
       </div>
     </div>
   );

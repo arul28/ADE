@@ -214,6 +214,8 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/renderer/components/chat/browser/` | The browser pane's presentational pieces and pure helpers, split out of what was a 4,500-line component. `BrowserTabStrip.tsx` (a tablist with roving focus, with each tab outlined in its lane group's color), `browserTabGroups.ts` (`orderBrowserTabsByLane`: the current lane's tabs first, then other lanes by first-opened tab, then tabs with no lane), `BrowserToolbarRow.tsx` (nav group, omnibox, and the buttons the row sheds as it narrows), `BrowserOverflowMenu.tsx` (every ability the row drops has to reappear here), `BrowserFindBar.tsx` (owns its own Escape, so dismissing a six-character search does not close the Browser tool), `BrowserHandoffBar.tsx`, `BrowserProfilePanel.tsx`, and `BrowserStage.tsx` (the measured 8px-inset, 10px-radius frame the native view is composited over, plus the snapshot underlay, capture crop, the grouped launchpad, and the letterbox caption). `browserChrome.tsx` is the shared control geometry and the one `BrowserChromeShared` object both toolbar pieces take whole; its ghost-button vocabulary is the same one `terminals/workToolChrome.tsx` spends across the other tools. |
 | `apps/desktop/src/renderer/components/chat/browser/builtInBrowserToolbar.ts`, `browserToolbarLabels.ts`, `browserViewGeometry.ts`, `browserPanelNormalizers.ts`, `browserPanelTypes.ts`, `browserCapture.ts`, `browserDevServers.ts`, `browserRecentUrls.ts` | The panel's pure half. Layout decides how much toolbar fits from the row's measured width (`BROWSER_TOOLBAR_URL_MIN_WIDTH` — below it the row gives up a control rather than squeezing the omnibox to nothing); labels own the words; `browserViewGeometry.ts` owns the letterbox arithmetic for a device larger than the pane; the normalizers read every wire payload field by field because the main process on the other end may be older, or may be the hosted web client's stub; `browserCapture.ts` is the DOM-touching half (measuring an `object-fit: contain` element and drawing through a canvas) kept apart from the pure one; `browserDevServers.ts` normalizes the typed `getDevServers()` read and the loose `dev-server-detected` payload into one de-duplicated list; `browserRecentUrls.ts` is the launchpad's `localStorage`-backed recents list, scoped per tab collection and sanitized on every write (no query, no fragment, no credential-bearing URL, no ephemeral loopback port). |
 | `apps/desktop/src/renderer/lib/appCommandClaims.ts`, `appMenuCommands.ts`, `appZoomCommands.ts`, `typingTarget.ts` | Who answers a native-menu command. `appCommandClaims.ts` is the generic claim registry — claims stack newest-first, a handler returns `false` when it is not the right moment, and the app-wide default then runs as before; `appMenuCommands.ts` and `appZoomCommands.ts` are its two instances (⌘F/⌘W and ⌘+/−/0). A claim is needed because Electron consumes accelerators in the browser process before any renderer keydown, and the built-in browser's page has focus in a different `WebContents` entirely. `typingTarget.ts` is the one "is this person typing?" test every single-key shortcut asks first — inputs, textareas, contenteditable, and any surface that declared `data-ade-escape-scope` (a find bar has claimed the keyboard even when focus sits on one of its buttons). |
+| `apps/desktop/src/renderer/components/chat/ChatFindLayer.tsx`, `chatFind.ts`, `chatFindTargets.ts` | Find in a chat (⌘F). `chatFind.ts` is the pure half: each row's searchable text (user messages as their bubble shows them, assistant replies with markdown reduced to displayed text, plan checklists), the incremental `ChatFindIndex` that parses markdown in 3 ms slices and keeps unchanged rows, and the match arithmetic (count, locate, wrap, first match in or below the view). `ChatFindLayer.tsx` owns the bar, the ⌘F claim, revealing a match through the list's `scrollToRowKey`, and painting mounted rows with the CSS Custom Highlight API. `chatFindTargets.ts` is how the ⌘K palette reaches a chat's bar. See [Find in a chat](#find-in-a-chat-f). |
+| `apps/desktop/src/renderer/lib/findScope.ts`, `findText.ts`, `components/shared/FindBar.tsx` | Shared by every ⌘F surface. `findScope.ts` decides which surface owns ⌘F: the innermost `data-ade-find-scope` around the focused element, or around the last press when focus is on nothing (crossing shadow roots). `findText.ts` is case-insensitive matching that keeps offsets, a DOM text walk that skips buttons and `data-ade-find-skip` chrome, and the one `ade-find` / `ade-find-active` highlight registry shared by all surfaces. `FindBar.tsx` is the bar (field, "3 of 17", previous/next/close). |
 | `apps/desktop/src/renderer/components/chat/browser/useNativeBrowserViewBounds.ts` | Bounds measurement, the suppression count that hides the composited view for splitter drags and overlays, and the frozen-frame underlay so a menu never opens over a black rectangle. Measures against the pane's content box rather than the frame's own laid-out rect, which lags a pointer-driven resize. Owns no product state — every decision is handed in as a ref or callback. |
 | `apps/desktop/src/renderer/components/chat/browserRemoteTunnels.ts` | Per-tab memory of "this tab is really looking at another machine". The view loads `http://127.0.0.1:<ephemeral>`, but nobody asked for that, so every surface that shows a URL — URL bar, tab title, the observation an agent reads back — is rewritten to the origin that was actually requested on the pinned machine. |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserTabCapabilities.ts` | Per-tab capability surface lifted out of the service closure: device emulation, zoom, find-in-page, DevTools, the network log and its HAR export, the extra page actions (hover / drag / select / upload), the live preview stream, and screen recording. Reaches the service only through the narrow `BuiltInBrowserTabCapabilityDeps` seam — resolve a tab, run it under a trace entry, hold the debugger, emit — the same shape `appControlAgentActions.ts` uses next door. |
@@ -278,6 +280,49 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/renderer/components/settings/providers/bodies/CodexBody.tsx` | Codex Settings card: list-only plugins via `listCodexPlugins`, with Refresh to re-fetch from a live Codex chat. |
 
 Explicit session metadata regeneration is a user-invoked, one-shot call through the selected chat runtime. All three fields are produced in a single JSON response even when the menu applies only some of them. The prompt is field-specific: regenerating only the status line sends the lane name, chat title, worktree folder, and the last two or three paragraphs of latest assistant output — not the full transcript, sibling threads, or git dump — and tells the model to copy the current title and lane name unchanged. `chatTitle` otherwise uses this thread's full conversation transcript; `laneName` uses every thread in the lane plus the git work that differs from the remote/base (`baseRef...HEAD`, commits, and uncommitted files). The primary lane keeps its immutable name, and an explicit request may replace a title previously chosen by the user. Naming tries the cheap helper for the chat's provider (Haiku 5.5 at low effort for Claude), then the chat's own model, both as the chat's own provider account. Extra keys, fenced JSON, and surrounding prose are accepted; if every model still misses, ADE keeps the current values and reports why instead of guessing a name. Streamed assistant chunks are joined per turn exactly as streamed (one paragraph per message), so the model reads whole words. While a field is regenerating, the Work sidebar and chat header mask it in place with the same shimmering "Naming …" animation auto-created lanes use.
+
+## Find in a chat (⌘F)
+
+⌘F in a chat (anywhere in its pane, composer included) opens a find bar over
+the transcript. It counts matches over the whole chat this pane holds, moves
+through them in time order with Enter / Shift-Enter or ⌘G / ⇧⌘G, wraps at both
+ends, and closes on Escape without moving the reading position.
+
+- **It searches rows, not the page.** The transcript is virtualized and finished
+  turns fold, so most rows are not mounted. The search runs over the list's
+  `presentedRows` (rows before folding) and matches what a reader sees: the
+  user's message as the bubble shows it, the assistant's reply with its
+  markdown reduced to displayed text (link labels, not URLs; no scene, mosaic or
+  diagram source), and plan checklists. Reasoning, tool calls and tool output
+  are not searched. An earlier copy of a turn's answer (`duplicateAnswerKeys`)
+  is never drawn, so it is not counted.
+- **The pane already holds the whole chat.** The main chat pane backfills older
+  history in idle slots, so every chat under the 60,000-event / 32 MB resident cap
+  is searched in full a moment after it opens. While older pages are still
+  loading the count reads `N+`.
+- **Moving to a match reuses the list's own jump.** The layer asks
+  `scrollToRowKey`, which opens the fold or wake chain hiding the row, then finds
+  the words in the mounted row and scrolls them into the reading band (only when
+  they are not already on screen, so a visible match never jumps). A new query
+  starts at the first match in or below the view — inside a long reply that
+  begins above the view, at the first occurrence on screen.
+- **Painting never touches the reply's DOM.** Mounted rows are searched again in
+  the DOM (`[data-chat-find-text]` elements; hover actions, review cards and
+  attachments are `data-ade-find-skip`) and painted with the CSS Custom Highlight
+  API under `ade-find` / `ade-find-active`. A path drawn as a short chip can show
+  fewer occurrences than the text holds; the bar then stays on the last one
+  shown.
+- **Closed, it costs nothing.** The layer is memoized with stable props, so a
+  streaming reply never re-renders it; it subscribes to the list's rows and
+  watches the DOM only while open. Open, streaming re-counts at most every
+  300 ms.
+- **⌘K hands off.** With a chat on screen, the palette's first line is
+  `Find "…" in this chat`, which opens that chat's bar with the words typed.
+  Opening a chat from a palette message hit lands on the hit and opens the bar
+  with the words, showing the count without moving; Enter starts walking.
+- **Timer and frame handles are cleared on unmount, not only cancelled.** React's
+  dev double mount (and a parked surface coming back) cancels them; a handle
+  left set made every later "schedule a paint" a no-op.
 
 ## Built-in browser authentication limits
 

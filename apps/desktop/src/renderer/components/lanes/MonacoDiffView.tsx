@@ -4,6 +4,9 @@ import { MONO_FONT } from "./laneDesignTokens";
 import { cn } from "../ui/cn";
 import { applyMonacoTheme } from "../../theme/codeTheme";
 import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
+import { claimAppMenuCommands } from "../../lib/appMenuCommands";
+import { findScopeOwnsTarget, installFindTargetTracking } from "../../lib/findScope";
+import { isInParkedSurface } from "../../lib/parkedSurface";
 
 export type MonacoDiffHandle = {
   getModifiedValue: () => string | null;
@@ -98,6 +101,26 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     useEffect(() => {
       stockThemeRef.current = stockTheme;
     }, [stockTheme]);
+
+    /**
+     * ⌘F while this diff is where the user is: Monaco's own find, on the side
+     * that has focus (the modified side otherwise). The native menu consumes
+     * the chord before Monaco's keybinding could see it (see CodeViewer).
+     */
+    const scopeRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+      installFindTargetTracking();
+      return claimAppMenuCommands((command) => {
+        if (command !== "find") return false;
+        const scope = scopeRef.current;
+        const editor = diffEditorRef.current;
+        if (!scope || !editor || isInParkedSurface(scope) || !findScopeOwnsTarget(scope)) return false;
+        const original = editor.getOriginalEditor();
+        const target = original.hasTextFocus() ? original : editor.getModifiedEditor();
+        void target.getAction("actions.find")?.run();
+        return true;
+      });
+    }, []);
 
     useEffect(() => {
       let cancelled = false;
@@ -195,7 +218,11 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     }, [stockTheme, resolvedTheme]);
 
     return (
-      <div className={cn("relative h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}>
+      <div
+        ref={scopeRef}
+        data-ade-find-scope="diff-editor"
+        className={cn("relative h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}
+      >
         <div ref={containerRef} className={cn("h-full w-full", (failed || diff.isBinary) && "hidden")} />
         {diff.isBinary ? (
           <div className="flex h-full w-full items-center justify-center p-4 text-xs text-muted-fg">

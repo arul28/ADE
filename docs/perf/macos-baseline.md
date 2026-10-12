@@ -282,6 +282,28 @@ The row and merge numbers are a production-style Node run; the streaming
 numbers are the dev build, where React's own work is two to three times what a
 packaged build pays.
 
+### Find in a chat and in a diff (⌘F)
+
+Measured 2026-10-12 on the dev build in an App Control session: the 5,031-event
+"Mac Desktop Tool Planning" chat and the 1,100-event "Quit Dialog Redesign"
+chat, query `the`. The A/B streaming rows are `npm run bench:webclient
+--skip-build --skip-load`, before = the tree without find, 3 interleaved runs,
+1-minute load average 9-11 (other agents running), so treat ±0.2 ms as noise.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Streaming: script per event, find closed | `bench:webclient` A/B | 5.8 ms | 5.9 ms | 7.5 ms |
+| Streaming: main-thread task per event, find closed | same | 8.7 ms | 8.8 ms | 10 ms |
+| Streaming: React commits per event, find closed | same | 2.3 | 2.3 | 2.8 |
+| Open a long chat to its first rows | same | 340 ms | 350 ms | 360 ms |
+| Find: first count after typing, 5,031-event chat, cold index | in-page timer | — | 114 ms | 200 ms |
+| Find: final count, same chat, cold index (3 ms slices + 300 ms recount) | same | — | 492 ms | 800 ms |
+| Find: next match to painted highlight, p50 / max of 20 | same | — | 4 / 7 ms | 8 / 33 ms |
+
+Closed, find does no work: its layer is memoized on stable props and
+subscribes to rows only while open. Indexing parses markdown in 3 ms slices, so
+it never holds a 240 Hz frame.
+
 ### Desktop dev app
 
 | Metric | How | Before | Baseline | Ceiling |

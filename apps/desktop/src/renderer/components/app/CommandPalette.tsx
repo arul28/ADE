@@ -118,6 +118,11 @@ import {
 import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
+import {
+  paletteQueryFreeText,
+  preferredChatFindTarget,
+  setPendingChatFind,
+} from "../chat/chatFindTargets";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { writeStoredProjectRoute } from "./projectRouteStorage";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
@@ -907,6 +912,32 @@ export function CommandPalette({
 
   const trimmedQuery = q.trim();
   const entityQuery = parsedWorkQuery.backendQuery.trim();
+
+  // "Find "…" in this chat": offered while a chat is on screen. Read when the
+  // palette opens — once it has focus, "the chat you were in" is history.
+  const [chatFindAvailable, setChatFindAvailable] = useState(false);
+  useEffect(() => {
+    if (open) setChatFindAvailable(preferredChatFindTarget() != null);
+  }, [open]);
+  /** Radix would hand focus back to where it was; a find bar opened from here keeps it. */
+  const keepFocusOnCloseRef = useRef(false);
+  const chatFindQuery = useMemo(() => paletteQueryFreeText(trimmedQuery), [trimmedQuery]);
+  const chatFindCommand = useMemo<Command | null>(() => {
+    if (!chatFindAvailable || mode !== "default" || !chatFindQuery) return null;
+    return {
+      id: "chat-find",
+      title: `Find “${chatFindQuery}” in this chat`,
+      hint: "Highlights every match; ↵ and ⇧↵ step through them",
+      shortcut: "⌘F",
+      group: "This chat",
+      run: () => {
+        const target = preferredChatFindTarget();
+        if (!target) return;
+        keepFocusOnCloseRef.current = true;
+        target.open(chatFindQuery);
+      },
+    };
+  }, [chatFindAvailable, chatFindQuery, mode]);
   const canEntitySearch =
     open &&
     mode === "default" &&
@@ -1029,8 +1060,10 @@ export function CommandPalette({
         threadCount: visibleWorkResults.length,
         commandCount: filtered.length,
         entityCount: flatEntities.length,
+        chatFindCount: chatFindCommand ? 1 : 0,
       }),
     [
+      chatFindCommand,
       commandsLead,
       filtered.length,
       flatEntities.length,
@@ -1425,6 +1458,33 @@ export function CommandPalette({
     [navigate, onOpenChange],
   );
 
+  /**
+   * Leave the palette's words for a chat opened from a message hit, so it
+   * opens with its find bar holding them and ↵ walks every match there. The
+   * bar shows the count without moving the view.
+   */
+  const handOffChatFind = useCallback((sessionId: string) => {
+    const words = paletteQueryFreeText(q.trim());
+    if (!words) return;
+    keepFocusOnCloseRef.current = true;
+    setPendingChatFind(sessionId, words);
+  }, [q]);
+
+  /** A thread row; one that matched on a message opens at that message, with find ready. */
+  const activateThreadResult = useCallback(
+    (entry: ThreadIndexEntry, contentHit: SearchResultItem | null) => {
+      if (contentHit?.kind === "chat" && contentHit.sessionId === entry.session.id && !entry.binding) {
+        const linkTarget = parseDeeplink(contentHit.deepLink);
+        if (linkTarget.ok && linkTarget.target.kind === "session" && linkTarget.target.event != null) {
+          setPendingSessionAnchor(entry.session.id, { event: linkTarget.target.event });
+        }
+        handOffChatFind(entry.session.id);
+      }
+      activateThread(entry);
+    },
+    [activateThread, handOffChatFind],
+  );
+
   const activateResult = useCallback(
     (item: SearchResultItem) => {
       switch (item.kind) {
@@ -1442,6 +1502,8 @@ export function CommandPalette({
               offset: linkTarget.target.offset,
             });
           }
+          // The jump above lands on the hit; the find bar then walks the rest.
+          if (item.kind === "chat") handOffChatFind(sessionId);
           // The Work tab stays mounted (keep-alive), so its select-session
           // listener focuses the target; the navigate switches the visible tab.
           window.dispatchEvent(
@@ -1552,7 +1614,7 @@ export function CommandPalette({
       }
       onOpenChange(false);
     },
-    [lanes, navigate, onOpenChange, project?.rootPath],
+    [handOffChatFind, lanes, navigate, onOpenChange, project?.rootPath],
   );
 
   const activateFlat = useCallback(
@@ -1561,10 +1623,14 @@ export function CommandPalette({
       // that produced the row on screen.
       const hit = paletteSectionAt(paletteSections, index);
       if (!hit) return;
+      if (hit.section.key === "chatFind") {
+        if (chatFindCommand) runCommand(chatFindCommand);
+        return;
+      }
       if (hit.section.key === "threads") {
         const result = visibleWorkResults[hit.offset];
         if (!result) return;
-        if (result.type === "thread") activateThread(result.match.entry);
+        if (result.type === "thread") activateThreadResult(result.match.entry, result.contentHit);
         else activateResult(result.item);
         return;
       }
@@ -1580,7 +1646,8 @@ export function CommandPalette({
     },
     [
       activateResult,
-      activateThread,
+      activateThreadResult,
+      chatFindCommand,
       filtered,
       flatEntities,
       paletteSections,
@@ -1952,6 +2019,11 @@ export function CommandPalette({
             <Dialog.Content
               asChild
               onOpenAutoFocus={(event) => event.preventDefault()}
+              onCloseAutoFocus={(event) => {
+                if (!keepFocusOnCloseRef.current) return;
+                keepFocusOnCloseRef.current = false;
+                event.preventDefault();
+              }}
             >
               <motion.div
                 data-tour={isBrowsing ? "project.browser" : undefined}
@@ -2588,7 +2660,7 @@ export function CommandPalette({
                                                 result.match.matchFields
                                               }
                                               onHover={setSelectedIdx}
-                                              onActivate={activateThread}
+                                              onActivate={(entry) => activateThreadResult(entry, result.contentHit)}
                                               onAction={handleThreadAction}
                                             />
                                           );
@@ -2602,17 +2674,20 @@ export function CommandPalette({
                                   ]
                                 : [];
 
-                            const buildCommandNodes = (startIndex: number) => {
+                            const renderCommandGroups = (
+                              groups: { label: string; items: Command[] }[],
+                              startIndex: number,
+                            ) => {
                               // The groups are consecutive slices of `filtered`,
                               // so a group's first flat index is the running sum
                               // of the groups before it.
                               let cursor = startIndex;
-                              const groupStarts = grouped.map((group) => {
+                              const groupStarts = groups.map((group) => {
                                 const start = cursor;
                                 cursor += group.items.length;
                                 return start;
                               });
-                              return grouped.map((group, groupIndex) => (
+                              return groups.map((group, groupIndex) => (
                                 <li key={group.label}>
                                   <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
                                     {group.label}
@@ -2670,6 +2745,9 @@ export function CommandPalette({
                                 </li>
                               ));
                             };
+
+                            const buildCommandNodes = (startIndex: number) =>
+                              renderCommandGroups(grouped, startIndex);
 
                             const buildEntityNodes = (startIndex: number) => {
                               // A section claims one index per visible row plus
@@ -2743,6 +2821,14 @@ export function CommandPalette({
                             return walkPaletteSections(
                               paletteSections,
                               (section, startIndex) => {
+                                if (section.key === "chatFind") {
+                                  return chatFindCommand
+                                    ? renderCommandGroups(
+                                        [{ label: "This chat", items: [chatFindCommand] }],
+                                        startIndex,
+                                      )
+                                    : [];
+                                }
                                 if (section.key === "threads") {
                                   return buildThreadNodes(startIndex);
                                 }

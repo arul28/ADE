@@ -225,6 +225,30 @@ not inside an `inert` single-surface column, and actually focused. Declining
 leaves the chord to whoever does own it (the built-in browser's find bar), or to
 nothing.
 
+Every ⌘F surface marks its root with `data-ade-find-scope` (`code-editor`,
+`diff`, `diff-editor`, `browser`, `chat-pane`, `chat-transcript`), and
+`lib/findScope.ts` gives ⌘F to the innermost scope around the focused element —
+or around the last press when focus is on nothing, which is what clicking plain
+text (a diff line, a chat reply) leaves. So a diff inside a chat pane finds in
+the diff, and a click on chat text takes ⌘F away from a browser pane that would
+otherwise answer "focus is nowhere". Nothing claims it on the Lanes page outside
+a diff, so ⌘F there still focuses the lane filter.
+
+### Find in a diff
+
+`AdeDiffViewer` has its own find bar (`useDiffFind.ts`). Pierre draws every line
+of the file's diff into an open shadow root, so the hook searches each
+`[data-line]` element there, orders matches top to bottom (old side before new),
+paints them with the shared highlight names (the two `::highlight` rules are
+repeated in the viewer's `unsafeCSS`, because the document's CSS does not reach
+a shadow root), and scrolls the current one into view, sideways too for long
+lines. Collapsed unchanged lines are not drawn: when a file holds more matches
+than were drawn on its side, the viewer draws the whole file (`expandUnchanged`;
+a patch view switches to the full files it was given) until the bar closes.
+A truncated preview has no full files, so its collapsed lines stay unsearched.
+The editable working-tree diff (`MonacoDiffView`) claims ⌘F itself and opens
+Monaco's find on the side that has focus.
+
 `monacoModelRegistry.ts` keeps one Monaco text model per
 workspace-relative path. Switching tabs calls `editor.setModel(existing)`
 instead of dispose/recreate, preserving tokenization and undo stacks.

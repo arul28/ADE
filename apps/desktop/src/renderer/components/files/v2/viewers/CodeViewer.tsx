@@ -225,5 +225,5 @@ export function CodeViewer({
     }
   }
 
-  return <div ref={hostRef} className="h-full w-full min-h-0" data-testid="files-v2-code-editor" />;
+  return <div ref={hostRef} className="h-full w-full min-h-0" data-testid="files-v2-code-editor" data-ade-find-scope="code-editor" />;
 }

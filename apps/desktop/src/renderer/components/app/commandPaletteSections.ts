@@ -13,7 +13,7 @@ import type { ProjectDetail, ProjectIcon } from "../../../shared/types";
  * index are derived from a single ordered array of these, so there is exactly
  * one place that knows what comes first.
  */
-export type PaletteSectionKey = "threads" | "commands" | "entities";
+export type PaletteSectionKey = "chatFind" | "threads" | "commands" | "entities";
 
 export type PaletteSection = { key: PaletteSectionKey; count: number };
 
@@ -29,6 +29,8 @@ export type PaletteSectionsInput = {
   commandCount: number;
   /** Flattened entity rows, including each section's "show more" row. */
   entityCount: number;
+  /** 1 when "Find "…" in this chat" is offered (a chat is on screen and words are typed). */
+  chatFindCount?: number;
 };
 
 /**
@@ -37,6 +39,9 @@ export type PaletteSectionsInput = {
  * Threads lead because the palette is the Work sidebar's search now — with an
  * empty query the thing you most likely came here for is a chat you were just
  * in, not a command. Typing a command's full title flips it.
+ *
+ * "Find "…" in this chat" comes first when it is offered: with a chat on
+ * screen, the words typed are most likely words in that chat.
  *
  * A section with `count === 0` renders nothing and claims no flat indices, so
  * it is kept in the array rather than dropped: presence never shifts an index,
@@ -47,13 +52,14 @@ export function buildPaletteSections({
   threadCount,
   commandCount,
   entityCount,
+  chatFindCount = 0,
 }: PaletteSectionsInput): PaletteSection[] {
+  const chatFind: PaletteSection = { key: "chatFind", count: chatFindCount };
   const threads: PaletteSection = { key: "threads", count: threadCount };
   const commands: PaletteSection = { key: "commands", count: commandCount };
   const entities: PaletteSection = { key: "entities", count: entityCount };
-  return commandsLead
-    ? [commands, threads, entities]
-    : [threads, commands, entities];
+  const ordered = commandsLead ? [commands, threads, entities] : [threads, commands, entities];
+  return chatFindCount > 0 ? [chatFind, ...ordered] : ordered;
 }
 
 /** Total number of keyboard-navigable rows across every section. */

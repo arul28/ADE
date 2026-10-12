@@ -86,6 +86,8 @@ import {
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
 import { issueCreateRequestFromSelection, requestIssueCreate } from "../../lib/issueCreateRequests";
 import { ThreadCommentLayer } from "./ThreadCommentLayer";
+import { ChatFindLayer, type ChatFindSource, type ChatFindSourceSnapshot } from "./ChatFindLayer";
+import { FIND_SCOPE_ATTRIBUTE } from "../../lib/findScope";
 import { parseThreadReviewBlock, type ChatThreadComment } from "../../../shared/threadComments";
 import {
   ChatWorkspacePathProvider,
@@ -2724,10 +2726,13 @@ function renderEvent(
           )}
           style={MESSAGE_CARD_STYLE}
           data-chat-user-message-card=""
+          // ⌘F searches the bubble's text; its hover actions, review card and
+          // attachments are marked to skip.
+          data-chat-find-text=""
         >
           {/* Frosted so the actions stay legible over a long first line or a
               brief's heading, instead of printing on top of the words. */}
-          <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+          <div data-ade-find-skip="" className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             {envelope.timestampSynthetic === true
               ? null
               : <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />}
@@ -2766,7 +2771,9 @@ function renderEvent(
                 : displayText || review.rest.trim();
               return (
                 <div className="flex min-w-0 flex-col gap-2">
-                  <ThreadReviewSentCard comments={review.comments} />
+                  <div data-ade-find-skip="">
+                    <ThreadReviewSentCard comments={review.comments} />
+                  </div>
                   {typed ? <UserTypedText text={typed} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null}
                 </div>
               );
@@ -2818,6 +2825,7 @@ function renderEvent(
             return body;
           })()}
           {event.attachments?.length || event.contextAttachments?.length ? (
+            <div data-ade-find-skip="" className="contents">
             <UserMessageIssueContext
               attachments={event.attachments ?? []}
               contextAttachments={event.contextAttachments ?? []}
@@ -2825,8 +2833,11 @@ function renderEvent(
               sessionId={options?.sessionId}
               accepted={userMessageAttachmentsAccepted(event)}
             />
+            </div>
           ) : null}
-          <UserMessageSendConfirmations event={event} />
+          <div data-ade-find-skip="" className="contents">
+            <UserMessageSendConfirmations event={event} />
+          </div>
         </div>
         <UserMessageStatusRow
           event={event}
@@ -5063,6 +5074,9 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
   );
 });
 
+/** Shared empty set: a chat with no duplicate answers keeps one identity. */
+const EMPTY_FIND_EXCLUDED_KEYS: ReadonlySet<string> = new Set();
+
 /* ── Virtualization constants ── */
 
 /** Estimated height per message row (px) used before real measurement. */
@@ -7075,11 +7089,10 @@ function AgentChatMessageListMain({
     [groupedRowKeys, heightForKey, estimateWidthStep],
   );
 
-  const scrollToRowIndexNearTop = useCallback((rowIndex: number) => {
+  /** Scroll to `targetTop` as a reader's own scroll would: bottom-follow lets go. */
+  const scrollContainerTo = useCallback((targetTop: number) => {
     const el = scrollRef.current;
-    if (!el || rowIndex < 0 || rowIndex >= groupedRows.length) return false;
-    const offsets = computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
-    const targetTop = computeScrollTopForRow(rowIndex, offsets);
+    if (!el) return false;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
     const clamped = Math.max(0, Math.min(maxScroll, targetTop));
     stickToBottomRef.current = false;
@@ -7096,7 +7109,13 @@ function AgentChatMessageListMain({
     }
     setScrollTop(el.scrollTop);
     return true;
-  }, [groupedRows.length, rowHeight, timelineRowGapPx]);
+  }, []);
+
+  const scrollToRowIndexNearTop = useCallback((rowIndex: number) => {
+    if (!scrollRef.current || rowIndex < 0 || rowIndex >= groupedRows.length) return false;
+    const offsets = computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
+    return scrollContainerTo(computeScrollTopForRow(rowIndex, offsets));
+  }, [groupedRows.length, rowHeight, scrollContainerTo, timelineRowGapPx]);
 
   // Scroll a grouped row into view by its stable render key — used by the
   // subagent spawn/result "jump to result ↓" / "↑ jump to start" affordances.
@@ -7116,6 +7135,35 @@ function AgentChatMessageListMain({
     const rowIndex = drawnRowKeyIndexRef.current.get(rowKey);
     if (rowIndex !== undefined && rowIndex >= 0) scrollToRowIndexNearTop(rowIndex);
   }, [revealTurnFoldRow, scrollToRowIndexNearTop]);
+
+  // Find (⌘F): a stable way in for the layer, and the rows it searches. The
+  // layer subscribes only while its bar is open, so a closed find costs the
+  // streaming path one ref write and an empty listener loop.
+  const scrollToRowKeyRef = useRef(scrollToRowKey);
+  scrollToRowKeyRef.current = scrollToRowKey;
+  const revealRowForFind = useCallback((rowKey: string) => scrollToRowKeyRef.current(rowKey), []);
+  const scrollContainerToForFind = useCallback((top: number) => {
+    scrollContainerTo(top);
+  }, [scrollContainerTo]);
+  const findSnapshotRef = useRef<ChatFindSourceSnapshot>({ rows: [], excludedKeys: new Set(), hasOlderHistory: false });
+  const findListenersRef = useRef(new Set<() => void>());
+  const findSource = useMemo<ChatFindSource>(() => ({
+    get: () => findSnapshotRef.current,
+    subscribe: (listener) => {
+      findListenersRef.current.add(listener);
+      return () => findListenersRef.current.delete(listener);
+    },
+  }), []);
+  useEffect(() => {
+    findSnapshotRef.current = {
+      rows: presentedRows,
+      excludedKeys: answerKeyByDuplicateKeyRef.current.size
+        ? new Set(answerKeyByDuplicateKeyRef.current.keys())
+        : EMPTY_FIND_EXCLUDED_KEYS,
+      hasOlderHistory,
+    };
+    for (const listener of findListenersRef.current) listener();
+  }, [presentedRows, turnFolds, hasOlderHistory]);
 
   useEffect(() => {
     if (!scrollToRowKeyRequest?.key) return;
@@ -8223,6 +8271,7 @@ function AgentChatMessageListMain({
     <div
       ref={listRootRef}
       data-chat-message-list-root=""
+      {...{ [FIND_SCOPE_ATTRIBUTE]: "chat-transcript" }}
       className={cn("relative h-full min-h-0 min-w-0 max-w-full overflow-hidden", className)}
     >
       {/* Direct child of the list root on purpose: the rail's `left-0` and all of
@@ -8315,6 +8364,15 @@ function AgentChatMessageListMain({
         </div>
       </div>
       {showJumpToLatest ? <ChatJumpToLatestPill newRows={newRowsSinceDetach} onJump={jumpToLatest} /> : null}
+      <ChatFindLayer
+        rootRef={listRootRef}
+        contentRef={contentWrapperRef}
+        scrollRef={scrollRef}
+        source={findSource}
+        sessionId={sessionId ?? null}
+        revealRow={revealRowForFind}
+        scrollContainerTo={scrollContainerToForFind}
+      />
       {/* With comments on, the layer owns the selection toolbar (it adds "Comment"). */}
       {threadComments ? (
         <ThreadCommentLayer

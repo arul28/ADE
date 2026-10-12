@@ -56,6 +56,7 @@ import {
   urlLockKind,
 } from "../../lib/browserUrl";
 import { claimAppMenuCommands } from "../../lib/appMenuCommands";
+import { lastPointerInOtherFindScope } from "../../lib/findScope";
 import { isTypingTarget } from "../../lib/typingTarget";
 import { claimAppZoomCommands } from "../../lib/appZoomCommands";
 import {
@@ -301,6 +302,19 @@ function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boole
   // rather than a widget: `<body>`, the pane root, the tool `<aside>`.
   return active.contains(panel);
 }
+
+/**
+ * ⌘F only: "focus is nowhere" also follows a click on plain text elsewhere (a
+ * chat reply, a diff line). While this window still has focus — so the page is
+ * not what the user clicked into — the text they pressed owns find.
+ */
+function findBelongsElsewhere(panel: HTMLElement | null): boolean {
+  if (!panel || typeof document === "undefined" || !document.hasFocus()) return false;
+  const active = document.activeElement;
+  if (active && panel.contains(active)) return false;
+  return lastPointerInOtherFindScope(panel);
+}
+
 
 /**
  * The browser window belongs to ONE computer: it is a view owned by that
@@ -2207,6 +2221,10 @@ export function ChatBuiltInBrowserPanel({
     return claimAppMenuCommands((command) => {
       if (!panelOwnsAppCommands(panelRef.current, hasTabRef.current)) return false;
       if (command === "find") {
+        // Focus "nowhere" also follows a click on plain text elsewhere (a chat
+        // reply, a diff line). When this window still has focus — so the page
+        // is not what the user clicked into — the text they pressed wins.
+        if (findBelongsElsewhere(panelRef.current)) return false;
         openFind();
         return true;
       }
@@ -2827,6 +2845,7 @@ export function ChatBuiltInBrowserPanel({
     <div
       ref={panelRef}
       data-testid="browser-panel"
+      data-ade-find-scope="browser"
       onKeyDownCapture={handlePanelKeyDown}
       className="flex h-full min-h-0 min-w-0 flex-col font-sans text-[12px] text-fg/75"
     >
