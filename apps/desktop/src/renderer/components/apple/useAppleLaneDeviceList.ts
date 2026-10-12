@@ -105,7 +105,8 @@ export function useAppleLaneDeviceList({
   listLoadedRef.current = listLoaded;
   const switching = useAppStore((state) => state.projectTransition !== null);
   const switchingRef = useRef(switching);
-  const switchStartsRef = useRef(0);
+  // Counts every switch start and end, so a read can tell one happened under it.
+  const switchEdgesRef = useRef(0);
   const [bootedRead, setBootedRead] = useState<AppleLaneDeviceBootedRead | null>(null);
   // Read through a ref so a new closure from the pane never re-reads the list.
   const onErrorRef = useRef(onError);
@@ -146,10 +147,18 @@ export function useAppleLaneDeviceList({
     };
   }, [hidden, listNonce, runtimePinRef]);
 
+  const readKeyRef = useRef(listKey);
   useEffect(() => {
     let cancelled = false;
-    const switchStarts = switchStartsRef.current;
-    const startedDuringSwitch = switchingRef.current;
+    // Another lane or chat: the last one's device must not stand in for this
+    // one's while its list loads.
+    if (readKeyRef.current !== listKey) {
+      readKeyRef.current = listKey;
+      setLaneDevice(null);
+      setBootedRead(null);
+      setOwners([]);
+    }
+    const switchEdges = switchEdgesRef.current;
     setRefreshing(true);
     void window.ade.iosSimulator
       .deviceList({ laneId, chatSessionId: sessionId, installed: true, runtimes: true }, runtimePinRef.current)
@@ -201,8 +210,7 @@ export function useAppleLaneDeviceList({
         if (loaded) onErrorRef.current(cause);
         // A read that met a project switch is retried once the switch is over:
         // now, or by the effect below when the switch ends.
-        const metSwitch = startedDuringSwitch || switchStartsRef.current !== switchStarts;
-        if (metSwitch && !switchingRef.current) refreshList();
+        if (switchEdgesRef.current !== switchEdges && !switchingRef.current) refreshList();
       })
       .finally(() => {
         if (!cancelled) setRefreshing(false);
@@ -213,8 +221,9 @@ export function useAppleLaneDeviceList({
   }, [laneId, listKey, listNonce, refreshList, runtimePinRef, sessionId]);
 
   useEffect(() => {
-    const switchEnded = switchingRef.current && !switching;
-    if (switching && !switchingRef.current) switchStartsRef.current += 1;
+    if (switching === switchingRef.current) return;
+    const switchEnded = !switching;
+    switchEdgesRef.current += 1;
     switchingRef.current = switching;
     if (switchEnded && listFailed) refreshList();
   }, [listFailed, refreshList, switching]);

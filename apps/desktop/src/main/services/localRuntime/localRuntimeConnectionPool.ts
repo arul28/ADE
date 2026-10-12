@@ -987,12 +987,6 @@ export function isLocalRuntimeConnectionDropped(error: Error): boolean {
   return LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN.test(error.message);
 }
 
-// Only declared reads (and a few idempotent writes) run again after a dropped
-// connection: a retried write could run twice against the reconnected daemon.
-export function isRetryableReadAction(domain: string, action: string): boolean {
-  return isReplaySafeAdeAction(domain, action);
-}
-
 /**
  * Signal an owned `ade serve` daemon and everything it started.
  *
@@ -1989,9 +1983,9 @@ export class LocalRuntimeConnectionPool {
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
     // A dropped daemon connection (restart / build-hash recycle) is transient:
-    // the next connect() reconnects to the live daemon. Retry idempotent reads
+    // the next connect() reconnects to the live daemon. Retry a replay-safe call
     // once so the renderer never sees a raw "connection closed" for a refresh.
-    const maxAttempts = isRetryableReadAction(request.domain, request.action) ? 2 : 1;
+    const maxAttempts = isReplaySafeAdeAction(request.domain, request.action) ? 2 : 1;
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {

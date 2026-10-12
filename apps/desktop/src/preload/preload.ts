@@ -1980,10 +1980,6 @@ function isMutatingRuntimeAction(domain: string, action: string): boolean {
   return adeActionAccess(domain, action) !== "read";
 }
 
-function assertProjectRuntimeNotTransitioningForMutation(doing: string): void {
-  if (projectRuntimeTransitionDepth > 0) throw projectSwitchingError(doing);
-}
-
 /** Refuse a write to the active binding while a project switch is in flight. */
 function assertWritesAllowedDuringProjectSwitch(domain: string, action: string): void {
   if (projectRuntimeTransitionDepth > 0 && isMutatingRuntimeAction(domain, action)) {
@@ -2624,7 +2620,7 @@ async function callProjectRuntimeSyncOr<T>(
   local: () => Promise<T>,
 ): Promise<T> {
   if (MUTATING_SYNC_METHODS.has(method) && projectRuntimeTransitionDepth > 0) {
-    assertProjectRuntimeNotTransitioningForMutation("changing sync state");
+    throw projectSwitchingError("changing sync state");
   }
   const remote = await callRemoteProjectSyncIfBound<T>(method, params);
   if (remote.handled) return remote.result;
@@ -4264,7 +4260,6 @@ async function runProjectRuntimeTransition<T>(
     }
   }
 }
-
 
 function createIpcEventFanout<T>(
   channel: string,

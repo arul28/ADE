@@ -7,15 +7,15 @@
  *
  * Two decisions read it. While a project tab is switching, the preload refuses
  * a write, because the project it was meant for is ambiguous, and lets a read
- * go ahead. After a dropped connection, the runtime pools run a read again and
- * never a write (`isReplaySafeAdeAction`).
+ * go ahead. After a dropped connection, the runtime pools run a call again only
+ * when `isReplaySafeAdeAction` says so.
  *
  * Declare by what the action does, not by its name. `lane.portGetLease`
- * creates the lease it cannot find, and `automations.webhookGetEndpoint` and
- * `automations.webhookList` register URLs with the relay, so all three are
- * writes. When unsure, declare `write`: a read declared as a write only fails
- * during a switch, but a write declared as a read can land on the wrong
- * project.
+ * creates the lease it cannot find, `automations.webhookGetEndpoint` and
+ * `automations.webhookList` register URLs with the relay, and
+ * `ai.getCursorAgentUsage` records billed usage, so all four are writes.
+ * When unsure, declare `write`: a read declared as a write only fails during a
+ * switch, but a write declared as a read can land on the wrong project.
  */
 export type AdeActionAccess = "read" | "write";
 
@@ -207,10 +207,11 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getApiCredential", "listApiKeys", "opencodeAuthMethods", "listHarnessRoutes",
       "piLoginProviders", "cursorAuthStatus", "listCursorCloudRepositories",
       "listCursorCloudAgents", "listCursorCloudRuns", "getCursorCloudLaneSecretNames",
-      "getCursorCloudAgent", "getCursorAgentUsage", "listCursorCloudArtifacts", "getCursorCloudFleet",
+      "getCursorCloudAgent", "listCursorCloudArtifacts", "getCursorCloudFleet",
       "listCloudAgents",
     ],
     write: [
+      "getCursorAgentUsage",
       "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential",
       "verifyApiKeyConnection", "storeApiKey", "deleteApiKey", "updateConfig",
       "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",
@@ -623,14 +624,17 @@ const REPLAY_SAFE_WRITES = new Set<string>([
   "lane.portGetLease",
 ]);
 
-// Reads that are never run again: they wait on purpose, call a model, or scan
-// every lane. A replay repeats the whole cost, and a replayable call gets a
-// shorter budget per attempt than these can need.
+// Reads that are never run again: they wait on purpose, call a model, or walk
+// a whole tree or disk. A replay repeats the whole cost, and a replayable
+// remote call gets a 25s budget per attempt, less than these can need.
 const UNREPLAYED_READS = new Set<string>([
   "chat.waitFor",
   "chat.suggestLaneNameFromPrompt",
   "chat.generateAutoLaneIdentity",
   "conflicts.scanRebaseNeeds",
+  "file.blame",
+  "ios_simulator.deviceList",
+  "storage.cleanupPreview",
 ]);
 
 /**

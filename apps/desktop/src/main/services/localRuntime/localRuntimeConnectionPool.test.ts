@@ -23,6 +23,7 @@ vi.mock("../processes/processStartTime", () => ({
   readProcessStartTimeMs: vi.fn((): number | null => null),
 }));
 
+import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   buildLocalRuntimeNodeEnv,
   buildLocalRuntimeNodePath,
@@ -33,7 +34,6 @@ import {
   defaultQueryServiceStatusAsync,
   isLocalChannelBuildOutputPath,
   isLocalRuntimeConnectionDropped,
-  isRetryableReadAction,
   localReleaseBuildOutputRuntimeBlock,
   LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE,
   LocalRuntimeConnectionPool,
@@ -4284,26 +4284,28 @@ describe("local runtime action retry classification", () => {
     expect(isLocalRuntimeConnectionDropped(new Error("Local ADE service action failed: ECONNRESET"))).toBe(false);
   });
 
-  it("only retries idempotent read actions, never mutations", () => {
-    // Reads — safe to retry after a connection drop.
-    expect(isRetryableReadAction("lane", "list")).toBe(true);
-    expect(isRetryableReadAction("lane", "listSnapshots")).toBe(true);
-    expect(isRetryableReadAction("diff", "getChanges")).toBe(true);
-    expect(isRetryableReadAction("diff", "getFilePatch")).toBe(true);
-    expect(isRetryableReadAction("file", "readFile")).toBe(true);
-    expect(isRetryableReadAction("chat", "getChatEventHistory")).toBe(true);
-    expect(isRetryableReadAction("file", "quickOpen")).toBe(true);
+  it("only retries replay-safe actions, never mutations", () => {
+    // Declared reads — safe to run again after a connection drop.
+    expect(isReplaySafeAdeAction("lane", "list")).toBe(true);
+    expect(isReplaySafeAdeAction("lane", "listSnapshots")).toBe(true);
+    expect(isReplaySafeAdeAction("diff", "getChanges")).toBe(true);
+    expect(isReplaySafeAdeAction("diff", "getFilePatch")).toBe(true);
+    expect(isReplaySafeAdeAction("file", "readFile")).toBe(true);
+    expect(isReplaySafeAdeAction("chat", "getChatEventHistory")).toBe(true);
+    expect(isReplaySafeAdeAction("file", "quickOpen")).toBe(true);
+    expect(isReplaySafeAdeAction("search", "query")).toBe(true);
 
     // Mutations — must NOT be retried (a retry could re-run the side effect).
-    expect(isRetryableReadAction("lane", "delete")).toBe(false);
-    expect(isRetryableReadAction("lane", "create")).toBe(false);
-    expect(isRetryableReadAction("lane", "archive")).toBe(false);
-    expect(isRetryableReadAction("file", "writeTextAtomic")).toBe(false);
-    expect(isRetryableReadAction("chat", "sendMessage")).toBe(false);
-    expect(isRetryableReadAction("pr", "merge")).toBe(false);
-    // Prefix must respect a camelCase boundary, not arbitrary substrings.
-    expect(isRetryableReadAction("lane", "getaway")).toBe(false);
-    expect(isRetryableReadAction("lane", "listenStop")).toBe(false);
+    expect(isReplaySafeAdeAction("lane", "delete")).toBe(false);
+    expect(isReplaySafeAdeAction("lane", "create")).toBe(false);
+    expect(isReplaySafeAdeAction("lane", "archive")).toBe(false);
+    expect(isReplaySafeAdeAction("file", "writeTextAtomic")).toBe(false);
+    expect(isReplaySafeAdeAction("chat", "sendMessage")).toBe(false);
+    expect(isReplaySafeAdeAction("ai", "getCursorAgentUsage")).toBe(false);
+    // A read that waits on purpose is not run twice either.
+    expect(isReplaySafeAdeAction("chat", "waitFor")).toBe(false);
+    // An action nobody declared is never assumed safe.
+    expect(isReplaySafeAdeAction("lane", "getaway")).toBe(false);
   });
 });
 

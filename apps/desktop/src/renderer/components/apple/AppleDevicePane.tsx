@@ -813,9 +813,9 @@ export function AppleDevicePane({
         if (!listLoaded) {
           return listFailed ? (
             <div data-apple-list-failed="" className="flex size-full items-start justify-center px-4 py-6">
+              <div className="w-full max-w-sm">
               <Banner
                 layout="inline"
-                style={{ width: "100%", maxWidth: 384 }}
                 model={{
                   id: "apple-device-list",
                   tone: "error",
@@ -825,6 +825,7 @@ export function AppleDevicePane({
                   actions: [{ label: "Retry", onClick: refreshList, disabled: refreshing }],
                 }}
               />
+              </div>
             </div>
           ) : (
             <PaneMessage title="Loading simulators…" description={null} />

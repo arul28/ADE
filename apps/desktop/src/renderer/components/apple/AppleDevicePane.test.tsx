@@ -454,9 +454,9 @@ describe("AppleDevicePane states", () => {
     renderPane();
     await waitFor(() => expect(failedNotice()).not.toBeNull());
     // The empty card is a claim about the machine; a failed read makes none,
-    // and the failure is said once, not again in the status strip.
+    // and the failure is said once.
     expect(emptyCard()).toBeNull();
-    expect(document.querySelector("[data-apple-status-strip]")).toBeNull();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
 
     listing();
