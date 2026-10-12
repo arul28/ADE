@@ -109,8 +109,10 @@ jobs:
               --jq '[.check_runs[] | select(.name == "ci-pass")] | sort_by(.completed_at // "") | last // empty'
           }
 
-          # A release commit that only adds release notes cannot change what
-          # ships: none of these files reaches a build. Waiting 15-50 minutes
+          # A release commit that only adds release notes cannot change the
+          # code that ships: these files reach the app only as data, the
+          # version's notes embedded as a string by bundle-release-notes.mjs.
+          # The release skill runs validate-docs on them before pushing. Waiting 15-50 minutes
           # for CI on it is what used to hold every tag, so a commit whose CI
           # has not finished may borrow the green ci-pass of the nearest
           # ancestor, provided every commit in between touches only these
@@ -126,7 +128,8 @@ jobs:
 
           target_sha="$(git rev-parse "$TARGET_REF^{commit}")"
           candidate="$target_sha"
-          for _ in 1 2 3 4 5; do
+          # The target, up to five notes-only commits, then the parent below them.
+          for _ in 1 2 3 4 5 6; do
             ci_pass_json="$(ci_pass_for "$candidate")"
             status="$(printf '%s' "${ci_pass_json:-null}" | jq -r '.status // ""')"
             conclusion="$(printf '%s' "${ci_pass_json:-null}" | jq -r '.conclusion // ""')"
@@ -148,7 +151,7 @@ jobs:
               if [ -z "$ci_pass_json" ]; then
                 echo "::error::No ci-pass check run was found for $candidate. Run CI before releasing."
               else
-                echo "::error::ci-pass for $candidate is still $status. Release packaging requires green CI. $url"
+                echo "::error::ci-pass for $candidate is ${status}${conclusion:+/$conclusion}, not green. Release packaging requires green CI. $url"
               fi
               exit 1
             fi
@@ -258,26 +261,31 @@ jobs:
       # depend only on their own sources, yet compiling them took 16 minutes of
       # every release. warm-release-caches.yml builds them on main; a release
       # restores them here and builds from source only on a miss.
+      - name: Resolve release cache keys
+        id: cache-keys
+        uses: ./.github/actions/release-cache-keys
+
       - name: Restore transcribe-cli
         uses: actions/cache/restore@v4
         with:
           path: apps/desktop/resources/whisper/transcribe-cli
-          key: transcribe-cli-darwin-universal-${{ hashFiles('apps/desktop/scripts/materialize-whisper-resources.mjs') }}
+          key: ${{ steps.cache-keys.outputs.transcribe-darwin }}
 
       - name: Restore native helpers
-        id: native-helpers
         uses: actions/cache/restore@v4
         with:
-          path: |
-            apps/desktop/resources/native/ade-desktop-driver
-            apps/desktop/resources/native/ade-capture-helper
-            apps/desktop/resources/native/ade-sim-helper
-            apps/desktop/resources/native/ade-media
-          key: native-helpers-darwin-universal-${{ hashFiles('apps/desktop/native/ADEDesktopDriver/**', 'apps/desktop/native/ADECaptureHelper/**', 'apps/desktop/native/ADESimHelper/**', 'apps/desktop/native/ADEMedia/**', 'apps/desktop/scripts/build-mac-desktop-driver.mjs', 'apps/desktop/scripts/build-capture-helper.mjs', 'apps/desktop/scripts/build-sim-helper.mjs', 'apps/desktop/scripts/build-ade-media.mjs', '!apps/desktop/native/**/.build*/**') }}
+          path: ${{ steps.cache-keys.outputs.native-helper-paths }}
+          key: ${{ steps.cache-keys.outputs.native-helpers }}
 
-      - name: Use cached native helpers
-        if: ${{ steps.native-helpers.outputs.cache-hit == 'true' }}
-        run: echo "ADE_NATIVE_HELPERS_CACHED=1" >> "$GITHUB_ENV"
+      - name: Verify cached native builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
+        run: |
+          scripts/verify-cached-release-builds.sh - apps/desktop/resources/whisper/transcribe-cli
+          # One path per line, none with spaces; split them into arguments.
+          # shellcheck disable=SC2086
+          scripts/verify-cached-release-builds.sh ADE_NATIVE_HELPERS_CACHED $HELPER_PATHS
 
       # Only this job's own target. Downloading every ade-runtime-* artifact is
       # what let foreign-platform payloads into the bundle in the first place.
@@ -487,11 +495,21 @@ jobs:
           }
 
       # See the equivalent step in build-mac-release.
+      - name: Resolve release cache keys
+        id: cache-keys
+        uses: ./.github/actions/release-cache-keys
+
       - name: Restore transcribe-cli
         uses: actions/cache/restore@v4
         with:
           path: apps/desktop/resources/whisper/transcribe-cli.exe
-          key: transcribe-cli-win32-x64-${{ hashFiles('apps/desktop/scripts/materialize-whisper-resources.mjs') }}
+          key: ${{ steps.cache-keys.outputs.transcribe-win32 }}
+
+      - name: Verify cached transcribe-cli
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/verify-cached-release-builds.sh - apps/desktop/resources/whisper/transcribe-cli.exe
 
       - name: Wait for the win32-x64 runtime binary
         shell: bash
@@ -523,8 +541,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # One deadline for all five, not a fresh 40 minutes per artifact.
+          deadline=$(( $(date +%s) + 2400 ))
           for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
-            scripts/wait-for-run-artifact.sh "ade-runtime-$target" "build-runtime-binaries ($target,"
+            remaining=$(( deadline - $(date +%s) ))
+            [ "$remaining" -gt 0 ] || { echo "::error::Timed out waiting for the runtime binaries."; exit 1; }
+            WAIT_TIMEOUT_SECONDS="$remaining" scripts/wait-for-run-artifact.sh "ade-runtime-$target" "build-runtime-binaries ($target,"
           done
 
       - name: Download all standalone runtime artifacts for proof

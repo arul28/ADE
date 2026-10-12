@@ -45,19 +45,20 @@ exports.default = async function afterSign(context) {
     return;
   }
 
-  const { APPLE_NETWORK_ERROR, retryTransient } = await import("./mac-release-retry.mjs");
+  // release-retry.mjs is ESM, so this CommonJS hook loads it with import().
+  const { isAppleNetworkError, retryTransient } = await import("./release-retry.mjs");
   const appPath = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
 
   console.log(`[release:mac] Notarizing app: ${appPath}`);
   await retryTransient(
     `notarization of ${path.basename(appPath)}`,
     () => notarizeAndWaitForNotaryTool({ appPath, ...credentials }),
-    { attempts: 4, delayMs: 30_000, isTransient: APPLE_NETWORK_ERROR },
+    { attempts: 4, delayMs: 30_000, isTransient: isAppleNetworkError },
   );
   await retryTransient(
     `stapling ${path.basename(appPath)}`,
     () => stapleApp({ appPath }),
-    { attempts: 6, delayMs: 15_000, isTransient: APPLE_NETWORK_ERROR },
+    { attempts: 6, delayMs: 15_000, isTransient: isAppleNetworkError },
   );
   console.log(`[release:mac] App notarized and stapled: ${appPath}`);
 };

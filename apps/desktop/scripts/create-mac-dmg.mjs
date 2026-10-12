@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { retryTransient } from "./mac-release-retry.mjs";
+import { retryTransient } from "./release-retry.mjs";
 
 const execFileAsync = promisify(execFile);
 

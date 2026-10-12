@@ -10,6 +10,7 @@
 //
 //   node scripts/prefetch-electron.mjs --platform=darwin --arch=x64
 import { createRequire } from "node:module";
+import { retryTransient } from "./release-retry.mjs";
 
 const require = createRequire(import.meta.url);
 const { downloadArtifact } = require("@electron/get");
@@ -27,18 +28,11 @@ const cacheRoot = process.env.ELECTRON_CACHE;
 if (!cacheRoot) throw new Error("[release] ELECTRON_CACHE must be set so electron-builder finds the prefetched zip.");
 const version = require("electron/package.json").version;
 
-const maxAttempts = 5;
-for (let attempt = 1; ; attempt += 1) {
-  try {
-    const zipPath = await downloadArtifact({ version, platform, arch, artifactName: "electron", cacheRoot });
-    console.log(`[release] Electron ${version} ${platform}-${arch} is cached: ${zipPath}`);
-    break;
-  } catch (error) {
-    if (attempt >= maxAttempts) throw error;
-    const waitMs = 10_000 * attempt;
-    console.warn(
-      `[release] Electron download failed (attempt ${attempt}/${maxAttempts}); retrying in ${waitMs / 1000}s.\n${error?.message ?? error}`,
-    );
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
-  }
-}
+// Retry every failure, including a checksum mismatch: refetching a corrupt
+// download is the fix.
+const zipPath = await retryTransient(
+  `Electron ${version} ${platform}-${arch} download`,
+  () => downloadArtifact({ version, platform, arch, artifactName: "electron", cacheRoot }),
+  { attempts: 5, delayMs: 10_000 },
+);
+console.log(`[release] Electron ${version} ${platform}-${arch} is cached: ${zipPath}`);

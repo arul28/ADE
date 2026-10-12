@@ -8,6 +8,10 @@
 # instead of letting it run to the timeout.
 #
 #   scripts/wait-for-run-artifact.sh <artifact-name> <producer-job-name-substring>
+#
+# The producer substring matches the job's display name, which for a matrix job
+# is "<job-id> (<matrix values>)" -- e.g. "build-runtime-binaries (win32-x64,".
+# Renaming that job or reordering its matrix keys means updating the callers.
 set -euo pipefail
 
 artifact="$1"

@@ -22,6 +22,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { retryTransient } from "./release-retry.mjs";
 
 const execFileAsync = promisify(execFile);
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -48,19 +49,18 @@ async function exists(target) {
 
 async function fetchVerified(url, integrity) {
   const [algorithm, expected] = integrity.split(/-(.*)/s);
-  for (let attempt = 1; ; attempt += 1) {
-    try {
+  return retryTransient(
+    `download of ${url}`,
+    async () => {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
       const body = Buffer.from(await response.arrayBuffer());
       const actual = crypto.createHash(algorithm).update(body).digest("base64");
       if (actual !== expected) throw new Error(`Integrity mismatch for ${url}`);
       return body;
-    } catch (error) {
-      if (attempt >= 4 || /Integrity mismatch/.test(error.message)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 5_000 * attempt));
-    }
-  }
+    },
+    { attempts: 4, delayMs: 5_000, isTransient: (text) => !text.includes("Integrity mismatch") },
+  );
 }
 
 const lock = JSON.parse(await fs.readFile(path.join(appDir, "package-lock.json"), "utf8"));
@@ -128,7 +128,6 @@ if (packageNames.length > 0) {
     maxBuffer: 1024 * 1024 * 50,
     env: { ...process.env, npm_config_arch: targetCpu, npm_config_target_arch: targetCpu },
   });
-  const lipoArch = targetCpu === "x64" ? "x86_64" : "arm64";
   // ssh2's installer reports a failed build as success and leaves no addon, so
   // require every addon that existed before the rebuild to exist after it.
   const rebuilt = new Set(await findCompiledAddons(nodeModules));
@@ -136,6 +135,7 @@ if (packageNames.length > 0) {
   if (lost.length > 0) {
     throw new Error(`[cross-arch] Rebuilding for ${targetCpu} dropped: ${lost.map((addon) => path.relative(appDir, addon)).join(", ")}`);
   }
+  const lipoArch = targetCpu === "x64" ? "x86_64" : "arm64";
   for (const addon of rebuilt) {
     const { stdout } = await execFileAsync("lipo", ["-archs", addon]);
     if (!stdout.trim().split(/\s+/).includes(lipoArch)) {

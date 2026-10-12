@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { exitIfCachedHelper } from "./native-helper-cache.mjs";
 
 // The Mac Desktop native helper: a universal binary in resources/native,
 // materialized before electron-builder runs, so the packaged app carries one
@@ -15,12 +16,7 @@ const packageRoot = path.join(desktopRoot, "native", "ADEDesktopDriver");
 const outputRoot = path.join(desktopRoot, "resources", "native");
 const outputPath = path.join(outputRoot, "ade-desktop-driver");
 
-// Release jobs restore this universal helper from a cache keyed on its sources
-// (warm-release-caches.yml) and set ADE_NATIVE_HELPERS_CACHED=1 on a hit.
-if (process.env.ADE_NATIVE_HELPERS_CACHED === "1" && fs.existsSync(outputPath)) {
-  console.log(`[native-helpers] Reusing cached ${path.basename(outputPath)}.`);
-  process.exit(0);
-}
+exitIfCachedHelper(outputPath);
 
 if (process.platform !== "darwin") {
   console.log("[desktop-driver] Skipping native helper build outside macOS.");

@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { APPLE_NETWORK_ERROR } from "./mac-release-retry.mjs";
+import { isAppleNetworkError, retryTransient } from "./release-retry.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -127,37 +127,17 @@ function readPositiveIntegerEnv(name, fallback) {
   return parsed;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function formatCommandOutput(error) {
-  const stdout = typeof error?.stdout === "string" ? error.stdout.trim() : "";
-  const stderr = typeof error?.stderr === "string" ? error.stderr.trim() : "";
-  return [stdout, stderr].filter(Boolean).join("\n");
-}
-
 async function stapleDmgWithRetry(dmgPath) {
   const maxAttempts = readPositiveIntegerEnv("ADE_DMG_STAPLE_MAX_ATTEMPTS", 12);
   const retryDelayMs = readPositiveIntegerEnv("ADE_DMG_STAPLE_RETRY_DELAY_MS", 30_000);
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    console.log(`[release:mac] Stapling DMG ticket (${attempt}/${maxAttempts}): ${dmgPath}`);
-    try {
-      await execFileAsync("xcrun", ["stapler", "staple", dmgPath], { maxBuffer: 1024 * 1024 * 10 });
-      return;
-    } catch (error) {
-      if (attempt >= maxAttempts) {
-        throw error;
-      }
-      const output = formatCommandOutput(error);
-      const suffix = output ? `\n${output}` : "";
-      console.warn(
-        `[release:mac] DMG stapling failed; retrying in ${Math.round(retryDelayMs / 1000)}s.${suffix}`
-      );
-      await sleep(retryDelayMs);
-    }
-  }
+  console.log(`[release:mac] Stapling DMG ticket: ${dmgPath}`);
+  // A fresh ticket can take minutes to reach the CDN, so every staple failure
+  // is retried on a fixed delay, not only network errors.
+  await retryTransient(
+    `stapling ${path.basename(dmgPath)}`,
+    () => execFileAsync("xcrun", ["stapler", "staple", dmgPath], { maxBuffer: 1024 * 1024 * 10 }),
+    { attempts: maxAttempts, delayMs: () => retryDelayMs },
+  );
 }
 
 async function verifyAppSignature(appPath, description) {
@@ -191,8 +171,9 @@ async function verifyDmgBeforeNotarization(dmgPath) {
   await verifyAppSignature(sourceApp, `source app signature before notarizing ${name}`);
 }
 
-// Per-arch builds emit one DMG per architecture. Notarize + staple each so the
-// artifact validator's `stapler validate` passes for every published DMG.
+// Local recovery only (release-mac-local.mjs): CI no longer notarizes DMGs
+// separately, since the app inside is notarized and stapled. Per-arch builds
+// emit one DMG per architecture; notarize and staple each.
 const explicitDmg = resolveAbsolute(readFlag("--dmg"));
 const dmgPaths = explicitDmg
   ? [explicitDmg]
@@ -209,45 +190,23 @@ for (const dmgPath of dmgPaths) {
   await verifyDmgBeforeNotarization(dmgPath);
 
   console.log(`[release:mac] Submitting DMG for notarization: ${dmgPath}`);
-  // Apple's notary service + the runner's network are flaky — a transient
-  // -1009 "offline" / timeout / 5xx must NOT sink a 40-minute release. Retry the
-  // submit on transient errors; a real Invalid/Rejected verdict throws immediately.
-  const maxNotaryAttempts = 6;
-  let notaryResult = null;
-  let lastNotaryError = null;
-  for (let attempt = 1; attempt <= maxNotaryAttempts; attempt += 1) {
-    try {
-      const { stdout: notarytoolOutput } = await execFileAsync("xcrun", buildNotarytoolArgs(dmgPath), {
-        maxBuffer: 1024 * 1024 * 10,
-      });
-      const parsed = JSON.parse(notarytoolOutput);
-      if (parsed.status === "Accepted") {
-        notaryResult = parsed;
-        break;
+  // Retry the submit on network errors; a real Invalid/Rejected verdict
+  // throws on the first attempt.
+  const notaryResult = await retryTransient(
+    `notarization submit for ${path.basename(dmgPath)}`,
+    async () => {
+      const { stdout } = await execFileAsync("xcrun", buildNotarytoolArgs(dmgPath), { maxBuffer: 1024 * 1024 * 10 });
+      const parsed = JSON.parse(stdout);
+      if (parsed.status !== "Accepted") {
+        throw new Error(
+          `[release:mac] DMG notarization failed with status ${parsed.status ?? "unknown"} ` +
+            `for ${path.basename(dmgPath)} (${parsed.id ?? "no submission id"})`,
+        );
       }
-      // A definite verdict (Invalid/Rejected) is not transient — fail fast.
-      throw new Error(
-        `[release:mac] DMG notarization failed with status ${parsed.status ?? "unknown"} ` +
-          `for ${path.basename(dmgPath)} (${parsed.id ?? "no submission id"})`
-      );
-    } catch (error) {
-      lastNotaryError = error;
-      const message = `${error?.message ?? ""}\n${error?.stderr ?? ""}`;
-      const isTransient = APPLE_NETWORK_ERROR.test(message);
-      if (!isTransient || attempt === maxNotaryAttempts) {
-        throw error;
-      }
-      const backoffMs = Math.min(120_000, 10_000 * 2 ** (attempt - 1));
-      console.warn(
-        `[release:mac] Notarization submit attempt ${attempt}/${maxNotaryAttempts} hit a transient error ` +
-          `for ${path.basename(dmgPath)}; retrying in ${Math.round(backoffMs / 1000)}s.`
-      );
-      await sleep(backoffMs);
-    }
-  }
-  if (!notaryResult) {
-    throw lastNotaryError ?? new Error(`[release:mac] Notarization failed for ${path.basename(dmgPath)}`);
-  }
+      return parsed;
+    },
+    { attempts: 6, delayMs: (attempt) => Math.min(120_000, 10_000 * 2 ** (attempt - 1)), isTransient: isAppleNetworkError },
+  );
   console.log(`[release:mac] DMG notarization accepted: ${notaryResult.id ?? path.basename(dmgPath)}`);
 
   await stapleDmgWithRetry(dmgPath);

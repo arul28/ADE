@@ -1,0 +1,40 @@
+name: Release cache keys
+description: >-
+  The one definition of the keys for the release's cached native builds.
+  warm-release-caches.yml saves under these keys on main; release-core.yml
+  restores them. Both must use this action so the keys cannot drift apart.
+  Run it after actions/checkout.
+
+outputs:
+  transcribe-darwin:
+    description: transcribe-cli universal macOS binary
+    value: ${{ steps.keys.outputs.transcribe-darwin }}
+  transcribe-win32:
+    description: transcribe-cli Windows x64 binary
+    value: ${{ steps.keys.outputs.transcribe-win32 }}
+  native-helpers:
+    description: the four universal Swift helpers in apps/desktop/resources/native
+    value: ${{ steps.keys.outputs.native-helpers }}
+  native-helper-paths:
+    description: newline-separated paths of those four helpers, for cache, attest and verify steps
+    value: ${{ steps.keys.outputs.native-helper-paths }}
+
+runs:
+  using: composite
+  steps:
+    - id: keys
+      shell: bash
+      env:
+        TRANSCRIBE_HASH: ${{ hashFiles('apps/desktop/scripts/materialize-whisper-resources.mjs') }}
+        NATIVE_HASH: ${{ hashFiles('apps/desktop/native/ADEDesktopDriver/**', 'apps/desktop/native/ADECaptureHelper/**', 'apps/desktop/native/ADESimHelper/**', 'apps/desktop/native/ADEMedia/**', 'apps/desktop/scripts/build-mac-desktop-driver.mjs', 'apps/desktop/scripts/build-capture-helper.mjs', 'apps/desktop/scripts/build-sim-helper.mjs', 'apps/desktop/scripts/build-ade-media.mjs', 'apps/desktop/scripts/native-helper-cache.mjs', '!apps/desktop/native/**/.build*/**') }}
+      run: |
+        echo "transcribe-darwin=transcribe-cli-darwin-universal-$TRANSCRIBE_HASH" >> "$GITHUB_OUTPUT"
+        echo "transcribe-win32=transcribe-cli-win32-x64-$TRANSCRIBE_HASH" >> "$GITHUB_OUTPUT"
+        echo "native-helpers=native-helpers-darwin-universal-$NATIVE_HASH" >> "$GITHUB_OUTPUT"
+        {
+          echo "native-helper-paths<<EOF"
+          for helper in ade-desktop-driver ade-capture-helper ade-sim-helper ade-media; do
+            echo "apps/desktop/resources/native/$helper"
+          done
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
