@@ -456,8 +456,8 @@ export type LaneMergedNotification = {
 
 export function summarizeTrigger(trigger: TriggerContext): string {
   if (trigger.summary?.trim()) return trigger.summary.trim();
+  const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
   if (trigger.triggerType === "lane.merged") {
-    const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
     const prNumber = trigger.pr?.number;
     return `Lane merged: ${lane}${typeof prNumber === "number" ? ` (PR #${prNumber})` : ""}`;
   }
@@ -469,7 +469,6 @@ export function summarizeTrigger(trigger: TriggerContext): string {
     const model = trigger.session?.modelId ?? trigger.session?.provider ?? "session";
     return `Session failed: ${model}`;
   }
-  const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
   if (trigger.triggerType === "session.ended_without_pr") return `Session ended without a PR: ${lane}`;
   if (trigger.triggerType === "session.settled") return `Session settled: ${lane}`;
   if (trigger.triggerType === "lane.created") return `Lane created: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;

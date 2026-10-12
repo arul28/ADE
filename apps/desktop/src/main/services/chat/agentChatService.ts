@@ -28536,6 +28536,8 @@ export function createAgentChatService(args: {
                   if (managed.runtime === runtime && runtime.activeTurnId === turnId) {
                     runtime.interrupted = true;
                     extraUsageQueryReaped = true;
+                    // Arm, then reap: the same order as every other quota reset.
+                    await waitForArmedResumeBounded(managed.session.id);
                     await resetClaudeQuerySession(managed, runtime, "interrupt").catch(() => undefined);
                   }
                 });
@@ -29837,10 +29839,10 @@ export function createAgentChatService(args: {
             costUsd = claudeResultCostUsd(runtime, resultMsg.total_cost_usd);
           }
           // The result of ADE's own extra-usage stop is an interrupt; its error
-          // text adds nothing to the stop notice. A result that names another
-          // failure (an API error, an exhausted budget) keeps its errors.
-          const stoppedForExtraUsage = extraUsageStopRequested
-            && !(resultTerminalReason && CLAUDE_FAILED_TERMINAL_REASONS.has(resultTerminalReason));
+          // text adds nothing to the stop notice. Only a result Claude marks as
+          // aborted is treated that way: hiding a different, real failure
+          // costs more than one extra error row beside the notice.
+          const stoppedForExtraUsage = extraUsageStopRequested && resultTerminalStatus === "interrupted";
           if (resultIsError && resultErrors.userFacing.length > 0) {
             // A logged-out result surfaces here as 401 / "invalid authentication
             // credentials" errors — route them into the re-login card rather than
@@ -29995,10 +29997,18 @@ export function createAgentChatService(args: {
       runtime.pauseIdleWatchdog = null;
       runtime.resumeIdleWatchdog = null;
       if (runtime.interrupted && !runtime.spareBackgroundOnInterrupt) {
-        await stopActiveClaudeSubagents(managed, runtime, turnId, "Interrupted");
+        await stopActiveClaudeSubagents(
+          managed,
+          runtime,
+          turnId,
+          "Interrupted",
+          extraUsageQueryReaped ? { stopSource: "system", stopReason: CHAT_STOP_REASON_RUNTIME_EXITED } : undefined,
+        );
       }
       dropFinishedForegroundClaudeTasks(managed, runtime, turnId);
-      const finalStatus: ClaudeTerminalStatus = runtime.interrupted
+      // ADE's extra-usage stop ends "failed", like a rejected quota, also when
+      // its fallback had to mark the turn interrupted to reap the query.
+      const finalStatus: ClaudeTerminalStatus = runtime.interrupted && !extraUsageQueryReaped
         ? "interrupted"
         : quotaTrippedThisTurn
           ? "failed"
@@ -30125,7 +30135,9 @@ export function createAgentChatService(args: {
       // Process queued steers (skip if session was disposed during execution)
       if (managed.runtime === runtime) {
         if (extraUsageStopRequested) {
-          // A retry or a queued message would start the next billed request at once.
+          // A retry or a queued message would start the next billed request at
+          // once. A replay that was promised and is now not sent says so.
+          if (replayRecovery === "retry") claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
           cancelQueuedSteers(managed, runtime, "interrupted");
           startClaudeIdleReader(managed, runtime, "turn_completed");
         } else if (replayRecovery === "retry") {

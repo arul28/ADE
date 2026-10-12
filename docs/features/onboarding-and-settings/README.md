@@ -2257,7 +2257,9 @@ file, so they have exactly one identity per machine.
   account registry, so another machine with the same account does not apply
   it, and iOS and the hosted web client show no control for it. It covers ADE
   chats that run on the account's own login: a chat that runs on a preset or a
-  stored credential, and a terminal `claude` session, are not stopped.
+  stored credential, and a terminal `claude` session, are not stopped. A chat
+  whose preset cannot be resolved runs on the account's own login, so the
+  setting applies to it.
 - **AI settings save to `.ade/local.yaml`.** `ai.updateConfig` (IPC, the `ai`
   action domain, and the brain's remote command) merges its partial config into
   the local layer through `projectConfigService.updateAiConfig`. The shared
