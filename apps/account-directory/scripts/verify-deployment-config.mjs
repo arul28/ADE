@@ -43,9 +43,10 @@ import { dirname, resolve } from "node:path";
  * site (`https://ade-app.dev/device`), so that site is checked live before the
  * deploy: it must already redirect `/device` to a `/device` page elsewhere and
  * keep the code. A Worker published ahead of the website turns every sign-in
- * link, including the ones older CLIs print, into a 404. A value the Worker
- * cannot use (a path, a query, plain http) fails too, because the Worker would
- * ignore it without saying so. `CLERK_SECRET_KEY` only warns: without it the
+ * link, including the ones older CLIs print, into a 404. A value that is not
+ * an exact https origin (a path, a query, plain http) fails too: the Worker
+ * ignores such a value without saying so, except http on localhost, which is
+ * for local runs and never for a deploy. `CLERK_SECRET_KEY` only warns: without it the
  * phone approval route answers 503 and the browser page still works.
  *
  * Secrets are read from `wrangler secret list` BY NAME ONLY — this never reads,
@@ -191,7 +192,7 @@ export function verifyDirectoryDeploymentConfig(args) {
       const origin = exactHttpsOrigin(vars.DEVICE_PAGE_ORIGIN);
       if (!origin) {
         throw new DeploymentConfigError(
-          `DEVICE_PAGE_ORIGIN for the ${environment} environment must be an https origin with no path or query; the Worker would ignore "${vars.DEVICE_PAGE_ORIGIN}"`,
+          `DEVICE_PAGE_ORIGIN for the ${environment} environment must be an https origin with no path or query, and "${vars.DEVICE_PAGE_ORIGIN}" is not`,
         );
       }
       devicePageOrigins.push({ environment, origin });

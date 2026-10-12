@@ -317,6 +317,14 @@ async function findByDeviceCode(env: DeviceAuthorizationEnv, deviceCode: string)
     .first<DeviceAuthorizationRow>();
 }
 
+/**
+ * Has this code run out of time? An expired row cannot be confirmed, and
+ * `/device/token` refuses it even when the sign-in was approved in time.
+ */
+export function isDeviceAuthorizationExpired(row: DeviceAuthorizationRow, now: number): boolean {
+  return row.expires_at <= now || row.status === "expired";
+}
+
 export async function findByUserCode(env: DeviceAuthorizationEnv, userCode: string): Promise<DeviceAuthorizationRow | null> {
   return env.DB.prepare("select * from device_authorizations where user_code = ?")
     .bind(userCode)
@@ -503,7 +511,7 @@ async function handleDeviceApproval(
   }
   const row = await findByUserCode(env, userCode);
   if (!row) return approvalMessage("Code not found", "Check the code shown by ADE and try again.", 404);
-  if (row.expires_at <= now || row.status === "expired") {
+  if (isDeviceAuthorizationExpired(row, now)) {
     await env.DB.prepare(`
       update device_authorizations
          set status = 'expired', code_verifier = null, oauth_state_hash = null,
@@ -712,7 +720,7 @@ async function handleDeviceToken(
   }
 
   const now = options.now();
-  if (row.expires_at <= now || row.status === "expired") {
+  if (isDeviceAuthorizationExpired(row, now)) {
     await env.DB.prepare(`
       update device_authorizations
          set status = 'expired', code_verifier = null, oauth_state_hash = null,

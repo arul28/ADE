@@ -179,6 +179,9 @@ struct ADEApp: App {
           DeviceSignInApprovalSheet(request: request) {
             deviceSignInRequest = nil
           }
+          // One sheet, and so one approval model, for each code: a second link
+          // cannot reset an approval that is in flight for the first.
+          .id(request.userCode)
           .environmentObject(accountService)
         }
   }

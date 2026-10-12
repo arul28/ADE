@@ -1618,6 +1618,26 @@ export function createAccountAuthService(args: {
     closeServer(session.server);
   };
 
+  /**
+   * One sign-in wins. When one completes, every other sign-in that is still
+   * open on this machine ends (`ade login` runs a browser and a device sign-in
+   * at once, and the desktop app can have its own open), so none of them can
+   * complete a moment later and replace the session, possibly with another
+   * account. A browser sign-in that was open reads as done to whoever polls
+   * it, because the machine is signed in; a device sign-in is forgotten.
+   */
+  const endOtherSignIns = (completed: PendingLoginSession | string): void => {
+    for (const pending of pendingSessions.values()) {
+      if (pending === completed) continue;
+      if (pending.phase === "pending" || pending.phase === "exchanging") {
+        finishPendingSession(pending, "signed_in", null);
+      }
+    }
+    for (const deviceSessionId of pendingDeviceSessions.keys()) {
+      if (deviceSessionId !== completed) pendingDeviceSessions.delete(deviceSessionId);
+    }
+  };
+
   const expirePendingSession = (session: PendingLoginSession): void => {
     if (session.phase !== "pending" && session.phase !== "exchanging") return;
     finishPendingSession(session, "expired", "ADE account sign-in expired.");
@@ -1823,12 +1843,18 @@ export function createAccountAuthService(args: {
         || session.phase !== "exchanging"
         || session.expiresAtMs <= now()
       ) {
-        finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
+        // `signed_in` here means another sign-in completed during the
+        // exchange and closed this one as done; that answer stands. (The cast
+        // widens the type: the compiler still believes "exchanging".)
+        if ((session.phase as PendingLoginSession["phase"]) !== "signed_in") {
+          finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
+        }
         respondHtml(response, 409, FAILURE_HTML);
         return;
       }
       persistSession(record, "loopback_login_completed");
       authEpoch += 1;
+      endOtherSignIns(session);
       notifySignedIn();
       finishPendingSession(session, "signed_in", null);
       logger.info("account.login_completed");
@@ -2251,14 +2277,7 @@ export function createAccountAuthService(args: {
       : baseRecord;
     persistSession(record, "device_login_completed");
     authEpoch += 1;
-    // One sign-in wins. A browser sign-in that is still open on this machine
-    // (`ade login` runs both at once) would otherwise complete a moment later
-    // and replace this session, possibly with another account.
-    for (const pending of pendingSessions.values()) {
-      if (pending.phase === "pending" || pending.phase === "exchanging") {
-        finishPendingSession(pending, "error", "ADE account sign-in was completed on another device.");
-      }
-    }
+    endOtherSignIns(normalizedSessionId);
     notifySignedIn();
     pendingDeviceSessions.delete(normalizedSessionId);
     logger.info("account.device_login_completed");

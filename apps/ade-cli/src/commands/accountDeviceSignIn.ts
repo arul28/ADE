@@ -136,6 +136,20 @@ export async function waitForBrowserOrDeviceSignIn(args: {
     ? { ...args.device, nextPollAtMs: Date.now() + args.device.intervalSec * 1000, failures: 0 }
     : null;
   let browserStatus: Json | null = null;
+  // One look at the browser sign-in. Returns the result when it signed in;
+  // when it failed, says so once and remembers it.
+  const checkBrowser = async (): Promise<BrowserOrDeviceSignIn | null> => {
+    if (browserStatus) return null;
+    const poll = await args.pollBrowser();
+    const status = text(poll.status);
+    if (status === "signed_in") return { winner: "browser", authStatus: authStatusOf(poll) };
+    if (status !== "pending") {
+      browserStatus = authStatusOf(poll);
+      args.write(`${text(poll.message) ?? "ADE account sign-in failed."}\n`);
+      if (device) args.write("Still waiting for the sign-in on another device…\n");
+    }
+    return null;
+  };
   const pollDevice = async (poll: () => Promise<Json>): Promise<DeviceSignInPoll | null> => {
     try {
       return readDeviceSignInPoll(await poll());
@@ -151,22 +165,18 @@ export async function waitForBrowserOrDeviceSignIn(args: {
     await args.sleep(Number.isFinite(args.deadlineMs)
       ? Math.min(BROWSER_POLL_INTERVAL_MS, Math.max(1, args.deadlineMs - Date.now()))
       : BROWSER_POLL_INTERVAL_MS);
-    if (!browserStatus) {
-      const poll = await args.pollBrowser();
-      const status = text(poll.status);
-      if (status === "signed_in") return { winner: "browser", authStatus: authStatusOf(poll) };
-      if (status !== "pending") {
-        browserStatus = authStatusOf(poll);
-        args.write(`${text(poll.message) ?? "ADE account sign-in failed."}\n`);
-        if (device) args.write("Still waiting for the sign-in on another device…\n");
-      }
-    }
+    const browserWon = await checkBrowser();
+    if (browserWon) return browserWon;
     if (device && Date.now() >= device.nextPollAtMs) {
       const poll = await pollDevice(device.poll);
       if (poll?.kind === "signed_in") return { winner: "device", authStatus: poll.authStatus };
       if (poll?.kind === "ended") {
-        args.write(`${poll.message ?? "The sign-in on another device ended."}${browserStillOpen()}\n`);
         device = null;
+        // The brain ends the device sign-in when the browser one completes, so
+        // look at the browser first: "ended" then is not news, it is the win.
+        const wonMeanwhile = await checkBrowser();
+        if (wonMeanwhile) return wonMeanwhile;
+        args.write(`${poll.message ?? "The sign-in on another device ended."}${browserStillOpen()}\n`);
       } else if (!poll && device.failures + 1 >= DEVICE_POLL_FAILURE_LIMIT) {
         args.write(`The sign-in on another device stopped answering.${browserStillOpen()}\n`);
         device = null;

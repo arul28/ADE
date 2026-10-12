@@ -13,6 +13,7 @@ import {
   claimForClerkSignIn,
   clerkOAuthConfig,
   findByUserCode,
+  isDeviceAuthorizationExpired,
   isRecord,
   json,
   nonEmptyString,
@@ -65,7 +66,7 @@ async function lookUpForApp(
   if (row.status === "consumed") return { row, state: "approved" };
   // An approved code the computer did not collect in time is gone like any
   // other: `/device/token` refuses it, so the app must not report it as done.
-  if (row.expires_at <= now || row.status === "expired") return { row: null, state: "expired" };
+  if (isDeviceAuthorizationExpired(row, now)) return { row: null, state: "expired" };
   if (row.status === "approved") return { row, state: "approved" };
   if (row.status === "error") return { row, state: "failed" };
   const claimed = Boolean(row.code_verifier || row.oauth_state_hash);
