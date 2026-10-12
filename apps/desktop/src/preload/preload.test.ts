@@ -482,6 +482,42 @@ describe("preload Apple device input routing", () => {
     expect(ipcCalls).toBe(1);
   });
 
+  it.each([true, false])("guards binding-callback mutations until a project switch settles (success=%s)", async (success) => {
+    const binding = { kind: "local", key: "local:/original", rootPath: "/original", displayName: "Original" };
+    let finishSwitch!: (result: unknown) => void;
+    let failSwitch!: (error: Error) => void;
+    const switchResult = new Promise((resolve, reject) => { finishSwitch = resolve; failSwitch = reject; });
+    const mutations: string[] = [];
+    const invoke = vi.fn(async (channel: string, payload?: any) => {
+      if (channel === IPC.appGetWindowSession) return { windowId: 1, binding };
+      if (channel === IPC.projectSwitchToPath) return switchResult;
+      if (channel === IPC.localRuntimeCallAction) {
+        mutations.push(payload.rootPath);
+        return { result: { released: true } };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const bridge = await mountBridge(invoke);
+    await bridge.app.getWindowSession();
+    const callbackResults: Promise<unknown>[] = [];
+    const unsubscribe = bridge.app.onProjectBindingChanged(() => {
+      callbackResults.push(bridge.iosSimulator.shutdown({ laneId: "lane-1" }).catch((error: unknown) => error));
+    });
+    const switching = bridge.project.switchToPath("/next").catch((error: unknown) => error);
+    expect(callbackResults).toHaveLength(1);
+    expect(await callbackResults[0]).toBeInstanceOf(Error);
+    expect(mutations).toEqual([]);
+    if (success) finishSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    else failSwitch(new Error("Open failed"));
+    await switching;
+    for (const result of callbackResults) expect(await result).toBeInstanceOf(Error);
+    expect(mutations).toEqual([]);
+    unsubscribe();
+    // The guard is released after both a successful open and a rollback.
+    await bridge.iosSimulator.shutdown({ laneId: "lane-1" });
+    expect(mutations).toEqual([success ? "/next" : "/original"]);
+  });
+
   it.each([
     ["local", "shutdown"], ["local", "recordStop"], ["local", "stopStream"],
     ["remote", "shutdown"], ["remote", "recordStop"], ["remote", "stopStream"],

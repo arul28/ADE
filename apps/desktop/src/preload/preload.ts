@@ -4894,28 +4894,28 @@ const adeBridge = {
       if (!normalizedRootPath) {
         throw new Error("Project root path is required.");
       }
-      const previousBinding = currentProjectBinding;
-      const nextBinding = localProjectBindingForRoot(normalizedRootPath);
-      rememberProjectBinding(nextBinding);
-      try {
-        const project = await clearAround(
-          () => {
-            clearProjectScopedReadCaches();
-          },
-          () => runProjectRuntimeTransition(() =>
-            ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath: normalizedRootPath }),
-          ),
-        );
-        rememberProjectBinding(
-          project?.rootPath === nextBinding.rootPath
-            ? nextBinding
-            : localProjectBindingForRoot(project?.rootPath ?? normalizedRootPath),
-        );
-        return project;
-      } catch (error) {
-        rememberProjectBinding(previousBinding);
-        throw error;
-      }
+      return runProjectRuntimeTransition(async () => {
+        const previousBinding = currentProjectBinding;
+        const nextBinding = localProjectBindingForRoot(normalizedRootPath);
+        // Binding listeners run synchronously. Guard mutations before
+        // publishing the optimistic target, through success or rollback.
+        rememberProjectBinding(nextBinding);
+        try {
+          const project = await clearAround(
+            clearProjectScopedReadCaches,
+            () => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath: normalizedRootPath }),
+          );
+          rememberProjectBinding(
+            project?.rootPath === nextBinding.rootPath
+              ? nextBinding
+              : localProjectBindingForRoot(project?.rootPath ?? normalizedRootPath),
+          );
+          return project;
+        } catch (error) {
+          rememberProjectBinding(previousBinding);
+          throw error;
+        }
+      });
     },
     forgetRecent: async (keyOrRootPath: string): Promise<RecentProjectSummary[]> =>
       // For local recents the key equals the root path; for remote recents the
