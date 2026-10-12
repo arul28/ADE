@@ -150,14 +150,54 @@ is in the prompt box.
 | `ade.restored` | True when the scene already played once and is being brought back; `ade.animate` and `ade.countUp` skip to their end state then. |
 | `ade.animate(target, keyframes, options)` | Web Animations, collapsed to the end state under reduced motion or restore. |
 | `ade.countUp(target, to, { from, duration, decimals })` | Counts a number up. |
+| `ade.chart(target, options)` | Draws a bar, line, area, donut or sparkline chart in ADE's look. See "Charts". |
 | `ade.resize()` | Re-measures the scene and asks the host for the new height. Call it after you change the content's size. |
 | `ade.ready()` | Call it when your first paint is done. |
 
 CSS variables, already set on `:root` and kept current when the theme changes:
 `--bg`, `--surface`, `--border`, `--fg`, `--fg-muted`, `--accent`, `--success`,
-`--warning`, `--danger`, `--font-sans`, `--font-mono`, `--font-size`. Use them
+`--warning`, `--danger`, `--chart-1` … `--chart-6` (series colors for charts),
+`--font-sans`, `--font-mono`, `--font-size`. Use them
 and the scene looks like the rest of ADE in every theme, light ones included.
 `--font-sans` is ADE's Geist and `--font-mono` its JetBrains Mono.
+
+## Charts
+
+Use `ade.chart` for a chart. Do not hand-draw axes in SVG: the helper picks
+round gridlines, spaces the labels, adds a legend and a hover tip, follows
+the theme, and refits when the reader resizes the chat.
+
+```html
+<div id="runs"></div>
+<script>
+  ade.chart("#runs", {
+    type: "bar",                       // "bar" | "line" | "area" | "donut" | "spark"
+    labels: ["Mon", "Tue", "Wed"],
+    series: [
+      { name: "Build", values: [4.1, 4.0, 4.3] },
+      { name: "Tests", values: [6.2, 5.9, 6.1] },
+    ],
+    stacked: true,                     // bars only
+    suffix: "m",                       // or prefix: "$", or format: function (v) { return ... }
+    height: 200,
+  });
+  ade.ready();
+</script>
+```
+
+- One series: pass `values: [...]` instead of `series`.
+- `donut`: `labels` and `values`, one slice each. The total sits in the
+  middle (`total: "text"` replaces it).
+- `spark`: a small inline line for next to a number. Put it in a `<span>`;
+  `width` and `height` are in px (96 × 24 by default).
+- `bar`, `area` and `donut` take values of zero or more. `line` also draws
+  negative values.
+- A series may set its own `color`; use `var(--success)` or `var(--danger)`
+  only when the color means good or bad. Leave it out otherwise.
+- `ade.chart` returns `{ update(options), destroy() }`. With live data, create
+  the chart once and call `update` from `ade.on("data", ...)`.
+- Give the chart's container no fixed width. Put two charts side by side with
+  a CSS grid.
 
 ## Live ADE data
 

@@ -7,6 +7,7 @@ import {
   sceneThemeVariables,
   type SceneTheme,
 } from "./chatScene";
+import { SCENE_CHART_SOURCE, SCENE_CHART_STYLES } from "./chatSceneChart";
 
 /**
  * Assembling the document a scene frame loads: the CSP, the frame's base
@@ -632,6 +633,15 @@ body {
 :root {
 ${variables}
   color-scheme: ${theme.scheme};
+  /* Series colors for charts: the theme's accent first, then hues that stay
+     apart from each other and from success / warning / danger, on dark and
+     on light. */
+  --chart-1: var(--accent);
+  --chart-2: #38bdf8;
+  --chart-3: #f59e0b;
+  --chart-4: #34d399;
+  --chart-5: #f472b6;
+  --chart-6: #94a3b8;
 }
 a { color: var(--accent); }
 code, pre, kbd, samp { font-family: var(--font-mono); }
@@ -652,6 +662,7 @@ input[type="checkbox"], input[type="radio"], input[type="range"] { padding: 0; a
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg) 18%, transparent); border-radius: 999px; }
 ::-webkit-scrollbar-track { background: transparent; }
+${SCENE_CHART_STYLES}
 `.trim();
 }
 
@@ -739,6 +750,7 @@ export function buildSceneDocument(args: SceneDocumentArgs): string {
     `window.__ADE_SCENE_RESTORED__ = ${args.restored ? "true" : "false"};`,
     "</script>",
     `<script>${SCENE_SDK_SOURCE}</script>`,
+    `<script>${SCENE_CHART_SOURCE}</script>`,
     `</head><body${args.scopeKey ? ` data-scene-scope="${sceneScopeAttribute(args.scopeKey)}"` : ""}>`,
     args.html,
     "</body></html>",
