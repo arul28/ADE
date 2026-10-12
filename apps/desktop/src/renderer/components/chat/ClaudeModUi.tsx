@@ -33,7 +33,7 @@ const GRID_STYLE = {
  * A control acts only while the Claude process that drew it lives.
  */
 export const ClaudeModUi = memo(function ClaudeModUi(props: {
-  sessionId: string | null;
+  sessionId: string;
   pin: OpenProjectBinding | null | undefined;
 }) {
   const { sessionId, pin } = props;
@@ -46,18 +46,30 @@ export const ClaudeModUi = memo(function ClaudeModUi(props: {
   const { generation, live } = snapshot;
   const act = useCallback((action: ClaudePluginUiAction) => {
     const api = claudeModUiApi();
-    if (!api || !sessionId || !live) return;
+    if (!api || !live) return;
     void api.act({ sessionId, generation, ...action }, pinRef.current ?? null).catch(() => {
       // The process that drew the control is gone; the next snapshot says so.
     });
   }, [sessionId, generation, live]);
 
-  if (!sessionId || !claudePluginUiHasContent(snapshot)) return null;
+  if (!claudePluginUiHasContent(snapshot)) return null;
 
   // Status lines alone are one row: there is nothing to fold away.
   const hasBody = snapshot.band !== null || snapshot.panes.length > 0;
   const folded = hasBody && collapsed;
-  const Head = hasBody ? "button" : "div";
+  const headContent = (
+    <>
+      <span className="kit-eyebrow">Mods</span>
+      <span className="ade-mod-statuses">
+        {snapshot.statuses.map((status) => (
+          // As in Claude Code, whose docs show a status line as `my-mod: checks: 3 passing`.
+          <span key={status.plugin} className="ade-mod-status">
+            <span className="ade-mod-status-name">{status.plugin}:</span> {status.text}
+          </span>
+        ))}
+      </span>
+    </>
+  );
 
   return (
     <div
@@ -68,30 +80,22 @@ export const ClaudeModUi = memo(function ClaudeModUi(props: {
       data-testid="claude-mod-ui"
     >
       <div className="kit-card">
-        <Head
-          className="kit-card-head ade-mod-head"
-          data-compact="true"
-          {...(hasBody
-            ? {
-                type: "button",
-                "aria-expanded": !folded,
-                "aria-controls": bodyId,
-                title: folded ? "Show what your Claude mods draw" : "Hide what your Claude mods draw",
-                onClick: () => setClaudeModUiCollapsed(!collapsed),
-              }
-            : null)}
-        >
-          <span className="kit-eyebrow">Mods</span>
-          <span className="ade-mod-statuses">
-            {snapshot.statuses.map((status) => (
-              // Claude Code starts a status line with the name of the mod that set it.
-              <span key={status.plugin} className="ade-mod-status">
-                <span className="ade-mod-status-name">{status.plugin}</span> {status.text}
-              </span>
-            ))}
-          </span>
-          {hasBody ? <CaretDown size={11} weight="bold" className="ade-mod-caret" aria-hidden /> : null}
-        </Head>
+        {hasBody ? (
+          <button
+            type="button"
+            className="kit-card-head ade-mod-head"
+            data-compact="true"
+            aria-expanded={!folded}
+            aria-controls={bodyId}
+            title={folded ? "Show what your Claude mods draw" : "Hide what your Claude mods draw"}
+            onClick={() => setClaudeModUiCollapsed(!collapsed)}
+          >
+            {headContent}
+            <CaretDown size={11} weight="bold" className="ade-mod-caret" aria-hidden />
+          </button>
+        ) : (
+          <div className="kit-card-head ade-mod-head" data-compact="true">{headContent}</div>
+        )}
         {hasBody ? (
           // Folded, the body is out of the tab order and hidden from assistive tools.
           <div id={bodyId} className="ade-mod-body" {...(folded ? INERT_ATTR : null)}>

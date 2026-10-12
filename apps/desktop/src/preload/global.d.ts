@@ -2551,7 +2551,8 @@ declare global {
             pin?: OpenProjectBinding | null,
           ) => Promise<{ ok: boolean; error?: string }>;
         };
-        claudePluginUi: {
+        /** Claude mod UI. Absent in a client that draws none (the hosted web client). */
+        claudePluginUi?: {
           get: (args: ClaudePluginUiGetArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiSnapshot>;
           act: (args: ClaudePluginUiActArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiActResult>;
         };

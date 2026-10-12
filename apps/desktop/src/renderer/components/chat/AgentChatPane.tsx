@@ -4788,8 +4788,9 @@ export function AgentChatPane({
   // thread comments are a project-runtime action the personal scope lacks.
   const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning && !personalScope ? composerSessionId : null;
   const threadComments = useThreadComments(threadCommentsSessionId, chatRuntimePin);
-  // Mod UI is the desktop window's own: the hosted client draws none, and a
-  // subagent view is another agent's transcript.
+  // Mod UI is for a readable Claude project chat (the thread-comments gate)
+  // in the desktop window: the hosted client draws none, and a subagent view
+  // is another agent's transcript.
   const claudeModUiSessionId = selectedSession?.provider === "claude" && !subagentView && !isWebClientMode()
     ? threadCommentsSessionId
     : null;
@@ -15944,8 +15945,7 @@ export function AgentChatPane({
   const compactFirstEnabled = compactFirst.choice?.sessionId === selectedSessionId
     ? compactFirst.choice.value : selectedSession?.compactionIdleMode === "always";
   compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
-  // What Claude mods draw for the open chat. Same gate as thread comments: a
-  // readable project chat whose composer and transcript agree on the session.
+  // What Claude mods draw for the open chat, on top of the prompt box.
   const claudeModUi = claudeModUiSessionId
     ? <ClaudeModUi sessionId={claudeModUiSessionId} pin={chatRuntimePin} />
     : null;

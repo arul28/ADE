@@ -31,7 +31,6 @@ import { DictationSection } from "./DictationSection";
 import { VoiceConversationSection } from "./VoiceConversationSection";
 import { LaunchPromptSection } from "./LaunchPromptSection";
 import { ClaudeModsSection } from "./ClaudeModsSection";
-import { isWebClientMode } from "../../lib/webClientMode";
 import { ModernRow, ModernRows, ModernSection, SettingsColumn, SettingsToggle } from "./primitives";
 import "./ChatSection.css";
 
@@ -166,8 +165,7 @@ export function ChatSection() {
 
             <LaunchPromptSection />
 
-            {/* The setting is the host's project configuration; the hosted client draws no mod UI. */}
-            {isWebClientMode() ? null : <ClaudeModsSection />}
+            <ClaudeModsSection />
 
             {/* Voice input is chat dictation, so it lives with chat. */}
             <DictationSection />

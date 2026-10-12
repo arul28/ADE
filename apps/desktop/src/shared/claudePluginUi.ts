@@ -10,6 +10,7 @@
  *
  * Everything here is pure so the host, the renderer and the tests share it.
  */
+import { isSessionMetaOnly } from "./sessionMetaEvents";
 
 /** The mod UI actions, in every list that must name them (policy, preload, RPC guard). */
 export const CLAUDE_PLUGIN_UI_ACTION_NAMES = [
@@ -56,9 +57,9 @@ export type ClaudePluginUiElement = {
 
 export type ClaudePluginUiNode = string | ClaudePluginUiElement;
 
-type Status = { plugin: string; text: string };
+export type ClaudePluginUiStatus = { plugin: string; text: string };
 
-type Toast = { id: string; plugin: string; text: string; timeoutMs: number };
+export type ClaudePluginUiToast = { id: string; plugin: string; text: string; timeoutMs: number };
 
 type Pane = {
   id: string;
@@ -74,9 +75,9 @@ export type ClaudePluginUiSnapshot = {
   generation: number;
   /** Bumped on every change, so a slow read cannot overwrite a newer push. */
   revision: number;
-  statuses: Status[];
-  /** The latest toast; clients show each `id` once. */
-  toast: Toast | null;
+  statuses: ClaudePluginUiStatus[];
+  /** A toast a mod just raised. It rides only the publish that raised it, so a later read never repeats it. */
+  toast: ClaudePluginUiToast | null;
   band: ClaudePluginUiElement | null;
   panes: Pane[];
 };
@@ -116,8 +117,7 @@ export function claudePluginUiHasContent(snapshot: ClaudePluginUiSnapshot | null
  * It is not chat activity: no recency bump, no roster refresh, no replay.
  */
 export function isClaudePluginUiOnlyMetaEvent(event: { type: string }): boolean {
-  if (event.type !== "session_meta_updated" || (event as { claudePluginUi?: unknown }).claudePluginUi === undefined) return false;
-  return Object.keys(event).every((key) => key === "type" || key === "claudePluginUi");
+  return isSessionMetaOnly(event, "claudePluginUi");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -215,7 +215,7 @@ function sanitizeProps(type: ElementType, raw: Record<string, unknown>, budget: 
     if (kind === "flag") {
       if (value === true) props[name] = true;
     } else if (typeof value === "number") {
-      if (kind !== "name" && kind !== "text" && Number.isFinite(value)) props[name] = Math.max(-512, Math.min(512, value));
+      if ((kind === "number" || kind === "size") && Number.isFinite(value)) props[name] = Math.max(-512, Math.min(512, value));
     } else if (typeof value === "string" && kind !== "number") {
       if (kind === "text") {
         const cleaned = cleanClaudePluginUiText(value, Math.max(0, MAX_TREE_CHARS - budget.chars));

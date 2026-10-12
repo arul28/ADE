@@ -2111,9 +2111,12 @@ with Claude Code 2.1.293 (SDK 0.3.293).
    client, record it for replay, or refresh the roster for it.
    A band and its controls change together: a site whose render failed keeps
    the tree and the controls it shows.
-5. A client reads the current snapshot with `chat.getClaudePluginUi` when a
-   chat opens, then follows the events. `chat.actOnClaudePluginUi` sends a
-   press, a typed value, a pick or a pane close.
+5. The desktop window reads the current snapshot with the runtime action
+   `chat.getClaudePluginUi` when a chat opens, then follows the events of that
+   chat. `chat.actOnClaudePluginUi` sends a press, a typed value, a pick or a
+   pane close. Both go through the chat action domain
+   (`callPinnedOrBoundRuntimeActionOr` in the preload), so a window bound to
+   another machine reaches that machine's Claude process.
 
 ### What a client may draw, and what a press may do
 
@@ -2129,12 +2132,18 @@ with Claude Code 2.1.293 (SDK 0.3.293).
   text. A link opens in the system browser; the window never navigates. Links
   inside a mod's `Markdown` follow the same rule, not the chat's: a mod cannot
   open a file or an ADE deeplink.
-- **Attribution.** A status line starts with the name of the mod that set it,
-  and a toast carries the mod's name as its title, as in Claude Code. A newer
-  toast of one mod replaces its older one. A toast found when a chat opens is
-  not shown: only one pushed while the window watches is news.
-- **Colours.** Terminal names, hex, `rgb()` and `ansi256()` map to theme
-  colours in `claudeModUiColor`. No style string from a mod reaches the DOM.
+- **Attribution.** A status line starts with the name of the mod that set it
+  (Claude Code's docs show `my-mod: checks: 3 passing`), and a toast carries
+  the mod's name as its title. A newer toast of one mod replaces its older
+  one. A toast rides only the publish that raised it, and the window shows it
+  only for the chat on screen, so opening a chat never repeats an old one.
+- **Keys.** A control with a `key` keeps its state (typed text) by that key.
+  Controls without one are tracked by position, as Claude Code's docs advise
+  ("give each control one").
+- **Colours.** Claude Code's theme keys, terminal names, hex, `rgb()` and
+  `ansi256()` map to theme colours in `claudeModUiStyle.ts`; the terminal's
+  black, white and greys follow the theme so they read on a light one. No
+  style string from a mod reaches the DOM.
 - **A press is bound to the process that drew the control.** The snapshot
   carries a `generation` (one per Claude process). The service refuses an
   action whose generation is not the current one, and one whose
@@ -2149,8 +2158,9 @@ with Claude Code 2.1.293 (SDK 0.3.293).
   cannot call them.
 
 When the Claude process goes away (idle eviction, a reset), the band and the
-panes stay on screen, dimmed and not pressable (`live: false`), until the
-first render of the next process commits. Status lines belong to the process that set them and are
+panes stay on screen, dimmed and not pressable (`live: false`), until a render
+of the next process answers. A late message of a closed or replaced process
+is dropped. Status lines belong to the process that set them and are
 cleared.
 
 ### Surfaces
@@ -2168,7 +2178,8 @@ It is **off unless set to true**, because the channel is private to Claude
 Code. Turning it off takes the drawing down at the chat's next message from
 Claude; turning it on draws at the next message too.
 
-While the setting is off, an open Claude chat offers it once: a floating
+While the setting is off, an open Claude chat in the desktop window (not the
+hosted client, not a subagent view) offers it once: a floating
 prompt ("ADE can show your Claude mods in chats") with a button that opens the
 setting. The offer shows only when `chat.listClaudePlugins` reports a plugin
 with `isMod` (its `hooks/hooks.json` names a hooks module). Closing it, or

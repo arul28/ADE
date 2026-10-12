@@ -28235,12 +28235,13 @@ export function createAgentChatService(args: {
         // waits one drain window for a tail message; a mod that redraws on a
         // timer would restart that window for ever and the turn would never
         // end. So mod messages share one window, counted from the first.
-        if (claudePluginUi.ingest(managed.session.id, sessionQuery, msg)) {
+        // A query this loop still reads after its teardown is no longer the chat's own.
+        if (claudePluginUi.ingest(managed.session.id, runtime.query === sessionQuery ? sessionQuery : null, msg)) {
           if (runtime.interrupted) break;
           if (timeoutError) throw timeoutError;
           if (resultSeen) {
-            modUiDrainStartedAt ??= Date.now();
-            if (Date.now() - modUiDrainStartedAt >= CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS) break;
+            modUiDrainStartedAt ??= performance.now();
+            if (performance.now() - modUiDrainStartedAt >= CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS) break;
           }
           continue;
         }

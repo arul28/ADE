@@ -10,11 +10,12 @@ import {
   cleanClaudePluginUiText,
   normalizeClaudePluginUiTarget,
   sanitizeClaudePluginUiTree,
-  type ClaudePluginUiActArgs,
   type ClaudePluginUiActResult,
   type ClaudePluginUiElement,
   type ClaudePluginUiSnapshot,
+  type ClaudePluginUiStatus,
   type ClaudePluginUiTarget,
+  type ClaudePluginUiToast,
 } from "../../../shared/claudePluginUi";
 
 /**
@@ -61,7 +62,7 @@ const CLIENT_ID = "ade";
 const MIN_RENDER_INTERVAL_MS = 200;
 const CONTROL_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_TOAST_MS = 4_000;
-/** The longest toast Claude Code accepts from a mod. */
+/** The longest toast Claude Code accepts from a mod: its docs give `timeoutMs` as 1 to 60000. */
 const MAX_TOAST_MS = 60_000;
 const PANE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -107,17 +108,17 @@ function sameTarget(left: ClaudePluginUiTarget, right: ClaudePluginUiTarget): bo
   return left.plugin === right.plugin && left.handle === right.handle;
 }
 
-function statusesAfter(snapshot: Snapshot, message: Record<string, unknown>): Partial<Snapshot> | null {
+/** The status lines after a `ui_status` message (an empty text clears that mod's line); null for no change. */
+function statusesAfter(statuses: ClaudePluginUiStatus[], message: Record<string, unknown>): ClaudePluginUiStatus[] | null {
   const plugin = cleanClaudePluginUiText(message.plugin, 128);
   if (!plugin) return null;
   const text = cleanClaudePluginUiText(message.text);
-  const others = snapshot.statuses.filter((status) => status.plugin !== plugin);
-  if (!text && others.length === snapshot.statuses.length) return null;
-  const statuses = text ? [...others, { plugin, text }] : others;
-  return { statuses: statuses.slice(-MAX_CLAUDE_PLUGIN_UI_STATUSES) };
+  const others = statuses.filter((status) => status.plugin !== plugin);
+  if (!text && others.length === statuses.length) return null;
+  return (text ? [...others, { plugin, text }] : others).slice(-MAX_CLAUDE_PLUGIN_UI_STATUSES);
 }
 
-function toastFrom(message: Record<string, unknown>, fallbackId: () => string): Partial<Snapshot> | null {
+function toastFrom(message: Record<string, unknown>, fallbackId: () => string): ClaudePluginUiToast | null {
   const plugin = cleanClaudePluginUiText(message.plugin, 128);
   const text = cleanClaudePluginUiText(message.text);
   if (!plugin || !text) return null;
@@ -125,7 +126,7 @@ function toastFrom(message: Record<string, unknown>, fallbackId: () => string): 
     ? Math.max(1_000, Math.min(MAX_TOAST_MS, message.timeout_ms))
     : DEFAULT_TOAST_MS;
   const id = typeof message.uuid === "string" && message.uuid && message.uuid.length <= 128 ? message.uuid : fallbackId();
-  return { toast: { id, plugin, text, timeoutMs } };
+  return { id, plugin, text, timeoutMs };
 }
 
 /** The open panes a `ui_panes` message lists, each keeping the tree already drawn for it. */
@@ -157,7 +158,8 @@ export function createClaudePluginUiService(deps: {
 
   const update = (sessionId: string, entry: Entry, patch: Partial<Snapshot>): void => {
     if (entries.get(sessionId) !== entry) return;
-    entry.snapshot = { ...entry.snapshot, ...patch, revision: entry.snapshot.revision + 1 };
+    // A toast is news once: it rides the publish that raised it and no later one.
+    entry.snapshot = { ...entry.snapshot, toast: null, ...patch, revision: entry.snapshot.revision + 1 };
     deps.publish(sessionId, entry.snapshot);
   };
 
@@ -228,9 +230,11 @@ export function createClaudePluginUiService(deps: {
       entry.targetsBySite.set(paneSite(pane.id), drawn.targets);
       return { ...pane, tree: drawn.tree };
     });
+    // A render that answered makes this process's controls the ones on screen.
+    // While none has, the last process's trees stay dimmed.
+    const answered = band !== null || [...panes.values()].some((drawn) => drawn !== null);
     update(sessionId, entry, {
-      // The first render of this process makes its controls the ones on screen.
-      live: true,
+      ...(answered ? { live: true } : {}),
       ...(band ? { band: band.tree } : {}),
       panes: drawnPanes,
     });
@@ -325,16 +329,16 @@ export function createClaudePluginUiService(deps: {
     update(sessionId, entry, { live: false, statuses: [], toast: null });
   };
 
-  const apply = (sessionId: string, entry: Entry, subtype: string, message: Record<string, unknown>): void => {
+  const applyMessage = (sessionId: string, entry: Entry, subtype: string, message: Record<string, unknown>): void => {
     switch (subtype) {
       case "ui_status": {
-        const patch = statusesAfter(entry.snapshot, message);
-        if (patch) update(sessionId, entry, patch);
+        const statuses = statusesAfter(entry.snapshot.statuses, message);
+        if (statuses) update(sessionId, entry, { statuses });
         return;
       }
       case "ui_toast": {
-        const patch = toastFrom(message, () => `toast-${++toastCounter}`);
-        if (patch) update(sessionId, entry, patch);
+        const toast = toastFrom(message, () => `toast-${++toastCounter}`);
+        if (toast) update(sessionId, entry, { toast });
         return;
       }
       case "ui_panes": {
@@ -373,9 +377,10 @@ export function createClaudePluginUiService(deps: {
         return isUi;
       }
       // Turned on after this query started, so it was never named.
-      if (entries.get(sessionId)?.query !== query) attach(sessionId, query);
+      if (!entries.has(sessionId)) attach(sessionId, query);
       const entry = entries.get(sessionId);
-      if (entry) apply(sessionId, entry, subtype, message);
+      // A late message of a replaced or closed query must not draw over the current one.
+      if (entry?.query === query) applyMessage(sessionId, entry, subtype, message);
     } catch (error) {
       deps.logger.debug("agent_chat.claude_plugin_ui_ingest_failed", {
         sessionId,
@@ -393,11 +398,11 @@ export function createClaudePluginUiService(deps: {
 
   /**
    * Forwards a press, a typed value, a pick or a pane close to the chat's live
-   * query. The arguments come from a client as untyped JSON, so each one is
-   * checked here: the action must name the generation of the process that drew
+   * query. The arguments come from a client as untyped JSON (shaped like
+   * `ClaudePluginUiActArgs`), so each one is checked here: the action must name the generation of the process that drew
    * the control, and a control this host sent for the site it names.
    */
-  const act = async (args: ClaudePluginUiActArgs): Promise<ClaudePluginUiActResult> => {
+  const act = async (args: unknown): Promise<ClaudePluginUiActResult> => {
     const refused = { handled: false };
     const raw: Record<string, unknown> = isRecord(args) ? args : {};
     const sessionId = typeof raw.sessionId === "string" ? raw.sessionId.trim() : "";
@@ -406,6 +411,8 @@ export function createClaudePluginUiService(deps: {
     if (!entry || !request || !deps.isEnabled() || entry.snapshot.generation !== raw.generation) return refused;
     try {
       if (raw.kind === "closePane") {
+        // Only a pane this process drew, and still shows, can be closed.
+        if (typeof raw.paneId !== "string" || !entry.snapshot.live || !entry.targetsBySite.has(paneSite(raw.paneId))) return refused;
         if (!entry.snapshot.panes.some((pane) => pane.id === raw.paneId)) return refused;
         const response = await send(request, { subtype: "ui_close", id: raw.paneId });
         return { handled: response?.closed === true };

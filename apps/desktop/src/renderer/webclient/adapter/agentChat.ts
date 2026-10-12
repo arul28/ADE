@@ -42,7 +42,6 @@ import type {
   ChatThreadCommentListArgs,
   ChatThreadCommentUpdateArgs,
 } from "../../../shared/threadComments";
-import { EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT } from "../../../shared/claudePluginUi";
 import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
@@ -279,11 +278,6 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         guardPin("drafts.sendNow", pin);
         return await callRequiredMutation<{ ok: boolean; error?: string }>("chat.sendDraftNow", args);
       },
-    },
-    // Mod UI is drawn by the desktop window only; the hosted client shows none.
-    claudePluginUi: {
-      get: async () => EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT,
-      act: async () => ({ handled: false }),
     },
     threadComments: {
       list: async (args: ChatThreadCommentListArgs, pin?: RuntimePinArg) => {

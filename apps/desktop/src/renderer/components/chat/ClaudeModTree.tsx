@@ -15,7 +15,7 @@ import { boxStyle, textStyle } from "./claudeModUiStyle";
  * reduced the tree to known elements and props; an element this surface does
  * not know draws nothing.
  */
-export type ModTreeProps = {
+type ModTreeProps = {
   node: ClaudePluginUiNode;
   site: ClaudePluginUiSite;
   act: (action: ClaudePluginUiAction) => void;
@@ -56,10 +56,15 @@ const MARKDOWN_OVERRIDES = {
 
 function ModChildren({ nodes, ...rest }: Omit<ModTreeProps, "node"> & { nodes: ClaudePluginUiNode[] | undefined }): ReactNode {
   // A mod's tree is positional, but a control keeps its own state (typed
-  // text), so a control with a `key` is tracked by it, not by its place.
+  // text), so a control with a `key` is tracked by it, not by its place. A
+  // mod may repeat a key among siblings; the count keeps React's keys unique.
+  const seen = new Map<string, number>();
   return nodes?.map((child, index) => {
     const own = typeof child === "string" ? undefined : str(child.props.key);
-    return <ModTree key={own ? `key:${own}` : index} node={child} {...rest} />;
+    if (!own) return <ModTree key={index} node={child} {...rest} />;
+    const nth = seen.get(own) ?? 0;
+    seen.set(own, nth + 1);
+    return <ModTree key={`key:${own}#${nth}`} node={child} {...rest} />;
   });
 }
 

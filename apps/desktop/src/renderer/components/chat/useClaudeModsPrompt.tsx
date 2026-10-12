@@ -6,8 +6,27 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { dismissClaudeModsOffer, isClaudeModsOfferDismissed } from "./claudeModUiPrefs";
 
 /**
+ * Whether this person has a mod installed. Listing plugins reads the disk, so
+ * the answer is kept for the window: a mod installed later is noticed after a
+ * restart.
+ */
+let hasModsInstalled: Promise<boolean> | null = null;
+
+function findInstalledMods(sessionId: string): Promise<boolean> {
+  hasModsInstalled ??= window.ade.agentChat.listClaudePlugins({ sessionId })
+    .then((plugins) => plugins.some((plugin) => plugin.isMod === true))
+    .catch(() => {
+      // An older host cannot say. Ask again on the next chat.
+      hasModsInstalled = null;
+      return false;
+    });
+  return hasModsInstalled;
+}
+
+/**
  * Offers the mod UI setting, once, to a person who has Claude Code mods
- * installed and has the setting off. Runs for an open Claude chat only.
+ * installed and has the setting off. Runs for an open Claude chat in the
+ * desktop window only (not the hosted client, not a subagent view).
  */
 export function useClaudeModsPrompt(sessionId: string | null): void {
   const navigate = useNavigate();
@@ -20,11 +39,11 @@ export function useClaudeModsPrompt(sessionId: string | null): void {
     void (async () => {
       const config = await window.ade.projectConfig.get();
       if (cancelled || config.effective.ai?.chat?.claudePluginUiEnabled === true) return;
-      // Listing plugins reads the disk, so it runs only while there is an offer to make.
-      const plugins = await window.ade.agentChat.listClaudePlugins({ sessionId });
-      if (!cancelled) setOffer(plugins.some((plugin) => plugin.isMod === true));
+      // The plugin list is read only while there is an offer to make.
+      const hasMods = await findInstalledMods(sessionId);
+      if (!cancelled) setOffer(hasMods);
     })().catch(() => {
-      // An older host cannot say; no offer.
+      // The configuration did not load; no offer.
     });
     return () => {
       cancelled = true;

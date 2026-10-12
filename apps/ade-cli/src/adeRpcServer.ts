@@ -264,12 +264,11 @@ type SessionState = {
   };
 };
 
-/**
- * Thread comments are the user's unsent review of an agent's reply. Only a
- * user client may read or change them, or send them (`includeThreadComments`);
- * an agent that could would be editing what the user is about to tell it.
- */
+/** Chat actions only a user client may call; an agent caller is refused. */
 const USER_ONLY_CHAT_ACTIONS: ReadonlySet<string> = new Set([
+  // Thread comments are the user's unsent review of an agent's reply. Only a
+  // user client may read or change them, or send them (`includeThreadComments`);
+  // an agent that could would be editing what the user is about to tell it.
   ...THREAD_COMMENT_ACTION_NAMES,
   // What a mod draws is for the person at the chat; a press runs plugin code on the host.
   ...CLAUDE_PLUGIN_UI_ACTION_NAMES,

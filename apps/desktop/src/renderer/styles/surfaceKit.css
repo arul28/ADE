@@ -100,7 +100,7 @@ html[data-scene="image"][data-theme="light"] {
   color: var(--color-fg);
 }
 
-/* A one-line card that sits on another surface (the mod dock on the prompt box). */
+/* Compact: a 28px head for a one-line card that sits on another surface. */
 .kit-card-head[data-compact="true"] { height: 28px; padding: 0 12px; font-size: 11px; }
 
 .kit-card-head > svg { flex: none; color: var(--kit-text-3); }

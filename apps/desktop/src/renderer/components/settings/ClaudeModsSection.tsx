@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import "./ChatSection.css";
@@ -81,6 +82,9 @@ export function ClaudeModsSection() {
       setSaving(false);
     }
   }, [saving]);
+
+  // The setting is the host's project configuration, and the hosted client draws no mod UI.
+  if (isWebClientMode()) return null;
 
   return (
     <ModernSection group="Claude mods" title="Claude mods" hint="Claude Code plugins that draw in the chat.">

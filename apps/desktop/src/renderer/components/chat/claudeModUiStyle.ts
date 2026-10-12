@@ -8,7 +8,7 @@ import type { ClaudePluginUiPropValue } from "../../../shared/claudePluginUi";
  * number: no string of a mod's is ever used as CSS.
  */
 
-export type ModProps = Record<string, ClaudePluginUiPropValue>;
+type ModProps = Record<string, ClaudePluginUiPropValue>;
 
 const PERCENT = /^\d{1,3}%$/;
 
@@ -21,6 +21,10 @@ function size(value: ClaudePluginUiPropValue | undefined, unit: "ch" | "lh"): st
 const FG = "var(--color-fg)";
 const BG = "var(--color-bg)";
 const MUTED = "var(--kit-text-3)";
+const FAINT = "color-mix(in srgb, var(--color-fg) 32%, transparent)";
+const BLUE = "#5b9dff";
+const PURPLE = "#c678dd";
+const TEAL = "#39b8c9";
 
 /** Terminal colour names and Claude Code's theme keys, in tones that read on light and dark themes. */
 const NAMED_COLORS: Record<string, string> = {
@@ -31,14 +35,14 @@ const NAMED_COLORS: Record<string, string> = {
   red: "var(--kit-crit)",
   green: "var(--kit-ok)",
   yellow: "var(--kit-warn)",
-  blue: "#5b9dff",
-  magenta: "#c678dd",
-  cyan: "#39b8c9",
+  blue: BLUE,
+  magenta: PURPLE,
+  cyan: TEAL,
   text: FG,
   inverseText: BG,
-  inactive: "color-mix(in srgb, var(--color-fg) 32%, transparent)",
+  inactive: FAINT,
   subtle: "color-mix(in srgb, var(--color-fg) 22%, transparent)",
-  promptBorder: "color-mix(in srgb, var(--color-fg) 32%, transparent)",
+  promptBorder: FAINT,
   success: "var(--kit-ok)",
   diffAdded: "var(--kit-ok)",
   diffAddedWord: "var(--kit-ok)",
@@ -47,17 +51,21 @@ const NAMED_COLORS: Record<string, string> = {
   diffRemovedWord: "var(--kit-crit)",
   warning: "var(--kit-warn)",
   claude: "#d97757",
-  suggestion: "#5b9dff",
-  permission: "#5b9dff",
-  remember: "#5b9dff",
-  ide: "#5b9dff",
-  planMode: "#39b8c9",
-  autoAccept: "#c678dd",
-  merged: "#c678dd",
-  bashBorder: "#c678dd",
+  suggestion: BLUE,
+  permission: BLUE,
+  remember: BLUE,
+  ide: BLUE,
+  planMode: TEAL,
+  autoAccept: PURPLE,
+  merged: PURPLE,
+  bashBorder: PURPLE,
 };
 
-/** The 16 base terminal colours; black, white and the two greys follow the theme. */
+/**
+ * The 16 base terminal colours. The four without a hue follow the theme, so
+ * they read on light themes: 0 is the background, 15 the foreground, and the
+ * two greys between them (7 "white", 8 "bright black") are the muted text.
+ */
 const ANSI_16 = [
   BG, "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", MUTED,
   MUTED, "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", FG,
@@ -129,7 +137,8 @@ export function boxStyle(props: ModProps): CSSProperties {
   set("flexShrink", typeof props.flexShrink === "number" ? props.flexShrink : undefined);
   set("backgroundColor", color(props.backgroundColor));
   if (typeof props.borderStyle === "string") {
-    style.border = `${BORDER_LINES[props.borderStyle] ?? "1px solid"} ${color(props.borderColor) ?? "var(--kit-rule)"}`;
+    const line = Object.hasOwn(BORDER_LINES, props.borderStyle) ? BORDER_LINES[props.borderStyle] : "1px solid";
+    style.border = `${line} ${color(props.borderColor) ?? "var(--kit-rule)"}`;
     if (props.borderStyle === "round") style.borderRadius = 6;
     style.paddingLeft ??= "1ch";
     style.paddingRight ??= "1ch";
@@ -139,9 +148,9 @@ export function boxStyle(props: ModProps): CSSProperties {
 
 /** Maps a terminal Text's colour and style props to CSS. */
 export function textStyle(props: ModProps): CSSProperties {
-  const named = { fg: color(props.color), bg: color(props.backgroundColor) };
+  const pair = { fg: color(props.color), bg: color(props.backgroundColor) };
   // `inverse` swaps the two, with the theme's own pair as the default.
-  const { fg, bg } = props.inverse === true ? { fg: named.bg ?? BG, bg: named.fg ?? FG } : named;
+  const { fg, bg } = props.inverse === true ? { fg: pair.bg ?? BG, bg: pair.fg ?? FG } : pair;
   const decorations = [props.underline === true ? "underline" : "", props.strikethrough === true ? "line-through" : ""]
     .filter(Boolean)
     .join(" ");

@@ -5,4 +5,4 @@
  * attribute, and `inert=""` is what the HTML spec asks for. Spread rather than
  * written inline so the cast lives in exactly one place.
  */
-export const INERT_ATTR = { inert: "" } as Record<string, string>;
+export const INERT_ATTR: Record<string, string> = { inert: "" };
