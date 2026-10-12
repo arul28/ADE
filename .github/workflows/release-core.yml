@@ -200,27 +200,24 @@ jobs:
     needs:
       - verify
       - build-runtime-binaries
-    # One job per arch, in parallel. Wall-clock ~= one arch's build+notarize
-    # instead of both serialized. Each job signs+notarizes+staples its own arch;
-    # the per-arch updater manifests are merged by the publish-release job in
+    # One job per arch, in parallel on native runners (arm64 -> macos-15,
+    # x64 -> macos-15-intel). Wall-clock ~= one arch's build+notarize instead of
+    # both serialized. Each job signs+notarizes+staples its own arch; the
+    # per-arch updater manifests are merged by the publish-release job in
     # release-publish.yml.
     #
-    # Both arches build on Apple Silicon. The Intel runner took 24-30 minutes for
-    # the signed x64 build against 11-13 on arm64, and it was every release's
-    # critical path. The x64 job runs an x64 Node under Rosetta, so npm selects
-    # the darwin-x64 optional packages (codex, opencode, cursor, msgpackr) and
-    # x64 native prebuilds exactly as the Intel runner did, and the validators
-    # execute the x64 binaries under Rosetta. The Swift helpers are universal.
+    # x64 stays on Intel. Building it on Apple Silicon with an x64 Node under
+    # Rosetta was measured on 2026-10-12: the signed build took 43 minutes
+    # against 24-30 on Intel, because every child process (Swift included)
+    # inherits Rosetta.
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
             runner: macos-15
-            node-arch: arm64
           - arch: x64
-            runner: macos-15
-            node-arch: x64
+            runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     concurrency:
       group: release-${{ inputs.release_tag }}-mac-${{ matrix.arch }}
@@ -239,7 +236,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          architecture: ${{ matrix.node-arch }}
           cache: npm
           cache-dependency-path: |
             apps/desktop/package-lock.json
