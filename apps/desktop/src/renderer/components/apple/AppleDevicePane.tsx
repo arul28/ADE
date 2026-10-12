@@ -814,17 +814,17 @@ export function AppleDevicePane({
           return listFailed ? (
             <div data-apple-list-failed="" className="flex size-full items-start justify-center px-4 py-6">
               <div className="w-full max-w-sm">
-              <Banner
-                layout="inline"
-                model={{
-                  id: "apple-device-list",
-                  tone: "error",
-                  title: "Couldn't load this lane's simulators.",
-                  detail: describeAppleError(listError).sentence,
-                  busy: refreshing,
-                  actions: [{ label: "Retry", onClick: refreshList, disabled: refreshing }],
-                }}
-              />
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: "apple-device-list",
+                    tone: "error",
+                    title: "Couldn't load this lane's simulators.",
+                    detail: describeAppleError(listError).sentence,
+                    busy: refreshing,
+                    actions: [{ label: "Retry", onClick: refreshList, disabled: refreshing }],
+                  }}
+                />
               </div>
             </div>
           ) : (

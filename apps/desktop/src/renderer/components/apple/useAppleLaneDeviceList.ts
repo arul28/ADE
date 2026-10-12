@@ -83,7 +83,6 @@ export function useAppleLaneDeviceList({
 }): AppleLaneDeviceList {
   const [status, setStatus] = useState<IosSimulatorStatus | null>(null);
   const [installed, setInstalled] = useState<AppleInstalledSimulator[]>([]);
-  const [laneDevice, setLaneDevice] = useState<AppleLaneDevice | null>(null);
   const [owners, setOwners] = useState<AppleSimulatorOwner[]>([]);
   const [disk, setDisk] = useState<AppleDeviceDiskUsage | null>(null);
   const [ownership, setOwnership] = useState<AppleSimulatorOwnershipInfo[]>([]);
@@ -103,11 +102,17 @@ export function useAppleLaneDeviceList({
   const listFailed = current?.failed ?? false;
   const listLoadedRef = useRef(listLoaded);
   listLoadedRef.current = listLoaded;
+  // Keyed like `listRead`, so another lane's device never stands in for this
+  // one's, not even for the frame before its list loads.
+  const [laneRead, setLaneRead] = useState<
+    { key: string; device: AppleLaneDevice | null; bootedRead: AppleLaneDeviceBootedRead | null } | null
+  >(null);
+  const laneDevice = laneRead?.key === listKey ? laneRead.device : null;
+  const bootedRead = laneRead?.key === listKey ? laneRead.bootedRead : null;
   const switching = useAppStore((state) => state.projectTransition !== null);
   const switchingRef = useRef(switching);
   // Counts every switch start and end, so a read can tell one happened under it.
   const switchEdgesRef = useRef(0);
-  const [bootedRead, setBootedRead] = useState<AppleLaneDeviceBootedRead | null>(null);
   // Read through a ref so a new closure from the pane never re-reads the list.
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
@@ -115,7 +120,7 @@ export function useAppleLaneDeviceList({
   const refreshList = useCallback(() => setListNonce((nonce) => nonce + 1), []);
 
   const dropLaneDevice = useCallback(() => {
-    setLaneDevice(null);
+    setLaneRead((current) => (current ? { ...current, device: null } : current));
     refreshList();
   }, [refreshList]);
 
@@ -147,17 +152,8 @@ export function useAppleLaneDeviceList({
     };
   }, [hidden, listNonce, runtimePinRef]);
 
-  const readKeyRef = useRef(listKey);
   useEffect(() => {
     let cancelled = false;
-    // Another lane or chat: the last one's device must not stand in for this
-    // one's while its list loads.
-    if (readKeyRef.current !== listKey) {
-      readKeyRef.current = listKey;
-      setLaneDevice(null);
-      setBootedRead(null);
-      setOwners([]);
-    }
     const switchEdges = switchEdgesRef.current;
     setRefreshing(true);
     void window.ade.iosSimulator
@@ -168,8 +164,11 @@ export function useAppleLaneDeviceList({
         setInstalled(next.installed);
         setRuntimes(next.runtimes ?? []);
         setDefaultNewDevice(next.defaultNewDevice ?? null);
-        setLaneDevice(next.lane);
-        setBootedRead(next.lane && laneDeviceBooted(next) ? { udid: next.lane.udid } : null);
+        setLaneRead({
+          key: listKey,
+          device: next.lane,
+          bootedRead: next.lane && laneDeviceBooted(next) ? { udid: next.lane.udid } : null,
+        });
         setOwners(next.owners ?? []);
         /*
          * Disk is the picker's line and nothing else's, and the picker is on
@@ -217,6 +216,8 @@ export function useAppleLaneDeviceList({
       });
     return () => {
       cancelled = true;
+      // A cancelled measurement never reaches its own `finally` reset.
+      setMeasuringDisk(false);
     };
   }, [laneId, listKey, listNonce, refreshList, runtimePinRef, sessionId]);
 

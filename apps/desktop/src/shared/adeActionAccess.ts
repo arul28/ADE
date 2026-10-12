@@ -633,7 +633,6 @@ const UNREPLAYED_READS = new Set<string>([
   "chat.generateAutoLaneIdentity",
   "conflicts.scanRebaseNeeds",
   "file.blame",
-  "ios_simulator.deviceList",
   "storage.cleanupPreview",
 ]);
 
