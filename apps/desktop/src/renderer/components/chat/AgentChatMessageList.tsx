@@ -76,17 +76,18 @@ import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { latestScenePreviewOutput, readScenePreviewPath, ScenePreviewThumb } from "./ScenePreviewThumb";
 import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
-import { splitChatOutputContextSegments } from "../../../shared/chatOutputContext";
 import {
   ChatContextSegments,
   ThreadReviewSentCard,
   UserTypedText,
-  userTextLooksLikeMarkdown,
 } from "./chatUserMessageCards";
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
 import { issueCreateRequestFromSelection, requestIssueCreate } from "../../lib/issueCreateRequests";
 import { ThreadCommentLayer } from "./ThreadCommentLayer";
-import { parseThreadReviewBlock, type ChatThreadComment } from "../../../shared/threadComments";
+import { resolveUserMessageBody, userMessageHasPastedPrompt } from "./userMessageBody";
+import { ChatFindLayer } from "./ChatFindLayer";
+import type { ChatFindSource, ChatFindSourceSnapshot } from "./useChatFindIndex";
+import type { ChatThreadComment } from "../../../shared/threadComments";
 import {
   ChatWorkspacePathProvider,
   useWorkspacePathOpener,
@@ -1021,47 +1022,6 @@ function UserMessageStatusRow({
 }
 
 const IOS_SIMULATOR_CONTEXT_PREFIX = "Selected iOS simulator context:";
-
-/**
- * Mirror the cyan chip pill the composer renders when an iOS-inspect packet is
- * staged. Sent user messages keep the same backtick-wrapped label tokens at the
- * front of `event.text`, so we can re-promote them to the same chip treatment
- * here. Without this they render as inline-code-styled text and reviewers can't
- * tell the message actually carried packet context (vs. the user just typing
- * the label by hand).
- */
-function parseLeadingIosContextChips(text: string): { chips: string[]; rest: string } {
-  const chips: string[] = [];
-  let i = 0;
-  while (i < text.length && text[i] === "`") {
-    const close = text.indexOf("`", i + 1);
-    if (close === -1) break;
-    const inner = text.slice(i + 1, close);
-    if (!inner.length || inner.includes("`") || inner.includes("\n")) break;
-    // Promote only when the closing backtick is followed by a valid token
-    // boundary — whitespace, end-of-string, or an accepted punctuation char.
-    // Adjacent non-space text (e.g. `ctx`message) is plain code, not a chip.
-    const next = text[close + 1];
-    const atValidBoundary =
-      next === undefined
-      || next === " "
-      || next === "\t"
-      || next === "\n"
-      || next === ","
-      || next === "."
-      || next === ":"
-      || next === ";";
-    if (!atValidBoundary) break;
-    chips.push(inner);
-    i = close + 1;
-    if (next === " ") {
-      i += 1;
-      continue;
-    }
-    break;
-  }
-  return { chips, rest: text.slice(i) };
-}
 
 /**
  * Whether a user message's attachments reached the agent. Only a state that
@@ -2631,8 +2591,11 @@ function renderEvent(
      with the exact text the agent received folded underneath it, quiet and
      centred. Rendering it as a user bubble would put words in the user's mouth
      that they never wrote. */
-  if (event.type === "user_message" && event.metadata?.boardMove) {
-    const boardMove = event.metadata.boardMove;
+  // One decision for what a user-message row shows (`userMessageBody.ts`);
+  // find (⌘F) searches the same text.
+  const userBody = event.type === "user_message" ? resolveUserMessageBody(event) : null;
+  if (userBody?.kind === "board-move") {
+    const boardMove = userBody.move;
     return (
       <div className="my-3 flex flex-col gap-1" data-board-move-to={boardMove.to}>
         <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45">
@@ -2642,8 +2605,8 @@ function renderEvent(
           </span>
           <span className="h-px flex-1 bg-fg/[0.08]" />
         </div>
-        <p className="mx-auto max-w-[var(--chat-content-width,52rem)] text-center font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-fg/55">
-          {event.displayText?.trim() || event.text}
+        <p data-chat-find-text="" className="mx-auto max-w-[var(--chat-content-width,52rem)] text-center font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-fg/55">
+          {userBody.line}
         </p>
       </div>
     );
@@ -2654,8 +2617,8 @@ function renderEvent(
      write this message, so it is never a user bubble: the card says what
      changed and that the agent was told, and the exact text sits folded
      underneath for anyone who wants to see what the agent read. */
-  const prWatchWake = event.type === "user_message" ? event.metadata?.prWatchWake : undefined;
-  if (event.type === "user_message" && prWatchWake?.card) {
+  if (event.type === "user_message" && userBody?.kind === "wake-card") {
+    const prWatchWake = userBody.wake;
     const card: Extract<AgentChatEvent, { type: "ade_card" }> = { ...prWatchWake.card, type: "ade_card" };
     return (
       <div className="my-2 flex flex-col gap-1" data-pr-watch-wake={prWatchWake.watchId}>
@@ -2677,12 +2640,10 @@ function renderEvent(
   }
 
   /* ── User message ── */
-  if (event.type === "user_message") {
+  if (event.type === "user_message" && userBody) {
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
     if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
-    const hasPastedTextPromptAttachment = event.attachments?.some(
-      (attachment) => attachment.type === "file" && attachment.intent === "user_prompt",
-    ) === true;
+    const hasPastedTextPromptAttachment = userMessageHasPastedPrompt(event);
     const copyText = event.displayText?.trim() || (
       event.metadata?.hideFullPrompt === true
       || hasPastedTextPromptAttachment
@@ -2724,10 +2685,13 @@ function renderEvent(
           )}
           style={MESSAGE_CARD_STYLE}
           data-chat-user-message-card=""
+          // ⌘F searches the bubble's text; its hover actions, review card and
+          // attachments are marked to skip.
+          data-chat-find-text=""
         >
           {/* Frosted so the actions stay legible over a long first line or a
               brief's heading, instead of printing on top of the words. */}
-          <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+          <div data-ade-find-skip="" className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             {envelope.timestampSynthetic === true
               ? null
               : <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />}
@@ -2751,82 +2715,74 @@ function renderEvent(
               : null}
           </div>
           {(() => {
-            const displayText = event.displayText?.trim();
-            if (event.metadata?.hideFullPrompt === true) {
-              return displayText ? (
-                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
-              ) : null;
-            }
-            // A send that carried thread comments: the review card, then what
-            // the user typed (if anything) under it.
-            const review = parseThreadReviewBlock(event.text);
-            if (review) {
-              const typed = hasPastedTextPromptAttachment
-                ? displayText
-                : displayText || review.rest.trim();
-              return (
-                <div className="flex min-w-0 flex-col gap-2">
-                  <ThreadReviewSentCard comments={review.comments} />
-                  {typed ? <UserTypedText text={typed} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null}
-                </div>
-              );
-            }
-            // `text` is what the provider received (mention blocks expanded);
-            // `displayText` is what the user typed. Show only what they typed.
-            if (hasPastedTextPromptAttachment) {
-              return displayText ? (
-                <UserTypedText text={displayText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
-              ) : null;
-            }
-            if (displayText && displayText !== event.text.trim()) {
-              return userTextLooksLikeMarkdown(displayText) ? (
-                <MarkdownBlock markdown={displayText} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
-              ) : (
-                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={displayText} />
-              );
-            }
-            const parsed = parseLeadingIosContextChips(event.text);
-            const contextSegments = splitChatOutputContextSegments(parsed.rest);
-            const hasOutputContext = contextSegments.some((segment) => segment.kind === "context");
-            const body = !parsed.chips.length && !hasOutputContext ? (
-              userTextLooksLikeMarkdown(event.text) ? (
-                <MarkdownBlock markdown={event.text} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
-              ) : (
-                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={event.text} />
-              )
-            ) : (
-              <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
-                {parsed.chips.length ? (
-                  <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
-                    {parsed.chips.map((label, idx) => (
-                      <span
-                        key={`ios-chip-${idx}`}
-                        className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-[#ecfeff]/85 align-baseline"
-                        title={label}
-                        data-testid="user-message-ios-context-chip"
-                      >
-                        <span className="max-w-[200px] truncate">{label}</span>
+            const body = userBody;
+            switch (body.kind) {
+              case "brief":
+                return body.text ? (
+                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={body.text} />
+                ) : null;
+              case "review":
+                return (
+                  <div className="flex min-w-0 flex-col gap-2">
+                    <div data-ade-find-skip="" className="contents">
+                      <ThreadReviewSentCard comments={body.comments} />
+                    </div>
+                    {body.typed ? <UserTypedText text={body.typed} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null}
+                  </div>
+                );
+              case "typed":
+                return body.text ? <UserTypedText text={body.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null;
+              case "text":
+                return body.markdown ? (
+                  <MarkdownBlock markdown={body.text} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+                ) : (
+                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={body.text} />
+                );
+              case "chips":
+                // Prompts render in full, however long.
+                return (
+                  <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
+                    {body.chips.length ? (
+                      <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
+                        {body.chips.map((label, idx) => (
+                          <span
+                            key={`ios-chip-${idx}`}
+                            className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-[#ecfeff]/85 align-baseline"
+                            title={label}
+                            data-testid="user-message-ios-context-chip"
+                          >
+                            <span className="max-w-[200px] truncate">{label}</span>
+                          </span>
+                        ))}
                       </span>
-                    ))}
-                  </span>
-                ) : null}
-                {hasOutputContext ? <ChatContextSegments segments={contextSegments} /> : parsed.rest}
-              </div>
-            );
-            // Prompts render in full, however long. The hidden-prompt brief
-            // keeps its own chip.
-            return body;
+                    ) : null}
+                    {body.segments ? <ChatContextSegments segments={body.segments} /> : body.rest}
+                  </div>
+                );
+              case "wake-card":
+                // Returned above (as is `board-move`), never as a bubble.
+                return null;
+              default: {
+                // Exhaustive: a new kind is a compile error here.
+                const unhandled: never = body;
+                return unhandled;
+              }
+            }
           })()}
           {event.attachments?.length || event.contextAttachments?.length ? (
-            <UserMessageIssueContext
-              attachments={event.attachments ?? []}
-              contextAttachments={event.contextAttachments ?? []}
-              mode={options?.surfaceMode ?? "standard"}
-              sessionId={options?.sessionId}
-              accepted={userMessageAttachmentsAccepted(event)}
-            />
+            <div data-ade-find-skip="" className="contents">
+              <UserMessageIssueContext
+                attachments={event.attachments ?? []}
+                contextAttachments={event.contextAttachments ?? []}
+                mode={options?.surfaceMode ?? "standard"}
+                sessionId={options?.sessionId}
+                accepted={userMessageAttachmentsAccepted(event)}
+              />
+            </div>
           ) : null}
-          <UserMessageSendConfirmations event={event} />
+          <div data-ade-find-skip="" className="contents">
+            <UserMessageSendConfirmations event={event} />
+          </div>
         </div>
         <UserMessageStatusRow
           event={event}
@@ -5063,6 +5019,9 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
   );
 });
 
+/** Shared empty set: a chat with no duplicate answers keeps one identity. */
+const EMPTY_FIND_EXCLUDED_KEYS: ReadonlySet<string> = new Set();
+
 /* ── Virtualization constants ── */
 
 /** Estimated height per message row (px) used before real measurement. */
@@ -7075,11 +7034,10 @@ function AgentChatMessageListMain({
     [groupedRowKeys, heightForKey, estimateWidthStep],
   );
 
-  const scrollToRowIndexNearTop = useCallback((rowIndex: number) => {
+  /** Scroll to `targetTop` as a reader's own scroll would: bottom-follow lets go. */
+  const scrollContainerTo = useCallback((targetTop: number) => {
     const el = scrollRef.current;
-    if (!el || rowIndex < 0 || rowIndex >= groupedRows.length) return false;
-    const offsets = computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
-    const targetTop = computeScrollTopForRow(rowIndex, offsets);
+    if (!el) return false;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
     const clamped = Math.max(0, Math.min(maxScroll, targetTop));
     stickToBottomRef.current = false;
@@ -7096,7 +7054,13 @@ function AgentChatMessageListMain({
     }
     setScrollTop(el.scrollTop);
     return true;
-  }, [groupedRows.length, rowHeight, timelineRowGapPx]);
+  }, []);
+
+  const scrollToRowIndexNearTop = useCallback((rowIndex: number) => {
+    if (!scrollRef.current || rowIndex < 0 || rowIndex >= groupedRows.length) return false;
+    const offsets = computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
+    return scrollContainerTo(computeScrollTopForRow(rowIndex, offsets));
+  }, [groupedRows.length, rowHeight, scrollContainerTo, timelineRowGapPx]);
 
   // Scroll a grouped row into view by its stable render key — used by the
   // subagent spawn/result "jump to result ↓" / "↑ jump to start" affordances.
@@ -7116,6 +7080,32 @@ function AgentChatMessageListMain({
     const rowIndex = drawnRowKeyIndexRef.current.get(rowKey);
     if (rowIndex !== undefined && rowIndex >= 0) scrollToRowIndexNearTop(rowIndex);
   }, [revealTurnFoldRow, scrollToRowIndexNearTop]);
+
+  // Find (⌘F): a stable way in for the layer, and the rows it searches. The
+  // layer subscribes only while its bar is open, so a closed find costs the
+  // streaming path one ref write and an empty listener loop.
+  const scrollToRowKeyRef = useRef(scrollToRowKey);
+  scrollToRowKeyRef.current = scrollToRowKey;
+  const revealRowForFind = useCallback((rowKey: string) => scrollToRowKeyRef.current(rowKey), []);
+  const findSnapshotRef = useRef<ChatFindSourceSnapshot>({ rows: [], excludedKeys: new Set(), hasOlderHistory: false });
+  const findListenersRef = useRef(new Set<() => void>());
+  const findSource = useMemo<ChatFindSource>(() => ({
+    get: () => findSnapshotRef.current,
+    subscribe: (listener) => {
+      findListenersRef.current.add(listener);
+      return () => findListenersRef.current.delete(listener);
+    },
+  }), []);
+  useEffect(() => {
+    findSnapshotRef.current = {
+      rows: presentedRows,
+      excludedKeys: answerKeyByDuplicateKeyRef.current.size
+        ? new Set(answerKeyByDuplicateKeyRef.current.keys())
+        : EMPTY_FIND_EXCLUDED_KEYS,
+      hasOlderHistory,
+    };
+    for (const listener of findListenersRef.current) listener();
+  }, [presentedRows, turnFolds, hasOlderHistory]);
 
   useEffect(() => {
     if (!scrollToRowKeyRequest?.key) return;
@@ -8223,6 +8213,7 @@ function AgentChatMessageListMain({
     <div
       ref={listRootRef}
       data-chat-message-list-root=""
+      data-ade-find-scope="chat-transcript"
       className={cn("relative h-full min-h-0 min-w-0 max-w-full overflow-hidden", className)}
     >
       {/* Direct child of the list root on purpose: the rail's `left-0` and all of
@@ -8315,6 +8306,15 @@ function AgentChatMessageListMain({
         </div>
       </div>
       {showJumpToLatest ? <ChatJumpToLatestPill newRows={newRowsSinceDetach} onJump={jumpToLatest} /> : null}
+      <ChatFindLayer
+        rootRef={listRootRef}
+        contentRef={contentWrapperRef}
+        scrollRef={scrollRef}
+        source={findSource}
+        sessionId={sessionId ?? null}
+        revealRow={revealRowForFind}
+        scrollContainerTo={scrollContainerTo}
+      />
       {/* With comments on, the layer owns the selection toolbar (it adds "Comment"). */}
       {threadComments ? (
         <ThreadCommentLayer

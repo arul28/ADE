@@ -185,6 +185,14 @@ you are probably building an overlay the hosts already provide. A new layer
 goes in `zLayers.ts`, with a comment explaining why the existing layers do not
 work.
 
+These layers order surfaces across the app. Inside one surface — a find bar
+over its own transcript or diff, a pill over its own list — the small Tailwind
+steps (`z-10` to `z-40`) order that surface's children against each other.
+They create no stacking context, so they share one with their neighbours:
+keep them below every `Z_LAYERS` value (all are 60 or more) and do not use
+them for anything that must cover another surface. The lint only flags `z-50`
+and arbitrary `z-[N]` with N ≥ 50, so this rule is yours to keep.
+
 ## Copy
 
 Follow the "Style preferences" section of `AGENTS.md`: use direct, operational

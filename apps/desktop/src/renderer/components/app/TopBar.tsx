@@ -47,7 +47,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
-import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
+import { consumeAppMenuCommand, installFindKeyBridge } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { cn } from "../ui/cn";
 import {
@@ -933,7 +933,10 @@ export function TopBar({
    */
   useEffect(() => {
     const onMenuCommand = window.ade?.app?.onMenuCommand;
-    if (typeof onMenuCommand !== "function") return;
+    if (typeof onMenuCommand !== "function") {
+      // No native menu (the web client): ⌘F arrives as a keydown.
+      return installFindKeyBridge();
+    }
     return onMenuCommand((command) => {
       if (consumeAppMenuCommand(command)) return;
       if (command === "close-tab") {

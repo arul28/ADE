@@ -269,6 +269,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "tab_opened",
   "widget_added",
   "music_connected",
+  // Find in a chat or a diff (⌘F), and the ⌘K "Find … in this chat" hand-off.
+  // Whether an installation opens find, on which surface, and whether the
+  // palette's words get used. Never the query, the chat, the diff, or a match.
+  "find_opened",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -379,6 +383,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // The dev home: which machine-level tabs (Browser, Music) and home widgets
     // an installation uses, and whether Apple Music gets connected.
     "home",
+    // Find (⌘F) in a chat or a diff, and the ⌘K hand-off into a chat's find bar.
+    "find",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -466,6 +472,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "widget_projects", "widget_running", "widget_activity", "widget_limits", "widget_prs", "widget_clock",
     "widget_pomodoro", "widget_clipboard", "widget_machine", "widget_heatmap", "widget_shipped", "widget_feed",
     "widget_now_playing",
+    // Where find was opened: ⌘F in a chat, the ⌘K "Find … in this chat" row, a
+    // chat opened from a ⌘K message hit with the words handed off, or ⌘F in a
+    // diff. Prefixed like the other renderer surfaces so none can be confused
+    // with another action's outcome. A fifth spelling is dropped, not widened.
+    "chat_shortcut", "chat_palette", "chat_palette_hit", "diff_shortcut",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([

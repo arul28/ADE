@@ -117,7 +117,14 @@ Desktop ⌘K command palette:
   relying on the deep-link navigate listener to focus the target). Thread entries
   always retain their owner machine name for matching; results show an amber
   name marker only when that owner is not This computer, including threads from the
-  remote-bound active tab.
+  remote-bound active tab. With a chat on screen and words typed, the
+  `chatFind` section (`commandPaletteSections.ts`) offers `Find "…" in this
+  chat` — first, or right after the commands when the words lead a command
+  title. Its logic is `chat/chatFindPalette.ts`; the words are the parsed
+  free-text terms. Opening a chat from a message hit leaves the words for that
+  chat's find bar (`setPendingChatFind`, dropped after 10 s). The palette keeps
+  focus from snapping back when it closes into a find bar. The keyboard index
+  resolves commands in their rendered (grouped) order.
 - `apps/desktop/src/renderer/components/app/commandPaletteMarks.tsx` — the
   palette's icons and captions: `commandPaletteMark` / `CommandPaletteGlyph`
   (a colored tile per command id, with Work tool marks from

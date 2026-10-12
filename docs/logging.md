@@ -314,6 +314,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
+| `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -762,6 +763,33 @@ the shared 200-event ceiling. No ceiling was raised, and the dashboard spec is
 deliberately untouched: no card asks this yet. Widget use after it is added
 (renders, polling, clipboard reads, weather and machine reads, playback
 commands) stays untracked by the high-frequency rule.
+
+Opening find (⌘F) in a chat or a diff, and the ⌘K "Find … in this chat" hand-off,
+records the existing `ade_feature_used` event with `feature: "find"`,
+`action: "find_opened"`, `source: "renderer_route"`, and a closed `outcome` that
+says where the bar opened: `chat_shortcut` (⌘F opened a chat's bar),
+`chat_palette` (the ⌘K "Find … in this chat" row), `chat_palette_hit` (a chat
+opened from a ⌘K message hit, taking the words the palette handed off), or
+`diff_shortcut` (⌘F opened a diff's bar). It is emitted from the renderer
+(`renderer/lib/findAnalytics.ts`) for the same reason `tool_opened` is: opening a
+find bar has no durable backend mutation, because the bar, its query and its
+matches live in one window. The shortcut outcomes are captured where ⌘F claims
+the bar (`useFindSession`), and only when the claim opens it, not when ⌘F lands on
+a bar that is already open. The palette outcome is captured in the chat's
+palette target, and the hand-off outcome when the chat takes the words left for
+it, so a hand-off that expires unpicked emits nothing. The product question is
+whether installations use find at all, on which surface, and whether the palette
+hand-off gets used: `chat_palette_hit` set against `chat_palette` says whether
+the palette's words are carried on. Nothing finer crosses the boundary: no query
+or words, no chat or diff, no file, lane, or match count, no selected match, and
+no scroll position. Typing, stepping through matches, closing the bar, and
+Escape are high-frequency and stay untracked. A per-outcome `find_opened:<outcome>`
+deduplication key with a 24-hour minimum interval (hashed locally, never sent)
+means each outcome counts at most once per installation per UTC day, so the worst
+case is four accepted events per installation per day, inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling. No ceiling was raised. The dashboard spec is deliberately untouched: no
+card asks this yet.
 
 Which live view an installation watches an iOS simulator through records the
 same `ade_feature_used` event from the drawer's single start path, with

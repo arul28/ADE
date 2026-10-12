@@ -7,11 +7,11 @@
  * able to read on its own.
  */
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import { CaretLeft, CaretRight, MagnifyingGlass, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { findMatchLabel, type BrowserFindState } from "./browserToolbarLabels";
 import { revealTransition } from "../../../lib/motion";
 import { cn } from "../../ui/cn";
+import { FindField } from "../../shared/FindBar";
 import { CHROME_BAR_CLASS, CHROME_FIELD_NO_HALO, CHROME_HAIRLINE, TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browserChrome";
 
 export type BrowserFindBarProps = {
@@ -68,77 +68,22 @@ export function BrowserFindBar({
             }}
             className={cn("flex min-w-0 select-none items-center gap-2 overflow-hidden px-2", CHROME_BAR_CLASS)}
           >
-            <MagnifyingGlass size={13} className="shrink-0 text-muted-fg/55" />
-            <input
-              ref={inputRef}
-              value={findText}
-              onChange={(event) => {
-                setFindText(event.target.value);
-                queueFind(event.target.value);
+            <FindField
+              inputRef={inputRef}
+              query={findText}
+              onQueryChange={(text) => {
+                setFindText(text);
+                queueFind(text);
               }}
-              onKeyDownCapture={(event) => {
-                if (event.key !== "Escape") return;
-                // Escape closes the bar and nothing else. It used to reach
-                // the pane's handler and take the whole Browser tool down
-                // with it, which is a very expensive way to dismiss a
-                // six-character input.
-                event.preventDefault();
-                event.stopPropagation();
-                event.nativeEvent.stopImmediatePropagation();
-                closeFind();
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter") return;
-                // Shift-Enter walks backwards, the way every find bar does.
-                event.preventDefault();
-                findStep(findText, !event.shiftKey);
-              }}
+              onStep={(direction) => findStep(findText, direction > 0)}
+              onClose={closeFind}
+              status={findError ?? findMatchLabel(findState) ?? ""}
+              statusTone={findError ? "warning" : "count"}
+              canStep={Boolean(findText.trim())}
               placeholder="Find on page"
-              aria-label="Find on page"
-              className={cn(
-                "h-full min-w-0 flex-1 bg-transparent text-[12px] text-fg/85 outline-none placeholder:text-muted-fg/45",
-                CHROME_FIELD_NO_HALO,
-              )}
+              inputClassName={CHROME_FIELD_NO_HALO}
+              buttonClassName={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
             />
-            <span
-              role="status"
-              aria-live="polite"
-              className={cn(
-                "min-w-0 shrink-0 truncate text-[10.5px]",
-                findError ? "font-sans text-amber-200/85" : "font-mono text-muted-fg/70",
-              )}
-            >
-              {findError ?? findMatchLabel(findState) ?? ""}
-            </span>
-            <button
-              type="button"
-              onClick={() => findStep(findText, false)}
-              disabled={!findText.trim()}
-              title="Previous match"
-              aria-label="Previous match"
-              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
-            >
-              <CaretLeft size={12} />
-            </button>
-            <button
-              type="button"
-              onClick={() => findStep(findText, true)}
-              disabled={!findText.trim()}
-              title="Next match"
-              aria-label="Next match"
-              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
-            >
-              <CaretRight size={12} />
-            </button>
-            <button
-              type="button"
-              onClick={closeFind}
-              title="Close find bar"
-              aria-label="Close find bar"
-              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
-            >
-              <X size={12} />
-            </button>
           </form>
         </motion.div>
       ) : null}
