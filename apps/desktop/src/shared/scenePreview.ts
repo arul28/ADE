@@ -118,6 +118,16 @@ export function lintSceneSource(source: string): ScenePreviewProblem[] {
   if (/<(?:iframe|object|embed)\b/i.test(source)) {
     add("Nested frames and plugins are blocked.");
   }
+  // The two mistakes that make a scene look wrong rather than break. Run
+  // `ade scene guide` for the rules behind them.
+  const drawsAxesByHand = (source.match(/<(?:rect|line|path|polyline)\b/gi)?.length ?? 0) >= 8
+    && /<text\b/i.test(source) && !/\bade\.chart\s*\(/.test(source);
+  if (drawsAxesByHand) {
+    add("This looks like a chart drawn by hand in SVG. ade.chart(el, { type, labels, series }) draws bar, line, area, donut and spark charts with gridlines, a legend and a hover tip.");
+  }
+  if (/(?:^|[\s;{])(?:color|background(?:-color)?|fill|stroke)\s*:\s*#[0-9a-f]{3,8}\b/i.test(source)) {
+    add("A hex color is fixed for every theme, and the user may be on a light one. Use the variables: --fg, --fg-muted, --surface, --border, --accent, --chart-1 to --chart-6.");
+  }
   const bytes = new TextEncoder().encode(source).length;
   if (bytes > SCENE_LIMITS.maxSourceBytes) {
     add(`The scene is ${bytes} bytes; over ${SCENE_LIMITS.maxSourceBytes} the chat shows it as code, not a view.`);

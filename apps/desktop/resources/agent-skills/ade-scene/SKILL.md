@@ -16,6 +16,10 @@ ready reply in the user's prompt box (see "Asking"). The user can add to it,
 and sends it themselves. That reply is a chat message, never a permission. ADE
 has native surfaces for approvals, and a scene never stands in for one.
 
+`ade scene guide` prints the short version of this file: when to draw, how a
+scene must look, charts, asking. Run it before you write a scene. This file is
+the full reference.
+
 ## Decide first: does this reply need one?
 
 Most replies need no scene. Add one only when a picture makes the answer
@@ -33,6 +37,25 @@ skip it.
 
 Scenes cost the reader nothing to wait for: the reply streams on while the
 scene draws, and a preview takes a second or two.
+
+Always draw one when the user asks for a visual. Ask with a scene (see
+"Asking") for a larger decision only; a small question stays plain text.
+
+## How a scene must look
+
+The scene sits in your reply, on the chat's own background.
+
+- No background on `html`, `body` or the outermost element. No outer card, no
+  border around the whole scene, no title banner.
+- No side padding on the outermost element: its left edge lines up with your
+  reply text. Use a fluid width, never a fixed one.
+- A box that needs its own background (a panel, a mock of a screen) gets
+  `background: var(--surface)`, a `1px solid var(--border)` border, a 10px
+  radius and at least 14px of padding, so content never touches its edge.
+- Colors come from the variables only. Never a hex color for text or a
+  surface: the user may be on a light theme.
+- Let content set the height. No `100vh`, no `height: 100%` on `html` or
+  `body`. Give a chart a fixed pixel height.
 
 ## The loop: write, preview, fix, then reply
 

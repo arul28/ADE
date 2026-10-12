@@ -89,6 +89,7 @@ import {
   STATUS_NOTE_GUIDELINE_WORDS,
 } from "../../desktop/src/shared/sessionStatusNote";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
+import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
@@ -3348,6 +3349,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   scene that never settles, and source mistakes the policy turns into blanks.
   Needs the ADE desktop app on this machine.
 
+    $ ade scene guide                                  The short rules for writing a scene (read this first)
     $ ade scene preview /tmp/chart.html --text         Preview a scene file
     $ ade scene preview /tmp/chart.html --theme light  In the light theme
     $ ade scene preview /tmp/chart.html --width 980    At another frame width (default 720)
@@ -11739,7 +11741,9 @@ function buildScenePlan(args: string[]): CliPlan {
   const stdin = args.includes("-");
   const sub = firstPositional(args);
   if (!sub || sub === "help") return { kind: "help", text: HELP_BY_COMMAND.scene };
-  if (sub !== "preview") throw new CliUsageError(`Unknown scene command '${sub}'. Try: ade scene preview <file>`);
+  // The short rules for writing a scene: local text, no runtime needed.
+  if (sub === "guide") return { kind: "help", text: SCENE_GUIDE };
+  if (sub !== "preview") throw new CliUsageError(`Unknown scene command '${sub}'. Try: ade scene guide, or ade scene preview <file>`);
   let width: number | undefined;
   if (widthRaw) {
     width = Number(widthRaw);
