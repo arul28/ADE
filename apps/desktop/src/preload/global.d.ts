@@ -140,6 +140,7 @@ import type {
   QuitPromptAnswer,
   QuitPromptRepairResult,
   QuitPromptRequest,
+  StopBackgroundServiceRequest,
   StopBackgroundServiceResult,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
@@ -1156,7 +1157,7 @@ declare global {
         /** What runs agents on this computer, and what stopping would end. */
         getBackgroundService?: () => Promise<BackgroundServiceSummary>;
         /** Stops the background service and every agent in it, then quits ADE. */
-        stopBackgroundServiceAndQuit?: () => Promise<StopBackgroundServiceResult>;
+        stopBackgroundServiceAndQuit?: (request: StopBackgroundServiceRequest) => Promise<StopBackgroundServiceResult>;
         getLatestRelease: () => Promise<LatestReleaseInfo | null>;
         getProject: () => Promise<ProjectInfo | null>;
         getWindowSession: () => Promise<{

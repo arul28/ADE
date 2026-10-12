@@ -1473,6 +1473,11 @@ export class LocalRuntimeConnectionPool {
     return install;
   }
 
+  /** Settles once any service install already running has finished. */
+  async waitForServiceInstall(): Promise<void> {
+    await this.serviceInstallPromise?.catch(() => undefined);
+  }
+
   /**
    * Stop and remove the per-user service login item by spawning
    * `serve --uninstall-service` — the same child-process boundary the

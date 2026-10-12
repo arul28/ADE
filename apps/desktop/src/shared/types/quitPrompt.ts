@@ -47,8 +47,19 @@ export type BackgroundServiceSummary = {
   manageable: boolean;
   /** `service`: the login service runs agents. `desktop`: this app runs them itself. */
   runner: "service" | "desktop";
-  /** Chats with a live turn right now; stopping ends them. */
+  /** Chats with a live turn right now in projects open in ADE; stopping ends them. */
   runningChats: UpdateInterruptedChat[];
+  /**
+   * Live agent turns across every project the service runs, including ones
+   * no ADE window has open. At least `runningChats.length`.
+   */
+  runningAgentsTotal: number;
+};
+
+/** What the person saw and agreed to stop; main refuses if more is running now. */
+export type StopBackgroundServiceRequest = {
+  confirmedSessionIds: string[];
+  confirmedTotal: number;
 };
 
 export type StopBackgroundServiceResult =

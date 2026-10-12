@@ -7,16 +7,21 @@ import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitiv
 function statusLine(summary: BackgroundServiceSummary | null): string {
   if (!summary) return "Checking…";
   if (summary.runner === "desktop") return "Not running. ADE is running your agents itself until it is repaired.";
-  const count = summary.runningChats.length;
+  const count = summary.runningAgentsTotal;
   const status = count > 0 ? `Running. ${agentsAre(count)} working.` : "Running. No agents are working right now.";
   return summary.manageable ? status : `${status} This build of ADE can't stop it; the installed ADE can.`;
 }
 
-function stopWarning(count: number): string {
+function stopWarning(summary: BackgroundServiceSummary | null): string {
+  const count = summary?.runningAgentsTotal ?? 0;
+  const unlisted = count - (summary?.runningChats.length ?? 0);
   const stops = count === 0
     ? "No agents are working right now. Open terminals and test runs stop too."
     : `This stops ${count === 1 ? "1 working agent" : `all ${count} working agents`}, and any open terminals and test runs.`;
-  return `${stops} Opening ADE starts the service again.`;
+  const elsewhere = unlisted > 0
+    ? ` ${unlisted === 1 ? "1 of them is" : `${unlisted} of them are`} in a project that isn't open in ADE.`
+    : "";
+  return `${stops}${elsewhere} Opening ADE starts the service again.`;
 }
 
 /**
@@ -73,7 +78,7 @@ export function BackgroundServiceSection() {
     const chats = latest?.runningChats ?? [];
     const confirmed = await confirmDialog({
       title: "Stop the background service and quit ADE?",
-      message: stopWarning(chats.length),
+      message: stopWarning(latest),
       children: chats.length > 0 ? (
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6 }}>
           {chats.map((chat) => (
@@ -91,7 +96,11 @@ export function BackgroundServiceSection() {
     if (!confirmed) return;
     setStopping(true);
     try {
-      const result = await api.stopBackgroundServiceAndQuit?.();
+      const result = await api.stopBackgroundServiceAndQuit?.({
+        confirmedSessionIds: chats.map((chat) => chat.sessionId),
+        confirmedTotal: latest?.runningAgentsTotal ?? chats.length,
+      });
+      if (result && !result.ok) void refresh();
       if (result && !result.ok) setError(result.message);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

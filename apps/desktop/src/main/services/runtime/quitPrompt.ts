@@ -11,6 +11,7 @@ import type {
   QuitPromptChoice,
   QuitPromptRepairResult,
   QuitPromptRequest,
+  StopBackgroundServiceRequest,
   StopBackgroundServiceResult,
   UpdateInstallImpact,
   UpdateInterruptedChat,
@@ -35,9 +36,12 @@ export type QuitPromptDeps = {
   /** Queues each chat to continue where it stopped once a brain is back. */
   armResume: (sessionIds: readonly string[]) => Promise<UpdateInterruptedChat[]>;
   getRunningLaneDeleteLabels: () => Promise<string[]>;
+  /** Live agent turns across every project the service runs; null when unknown. */
+  countRunningAgents: () => Promise<number | null>;
   /** Stops the pool reinstalling a service that is being removed on purpose. */
   holdServiceRepair: (reason: string) => void;
   releaseServiceRepair: (reason: string) => void;
+  /** Waits out an install already running, then removes the service. */
   uninstallService: () => Promise<void>;
   isShuttingDown: () => boolean;
   shutdown: (reason: string) => void;
@@ -273,13 +277,20 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
     return true;
   };
 
-  ipcMain.handle(IPC.appGetBackgroundService, async (event): Promise<BackgroundServiceSummary> => {
-    if (!trusted(event, IPC.appGetBackgroundService)) throw new Error("Untrusted sender.");
+  const backgroundServiceSummary = async (): Promise<BackgroundServiceSummary> => {
+    const [impact, total] = await Promise.all([deps.collectImpact(), deps.countRunningAgents()]);
+    const runningChats = impact.interruptedChats;
     return {
       manageable: deps.manageService,
       runner: appOwnedService(deps.getRuntimeStatus()) ? "desktop" : "service",
-      runningChats: (await deps.collectImpact()).interruptedChats,
+      runningChats,
+      runningAgentsTotal: Math.max(runningChats.length, total ?? 0),
     };
+  };
+
+  ipcMain.handle(IPC.appGetBackgroundService, async (event): Promise<BackgroundServiceSummary> => {
+    if (!trusted(event, IPC.appGetBackgroundService)) throw new Error("Untrusted sender.");
+    return await backgroundServiceSummary();
   });
 
   /**
@@ -288,7 +299,7 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
    * desktop cannot run without a brain, and it installs the service again on
    * its next launch, so stopping lasts until ADE is opened again.
    */
-  ipcMain.handle(IPC.appStopBackgroundServiceAndQuit, async (event): Promise<StopBackgroundServiceResult> => {
+  ipcMain.handle(IPC.appStopBackgroundServiceAndQuit, async (event, raw: unknown): Promise<StopBackgroundServiceResult> => {
     if (!trusted(event, IPC.appStopBackgroundServiceAndQuit)) {
       return { ok: false, message: "Only an ADE window can stop the background service." };
     }
@@ -302,6 +313,14 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
       // A lane delete runs in the service, so stopping it would cut the delete short.
       return { ok: false, message: `Wait for the lane delete in ${deletes.join(", ")} to finish.` };
     }
+    // An agent may have started while the confirmation was open; the person
+    // must see it before it is stopped.
+    const confirmed = raw as Partial<StopBackgroundServiceRequest> | undefined;
+    const confirmedIds = new Set(Array.isArray(confirmed?.confirmedSessionIds) ? confirmed.confirmedSessionIds : []);
+    const now = await backgroundServiceSummary();
+    const unseen = now.runningChats.some((chat) => !confirmedIds.has(chat.sessionId))
+      || now.runningAgentsTotal > (typeof confirmed?.confirmedTotal === "number" ? confirmed.confirmedTotal : 0);
+    if (unseen) return { ok: false, message: "Another agent started working. Press Stop again to see it." };
     deps.holdServiceRepair("stop_background_service");
     try {
       await deps.uninstallService();

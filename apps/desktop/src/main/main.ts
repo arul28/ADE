@@ -8144,9 +8144,13 @@ app.whenReady().then(async () => {
     restartService: () => restartBrainForRepair(machineRecoveryService, productAnalyticsService),
     armResume: (sessionIds) => armResumeForSessions(sessionIds),
     getRunningLaneDeleteLabels,
+    countRunningAgents: () => localRuntimePool.activitySummary().then((summary) => summary.activeAgentTurns, () => null),
     holdServiceRepair: (reason) => localRuntimePool.beginUpdateWindow(reason),
     releaseServiceRepair: (reason) => localRuntimePool.endUpdateWindow(reason),
-    uninstallService: () => localRuntimePool.uninstallServiceBestEffort(),
+    uninstallService: async () => {
+      await localRuntimePool.waitForServiceInstall();
+      await localRuntimePool.uninstallServiceBestEffort();
+    },
     isShuttingDown: () => shutdownRequested,
     shutdown: (reason) => requestAppShutdown({ reason, exitCode: 0 }),
   });

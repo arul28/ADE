@@ -196,6 +196,7 @@ import type {
   QuitPromptAnswer,
   QuitPromptRepairResult,
   QuitPromptRequest,
+  StopBackgroundServiceRequest,
   StopBackgroundServiceResult,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
@@ -4538,8 +4539,8 @@ const adeBridge = {
     setAskBeforeQuit: async (ask: boolean): Promise<boolean> => ipcRenderer.invoke(IPC.appSetAskBeforeQuit, ask),
     getBackgroundService: async (): Promise<BackgroundServiceSummary> =>
       ipcRenderer.invoke(IPC.appGetBackgroundService),
-    stopBackgroundServiceAndQuit: async (): Promise<StopBackgroundServiceResult> =>
-      ipcRenderer.invoke(IPC.appStopBackgroundServiceAndQuit),
+    stopBackgroundServiceAndQuit: async (request: StopBackgroundServiceRequest): Promise<StopBackgroundServiceResult> =>
+      ipcRenderer.invoke(IPC.appStopBackgroundServiceAndQuit, request),
     getLatestRelease: async (): Promise<LatestReleaseInfo | null> =>
       ipcRenderer.invoke(IPC.appGetLatestRelease),
     getProject: async (): Promise<ProjectInfo | null> =>
