@@ -1328,6 +1328,9 @@ async function pollClaudeInstance(
     errorKind: errorKindForHttpStatus(401),
   });
   if (!allowInteractiveSources && rejectedClaudeTokens.get(accountId) === creds.accessToken) {
+    // Not cached either, so the next poll re-reads the login and sees the
+    // token the CLI writes when it replaces this one.
+    invalidateCachedClaudeCredentials(configHome);
     return await refreshClaudeLoginInBackground(logger, context, instance.id, accountId, configHome) ?? rejected();
   }
 

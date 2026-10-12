@@ -636,6 +636,43 @@ describe("ProviderAccountsPanel", () => {
     expect(harness.providerInstances.create).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { name: "into a copy of it", copyId: "claude-spare", base: false },
+    // Re-signing the machine's own login would move the terminal's `claude` too.
+    { name: "as a new account when the copy is the machine's own login", copyId: "claude", base: true },
+  ])("signs a replaced login back in $name", async ({ copyId, base }) => {
+    const owner = instance({
+      id: "claude-work",
+      label: "Work",
+      isDefault: true,
+      account: { email: "now@example.com" },
+      replacedAccount: { email: "old@example.com", replacedAt: "2026-09-01T00:00:00.000Z" },
+    });
+    const copy = instance({
+      id: copyId,
+      label: base ? "Personal" : "Spare",
+      account: { email: "now@example.com" },
+      sameLoginAs: "claude-work",
+    });
+    const harness = installBridge({ instances: [copy, owner] });
+    renderPanel();
+
+    const row = await screen.findByRole("group", { name: "Work account" });
+    fireEvent.click(within(row).getByRole("button", { name: "Sign it back in" }));
+
+    if (base) {
+      const sheet = await screen.findByRole("dialog", { name: "Add a Claude Code account" });
+      expect((within(sheet).getByRole("textbox", { name: "Account label" }) as HTMLInputElement).value).toBe("old");
+      expect(harness.providerInstances.loginStart).not.toHaveBeenCalled();
+    } else {
+      expect(await screen.findByRole("dialog", { name: "Sign in to Spare" })).toBeTruthy();
+      await waitFor(() => {
+        expect(harness.providerInstances.loginStart).toHaveBeenCalledWith({ id: "claude-spare" });
+      });
+    }
+    expect(harness.providerInstances.create).not.toHaveBeenCalled();
+  });
+
   it("reopens sign-in for an existing account without creating a new one", async () => {
     const harness = installBridge({
       instances: [instance({ id: "claude", label: "Personal", isDefault: true, signedIn: false })],
