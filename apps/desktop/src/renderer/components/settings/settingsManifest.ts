@@ -254,6 +254,28 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Command line",
   },
   {
+    id: "general.background-service",
+    label: "Background service",
+    keywords: ["background", "service", "brain", "stop", "quit", "agents", "login item", "daemon", "runtime"],
+    tab: "general",
+    anchor: "background-service",
+    scope: "machine",
+    // Stopping the service is a desktop action on this computer.
+    web: "hidden",
+    group: "Background service",
+  },
+  {
+    id: "general.quit-confirmation",
+    label: "Ask before quitting",
+    keywords: ["quit", "close", "exit", "confirm", "background", "agents", "don't ask again"],
+    tab: "general",
+    anchor: "quit-confirmation",
+    scope: "machine",
+    // The question is asked by the desktop app when it quits.
+    web: "hidden",
+    group: "Quitting",
+  },
+  {
     id: "general.auto-updates",
     label: "Automatic updates",
     keywords: ["update", "upgrade", "release", "channel", "version"],

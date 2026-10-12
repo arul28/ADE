@@ -195,6 +195,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // not give up before the main process knows the outcome, or the Repair
     // button reports a failure for a restart that actually succeeded.
     case IPC.appRestartBackgroundService:
+    // "Repair service" on the quit prompt answers after that same restart.
+    case IPC.appAnswerQuitPrompt:
+    // Removing the login service waits on the service manager.
+    case IPC.appStopBackgroundServiceAndQuit:
     // Repairing the stored sign-in ends in that same brain restart, so it
     // inherits the same budget. On the 30s default the renderer would report a
     // failure for a repair that is still running — the exact mis-report the

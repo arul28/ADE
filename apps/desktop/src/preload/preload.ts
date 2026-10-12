@@ -192,6 +192,11 @@ import type {
   ApplyConflictProposalArgs,
   AppInfo,
   LocalRuntimeStatus,
+  BackgroundServiceSummary,
+  QuitPromptAnswer,
+  QuitPromptRepairResult,
+  QuitPromptRequest,
+  StopBackgroundServiceResult,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -4516,6 +4521,19 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appGetRuntimeHealth),
     restartBackgroundService: async (): Promise<void> =>
       ipcRenderer.invoke(IPC.appRestartBackgroundService),
+    onQuitPrompt: (cb: (request: QuitPromptRequest) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: QuitPromptRequest) => cb(payload);
+      ipcRenderer.on(IPC.appQuitPrompt, listener);
+      return () => ipcRenderer.removeListener(IPC.appQuitPrompt, listener);
+    },
+    answerQuitPrompt: async (answer: QuitPromptAnswer): Promise<QuitPromptRepairResult | null> =>
+      ipcRenderer.invoke(IPC.appAnswerQuitPrompt, answer),
+    getAskBeforeQuit: async (): Promise<boolean> => ipcRenderer.invoke(IPC.appGetAskBeforeQuit),
+    setAskBeforeQuit: async (ask: boolean): Promise<boolean> => ipcRenderer.invoke(IPC.appSetAskBeforeQuit, ask),
+    getBackgroundService: async (): Promise<BackgroundServiceSummary> =>
+      ipcRenderer.invoke(IPC.appGetBackgroundService),
+    stopBackgroundServiceAndQuit: async (): Promise<StopBackgroundServiceResult> =>
+      ipcRenderer.invoke(IPC.appStopBackgroundServiceAndQuit),
     getLatestRelease: async (): Promise<LatestReleaseInfo | null> =>
       ipcRenderer.invoke(IPC.appGetLatestRelease),
     getProject: async (): Promise<ProjectInfo | null> =>

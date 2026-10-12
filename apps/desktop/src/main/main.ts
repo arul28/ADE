@@ -271,8 +271,16 @@ import type {
   SyncProjectSwitchResultPayload,
   UpdateInstallImpact,
   UpdateInterruptedChat,
+  BackgroundServiceSummary,
+  QuitPromptAnswer,
+  QuitPromptChoice,
+  QuitPromptRepairResult,
+  QuitPromptRequest,
+  StopBackgroundServiceResult,
 } from "../shared/types";
 import type { AppContext } from "./services/ipc/registerIpc";
+import { randomUUID } from "node:crypto";
+import { quitPromptCopy } from "../shared/quitPromptCopy";
 import fs from "node:fs";
 import net from "node:net";
 import { createAdeRpcRequestHandler } from "../../../ade-cli/src/adeRpcServer";
@@ -7852,44 +7860,6 @@ app.whenReady().then(async () => {
     });
   };
 
-  const showWindowCloseWarning = (
-    ownerWindow: BrowserWindow | null | undefined,
-    options: {
-      buttons: string[];
-      title: string;
-      message: string;
-      detail: string;
-      rememberQuitAcknowledgement?: boolean;
-    },
-  ): boolean => {
-    if (shutdownRequested) return true;
-    if (options.rememberQuitAcknowledgement && quitWarningAcknowledged) return true;
-    const dialogOptions = {
-      type: "warning" as const,
-      buttons: options.buttons,
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-      title: options.title,
-      message: options.message,
-      detail: options.detail,
-    };
-    const parentWindow =
-      ownerWindow && !ownerWindow.isDestroyed()
-        ? ownerWindow
-        : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-    const response = parentWindow
-      ? dialog.showMessageBoxSync(parentWindow, dialogOptions)
-      : dialog.showMessageBoxSync(dialogOptions);
-    if (response !== 1) {
-      return false;
-    }
-    if (options.rememberQuitAcknowledgement) {
-      quitWarningAcknowledged = true;
-    }
-    return true;
-  };
-
   const isRunningLaneDeleteProgress = (value: unknown): value is LaneDeleteProgress => {
     return Boolean(
       value
@@ -8172,44 +8142,216 @@ app.whenReady().then(async () => {
     return choice === 1;
   };
 
-  const describeConnectedPhones = (impact: UpdateInstallImpact | null): string | null => {
-    const phones = impact?.connectedPhones ?? [];
-    if (phones.length === 0) return null;
-    const names = phones.map((phone) => phone.deviceName).join(", ");
-    return phones.length === 1
-      ? `${names} is connected through ADE phone sync and will disconnect; it reconnects automatically once ADE is running again.`
-      : `These phones are connected through ADE phone sync and will disconnect: ${names}. They reconnect automatically once ADE is running again.`;
+  const readAskBeforeQuit = (): boolean => readGlobalState(globalStatePath).askBeforeQuit !== false;
+  const writeAskBeforeQuit = (ask: boolean): boolean => {
+    const current = readGlobalState(globalStatePath);
+    const { askBeforeQuit: _previous, ...rest } = current;
+    writeGlobalState(globalStatePath, ask ? rest : { ...rest, askBeforeQuit: false });
+    return ask;
+  };
+  ipcMain.handle(IPC.appGetAskBeforeQuit, () => readAskBeforeQuit());
+  ipcMain.handle(IPC.appSetAskBeforeQuit, (_event, ask: unknown) => writeAskBeforeQuit(ask !== false));
+
+  /** The window has this long to show the prompt before main asks natively. */
+  const QUIT_PROMPT_SHOWN_TIMEOUT_MS = 1_500;
+  const pendingQuitPrompts = new Map<string, {
+    webContentsId: number;
+    shown: () => void;
+    answer: (answer: QuitPromptAnswer) => Promise<QuitPromptRepairResult | null>;
+  }>();
+
+  ipcMain.handle(IPC.appAnswerQuitPrompt, async (event, raw: unknown) => {
+    const answer = raw as QuitPromptAnswer | undefined;
+    const pending = answer?.requestId ? pendingQuitPrompts.get(answer.requestId) : undefined;
+    // Only the window that was asked may answer.
+    if (!pending || pending.webContentsId !== event.sender.id) return null;
+    if (!answer?.choice) {
+      pending.shown();
+      return null;
+    }
+    return await pending.answer(answer);
+  });
+
+  /**
+   * Agents survive a quit unless this desktop is running the service itself:
+   * the fallback when the service cannot start, or an isolated brain.
+   */
+  const appOwnedServiceForQuit = (): QuitPromptRequest["appOwnedService"] => {
+    const status = localRuntimePool.getStatus();
+    if (status.runtimeMode === "primary") return null;
+    return { blockedByMacOS: status.appFallback?.reason === "background_item_blocked" };
   };
 
-  const confirmQuitWarning = (
-    ownerWindow?: BrowserWindow | null,
-    impact: UpdateInstallImpact | null = null,
-    relaunch = false,
-  ): boolean => {
-    const phoneDetail = describeConnectedPhones(impact);
-    return showWindowCloseWarning(ownerWindow, {
-      buttons: ["Keep ADE open", relaunch ? "Restart ADE" : "Quit ADE"],
-      title: relaunch ? "Restart ADE?" : "Quit ADE?",
-      message: "Save your work before closing ADE.",
-      detail: [
-        "Quitting ADE will end agents and background processes owned by this desktop session, including OpenCode servers, terminal sessions, and test runs.",
-        phoneDetail,
-        "Open ADE Code terminals attached to this machine's ADE service will disconnect too — you can reopen them afterwards.",
-        "The ADE service login item keeps running separately when it is installed.",
-      ].filter(Boolean).join(" "),
-      rememberQuitAcknowledgement: true,
+  /**
+   * "Repair service" from the quit prompt. Restarting the service stops the
+   * chats the desktop was running, so they are queued to pick up where they
+   * stopped once a brain is back, the same way an update resumes them.
+   */
+  const repairServiceFromQuitPrompt = async (
+    impact: UpdateInstallImpact | null,
+  ): Promise<QuitPromptRepairResult> => {
+    const sessionIds = (impact?.interruptedChats ?? []).map((chat) => chat.sessionId);
+    let repaired = true;
+    try {
+      await machineRecoveryService.restartBrain();
+    } catch (error) {
+      repaired = false;
+      localRuntimeLogger.warn("quit_prompt.repair_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // On failure the pool brings its own brain back, and the chats resume there.
+    const resumed = await armUpdateResumeForSessions(sessionIds);
+    return { repaired, resumedChats: resumed.length };
+  };
+
+  /**
+   * Asks in the window. Null when the window could not show it in time, so the
+   * caller falls back to the native box; a window closed mid-question keeps ADE open.
+   */
+  const askQuitPromptInWindow = (
+    win: BrowserWindow,
+    request: QuitPromptRequest,
+    impact: UpdateInstallImpact | null,
+  ): Promise<QuitPromptAnswer | null> => {
+    if (win.isDestroyed() || win.webContents.isLoading() || win.webContents.isCrashed()) {
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      let shown = false;
+      const finish = (value: QuitPromptAnswer | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(shownTimer);
+        pendingQuitPrompts.delete(request.requestId);
+        win.removeListener("closed", onClosed);
+        resolve(value);
+      };
+      const onClosed = () => finish(shown ? { requestId: request.requestId, choice: "keep" } : null);
+      const shownTimer = setTimeout(() => {
+        if (!shown) finish(null);
+      }, QUIT_PROMPT_SHOWN_TIMEOUT_MS);
+      win.once("closed", onClosed);
+      pendingQuitPrompts.set(request.requestId, {
+        webContentsId: win.webContents.id,
+        shown: () => {
+          shown = true;
+          clearTimeout(shownTimer);
+        },
+        answer: async (answer) => {
+          if (answer.choice !== "repair") {
+            finish(answer);
+            return null;
+          }
+          // Repair keeps ADE open; the window waits for the outcome.
+          finish(answer);
+          return await repairServiceFromQuitPrompt(impact);
+        },
+      });
+      win.webContents.send(IPC.appQuitPrompt, request);
     });
   };
 
-  const confirmCloseWindowWarning = (ownerWindow: BrowserWindow): boolean =>
-    showWindowCloseWarning(ownerWindow, {
+  /** The same question, as a native box, for when no ADE window can show it. */
+  const askQuitPromptNatively = async (
+    ownerWindow: BrowserWindow | null,
+    request: QuitPromptRequest,
+  ): Promise<QuitPromptAnswer> => {
+    const { title, description } = quitPromptCopy(request);
+    const verb = request.relaunch ? "Restart" : "Quit";
+    const options: Electron.MessageBoxOptions = {
+      type: request.appOwnedService ? "warning" : "info",
+      buttons: ["Keep ADE open", request.appOwnedService ? `${verb} anyway` : `${verb} ADE`],
+      defaultId: 1,
+      cancelId: 0,
+      noLink: true,
+      title: `${verb} ADE?`,
+      message: title,
+      detail: description,
+      ...(request.appOwnedService ? {} : { checkboxLabel: "Don't ask again", checkboxChecked: false }),
+    };
+    const result = ownerWindow
+      ? await dialog.showMessageBox(ownerWindow, options)
+      : await dialog.showMessageBox(options);
+    const choice: QuitPromptChoice = result.response === 1 ? "quit" : "keep";
+    return { requestId: request.requestId, choice, dontAskAgain: result.checkboxChecked === true };
+  };
+
+  const confirmQuitWarning = async (
+    ownerWindow: BrowserWindow | null | undefined,
+    relaunch: boolean,
+  ): Promise<boolean> => {
+    if (shutdownRequested || quitWarningAcknowledged) return true;
+    const appOwnedService = appOwnedServiceForQuit();
+    // A normal quit stops nothing, so "Don't ask again" skips even the probe.
+    if (!appOwnedService && !readAskBeforeQuit()) return true;
+    const impact = await collectUpdateInstallImpactBounded();
+    const runningAgents = impact.interruptedChats.length;
+    // Here quitting stops running agents, so the person always hears it.
+    if (runningAgents === 0 && !readAskBeforeQuit()) return true;
+    const request: QuitPromptRequest = { requestId: randomUUID(), relaunch, runningAgents, appOwnedService };
+    const parentWindow =
+      ownerWindow && !ownerWindow.isDestroyed()
+        ? ownerWindow
+        : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) ?? null;
+    if (parentWindow) {
+      if (parentWindow.isMinimized()) parentWindow.restore();
+      parentWindow.show();
+      parentWindow.focus();
+    }
+    const answer = (parentWindow ? await askQuitPromptInWindow(parentWindow, request, impact) : null)
+      ?? await askQuitPromptNatively(parentWindow && !parentWindow.isDestroyed() ? parentWindow : null, request);
+    if (answer.choice !== "quit") return false;
+    if (answer.dontAskAgain && !appOwnedService) writeAskBeforeQuit(false);
+    quitWarningAcknowledged = true;
+    return true;
+  };
+
+  ipcMain.handle(IPC.appGetBackgroundService, async (): Promise<BackgroundServiceSummary> => ({
+    manageable: shouldRepairRuntimeServiceOnFallback,
+    runner: appOwnedServiceForQuit() ? "desktop" : "service",
+    runningChats: (await collectUpdateInstallImpactBounded()).interruptedChats,
+  }));
+
+  /**
+   * Settings → "Stop and quit ADE". Removes the login service (what `ade brain
+   * stop` does), which stops its brain and every agent in it, then quits. The
+   * desktop cannot run without a brain, and it installs the service again on
+   * its next launch, so stopping lasts until ADE is opened again.
+   */
+  ipcMain.handle(IPC.appStopBackgroundServiceAndQuit, async (): Promise<StopBackgroundServiceResult> => {
+    if (!shouldRepairRuntimeServiceOnFallback) {
+      return { ok: false, message: "This build of ADE does not manage the background service." };
+    }
+    if (shutdownRequested) return { ok: true };
+    // A vanished service looks broken to the pool; it must not reinstall it.
+    localRuntimePool.beginUpdateWindow("stop_background_service");
+    try {
+      await localRuntimePool.uninstallServiceBestEffort();
+    } catch (error) {
+      localRuntimePool.endUpdateWindow("stop_background_service_failed");
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+    quitWarningAcknowledged = true;
+    requestAppShutdown({ reason: "stop_background_service", exitCode: 0 });
+    return { ok: true };
+  });
+
+  const confirmCloseWindowWarning = (ownerWindow: BrowserWindow): boolean => {
+    if (shutdownRequested) return true;
+    const response = dialog.showMessageBoxSync(ownerWindow, {
+      type: "question",
       buttons: ["Keep window open", "Close window"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
       title: "Close ADE window?",
       message: "Close this ADE window?",
-      detail:
-        "ADE will keep running in other windows. Active agents and background processes continue unless you quit ADE.",
-      rememberQuitAcknowledgement: false,
+      detail: "ADE keeps running in your other windows.",
     });
+    return response === 1;
+  };
 
   const requestQuitAfterWarnings = (
     ownerWindow: BrowserWindow | null | undefined,
@@ -8222,8 +8364,7 @@ app.whenReady().then(async () => {
     return (async () => {
       try {
         if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return false;
-        const impact = await collectUpdateInstallImpactBounded();
-        if (!confirmQuitWarning(ownerWindow, impact, reason === "relaunch")) return false;
+        if (!(await confirmQuitWarning(ownerWindow, reason === "relaunch"))) return false;
         // Registered only once the user has agreed, so a cancelled restart
         // cannot turn a later plain quit into a relaunch. app.exit honors it.
         if (reason === "relaunch") app.relaunch();

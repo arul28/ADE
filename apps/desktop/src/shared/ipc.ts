@@ -11,6 +11,13 @@ export const IPC = {
   appGetResourceUsage: "ade.app.getResourceUsage",
   appGetRuntimeHealth: "ade.app.getRuntimeHealth",
   appRestartBackgroundService: "ade.app.restartBackgroundService",
+  /** main → window: ask the quit confirmation in ADE's own dialog. */
+  appQuitPrompt: "ade.app.quitPrompt",
+  appAnswerQuitPrompt: "ade.app.answerQuitPrompt",
+  appGetAskBeforeQuit: "ade.app.getAskBeforeQuit",
+  appSetAskBeforeQuit: "ade.app.setAskBeforeQuit",
+  appGetBackgroundService: "ade.app.getBackgroundService",
+  appStopBackgroundServiceAndQuit: "ade.app.stopBackgroundServiceAndQuit",
   storageGetPressure: "ade.storage.getPressure",
   storageGetSnapshot: "ade.storage.getSnapshot",
   storageCompressNow: "ade.storage.compressNow",

@@ -24,6 +24,7 @@ import {
 import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { DialogHost } from "../ui/dialog/confirm";
 import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
+import { QuitPromptHost } from "./QuitPromptHost";
 import { GitFolderTrustPromptHost } from "./GitFolderTrustPrompt";
 import { LeftoverWorktreeDialogHost } from "../lanes/LeftoverWorktreeDialogHost";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
@@ -1559,6 +1560,8 @@ export function App() {
           <DialogHost />
           {/* "May this agent use the ADE browser?" — only when the setting asks. */}
           <BrowserAgentAccessPromptHost />
+          {/* "Quit ADE?" — main asks the window it is quitting from. */}
+          <QuitPromptHost />
           {/* "Trust this folder?" — git refused a folder the user chose to open. */}
           <GitFolderTrustPromptHost />
           <LeftoverWorktreeDialogHost />

@@ -253,6 +253,61 @@ export type UpdateInterruptedChat = {
 };
 
 /**
+ * The quit confirmation, asked in an ADE window instead of a native box.
+ *
+ * `appOwnedService` is null in the normal case: agents run in the background
+ * service and keep going after the desktop quits. It is set only when the
+ * desktop is running the service itself (the service could not start), which
+ * is the one case where quitting stops agents.
+ */
+export type QuitPromptRequest = {
+  requestId: string;
+  relaunch: boolean;
+  /** Chats with a live turn right now. */
+  runningAgents: number;
+  appOwnedService: null | {
+    /** macOS refuses the background item; only System Settings can fix it. */
+    blockedByMacOS: boolean;
+  };
+};
+
+export type QuitPromptChoice = "quit" | "keep" | "repair";
+
+/**
+ * The window's reply. Sent first with no `choice` the moment the prompt shows,
+ * so main knows not to fall back to the native box, then again with the answer.
+ */
+export type QuitPromptAnswer = {
+  requestId: string;
+  choice?: QuitPromptChoice;
+  dontAskAgain?: boolean;
+};
+
+/** Settings → Background service: what is running, and whether it can be stopped here. */
+export type BackgroundServiceSummary = {
+  /**
+   * False in a dev build and wherever ADE does not manage the login service,
+   * so a dev app can never stop the installed service.
+   */
+  manageable: boolean;
+  /** `service`: the login service runs agents. `desktop`: this app runs them itself. */
+  runner: "service" | "desktop";
+  /** Chats with a live turn right now; stopping ends them. */
+  runningChats: UpdateInterruptedChat[];
+};
+
+export type StopBackgroundServiceResult =
+  | { ok: true }
+  | { ok: false; message: string };
+
+/** The outcome of a "Repair service" answer, once the repair has finished. */
+export type QuitPromptRepairResult = {
+  repaired: boolean;
+  /** Chats queued to pick up where they stopped. */
+  resumedChats: number;
+};
+
+/**
  * Applying an update is one transaction: the app is swapped, the background
  * service is set up for the new app, restarted, and answering. These are its
  * four steps, in order.

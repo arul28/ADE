@@ -25,6 +25,8 @@ import { AdeUsageSection } from "./AdeUsageSection";
 import { GitHubIntegrationSection } from "./GitHubIntegrationSection";
 import { LinearMark } from "../lanes/linearBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
+import { BackgroundServiceSection } from "./BackgroundServiceSection";
+import { QuitConfirmationSection } from "./QuitConfirmationSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LaneBehaviorSection } from "./LaneBehaviorSection";
 import { LaneTemplatesSection } from "./LaneTemplatesSection";
@@ -354,6 +356,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       group: "ade",
     },
     { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", group: "ade" },
+    { entryIds: ["general.background-service"], render: () => <BackgroundServiceSection />, machine: "local", title: "Background service", group: "ade" },
+    { entryIds: ["general.quit-confirmation"], render: () => <QuitConfirmationSection />, machine: "local", title: "Quitting ADE", group: "ade" },
     { entryIds: ["general.project"], render: () => <ProjectSection />, machine: "routed", title: "Project health", group: "project" },
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake", group: "computer" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture", group: "computer" },

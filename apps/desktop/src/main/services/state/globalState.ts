@@ -126,6 +126,12 @@ export type GlobalState = {
    */
   claudeResumeReturnDismissed?: boolean;
   /**
+   * False once the person ticked "Don't ask again" on the quit confirmation.
+   * Absent means ask. Settings turns it back on. Never silences the warning
+   * shown when quitting would stop running agents.
+   */
+  askBeforeQuit?: boolean;
+  /**
    * "Agents can use the ADE browser" and the lanes and chats the user allowed.
    * Machine-wide because the browser's signed-in profile is one per install.
    * Absent: every agent may use it (the default).
