@@ -88,7 +88,7 @@ import {
   type DevServerRecord,
 } from "../shared/types/builtInBrowser";
 import type { SessionInputOrigin } from "../shared/sessionInputOrigin";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   DiagnosticReportPayload,
@@ -1776,13 +1776,18 @@ async function callRemoteProjectActionIfBound<T>(
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
   assertWritesAllowedDuringProjectSwitch(domain, action);
+  const guardBinding = guardsProjectBinding(domain, action);
+  const checkBeforeBind = captureProjectBinding(guardBinding && Boolean(currentProjectBinding));
   const binding = await getRemoteProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
+  checkBeforeBind();
   if (!binding) return { handled: false };
+  const checkAfterInvoke = captureProjectBinding(guardBinding);
   const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
     id: binding.targetId,
     projectId: binding.projectId,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
+  checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
 
@@ -1912,12 +1917,17 @@ async function callLocalProjectActionIfBound<T>(
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
   assertWritesAllowedDuringProjectSwitch(domain, action);
+  const guardBinding = guardsProjectBinding(domain, action);
+  const checkBeforeBind = captureProjectBinding(guardBinding && Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
+  checkBeforeBind();
   if (!binding) return { handled: false };
+  const checkAfterInvoke = captureProjectBinding(guardBinding);
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
     rootPath: binding.rootPath,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
+  checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
 
@@ -1927,12 +1937,16 @@ async function callLocalProjectActionStrictIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
   assertWritesAllowedDuringProjectSwitch(domain, action);
+  const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding();
+  checkBeforeBind();
   if (!binding) return { handled: false };
+  const checkAfterInvoke = captureProjectBinding();
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
     rootPath: binding.rootPath,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
+  checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
 
@@ -1959,6 +1973,15 @@ const MACHINE_INVENTORY_CHAT_ACTIONS = new Set<string>([
   "getLaunchDefaults",
 ]);
 
+/**
+ * Whether a runtime action's result belongs to the project the window was
+ * bound to when it started. Machine inventories (the model catalog) belong to
+ * the machine, so a project switch does not make them stale.
+ */
+function guardsProjectBinding(domain: string, action: string): boolean {
+  return !(domain === "chat" && MACHINE_INVENTORY_CHAT_ACTIONS.has(action));
+}
+
 const MUTATING_SYNC_METHODS = new Set([
   "sync.connectToBrain",
   "sync.disconnectFromBrain",
@@ -1979,6 +2002,14 @@ const MUTATING_SYNC_METHODS = new Set([
 /** "Project is switching", finished with what the caller was doing. */
 function projectSwitchingError(doing: string): Error {
   return new Error(`Project is switching. Wait for the current project to finish loading before ${doing}.`);
+}
+
+/** Captures the binding generation now; the returned check throws if the window switched projects since. */
+function captureProjectBinding(enabled = true): () => void {
+  const captured = enabled ? projectBindingGeneration : null;
+  return () => {
+    if (captured != null && captured !== projectBindingGeneration) throw projectSwitchingError("using this result");
+  };
 }
 
 let openRemoteProjectGeneration = 0;
@@ -2019,6 +2050,9 @@ async function callProjectRuntimeActionIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  const checkBinding = captureProjectBinding(
+    Boolean(currentProjectBinding) && guardsProjectBinding(domain, action),
+  );
   const freshBinding = domain === "chat";
   assertWritesAllowedDuringProjectSwitch(domain, action);
   const mutating = isMutatingRuntimeAction(domain, action);
@@ -2048,12 +2082,14 @@ async function callProjectRuntimeActionIfBound<T>(
       throw projectSwitchingError("reading project state");
     }
   }
+  checkBinding();
   const remote = await callRemoteProjectActionIfBound<T>(
     domain,
     action,
     request,
     { freshBinding },
   );
+  checkBinding();
   if (remote.handled) return remote;
   return callLocalProjectActionIfBound<T>(domain, action, request, { freshBinding });
 }
@@ -2604,14 +2640,18 @@ async function callRemoteProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getRemoteProjectBinding();
+  checkBeforeBind();
   if (!binding) return { handled: false };
+  const checkAfterInvoke = captureProjectBinding();
   const result = (await ipcRenderer.invoke(IPC.remoteRuntimeCallSync, {
     id: binding.targetId,
     projectId: binding.projectId,
     method,
     params,
   })) as T;
+  checkAfterInvoke();
   return { handled: true, result };
 }
 
@@ -2619,13 +2659,17 @@ async function callLocalProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding();
+  checkBeforeBind();
   if (!binding) return { handled: false };
+  const checkAfterInvoke = captureProjectBinding();
   const result = (await ipcRenderer.invoke(IPC.localRuntimeCallSync, {
     rootPath: binding.rootPath,
     method,
     params,
   })) as T;
+  checkAfterInvoke();
   return { handled: true, result };
 }
 
@@ -2637,7 +2681,9 @@ async function callProjectRuntimeSyncOr<T>(
   if (MUTATING_SYNC_METHODS.has(method) && projectRuntimeTransitionDepth > 0) {
     throw projectSwitchingError("changing sync state");
   }
+  const checkBinding = captureProjectBinding(Boolean(currentProjectBinding));
   const remote = await callRemoteProjectSyncIfBound<T>(method, params);
+  checkBinding();
   if (remote.handled) return remote.result;
   let localRuntime: Awaited<ReturnType<typeof callLocalProjectSyncIfBound<T>>>;
   try {
@@ -4942,6 +4988,17 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.recoveryRepair, { projectRoot }),
     openBackgroundSettings: (): Promise<{ opened: boolean }> =>
       ipcRenderer.invoke(IPC.recoveryOpenBackgroundSettings),
+    restoreProjectData: (projectRoot: string): Promise<ProjectDataRestoreResult> =>
+      ipcRenderer.invoke(IPC.recoveryRestoreProjectData, { projectRoot }),
+    startFresh: (projectRoot: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.recoveryStartFresh, { projectRoot }),
+    projectDataStatus: (projectRoot?: string): Promise<ProjectDataStatus | null> =>
+      ipcRenderer.invoke(IPC.recoveryProjectDataStatus, projectRoot ? { projectRoot } : {}),
+    onProjectDataMissing: (cb: (payload: { projectRoot: string; status: ProjectDataProblem }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { projectRoot: string; status: ProjectDataProblem }) => cb(payload);
+      ipcRenderer.on(IPC.recoveryProjectDataMissing, listener);
+      return () => ipcRenderer.removeListener(IPC.recoveryProjectDataMissing, listener);
+    },
     onRepairStep: (
       cb: (payload: { projectRoot: string; step: RepairStepResult }) => void,
     ): (() => void) => {

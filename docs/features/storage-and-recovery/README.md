@@ -1,5 +1,60 @@
 # Storage and recovery
 
+An open project database checks its file's device and inode before each SQLite
+operation. If `.ade/ade.db` disappears or is replaced, ADE pauses database
+operations with `db_path_changed` rather than continuing to query or write the
+moved file. Restore the original `.ade` folder to its original location to
+resume automatically. A replacement database is never adopted by the existing
+connection. This protection is shared by desktop and headless runtime clients,
+including sync and database maintenance.
+
+The desktop also checks each open project's `ade.db` every 5 seconds
+(`services/runtime/openProjectDataWatch.ts`). Only "not found" (ENOENT, or
+ENOTDIR when a parent became a file) counts as missing; other errors (a volume slow to answer) skip the tick. A project
+folder that is itself gone, an unplugged drive included, gets its own wording
+and no Restore or Start fresh, since either would recreate the folder.
+When the file disappears or is swapped, the window shows the project recovery
+screen instead of failing panel by panel (`data_missing` or `data_replaced` in
+`shared/types/recovery.ts`). A failed reopen at launch for the same reason
+shows the screen too; a window asks `recovery.projectDataStatus` when it loads
+and whenever its project changes, so a reload or a second window sees it. The
+screen shows at most two buttons; Restart, Reset and Report are hidden there
+because none of them helps. Repair refuses a project whose data is missing,
+since opening the database would create an empty replacement. From there:
+
+- **Restore from Trash** appears when `findTrashedProjectData`
+  (`services/runtime/projectDataTrash.ts`) finds this project's `.ade` in the
+  Trash, matched by the database file's device and inode from the project-data
+  identity file (a move keeps them), with the database's own `projects` row as
+  a fallback. macOS refuses to list the Trash without Full Disk Access, so it
+  tries the names Finder gives (`.ade`, `.ade 2`, …). On Windows it reads the
+  drive's Recycle Bin: each `$I…` record names the original path of the `$R…`
+  item beside it (`recycleBinRecord.ts`), and a restore removes the record so
+  Explorer does not list a deleted `.ade` that is gone. Restoring merges into any
+  `.ade` that reappeared meanwhile: ADE writes some files (machine keys, for
+  one) while the data is gone, so on a clash the original wins and the newer
+  file is kept as `<name>.created-while-missing`, beside the trashed copy (or
+  in the project when the Trash is on another volume). The
+  database goes back last, after its write-ahead log, and a copy from another
+  volume's Trash lands under a temporary name before it is renamed into place,
+  so a failed restore can be retried. Nothing is deleted. Once the files are
+  back, the window closes the project and the background service drops it,
+  so the reopen starts on fresh database handles; a failed restore keeps the
+  project's record, so the next open still refuses to create empty data.
+- The screen keeps checking, so putting the folder back by hand reopens the
+  project.
+- **Start fresh** (or **Use this copy** for a swapped database) closes the
+  project, has the background service drop it (and the desktop's cached
+  record of it), forgets the database identity, leaves an empty `.ade`, and
+  reopens with new data. The old data stays wherever it went.
+
+When a relocated database is disposed, ADE defers native SQLite close and
+extension finalization. This prevents shutdown or garbage collection from
+checkpointing pending WAL into the moved file. Those handles remain retained
+until the original file returns and another database open reaps them, or until
+process exit releases the OS handles. Normal disposal still finalizes the
+extension and releases its handles immediately, including on Windows.
+
 ## Source file map
 
 | Path | Role |
@@ -22,6 +77,9 @@
 | `apps/desktop/src/main/services/logging/machineLogger.ts` | The desktop main process's **machine-scoped** logger: same `createFileLogger` and rotation, writing `~/.ade/runtime/desktop-main.jsonl`. Opened in `main.ts`'s first executable statement, so the events that happen before (or without) a project — the launch marker, the `ade://` claim, the single-instance outcome, the CLI auto-install result — are durable rather than `console.log` into a stdout a Finder-launched app does not have. `logMachineEvent` writes the structured line and mirrors it to `console`; `flushMachineMainLog` drains it on the branch that quits immediately. See [logging.md](../../logging.md). |
 | `apps/ade-cli/src/commands/doctor.ts` | `ade doctor [--online]` — connects to the brain over the local socket and prints one `ok`/`warn`/`fail` row per subsystem (App version, Brain, Wedge history, Sync port, Publish health, Relay, Account, Diagnostics sharing); exits non-zero on any `fail`. The **Diagnostics sharing** row reads the shared auto-send ledger through `readAutoDiagnosticsState` — never a second parser — and is always `ok`: consent is a preference, not a fault, so it reports `on · N of 3 automatic reports sent today` or `off · no automatic reports are sent` and never colours a healthy machine. `evaluateDoctorRows` is pure and dependency-injected — every row's inputs are read at the edge (`runDoctorCommand`) and handed in — so the verdict is testable without a machine and a second surface can reuse it. Today the CLI is its only caller: the desktop's **Connection doctor** card (`remoteTargets/ConnectionDoctorPanel.tsx` → `remoteRuntime.runDoctor`) is a different check about reaching a *remote* machine, not this one. |
 | `apps/desktop/src/shared/adeRuntimeProtocol.ts` | Shared runtime-protocol contract: `RUNTIME_COMPAT_LEVEL` + `isRuntimeProtocolCompatible` (the integer compatibility-window check), and the tolerant parsers `parseRuntimePublishHealth` / `parseRuntimeLastWedge` that decode `runtimeInfo.publishHealth` and `runtimeInfo.lastWedge` for the connection pool, the doctor, and the desktop status surfaces. |
+| `apps/desktop/src/main/services/runtime/projectDataTrash.ts` | Finds a project's `.ade` in the Trash (by the recorded database identity, else the database's own `projects` row; cached 5 s) and puts it back, whole or merged, database last. |
+| `apps/desktop/src/main/services/runtime/recycleBinRecord.ts` | Reads a Windows Recycle Bin `$I…` record (versions 1 and 2) for the original path of the `$R…` item it describes. |
+| `apps/desktop/src/main/services/runtime/openProjectDataWatch.ts` | Checks each open project's `ade.db` every 5 seconds and reports `missing` or `replaced` once per change, so the window shows the recovery screen. |
 | `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. On macOS it also reads the launch agent's Background Items verdict (`isBackgroundItemBlocked`, `shared/types/core.ts`) and reports `background_blocked` ahead of every repairable state when "Allow in the Background" is off; an installed brain that is not running with no crash on record is `brain_not_running`, not a crash loop. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button and the brain-down notice's **Fix it** — which shares one `restartServiceAndWait()` sequence (install → wait ≤90 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer version of ADE is already running. Restart ADE to switch to it."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
 | `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
 | `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. |

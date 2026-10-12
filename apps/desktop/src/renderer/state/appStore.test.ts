@@ -515,6 +515,31 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectBinding).not.toBe(binding);
     });
 
+    it("replaces lane selection at binding change before project hydration, including A → B → A", () => {
+      const a = { rootPath: "/repo/a", displayName: "A", baseRef: "main" } as any;
+      const b = { rootPath: "/repo/b", displayName: "B", baseRef: "main" } as any;
+      const laneA = { id: "lane-a", laneType: "primary" } as any;
+      const laneB = { id: "lane-b", laneType: "primary" } as any;
+      useAppStore.setState({
+        laneCacheByProject: {
+          [a.rootPath]: { lanes: [laneA], laneSnapshots: [] },
+          [b.rootPath]: { lanes: [laneB], laneSnapshots: [] },
+        },
+        laneSelectionByProject: { [b.rootPath]: { laneId: laneA.id, sessionId: "stale" } },
+      });
+      useAppStore.getState().setProject(a);
+      for (const [project, lane] of [[b, laneB], [a, laneA]]) {
+        useAppStore.getState().setProjectBinding({
+          kind: "local", key: `local:${project.rootPath}`, rootPath: project.rootPath, displayName: project.displayName,
+        });
+        expect(useAppStore.getState().lanes).toEqual([lane]);
+        expect(useAppStore.getState().selectedLaneId).toBe(lane.id);
+        expect(useAppStore.getState().focusedSessionId).toBeNull();
+        useAppStore.getState().setProject(project);
+        expect(useAppStore.getState().selectedLaneId).toBe(lane.id);
+      }
+    });
+
     it("setProject restores a persisted lane cache before the first refresh", () => {
       const project = { id: "p1", name: "Test", rootPath: "/tmp/test", gitRemoteUrl: null, gitDefaultBranch: "main", createdAt: "" } as any;
       const persistedLane = { id: "lane-cached", name: "Cached lane" } as any;
@@ -1241,6 +1266,21 @@ describe("appStore", () => {
         laneId: "lane-7",
         sessionId: "session-abc",
       });
+    });
+
+    const otherRecovery = { message: "Out of space", code: "disk_full", rootPath: "/repo/b" };
+    it.each([
+      { name: "nothing on screen", existing: null, shown: { code: "project_data_missing", rootPath: "/repo/a" } },
+      {
+        name: "a plain error with no recovery code",
+        existing: { message: "Switching took longer than 30 seconds" },
+        shown: { code: "project_data_missing", rootPath: "/repo/a" },
+      },
+      { name: "another recovery screen", existing: otherRecovery, shown: otherRecovery },
+    ])("reportProjectDataProblem over $name", ({ existing, shown }) => {
+      useAppStore.setState({ projectTransitionError: existing });
+      useAppStore.getState().reportProjectDataProblem("/repo/a", "missing");
+      expect(useAppStore.getState().projectTransitionError).toMatchObject(shown);
     });
 
     it("clearProjectTransitionError clears project action errors", () => {

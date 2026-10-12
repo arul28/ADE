@@ -489,3 +489,31 @@ Open items from this pass:
 - The view cache keeps a chat until 128 MB of cached events are held. A
   session that visits many long chats holds all of them up to that limit; the
   heap row above is 16 chats.
+
+### Project database identity guard
+
+Measured on macOS arm64, Node 26.7.0, warm interleaved medians across seven
+runs of 20,000 SQLite operations; implementation commit `b34127f77`
+(baseline `96e4a0de6`):
+
+| Metric | Before | After | Budget |
+|---|---|---|---|
+| 100-row KV list query | 32.64 μs | 35.17 μs | Existing 25% regression rule |
+| Device/inode guard incremental cost per operation | — | 2.53 μs | 5 μs |
+
+The representative query increases 7.75%. A trivial one-row KV read increases
+5.48 → 8.34 μs (+2.86 μs); this small query pays the full identity-check cost.
+Checks run per operation to avoid a polling window that can write to a moved
+file. These service measurements do not establish Electron idle, GPU, typing,
+or memory numbers. Full desktop scenarios were not measured for this change.
+
+The desktop main process also checks each open project's `ade.db` every
+5 seconds (`openProjectDataWatch.ts`); no renderer work until it fires. While
+the recovery screen waits on missing data it diagnoses every 2 seconds; the
+Trash lookup inside is cached for 5 seconds per project. Measured with an
+ad-hoc Node loop (`fs.promises.stat(…, { bigint: true })`, 200 warm-up calls,
+then the mean of 2,000) on the same machine, commit `9ee2c4ae0`:
+
+| Metric | Before | After | Budget |
+|---|---|---|---|
+| Open-project data watch, per open project per 5 s tick | — | 10 μs | 100 μs |

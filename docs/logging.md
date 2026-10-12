@@ -937,6 +937,20 @@ day, inside the existing `ade_feature_used` 140-per-day / 30-per-minute limits
 and the shared 200-event ceiling; no ceiling was raised. The dashboard spec is
 deliberately untouched: no card asks this question yet.
 
+When a project's ADE data went missing or was swapped, the project recovery
+screen's choices record the existing `ade_feature_used` event at the IPC owner
+boundary (`registerIpc.ts`, where the outcome is known) with
+`feature: "storage_doctor"`, `action: "project_data_restore"` (Restore from
+Trash) or `action: "project_data_start_fresh"` (Start fresh and Use this copy,
+which are the same operation), and `outcome: "completed" | "failed"`. They
+answer how often project data goes missing and which way people recover. They
+carry no path, project identity, Trash location or error text. A per-action,
+per-outcome one-hour deduplication key bounds a retry loop to 24 accepted
+events per key, 96 across the four, per installation per UTC day, inside the
+existing `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was
+raised. The diagnosis itself is not reported: a folder the person moved or
+deleted is their action, not a fault in ADE. The dashboard spec is untouched.
+
 Pressing "Report issue" on any of ADE's error surfaces — the project recovery
 screen, the renderer error boundary, the project transition alert, the update
 banner — sends the redacted report to ADE first, and records the existing

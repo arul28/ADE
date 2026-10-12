@@ -1062,7 +1062,7 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   WorkToolId,
@@ -1370,6 +1370,13 @@ declare global {
         repair: (projectRoot: string) => Promise<ProjectRepairReport>;
         /** Opens System Settings at Login Items (macOS). Optional: older preloads lack it. */
         openBackgroundSettings?: () => Promise<{ opened: boolean }>;
+        /** Optional: older preloads lack the missing-data recovery calls. */
+        restoreProjectData?: (projectRoot: string) => Promise<ProjectDataRestoreResult>;
+        startFresh?: (projectRoot: string) => Promise<void>;
+        /** Whether a project's ADE data is missing or swapped; no root asks about the project that failed to reopen at launch. */
+        projectDataStatus?: (projectRoot?: string) => Promise<ProjectDataStatus | null>;
+        /** An open project's .ade folder or database was moved or deleted. */
+        onProjectDataMissing?: (cb: (payload: { projectRoot: string; status: ProjectDataProblem }) => void) => () => void;
         /**
          * Live repair steps for the window that started the repair. Optional
          * for the same reason `diagnostics` is: an older preload does not have

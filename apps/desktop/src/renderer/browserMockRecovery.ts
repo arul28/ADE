@@ -17,6 +17,7 @@ import { LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE } from "../shared/runtimeError
  *
  *   http://localhost:5173/#/work?adeRecovery=background_blocked
  *   …?adeRecovery=brain_not_running&adeRecoveryRepair=fail
+ *   …?adeRecovery=data_missing&adeRecoveryTrash=empty   the folder is not in the Trash
  *   …?adeBrainDown=service             the update's service step failed
  *   …?adeBrainDown=background_blocked  …and macOS "Allow in the Background" is off
  *   …?adeBrainDown=updating            an update is still replacing the service
@@ -43,6 +44,8 @@ const STATE_CODE: Partial<Record<RecoveryState, AdeRecoveryErrorCode>> = {
   insufficient_headroom: "insufficient_headroom",
   db_repair_needed: "db_integrity",
   storage_unreadable: "storage_read_failed",
+  data_missing: "project_data_missing",
+  data_replaced: "db_path_changed",
   brain_not_installed: "brain_not_installed",
   brain_crash_looping: "brain_crash_looping",
   brain_not_running: "brain_not_running",
@@ -62,6 +65,7 @@ function readScenario(): { state: RecoveryState; code: AdeRecoveryErrorCode } | 
 // the query is gone by the time the screen is raised.
 const SCENARIO = readScenario();
 const REPAIR_FAILS = urlParam("adeRecoveryRepair") === "fail";
+const TRASH_EMPTY = urlParam("adeRecoveryTrash") === "empty";
 const IS_WINDOWS = urlParam("adePlatform") === "win32";
 
 /** What the installer said, in its own (raw) words: these belong in the fold. */
@@ -167,6 +171,7 @@ export function createBrowserMockRecoveryBridges(): Record<string, unknown> {
       headline: copy.headline,
       body: copy.body,
       canAutoRepair: copy.canAutoRepair,
+      ...(current === "data_missing" ? { restoreAvailable: !TRASH_EMPTY } : {}),
       technicalDetail: mockTechnicalDetail(current),
     };
   };
@@ -228,6 +233,17 @@ export function createBrowserMockRecoveryBridges(): Record<string, unknown> {
         return { opened: true };
       },
       onRepairStep: () => () => {},
+      restoreProjectData: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        current = "healthy";
+        return { restored: true as const };
+      },
+      startFresh: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        current = "healthy";
+      },
+      onProjectDataMissing: () => () => {},
+      projectDataStatus: async () => null,
     },
     machineReset: {
       plan: async () => {

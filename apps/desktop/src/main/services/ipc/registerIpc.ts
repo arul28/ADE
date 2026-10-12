@@ -1000,7 +1000,8 @@ import { createLinearOAuthService, type LinearOAuthService } from "../cto/linear
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { LOCAL_RUNTIME_SYNC_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { createProjectRecoveryService, ProjectRecoveryService, restartBrainForRepair } from "../runtime/projectRecoveryService";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
+import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
+import { forgetLocalProjectDatabaseIdentity } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
@@ -4825,6 +4826,15 @@ export function registerIpc({
     writeGlobalState(globalStatePath, next);
     clearRecentProjectSummaryCache();
     if (removed && !removed.remote) {
+      // Removing a project is the person's way to start over with it: adding
+      // it back no longer expects the old database. A project whose whole
+      // .ade folder is gone still opens on the recovery screen, where Start
+      // fresh is one click.
+      try {
+        forgetLocalProjectDatabaseIdentity(removed.rootPath);
+      } catch {
+        // Best effort; the recovery screen still offers Start fresh.
+      }
       const catalogPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
       if (catalogPool) {
         try {
@@ -4923,13 +4933,20 @@ export function registerIpc({
     });
   };
 
-  ipcMain.handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
+  // Every recovery call names a project this window has open or ADE has opened
+  // before, and needs the recovery service.
+  const recoveryTarget = (arg: { projectRoot?: unknown } | undefined): { projectRoot: string; service: ProjectRecoveryService } => {
     const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
     if (!requested) throw new Error("Project root path is required.");
     const projectRoot = resolveRequestedProjectRoot(requested);
     if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
     if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
-    return await projectRecoveryService.diagnose(projectRoot);
+    return { projectRoot, service: projectRecoveryService };
+  };
+
+  ipcMain.handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
+    const { projectRoot, service } = recoveryTarget(arg);
+    return await service.diagnose(projectRoot);
   });
 
   // The complete ordered step array comes back with the final report; each
@@ -4937,17 +4954,68 @@ export function registerIpc({
   // legitimately wait a minute or more for the background service to answer,
   // and a spinner with no steps for that long reads as a hang.
   ipcMain.handle(IPC.recoveryRepair, async (event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
-    const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    if (!requested) throw new Error("Project root path is required.");
-    const projectRoot = resolveRequestedProjectRoot(requested);
-    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
-    if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
-    return await projectRecoveryService.repair(projectRoot, {
+    const { projectRoot, service } = recoveryTarget(arg);
+    return await service.repair(projectRoot, {
       onStep: (step) => {
         if (event.sender.isDestroyed()) return;
         event.sender.send(IPC.recoveryRepairStep, { projectRoot, step });
       },
     });
+  });
+
+  // One coarse fact per choice and outcome: how often project data goes
+  // missing and which way people recover. Nothing about the project. The 1 h
+  // dedupe bounds a retry loop to 24 events per key per day.
+  const captureProjectDataRecovery = (
+    action: "project_data_restore" | "project_data_start_fresh",
+    outcome: "completed" | "failed",
+  ) => {
+    try {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "storage_doctor", action, outcome },
+        projectId: null,
+        dedupeKey: `${action}:${outcome}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+    } catch {
+      // Counting a choice must never change its result.
+    }
+  };
+
+  ipcMain.handle(IPC.recoveryRestoreProjectData, async (_event, arg: { projectRoot: string }): Promise<ProjectDataRestoreResult> => {
+    const { projectRoot, service } = recoveryTarget(arg);
+    let result: ProjectDataRestoreResult;
+    try {
+      result = await service.restoreProjectData(projectRoot);
+    } catch (error) {
+      captureProjectDataRecovery("project_data_restore", "failed");
+      throw error;
+    }
+    captureProjectDataRecovery("project_data_restore", result.restored ? "completed" : "failed");
+    return result;
+  });
+
+  ipcMain.handle(IPC.recoveryStartFresh, async (_event, arg: { projectRoot: string }): Promise<void> => {
+    const { projectRoot, service } = recoveryTarget(arg);
+    try {
+      await service.startFresh(projectRoot);
+    } catch (error) {
+      captureProjectDataRecovery("project_data_start_fresh", "failed");
+      throw error;
+    }
+    captureProjectDataRecovery("project_data_start_fresh", "completed");
+  });
+
+  // With no root: the project that failed to reopen at launch. A window asks
+  // when it loads and whenever its project changes, so a reload or a second
+  // window still shows the recovery screen.
+  ipcMain.handle(IPC.recoveryProjectDataStatus, async (_event, arg?: { projectRoot?: string }): Promise<ProjectDataStatus | null> => {
+    if (!projectRecoveryService) return null;
+    if (typeof arg?.projectRoot !== "string" || !arg.projectRoot.trim()) return projectRecoveryService.startupProjectDataStatus();
+    const projectRoot = resolveRequestedProjectRoot(arg.projectRoot.trim());
+    return projectRoot ? projectRecoveryService.projectDataStatus(projectRoot) : null;
   });
 
   // The one place "Allow in the Background" can be switched back on. Apple's

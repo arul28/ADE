@@ -1846,6 +1846,19 @@ export class LocalRuntimeConnectionPool {
     throw lastError ?? new Error("Local ADE service did not return a project record.");
   }
 
+  /**
+   * Removes the project from the brain and drops this pool's cached record of
+   * it, so the next `ensureProject` registers it again instead of handing out
+   * a project id the brain no longer knows.
+   */
+  async removeProject(rootPath: string, projectId: string): Promise<void> {
+    const normalizedRoot = path.resolve(rootPath);
+    this.projectsByRoot.delete(normalizedRoot);
+    const entry = await this.connect();
+    await entry.client.call("projects.remove", { projectId }, { timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS });
+    this.projectsByRoot.delete(normalizedRoot);
+  }
+
   async setProjectCatalogVisibility(
     rootPath: string,
     catalogVisibility: "recent" | "system",
