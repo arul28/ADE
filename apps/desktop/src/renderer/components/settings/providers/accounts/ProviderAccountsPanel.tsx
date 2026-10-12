@@ -257,9 +257,11 @@ export function ProviderAccountsPanel({
         destructive: true,
       }).then((ok) => {
         if (!ok) return;
+        let signOutError: string | undefined;
         void run(async () => {
-          if (signedIn) await api.signOut({ id: instance.id });
-          return api.remove({ id: instance.id });
+          signOutError = (await api.remove({ id: instance.id })).signOutError;
+        }).then(() => {
+          if (signOutError) setActionError(`${instance.label} was removed, but its sign-in could not be cleared. ${signOutError}`);
         });
       });
     },

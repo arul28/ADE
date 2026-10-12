@@ -2283,8 +2283,12 @@ not carry the install command.
   config home and keeps the card; on the machine's own login the confirm says
   the terminal's CLI is signed out too. **Remove** is not offered on the default
   or the machine's own login, which the store refuses; it signs a signed-in
-  account out first, so adding it again starts from a fresh sign-in. Both ask
-  for confirmation, and any refusal shows the store's own sentence.
+  account out first (`removeProviderAccount`, shared by every surface), so
+  adding it again starts from a fresh sign-in. A sign-out that fails does not
+  block the removal; the card's error says the login was left in place. Both
+  ask for confirmation, and any refusal shows the store's own sentence. Both
+  clear a saved login, so they are CTO-only actions: agents cannot call them,
+  and the user's terminal needs `ade --role cto`.
 - **Panels fold.** `ProviderPanel` takes `autoCollapsed` and `summary`: a panel
   with nothing to show folds to its header (API keys with none saved reads
   `API keys · 0 None saved`), and a click on the title flips any panel. Sheets

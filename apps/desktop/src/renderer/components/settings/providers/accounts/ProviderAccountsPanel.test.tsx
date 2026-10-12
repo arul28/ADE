@@ -516,7 +516,7 @@ describe("ProviderAccountsPanel", () => {
     });
   });
 
-  it("confirms before removing, signs the account out first, and does nothing when cancelled", async () => {
+  it("confirms before removing, removes nothing when cancelled, and says when the sign-out was left undone", async () => {
     const harness = installBridge();
     renderPanel();
 
@@ -526,7 +526,12 @@ describe("ProviderAccountsPanel", () => {
     expect(await screen.findByText("Remove account")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(harness.providerInstances.remove).not.toHaveBeenCalled();
-    expect(harness.providerInstances.signOut).not.toHaveBeenCalled();
+    // The host signs a removed account out; it can fail without blocking the removal.
+    harness.providerInstances.remove.mockResolvedValue({
+      removed: true,
+      configHome: "/home/claude-work",
+      signOutError: "Sign-out failed: the provider CLI could not run.",
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
@@ -535,10 +540,9 @@ describe("ProviderAccountsPanel", () => {
     await waitFor(() => {
       expect(harness.providerInstances.remove).toHaveBeenCalledWith({ id: "claude-work" });
     });
-    // Signed out before it is forgotten, so adding it again is a fresh sign-in.
-    expect(harness.providerInstances.signOut).toHaveBeenCalledWith({ id: "claude-work" });
-    expect(harness.providerInstances.signOut.mock.invocationCallOrder[0])
-      .toBeLessThan(harness.providerInstances.remove.mock.invocationCallOrder[0]!);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Work was removed");
+    expect(alert.textContent).toContain("could not run");
   });
 
   it.each([

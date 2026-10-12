@@ -165,8 +165,10 @@ export type ProviderInstanceRemoveArgs = {
 
 export type ProviderInstanceRemoveResult = {
   removed: boolean;
-  /** The config home left on disk; removing an account never deletes credentials. */
+  /** The config home left on disk; removing an account never deletes the directory. */
   configHome: string;
+  /** Why the sign-out before the removal failed; the login is still in `configHome`. */
+  signOutError?: string;
 };
 
 export type ProviderInstanceRenameArgs = {

@@ -146,7 +146,7 @@ import {
 import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
-import { signOutProviderAccount } from "../providerAccounts/signOutProviderAccount";
+import { removeProviderAccount, signOutProviderAccount } from "../providerAccounts/signOutProviderAccount";
 import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
 import { readGithubContributionCalendar } from "../usage/githubActivityStats";
 import {
@@ -6888,7 +6888,7 @@ export function registerIpc({
     const id = providerInstanceId(arg);
     // Read the provider before the removal: afterwards the record is gone.
     const provider = store.get(id)?.provider;
-    const result = store.remove(id);
+    const result = await removeProviderAccount(id);
     captureProviderAccount("account_removed", "completed", provider);
     return result;
   });

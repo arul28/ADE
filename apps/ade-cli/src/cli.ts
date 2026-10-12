@@ -3478,8 +3478,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade providers accounts rename --instance work --label "Work (EU)" --text
     $ ade providers accounts default --instance work --text
                                                     Make an account the provider's default
-    $ ade providers accounts remove --instance work --text
-                                                    Forget an account (nothing on disk is deleted)
+    $ ade --role cto providers accounts remove --instance work --text
+                                                    Sign an account out and forget it (needs --role cto)
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
     $ ade providers actions --text                  List raw provider-account service actions
 

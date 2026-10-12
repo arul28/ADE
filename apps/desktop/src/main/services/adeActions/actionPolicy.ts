@@ -42,6 +42,11 @@ export type CtoOnlyRule =
  * must be listed here.
  */
 export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> = {
+  // Both clear a saved provider login (remove signs out first), so an agent
+  // cannot sign the user's accounts out; Settings and the user's CLI can.
+  provider_instances: {
+    only: ["signOut", "remove"],
+  },
   account: {
     only: [
       "startLogin",
