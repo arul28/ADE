@@ -387,7 +387,7 @@ export type AutomationLinearAgentHooks = {
 
 /**
  * Chat-session payload carried by `session.limit_reached`, `session.failed`,
- * and `session.ended_without_pr`. Mirrored onto `trigger.sessionId` /
+ * `session.ended_without_pr` and `session.settled`. Mirrored onto `trigger.sessionId` /
  * `trigger.laneId` so lane-shaped filters and existing templates keep working,
  * and readable from templates as `{{trigger.session.*}}`.
  */
@@ -470,6 +470,10 @@ export function summarizeTrigger(trigger: TriggerContext): string {
   if (trigger.triggerType === "session.ended_without_pr") {
     const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
     return `Session ended without a PR: ${lane}`;
+  }
+  if (trigger.triggerType === "session.settled") {
+    const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
+    return `Session settled: ${lane}`;
   }
   if (trigger.triggerType === "lane.created") return `Lane created: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;
   if (trigger.triggerType === "lane.archived") return `Lane archived: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;
@@ -5497,6 +5501,31 @@ export function createAutomationService({
         sessionId: args.sessionId,
         branch: resolveLaneBranch(args.laneId),
         reason: "session_end_without_pr",
+        scheduledAt: nowIso(),
+        session,
+      };
+      trigger.summary = summarizeTrigger(trigger);
+      void dispatchTrigger(trigger);
+    },
+
+    /**
+     * Host callback for a settle that landed on this host. The session service
+     * reports the chat the caller settled, not the subagents that followed it.
+     */
+    onSessionSettled(args: { laneId: string; sessionId: string; provider?: string | null }) {
+      const sessionId = args.sessionId?.trim();
+      if (!sessionId) return;
+      const laneId = args.laneId?.trim() || undefined;
+      const session: TriggerSessionContext = {
+        sessionId,
+        ...(args.provider?.trim() ? { provider: args.provider.trim() } : {}),
+        ...(laneId ? { laneId } : {}),
+      };
+      const trigger: TriggerContext = {
+        triggerType: "session.settled",
+        sessionId,
+        ...(laneId ? { laneId, branch: resolveLaneBranch(laneId) } : {}),
+        reason: "session_settled",
         scheduledAt: nowIso(),
         session,
       };

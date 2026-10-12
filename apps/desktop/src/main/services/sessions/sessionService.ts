@@ -444,6 +444,7 @@ export function createSessionService({
   runSettleTeardown,
   onRemoteSettleWrite,
   onSettleResidue,
+  onSessionsSettled,
   listSubagentLinks,
 }: {
   db: AdeDb;
@@ -474,6 +475,16 @@ export function createSessionService({
   onRemoteSettleWrite?: (args: { columns: string[]; changesetSessionCount: number }) => void;
   /** Fired only for residue attached to a settle that actually landed. */
   onSettleResidue?: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
+  /**
+   * Fired after a settle that this host declared has landed. A subagent that
+   * follows its settled parent is not reported: the caller settled one chat,
+   * and a listener must hear about one. A peer's settle is not reported either;
+   * the host that declared it reports it.
+   */
+  onSessionsSettled?: (args: {
+    sessions: Array<{ sessionId: string; laneId: string; provider: string | null }>;
+    source: SessionSettleSource;
+  }) => void;
   /**
    * The subagents of these sessions (not peers). Late-bound like teardown,
    * because the chat service that knows the lineage is built later. A settled
@@ -937,6 +948,7 @@ export function createSessionService({
   const settleMany = (
     sessionIds: string[],
     options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
+    notify = true,
   ): string[] => {
     const ids = normalizeSessionIds(sessionIds);
     if (!ids.length) return [];
@@ -968,6 +980,27 @@ export function createSessionService({
     });
     for (const id of newlySettled) {
       emitChanged({ sessionId: id, reason: "meta-updated" });
+    }
+    if (notify && onSessionsSettled) {
+      // The settle has landed. A listener that throws must not turn it into a
+      // failed settle.
+      try {
+        const settledRows = db.all<{ id: string; laneId: string; toolType: string | null }>(
+          `select id, lane_id as laneId, tool_type as toolType from terminal_sessions
+            where id in (${newlySettled.map(() => "?").join(", ")})`,
+          newlySettled,
+        );
+        onSessionsSettled({
+          sessions: settledRows.map((row) => ({
+            sessionId: row.id,
+            laneId: row.laneId,
+            provider: providerFromTool(normalizeToolType(row.toolType)),
+          })),
+          source: options.source ?? "user",
+        });
+      } catch {
+        // Listener failure only.
+      }
     }
     return newlySettled;
   };
@@ -1014,6 +1047,8 @@ export function createSessionService({
   const settleManyWithTeardown = async (
     sessionIds: string[],
     options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
+    /** True for subagents that follow a settled parent; see `onSessionsSettled`. */
+    cascaded = false,
   ): Promise<SettleSessionsOutcome> => {
     const ids = normalizeSessionIds(sessionIds);
     const settled: string[] = [];
@@ -1096,7 +1131,7 @@ export function createSessionService({
           return outcome;
         }
 
-        const changed = settleMany([id], options);
+        const changed = settleMany([id], options, !cascaded);
         outcome.settled.push(...changed);
         if (changed.length && teardown?.confirmed && !teardown.residue.length) {
           // A settle that DID confirm everything must clear the previous
@@ -1185,8 +1220,8 @@ export function createSessionService({
       // get a second teardown.
       const children = [...new Set(childIds)].filter((childId) => !requested.has(childId) && settledAtMs(childId) == null);
       if (children.length) {
-        const cascaded = await settleManyWithTeardown(children, options);
-        settled.push(...cascaded.settled);
+        const followers = await settleManyWithTeardown(children, options, true);
+        settled.push(...followers.settled);
       }
     }
 

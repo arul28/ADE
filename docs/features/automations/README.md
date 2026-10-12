@@ -120,7 +120,7 @@ Each `AutomationRule` carries:
 Automations support two broad trigger classes:
 
 1. **Time-based** — `schedule` with a 5-field cron expression. `computeNextScheduleAt` walks forward in 1-minute steps (bounded at ~1 year) to find the next match using `parseCronPart` for `*`, `*/N`, ranges, and lists.
-2. **Action-based** — `manual`, `git.commit`, `git.push`, `git.pr_opened`, `git.pr_updated`, `git.pr_closed`, `git.pr_merged`, `lane.created`, `lane.archived`, `lane.merged`, `file.change`, `session-end`, `session.limit_reached`, `session.failed`, `session.ended_without_pr`, `webhook`, `github-webhook`, various `linear.*` events.
+2. **Action-based** — `manual`, `git.commit`, `git.push`, `git.pr_opened`, `git.pr_updated`, `git.pr_closed`, `git.pr_merged`, `lane.created`, `lane.archived`, `lane.merged`, `file.change`, `session-end`, `session.limit_reached`, `session.failed`, `session.ended_without_pr`, `session.settled`, `webhook`, `github-webhook`, various `linear.*` events.
 
 The `commit` trigger is an alias for `git.commit` (normalized by `normalizeTriggerType`).
 

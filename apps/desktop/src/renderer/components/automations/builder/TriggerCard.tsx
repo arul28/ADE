@@ -194,6 +194,7 @@ function sessionTriggerHint(type: string): string {
   if (type === "session.limit_reached") return "Runs when the provider reports a usage limit for the chat.";
   if (type === "session.failed") return "Runs when the provider or its API fails the chat.";
   if (type === "session.ended_without_pr") return "Runs when a chat ends and its lane has no open PR.";
+  if (type === "session.settled") return "Runs when a chat is settled. Other chats in the lane can still be open.";
   return "Runs after an agent session ends.";
 }
 

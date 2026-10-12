@@ -3655,6 +3655,10 @@ app.whenReady().then(async () => {
       db,
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
       onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      // Read at call time: the automation service is built later.
+      onSessionsSettled: ({ sessions }) => {
+        for (const session of sessions) automationService?.onSessionSettled(session);
+      },
       listSubagentLinks: async (parentSessionIds) =>
         settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
       runSettleTeardown: async (sessionId, ctx) =>
