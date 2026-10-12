@@ -26,6 +26,9 @@ import { MCP_APP_LIMITS, type McpAppDocument } from "../../../shared/mcpApp";
 
 type StoredRecord = Omit<McpAppDocument, "html"> & { docHash: string };
 
+/** A folder younger than this is never swept: its chat may still be on its way in. */
+const ORPHAN_MIN_AGE_MS = 60 * 60_000;
+
 const sha = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 function sessionFolderName(sessionId: string): string {
@@ -40,6 +43,16 @@ export type McpAppStore = {
   /** The record without its page: what request routing needs. */
   readRecord(sessionId: string, itemId: string): Omit<McpAppDocument, "html"> | null;
   deleteSession(sessionId: string): void;
+  /**
+   * Remove the folders of chats that no longer exist.
+   *
+   * A chat deleted by a brain without this code (an older build sharing the
+   * project) leaves its folder behind. Only a folder named by a chat id is
+   * judged, and only once it has sat untouched for an hour, so a chat being
+   * created or moved right now is never mistaken for a deleted one. Returns
+   * how many it removed.
+   */
+  sweepOrphans(isKnownSession: (sessionId: string) => boolean): number;
 };
 
 export function createMcpAppStore(args: {
@@ -143,6 +156,30 @@ export function createMcpAppStore(args: {
       } catch (error) {
         report("agent_chat.mcp_app_store_delete_failed", error, { sessionId });
       }
+    },
+    sweepOrphans(isKnownSession) {
+      let removed = 0;
+      let names: string[];
+      try {
+        names = fs.readdirSync(rootDir);
+      } catch {
+        return 0;
+      }
+      const cutoff = Date.now() - ORPHAN_MIN_AGE_MS;
+      for (const name of names) {
+        // A hashed folder name cannot be turned back into a chat id; leave it.
+        if (name.startsWith("h-") || sessionFolderName(name) !== name) continue;
+        const dir = path.join(rootDir, name);
+        try {
+          const stat = fs.statSync(dir);
+          if (!stat.isDirectory() || stat.mtimeMs > cutoff || isKnownSession(name)) continue;
+          fs.rmSync(dir, { recursive: true, force: true });
+          removed += 1;
+        } catch (error) {
+          report("agent_chat.mcp_app_store_sweep_failed", error, { sessionId: name });
+        }
+      }
+      return removed;
     },
   };
 }

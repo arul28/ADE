@@ -456,6 +456,10 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
     observe,
     get,
     request,
+    /** Drop the stored apps of chats that are gone. See `McpAppStore.sweepOrphans`. */
+    sweepOrphans(isKnownSession: (sessionId: string) => boolean): number {
+      return deps.store.sweepOrphans(isKnownSession);
+    },
     /** The chat is being deleted: its apps go with it. */
     deleteSession(sessionId: string): void {
       sessions.delete(sessionId);

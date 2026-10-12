@@ -11604,6 +11604,16 @@ export function createAgentChatService(args: {
     requestChatInput: (input) => requestChatInput(input),
     log: (level, event, detail) => logger[level](event, detail),
   });
+  // Once, well after boot: apps left by chats another brain deleted.
+  const mcpAppOrphanSweepTimer = setTimeout(() => {
+    try {
+      const removed = mcpApps.sweepOrphans((sessionId) => Boolean(sessionService.get(sessionId)));
+      if (removed > 0) logger.info("agent_chat.mcp_app_orphans_removed", { removed });
+    } catch (error) {
+      logger.warn("agent_chat.mcp_app_orphan_sweep_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }, 120_000);
+  mcpAppOrphanSweepTimer.unref?.();
   const getMcpApp = (args: McpAppGetArgs): Promise<McpAppGetResult> => mcpApps.get(args);
   const mcpAppRequest = (args: McpAppRequestArgs): Promise<McpAppRequestResult> => mcpApps.request(args);
 
@@ -60312,6 +60322,7 @@ export function createAgentChatService(args: {
    */
   const beginDispose = (): void => {
     runtimeBudget.unregister(runtimeBudgetParticipant);
+    clearTimeout(mcpAppOrphanSweepTimer);
     if (crossMachineHandoffSweepTimer) clearTimeout(crossMachineHandoffSweepTimer);
     crossMachineHandoffSweepTimer = null;
     hostSleepChips.dispose();
