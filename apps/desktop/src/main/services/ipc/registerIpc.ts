@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
+import { encodeClipboardImageWithinCap } from "../chat/clipboardImageEncoding";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import { execFile } from "node:child_process";
@@ -4050,15 +4051,12 @@ export function registerIpc({
   ipcMain.handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
     const image = clipboard.readImage();
     if (image.isEmpty()) return null;
-    const png = image.toPNG();
-    if (!png.byteLength) return null;
-    if (png.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-      throw new Error(legacyAttachmentCapMessage("Clipboard image"));
-    }
+    const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
+    if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
     return {
-      data: png.toString("base64"),
-      filename: "clipboard.png",
-      mimeType: "image/png",
+      data: encoded.data.toString("base64"),
+      filename: encoded.filename,
+      mimeType: encoded.mimeType,
     };
   });
 
@@ -4108,16 +4106,13 @@ export function registerIpc({
   ipcMain.handle(IPC.appSaveClipboardImageAttachment, async (): Promise<{ path: string; mimeType: string; previewDataUrl: string | null } | null> => {
     const image = clipboard.readImage();
     if (image.isEmpty()) return null;
-    const png = image.toPNG();
-    if (!png.byteLength) return null;
-    if (png.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-      throw new Error(legacyAttachmentCapMessage("Clipboard image"));
-    }
-    const saved = await saveAgentChatTempAttachmentBuffer(png, "clipboard.png");
+    const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
+    if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
+    const saved = await saveAgentChatTempAttachmentBuffer(encoded.data, encoded.filename);
     const previewImage = image.resize({ width: 96, height: 96, quality: "best" });
     return {
       path: saved.path,
-      mimeType: "image/png",
+      mimeType: encoded.mimeType,
       previewDataUrl: previewImage.isEmpty() ? null : previewImage.toDataURL(),
     };
   });

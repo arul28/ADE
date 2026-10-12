@@ -5,6 +5,8 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { linearIssueRef } from "../../../shared/issueRefs";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import type { CompactFirstOffer } from "../../../shared/compactFirst";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
@@ -3462,22 +3464,34 @@ export function AgentChatComposer({
   };
   addFileAttachmentsRef.current = addFileAttachments;
 
-  const addNativeClipboardImageAttachment = async () => {
+  /**
+   * Attach the clipboard's image through the host, which fits an oversized one
+   * under the ceiling. `fallbackFiles` are what the paste event carried: when
+   * the clipboard holds no bitmap after all (a file copied in Finder, say),
+   * they go through the normal path, which says why it refuses one.
+   */
+  const addNativeClipboardImageAttachment = async (fallbackFiles?: File[]) => {
     if (attachmentPersistenceUnavailableReason) {
       setAttachError(attachmentPersistenceUnavailableReason);
       return;
     }
-    if (!canAttach) return;
+    if (!canAttach) {
+      // The normal path is the one that says why attaching is blocked.
+      if (fallbackFiles?.length) void addFileAttachments(fallbackFiles);
+      return;
+    }
     if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     const attachmentOwnerBinding = composerMachineBinding;
+    let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
       if (!image) {
         dropPendingImageAttachment(pendingImage.id);
+        clipboardWasEmpty = true;
         return;
       }
       const { path: tempPath } = await agentChatApiRef.current.saveTempAttachment({
@@ -3496,11 +3510,15 @@ export function AgentChatComposer({
       rememberPreviewUrl(tempPath, `data:${image.mimeType};base64,${image.data}`);
       onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, image.mimeType) });
       dropPendingImageAttachment(pendingImage.id);
-    } catch {
+    } catch (error) {
       dropPendingImageAttachment(pendingImage.id);
-      setAttachError("Unable to attach clipboard image.");
+      // The host's reason (a clipboard image it could not fit under the
+      // ceiling, say) is the useful part; a bare "Unable to attach" hid it.
+      const reason = error instanceof Error ? stripElectronErrorWrapper(error.message) : "";
+      setAttachError(reason || "Unable to attach clipboard image.");
     } finally {
       fileAddInProgressRef.current = false;
+      if (clipboardWasEmpty && fallbackFiles?.length) void addFileAttachments(fallbackFiles);
     }
   };
 
@@ -5709,6 +5727,25 @@ export function AgentChatComposer({
     event.preventDefault();
     if (fallbackAlreadyAttached) return;
     clipboardImagePasteHandledRef.current += 1;
+    // A photo copied out of Messages or Photos arrives as a PNG the browser
+    // re-encoded from the bitmap, often 3–10x the file that was sent, and over
+    // the pasted-bytes ceiling. The desktop clipboard reader fits it under the
+    // ceiling instead of refusing it, so an oversized pasted image goes there.
+    // The web adapter's reader does no fitting, so the web keeps the old path.
+    const [onlyFile] = collected;
+    // A file copied in Finder has a path on disk, which the normal path
+    // streams at the full ceiling; only an in-memory bitmap needs fitting.
+    const oversizedClipboardImage = collected.length === 1
+      && onlyFile != null
+      && onlyFile.type.startsWith("image/")
+      && onlyFile.size > LEGACY_MAX_CHAT_ATTACHMENT_BYTES
+      && !window.ade?.project?.getDroppedPath?.(onlyFile)
+      && !isWebClientMode()
+      && typeof window.ade?.app?.readClipboardImage === "function";
+    if (oversizedClipboardImage) {
+      void addNativeClipboardImageAttachment(collected);
+      return;
+    }
     void addFileAttachments(collected);
   };
 

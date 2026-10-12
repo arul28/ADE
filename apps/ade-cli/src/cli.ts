@@ -29956,6 +29956,12 @@ function formatBrowserStatus(value: unknown): string {
     const profile = asString(tab.isolatedProfile);
     return profile ? `isolated profile "${profile}"` : "shared (the user's)";
   };
+  // A failed main-frame load shows as a plain white page, which a screenshot
+  // cannot explain; the status names the failure instead.
+  const loadFailureForTab = (tab: Record<string, unknown> | null | undefined): string | null => {
+    const failure = isRecord(tab?.loadError) ? tab.loadError : null;
+    return failure ? asString(failure.description) ?? "the page did not load" : null;
+  };
   // `open` / `new-tab` name the tab they drove in one line, so the agent does
   // not have to pick it out of the table (an agent's tab is not the active
   // one: agent opens do not take the human's focus).
@@ -29977,6 +29983,7 @@ function formatBrowserStatus(value: unknown): string {
       renderKeyValues("ADE browser", [
         ["title", targetTab?.title],
         ["loading", targetTab?.isLoading ?? targetTab?.loading],
+        ["load failed", loadFailureForTab(targetTab)],
         ["owner", targetTab ? ownerForTab(targetTab) : null],
         ["sign-in", targetTab ? signInForTab(targetTab) : null],
         ["other tabs", otherTabs > 0 ? `${otherTabs} (ade browser status lists them)` : null],
@@ -29991,6 +29998,7 @@ function formatBrowserStatus(value: unknown): string {
       ["url", status.url],
       ["title", status.title],
       ["loading", status.isLoading ?? status.loading],
+      ["load failed", loadFailureForTab(tabs.find((tab) => asString(tab.id) === activeTabId))],
       ["back", status.canGoBack],
       ["forward", status.canGoForward],
       ["inspecting", status.isInspecting ?? status.inspecting],

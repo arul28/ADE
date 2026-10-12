@@ -1104,6 +1104,101 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.dispose();
   });
 
+  it("warms a shown view again when it is parked at a different size", async () => {
+    // A view parked wholly off the window keeps the layout it last had on it.
+    // Shown in a 300px pane and then parked in the 960x600 box, the page stayed
+    // a 300px strip inside that box unless the resize lands while the view
+    // still overlaps the window by a pixel.
+    vi.useFakeTimers();
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setVisibleOnScreen(true);
+    win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    try {
+      service.attachToWindow(win as unknown as ServiceBrowserWindow);
+      await service.createTab({ url: "https://example.test", activate: true });
+      const view = fakes.webContentsViewInstances.at(-1)!;
+      const tabId = service.getStatus().activeTabId!;
+      await service.setBounds({ x: 12, y: 24, width: 300, height: 660, visible: true });
+      service.startPreviewStream({ tabId });
+
+      await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+      const warming = view.boundsCalls.at(-1)!;
+      expect(warming).toMatchObject({ x: 1279, y: 719 });
+      expect(warming).toMatchObject({
+        width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+        height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+      });
+
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS + 5);
+      const parked = view.boundsCalls.at(-1)!;
+      expect(parked.x).toBe(1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN);
+      expect(parked.width).toBe(BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH);
+
+      // Same size from here on: a later pass re-parks without warming again.
+      const calls = view.boundsCalls.length;
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS * 4);
+      expect(view.boundsCalls.slice(calls).every((rect) => rect.x > 1280)).toBe(true);
+      service.stopPreviewStream({ tabId });
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("parks a tab with a device preset at the device's size, not the default box", async () => {
+    // The device is drawn pinned to the view's top-left at its own size, so a
+    // larger park box frames it with blank space, and that blank space is
+    // every frame the corner card shows.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+    service.startPreviewStream({ tabId });
+    expect(view.boundsCalls.at(-1)).toMatchObject({
+      width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+      height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+    });
+
+    await service.setEmulation({ tabId, width: 390, height: 844, mobile: true });
+    expect(view.boundsCalls.at(-1)).toMatchObject({ width: 390, height: 844 });
+    expect(view.boundsCalls.at(-1)!.x).toBeGreaterThanOrEqual(1280);
+
+    // Clearing the preset gives the tab the ordinary park box back.
+    await service.setEmulation({ tabId, preset: "off" });
+    expect(view.boundsCalls.at(-1)).toMatchObject({
+      width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+      height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+    });
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("reports a failed main-frame load on the tab until it loads again", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "http://127.0.0.1:47899/", activate: true });
+    const wc = fakes.webContentsInstances.at(-1)!;
+    expect(service.getStatus().tabs[0]!.loadError).toBeNull();
+
+    wc.emit("did-fail-load", {}, -102, "ERR_CONNECTION_REFUSED", "http://127.0.0.1:47899/", true);
+    expect(service.getStatus().tabs[0]!.loadError).toEqual({
+      code: -102,
+      description: "ERR_CONNECTION_REFUSED",
+      url: "http://127.0.0.1:47899/",
+    });
+
+    // A subframe failing, or a load the page itself aborted (-3), is not the page failing.
+    wc.emit("did-start-loading");
+    wc.emit("did-fail-load", {}, -102, "ERR_CONNECTION_REFUSED", "http://ads.example.test/", false);
+    wc.emit("did-fail-load", {}, -3, "ERR_ABORTED", "http://127.0.0.1:47899/", true);
+    expect(service.getStatus().tabs[0]!.loadError).toBeNull();
+    service.dispose();
+  });
+
   it("does not warm — or claim a surface — while the window is off screen", async () => {
     // A minimised or hidden window has no surface to lend. Marking the tab
     // surfaced on that evidence is how the black card comes back: nothing
