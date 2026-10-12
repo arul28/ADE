@@ -12,9 +12,7 @@ name: Warm release caches
 
 on:
   push:
-    # TEMP: the PR branch is listed only so its dry run can restore these
-    # caches; remove it before merging.
-    branches: [main, ci/release-speed-and-flake-retries]
+    branches: [main]
     paths:
       - "apps/desktop/native/ADEDesktopDriver/**"
       - "apps/desktop/native/ADECaptureHelper/**"

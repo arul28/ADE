@@ -885,9 +885,10 @@ jobs:
     # build-mac-release packages x64 on Apple Silicon, where running the x64 app
     # under Rosetta is unreliable, so its validator skips the packaged-app
     # smoke. This job reruns the full validator on a real x64 Mac against the
-    # exact zip that will be published. It only unzips and checks, so it adds a
-    # few minutes after the x64 build instead of a 35-minute Intel build.
-    needs: build-mac-release
+    # exact zip that will be published. It installs and builds what the
+    # validator needs while the x64 build runs, then waits for its artifact, so
+    # it adds only a few minutes after the x64 build.
+    needs: verify
     runs-on: macos-15-intel
     env:
       ADE_RUNTIME_TARGET: darwin-x64
@@ -915,6 +916,11 @@ jobs:
         run: |
           cd apps/ade-cli && npm ci
           cd ../desktop && npm run ade:build
+
+      - name: Wait for the x64 release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/wait-for-run-artifact.sh "ade-mac-release-${{ inputs.release_tag }}-x64" "build-mac-release (x64)"
 
       - name: Download x64 release artifacts
         uses: actions/download-artifact@v4
