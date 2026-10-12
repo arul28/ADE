@@ -191,8 +191,9 @@ debug lines and no PostHog event: `agent_chat.claude_plugin_ui_render_failed`
 (session id, render site, error message), `agent_chat.claude_plugin_ui_action_failed`
 (session id, action kind, error message) and
 `agent_chat.claude_plugin_ui_ingest_failed` (session id, message subtype, error
-message). They exist because the channel is private to Claude Code and every
-failure in it is swallowed; without them a blank dock has nothing to read.
+message). They exist because the channel is private to Claude Code and a
+failure in it never reaches a turn; without them a blank dock has nothing to
+read. (A press that got no answer also shows a toast in the window.)
 
 **No product-analytics event accompanies the feature, deliberately.** What a
 mod draws is a third party's text and controls, so a press, a typed value, a

@@ -22,8 +22,6 @@ function findInstalledMods(sessionId: string): Promise<boolean> {
         hasModsBySession.delete(sessionId);
         return false;
       });
-    // One small entry per chat opened in this window; start over before it can grow large.
-    if (hasModsBySession.size >= 500) hasModsBySession.clear();
     hasModsBySession.set(sessionId, found);
   }
   return found;

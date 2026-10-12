@@ -28,7 +28,7 @@ const GRID_STYLE = {
  * Draws what Claude Code mods put on screen for one chat, as one dock that sits
  * on the prompt box: a header with the mods' status lines, and under it the
  * open panes and the band a mod draws above the prompt. The header folds the
- * dock down to one row. Toasts are raised by the store.
+ * dock down to one row. A mod's own toasts are raised by the store.
  *
  * Mods lay out in terminal cells, so every tree is monospace and sized in `ch`.
  * A control acts only while the Claude process that drew it lives.
@@ -48,15 +48,18 @@ export const ClaudeModUi = memo(function ClaudeModUi(props: {
   const act = useCallback((action: ClaudePluginUiAction) => {
     const api = claudeModUiApi();
     if (!api || !live) return;
-    void api.act({ sessionId, generation, ...action }, pinRef.current ?? null).catch(() => {
-      // The call did not come back (a dropped connection, a timeout), so the
-      // mod may or may not have run it. Say so; a silent miss invites a second press.
-      showToast({
-        title: "The mod did not answer",
-        message: "It may still have run. Check before you press again.",
-        tone: "warning",
-      });
-    });
+    // A refused action (an old control, a mod that did not handle it) needs no
+    // word: the next snapshot shows the truth. Two cases do, because a silent
+    // miss invites a second press. One toast, replaced in place.
+    const warn = (title: string, message: string) =>
+      showToast({ id: `claude-mod-action:${sessionId}`, title, message, tone: "warning" });
+    void api.act({ sessionId, generation, ...action }, pinRef.current ?? null).then(
+      (result) => {
+        if (result.unanswered) warn("The mod did not answer", "It may still have run. Check before you press again.");
+      },
+      // The call never left: a project switch, or a lost connection to the chat's machine.
+      () => warn("That did not reach the mod", "Nothing ran. Try again in a moment."),
+    );
   }, [sessionId, generation, live]);
 
   if (!claudePluginUiHasContent(snapshot)) return null;

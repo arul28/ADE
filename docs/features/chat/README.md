@@ -2145,8 +2145,10 @@ with Claude Code 2.1.293 (SDK 0.3.293).
   key holds (without a key: its label and placeholder); a new field starts
   from its own value, so typed text never moves to another field.
 - **A press that does not come back.** A press is never sent twice by ADE
-  (`actOnClaudePluginUi` is a declared write). When the call fails, the window
-  says the mod may still have run it.
+  (`actOnClaudePluginUi` is a declared write). When the Claude process does
+  not answer within 5 seconds, the result says `unanswered` and the window
+  says the mod may still have run it. When the call never left (a project
+  switch, a lost connection), the window says nothing ran.
 - **Colours.** Claude Code's theme keys, terminal names, hex, `rgb()` and
   `ansi256()` map to theme colours in `claudeModUiStyle.ts`; the terminal's
   black, white and greys follow the theme so they read on a light one. No
@@ -2172,8 +2174,8 @@ process starts with that band still dimmed, until one of its renders answers,
 and with no panes: a pane belongs to the process that opened it. A late
 message of a closed or replaced process is dropped. A `generation` starts at
 the host's clock, so a restarted host does not reuse one a window still holds.
-A redraw that draws the same trees is not published. When a chat ends, its
-mod UI is taken off the window. Status lines belong to the process that set them and are
+A redraw that draws what clients already show is not published. When a chat
+ends, its mod UI is taken off the window. Status lines belong to the process that set them and are
 cleared.
 
 ### Surfaces

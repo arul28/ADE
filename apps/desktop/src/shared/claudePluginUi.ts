@@ -107,9 +107,16 @@ export type ClaudePluginUiAction =
 
 export type ClaudePluginUiActArgs = { sessionId: string; generation: number } & ClaudePluginUiAction;
 
-export type ClaudePluginUiActResult = { handled: boolean };
+export type ClaudePluginUiActResult = {
+  /** The mod took the action. False when the host refused it or the mod did not handle it. */
+  handled: boolean;
+  /** The action was sent and no answer came back: the mod may or may not have run it. */
+  unanswered?: boolean;
+};
 
-export function claudePluginUiHasContent(snapshot: ClaudePluginUiSnapshot | null | undefined): boolean {
+export function claudePluginUiHasContent(
+  snapshot: Pick<ClaudePluginUiSnapshot, "band" | "statuses" | "panes"> | null | undefined,
+): boolean {
   return Boolean(snapshot && (snapshot.band || snapshot.statuses.length || snapshot.panes.length));
 }
 

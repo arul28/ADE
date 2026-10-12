@@ -24722,7 +24722,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
-    claudePluginUi.forget(managed.session.id);
+    claudePluginUi.end(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
     laneBranchAtTurnStart.delete(managed.session.id);
@@ -57675,7 +57675,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
-    claudePluginUi.forget(sessionId);
+    claudePluginUi.end(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
     releaseChatBrowser(sessionId);
@@ -60075,7 +60075,7 @@ export function createAgentChatService(args: {
       ]);
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
-      claudePluginUi.forget(trimmedSessionId);
+      claudePluginUi.end(trimmedSessionId);
       forgetCursorCloudHydrationState(trimmedSessionId);
       forgetDevinCloudAttentionState(trimmedSessionId);
     } else {

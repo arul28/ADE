@@ -40,15 +40,15 @@ type Logger = { debug: (event: string, data?: Record<string, unknown>) => void }
 
 type Snapshot = ClaudePluginUiSnapshot;
 
+/** What clients show, kept between publishes. A toast is not kept: it rides the one publish that raised it. */
+type Shown = Omit<Snapshot, "toast">;
+
 type Entry = {
   /** The query that owns this entry. Messages and answers from any other query are dropped. */
   query: object | null;
   /** The query's control-request sender; null when this SDK build has none. */
   request: ControlRequest | null;
-  /** What clients show. Its `toast` is always null: a toast rides one publish and is not kept. */
-  snapshot: Snapshot;
-  /** The trees of `snapshot` as one string, to tell a redraw that changed nothing. */
-  drawn: string;
+  snapshot: Shown;
   /** The controls of each tree in the snapshot, by render site. An action must name one. */
   targetsBySite: Map<string, ClaudePluginUiTarget[]>;
   rendering: boolean;
@@ -134,7 +134,7 @@ function toastFrom(message: Record<string, unknown>, fallbackId: () => string): 
 }
 
 /** The open panes a `ui_panes` message lists, each keeping the tree already drawn for it. */
-function panesFrom(snapshot: Snapshot, message: Record<string, unknown>): Snapshot["panes"] {
+function panesFrom(snapshot: Shown, message: Record<string, unknown>): Snapshot["panes"] {
   const drawn = new Map(snapshot.panes.map((pane) => [pane.id, pane.tree]));
   const panes: Snapshot["panes"] = [];
   for (const raw of Array.isArray(message.panes) ? message.panes : []) {
@@ -167,12 +167,12 @@ export function createClaudePluginUiService(deps: {
   const update = (
     sessionId: string,
     entry: Entry,
-    patch: Partial<Omit<Snapshot, "toast">>,
+    patch: Partial<Shown>,
     toast: ClaudePluginUiToast | null = null,
   ): void => {
     if (entries.get(sessionId) !== entry) return;
     entry.snapshot = { ...entry.snapshot, ...patch, revision: entry.snapshot.revision + 1 };
-    deps.publish(sessionId, toast ? { ...entry.snapshot, toast } : entry.snapshot);
+    deps.publish(sessionId, { ...entry.snapshot, toast });
   };
 
   const send = async (request: ControlRequest, body: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
@@ -208,7 +208,8 @@ export function createClaudePluginUiService(deps: {
         client_id: CLIENT_ID,
         props,
       });
-      // A reply that does not say whether a mod drew is no answer: the site keeps what it shows.
+      // Claude Code always says whether a mod drew (`hooked`). A reply that
+      // does not is no answer: the site keeps what it shows.
       if (typeof response?.hooked !== "boolean") return null;
       // `hooked: false`, or a tree of type `engine`, is Claude Code's own placeholder.
       if (!response.hooked) return { tree: null, targets: [] };
@@ -252,10 +253,11 @@ export function createClaudePluginUiService(deps: {
       band: band ? band.tree : entry.snapshot.band,
       panes: drawnPanes,
     };
-    // A mod may ask for a redraw that draws the same thing; clients need no word of it.
-    const drawn = JSON.stringify(next);
-    if (drawn === entry.drawn) return;
-    entry.drawn = drawn;
+    // A mod may ask for a redraw that draws the same thing; clients need no
+    // word of it. Compared with what clients show now, so a pane that was
+    // listed again without its tree still gets one.
+    const { live, band: shownBand, panes: shownPanes } = entry.snapshot;
+    if (JSON.stringify(next) === JSON.stringify({ live, band: shownBand, panes: shownPanes })) return;
     update(sessionId, entry, next);
   };
 
@@ -281,8 +283,11 @@ export function createClaudePluginUiService(deps: {
     entry.timer.unref?.();
   };
 
-  /** Drops a chat's mod UI, and takes it off every client that shows some. */
-  const forget = (sessionId: string): void => {
+  /**
+   * Ends a chat's mod UI: drops what the host holds, and tells clients that
+   * show some to take it down. For a chat that ended, or the setting turned off.
+   */
+  const end = (sessionId: string): void => {
     const entry = entries.get(sessionId);
     if (!entry) return;
     if (entry.timer) clearTimeout(entry.timer);
@@ -293,7 +298,7 @@ export function createClaudePluginUiService(deps: {
   /** Names the live query of a chat and asks it for its trees. */
   const attach = (sessionId: string, query: object): void => {
     if (!deps.isEnabled()) {
-      forget(sessionId);
+      end(sessionId);
       return;
     }
     const previous = entries.get(sessionId);
@@ -306,12 +311,13 @@ export function createClaudePluginUiService(deps: {
       // gone with the process that set them. So are panes: which panes are
       // open is this process's list (`ui_panes`), and it starts with none.
       snapshot: {
-        ...EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT,
-        band: previous?.snapshot.band ?? null,
+        live: false,
         generation: ++generationCounter,
         revision: 1,
+        statuses: [],
+        band: previous?.snapshot.band ?? null,
+        panes: [],
       },
-      drawn: "",
       targetsBySite: new Map(),
       rendering: false,
       renderAgain: false,
@@ -319,7 +325,7 @@ export function createClaudePluginUiService(deps: {
       timer: null,
     };
     entries.set(sessionId, entry);
-    if (previous) deps.publish(sessionId, entry.snapshot);
+    if (previous) deps.publish(sessionId, { ...entry.snapshot, toast: null });
     requestRender(sessionId, entry);
   };
 
@@ -330,7 +336,7 @@ export function createClaudePluginUiService(deps: {
     const { band, panes } = entry.snapshot;
     if (!band && !panes.length) {
       // Nothing worth keeping on screen.
-      forget(sessionId);
+      end(sessionId);
       return;
     }
     if (entry.timer) clearTimeout(entry.timer);
@@ -338,7 +344,6 @@ export function createClaudePluginUiService(deps: {
     entry.query = null;
     entry.request = null;
     entry.targetsBySite = new Map();
-    entry.drawn = "";
     update(sessionId, entry, { live: false, statuses: [] });
   };
 
@@ -392,7 +397,7 @@ export function createClaudePluginUiService(deps: {
       if (!query) return isUi;
       if (!deps.isEnabled()) {
         // Turned off while this chat was drawing: take the drawing down.
-        forget(sessionId);
+        end(sessionId);
         return isUi;
       }
       // No entry: the setting was turned on after this query started, so it was never named.
@@ -412,14 +417,16 @@ export function createClaudePluginUiService(deps: {
 
   const get = (sessionId: unknown): Snapshot => {
     const id = typeof sessionId === "string" ? sessionId.trim() : "";
-    return (deps.isEnabled() ? entries.get(id)?.snapshot : null) ?? EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT;
+    const shown = deps.isEnabled() ? entries.get(id)?.snapshot : null;
+    return shown ? { ...shown, toast: null } : EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT;
   };
 
   /**
    * Forwards a press, a typed value, a pick or a pane close to the chat's live
    * query. The arguments come from a client as untyped JSON (shaped like
-   * `ClaudePluginUiActArgs`), so each one is checked here: the action must name the generation of the process that drew
-   * the control, and a control this host sent for the site it names.
+   * `ClaudePluginUiActArgs`), so each one is checked here: the action must
+   * name the generation of the process that drew the control, and a control
+   * this host sent for the site it names.
    */
   const act = async (args: unknown): Promise<ClaudePluginUiActResult> => {
     const refused = { handled: false };
@@ -466,9 +473,10 @@ export function createClaudePluginUiService(deps: {
         kind: typeof raw.kind === "string" ? raw.kind : "unknown",
         error: error instanceof Error ? error.message : String(error),
       });
-      return refused;
+      // Sent, with no answer (a timeout, a closed process): the mod may have run it.
+      return { handled: false, unanswered: true };
     }
   };
 
-  return { attach, detach, forget, ingest, get, act };
+  return { attach, detach, end, ingest, get, act };
 }

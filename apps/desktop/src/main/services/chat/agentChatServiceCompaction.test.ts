@@ -2695,7 +2695,10 @@ describe("createAgentChatService", () => {
         const stream = vi.fn(() => (async function* () {
           streamCall += 1;
           yield { type: "result", session_id: "sdk-session-mod-ticker", usage: { input_tokens: 1, output_tokens: 1 } };
+          // The harness drains one stream to warm the session up; the turn reads the next one.
           if (streamCall === 1) return;
+          // A real tail message, so the test also sees a turn that drops one.
+          yield { type: "prompt_suggestion", session_id: "sdk-session-mod-ticker", uuid: "tail-1", suggestion: "Audit the Work tab" };
           // A mod that redraws on a timer: each message lands inside the
           // one-second drain window that waits for a tail message.
           for (let tick = 0; tick < 200; tick += 1) {
@@ -2724,6 +2727,9 @@ describe("createAgentChatService", () => {
         // The mod did send messages during the turn; the idle reader takes the later ones.
         expect(ticksRead).toBeGreaterThan(0);
         expect(events.filter((event) => event.event.type === "done")).toHaveLength(1);
+        const eventTypes = events.map((event) => event.event.type);
+        expect(eventTypes).toContain("prompt_suggestion");
+        expect(eventTypes.indexOf("prompt_suggestion")).toBeLessThan(eventTypes.indexOf("done"));
         // What a mod draws is not transcript content.
         expect((await service.getChatEventHistory(session.id, { maxEvents: 50 })).events
           .some((event) => JSON.stringify(event.event).includes("tick "))).toBe(false);

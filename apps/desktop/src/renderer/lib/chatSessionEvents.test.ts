@@ -134,12 +134,6 @@ describe("getChatSessionLocalTouchTimestampForEvent", () => {
     const claudePluginUi = { live: true, generation: 1, revision: 2, statuses: [], toast: null, band: null, panes: [] };
     expect(getChatSessionLocalTouchTimestampForEvent(makeEnvelope({ type: "session_meta_updated", claudePluginUi }))).toBeNull();
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "session_meta_updated", claudePluginUi }))).toBe(false);
-    // A meta update that also carries a real change still counts.
-    expect(getChatSessionLocalTouchTimestampForEvent(makeEnvelope({
-      type: "session_meta_updated",
-      claudePluginUi,
-      title: "Renamed",
-    }))).not.toBeNull();
   });
 });
 

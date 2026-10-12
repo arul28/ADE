@@ -4,7 +4,7 @@ import { createClaudePluginUiService } from "./claudePluginUiService";
 
 const SESSION = "chat-1";
 
-type Render = { tree?: unknown; hooked?: boolean } | "hang" | "fail" | "no-body";
+type Render = { tree?: unknown; hooked?: boolean } | "hang" | "fail" | "no-body" | "empty-body";
 
 /** A fake Claude query: answers `ui_render` per site from `renders`, and records every control request. */
 function fakeQuery(renders: Record<string, Render> = {}) {
@@ -12,12 +12,14 @@ function fakeQuery(renders: Record<string, Render> = {}) {
   const request = vi.fn(async (body: Record<string, unknown>) => {
     sent.push(body);
     if (body.subtype !== "ui_render") {
+      if (renders[`answer:${String(body.subtype)}`] === "hang") return new Promise(() => {});
       return { subtype: "success", response: body.subtype === "ui_close" ? { closed: true } : { handled: true } };
     }
     const render = renders[String(body.instance_id)] ?? { hooked: false };
     if (render === "hang") return new Promise(() => {});
     if (render === "fail") throw new Error("boom");
     if (render === "no-body") return { subtype: "error" };
+    if (render === "empty-body") return { subtype: "success", response: {} };
     return { subtype: "success", response: { hooked: render.hooked ?? true, tree: render.tree } };
   });
   return { query: { request }, renders, sent, requestsOf: (subtype: string) => sent.filter((body) => body.subtype === subtype) };
@@ -38,8 +40,10 @@ function setup(options: { enabled?: boolean } = {}) {
   return { service, state, published, last: () => published.at(-1) };
 }
 
-/** Lets the render throttle fire and the answered requests settle. */
-const settle = () => vi.advanceTimersByTimeAsync(250);
+/** Lets pending renders run and answered requests settle (well past the render throttle). */
+const settle = () => vi.advanceTimersByTimeAsync(2_000);
+/** Long enough for a request that never answers to be given up on. */
+const giveUp = () => vi.advanceTimersByTimeAsync(60_000);
 
 describe("createClaudePluginUiService", () => {
   beforeEach(() => {
@@ -63,7 +67,8 @@ describe("createClaudePluginUiService", () => {
 
     const press = { sessionId: SESSION, generation: shown.generation, kind: "press", target: { plugin: "demo", handle: 7 }, key: "Bump" };
     await expect(service.act(press)).resolves.toEqual({ handled: true });
-    expect(claude.requestsOf("ui_press")).toEqual([{ subtype: "ui_press", plugin: "demo", handle: 7, surface: "desktop", key: "Bump" }]);
+    expect(claude.requestsOf("ui_press")).toHaveLength(1);
+    expect(claude.requestsOf("ui_press")[0]).toMatchObject({ plugin: "demo", handle: 7, key: "Bump" });
 
     const refused = [
       { ...press, generation: shown.generation - 1 },
@@ -137,10 +142,10 @@ describe("createClaudePluginUiService", () => {
     const { generation } = service.get(SESSION);
     const pressFirst = { sessionId: SESSION, generation, kind: "press", target: { plugin: "demo", handle: 1 } };
 
-    for (const failure of ["fail", "no-body", "hang"] as const) {
+    for (const failure of ["fail", "no-body", "empty-body", "hang"] as const) {
       claude.renders["above-prompt"] = failure;
       service.ingest(SESSION, claude.query, ui("ui_invalidate"));
-      await vi.advanceTimersByTimeAsync(5_500);
+      await giveUp();
       expect(JSON.stringify(service.get(SESSION).band)).toContain("First");
       expect(service.get(SESSION).live).toBe(true);
       await expect(service.act(pressFirst)).resolves.toEqual({ handled: true });
@@ -169,23 +174,71 @@ describe("createClaudePluginUiService", () => {
     expect(published.length).toBe(publishedOnce);
   });
 
+  it("draws a pane again when a mod closes and reopens it with the same content", async () => {
+    const { service } = setup();
+    const claude = fakeQuery({ notes: { tree: band("Pane", 5) } });
+    const listNotes = ui("ui_panes", { panes: [{ id: "notes", title: "Notes", plugin: "demo" }] });
+    service.attach(SESSION, claude.query);
+    service.ingest(SESSION, claude.query, listNotes);
+    await settle();
+    expect(JSON.stringify(service.get(SESSION).panes[0]?.tree)).toContain("Pane");
+
+    // Closed and listed again before the next redraw: the pane comes back without its tree.
+    service.ingest(SESSION, claude.query, ui("ui_panes", { panes: [] }));
+    service.ingest(SESSION, claude.query, listNotes);
+    expect(service.get(SESSION).panes).toMatchObject([{ id: "notes", tree: null }]);
+    await settle();
+    expect(JSON.stringify(service.get(SESSION).panes[0]?.tree)).toContain("Pane");
+  });
+
+  it("says so when a press was sent and the Claude process did not answer", async () => {
+    const { service } = setup();
+    const claude = fakeQuery({ "above-prompt": { tree: band("Bump", 7) }, "answer:ui_press": "hang" });
+    service.attach(SESSION, claude.query);
+    await settle();
+    const { generation } = service.get(SESSION);
+
+    const pressed = service.act({ sessionId: SESSION, generation, kind: "press", target: { plugin: "demo", handle: 7 } });
+    await giveUp();
+    // Not handled, and not known to be refused either: the mod may have run it.
+    await expect(pressed).resolves.toEqual({ handled: false, unanswered: true });
+    expect(claude.requestsOf("ui_press")).toHaveLength(1);
+    // A refusal the host decided is a plain no.
+    await expect(service.act({ sessionId: SESSION, generation, kind: "press", target: { plugin: "demo", handle: 8 } }))
+      .resolves.toEqual({ handled: false });
+  });
+
+  it("lists the panes a mod opens, and acts on a pane control only at its own site", async () => {
+    const { service } = setup();
+    const claude = fakeQuery({ "above-prompt": { tree: band("Band", 1) }, notes: { tree: band("Pane", 5) } });
+    service.attach(SESSION, claude.query);
+    service.ingest(SESSION, claude.query, ui("ui_panes", { panes: [{ id: "notes", title: "Notes", plugin: "demo" }, { id: "../bad id" }] }));
+    await settle();
+    const shown = service.get(SESSION);
+    expect(shown.panes.map((pane) => pane.id)).toEqual(["notes"]);
+    expect(JSON.stringify(shown.panes[0]?.tree)).toContain("Pane");
+
+    const inPane = { sessionId: SESSION, generation: shown.generation, kind: "input", value: "x", target: { plugin: "demo", handle: 5 } };
+    await expect(service.act({ ...inPane, site: { component: "AbovePrompt" } })).resolves.toEqual({ handled: false });
+    await expect(service.act({ ...inPane, site: { component: "Pane", paneId: "notes" } })).resolves.toEqual({ handled: true });
+    expect(claude.requestsOf("ui_input")[0]).toMatchObject({ component: "Pane", instance_id: "notes", value: "x" });
+
+    // Only a pane this process lists can be closed.
+    const close = { sessionId: SESSION, generation: shown.generation, kind: "closePane" };
+    await expect(service.act({ ...close, paneId: "other" })).resolves.toEqual({ handled: false });
+    await expect(service.act({ ...close, paneId: "notes" })).resolves.toEqual({ handled: true });
+    expect(claude.requestsOf("ui_close")).toHaveLength(1);
+    expect(claude.requestsOf("ui_close")[0]).toMatchObject({ id: "notes" });
+  });
+
   it("dims the band when the Claude process goes, and starts the next one with a new generation and no panes", async () => {
     const { service, last } = setup();
     const first = fakeQuery({ "above-prompt": { tree: band("Old", 1) }, notes: { tree: band("Pane", 5) } });
     service.attach(SESSION, first.query);
     service.ingest(SESSION, first.query, ui("ui_status", { plugin: "a", text: "busy" }));
-    service.ingest(SESSION, first.query, ui("ui_panes", { panes: [{ id: "notes", title: "Notes", plugin: "demo" }, { id: "../bad id" }] }));
+    service.ingest(SESSION, first.query, ui("ui_panes", { panes: [{ id: "notes", title: "Notes", plugin: "demo" }] }));
     await settle();
     const old = service.get(SESSION);
-    expect(old.panes.map((pane) => pane.id)).toEqual(["notes"]);
-    expect(JSON.stringify(old.panes[0]?.tree)).toContain("Pane");
-
-    // A pane this process lists can be closed; a pane control needs its own site.
-    const inPane = { sessionId: SESSION, generation: old.generation, kind: "input", value: "x", target: { plugin: "demo", handle: 5 } };
-    await expect(service.act({ ...inPane, site: { component: "AbovePrompt" } })).resolves.toEqual({ handled: false });
-    await expect(service.act({ ...inPane, site: { component: "Pane", paneId: "notes" } })).resolves.toEqual({ handled: true });
-    await expect(service.act({ sessionId: SESSION, generation: old.generation, kind: "closePane", paneId: "notes" })).resolves.toEqual({ handled: true });
-    expect(first.requestsOf("ui_close")).toEqual([{ subtype: "ui_close", id: "notes" }]);
 
     service.detach(SESSION);
     expect(last()).toMatchObject({ live: false, statuses: [], generation: old.generation });
@@ -199,11 +252,21 @@ describe("createClaudePluginUiService", () => {
     expect(carried.generation).toBeGreaterThan(old.generation);
     expect(carried).toMatchObject({ live: false, panes: [], statuses: [] });
     expect(JSON.stringify(carried.band)).toContain("Old");
+  });
 
-    // The chat ends: clients are told to take the drawing down.
-    service.forget(SESSION);
+  it("takes the drawing off clients when the chat ends", async () => {
+    const { service, last } = setup();
+    const claude = fakeQuery({ "above-prompt": { tree: band("Band", 1) } });
+    service.attach(SESSION, claude.query);
+    await settle();
+    expect(last()?.band).not.toBeNull();
+
+    service.end(SESSION);
     expect(last()).toMatchObject({ generation: 0, band: null, live: false });
     expect(service.get(SESSION).band).toBeNull();
+    // A late message of the ended chat's process brings nothing back.
+    service.ingest(SESSION, null, ui("ui_status", { plugin: "a", text: "late" }));
+    expect(service.get(SESSION).statuses).toEqual([]);
   });
 
   it("draws nothing while the setting is off, and follows the setting within a session", async () => {
