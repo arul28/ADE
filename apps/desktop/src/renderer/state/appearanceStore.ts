@@ -42,13 +42,27 @@ export type InterfacePreferences = {
   monoFont: InterfaceMonoFont;
   /** Stops transitions and animations across the app, whatever the OS says. */
   reduceMotion: boolean;
+  /**
+   * The most chats one Focus grid page shows on this computer, or null to let
+   * the grid decide from the space it has. A screen is a fact about the
+   * computer, so this is never synced.
+   */
+  focusGridMaxChats: number | null;
   scene: ScenePreferences;
 };
+
+/** The Focus grid page sizes a user can pick; every tile mounts a full chat, so the work grid's cap is the top. */
+export const FOCUS_GRID_MAX_CHATS_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
+
+function normalizeFocusGridMaxChats(value: unknown): number | null {
+  return (FOCUS_GRID_MAX_CHATS_OPTIONS as readonly unknown[]).includes(value) ? (value as number) : null;
+}
 
 export const DEFAULT_INTERFACE_PREFERENCES: InterfacePreferences = {
   sansFont: "geist",
   monoFont: "jetbrains",
   reduceMotion: false,
+  focusGridMaxChats: null,
   scene: DEFAULT_SCENE_PREFERENCES,
 };
 
@@ -58,7 +72,13 @@ export function normalizeInterfacePreferences(value: unknown): InterfacePreferen
     raw.sansFont === "system" || raw.sansFont === "geist-mono" ? raw.sansFont : "geist";
   const monoFont: InterfaceMonoFont =
     raw.monoFont === "geist-mono" || raw.monoFont === "system" ? raw.monoFont : "jetbrains";
-  return { sansFont, monoFont, reduceMotion: raw.reduceMotion === true, scene: normalizeScenePreferences(raw.scene) };
+  return {
+    sansFont,
+    monoFont,
+    reduceMotion: raw.reduceMotion === true,
+    focusGridMaxChats: normalizeFocusGridMaxChats(raw.focusGridMaxChats),
+    scene: normalizeScenePreferences(raw.scene),
+  };
 }
 
 export const USER_PREFERENCES_STORAGE_KEY = "ade.userPreferences.v1";

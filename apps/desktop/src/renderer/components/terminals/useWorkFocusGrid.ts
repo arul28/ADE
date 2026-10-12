@@ -2,6 +2,7 @@ import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { useLatestCallback } from "../../lib/stableIdentity";
+import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { makeGridLayoutId, MAX_WORK_GRID_TILES } from "../../lib/workGrid";
 import type { WorkFocusCardMark } from "./SessionCard";
@@ -81,14 +82,17 @@ export function useWorkFocusGrid({
   // usable tiles per page instead of six cramped ones. Measured on the grid's
   // own box; state changes only when the number of tiles that fit changes.
   // Every tile mounts a full chat, so the hand-made grid's cap still applies,
-  // and only the page on screen is mounted.
+  // and only the page on screen is mounted. This computer's "chats per page"
+  // setting lowers that cap; it never raises a page above what fits.
+  const maxChats = useAppStore((s) => s.interfacePreferences.focusGridMaxChats);
+  const maxTiles = Math.min(MAX_WORK_GRID_TILES, maxChats ?? MAX_WORK_GRID_TILES);
   const [gridNode, setGridNode] = useState<HTMLDivElement | null>(null);
-  const [fit, setFit] = useState<FocusFit>({ columns: 3, rows: 2, capacity: MAX_WORK_GRID_TILES });
+  const [fit, setFit] = useState<FocusFit>({ columns: 3, rows: 2, capacity: maxTiles });
   useEffect(() => {
     if (!gridNode || typeof ResizeObserver === "undefined") return;
     const update = () => {
       const rect = gridNode.getBoundingClientRect();
-      const next = focusFit(rect.width, rect.height, MAX_WORK_GRID_TILES);
+      const next = focusFit(rect.width, rect.height, maxTiles);
       setFit((previous) => (
         previous.columns === next.columns && previous.rows === next.rows && previous.capacity === next.capacity
           ? previous
@@ -99,7 +103,7 @@ export function useWorkFocusGrid({
     const observer = new ResizeObserver(update);
     observer.observe(gridNode);
     return () => observer.disconnect();
-  }, [gridNode]);
+  }, [gridNode, maxTiles]);
 
   // As few pages as fit, with the chats spread evenly across them.
   const pages = useMemo(() => focusEvenPages(ordered, fit.capacity), [fit.capacity, ordered]);

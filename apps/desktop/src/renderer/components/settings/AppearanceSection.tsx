@@ -19,6 +19,7 @@ import {
   type InterfaceSansFont,
 } from "../../state/appStore";
 import { DEFAULT_SCENE_PREFERENCES, type SceneShuffleEvery, type SceneTexture } from "../../scene/scenePreferences";
+import { FOCUS_GRID_MAX_CHATS_OPTIONS } from "../../state/appearanceStore";
 import type {
   ChatChromeTint,
   ChatShellGeometry,
@@ -219,6 +220,26 @@ export function AppearanceSection() {
                 label="Reduce motion"
                 checked={interfacePreferences.reduceMotion}
                 onChange={(reduceMotion) => setInterfacePreferences({ reduceMotion })}
+              />
+            </div>
+          </ModernSection>
+
+          <ModernSection group="Interface" anchor="focus-grid-chats" title="Focus grid">
+            <div className="ade-ap-rowcard">
+              <div>
+                <div className="ade-ap-rowtitle">Chats per page</div>
+                <div className="ade-ap-rowhint">
+                  The most chats one Focus grid page shows on this computer. Automatic fits as many as stay readable.
+                </div>
+              </div>
+              <SettingsSelect
+                ariaLabel="Focus grid chats per page"
+                value={interfacePreferences.focusGridMaxChats == null ? "auto" : String(interfacePreferences.focusGridMaxChats)}
+                onChange={(next) => setInterfacePreferences({ focusGridMaxChats: next === "auto" ? null : Number(next) })}
+                options={[
+                  { value: "auto", label: "Automatic" },
+                  ...FOCUS_GRID_MAX_CHATS_OPTIONS.map((count) => ({ value: String(count), label: `Up to ${count}` })),
+                ]}
               />
             </div>
           </ModernSection>

@@ -75,10 +75,13 @@ export function WorkFocusGridEmpty({
  * The smallest chat tile that stays usable: the header, a readable piece of
  * the reply, and the composer with its controls on one row. The height is
  * high on purpose: a short tile is mostly composer, so a laptop-height grid
- * pages side-by-side tiles instead of stacking two rows.
+ * pages side-by-side tiles instead of stacking two rows. The box is measured
+ * in CSS pixels, which grow as the app zooms out, so the height also has to
+ * keep a zoomed-out laptop (1512 × 982 at 70% is a 1890 × ~1080 box) on one
+ * row: two rows there are six tiles about 430 points tall.
  */
 const FOCUS_TILE_MIN_WIDTH = 420;
-const FOCUS_TILE_MIN_HEIGHT = 480;
+const FOCUS_TILE_MIN_HEIGHT = 600;
 
 export type FocusFit = {
   /** Tiles that fit side by side. */
