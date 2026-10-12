@@ -807,6 +807,18 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
       return loginCommandFor(instance);
     },
+    /**
+     * The provider CLI's own sign-out for one account, run against that
+     * account's config home. The default is refused like `remove`: new chats
+     * go to it, so it has to stay signed in until another account is the
+     * default.
+     */
+    logoutCommand: (id: string): ProviderInstanceLoginCommand => {
+      const instance = get(id);
+      if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
+      if (instance.isDefault) throw new Error("This account is the default. Make another account the default first.");
+      return { ...loginCommandFor(instance), args: instance.provider === "claude" ? ["auth", "logout"] : ["logout"] };
+    },
     refreshAccounts,
     setLoginBroken,
     /** Every write emits; returns the unsubscribe. */

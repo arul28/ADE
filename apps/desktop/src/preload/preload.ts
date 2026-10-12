@@ -10563,6 +10563,17 @@ const adeBridge = {
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginCancel, args),
       ).then(normalizeProviderLoginStatus),
+    signOut: async (
+      args: ProviderInstanceDismissReplacedArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance | null> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance | null | { instance: ProviderInstance | null }>(
+        pin,
+        "provider_instances",
+        "signOut",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesSignOut, args),
+      ).then((result) => (result && "instance" in result ? result.instance : result)),
     dismissReplaced: async (
       args: ProviderInstanceDismissReplacedArgs,
       pin?: OpenProjectBinding | null,

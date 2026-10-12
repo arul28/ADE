@@ -1231,6 +1231,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "list",
     "create",
     "remove",
+    "signOut",
     "rename",
     "setDefault",
     "setAccent",

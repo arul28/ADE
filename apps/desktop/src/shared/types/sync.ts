@@ -2424,6 +2424,7 @@ export const PROVIDER_ACCOUNT_REMOTE_COMMANDS = {
   loginStatus: "controller",
   create: "controller",
   remove: "controller",
+  signOut: "controller",
   rename: "controller",
   setDefault: "controller",
   dismissReplaced: "controller",

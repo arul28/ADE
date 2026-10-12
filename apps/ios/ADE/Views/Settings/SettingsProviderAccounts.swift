@@ -454,7 +454,8 @@ struct ProviderAccountRow: View {
   }
 
   private var detailLine: String {
-    if let ownerLabel { return "Same login as \(ownerLabel) · shares its limits" }
+    // A broken login shares nothing; its own line says why, like desktop.
+    if let ownerLabel, account.loginBroken != true { return "Same login as \(ownerLabel) · shares its limits" }
     return providerAccountDetailLine(account)
   }
 

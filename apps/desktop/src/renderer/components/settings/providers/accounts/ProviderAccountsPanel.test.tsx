@@ -136,6 +136,7 @@ function installBridge(options?: {
     setDefault: vi.fn().mockResolvedValue(WORK_INSTANCE),
     setAccent: vi.fn().mockResolvedValue(WORK_INSTANCE),
     dismissReplaced: vi.fn().mockResolvedValue(WORK_INSTANCE),
+    signOut: vi.fn().mockResolvedValue({ ...WORK_INSTANCE, signedIn: false }),
     getSettings: vi.fn().mockResolvedValue({
       smartBalance: options?.smartBalance ?? false,
       autoStartWindows: false,
@@ -515,7 +516,7 @@ describe("ProviderAccountsPanel", () => {
     });
   });
 
-  it("confirms before removing, and removes nothing when the confirm is cancelled", async () => {
+  it("confirms before removing, signs the account out first, and does nothing when cancelled", async () => {
     const harness = installBridge();
     renderPanel();
 
@@ -525,6 +526,7 @@ describe("ProviderAccountsPanel", () => {
     expect(await screen.findByText("Remove account")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(harness.providerInstances.remove).not.toHaveBeenCalled();
+    expect(harness.providerInstances.signOut).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
@@ -533,6 +535,41 @@ describe("ProviderAccountsPanel", () => {
     await waitFor(() => {
       expect(harness.providerInstances.remove).toHaveBeenCalledWith({ id: "claude-work" });
     });
+    // Signed out before it is forgotten, so adding it again is a fresh sign-in.
+    expect(harness.providerInstances.signOut).toHaveBeenCalledWith({ id: "claude-work" });
+    expect(harness.providerInstances.signOut.mock.invocationCallOrder[0])
+      .toBeLessThan(harness.providerInstances.remove.mock.invocationCallOrder[0]!);
+  });
+
+  it.each([
+    { name: "a second account", id: "claude-work", label: "Work", isDefault: false, signOut: true, remove: true },
+    // Its login is the terminal's own; the card stays, but it can be signed out.
+    { name: "this computer's own login", id: "claude", label: "Personal", isDefault: false, signOut: true, remove: false },
+    // New chats go to it, so it keeps its login until another account is the default.
+    { name: "the default account", id: "claude-work", label: "Work", isDefault: true, signOut: false, remove: false },
+  ])("offers cleanup actions on $name's card", async ({ id, label, isDefault, signOut, remove }) => {
+    const card = instance({ id, label, isDefault, account: { email: `${id}@example.com` } });
+    const other = instance({
+      id: id === "claude" ? "claude-work" : "claude",
+      label: id === "claude" ? "Work" : "Personal",
+      isDefault: !isDefault,
+      account: { email: "other@example.com" },
+    });
+    const harness = installBridge({ instances: [card, other] });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: `${label} account actions` }));
+    expect(screen.queryByRole("menuitem", { name: "Remove" }) !== null).toBe(remove);
+    const signOutItem = screen.queryByRole("menuitem", { name: "Sign out" });
+    expect(signOutItem !== null).toBe(signOut);
+    if (!signOutItem) return;
+
+    fireEvent.click(signOutItem);
+    fireEvent.click(await screen.findByRole("button", { name: "SIGN OUT" }));
+    await waitFor(() => {
+      expect(harness.providerInstances.signOut).toHaveBeenCalledWith({ id });
+    });
+    expect(harness.providerInstances.remove).not.toHaveBeenCalled();
   });
 
   it("shows the store's sentence without the Electron IPC wrapper around it", async () => {

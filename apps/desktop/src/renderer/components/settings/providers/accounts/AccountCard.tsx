@@ -18,7 +18,7 @@ import {
 } from "../../../../../shared/types/providerInstances";
 import { accountIdentityLine } from "./accountPresentation";
 
-export type RowMenuAction = "rename" | "signIn" | "remove";
+export type RowMenuAction = "rename" | "signIn" | "signOut" | "remove";
 
 /** Why a card is shown the way it is; one state per card, decided by the panel. */
 export type CardState =
@@ -319,11 +319,12 @@ export function AccountCard({
                 {compactionControl || onSetPromptCache ? <div style={menuRuleStyle} /> : null}
                 {compactionControl ? subviewRow("compaction", "Auto-compact", instance.compaction ? "Custom" : "Default") : null}
                 {onSetPromptCache ? subviewRow("cache", "Subagent cache", longPromptCache ? "1 hour" : "5 minutes") : null}
-                {/* The store refuses both: the default, and the machine's own login. */}
-                {instance.isDefault || isBaseProviderInstance(instance) ? null : (
+                {/* The store refuses both on the default, and Remove on the machine's own login. */}
+                {instance.isDefault ? null : (
                   <>
                     <div style={menuRuleStyle} />
-                    {item("remove", "Remove", true)}
+                    {instance.signedIn || instance.loginBroken ? item("signOut", "Sign out", true) : null}
+                    {isBaseProviderInstance(instance) ? null : item("remove", "Remove", true)}
                   </>
                 )}
               </>

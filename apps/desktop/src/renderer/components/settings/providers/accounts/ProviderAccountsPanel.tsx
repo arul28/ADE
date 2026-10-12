@@ -234,13 +234,33 @@ export function ProviderAccountsPanel({
         openSheet({ existing: instance });
         return;
       }
+      if (action === "signOut") {
+        void confirmDialog({
+          title: "Sign out",
+          message: isBaseProviderInstance(instance)
+            ? `Sign ${instance.label} out of ${providerLabel}? This is this computer's own login, so the ${providerLabel} command in your terminal is signed out too.`
+            : `Sign ${instance.label} out of ${providerLabel}? The card stays; Sign in puts a login back.`,
+          confirmLabel: "SIGN OUT",
+          destructive: true,
+        }).then((ok) => {
+          if (ok) void run(() => api.signOut({ id: instance.id }));
+        });
+        return;
+      }
+      const signedIn = instance.signedIn || instance.loginBroken === true;
       void confirmDialog({
         title: "Remove account",
-        message: `Remove ${instance.label} from ${providerLabel}? Its sign-in stays on disk — only ADE forgets the account.`,
+        message: signedIn
+          ? `Remove ${instance.label} from ${providerLabel}? It is signed out first, so adding it again starts from a fresh sign-in.`
+          : `Remove ${instance.label} from ${providerLabel}?`,
         confirmLabel: "REMOVE",
         destructive: true,
       }).then((ok) => {
-        if (ok) void run(() => api.remove({ id: instance.id }));
+        if (!ok) return;
+        void run(async () => {
+          if (signedIn) await api.signOut({ id: instance.id });
+          return api.remove({ id: instance.id });
+        });
       });
     },
     [openSheet, pin, providerLabel, run],
