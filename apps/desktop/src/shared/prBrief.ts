@@ -20,6 +20,7 @@
  */
 
 import { markdownFenceLines } from "./markdownFences";
+import { splitPrBodyBotSections } from "./prBodyBotSections";
 
 export type PrBriefPartKind = "why" | "changed" | "evidence" | "not_checked" | "choices" | "other";
 
@@ -208,7 +209,9 @@ function proseWords(markdown: string): number {
  * follows the Brief. Each line says what is missing and what to write.
  */
 export function prBriefHints(markdown: string | null | undefined): PrBriefHint[] {
-  const text = (markdown ?? "").replace(/\r\n?/g, "\n");
+  // Review bots append their own summary to a description. The author did not
+  // write it and cannot shorten it, so it is not part of what the hints judge.
+  const text = splitPrBodyBotSections(markdown).body.replace(/\r\n?/g, "\n");
   const hints: PrBriefHint[] = [];
   if (!text.trim()) {
     return [{ code: "no_text", message: "The PR has no text. Say what changed and how you checked it." }];

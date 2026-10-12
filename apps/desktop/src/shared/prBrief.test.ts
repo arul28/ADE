@@ -101,5 +101,8 @@ describe("prBriefHints", () => {
     expect(codes(long)).toEqual(["long"]);
     const sameWordsInCode = `## Why\nShort.\n\n\`\`\`\n${"word ".repeat(460)}\n\`\`\`\n\n![${"word ".repeat(40)}](https://example.com/a.png)${rest}`;
     expect(codes(sameWordsInCode)).toEqual([]);
+    // A summary a review bot appended is not the author's text.
+    const withBotSummary = `## Why\nShort.${rest}\n\n<!-- CURSOR_SUMMARY -->\n## Overview\n${"word ".repeat(460)}\n<!-- /CURSOR_SUMMARY -->`;
+    expect(codes(withBotSummary)).toEqual([]);
   });
 });
