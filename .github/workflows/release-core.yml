@@ -197,10 +197,13 @@ jobs:
           fi
 
   build-mac-release:
-    # Not `needs: build-runtime-binaries`: the job does its own setup while the
-    # runtime binaries build, then waits for its one runtime artifact below.
+    # Unlike build-win-release, this job does not start early and wait for its
+    # runtime artifact: macOS runners have a small account-wide concurrency
+    # limit, and a job holding one while it waits starved the macOS runtime
+    # builds it was waiting for (dry run on 2026-10-12 lost 8 minutes to it).
     needs:
       - verify
+      - build-runtime-binaries
     # One job per arch, in parallel, both on Apple Silicon. Each job signs,
     # notarizes and staples its own app; the per-arch updater manifests are
     # merged by the publish-release job in release-publish.yml.
@@ -275,11 +278,6 @@ jobs:
       - name: Use cached native helpers
         if: ${{ steps.native-helpers.outputs.cache-hit == 'true' }}
         run: echo "ADE_NATIVE_HELPERS_CACHED=1" >> "$GITHUB_ENV"
-
-      - name: Wait for the darwin-${{ matrix.arch }} runtime binary
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/wait-for-run-artifact.sh "ade-runtime-darwin-${{ matrix.arch }}" "build-runtime-binaries (darwin-${{ matrix.arch }},"
 
       # Only this job's own target. Downloading every ade-runtime-* artifact is
       # what let foreign-platform payloads into the bundle in the first place.
@@ -885,10 +883,10 @@ jobs:
     # build-mac-release packages x64 on Apple Silicon, where running the x64 app
     # under Rosetta is unreliable, so its validator skips the packaged-app
     # smoke. This job reruns the full validator on a real x64 Mac against the
-    # exact zip that will be published. It installs and builds what the
-    # validator needs while the x64 build runs, then waits for its artifact, so
-    # it adds only a few minutes after the x64 build.
-    needs: verify
+    # exact zip that will be published. It installs only what the validator
+    # imports, so it adds a few minutes after the x64 build. It starts after
+    # that build rather than waiting on a macOS runner; see build-mac-release.
+    needs: build-mac-release
     runs-on: macos-15-intel
     env:
       ADE_RUNTIME_TARGET: darwin-x64
@@ -905,10 +903,17 @@ jobs:
             apps/desktop/package-lock.json
             apps/ade-cli/package-lock.json
 
-      # The validator needs only plain JS packages; skipping install scripts
-      # skips the Electron download and the native builds it does not use.
+      # The validator imports only @electron/asar and yaml. A full npm ci took
+      # 4.4 minutes on this runner, so install just those, at their locked
+      # versions, where the validator resolves them.
       - name: Install validator dependencies
-        run: cd apps/desktop && npm ci --ignore-scripts
+        run: |
+          set -euo pipefail
+          cd apps/desktop
+          versions="$(node -p 'const l=require("./package-lock.json").packages; ["@electron/asar","yaml"].map((n)=>n+"@"+l["node_modules/"+n].version).join(" ")')"
+          mkdir -p "$RUNNER_TEMP/validator-deps"
+          (cd "$RUNNER_TEMP/validator-deps" && npm init -y >/dev/null && npm install --no-audit --no-fund --ignore-scripts $versions)
+          ln -s "$RUNNER_TEMP/validator-deps/node_modules" node_modules
 
       # The validator compares the bundled ADE CLI against the CLI built from
       # this commit, so build it the same way the release job does.
@@ -916,11 +921,6 @@ jobs:
         run: |
           cd apps/ade-cli && npm ci
           cd ../desktop && npm run ade:build
-
-      - name: Wait for the x64 release artifacts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/wait-for-run-artifact.sh "ade-mac-release-${{ inputs.release_tag }}-x64" "build-mac-release (x64)"
 
       - name: Download x64 release artifacts
         uses: actions/download-artifact@v4
