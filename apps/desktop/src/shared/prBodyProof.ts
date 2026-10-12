@@ -1,3 +1,4 @@
+import { markdownFenceLines } from "./markdownFences";
 import { parseProofCompareBlock, PROOF_COMPARE_FENCE_LANGUAGE, type ProofCompareBlock } from "./proofCitation";
 
 /**
@@ -17,6 +18,7 @@ import { parseProofCompareBlock, PROOF_COMPARE_FENCE_LANGUAGE, type ProofCompare
  */
 
 const ID = "[A-Za-z0-9][A-Za-z0-9_-]{0,127}";
+const ID_ONLY = new RegExp(`^${ID}$`);
 const CITATION = new RegExp(`!\\[([^\\]]*)\\]\\(\\s*ade-proof:\\/{0,2}(${ID})\\/?\\s*\\)`, "g");
 const MARKER = new RegExp(`<!--\\s*ade-proof:(${ID})\\s*-->`);
 /** The fence ADE's PR markdown draws as a side-by-side figure. */
@@ -48,35 +50,29 @@ type Segment =
  */
 function segments(markdown: string): Segment[] {
   const out: Segment[] = [];
-  const lines = markdown.split("\n");
-  let buffer: string[] = [];
-  let fence: { mark: string; language: string; lines: string[] } | null = null;
+  let text: string[] = [];
+  let fence: string[] = [];
   const flushText = () => {
-    if (buffer.length) out.push({ kind: "text", text: buffer.join("\n") });
-    buffer = [];
+    if (text.length) out.push({ kind: "text", text: text.join("\n") });
+    text = [];
   };
-  for (const line of lines) {
-    const mark = /^\s*(`{3,}|~{3,})\s*([^\s`]*)/.exec(line);
-    if (!fence) {
-      if (mark) {
-        flushText();
-        fence = { mark: mark[1]!, language: (mark[2] ?? "").toLowerCase(), lines: [line] };
-      } else {
-        buffer.push(line);
-      }
+  const flushFence = (language: string) => {
+    const source = fence.join("\n");
+    const block = language === PROOF_COMPARE_FENCE_LANGUAGE ? parseProofCompareBlock(fence.slice(1, -1).join("\n")) : null;
+    out.push(block ? { kind: "compare", text: source, block } : { kind: "code", text: source });
+    fence = [];
+  };
+  for (const entry of markdownFenceLines(markdown)) {
+    if (entry.fence === null) {
+      text.push(entry.line);
       continue;
     }
-    fence.lines.push(line);
-    if (mark && mark[1]![0] === fence.mark[0] && mark[1]!.length >= fence.mark.length && !mark[2]) {
-      const text = fence.lines.join("\n");
-      const block = fence.language === PROOF_COMPARE_FENCE_LANGUAGE
-        ? parseProofCompareBlock(fence.lines.slice(1, -1).join("\n"))
-        : null;
-      out.push(block ? { kind: "compare", text, block } : { kind: "code", text });
-      fence = null;
-    }
+    if (entry.fence === "open") flushText();
+    fence.push(entry.line);
+    if (entry.fence === "close") flushFence(entry.language);
   }
-  if (fence) out.push({ kind: "code", text: fence.lines.join("\n") });
+  // A fence the text never closes runs to the end, and stays code.
+  if (fence.length) out.push({ kind: "code", text: fence.join("\n") });
   flushText();
   return out;
 }
@@ -87,10 +83,6 @@ function outsideInlineCode(text: string, fn: (prose: string) => string): string 
     .split(/(`+[^`\n]*`+)/)
     .map((piece, index) => (index % 2 === 1 ? piece : fn(piece)))
     .join("");
-}
-
-function joinSegments(parts: string[]): string {
-  return parts.join("\n");
 }
 
 /** Every proof id the text cites, in reading order, each once. */
@@ -132,7 +124,7 @@ export function rewritePrBodyProofForGithub(
   markdown: string,
   fileFor: (artifactId: string) => PrBodyProofFile | null,
 ): string {
-  return joinSegments(segments(markdown.replace(/\r\n?/g, "\n")).map((segment) => {
+  return segments(markdown.replace(/\r\n?/g, "\n")).map((segment) => {
     if (segment.kind === "code") return segment.text;
     if (segment.kind === "text") {
       return outsideInlineCode(segment.text, (prose) => prose.replace(CITATION, (whole, caption: string, id: string) => {
@@ -162,15 +154,21 @@ export function rewritePrBodyProofForGithub(
       ];
     if (caption) lines.push("", caption);
     return lines.join("\n");
-  }));
+  }).join("\n");
 }
 
 /* ── Reading the text back in ADE ───────────────────────────────────── */
 
 const IMAGE = /!\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+"([^"]*)")?\s*\)/;
+const IMAGE_ONLY = new RegExp(`^${IMAGE.source}$`);
+/** An uploaded picture followed by the comment that carries its proof id. */
+const MARKED_IMAGE = new RegExp(`${IMAGE.source}[ \\t]*${MARKER.source}`, "g");
+/** gh may leave an uploaded video as a bare link. */
+const MARKED_LINK = new RegExp(`(^|[\\s(])(https:\\/\\/[^\\s)<]+)[ \\t]*${MARKER.source}`, "g");
+const TABLE_RULE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
 
 function readImageCell(cell: string): { url: string; artifactId: string | null; label: string | null } | null {
-  const match = new RegExp(`^${IMAGE.source}$`).exec(cell.trim());
+  const match = IMAGE_ONLY.exec(cell.trim());
   if (!match) return null;
   const title = match[3] ?? "";
   return {
@@ -208,7 +206,7 @@ function tablesToCompare(text: string): string {
       && titles.length <= MAX_COMPARE_SIDES
       && titles.every((title) => /^(before|after)\b/i.test(title))
       && rule !== undefined
-      && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(rule)
+      && TABLE_RULE.test(rule)
       && row !== undefined
       && (after === undefined || !after.includes("|"));
     const cells = isCompare ? splitRow(row!).map(readImageCell) : [];
@@ -237,7 +235,7 @@ export function prBodyMayHoldProof(markdown: string): boolean {
  */
 export function preparePrBodyProofForAde(markdown: string): string {
   if (!prBodyMayHoldProof(markdown)) return markdown;
-  return joinSegments(segments(markdown.replace(/\r\n?/g, "\n")).map((segment) => {
+  return segments(markdown.replace(/\r\n?/g, "\n")).map((segment) => {
     if (segment.kind === "code") return segment.text;
     if (segment.kind === "compare") {
       const { before, after, caption } = segment.block;
@@ -250,15 +248,14 @@ export function preparePrBodyProofForAde(markdown: string): string {
       });
     }
     const marked = outsideInlineCode(segment.text, (prose) => prose
-      .replace(new RegExp(`${IMAGE.source}[ \\t]*${MARKER.source}`, "g"), (_whole, alt: string, url: string, _title: string | undefined, id: string) =>
+      .replace(MARKED_IMAGE, (_whole, alt: string, url: string, _title: string | undefined, id: string) =>
         `![${alt}](${url} "${PR_PROOF_TITLE_PREFIX}${id}")`)
-      // gh may leave an uploaded video as a bare link.
-      .replace(new RegExp(`(^|[\\s(])(https:\\/\\/[^\\s)<]+)[ \\t]*${MARKER.source}`, "g"), (_whole, lead: string, url: string, id: string) =>
+      .replace(MARKED_LINK, (_whole, lead: string, url: string, id: string) =>
         `${lead}![](${url} "${PR_PROOF_TITLE_PREFIX}${id}")`)
       .replace(CITATION, (_whole, caption: string, id: string) =>
         `![${caption}](https://${PR_PROOF_PLACEHOLDER_HOST}/${id} "${PR_PROOF_TITLE_PREFIX}${id}")`));
     return tablesToCompare(stackedPairsToCompare(marked));
-  }));
+  }).join("\n");
 }
 
 /** The Before / After pair `rewritePrBodyProofForGithub` writes for videos. */
@@ -279,21 +276,42 @@ function stackedPairsToCompare(text: string): string {
   });
 }
 
+/** A proof id an image title or a figure carries, or null for anything else. */
+export function prProofIdFromTitle(title: string | null | undefined): string | null {
+  if (!title?.startsWith(PR_PROOF_TITLE_PREFIX)) return null;
+  const id = title.slice(PR_PROOF_TITLE_PREFIX.length);
+  return ID_ONLY.test(id) ? id : null;
+}
+
+/**
+ * Anyone who can comment on a PR can write this fence, so its fields are
+ * checked like any other markdown: an https URL, a well-formed proof id.
+ */
 export function parsePrCompareFence(source: string): PrCompareFigure | null {
+  let value: unknown;
   try {
-    const value = JSON.parse(source) as Partial<PrCompareFigure> | null;
-    const sides = Array.isArray(value?.sides) ? value!.sides : [];
-    if (sides.length < 2) return null;
-    return {
-      sides: sides.map((side) => ({
-        title: typeof side?.title === "string" ? side.title : "",
-        url: typeof side?.url === "string" && !side.url.includes(PR_PROOF_PLACEHOLDER_HOST) ? side.url : null,
-        artifactId: typeof side?.artifactId === "string" ? side.artifactId : null,
-        label: typeof side?.label === "string" ? side.label : null,
-      })),
-      caption: typeof value?.caption === "string" ? value.caption : null,
-    };
+    value = JSON.parse(source);
   } catch {
     return null;
   }
+  const sides = value !== null && typeof value === "object" && Array.isArray((value as { sides?: unknown }).sides)
+    ? (value as { sides: unknown[] }).sides
+    : [];
+  if (sides.length < 2 || sides.length > MAX_COMPARE_SIDES) return null;
+  const text = (field: unknown): string | null => (typeof field === "string" && field.trim() ? field : null);
+  const caption = text((value as { caption?: unknown }).caption);
+  return {
+    sides: sides.map((raw) => {
+      const side = (raw ?? {}) as Record<string, unknown>;
+      const url = text(side.url);
+      const id = text(side.artifactId);
+      return {
+        title: text(side.title) ?? "",
+        url: url && /^https:\/\//i.test(url) && !url.includes(PR_PROOF_PLACEHOLDER_HOST) ? url : null,
+        artifactId: id && ID_ONLY.test(id) ? id : null,
+        label: text(side.label),
+      };
+    }),
+    caption,
+  };
 }

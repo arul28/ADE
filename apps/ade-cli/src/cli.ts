@@ -7682,6 +7682,11 @@ function proofIntoPrBodySteps(options: {
       // hide that; the summary reports it as a warning instead.
       optional: true,
       params: (values) => {
+        // The list step failed and said why; an upload with no records would
+        // only spend a GitHub call to fail with a worse reason.
+        if (isRecord(values.proofList) && values.proofList.ok === false) {
+          throw new CliToolError(asString(values.proofList.error) ?? "proof publish failed — the proof records could not be read", {});
+        }
         const listed = firstArray(unwrapActionEnvelope(values.proofList) as JsonObject, ["artifacts"]);
         let published: ProofPublishResult;
         try {
@@ -7794,7 +7799,7 @@ function buildPrPlan(args: string[]): CliPlan {
           // The text travels beside the result so the summary can say what a
           // reader will miss in it.
           params: (values) => {
-            if (body !== undefined) values.prBody = body;
+            values.prBody = body ?? "";
             return { name: "create_pr_from_lane", arguments: createArgs };
           },
         },
@@ -7946,8 +7951,14 @@ function buildPrPlan(args: string[]): CliPlan {
         },
         ...(citedProof.length
           ? proofIntoPrBodySteps({
-            // gh takes a number or a URL, as this command does.
-            pr: () => String(target ?? "").replace(/^#/, ""),
+            pr: () => {
+              // gh takes a number or a URL. An ADE PR id names no PR to it.
+              const ref = String(target ?? "").replace(/^#/, "");
+              if (!/^\d+$/.test(ref) && !/^https:\/\//i.test(ref)) {
+                throw new CliToolError("to upload the cited proof, name the PR by its number or URL", {});
+              }
+              return ref;
+            },
             ids: citedProof,
             optional: true,
           })
@@ -28537,18 +28548,18 @@ function formatPrCreate(value: unknown): string {
     ["lane", pr.laneId],
     ["GitHub URL", githubUrl],
     ["ADE URL", adeUrl],
-  ]) + formatPrCreateNotes(value, prNumber);
+  ]) + formatPrTextNotes(value, prNumber ? String(prNumber) : null);
 }
 
 /**
- * What the author can still do for the reader, printed under a made PR. These
- * lines guide; the PR exists whatever they say.
+ * What the author can still do for the reader, printed after a PR is made or
+ * its text is replaced. These lines guide; the PR exists whatever they say.
  */
-function formatPrCreateNotes(value: unknown, prNumber: number | null): string {
+function formatPrTextNotes(value: unknown, prRef: string | null): string {
   const record = isRecord(value) ? value : {};
   const lines: string[] = [];
   const proof = isRecord(record.proofInText) ? record.proofInText : null;
-  const uploadCommand = `ade proof publish --pr ${prNumber ?? "<number>"} --in-body`;
+  const uploadCommand = `ade proof publish --pr ${prRef ?? "<number or URL>"} --in-body`;
   if (proof) {
     const posted = firstArray(proof, ["posted"]);
     lines.push(`proof: ${posted.length} item${posted.length === 1 ? "" : "s"} uploaded into the PR text`);
@@ -28569,7 +28580,7 @@ function formatPrCreateNotes(value: unknown, prNumber: number | null): string {
       "",
       "For the reader (the PR is made; these are optional):",
       ...hints.map((hint) => `  - ${hint}`),
-      `  Update the text: ade prs body ${prNumber ?? "<pr>"} --body-file <file>`,
+      `  Update the text: ade prs body ${prRef ?? "<pr>"} --body-file <file>`,
     );
   }
   return lines.length ? `\n${lines.join("\n")}` : "";
@@ -31526,9 +31537,8 @@ function formatTextOutput(
     case "pr-create":
       return formatPrCreate(value);
     case "pr-body": {
-      const pr = isRecord(value) ? asString(value.pr) : null;
-      return `Updated the text of pull request ${pr ?? ""}`.trimEnd()
-        + formatPrCreateNotes(value, positiveInteger(String(pr ?? "").replace(/^#/, "")));
+      const ref = isRecord(value) ? asString(value.prRef) : null;
+      return `Updated the text of pull request ${ref ?? ""}`.trimEnd() + formatPrTextNotes(value, ref);
     }
     case "pr-detail":
       return renderKeyValues(
@@ -32234,16 +32244,18 @@ function summarizeExecution(args: {
   }
 
   if (plan.label === "PR create" || plan.label === "PR update body") {
+    // The body update keeps the result it always returned, with the notes added.
     const summary = plan.label === "PR create"
       ? summarizePrCreateResult(values.result ?? values)
-      : { ok: true, pr: values.prRef ?? null, result: unwrapActionEnvelope(values.result) };
+      : values.result;
     if (!isRecord(summary)) return summary;
-    const body = asString(values.prBody);
+    const body = typeof values.prBody === "string" ? values.prBody : null;
     const proofFailure = [values.proofList, values.proofLink]
       .map((step) => (isRecord(step) && step.ok === false ? asString(step.error) : null))
       .find(Boolean) ?? null;
     return {
       ...summary,
+      ...(plan.label === "PR update body" ? { prRef: values.prRef ?? null } : {}),
       ...(body !== null ? { briefHints: prBriefHints(body).map((hint) => hint.message) } : {}),
       ...(isRecord(values.publish) ? { proofInText: values.publish } : {}),
       // The upload failed before anything reached the PR text.

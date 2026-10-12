@@ -1,10 +1,8 @@
-import { memo, useContext, useMemo, type ReactNode } from "react";
+import { memo, useContext, useMemo } from "react";
 import { CheckCircle, Eye, GitDiff, Question, Scales, type Icon } from "@phosphor-icons/react";
 
 import {
   parsePrBrief,
-  prBriefEvidenceCounts,
-  prBriefEvidenceSummary,
   prBriefPlaceholder,
   type PrBrief,
   type PrBriefPart,
@@ -52,10 +50,6 @@ function BriefPart({
   const env = useContext(PrMarkdownEnvContext);
   const Glyph = PART_GLYPH[part.kind];
   const tone = partTone(part.kind);
-  const summary = useMemo(
-    () => (part.kind === "evidence" ? prBriefEvidenceSummary(prBriefEvidenceCounts(part.body)) : null),
-    [part.body, part.kind],
-  );
   // Evidence that still says "pending" proves nothing yet; say so beside it.
   const notFinal = useMemo(
     () => (part.kind === "evidence" ? prBriefPlaceholder(part.body) : null),
@@ -92,11 +86,6 @@ function BriefPart({
             Not final
           </span>
         ) : null}
-        {summary ? (
-          <span className="text-[11px]" style={{ color: COLORS.textDim }} data-testid="pr-brief-evidence-kinds">
-            · {summary}
-          </span>
-        ) : null}
         <span className="flex-1" />
         {addToChat && part.body.trim() ? (
           <PrAddToChatButton
@@ -118,10 +107,6 @@ function BriefPart({
   );
 }
 
-function Quiet({ children }: { children: ReactNode }) {
-  return <p className="m-0 text-[12px]" style={{ color: COLORS.textMuted }}>{children}</p>;
-}
-
 function PrBriefParts({ brief, repoOwner, repoName, from }: { brief: PrBrief; repoOwner: string; repoName: string; from: string }) {
   const kinds = new Set(brief.parts.map((part) => part.kind));
   return (
@@ -139,9 +124,9 @@ function PrBriefParts({ brief, repoOwner, repoName, from }: { brief: PrBrief; re
         <BriefPart key={`${part.heading}:${index}`} part={part} repoOwner={repoOwner} repoName={repoName} from={from} />
       ))}
       {!kinds.has("evidence") ? (
-        <Quiet>
-          <span data-testid="pr-brief-no-evidence">The author did not say how this was checked.</span>
-        </Quiet>
+        <p data-testid="pr-brief-no-evidence" className="m-0 text-[12px]" style={{ color: COLORS.textMuted }}>
+          The author did not say how this was checked.
+        </p>
       ) : null}
       {brief.footer ? (
         <div className="text-[11.5px] opacity-70" data-testid="pr-brief-footer">

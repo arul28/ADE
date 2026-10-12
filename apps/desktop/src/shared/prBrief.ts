@@ -19,6 +19,8 @@
  * and never refuses.
  */
 
+import { markdownFenceLines } from "./markdownFences";
+
 export type PrBriefPartKind = "why" | "changed" | "evidence" | "not_checked" | "choices" | "other";
 
 export type PrBriefPart = {
@@ -69,65 +71,60 @@ const FOOTER_START = /^(<!--\s*ade:link\b|🤖\s*Generated with\b|(authored|writ
 
 /** Cuts the sign-off and ADE's link block off the end of the last part. */
 function splitFooter(text: string): { body: string; footer: string } {
-  const lines = text.split("\n");
-  let fence: string | null = null;
+  const lines = markdownFenceLines(text);
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    const mark = /^\s*(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
-    if (mark) {
-      if (!fence) fence = mark[0]!;
-      else if (mark[0] === fence) fence = null;
-      continue;
-    }
-    if (fence) continue;
-    if (!FOOTER_START.test(line.trim())) continue;
+    const { line, fence } = lines[index]!;
+    if (fence !== null || !FOOTER_START.test(line.trim())) continue;
     // A sign-off starts a paragraph; the same words mid-paragraph are prose.
-    if (index > 0 && lines[index - 1]!.trim() !== "") continue;
-    return { body: lines.slice(0, index).join("\n").trim(), footer: lines.slice(index).join("\n").trim() };
+    if (index > 0 && lines[index - 1]!.line.trim() !== "") continue;
+    const join = (from: number, to: number) => lines.slice(from, to).map((entry) => entry.line).join("\n").trim();
+    return { body: join(0, index), footer: join(index, lines.length) };
   }
   return { body: text.trim(), footer: "" };
+}
+
+/** A link or footnote defined on its own line; a part cut off from it loses the link. */
+const REFERENCE_DEFINITION = /^ {0,3}\[[^\]\n]+\]:\s+\S/m;
+
+function tagBalance(text: string, tag: string): number {
+  return (text.match(new RegExp(`<${tag}\\b`, "gi"))?.length ?? 0) - (text.match(new RegExp(`</${tag}>`, "gi"))?.length ?? 0);
 }
 
 /**
  * Splits a description at its top headings (`#` to `###`). Returns null when
  * the text does not answer at least two of the Brief's questions, one of them
- * what changed or how it was checked: such a text is shown as written.
+ * what changed or how it was checked: such a text is shown as written. Also
+ * null when a cut would break the markdown: a link defined in one place and
+ * used in another, or a `<details>` block that spans two parts.
  */
 export function parsePrBrief(markdown: string | null | undefined): PrBrief | null {
   const text = (markdown ?? "").replace(/\r\n?/g, "\n");
-  if (!text.trim()) return null;
-  const lines = text.split("\n");
+  if (!text.trim() || REFERENCE_DEFINITION.test(text)) return null;
+  const lines = markdownFenceLines(text);
   const cuts: Array<{ line: number; heading: string; level: number }> = [];
-  let fence: string | null = null;
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    const mark = /^\s*(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
-    if (mark) {
-      if (!fence) fence = mark[0]!;
-      else if (mark[0] === fence) fence = null;
-      continue;
-    }
-    if (fence) continue;
+  lines.forEach(({ line, fence }, index) => {
+    if (fence !== null) return;
     const heading = /^(#{1,3})\s+(.+?)\s*#*\s*$/.exec(line);
     if (heading) cuts.push({ line: index, heading: heading[2]!.trim(), level: heading[1]!.length });
-  }
-  if (cuts.length === 0) return null;
+  });
   // The parts are the headings of the shallowest level that names one; a
   // deeper heading under a part belongs to that part's body.
   const named = cuts.filter((cut) => headingKind(cut.heading) !== "other");
   if (named.length === 0) return null;
   const level = Math.min(...named.map((cut) => cut.level));
   const top = cuts.filter((cut) => cut.level <= level);
+  const join = (from: number, to: number) => lines.slice(from, to).map((entry) => entry.line).join("\n").trim();
 
-  const lead = lines.slice(0, top[0]!.line).join("\n").trim();
+  const lead = join(0, top[0]!.line);
   const parts: PrBriefPart[] = top.map((cut, index) => ({
     kind: headingKind(cut.heading),
     heading: cut.heading.replace(/[:.]\s*$/, ""),
-    body: lines.slice(cut.line + 1, top[index + 1]?.line ?? lines.length).join("\n").trim(),
+    body: join(cut.line + 1, top[index + 1]?.line ?? lines.length),
   }));
 
   const kinds = new Set(parts.map((part) => part.kind).filter((kind) => kind !== "other"));
   if (kinds.size < 2 || !(kinds.has("changed") || kinds.has("evidence"))) return null;
+  if ([lead, ...parts.map((part) => part.body)].some((piece) => tagBalance(piece, "details") !== 0)) return null;
 
   const last = parts[parts.length - 1]!;
   const { body, footer } = splitFooter(last.body);
@@ -135,55 +132,20 @@ export function parsePrBrief(markdown: string | null | undefined): PrBrief | nul
   return { lead, parts, footer };
 }
 
-/* ── What kind of evidence a part holds ─────────────────────────────── */
-
-export type PrBriefEvidenceCounts = {
-  pictures: number;
-  videos: number;
-  /** Shell commands and code blocks: what the author ran. */
-  commands: number;
-  /** Tables: measured numbers. */
-  tables: number;
-};
-
-const VIDEO_URL = /\.(mp4|mov|webm|m4v)(\?|#|\)|\s|"|$)/i;
-
-export function prBriefEvidenceCounts(markdown: string): PrBriefEvidenceCounts {
-  const counts: PrBriefEvidenceCounts = { pictures: 0, videos: 0, commands: 0, tables: 0 };
-  const withoutFences = markdown.replace(/(^|\n)\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\s*\2[^\n]*(?=\n|$)/g, (block) => {
-    if (!/^\s*(`{3,}|~{3,})\s*(proof-compare|mermaid)\b/.test(block.trimStart())) counts.commands += 1;
-    else if (/proof-compare/.test(block)) counts.pictures += 2;
-    return "\n";
-  });
-  for (const match of withoutFences.matchAll(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)|<img\b[^>]*>|<video\b[^>]*>/gi)) {
-    if (/^<video/i.test(match[0]) || VIDEO_URL.test(match[1] ?? "")) counts.videos += 1;
-    else counts.pictures += 1;
-  }
-  const withoutImages = withoutFences.replace(/!\[[^\]]*\]\([^)]*\)/g, "");
-  for (const match of withoutImages.matchAll(/(^|\s)(https:\/\/\S+)/g)) {
-    if (VIDEO_URL.test(match[2]!)) counts.videos += 1;
-  }
-  counts.commands += (withoutFences.match(/`[^`\n]+`/g) ?? []).filter((span) => /\s/.test(span) || /^`(npm|npx|node|git|gh|ade|pnpm|yarn|bun|cargo|go|make|pytest|swift|xcodebuild)\b/.test(span)).length;
-  counts.tables = (withoutFences.match(/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/gm) ?? []).length;
-  return counts;
-}
-
-/** "2 pictures · 1 video · 3 commands", or null when the part is words only. */
-export function prBriefEvidenceSummary(counts: PrBriefEvidenceCounts): string | null {
-  const plural = (count: number, one: string, many: string) => (count === 1 ? `1 ${one}` : `${count} ${many}`);
-  const bits = [
-    counts.pictures ? plural(counts.pictures, "picture", "pictures") : null,
-    counts.videos ? plural(counts.videos, "video", "videos") : null,
-    counts.tables ? plural(counts.tables, "table", "tables") : null,
-    counts.commands ? plural(counts.commands, "command", "commands") : null,
-  ].filter(Boolean);
-  return bits.length ? bits.join(" · ") : null;
+/** Does the text show something: a picture, a video, a comparison or a table of numbers? */
+function showsEvidence(markdown: string): boolean {
+  const lines = markdownFenceLines(markdown);
+  if (lines.some((entry) => entry.fence === "open" && entry.language === "proof-compare")) return true;
+  const prose = lines.filter((entry) => entry.fence === null).map((entry) => entry.line).join("\n");
+  return /!\[[^\]]*\]\([^)\s]+[^)]*\)|<img\b|<video\b/i.test(prose)
+    || /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/m.test(prose);
 }
 
 /* ── Hints: what the CLI tells an author after the PR is made ───────── */
 
 export type PrBriefHint = {
   code:
+    | "no_text"
     | "no_parts"
     | "no_why"
     | "no_changed"
@@ -209,12 +171,15 @@ const PLACEHOLDER = new RegExp(
     ...Object.values(PR_BRIEF_PLACEHOLDERS),
     // The draft ADE wrote before the Brief.
     "_Describe the change._", "_Key files and behaviors._", "_How you tested._", "_Anything to watch._",
-  ].map((text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}|\\bTBD\\b|\\bTODO\\b|\\bpending \\/\\w+)`,
+  ].map((text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}|\\bpending \\/\\w+)`,
   "i",
 );
+/** Upper case only: "todo" in a sentence is a word, "TODO" is a marker. */
+const MARKER_WORD = /\b(TBD|TODO)\b/;
+
 /** The placeholder a text still holds ("pending /test", "TODO"), or null. */
 export function prBriefPlaceholder(markdown: string): string | null {
-  return PLACEHOLDER.exec(markdown)?.[0] ?? null;
+  return (PLACEHOLDER.exec(markdown) ?? MARKER_WORD.exec(markdown))?.[0] ?? null;
 }
 
 /** Words of author prose up to which a text needs no parts at all. */
@@ -225,8 +190,10 @@ export const PR_BRIEF_LONG_WORDS = 450;
 export const PR_BRIEF_MAX_WHY_CODE_NAMES = 3;
 
 function proseWords(markdown: string): number {
-  return markdown
-    .replace(/(^|\n)\s*(`{3,}|~{3,})[\s\S]*?\n\s*\2[^\n]*/g, " ")
+  return markdownFenceLines(markdown)
+    .filter((entry) => entry.fence === null)
+    .map((entry) => entry.line)
+    .join("\n")
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .split(/\s+/)
@@ -240,6 +207,9 @@ function proseWords(markdown: string): number {
 export function prBriefHints(markdown: string | null | undefined): PrBriefHint[] {
   const text = (markdown ?? "").replace(/\r\n?/g, "\n");
   const hints: PrBriefHint[] = [];
+  if (!text.trim()) {
+    return [{ code: "no_text", message: "The PR has no text. Say what changed and how you checked it." }];
+  }
   const brief = parsePrBrief(text);
   if (!brief) {
     // A small fix told in a few sentences needs no headings.
@@ -258,10 +228,9 @@ export function prBriefHints(markdown: string | null | undefined): PrBriefHint[]
     hints.push({ code: "no_evidence", message: `No "${PR_BRIEF_HEADINGS.evidence}" part. Say how you checked the change and what you saw, or say why no check is necessary.` });
   } else {
     const evidence = body("evidence");
-    const counts = prBriefEvidenceCounts(evidence);
     const onlyPasses = proseWords(evidence) <= 14
       && /\b(tests?|ci|checks?|typecheck|lint|build)\b[^.\n]*\b(pass(es|ed|ing)?|green|clean|ok)\b/i.test(evidence)
-      && counts.pictures + counts.videos + counts.tables === 0;
+      && !showsEvidence(evidence);
     if (onlyPasses) {
       hints.push({ code: "tests_pass_only", message: `"Tests pass" alone does not show that the change works. Say what you ran, on what, and what you saw.` });
     }
@@ -269,8 +238,8 @@ export function prBriefHints(markdown: string | null | undefined): PrBriefHint[]
   if (!has("not_checked")) {
     hints.push({ code: "no_not_checked", message: `No "${PR_BRIEF_HEADINGS.not_checked}" part. Say what you could not check, or write "Nothing".` });
   }
-  const placeholder = PLACEHOLDER.exec(text);
-  if (placeholder) hints.push({ code: "placeholder", message: `The text still holds a placeholder ("${placeholder[0]}"). Replace it with the real result.` });
+  const placeholder = prBriefPlaceholder(text);
+  if (placeholder) hints.push({ code: "placeholder", message: `The text still holds a placeholder ("${placeholder}"). Replace it with the real result.` });
 
   const opening = `${brief.lead}\n${body("why")}`;
   const codeNames = new Set(opening.match(/`[^`\n]+`/g) ?? []).size;

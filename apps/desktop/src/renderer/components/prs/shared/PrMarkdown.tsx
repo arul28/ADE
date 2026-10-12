@@ -39,8 +39,8 @@ import { getFileIcon } from "../../files/filePresentation";
 import {
   PR_COMPARE_FENCE_LANGUAGE,
   PR_PROOF_PLACEHOLDER_HOST,
-  PR_PROOF_TITLE_PREFIX,
   parsePrCompareFence,
+  prProofIdFromTitle,
   preparePrBodyProofForAde,
   type PrCompareFigure,
 } from "../../../../shared/prBodyProof";
@@ -305,6 +305,9 @@ function isCursorActionImage(src: string | undefined, altText: string): boolean 
   }
 }
 
+const MIN_QUOTABLE_IMAGE_WIDTH = 160;
+const MIN_QUOTABLE_IMAGE_HEIGHT = 80;
+
 function PrImage({
   src,
   alt,
@@ -315,12 +318,16 @@ function PrImage({
   title?: string;
 }) {
   const [errored, setErrored] = useState(false);
+  // "Add to chat" is for a picture a reader would quote: not a badge, an
+  // avatar or an icon, and not a picture that is itself a link.
+  const [quotable, setQuotable] = useState(false);
   const env = useContext(PrMarkdownEnvContext);
   const from = useContext(PrQuoteSourceContext);
   // react-markdown reuses img instances positionally, so reset the error flag
   // when the source changes (e.g. a corrected URL in the editor preview).
   useEffect(() => {
     setErrored(false);
+    setQuotable(false);
   }, [src]);
   const handleClick = useCallback(
     (event: MouseEvent<HTMLImageElement>) => {
@@ -372,7 +379,7 @@ function PrImage({
   }
   // A picture the author uploaded as proof carries its proof id in the title
   // (see prBodyProof.ts): this machine's copy when it has one, else GitHub's.
-  const proofId = title?.startsWith(PR_PROOF_TITLE_PREFIX) ? title.slice(PR_PROOF_TITLE_PREFIX.length) : null;
+  const proofId = prProofIdFromTitle(title);
   const addToChat = env?.onAddToChat;
   const quote = addToChat && !src.includes(PR_PROOF_PLACEHOLDER_HOST)
     ? () => addToChat({ text: `![${altText}](${src})`, from: `a picture in ${from}` })
@@ -404,14 +411,22 @@ function PrImage({
       // which is why GitHub itself serves these with referrer stripped.
       referrerPolicy="no-referrer"
       onError={() => setErrored(true)}
+      onLoad={quote ? (event) => {
+        const image = event.currentTarget;
+        setQuotable(
+          image.naturalWidth >= MIN_QUOTABLE_IMAGE_WIDTH
+          && image.naturalHeight >= MIN_QUOTABLE_IMAGE_HEIGHT
+          && image.closest("a") === null,
+        );
+      } : undefined}
       onClick={handleClick}
       className="my-2 block max-w-full cursor-zoom-in rounded-[6px] border"
       style={{ borderColor: COLORS.border, maxHeight: 520 }}
     />
   );
-  if (!quote) return picture;
+  if (!quote || !quotable) return picture;
   return (
-    <span className="group/media relative inline-block max-w-full align-top">
+    <span className="group/media relative block w-fit max-w-full">
       {picture}
       <PrAddToChatButton onClick={quote} className="absolute right-2 top-4 opacity-0 group-hover/media:opacity-100 focus-visible:opacity-100" />
     </span>

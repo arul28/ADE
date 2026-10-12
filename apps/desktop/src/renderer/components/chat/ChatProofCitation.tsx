@@ -116,10 +116,13 @@ function CitedProofMedia({
   artifact,
   caption,
   compact = false,
+  fallback,
 }: {
   artifact: ComputerUseArtifactView;
   caption: string | null;
   compact?: boolean;
+  /** Shown in place of the failure notice when this machine cannot load the file. */
+  fallback?: React.ReactNode;
 }) {
   const { allowLocalArtifactProtocol } = useContext(ProofCitationContext);
   const { containerRef, preview, loading, failed, explanation, onMediaError } = useArtifactPreview<HTMLSpanElement>(
@@ -136,6 +139,7 @@ function CitedProofMedia({
   const olderLine = proofRecordedBeforeRequestLine(readProofProvenance(artifact.metadata));
   const mediaHeight = compact ? "max-h-[300px]" : "max-h-[440px]";
 
+  if (failed && fallback != null) return <>{fallback}</>;
   return (
     <span
       ref={containerRef}
@@ -210,7 +214,8 @@ function CitedProofMedia({
 /**
  * One cited artifact. `fallback` is another copy of the same proof (a pull
  * request's uploaded picture): it shows while the record is read and when this
- * machine does not hold it, instead of the spinner and the "no proof" note.
+ * machine does not hold the record or its file, instead of the spinner and
+ * the failure notes.
  */
 export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
   artifactId: string;
@@ -236,7 +241,7 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
       </CitationPlaceholder>
     );
   }
-  return <CitedProofMedia artifact={state.artifact} caption={caption} compact={compact} />;
+  return <CitedProofMedia artifact={state.artifact} caption={caption} compact={compact} fallback={fallback} />;
 }
 
 /** `![caption](ade-proof://<id>)` in an answer. */

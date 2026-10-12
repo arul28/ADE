@@ -1436,22 +1436,23 @@ export function PrDetailPane({
       `${quote.from} in pull request #${pr.githubPrNumber} "${pr.title}" (${pr.githubUrl})`,
     );
     if (!block) return;
-    const target = linkedChats.find((chat) => chat.sessionId === hostChatSessionId) ?? linkedChats[0] ?? null;
-    const sessionId = hostChatSessionId ?? target?.sessionId ?? null;
-    if (!sessionId) {
+    if (hostChatSessionId) {
+      // The chat beside this pane shows the quote arrive; no notice needed.
+      queueAgentChatDraftHandoff({ sessionId: hostChatSessionId }, block, { collect: true });
+      return;
+    }
+    const chat = linkedChats[0] ?? null;
+    if (!chat) {
       chatHandoff({ laneId: pr.laneId, sessionId: null, prompt: block });
       return;
     }
-    queueAgentChatDraftHandoff({ sessionId }, block, { collect: true });
-    // The chat beside this pane shows the quote arrive; no notice needed.
-    if (sessionId === hostChatSessionId) return;
-    const laneId = target?.laneId ?? pr.laneId;
+    queueAgentChatDraftHandoff({ sessionId: chat.sessionId }, block, { collect: true });
     showToast({
       id: `pr-add-to-chat:${pr.id}`,
       tone: "success",
-      title: `Added to ${target ? chatLabel(target) : "the chat"}`,
+      title: `Added to ${chatLabel(chat)}`,
       message: "It waits in the chat's message box.",
-      actions: [{ label: "Open chat", onClick: () => chatHandoff({ laneId, sessionId }) }],
+      actions: [{ label: "Open chat", onClick: () => chatHandoff({ laneId: chat.laneId, sessionId: chat.sessionId }) }],
     });
   }, [chatHandoff, hostChatSessionId, linkedChats, pr.githubPrNumber, pr.githubUrl, pr.id, pr.laneId, pr.title]);
 

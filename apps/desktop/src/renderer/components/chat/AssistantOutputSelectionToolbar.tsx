@@ -1,18 +1,10 @@
-import React, { useLayoutEffect, useRef, useState } from "react";
+import React from "react";
 import { ChatTeardropText, Quotes, Ticket } from "@phosphor-icons/react";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 import { cn } from "../ui/cn";
-import { cssZoomOf } from "../../lib/webZoom";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
+import { useSelectionAnchor } from "../ui/useSelectionAnchor";
 import { readAssistantOutputSelection, type AssistantOutputSelection } from "./assistantOutputSelection";
-
-type ToolbarState = {
-  selection: AssistantOutputSelection;
-  left: number;
-  top: number;
-  /** Comments hang off finished replies only; a streaming one is still changing. */
-  canComment: boolean;
-};
 
 const BUTTON_CLASS =
   "inline-flex items-center gap-1.5 px-2 py-1 font-sans text-[11px] font-medium transition-colors";
@@ -30,62 +22,16 @@ export function AssistantOutputSelectionToolbar({
   /** Opens a comment on the selection. Absent where comments are not offered. */
   onComment?: (selection: AssistantOutputSelection) => void;
 }) {
-  const [state, setState] = useState<ToolbarState | null>(null);
   const enabled = Boolean(onAddToChat || onComment || onCreateIssue);
-  // Scrolling only moves a toolbar that is already open: it cannot change the
-  // selection, and a streaming transcript scrolls itself many times a second.
-  const showingRef = useRef(false);
-  showingRef.current = state != null;
-
-  const sync = () => {
-    if (!enabled) {
-      setState(null);
-      return;
-    }
-    try {
-      const next = readAssistantOutputSelection(rootRef.current);
-      if (!next) {
-        setState(null);
-        return;
-      }
-      const width = (onAddToChat ? 118 : 0) + (onComment ? 78 : 0) + (onCreateIssue ? 108 : 0);
-      // Rects are zoomed under the hosted web client's body zoom; styles are
-      // not (see `cssZoomOf`).
-      const zoom = cssZoomOf();
-      setState({
-        selection: next,
-        left: Math.min(Math.max(8, next.rect.right / zoom + 8), Math.max(8, window.innerWidth / zoom - width - 8)),
-        top: Math.max(8, next.rect.top / zoom - 36),
-        canComment: Boolean(next.output.dataset.threadCommentKey),
-      });
-    } catch {
-      setState(null);
-    }
-  };
-
-  useLayoutEffect(() => {
-    if (!enabled) return;
-    const handleSelection = () => sync();
-    const handleScrollOrResize = () => {
-      if (showingRef.current) sync();
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setState(null);
-    };
-    document.addEventListener("selectionchange", handleSelection);
-    document.addEventListener("mouseup", handleSelection);
-    window.addEventListener("resize", handleScrollOrResize);
-    window.addEventListener("scroll", handleScrollOrResize, true);
-    window.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("selectionchange", handleSelection);
-      document.removeEventListener("mouseup", handleSelection);
-      window.removeEventListener("resize", handleScrollOrResize);
-      window.removeEventListener("scroll", handleScrollOrResize, true);
-      window.removeEventListener("keydown", handleKey);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `sync` reads the latest props each call
-  }, [enabled, onAddToChat, onComment, onCreateIssue, rootRef]);
+  const [anchor, clear] = useSelectionAnchor(
+    enabled,
+    () => readAssistantOutputSelection(rootRef.current),
+    (onAddToChat ? 118 : 0) + (onComment ? 78 : 0) + (onCreateIssue ? 108 : 0),
+  );
+  // Comments hang off finished replies only; a streaming one is still changing.
+  const state = anchor
+    ? { ...anchor, canComment: Boolean(anchor.selection.output.dataset.threadCommentKey) }
+    : null;
 
   if (!state || !enabled) return null;
 
@@ -113,8 +59,7 @@ export function AssistantOutputSelectionToolbar({
               event.stopPropagation();
               const block = formatChatOutputContextBlock(state.selection.text);
               if (block) onAddToChat(block);
-              window.getSelection()?.removeAllRanges();
-              setState(null);
+              clear();
             }}
           >
             <Quotes size={13} weight="fill" className="text-[var(--chat-accent)]" aria-hidden />
@@ -137,8 +82,7 @@ export function AssistantOutputSelectionToolbar({
               event.stopPropagation();
               if (!state.canComment) return;
               onComment(state.selection);
-              window.getSelection()?.removeAllRanges();
-              setState(null);
+              clear();
             }}
           >
             <ChatTeardropText size={13} weight="fill" className={state.canComment ? "text-[var(--chat-accent)]" : undefined} aria-hidden />
@@ -155,8 +99,7 @@ export function AssistantOutputSelectionToolbar({
               event.preventDefault();
               event.stopPropagation();
               onCreateIssue(state.selection.text);
-              window.getSelection()?.removeAllRanges();
-              setState(null);
+              clear();
             }}
           >
             <Ticket size={13} weight="fill" className="text-[var(--chat-accent)]" aria-hidden />

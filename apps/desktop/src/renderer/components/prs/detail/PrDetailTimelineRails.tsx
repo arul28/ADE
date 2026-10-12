@@ -859,10 +859,12 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
 
     const unifiedChecks = useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
     // Checks of a merged or closed PR need nobody; the strip is for open work.
-    const failingChecks = useMemo(
-      () => (pr.state === "open" || pr.state === "draft" ? prFailingCheckNames(unifiedChecks) : []),
-      [pr.state, unifiedChecks],
-    );
+    // Keyed by the names: the checks array is new on every poll, and the
+    // thread must not rebuild while the same checks keep failing.
+    const failingChecksKey = pr.state === "open" || pr.state === "draft"
+      ? prFailingCheckNames(unifiedChecks).join("\n")
+      : "";
+    const failingChecks = useMemo(() => (failingChecksKey ? failingChecksKey.split("\n") : []), [failingChecksKey]);
     const digestModel = useMemo(() => buildDigestTimelineModel(events, { failingChecks }), [events, failingChecks]);
 
     // Which push section the reader is in: the last push at or above the

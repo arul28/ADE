@@ -1,10 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ChatTeardropText } from "@phosphor-icons/react";
+import { ArrowSquareOut, ChatTeardropText } from "@phosphor-icons/react";
 
 import type { PrCompareFigure, PrCompareSide } from "../../../../shared/prBodyProof";
 import { CitedProofSlot, ProofCitationProvider } from "../../chat/ChatProofCitation";
 import { useChatRuntimeScope } from "../../chat/ChatRuntimeScope";
 import { COLORS } from "../../lanes/laneDesignTokens";
+import { useAppStore } from "../../../state/appStore";
 
 /**
  * Proof in a pull request's text.
@@ -21,29 +22,34 @@ function openExternal(url: string | null | undefined) {
 }
 
 /**
- * GitHub's copy. An uploaded video has no file extension in its URL, so a
- * picture that fails to load is tried once as a video before the words show.
+ * GitHub's copy. ADE's content policy loads pictures from GitHub and no video,
+ * and an uploaded video's URL does not say that it is one. So a copy that does
+ * not load as a picture becomes a link that opens it on GitHub.
  */
-export function PrRemoteMedia({ url, alt, maxHeight = 520 }: { url: string; alt: string; maxHeight?: number }) {
-  const [mode, setMode] = useState<"image" | "video" | "failed">("image");
-  useEffect(() => setMode("image"), [url]);
-  if (mode === "failed") {
-    return alt
-      ? <span className="text-[11px]" style={{ color: COLORS.textMuted }}>{alt}</span>
-      : null;
-  }
-  if (mode === "video") {
+export function PrRemoteMedia({
+  url,
+  alt,
+  maxHeight = 520,
+}: {
+  url: string;
+  alt: string;
+  maxHeight?: number;
+}) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [url]);
+  if (failed) {
     return (
-      <video
-        src={url}
-        controls
-        playsInline
-        preload="metadata"
-        aria-label={alt}
-        onError={() => setMode("failed")}
-        className="my-2 block max-w-full rounded-[8px] border"
-        style={{ borderColor: COLORS.border, maxHeight, background: "#000" }}
-      />
+      <button
+        type="button"
+        data-testid="pr-remote-media-link"
+        onClick={() => openExternal(url)}
+        className="my-2 inline-flex max-w-full items-center gap-1.5 rounded-[6px] border px-2 py-1 text-left text-[12px] hover:underline"
+        style={{ borderColor: COLORS.border, color: COLORS.textSecondary, background: "transparent", cursor: "pointer" }}
+      >
+        <ArrowSquareOut size={12} style={{ flexShrink: 0 }} />
+        <span className="min-w-0 truncate">{alt || "Attachment"}</span>
+        <span className="shrink-0" style={{ color: COLORS.textMuted }}>· open on GitHub</span>
+      </button>
     );
   }
   return (
@@ -54,8 +60,11 @@ export function PrRemoteMedia({ url, alt, maxHeight = 520 }: { url: string; alt:
       // GitHub's image hosts refuse a request that carries a referrer from
       // another origin; see PrImage.
       referrerPolicy="no-referrer"
-      onError={() => setMode("video")}
-      onClick={() => openExternal(url)}
+      onError={() => setFailed(true)}
+      onClick={(event) => {
+        event.preventDefault();
+        openExternal(url);
+      }}
       className="my-2 block max-w-full cursor-zoom-in rounded-[8px] border"
       style={{ borderColor: COLORS.border, maxHeight }}
     />
@@ -65,8 +74,12 @@ export function PrRemoteMedia({ url, alt, maxHeight = 520 }: { url: string; alt:
 /** The frame the chat's proof figure needs: its font variable and its context. */
 function ProofFrame({ children }: { children: ReactNode }) {
   const scope = useChatRuntimeScope();
+  const tabBinding = useAppStore((state) => state.projectBinding);
+  // Outside a chat the scope has no binding, and the tab's own says where the
+  // proof files are. Only a machine that holds them may read them by path.
+  const remote = (scope.binding ?? tabBinding)?.kind === "remote";
   return (
-    <ProofCitationProvider artifacts={NO_ARTIFACTS} allowLocalArtifactProtocol={!scope.isRemote}>
+    <ProofCitationProvider artifacts={NO_ARTIFACTS} allowLocalArtifactProtocol={!remote}>
       <span className="block min-w-0" style={{ ["--chat-font-size" as string]: "13.5px" }}>{children}</span>
     </ProofCitationProvider>
   );

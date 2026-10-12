@@ -2223,9 +2223,12 @@ two known parts renders as the plain document it is.
 
 `PrDescriptionBody` (`prs/shared/PrBrief.tsx`) draws each part with a small
 label and its markdown. Only the "Not checked" part is tinted. The Evidence
-label says what kind of evidence the part holds ("2 pictures · 3 commands"),
-and shows "Not final" when the text still holds a placeholder such as
+label shows "Not final" when the text still holds a placeholder such as
 `pending /test`. A Brief with no Evidence part says so in one quiet line.
+
+The parser returns null, and the text stays a plain document, when a cut would
+break the markdown: a link or footnote defined on its own line (`[1]: …`), or
+a `<details>` block that spans two parts.
 
 The Brief is plain markdown in the PR's own text. ADE stores nothing beside
 it, so GitHub, the phone and another machine all read the same words.
@@ -2246,17 +2249,23 @@ keeps its proof id in an HTML comment that GitHub does not show.
 
 `PrMarkdown` reads the same text back (`preparePrBodyProofForAde`). A picture
 with a proof id shows this machine's copy when it holds one (`PrProofMedia`,
-the chat's proof figure, so a video has its chapters), else GitHub's copy. A
+the chat's proof figure, so a video has its chapters), else GitHub's copy.
+ADE's content policy loads pictures from GitHub and no video, so a GitHub copy
+that does not load as a picture becomes an "open on GitHub" link. A
 Before/After table whose one row holds one picture per cell becomes a
 side-by-side figure (`PrCompare`), whoever wrote the table. A citation that
-was never uploaded still shows on the machine that holds the proof.
+was never uploaded still shows on the machine that holds the proof. Anyone who
+can comment can write these forms, so `parsePrCompareFence` and
+`prProofIdFromTitle` accept only an https URL and a well-formed proof id.
 
 ### Add to chat
 
 Every part of the PR can be quoted in the chat that works on it: a Brief part,
 a comment, a review, a review thread, a picture, a comparison, or any selected
-text (`PrSelectionToolbar`). The control shows on hover and only when the PR
-has a lane. `PrDetailPane.addQuoteToChat` formats the quote as an
+text (`PrSelectionToolbar`, on the `useSelectionAnchor` hook the chat's own
+toolbar uses). The control shows on hover and only when the PR has a lane. A
+picture gets it only when it is at least 160 by 80 pixels and is not a link,
+so badges and avatars stay as they are. `PrDetailPane.addQuoteToChat` formats the quote as an
 `<ade-chat-context>` block whose first line names its source ("a review thread
 on prService.ts:40 in pull request #12 …", `formatChatOutputContextBlock`'s
 `source`), and queues it for the composer with

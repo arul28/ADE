@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   ArrowsClockwise,
   CaretRight,
@@ -159,17 +159,20 @@ export function NeedsAttentionBlock({
         {item.failingChecks.length > 0 ? (
           <li>
             <div
-              role="button"
-              tabIndex={0}
               data-testid="pr-digest-attention-checks"
-              onClick={() => onOpenChecks?.()}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  onOpenChecks?.();
-                }
-              }}
-              className="group flex cursor-pointer items-center gap-2.5 px-4 py-1.5 transition-colors hover:bg-fg/[0.035]"
+              // A row that opens the Checks tab, where the host has one.
+              {...(onOpenChecks ? {
+                role: "button",
+                tabIndex: 0,
+                onClick: onOpenChecks,
+                onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onOpenChecks();
+                  }
+                },
+              } : {})}
+              className={`group flex items-center gap-2.5 px-4 py-1.5 transition-colors ${onOpenChecks ? "cursor-pointer hover:bg-fg/[0.035]" : ""}`}
             >
               <XCircle size={16} weight="fill" style={{ color: COLORS.danger, flexShrink: 0 }} />
               <span className="shrink-0 text-[12px] font-medium" style={{ color: COLORS.textPrimary }}>
