@@ -5,7 +5,8 @@ import type { FilesQuickOpenItem, FilesSearchTextMatch } from "../../../shared/t
 import { destroyChildProcessStreams, hasNullByte, normalizeRelative } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
 import { pathKey } from "../shared/pathCompare";
-import { GIT_READ_ENV, resolveGitExecutable, runGit } from "../git/git";
+import { resolveGitExecutable, runGit } from "../git/git";
+import { GIT_READ_ENV } from "../git/gitReadEnv";
 
 const MAX_INDEXED_FILES = 25_000;
 const MAX_TEXT_FILE_BYTES = 1_000_000;

@@ -27836,6 +27836,8 @@ export function createAgentChatService(args: {
     let quotaTrippedThisTurn = false;
     /** The account stops on extra usage and this turn drew on it; set once per turn. */
     let extraUsageStopRequested = false;
+    /** The polite stop failed and its fallback already reaped the query. */
+    let extraUsageQueryReaped = false;
     let resultTerminalReason: string | undefined;
     let resultCanonicalModel: string | undefined;
     let resultModelProvider: string | undefined;
@@ -28528,8 +28530,12 @@ export function createAgentChatService(args: {
                     error: error instanceof Error ? error.message : String(error),
                   });
                   // The polite stop did not land. Reap the query so no further
-                  // request of this turn is billed.
+                  // request of this turn is billed. Marked as an interrupt, so
+                  // the loop ends on the same path as a Stop that kills
+                  // background work, whether the stream ends or throws.
                   if (managed.runtime === runtime && runtime.activeTurnId === turnId) {
+                    runtime.interrupted = true;
+                    extraUsageQueryReaped = true;
                     await resetClaudeQuerySession(managed, runtime, "interrupt").catch(() => undefined);
                   }
                 });
@@ -29831,9 +29837,10 @@ export function createAgentChatService(args: {
             costUsd = claudeResultCostUsd(runtime, resultMsg.total_cost_usd);
           }
           // The result of ADE's own extra-usage stop is an interrupt; its error
-          // text adds nothing to the stop notice. A result that failed for
-          // another reason keeps its errors.
-          const stoppedForExtraUsage = extraUsageStopRequested && resultTerminalStatus === "interrupted";
+          // text adds nothing to the stop notice. A result that names another
+          // failure (an API error, an exhausted budget) keeps its errors.
+          const stoppedForExtraUsage = extraUsageStopRequested
+            && !(resultTerminalReason && CLAUDE_FAILED_TERMINAL_REASONS.has(resultTerminalReason));
           if (resultIsError && resultErrors.userFacing.length > 0) {
             // A logged-out result surfaces here as 401 / "invalid authentication
             // credentials" errors — route them into the re-login card rather than
@@ -30023,7 +30030,7 @@ export function createAgentChatService(args: {
         // the same ceiling, so a scheduler that never finishes loading cannot
         // hold the finished turn open.
         await waitForArmedResumeBounded(managed.session.id);
-        await resetClaudeQuerySession(managed, runtime, "session_reset");
+        if (!extraUsageQueryReaped) await resetClaudeQuerySession(managed, runtime, "session_reset");
       } else if (runtimeStillCurrent && finalStatus === "completed") {
         dismissClaudeSessionQuota(managed);
       }
@@ -30106,7 +30113,9 @@ export function createAgentChatService(args: {
           });
         }
       }
-      const compactionIssued = runtimeStillCurrent && !replayRecovery
+      // A compaction is one more billed request, so a turn ADE stopped for
+      // extra usage issues none.
+      const compactionIssued = runtimeStillCurrent && !replayRecovery && !extraUsageStopRequested
         ? await maybeIssueClaudeBoundaryCompaction(managed, runtime, {
             recoverFromOverflow: recoverFromContextOverflow,
             turnId,
@@ -30115,7 +30124,11 @@ export function createAgentChatService(args: {
 
       // Process queued steers (skip if session was disposed during execution)
       if (managed.runtime === runtime) {
-        if (replayRecovery === "retry") {
+        if (extraUsageStopRequested) {
+          // A retry or a queued message would start the next billed request at once.
+          cancelQueuedSteers(managed, runtime, "interrupted");
+          startClaudeIdleReader(managed, runtime, "turn_completed");
+        } else if (replayRecovery === "retry") {
           void runClaudeTurn(managed, {
             ...args,
             replayOverflowRetry: true,
@@ -30131,10 +30144,6 @@ export function createAgentChatService(args: {
             claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
           });
         } else if (compactionIssued) {
-          startClaudeIdleReader(managed, runtime, "turn_completed");
-        } else if (extraUsageStopRequested) {
-          // A queued message would start the next billed request at once.
-          cancelQueuedSteers(managed, runtime, "interrupted");
           startClaudeIdleReader(managed, runtime, "turn_completed");
         } else if (runtime.pendingSteers.length) {
           const delivered = await deliverNextQueuedSteer(managed, runtime);
@@ -45459,8 +45468,10 @@ export function createAgentChatService(args: {
 
   /**
    * True when this event says the turn draws on extra usage and the chat's own
-   * account is set to stop on it. A chat on a preset or a stored credential
-   * bills another endpoint, so the account's choice does not apply to it.
+   * account is set to stop on it. A chat that runs on a preset or a stored
+   * credential bills another endpoint, so the account's choice does not apply
+   * to it. A preset that cannot be resolved has no plan, and the chat then runs
+   * on the account's own login, where the choice does apply.
    */
   const claudeExtraUsageStops = (managed: ManagedChatSession, info: Record<string, unknown>): boolean =>
     claudeRateLimitInfoUsesExtraUsage(info)

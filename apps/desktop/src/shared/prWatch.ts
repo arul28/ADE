@@ -52,7 +52,7 @@ export type PrWatchRemark = {
   url?: string | null;
   createdAt: string | null;
   /**
-   * When the comment was last edited. Only a bot's edit is news: review bots
+   * When the comment was last edited. Only a review bot's edit is news: such bots
    * report a new review of a push by editing their old summary comment, and a
    * person who fixes a typo must not wake the agent. See `remarkAt`.
    */
@@ -164,9 +164,9 @@ function isAgentReviewer(remark: PrWatchRemark): boolean {
   return classifyPrAuthor(remark.author, remark.authorIsBot).role === "agent-reviewer";
 }
 
-/** The instant a remark last said something: a bot's edit when it has one. */
+/** The instant a remark last said something: a review bot's edit when it has one. */
 function remarkAt(remark: PrWatchRemark): string | null {
-  if (!remark.authorIsBot || !remark.editedAt) return remark.createdAt;
+  if (!remark.editedAt || !isAgentReviewer(remark)) return remark.createdAt;
   return timeMs(remark.editedAt) > timeMs(remark.createdAt) ? remark.editedAt : remark.createdAt;
 }
 

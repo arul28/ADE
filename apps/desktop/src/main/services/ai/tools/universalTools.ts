@@ -22,7 +22,7 @@ import {
 } from "../../shared/utils";
 import { terminateProcessTree } from "../../shared/processExecution";
 import { userProcessEnv } from "../../shared/hostRuntimeEnv";
-import { GIT_READ_ENV } from "../../git/git";
+import { GIT_READ_ENV } from "../../git/gitReadEnv";
 
 const execFileAsync = promisify(execFile);
 

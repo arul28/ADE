@@ -2255,9 +2255,9 @@ file, so they have exactly one identity per machine.
   under Smart balance). Claude reports extra usage after the response, so one
   request is billed before the stop. The setting lives in this machine's
   account registry, so another machine with the same account does not apply
-  it, and iOS and the hosted web client cannot set it. It covers ADE chats on
-  the account's own login: a chat on a preset or a stored credential, and a
-  terminal `claude` session, are not stopped.
+  it, and iOS and the hosted web client show no control for it. It covers ADE
+  chats that run on the account's own login: a chat that runs on a preset or a
+  stored credential, and a terminal `claude` session, are not stopped.
 - **AI settings save to `.ade/local.yaml`.** `ai.updateConfig` (IPC, the `ai`
   action domain, and the brain's remote command) merges its partial config into
   the local layer through `projectConfigService.updateAiConfig`. The shared

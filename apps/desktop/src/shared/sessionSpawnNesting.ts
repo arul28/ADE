@@ -104,8 +104,8 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
 
 /** The provider of an ADE chat's tool type (`claude-chat` → `claude`); null for a session that is not a chat. */
 export function chatToolProvider(toolType: string | null | undefined): string | null {
-  if (!isChatToolType(toolType)) return null;
-  const normalized = toolType!.trim().toLowerCase();
+  if (!toolType || !isChatToolType(toolType)) return null;
+  const normalized = toolType.trim().toLowerCase();
   return normalized === "cursor" ? "cursor" : normalized.slice(0, -"-chat".length);
 }
 

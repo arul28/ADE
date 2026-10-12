@@ -53,7 +53,8 @@ export type OffThreadSpawnOptions = {
   /**
    * A few variables laid over the environment the child would get (`env`, or
    * this process's live one). Use it for a small overlay: a full `env` is
-   * cloned into every request.
+   * cloned into every request. Do not put `PATH` in it: on Windows the stored
+   * key is usually `Path`, and a second spelling makes two keys in the child.
    */
   envPatch?: Record<string, string | undefined>;
 };
@@ -382,7 +383,7 @@ export function execFileOffThread(
 ): Promise<OffThreadExecResult> {
   const maxBuffer = options.maxBuffer ?? 1024 * 1024;
   return new Promise((resolve) => {
-    const child = spawnOffThread(command, args, { cwd: options.cwd, env: options.env });
+    const child = spawnOffThread(command, args, { cwd: options.cwd, env: options.env, envPatch: options.envPatch });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let bytes = 0;

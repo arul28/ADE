@@ -469,10 +469,9 @@ export function summarizeTrigger(trigger: TriggerContext): string {
     const model = trigger.session?.modelId ?? trigger.session?.provider ?? "session";
     return `Session failed: ${model}`;
   }
-  if (trigger.triggerType === "session.ended_without_pr" || trigger.triggerType === "session.settled") {
-    const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
-    return `${trigger.triggerType === "session.settled" ? "Session settled" : "Session ended without a PR"}: ${lane}`;
-  }
+  const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
+  if (trigger.triggerType === "session.ended_without_pr") return `Session ended without a PR: ${lane}`;
+  if (trigger.triggerType === "session.settled") return `Session settled: ${lane}`;
   if (trigger.triggerType === "lane.created") return `Lane created: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;
   if (trigger.triggerType === "lane.archived") return `Lane archived: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;
   return trigger.triggerType;
