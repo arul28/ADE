@@ -178,6 +178,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/renderer/state/appStore.ts` | Shared renderer state store. Besides project/lane/work selection, it persists user preferences such as `launchPromptClipboardEnabled`, `launchPromptClipboardNoticeEnabled`, and the default-on `draftsButtonEnabled`, mirrors them into per-project stores, and owns `draftLaunchJobsByScope` (+ `setDraftLaunchJobs`) for Work draft launch status strips plus `handoffLaunchJobsByScope` (+ `setHandoffLaunchJobs`) for Work sidebar handoff placeholders. These live in the **root** store (not the per-project store) on purpose: in-flight launches must survive a remote project switch that destroys the originating per-project store; `AgentChatPane` reads them via `useRootAppStore` / `rootAppStoreApi.getState()`. |
 | `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx` | Virtualized transcript renderer. Coalesces resize / measurement updates and, while sticky-to-bottom is active, follows height changes across multiple animation frames so streamed output and late row measurements do not leave the user above the newest message. A shrinking transcript viewport (the composer growing around a long prompt) is treated as a pin, not a user scroll, so a thread stuck to the bottom stays there unless the user scrolls. Programmatic scroll writes are tracked by target scroll position, not a stale counter, so browser-coalesced scroll events do not swallow the next real user gesture. Workspace paths in Markdown links and inline code render with an explicit file glyph/click treatment and open with a relative path + lane id (parsing, resolution, index probing, and the opener live in `chatWorkspacePaths.tsx`, which the list feeds its `runtimePin` so a foreign chat's paths are looked up on the machine that has them). A file in this chat's own lane on this machine opens in the Work tools-pane Files panel next to the conversation; anything else navigates to `FilesTab`, which resolves the target against that machine's workspace roster — so the same click opens the correct file for local, remote-bound, and cross-machine chats without treating a remote path as a local OS file. `work_log_group` rows are filtered out of the rendered timeline, except a group holding ADE computer-use commands, which draws those commands as action rows (`ChatComputerUseActions.tsx`; see [transcript-and-turns.md](transcript-and-turns.md)). Live turns still expand tools from the working indicator; after `done`, `ChatTurnWorkSummary` is one expandable `N tools · M files` line immediately above the turn's time/usage cutout (left-aligned with Thought), with tools and files between that summary and the footer when expanded (file counts omitted when the turn has a checkpoint-backed `turn_diff_summary`). Older history prefetches roughly two viewport-heights before the top (`resolveOlderHistoryPrefetchTriggerPx`, shared by the scroll handler and the sentinel observer) so the reader normally never sees the head spinner. `stabilizeTranscriptToolActivity` reuses the previous per-turn entry arrays whenever a turn's entries did not change, so a streaming delta does not defeat `React.memo` on every settled turn in the thread. Activity bundles fold todo/scheduled updates and placeholder subagent updates into compact rows, dedupe placeholder subagent parents once the concrete child id is known, and open Chat Info / subagent detail instead of duplicating the drawer roster inline; real subagents instead render as inline `SubagentSpawnCard` / `SubagentResultCard` rows anchored where they started and settled (backgrounded shell commands instead get one compact `BackgroundJobRunRow` per run of consecutive jobs, expandable to one line per job), with jump-to-result / jump-to-start affordances that reuse the stable-row scroll machinery; a run of two or more interrupt-stopped subagents folds into one calm `SubagentStoppedGroupCard` instead of a wall of identical stopped cards. Synthetic scheduled turns render an amber `Woke on schedule` divider with fire time, reason, and late marker; the existing stable-row scroll machinery accepts the Review jump from the while-you-were-away card. Completed-turn dividers bucket chat-owned proof by capture timestamp, expand the filmstrip (open by default) directly beneath the producing turn, and keep no proof footer pinned to the tail. A run of `codex_image_view` events in one turn folds into one `Viewed N images` strip (folded tool calls and narration between them do not break the run), and a local image view reads its thumbnail through the chat's machine. An interim narration line (any assistant text row of a turn except its last) floats its hover actions below the row so a run of short progress lines reads as one passage. Codex goal lifecycle events render as compact user-facing rows (`Goal set`, `Goal paused`, `Goal cleared`) instead of raw JSON-RPC/status wording. Codex runtime notices (`codex_safety_buffering`, `codex_moderation_metadata`, `codex_sleep`, `codex_thread_deleted`) render as small transcript chips. `codex_turn_stalled` renders a live recovery card: Wait re-arms the watchdog, Nudge sends a status steer, Retry interrupts and replays work in the same thread, and Resume restarts app-server, resumes the thread, and retries. Handoff brief user messages with `metadata.hideFullPrompt` show only their `displayText` breadcrumb and do not expose or copy the internal prompt body; the first such message is marked above its bubble by a shared origin divider — `Started from a brief of the previous chat`, or `Continued from another computer` for a cross-machine handoff — and that same divider renders the fork line rather than a label inside the bubble. A user message long enough to be a markdown document renders as formatted markdown in the bubble (`userTextLooksLikeMarkdown`, `MarkdownBlock tone="bubble"`); the bubble shows only the text the reader typed, never the expanded provider prompt. History seeded into a forked chat (envelopes tagged `providerOrigin: "handoff_fork"`) renders under a single `Forked from the previous chat — full history above` divider pinned to the first live row after the seeded tail, rather than a per-row marker. Every other error event renders as an `InstructionErrorCard` built from the host's `errorInfo.presentation` (or, when a host sends none, from the same derivation applied locally), so a failed turn is a title, a sentence, what to do, and a technical fold rather than a dump of the provider's text. Error events whose `errorInfo.agentCli.category` is `"unauthenticated"` render as the calm `AgentCliAuthCard` (raw 401 behind a `Details` disclosure) rather than the red error block, so a recoverable logout reads as a re-login prompt, not a crash. The live turn's `working for <elapsed>` counter is painted imperatively through a callback ref that survives the status line's mid-turn remount (see [composer-and-ui.md](composer-and-ui.md)). It also owns `ChatInfoHostContext`: `AgentChatPane` provides it because it owns the chat actions pane and listens for `ade:chat:open-info`; `PersonalChatsPage` does not, so transcript affordances that reveal that pane render only where dispatching would actually do something. Scoping is per-subtree by necessity — hidden `ProjectSurface`s stay mounted, so a module-level registry would report a host on the one surface that lacks one. |
 | `apps/desktop/src/shared/threadComments.ts`, `apps/desktop/src/main/services/chat/threadCommentService.ts`, `apps/desktop/src/renderer/components/chat/ThreadCommentLayer.tsx`, `ThreadCommentControls.tsx`, `threadCommentAnchors.ts`, `threadCommentsStore.ts`, `chatUserMessageCards.tsx` | **Thread comments and Add-to-chat quotes.** The user pins notes to parts of an agent reply; they stay pending on the host (per-session JSON under `chatSessionsDir/thread-comments`, never a synced table) until a send carries them as one `<ade-review>` block ahead of the typed text. `shared/threadComments.ts` owns the pure format/parse/normalize/cap rules (tag neutralization, surrogate-safe cuts); the host service owns create/update/delete/`takeForSend`/restore; the renderer layer and controls anchor comments to transcript rows and send only the `includeThreadComments` flag. Writes show at once: `threadCommentsStore` keeps the host's last list as the source of truth, overlays a comment whose create call has not answered yet (dropped on failure, joined without a duplicate on success), and patches edits/toggles/deletes in place until the host's `session_meta_updated` list replaces them; a refused write re-reads the host list. Unsent comments are private to user clients: the `ade` action edge strips `includeThreadComments` from agent senders and denies the four `chat.*ThreadComment*` actions. A provider slash command or a disk-refused send keeps the comments pending; a dropped, queued-cancelled, or emptied steer restores them. |
+| `apps/desktop/src/shared/claudePluginUi.ts`, `apps/desktop/src/main/services/chat/claudePluginUiService.ts`, `apps/desktop/src/renderer/components/chat/ClaudeModUi.tsx`, `ClaudeModUi.css`, `ClaudeModTree.tsx`, `claudeModUiStyle.ts`, `claudeModUiStore.ts`, `claudeModUiPrefs.ts`, `useClaudeModsPrompt.tsx`, `apps/desktop/src/renderer/components/settings/ClaudeModsSection.tsx` | Claude mod UI: what Claude Code plugins with a hooks module draw for a chat. The shared file holds the snapshot types, the two action names and `sanitizeClaudePluginUiTree`. The service keeps one snapshot per chat, asks the Claude process for the band and pane trees, and forwards presses. The component draws one dock on the composer (status lines in its header, panes and the band under it, a fold control) and raises toasts. `useClaudeModsPrompt` offers the setting once to a person who has mods installed. See [Claude mod UI](#claude-mod-ui). |
 | `apps/desktop/src/renderer/components/chat/ProviderOutdatedNoticeRow.tsx` | The transcript row for a `system_notice` with status `acp_provider_outdated` (an ACP provider CLI older than ADE's tested range). Its **Update to <version>** button runs `window.ade.ai.acpProviderUpdate` pinned to the chat's machine (`useChatRuntimeScope().binding`), never the computer that shows the chat, and the outcome replaces the button. `shared/chatTurnFold.ts` keeps this notice visible instead of folding it into the turn's history. See [acp-providers-spec.md](acp-providers-spec.md#provider-versions-and-update). |
 | `apps/desktop/src/renderer/components/chat/chatMarkdownBlock.tsx` | `MarkdownBlock` — the transcript's markdown renderer, extracted out of `AgentChatMessageList.tsx` (which imports it), along with the `MosaicRenderContext` type. Threads `remarkThreadEntities` so the ADE things an agent names render as live chips, sizes headings from `--chat-font-size`, renders an `ade://` link as the same chip the composer draws, and accepts a `tone` (`"thought"` or `"bubble"`; a user bubble's markdown brief uses the neutral white palette). It also accepts an optional `tailMarkdown` so a paced row renders a byte-stable settled body plus a short re-parsing tail inside one prose flow. Right-clicking a normal `http(s)` link opens the shared link menu (`useChatLinkContextMenu`): **Copy link**, and **Open in** — ADE's own browser, the system browser, or any browser detected on this machine, each under its real app icon. A `localhost` link stays bound to the chat's machine (`runtimePin`). |
 | `apps/desktop/src/renderer/components/chat/useChatLinkContextMenu.tsx`, `components/ui/OpenLinkInSubmenu.tsx`, `components/ui/BrowserTargetLogo.tsx`, `apps/desktop/src/shared/browserTargets.ts` | The chat link right-click menu. The hook owns the anchor state and builds the `ContextMenu` entries (`Copy link`, plus the `open-link-in` row kind that `ContextMenu` renders as `OpenLinkInSubmenu`); the submenu lists ADE Browser, System Browser, and every browser the main process detected, each with its app icon as a data URL and a per-browser glyph fallback when the OS hands none over. Desktop-only: on the hosted web client the `getInstalledBrowsers` bridge is absent, so the panel keeps the two choices that still mean something. |
@@ -2071,6 +2072,156 @@ Every agent's prompt carries one line (`buildAdeBootstrapGuidance`): use a scene
 - `clampSceneCaptureRect` **intersects** the measured rect with the window's content box rather than shifting it. Clamping the origin alone while keeping the size froze a scrolled-off scene as a picture of the top of the window.
 - `ade code`'s TUI collapses a ```scene fence to one dim line (`[scene: <title>]`, via `summarizeSceneFence`), exactly as it does a ```mosaic fence. The interactive frame is desktop-only, and printing up to 96 KB of HTML into a terminal buries the answer the user asked for.
 - The `ade-scene:` scheme is registered and handled in `main.ts`, but the paths exercised by the test suite are the pure store (`respond`, `parseSceneRequestId`, eviction) and the blob fallback in `SceneFrame`; the custom scheme has not been driven end-to-end in a running Electron window.
+
+## Claude mod UI
+
+A Claude Code **mod** is a plugin whose `hooks/hooks.json` names a hooks module
+(`{ "modules": ["./register.tsx"] }`). The module runs inside the Claude Code
+process and can draw: a status line (`$.ui.status`), a toast (`$.ui.toast`), a
+band above the prompt (a `ui.render` hook on `AbovePrompt`) and panes
+(`$.ui.open` plus a `ui.render` hook on `Pane`). ADE chat can draw all four in
+one dock on the composer. It is **off by default**. The mods' hooks run in
+every Claude chat either way; this feature is only the drawing.
+
+### The channel is private
+
+Claude Code's documentation says an Agent SDK host draws nothing. The UI still
+reaches the host, on a channel that Claude Desktop uses:
+
+| Direction | Message | Meaning |
+|---|---|---|
+| CLI to host (a `system` message) | `ui_status` | A plugin set or cleared its status line (`text: null` clears). |
+| CLI to host | `ui_toast` | A plugin raised a toast (`timeout_ms`). |
+| CLI to host | `ui_panes` | The list of open panes changed. |
+| CLI to host | `ui_invalidate` | A tree changed; ask for it again. |
+| CLI to host | `ui_log` | A debug line. ADE ignores it. |
+| Host to CLI (a control request) | `ui_render` | Returns the element tree of one site (`component: "AbovePrompt"` or `"Pane"`, `surface: "desktop"`). |
+| Host to CLI | `ui_press`, `ui_input`, `ui_select` | A button was pressed, a field submitted, an option picked. Names the `{ plugin, handle }` the tree carried. |
+| Host to CLI | `ui_close` | Close a pane. |
+
+None of this is in the SDK's types. The control requests go through the
+untyped `Query.request` method (the one `setModel` uses). The mod API is marked
+early access and sits behind a server-side flag. So the rule of this feature is:
+**a failure here leaves the chat without mod UI and never touches a turn.**
+`claudePluginUiService` checks that `request` exists, puts a 5-second timeout
+on every request, catches every error, and logs at debug level only. Confirmed
+with Claude Code 2.1.293 (SDK 0.3.293).
+
+### How it flows
+
+1. `ensureClaudeQuery` calls `claudePluginUi.attach(sessionId, query)` when it
+   sets `runtime.query`. Each of the four places that clear `runtime.query`
+   calls `detach`.
+2. Both Claude message loops (the turn loop and `handleClaudeIdleMessage`) hand
+   every message to `claudePluginUi.ingest` first. A `ui_*` message is consumed
+   there. In the turn loop that happens before `bumpClaudeIdleDeadline`: what a
+   mod draws is not model activity. After a turn's result, the loop waits one
+   drain window (1 s) per read for a tail message; mod messages share one
+   window counted from the first, so a mod that redraws on a timer cannot keep
+   a finished turn open. An interrupt is honored on a mod message too.
+3. The service asks for the band on attach, on `system/init` (plugins are
+   loaded by then) and on each `ui_invalidate` or `ui_panes`. Requests that
+   land during a render fold into one more, and renders are at least 200 ms
+   apart (a mod may ask for ten a second).
+4. Each tree goes through `sanitizeClaudePluginUiTree` before any client sees
+   it. Every change publishes the whole snapshot as a transient
+   `session_meta_updated` event with a `claudePluginUi` field. Nothing is
+   written to the transcript or the database. Such an event is not chat
+   activity (`isClaudePluginUiOnlyMetaEvent`): it does not move the chat up
+   the Work list, and the sync host does not send it to phones or the hosted
+   client, record it for replay, or refresh the roster for it.
+   A band and its controls change together: a site whose render failed keeps
+   the tree and the controls it shows.
+5. The desktop window reads the current snapshot with the runtime action
+   `chat.getClaudePluginUi` when a chat opens, then follows the events of that
+   chat. `chat.actOnClaudePluginUi` sends a press, a typed value, a pick or a
+   pane close. Both go through the chat action domain
+   (`callPinnedOrBoundRuntimeActionOr` in the preload), so a window bound to
+   another machine reaches that machine's Claude process.
+
+### What a client may draw, and what a press may do
+
+- **Known elements only.** `Box`, `Text`, `Button`, `Link`, `Code`, `Markdown`,
+  `Input`, `Select`, each with a fixed list of props. `Svg`, `Client` (plugin
+  code that would run in the host page), `Raster` and `Image` are dropped; an
+  `alt` text stands in when the mod gave one.
+- **Bounded.** 1,500 nodes, 40,000 characters, depth 32, 8 status lines,
+  4 panes. Control characters and bidirectional overrides are removed.
+- **Links.** The rule Claude Code documents for its Desktop app
+  (`safeClaudePluginUiHref`): an `https:` URL or an `http://localhost` URL,
+  with no `@`, in its normalized spelling. Any other link draws as plain
+  text. A link opens in the system browser; the window never navigates. Links
+  inside a mod's `Markdown` follow the same rule, not the chat's: a mod cannot
+  open a file or an ADE deeplink.
+- **Attribution.** A status line starts with the name of the mod that set it
+  (Claude Code's [mods API docs](https://code.claude.com/docs/en/plugins/mods/api),
+  the page for v2.1.290, show `my-mod: checks: 3 passing`), and a toast carries
+  the mod's name as its title. A newer toast of one mod replaces its older
+  one. A toast rides only the publish that raised it, and the window shows it
+  only for the chat on screen, so opening a chat never repeats an old one.
+- **Keys.** A control with a `key` keeps its state (typed text) by that key.
+  Controls without one are tracked by position; Claude Code's
+  [interface docs](https://code.claude.com/docs/en/plugins/mods/interface) tell
+  a mod to give each control a key. A text field is the same field while its
+  key holds (without a key: its label and placeholder); a new field starts
+  from its own value, so typed text never moves to another field.
+- **A press that does not come back.** A press is never sent twice by ADE
+  (`actOnClaudePluginUi` is a declared write). When the Claude process does
+  not answer within 5 seconds, the result says `unanswered` and the window
+  says the mod may still have run it. When the call never left (a project
+  switch, a lost connection), the window says nothing ran.
+- **Colours.** Claude Code's theme keys, terminal names, hex, `rgb()` and
+  `ansi256()` map to theme colours in `claudeModUiStyle.ts`; the terminal's
+  black, white and greys follow the theme so they read on a light one. No
+  style string from a mod reaches the DOM.
+- **A press is bound to the process that drew the control.** The snapshot
+  carries a `generation` (one per Claude process). The service refuses an
+  action whose generation is not the current one, and one whose
+  `{ plugin, handle }` is not in the trees it last sent. A typed value or a
+  pick must also name the site (the band, or an open pane) the control was
+  drawn in, and only a pane this process lists can be closed. The arguments arrive as untyped JSON and each one is checked. Claude Code issues new
+  handles on every render, so an old control is also refused there.
+- **User clients only.** Both actions are in `CLAUDE_PLUGIN_UI_ACTION_NAMES`,
+  which the action policy and the RPC guard share with thread comments: an
+  agent cannot read or press what a mod drew. `adeActionAccess.ts` declares
+  the read and the write, and the preload lists `getClaudePluginUi` among the
+  chat-host reads, so during a project switch it waits for the chat's host.
+  The actions are not sync remote commands, so a phone or the hosted client
+  cannot call them.
+
+When the Claude process goes away (idle eviction, a reset), the band and the
+panes stay on screen, dimmed and not pressable (`live: false`). The next
+process starts with that band still dimmed, until one of its renders answers,
+and with no panes: a pane belongs to the process that opened it. A late
+message of a closed or replaced process is dropped. A `generation` starts at
+the host's clock, so a restarted host does not reuse one a window still holds.
+A redraw that draws what clients already show is not published. When a chat
+ends, its mod UI is taken off the window. Status lines belong to the process that set them and are
+cleared.
+
+### Surfaces
+
+| Surface | State |
+|---|---|
+| Desktop chat | One dock on the composer, as wide as the prompt box: a header with the status lines, then panes and the band, centred. The header folds the dock down to one row; the choice is kept in this window's storage. Toasts use the app toast stack. |
+| Hosted web client | Not drawn. The setting is hidden. |
+| `ade code` (TUI) | Not drawn yet. |
+| iOS | Not drawn. Snapshots are not sent over sync. |
+| Tracked CLI session | The real Claude terminal draws its own mod UI. |
+
+The setting is `ai.chat.claudePluginUiEnabled` (Settings › Chat › Claude mods).
+It is **off unless set to true**, because the channel is private to Claude
+Code. Turning it off takes the drawing down at the chat's next message from
+Claude; turning it on draws at the next message too.
+
+While the setting is off, an open Claude chat of this tab's own project (not
+the hosted client, not a subagent view, not a chat pinned to another runtime)
+offers it once: a floating
+prompt ("ADE can show your Claude mods in chats") with a button that opens the
+setting. The offer shows only when `chat.listClaudePlugins` reports a plugin
+with `isMod` (its `hooks/hooks.json` names a hooks module); each chat is asked
+once per window. Closing it, or
+following its button, ends the offer for good in that window's storage.
 
 ## Pi UI bridge, `ask_user`, and extensions
 
@@ -4024,6 +4175,9 @@ config service):
   does in a terminal. Turning it off runs ADE chat with Pi's built-in tools
   only; the Pi CLI is unaffected either way. Plan-mode and personal sessions
   ignore the flag and never load extensions.
+- `ai.chat.claudePluginUiEnabled` -- draw what Claude Code mods show (status
+  lines, toasts, a band above the prompt, panes) in ADE chat. Defaults to
+  **false**. The mods' hooks run either way. See [Claude mod UI](#claude-mod-ui).
 
 ## Related docs
 

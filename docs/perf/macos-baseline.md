@@ -57,6 +57,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 |---|---|---|---|
 | Static tabs (Lanes, CTO, History, Settings, Automations, Chats): main-thread work | 3–18 ms/s | 3–26 ms/s | 30 ms/s |
 | Work with a chat streaming: main-thread work | — | 39–43 ms/s, 36–40 style recalcs/s | 60 ms/s |
+| Work, idle Claude chat with mod UI on screen (dock with the band of three mods, 116 elements): main-thread work | — | 11–17 ms/s; 10–15 ms/s with the setting off, which is the default (Mac Studio M4 Max, 2026-10-12, not the baseline machine) | 30 ms/s |
 | Settings, nothing animating: frames drawn | — | 0/s | 0/s |
 | PRs with running checks (3 spinners): frames drawn | 63/s | 30/s | 40/s |
 | PRs with running checks: GPU swap time | 118 ms/s | 57 ms/s | 80 ms/s |

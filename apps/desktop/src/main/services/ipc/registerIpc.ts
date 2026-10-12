@@ -138,6 +138,12 @@ import type {
   ChatThreadCommentListArgs,
   ChatThreadCommentUpdateArgs,
 } from "../../../shared/threadComments";
+import type {
+  ClaudePluginUiActArgs,
+  ClaudePluginUiActResult,
+  ClaudePluginUiGetArgs,
+  ClaudePluginUiSnapshot,
+} from "../../../shared/claudePluginUi";
 import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
 import { createAccountRollupFetcher } from "../usage/accountUsageLiveRefresh";
 import {
@@ -9174,6 +9180,14 @@ export function registerIpc({
 
   ipcMain.handle(IPC.archiveDelete, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
     ensureArchiveService().delete(arg));
+
+  ipcMain.handle(IPC.agentChatClaudePluginUiGet, async (_event, arg: ClaudePluginUiGetArgs): Promise<ClaudePluginUiSnapshot> => {
+    return ensureAgentChatContext().agentChatService.getClaudePluginUi(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatClaudePluginUiAct, async (_event, arg: ClaudePluginUiActArgs): Promise<ClaudePluginUiActResult> => {
+    return ensureAgentChatContext().agentChatService.actOnClaudePluginUi(arg);
+  });
 
   ipcMain.handle(IPC.agentChatThreadCommentsList, async (_event, arg: ChatThreadCommentListArgs): Promise<ChatThreadComment[]> => {
     return ensureAgentChatContext().agentChatService.listThreadComments(arg);

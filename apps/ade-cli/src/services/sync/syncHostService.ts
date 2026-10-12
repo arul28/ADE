@@ -1,4 +1,5 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { isClaudePluginUiOnlyMetaEvent } from "../../../../desktop/src/shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../../../desktop/src/shared/threadComments";
 import fs from "node:fs";
 import http from "node:http";
@@ -5844,6 +5845,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   function broadcastChatEvent(event: AgentChatEventEnvelope): void {
+    // What a mod draws is live state for the desktop window. No sync client
+    // draws it, and a mod can redraw five times a second: sent here, each
+    // snapshot would take a replay slot from transcript events.
+    if (isClaudePluginUiOnlyMetaEvent(event.event)) return;
     // Record unconditionally (even with no subscribed peers) so the replay
     // buffer can cover events that happened while a phone was disconnected.
     const seq = recordChatEventSeq(event);

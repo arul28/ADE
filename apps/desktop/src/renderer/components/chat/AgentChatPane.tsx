@@ -165,6 +165,9 @@ import {
   setThreadComments,
   useThreadComments,
 } from "./threadCommentsStore";
+import { ClaudeModUi } from "./ClaudeModUi";
+import { useClaudeModsPrompt } from "./useClaudeModsPrompt";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { threadReviewCountLabel } from "../../../shared/threadComments";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
@@ -4804,6 +4807,15 @@ export function AgentChatPane({
   // thread comments are a project-runtime action the personal scope lacks.
   const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning && !personalScope ? composerSessionId : null;
   const threadComments = useThreadComments(threadCommentsSessionId, chatRuntimePin);
+  // Mod UI is for a readable Claude project chat (the thread-comments gate)
+  // in the desktop window: the hosted client draws none, and a subagent view
+  // is another agent's transcript.
+  const claudeModUiSessionId = selectedSession?.provider === "claude" && !subagentView && !isWebClientMode()
+    ? threadCommentsSessionId
+    : null;
+  // The offer reads the setting and the plugins of this tab's own project, so a
+  // chat pinned to another runtime (another machine, another open project) gets none.
+  useClaudeModsPrompt(chatRuntimePin ? null : claudeModUiSessionId);
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;
@@ -16026,6 +16038,10 @@ export function AgentChatPane({
   const compactFirstEnabled = compactFirst.choice?.sessionId === selectedSessionId
     ? compactFirst.choice.value : selectedSession?.compactionIdleMode === "always";
   compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
+  // What Claude mods draw for the open chat, on top of the prompt box.
+  const claudeModUi = claudeModUiSessionId
+    ? <ClaudeModUi sessionId={claudeModUiSessionId} pin={chatRuntimePin} />
+    : null;
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
@@ -16756,6 +16772,7 @@ export function AgentChatPane({
         </div>
       ) : null}
       {usageLimitPill}
+      {claudeModUi}
       {composerElement}
     </div>
   );
@@ -17183,6 +17200,7 @@ export function AgentChatPane({
                         {crossMachineMoveBanner}
                         {crossMachineArrivalBanner}
                         {usageLimitPill}
+                        {claudeModUi}
                         {composerElement}
                       </div>
                     ) : null}

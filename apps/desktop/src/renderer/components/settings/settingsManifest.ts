@@ -482,6 +482,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Composer",
   },
   {
+    id: "chat.claude-mods",
+    label: "Show what Claude mods draw",
+    keywords: ["mods", "plugins", "claude code", "band", "status line", "pane", "toast"],
+    tab: "chat",
+    anchor: "claude-mods",
+    scope: "account",
+    // The setting is the host's project configuration, which the hosted client cannot write.
+    web: "hidden",
+    group: "Claude mods",
+  },
+  {
     id: "appearance.preview",
     label: "Chat preview",
     keywords: ["preview", "sample", "example", "what it looks like"],

@@ -21,6 +21,7 @@ import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ChatThreadComment } from "../threadComments";
+import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
@@ -338,6 +339,8 @@ export type AgentChatClaudePlugin = {
   source: "local";
   description?: string;
   version?: string;
+  /** True when the plugin has a hooks module: a mod, which may draw in the chat. */
+  isMod?: boolean;
 };
 export type AgentChatClaudePluginsArgs = {
   sessionId?: string;
@@ -2227,6 +2230,8 @@ export type AgentChatEvent =
       title?: string;
       manuallyNamed?: boolean;
       claudeTag?: string | null;
+      /** What Claude mods draw for this chat right now, whole. Never stored. */
+      claudePluginUi?: ClaudePluginUiSnapshot;
       /** Signals that persisted envelope history changed and open views must refetch. */
       historyInvalidated?: boolean;
       /**

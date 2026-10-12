@@ -53,7 +53,7 @@ wall of utilities.
 | Class | Use |
 |---|---|
 | `.kit-card` | The box. Rounded `--radius-lg`, hairline `--kit-card-edge`, translucent `--kit-card-bg`. Frosted on an image scene. |
-| `.kit-card-head` | 40px header: icon, label, `.kit-card-head-count`, then `.kit-card-head-action` on the right. |
+| `.kit-card-head` | 40px header: icon, label, `.kit-card-head-count`, then `.kit-card-head-action` on the right. `data-compact="true"` makes it a 28px row for a one-line card that sits on another surface. |
 | `.kit-card-body` | Body padding. `data-flush="true"` for edge-to-edge lists. |
 | `.kit-eyebrow` | 10px mono uppercase label with wide tracking. Section kickers, column labels. |
 | `.kit-num` | Mono, tabular figures. Every number that can change. |
