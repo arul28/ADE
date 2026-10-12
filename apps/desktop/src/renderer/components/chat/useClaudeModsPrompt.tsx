@@ -1,20 +1,9 @@
 import { useEffect, useState } from "react";
 import { PuzzlePiece } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import type { AiConfig } from "../../../shared/types";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import { settingsRouteFor } from "../settings/settingsManifest";
-
-/** Set once the person closes the prompt; it is an offer, so it does not come back. */
-const DISMISSED_KEY = "ade.chat.claudeModUi.promptDismissed";
-
-function wasDismissed(): boolean {
-  try {
-    return window.localStorage.getItem(DISMISSED_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
+import { dismissClaudeModsOffer, isClaudeModsOfferDismissed } from "./claudeModUiPrefs";
 
 /**
  * Offers the mod UI setting, once, to a person who has Claude Code mods
@@ -26,32 +15,24 @@ export function useClaudeModsPrompt(sessionId: string | null): void {
 
   useEffect(() => {
     setOffer(false);
-    if (!sessionId || wasDismissed()) return;
+    if (!sessionId || isClaudeModsOfferDismissed()) return;
     let cancelled = false;
-    void Promise.all([
-      window.ade.projectConfig.get(),
-      window.ade.agentChat.listClaudePlugins({ sessionId }),
-    ])
-      .then(([config, plugins]) => {
-        if (cancelled) return;
-        const ai = config.effective?.ai as AiConfig | undefined;
-        const enabled = ai?.chat?.claudePluginUiEnabled === true;
-        setOffer(!enabled && plugins.some((plugin) => plugin.isMod === true));
-      })
-      .catch(() => {
-        // An older host cannot say; no offer.
-      });
+    void (async () => {
+      const config = await window.ade.projectConfig.get();
+      if (cancelled || config.effective.ai?.chat?.claudePluginUiEnabled === true) return;
+      // Listing plugins reads the disk, so it runs only while there is an offer to make.
+      const plugins = await window.ade.agentChat.listClaudePlugins({ sessionId });
+      if (!cancelled) setOffer(plugins.some((plugin) => plugin.isMod === true));
+    })().catch(() => {
+      // An older host cannot say; no offer.
+    });
     return () => {
       cancelled = true;
     };
   }, [sessionId]);
 
   const dismiss = () => {
-    try {
-      window.localStorage.setItem(DISMISSED_KEY, "1");
-    } catch {
-      // Storage is unavailable: the offer is gone for this window.
-    }
+    dismissClaudeModsOffer();
     setOffer(false);
   };
 

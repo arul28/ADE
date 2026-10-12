@@ -4,7 +4,6 @@ import { parseGitHubIssueListState } from "../../../../desktop/src/shared/github
 import type { LinearIssueCreateInput, SessionAttentionSource } from "../../../../desktop/src/shared/types";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
-import type { ClaudePluginUiActArgs } from "../../../../desktop/src/shared/claudePluginUi";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -5185,16 +5184,6 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     return await requireService(args.agentChatService, "Agent chat service not available.")
       .sendDraftNow(id);
   });
-  // Claude mod UI: what plugins draw for a chat. Reading is open to a viewer;
-  // an action runs plugin code on the host, so a viewer may not send one. The
-  // host's chat service validates every field; these only route.
-  register("chat.getClaudePluginUi", { viewerAllowed: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").getClaudePluginUi({
-      sessionId: requireString(payload.sessionId, "chat.getClaudePluginUi requires sessionId."),
-    }));
-  register("chat.actOnClaudePluginUi", { viewerAllowed: false, queueable: false }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.")
-      .actOnClaudePluginUi(payload as unknown as ClaudePluginUiActArgs));
   // Thread comments: the user's pending notes on parts of an agent reply. The
   // host's chat service validates every field; these only route.
   register("chat.listThreadComments", { viewerAllowed: true }, async (payload) =>

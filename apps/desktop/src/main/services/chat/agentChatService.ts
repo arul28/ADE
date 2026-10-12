@@ -144,12 +144,7 @@ import {
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import { forkCodexThreadInEphemeralAppServer } from "./codexEphemeralFork";
 import { createClaudePluginUiService } from "./claudePluginUiService";
-import type {
-  ClaudePluginUiActArgs,
-  ClaudePluginUiActResult,
-  ClaudePluginUiGetArgs,
-  ClaudePluginUiSnapshot,
-} from "../../../shared/claudePluginUi";
+import type { ClaudePluginUiGetArgs, ClaudePluginUiSnapshot } from "../../../shared/claudePluginUi";
 import {
   CODEX_COMPACTION_STALL_MS,
   type CodexCompactionFailReason,
@@ -20432,10 +20427,7 @@ export function createAgentChatService(args: {
   };
 
   const getClaudePluginUi = (args: ClaudePluginUiGetArgs): ClaudePluginUiSnapshot =>
-    claudePluginUi.get(typeof args?.sessionId === "string" ? args.sessionId.trim() : "");
-
-  const actOnClaudePluginUi = (args: ClaudePluginUiActArgs): Promise<ClaudePluginUiActResult> =>
-    claudePluginUi.act(args);
+    claudePluginUi.get(args?.sessionId);
 
   const listThreadComments = (args: ChatThreadCommentListArgs): ChatThreadComment[] =>
     threadComments.list({ sessionId: assertThreadCommentSession(args?.sessionId) });
@@ -28226,6 +28218,7 @@ export function createAgentChatService(args: {
         throw new Error(CLAUDE_RUNTIME_AUTH_ERROR);
       };
 
+      let modUiDrainStartedAt: number | null = null;
       while (true) {
         const nextMessage = await readNextClaudeTurnMessage();
         if (!nextMessage) {
@@ -28238,9 +28231,20 @@ export function createAgentChatService(args: {
         }
         if (nextMessage.done) break;
         const msg = nextMessage.value;
-        // What a mod draws is no part of the turn: it must not reset the idle
-        // deadline, or a mod that redraws on a timer keeps a hung turn alive.
-        if (claudePluginUi.ingest(managed.session.id, runtime.query, msg)) continue;
+        // What a mod draws is no part of the turn. After the result, each read
+        // waits one drain window for a tail message; a mod that redraws on a
+        // timer would restart that window for ever and the turn would never
+        // end. So mod messages share one window, counted from the first.
+        if (claudePluginUi.ingest(managed.session.id, sessionQuery, msg)) {
+          if (runtime.interrupted) break;
+          if (timeoutError) throw timeoutError;
+          if (resultSeen) {
+            modUiDrainStartedAt ??= Date.now();
+            if (Date.now() - modUiDrainStartedAt >= CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS) break;
+          }
+          continue;
+        }
+        modUiDrainStartedAt = null;
         const msgSubtype = typeof (msg as any).subtype === "string" ? (msg as any).subtype : null;
         if (pendingWorkerShutdownReason && !(msg.type === "system" && msgSubtype === "worker_shutting_down")) {
           pendingWorkerShutdownReason = null;
@@ -64662,7 +64666,7 @@ export function createAgentChatService(args: {
     emitAdeCard,
     sendMessage,
     getClaudePluginUi,
-    actOnClaudePluginUi,
+    actOnClaudePluginUi: claudePluginUi.act,
     listThreadComments,
     createThreadComment,
     updateThreadComment,

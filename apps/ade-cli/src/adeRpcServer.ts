@@ -269,9 +269,11 @@ type SessionState = {
  * user client may read or change them, or send them (`includeThreadComments`);
  * an agent that could would be editing what the user is about to tell it.
  */
-const THREAD_COMMENT_ACTIONS: ReadonlySet<string> = new Set(THREAD_COMMENT_ACTION_NAMES);
-/** What a mod draws is for the person at the chat; a press runs plugin code on the host. */
-const CLAUDE_PLUGIN_UI_ACTIONS: ReadonlySet<string> = new Set(CLAUDE_PLUGIN_UI_ACTION_NAMES);
+const USER_ONLY_CHAT_ACTIONS: ReadonlySet<string> = new Set([
+  ...THREAD_COMMENT_ACTION_NAMES,
+  // What a mod draws is for the person at the chat; a press runs plugin code on the host.
+  ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
+]);
 const THREAD_COMMENT_SEND_ACTIONS = new Set(["sendMessage", "steer", "messageSession"]);
 
 function withoutIncludeThreadComments(args: Record<string, unknown>): Record<string, unknown> {
@@ -5555,7 +5557,7 @@ async function runTool(args: {
       );
     }
     const agentCaller = !isUserClientSession(session);
-    if (domain === "chat" && agentCaller && (THREAD_COMMENT_ACTIONS.has(action) || CLAUDE_PLUGIN_UI_ACTIONS.has(action))) {
+    if (domain === "chat" && agentCaller && USER_ONLY_CHAT_ACTIONS.has(action)) {
       scopeAccessDenied(`chat.${action} is limited to user clients`, `run_ade_action:chat.${action}`);
     }
     // Stripped here, at the source, because the chat scoping below rebuilds

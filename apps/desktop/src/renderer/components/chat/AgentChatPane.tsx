@@ -167,6 +167,7 @@ import {
 } from "./threadCommentsStore";
 import { ClaudeModUi } from "./ClaudeModUi";
 import { useClaudeModsPrompt } from "./useClaudeModsPrompt";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { threadReviewCountLabel } from "../../../shared/threadComments";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
@@ -4787,7 +4788,12 @@ export function AgentChatPane({
   // thread comments are a project-runtime action the personal scope lacks.
   const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning && !personalScope ? composerSessionId : null;
   const threadComments = useThreadComments(threadCommentsSessionId, chatRuntimePin);
-  useClaudeModsPrompt(selectedSession?.provider === "claude" ? threadCommentsSessionId : null);
+  // Mod UI is the desktop window's own: the hosted client draws none, and a
+  // subagent view is another agent's transcript.
+  const claudeModUiSessionId = selectedSession?.provider === "claude" && !subagentView && !isWebClientMode()
+    ? threadCommentsSessionId
+    : null;
+  useClaudeModsPrompt(claudeModUiSessionId);
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;
@@ -15940,8 +15946,8 @@ export function AgentChatPane({
   compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
   // What Claude mods draw for the open chat. Same gate as thread comments: a
   // readable project chat whose composer and transcript agree on the session.
-  const claudeModUi = selectedProvider === "claude" && !subagentView
-    ? <ClaudeModUi sessionId={threadCommentsSessionId} pin={chatRuntimePin} />
+  const claudeModUi = claudeModUiSessionId
+    ? <ClaudeModUi sessionId={claudeModUiSessionId} pin={chatRuntimePin} />
     : null;
   const composerElement = (
       <AgentChatComposer

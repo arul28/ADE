@@ -11,13 +11,13 @@
  * Everything here is pure so the host, the renderer and the tests share it.
  */
 
-/** The mod UI actions, in every list that must name them (policy, preload, RPC guard, mobile). */
+/** The mod UI actions, in every list that must name them (policy, preload, RPC guard). */
 export const CLAUDE_PLUGIN_UI_ACTION_NAMES = [
   "getClaudePluginUi",
   "actOnClaudePluginUi",
 ] as const;
 
-/** Terminal columns the band is laid out for; clients scale the font to fit. */
+/** Terminal columns and rows the band is laid out for; clients scale the font to fit. */
 export const CLAUDE_PLUGIN_UI_BAND_COLUMNS = 100;
 export const CLAUDE_PLUGIN_UI_BAND_ROWS = 12;
 /** Terminal columns and rows a pane is laid out for. ADE seats a pane above the prompt. */
@@ -26,8 +26,8 @@ export const CLAUDE_PLUGIN_UI_PANE_ROWS = 20;
 
 export const MAX_CLAUDE_PLUGIN_UI_STATUSES = 8;
 export const MAX_CLAUDE_PLUGIN_UI_PANES = 4;
-export const MAX_CLAUDE_PLUGIN_UI_TEXT_CHARS = 2_000;
 export const MAX_CLAUDE_PLUGIN_UI_INPUT_CHARS = 16_384;
+const MAX_TEXT_CHARS = 2_000;
 const MAX_TREE_NODES = 1_500;
 const MAX_TREE_DEPTH = 32;
 const MAX_TREE_CHARS = 40_000;
@@ -38,15 +38,7 @@ const MAX_SELECT_OPTIONS = 64;
 /** Where an element's handler lives, as Claude Code stamped it. An action names it back. */
 export type ClaudePluginUiTarget = { plugin: string; handle: number };
 
-export type ClaudePluginUiElementType =
-  | "Box"
-  | "Text"
-  | "Button"
-  | "Link"
-  | "Code"
-  | "Markdown"
-  | "Input"
-  | "Select";
+type ElementType = "Box" | "Text" | "Button" | "Link" | "Code" | "Markdown" | "Input" | "Select";
 
 export type ClaudePluginUiPropValue =
   | string
@@ -55,7 +47,7 @@ export type ClaudePluginUiPropValue =
   | Array<{ value: string; label: string }>;
 
 export type ClaudePluginUiElement = {
-  type: ClaudePluginUiElementType;
+  type: ElementType;
   props: Record<string, ClaudePluginUiPropValue>;
   /** Present on a Button, Input or Select the user may act on. */
   target?: ClaudePluginUiTarget;
@@ -64,11 +56,11 @@ export type ClaudePluginUiElement = {
 
 export type ClaudePluginUiNode = string | ClaudePluginUiElement;
 
-export type ClaudePluginUiStatus = { plugin: string; text: string };
+type Status = { plugin: string; text: string };
 
-export type ClaudePluginUiToast = { id: string; plugin: string; text: string; timeoutMs: number };
+type Toast = { id: string; plugin: string; text: string; timeoutMs: number };
 
-export type ClaudePluginUiPane = {
+type Pane = {
   id: string;
   title: string;
   plugin: string;
@@ -76,17 +68,17 @@ export type ClaudePluginUiPane = {
 };
 
 export type ClaudePluginUiSnapshot = {
-  /** False once the Claude process that drew this is gone: shown, but nothing can be pressed. */
+  /** True while the Claude process that drew this lives: only then can a control be pressed. */
   live: boolean;
   /** One per Claude process. An action must name the generation that drew its control. */
   generation: number;
   /** Bumped on every change, so a slow read cannot overwrite a newer push. */
   revision: number;
-  statuses: ClaudePluginUiStatus[];
+  statuses: Status[];
   /** The latest toast; clients show each `id` once. */
-  toast: ClaudePluginUiToast | null;
+  toast: Toast | null;
   band: ClaudePluginUiElement | null;
-  panes: ClaudePluginUiPane[];
+  panes: Pane[];
 };
 
 export const EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT: ClaudePluginUiSnapshot = {
@@ -101,18 +93,17 @@ export const EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT: ClaudePluginUiSnapshot = {
 
 export type ClaudePluginUiGetArgs = { sessionId: string };
 
-export type ClaudePluginUiActArgs = {
-  sessionId: string;
-  generation: number;
-} & (
+/** The render site a control was drawn in: the band, or one pane by id. */
+export type ClaudePluginUiSite = { component: "AbovePrompt" } | { component: "Pane"; paneId: string };
+
+/** What a person did to a control a mod drew. */
+export type ClaudePluginUiAction =
   | { kind: "press"; target: ClaudePluginUiTarget; key?: string }
   | { kind: "input"; target: ClaudePluginUiTarget; key?: string; value: string; site: ClaudePluginUiSite }
   | { kind: "select"; target: ClaudePluginUiTarget; key?: string; value: string; site: ClaudePluginUiSite }
-  | { kind: "closePane"; paneId: string }
-);
+  | { kind: "closePane"; paneId: string };
 
-/** The render site a control was drawn in: the band, or one pane by id. */
-export type ClaudePluginUiSite = { component: "AbovePrompt" } | { component: "Pane"; paneId: string };
+export type ClaudePluginUiActArgs = { sessionId: string; generation: number } & ClaudePluginUiAction;
 
 export type ClaudePluginUiActResult = { handled: boolean };
 
@@ -120,29 +111,49 @@ export function claudePluginUiHasContent(snapshot: ClaudePluginUiSnapshot | null
   return Boolean(snapshot && (snapshot.band || snapshot.statuses.length || snapshot.panes.length));
 }
 
+/**
+ * True for a `session_meta_updated` event that only carries a mod UI snapshot.
+ * It is not chat activity: no recency bump, no roster refresh, no replay.
+ */
+export function isClaudePluginUiOnlyMetaEvent(event: { type: string }): boolean {
+  if (event.type !== "session_meta_updated" || (event as { claudePluginUi?: unknown }).claudePluginUi === undefined) return false;
+  return Object.keys(event).every((key) => key === "type" || key === "claudePluginUi");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Text without control characters (tabs and newlines stay), cut to `max`. */
-export function cleanClaudePluginUiText(value: unknown, max = MAX_CLAUDE_PLUGIN_UI_TEXT_CHARS): string {
+/** Text without control characters and direction overrides (tabs and newlines stay), cut to `max`. */
+export function cleanClaudePluginUiText(value: unknown, max = MAX_TEXT_CHARS): string {
   if (typeof value !== "string") return "";
+  // Cut first: a huge string must not be scanned whole. The slack covers removed characters.
+  const bounded = value.length > max * 2 ? value.slice(0, max * 2) : value;
   // eslint-disable-next-line no-control-regex
-  const cleaned = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f‎‏‪-‮⁦-⁩]/g, "");
+  const cleaned = bounded.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f‎‏‪-‮⁦-⁩]/g, "");
   return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
 }
 
-/** Only web links open from a mod's tree. */
+/**
+ * The address a mod's `Link` may open, by the rule Claude Code documents for
+ * its Desktop app: an `https:` URL or an `http://localhost` URL, with no `@`,
+ * spelled the way `new URL(href).href` spells it (a missing `/` after the host
+ * is allowed). Any other link draws as plain text.
+ */
 export function safeClaudePluginUiHref(value: unknown): string | null {
-  if (typeof value !== "string" || value.length > MAX_HREF_CHARS) return null;
+  if (typeof value !== "string" || value.length > MAX_HREF_CHARS || value.includes("@")) return null;
+  let url: URL;
   try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+    url = new URL(value);
   } catch {
     return null;
   }
+  const allowed = url.protocol === "https:" || (url.protocol === "http:" && url.hostname === "localhost");
+  if (!allowed || (url.href !== value && url.href !== `${value}/`)) return null;
+  return url.href;
 }
 
+/** A `{ plugin, handle }` as Claude Code stamps it, or null for anything else. */
 export function normalizeClaudePluginUiTarget(value: unknown): ClaudePluginUiTarget | null {
   if (!isRecord(value)) return null;
   const plugin = typeof value.plugin === "string" ? value.plugin : "";
@@ -152,71 +163,68 @@ export function normalizeClaudePluginUiTarget(value: unknown): ClaudePluginUiTar
   return { plugin, handle };
 }
 
-const STRING_PROPS: Record<ClaudePluginUiElementType, readonly string[]> = {
-  Box: [
-    "key", "flexDirection", "flexWrap", "alignItems", "alignSelf", "justifyContent", "display",
-    "borderStyle", "borderColor", "backgroundColor", "width", "height", "minWidth",
-  ],
-  Text: ["color", "backgroundColor", "wrap"],
-  Button: ["key", "label", "variant", "role", "hotkey"],
-  Link: ["label"],
-  Code: ["source", "language", "path", "format"],
-  Markdown: ["key", "text"],
-  Input: ["key", "label", "placeholder", "value", "submitLabel"],
-  Select: ["key", "label", "value"],
+/**
+ * What a prop may hold. `name` is a short string (an id, a keyword, a colour),
+ * `text` a string a person reads or types, `size` a number of cells or a
+ * percentage string.
+ */
+type PropKind = "name" | "text" | "number" | "flag" | "size";
+
+/** Every prop a client may receive, per element. A prop not listed is dropped. */
+const ELEMENT_PROPS: Record<ElementType, Record<string, PropKind>> = {
+  Box: {
+    key: "name", flexDirection: "name", flexWrap: "name", alignItems: "name", alignSelf: "name",
+    justifyContent: "name", display: "name", borderStyle: "name", borderColor: "name", backgroundColor: "name",
+    width: "size", height: "size", minWidth: "size", minHeight: "number",
+    gap: "number", columnGap: "number", rowGap: "number",
+    padding: "number", paddingX: "number", paddingY: "number",
+    paddingLeft: "number", paddingRight: "number", paddingTop: "number", paddingBottom: "number",
+    margin: "number", marginX: "number", marginY: "number",
+    marginLeft: "number", marginRight: "number", marginTop: "number", marginBottom: "number",
+    flexGrow: "number", flexShrink: "number",
+  },
+  Text: {
+    color: "name", backgroundColor: "name", wrap: "name",
+    bold: "flag", italic: "flag", underline: "flag", strikethrough: "flag", dimColor: "flag", inverse: "flag",
+  },
+  Button: { key: "name", label: "text", variant: "name", role: "name", plain: "flag", dimColor: "flag" },
+  Link: { label: "text" },
+  Code: { source: "text", language: "name", path: "name", format: "name", startLine: "number", wrap: "flag" },
+  Markdown: { key: "name", text: "text", dimColor: "flag" },
+  Input: { key: "name", label: "text", placeholder: "text", value: "text", submitLabel: "name" },
+  Select: { key: "name", label: "text", value: "text" },
 };
 
-const NUMBER_PROPS: Record<ClaudePluginUiElementType, readonly string[]> = {
-  Box: [
-    "gap", "columnGap", "rowGap", "padding", "paddingX", "paddingY", "paddingLeft", "paddingRight",
-    "paddingTop", "paddingBottom", "margin", "marginX", "marginY", "marginLeft", "marginRight",
-    "marginTop", "marginBottom", "width", "height", "minWidth", "minHeight", "flexGrow", "flexShrink",
-  ],
-  Text: [],
-  Button: [],
-  Link: [],
-  Code: ["startLine"],
-  Markdown: [],
-  Input: [],
-  Select: [],
+/** Element names other surfaces use, with the element this one draws and the props that implies. */
+const ELEMENT_ALIASES: Record<string, { type: ElementType; props?: Record<string, ClaudePluginUiPropValue> }> = {
+  div: { type: "Box" },
+  span: { type: "Text" },
+  b: { type: "Text", props: { bold: true } },
 };
 
-const BOOLEAN_PROPS: Record<ClaudePluginUiElementType, readonly string[]> = {
-  Box: [],
-  Text: ["bold", "italic", "underline", "strikethrough", "dimColor", "inverse"],
-  Button: ["plain", "dimColor"],
-  Link: [],
-  Code: ["wrap"],
-  Markdown: ["dimColor"],
-  Input: [],
-  Select: [],
-};
-
-/** Longer text a prop may carry; every other string prop is a short name. */
-const LONG_STRING_PROPS = new Set(["source", "text", "value", "label", "placeholder"]);
-
-/** Element names other surfaces use for what this one draws as a Box or Text. */
-const TYPE_ALIASES: Record<string, ClaudePluginUiElementType> = { div: "Box", span: "Text", b: "Text" };
+function isElementType(value: string): value is ElementType {
+  return Object.hasOwn(ELEMENT_PROPS, value);
+}
 
 type SanitizeBudget = { nodes: number; chars: number; targets: ClaudePluginUiTarget[] };
 
-function sanitizeProps(type: ClaudePluginUiElementType, raw: Record<string, unknown>, budget: SanitizeBudget): Record<string, ClaudePluginUiPropValue> {
+function sanitizeProps(type: ElementType, raw: Record<string, unknown>, budget: SanitizeBudget): Record<string, ClaudePluginUiPropValue> {
   const props: Record<string, ClaudePluginUiPropValue> = {};
-  for (const name of STRING_PROPS[type]) {
+  for (const [name, kind] of Object.entries(ELEMENT_PROPS[type])) {
     const value = raw[name];
-    if (typeof value !== "string") continue;
-    const long = LONG_STRING_PROPS.has(name);
-    const room = Math.max(0, MAX_TREE_CHARS - budget.chars);
-    const cleaned = cleanClaudePluginUiText(value, long ? Math.min(room, MAX_TREE_CHARS) : MAX_NAME_CHARS);
-    if (long) budget.chars += cleaned.length;
-    props[name] = cleaned;
-  }
-  for (const name of NUMBER_PROPS[type]) {
-    const value = raw[name];
-    if (typeof value === "number" && Number.isFinite(value)) props[name] = Math.max(-512, Math.min(512, value));
-  }
-  for (const name of BOOLEAN_PROPS[type]) {
-    if (raw[name] === true) props[name] = true;
+    if (kind === "flag") {
+      if (value === true) props[name] = true;
+    } else if (typeof value === "number") {
+      if (kind !== "name" && kind !== "text" && Number.isFinite(value)) props[name] = Math.max(-512, Math.min(512, value));
+    } else if (typeof value === "string" && kind !== "number") {
+      if (kind === "text") {
+        const cleaned = cleanClaudePluginUiText(value, Math.max(0, MAX_TREE_CHARS - budget.chars));
+        budget.chars += cleaned.length;
+        props[name] = cleaned;
+      } else {
+        props[name] = cleanClaudePluginUiText(value, MAX_NAME_CHARS);
+      }
+    }
   }
   if (type === "Link") {
     const href = safeClaudePluginUiHref(raw.href);
@@ -225,14 +233,13 @@ function sanitizeProps(type: ClaudePluginUiElementType, raw: Record<string, unkn
   if (type === "Select" && Array.isArray(raw.options)) {
     const options: Array<{ value: string; label: string }> = [];
     for (const option of raw.options.slice(0, MAX_SELECT_OPTIONS)) {
-      if (typeof option === "string") {
-        options.push({ value: option.slice(0, MAX_NAME_CHARS), label: cleanClaudePluginUiText(option, MAX_NAME_CHARS) });
-      } else if (isRecord(option) && typeof option.value === "string") {
-        options.push({
-          value: option.value.slice(0, MAX_CLAUDE_PLUGIN_UI_INPUT_CHARS),
-          label: cleanClaudePluginUiText(typeof option.label === "string" ? option.label : option.value, MAX_NAME_CHARS),
-        });
-      }
+      const value = typeof option === "string" ? option : isRecord(option) ? option.value : undefined;
+      if (typeof value !== "string") continue;
+      const label = isRecord(option) && typeof option.label === "string" ? option.label : value;
+      options.push({
+        value: cleanClaudePluginUiText(value, MAX_CLAUDE_PLUGIN_UI_INPUT_CHARS),
+        label: cleanClaudePluginUiText(label, MAX_NAME_CHARS),
+      });
     }
     props.options = options;
   }
@@ -247,17 +254,15 @@ function sanitizeNode(raw: unknown, depth: number, budget: SanitizeBudget): Clau
     return text;
   }
   if (!isRecord(raw) || typeof raw.type !== "string" || depth > MAX_TREE_DEPTH) return null;
-  const type = (TYPE_ALIASES[raw.type] ?? raw.type) as ClaudePluginUiElementType;
-  if (!Object.hasOwn(STRING_PROPS, type)) {
+  const rawProps = isRecord(raw.props) ? raw.props : {};
+  const alias = Object.hasOwn(ELEMENT_ALIASES, raw.type) ? ELEMENT_ALIASES[raw.type] : undefined;
+  const type = alias?.type ?? raw.type;
+  if (!isElementType(type)) {
     // Svg, Client, Raster, Image: not drawn. An `alt` is the mod's own stand-in.
-    const alt = isRecord(raw.props) ? cleanClaudePluginUiText(raw.props.alt, MAX_NAME_CHARS) : "";
-    return alt || null;
+    return cleanClaudePluginUiText(rawProps.alt, MAX_NAME_CHARS) || null;
   }
   budget.nodes += 1;
-  const rawProps = isRecord(raw.props) ? raw.props : {};
-  const props = sanitizeProps(type, rawProps, budget);
-  if (raw.type === "b") props.bold = true;
-  const element: ClaudePluginUiElement = { type, props };
+  const element: ClaudePluginUiElement = { type, props: { ...sanitizeProps(type, rawProps, budget), ...alias?.props } };
   if (type === "Button" || type === "Input" || type === "Select") {
     const target = normalizeClaudePluginUiTarget(raw.press);
     if (target) {

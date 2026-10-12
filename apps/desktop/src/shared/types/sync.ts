@@ -2578,8 +2578,6 @@ export type SyncRemoteCommandAction =
   | "chat.updateDraft"
   | "chat.claimDraft"
   | "chat.sendDraftNow"
-  | "chat.getClaudePluginUi"
-  | "chat.actOnClaudePluginUi"
   | "chat.listThreadComments"
   | "chat.createThreadComment"
   | "chat.updateThreadComment"

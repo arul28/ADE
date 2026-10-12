@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import type { AiConfig } from "../../../shared/types";
 import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import "./ChatSection.css";
@@ -53,8 +52,7 @@ export function ClaudeModsSection() {
     void window.ade.projectConfig.get()
       .then((snapshot) => {
         if (cancelled) return;
-        const ai = snapshot.effective?.ai as AiConfig | undefined;
-        setEnabled(ai?.chat?.claudePluginUiEnabled === true);
+        setEnabled(snapshot.effective.ai?.chat?.claudePluginUiEnabled === true);
         setLoaded(true);
       })
       .catch(() => {
@@ -89,9 +87,9 @@ export function ClaudeModsSection() {
       <ModernRows>
         <ModernRow
           anchor="claude-mods"
-          title="Show what mods draw"
+          title="Show what Claude mods draw"
           hint={loaded
-            ? "Status lines, toasts, a band above the prompt and panes from your Claude Code mods. Early access in Claude Code, so it can change."
+            ? "What your Claude Code mods draw, on top of the prompt box. Early access in Claude Code, so it can change."
             : "Loading…"}
           control={(
             <SettingsToggle
