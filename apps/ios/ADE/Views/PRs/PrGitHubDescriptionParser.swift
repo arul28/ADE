@@ -26,7 +26,8 @@ private enum PrGitHubDescriptionRegex {
   static let link = htmlExpression(#"<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a\s*>"#)
   static let heading = htmlExpression(#"<h([1-6])\b[^>]*>(.*?)</h[1-6]\s*>"#)
   static let listItem = htmlExpression(#"<li\b[^>]*>(.*?)</li\s*>"#)
-  static let image = htmlExpression(#"<img\b[^>]*\balt\s*=\s*["']([^"']+)["'][^>]*>"#)
+  static let image = htmlExpression(#"<img\b[^>]*>"#)
+  static let imageAlt = expression(#"\balt\s*=\s*["']([^"']*)["']"#, options: [.caseInsensitive])
   static let lineBreak = expression(#"<br\s*/?>"#, options: [.caseInsensitive])
   static let paragraph = expression(#"</?p\b[^>]*>"#, options: [.caseInsensitive])
   static let list = expression(#"</?(?:ul|ol)\b[^>]*>"#, options: [.caseInsensitive])
@@ -343,10 +344,14 @@ func normalizePrGitHubHtmlFragment(_ source: String) -> String {
     in: value,
     regex: PrGitHubDescriptionRegex.image
   ) { match, original in
-    let alt = prDecodeHtmlEntities(prHtmlCapture(match, in: original, index: 1))
+    // GitHub's own uploads often carry no `alt`, or an empty one.
+    let tag = original.substring(with: match.range)
+    let alt = PrGitHubDescriptionRegex.imageAlt
+      .firstMatch(in: tag, range: NSRange(location: 0, length: (tag as NSString).length))
+      .map { prDecodeHtmlEntities((tag as NSString).substring(with: $0.range(at: 1))) } ?? ""
     // A picture GitHub hosts is drawn as a picture (`prDescriptionPieces`).
     // Any other source stays words, as before.
-    if let source = prHtmlImageSource(original.substring(with: match.range)),
+    if let source = prHtmlImageSource(tag),
        prIsGitHubMediaURL(source) {
       let label = alt.replacingOccurrences(of: "[", with: "(").replacingOccurrences(of: "]", with: ")")
       return "\n\n![\(label)](\(source))\n\n"
@@ -636,6 +641,11 @@ private enum PrDescriptionMediaRegex {
     pattern: #"^(before|after)\b"#,
     options: [.caseInsensitive]
   )
+  /// `[label]: url` on its own line: a link or footnote used elsewhere.
+  static let referenceDefinition = try! NSRegularExpression(
+    pattern: #"^ {0,3}\[[^\]\n]+\]:\s+\S"#,
+    options: [.anchorsMatchLines]
+  )
 }
 
 private func prFullMatch(_ regex: NSRegularExpression, _ text: String) -> NSTextCheckingResult? {
@@ -677,6 +687,12 @@ private func prTableCells(_ line: String) -> [String] {
 /// Splits a PR text into markdown and the media a reader should see as media.
 /// Lines inside a code fence are never media.
 func prDescriptionPieces(_ markdown: String) -> [PrDescriptionPiece] {
+  // A link defined on its own line can be used anywhere in the text. Cut into
+  // pieces, the use and the definition land in different renderers and the
+  // link dies, so such a text stays whole.
+  if prFullMatch(PrDescriptionMediaRegex.referenceDefinition, markdown) != nil {
+    return markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [.markdown(markdown)]
+  }
   let lines = markdown.components(separatedBy: "\n")
   var pieces: [PrDescriptionPiece] = []
   var text: [String] = []
@@ -705,7 +721,8 @@ func prDescriptionPieces(_ markdown: String) -> [PrDescriptionPiece] {
         continue
       }
     }
-    if fence != nil {
+    // Inside a fence, or indented as code (four spaces or a tab): not media.
+    if fence != nil || line.hasPrefix("    ") || line.hasPrefix("\t") {
       text.append(line)
       index += 1
       continue

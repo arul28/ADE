@@ -299,6 +299,24 @@ final class PrGitHubDescriptionParserTests: XCTestCase {
     XCTAssertEqual(prDescriptionPieces(text), [.markdown(text)])
   }
 
+  func testATextWithALinkDefinedOnItsOwnLineStaysWhole() {
+    // Cut into pieces, `[the issue][1]` and `[1]: …` would land in different
+    // renderers and the link would stop working.
+    let text = """
+    See [the issue][1].
+
+    ![The new list](\(attachment))
+
+    [1]: https://github.com/arul28/ADE/issues/1
+    """
+    XCTAssertEqual(prDescriptionPieces(text), [.markdown(text)])
+  }
+
+  func testAnAttachmentIndentedAsCodeStaysCode() {
+    let text = "Run it:\n\n    \(attachment)\n    ![x](\(attachment))"
+    XCTAssertEqual(prDescriptionPieces(text), [.markdown(text)])
+  }
+
   func testOnlyMediaThatGitHubServesIsLoaded() {
     // A PR text can be written by anyone, so a picture on another host stays
     // words: loading it would tell its author who read the PR.
@@ -315,6 +333,7 @@ final class PrGitHubDescriptionParserTests: XCTestCase {
     Before the fix:
     <img width="800" alt="The old list" src="\(attachment)" />
     <img alt="A chart" src="https://tracker.example.com/pixel.png">
+    <img src="\(attachment)">
     """)
 
     guard case .markdown(_, let markdown) = blocks[0] else {
@@ -324,6 +343,8 @@ final class PrGitHubDescriptionParserTests: XCTestCase {
       .markdown("Before the fix:"),
       .media(image(attachment, "The old list")),
       .markdown("[Image: A chart]"),
+      // GitHub's own uploads often carry no alt text at all.
+      .media(image(attachment, "")),
     ])
   }
 }

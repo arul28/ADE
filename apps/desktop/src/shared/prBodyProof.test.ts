@@ -108,11 +108,12 @@ describe("proof in a pull request's text", () => {
 
   it("draws a GitHub attachment alone on its line as media, as GitHub does, and leaves one in a sentence or in code alone", () => {
     const url = "https://github.com/user-attachments/assets/83908590-2459-482d-bce8-9fbe8c7b7974";
-    const text = `## Proof\n\n${url}\n\nSee ${url} for the run.\n\n\`\`\`\n${url}\n\`\`\``;
+    const text = `## Proof\n\n${url}\n\nSee ${url} for the run.\n\n\`\`\`\n${url}\n\`\`\`\n\nIndented as code:\n\n    ${url}`;
     const ade = preparePrBodyProofForAde(text);
     expect(ade).toContain(`\n![](${url} "${PR_ATTACHMENT_TITLE}")\n`);
     expect(ade).toContain(`See ${url} for the run.`);
     expect(ade).toContain(`\`\`\`\n${url}\n\`\`\``);
+    expect(ade).toContain(`\n    ${url}`);
     // A link that only looks like an attachment is a link.
     const other = "https://github.com/user-attachments/files/123/report.zip";
     expect(preparePrBodyProofForAde(other)).toBe(other);

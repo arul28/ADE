@@ -236,8 +236,11 @@ export function prBodyMayHoldProof(markdown: string): boolean {
     || markdown.includes(PROOF_COMPARE_FENCE_LANGUAGE);
 }
 
-/** A GitHub attachment alone on its line: how GitHub stores an uploaded video. */
-const ATTACHMENT_LINE = /^([ \t]*)(https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f-]{36})[ \t]*$/gm;
+/**
+ * A GitHub attachment alone on its line: how GitHub stores an uploaded video.
+ * Four spaces or a tab of indent make the line code, which stays code.
+ */
+const ATTACHMENT_LINE = /^( {0,3})(https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f-]{36})[ \t]*$/gm;
 
 /**
  * The text as ADE's PR markdown draws it: proof ids moved from comments into

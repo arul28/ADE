@@ -1296,6 +1296,7 @@ struct PrDescriptionMediaView: View {
   let media: PrDescriptionMedia
   @Environment(\.openURL) private var openURL
   @State private var player: AVPlayer?
+  @State private var videoFailed = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
@@ -1329,10 +1330,16 @@ struct PrDescriptionMediaView: View {
           }
         }
       case .video:
-        if let player {
+        if videoFailed {
+          // A private repository or a lost connection: the file did not load.
+          fallbackLink
+        } else if let player {
           VideoPlayer(player: player)
             .aspectRatio(16.0 / 9.0, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .onReceive(player.publisher(for: \.currentItem?.status).receive(on: DispatchQueue.main)) { status in
+              if status == .failed { videoFailed = true }
+            }
         } else {
           Button {
             let next = AVPlayer(url: media.url)
@@ -1365,12 +1372,15 @@ struct PrDescriptionMediaView: View {
     }
   }
 
-  /// A picture that did not load (a private repository, no connection).
+  /// Media that did not load (a private repository, no connection).
   private var fallbackLink: some View {
     Button {
       openURL(media.url)
     } label: {
-      Label(media.label.isEmpty ? "Open picture on GitHub" : media.label, systemImage: "arrow.up.right.square")
+      Label(
+        media.label.isEmpty ? (media.kind == .video ? "Open video on GitHub" : "Open picture on GitHub") : media.label,
+        systemImage: "arrow.up.right.square"
+      )
         .font(.footnote)
         .frame(minHeight: 44, alignment: .leading)
     }
