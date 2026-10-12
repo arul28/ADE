@@ -69,6 +69,30 @@ export function classifyClaudeRateLimitInfo(info: Record<string, unknown> | null
   return { kind: "rejected", snapshot, status };
 }
 
+/**
+ * True when Claude reports that the request drew on extra usage: usage billed
+ * past the plan limit. Such an event has status `allowed`, so the classifier
+ * above ignores it, and Claude Code continues the turn.
+ */
+export function claudeRateLimitInfoUsesExtraUsage(info: Record<string, unknown> | null | undefined): boolean {
+  return info?.isUsingOverage === true || info?.overageInUse === true;
+}
+
+/**
+ * The quota card's numbers for a turn ADE stops for extra usage. Only the plan
+ * window is a reset the owner waits for; an event about the extra-usage window
+ * itself gives no resume time.
+ */
+export function claudeExtraUsageQuotaSnapshot(info: Record<string, unknown>): ClaudeSessionQuotaSnapshot {
+  return {
+    utilizationPct: null,
+    resetsAtMs: info.rateLimitType === "overage" ? null : normalizeResetsAtMs(info.resetsAt),
+  };
+}
+
+export const CLAUDE_EXTRA_USAGE_STOP_NOTICE =
+  "ADE stopped this turn because Claude started to bill extra usage. The last request can be billed. To let turns continue, change Extra usage in this account's settings.";
+
 export function parseClaudeSessionQuotaResetAt(
   text: string,
   nowMs: number = Date.now(),

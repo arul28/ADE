@@ -2088,7 +2088,9 @@ are how a chat asks to be woken when its PR changes. Source:
 - **What wakes the agent.** Each check as soon as it fails (failure, cancelled,
   timed out, action required); the required checks passing (`checksStatus`
   turning `passing`); new comments, inline comments, and submitted reviews from
-  people and agent reviewers (deploy, CI, and dependency bots are ignored); the
+  people and agent reviewers (deploy, CI, and dependency bots are ignored); a
+  review bot's edit of its old comment, which is how such a bot reports a new
+  review of a push (a person's edit does not wake the agent); the
   branch starting to conflict; the PR merging or closing. A new head resets the
   check state. The first pass reports the PR's current state, so arming Watch
   on a red PR tells the agent what is red right away.

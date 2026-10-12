@@ -6,6 +6,7 @@ import { destroyChildProcessStreams, hasNullByte, normalizeRelative } from "../s
 import { terminateProcessTree } from "../shared/processExecution";
 import { pathKey } from "../shared/pathCompare";
 import { resolveGitExecutable, runGit } from "../git/git";
+import { GIT_READ_ENV } from "../git/gitReadEnv";
 
 const MAX_INDEXED_FILES = 25_000;
 const MAX_TEXT_FILE_BYTES = 1_000_000;
@@ -317,9 +318,7 @@ async function searchTextWithGitGrep(args: {
       // query, expanding any `%VAR%` in it beyond rescue (windows-quirks #8).
       child = spawn(executable, gitGrepArgs(args), {
         cwd: args.rootPath,
-        // GIT_OPTIONAL_LOCKS=0 keeps a background search from taking
-        // `index.lock` to refresh the index while the user runs their own git.
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+        env: { ...process.env, ...GIT_READ_ENV },
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });

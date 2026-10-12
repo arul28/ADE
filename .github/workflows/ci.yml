@@ -636,7 +636,7 @@ jobs:
       # changes are meaningful there. Run them on Windows so the worker pools'
       # case-insensitive path reuse is exercised by a native filesystem target.
       - name: Test Windows SDK worker activity path contracts
-        run: cd apps/desktop && npx vitest run src/main/services/chat/cursorSdkPool.test.ts src/main/services/chat/piSdkPool.test.ts
+        run: cd apps/desktop && npx vitest run src/main/services/chat/cursorSdkPool.test.ts src/main/services/chat/piSdkPool.test.ts src/main/services/shared/offThreadSpawn.test.ts
 
       # The suites docs/development/windows-port-lane.md names as the Windows
       # validation set. Before this step the intersection with this job was

@@ -2242,6 +2242,24 @@ file, so they have exactly one identity per machine.
   `claude` sessions on that account. It adds nothing when the environment
   already states a TTL, and a launch on a preset or a stored credential never
   gets it, because that endpoint bills separately.
+- **Extra usage (Claude).** The same menu has an **Extra usage** page with two
+  choices: **Continue**, which is what Claude Code does by itself, or **Stop
+  the turn**. Extra usage is usage that Claude bills after the plan limit, on
+  an account that allows it. "Stop the turn" is stored as `onExtraUsage: "stop"`
+  on the account record; the default stores nothing. When a `rate_limit_event`
+  says the request drew on extra usage (`isUsingOverage` or `overageInUse`),
+  the Claude chat runtime interrupts the turn, cancels its queued messages,
+  and ends it as a usage limit: the quota card shows, and the chat then does
+  what it does at a plan limit (it resumes at the reset when Claude sends a
+  reset time and the chat continues at limits, or it moves to another account
+  under Smart balance). Claude reports extra usage after the response, so one
+  request is billed before the stop. The setting lives in this machine's
+  account registry, so another machine with the same account does not apply
+  it, and iOS and the hosted web client show no control for it. It covers ADE
+  chats that run on the account's own login: a chat that runs on a preset or a
+  stored credential, and a terminal `claude` session, are not stopped. A chat
+  whose preset cannot be resolved runs on the account's own login, so the
+  setting applies to it.
 - **AI settings save to `.ade/local.yaml`.** `ai.updateConfig` (IPC, the `ai`
   action domain, and the brain's remote command) merges its partial config into
   the local layer through `projectConfigService.updateAiConfig`. The shared

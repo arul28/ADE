@@ -79,6 +79,55 @@ describe("evaluatePrWatch", () => {
     expect(remarkChange?.kind === "remarks" ? remarkChange.remarks.map((entry) => entry.id) : []).toEqual(["human-1"]);
   });
 
+  it("tells a review bot's edit of its old comment one time, and not a person's edit or an unchanged comment", () => {
+    let state = initialPrWatchState(iso(T0), "head-1");
+    const summary = remark("bot-summary", "coderabbitai[bot]", T0 + 60_000, true);
+    const first = step("watch", state, { remarks: [summary], nowMs: T0 + 120_000 });
+    expect(kinds(first)).toEqual(["remarks"]);
+    state = first.next;
+
+    // The bot reviews the next push by editing the same comment: same id, same createdAt.
+    const edited = { ...summary, body: "second review", editedAt: iso(T0 + 600_000) };
+    const second = step("watch", state, { remarks: [edited], nowMs: T0 + 660_000 });
+    expect(kinds(second)).toEqual(["remarks"]);
+    state = second.next;
+
+    expect(kinds(step("watch", state, { remarks: [edited], nowMs: T0 + 720_000 }))).toEqual([]);
+
+    // A person who edits an old comment has said nothing new.
+    const person = remark("human-1", "reviewer", T0 + 30_000);
+    const typoFix = { ...person, editedAt: iso(T0 + 900_000) };
+    expect(kinds(step("watch", state, { remarks: [edited, typoFix], nowMs: T0 + 960_000 }))).toEqual([]);
+  });
+
+  it("Ship counts a review bot's edit as the review of the new head, and tells its newest text", () => {
+    // The bot's one summary comment is older than the push it will review.
+    const summary = remark("bot-summary", "coderabbitai[bot]", T0 + 10_000, true);
+    const pushedAt = T0 + 60_000;
+    let state = step("ship", initialPrWatchState(iso(T0), "head-0"), {
+      pr: { headSha: "head-1" },
+      checks: [check("build", "in_progress")],
+      remarks: [summary],
+      nowMs: pushedAt,
+    }).next;
+
+    const firstEdit = { ...summary, body: "review in progress", editedAt: iso(pushedAt + 30_000) };
+    const held = step("ship", state, { checks: [check("build", "in_progress")], remarks: [firstEdit], nowMs: pushedAt + 60_000 });
+    expect(held.changes).toEqual([]);
+    state = held.next;
+
+    // CI ends well inside the 12-minute grace. The bot's second edit is the review.
+    const secondEdit = { ...summary, body: "2 findings on head-1", editedAt: iso(pushedAt + 90_000) };
+    const released = step("ship", state, {
+      checks: [check("build", "completed", "success")],
+      remarks: [secondEdit],
+      nowMs: pushedAt + 120_000,
+    });
+    const told = released.changes.flatMap((change) => (change.kind === "remarks" ? change.remarks : []));
+    expect(told.map((entry) => entry.body)).toEqual(["2 findings on head-1"]);
+    expect(released.next.held).toEqual([]);
+  });
+
   it("Ship holds news until CI finishes and review bots are heard, but a conflict goes out at once", () => {
     const pushedAt = T0 + 60_000;
     // A head pushed after the watch began starts the bot grace clock.

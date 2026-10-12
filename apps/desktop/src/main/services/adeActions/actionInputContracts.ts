@@ -975,8 +975,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run provider_instances.getSettings --input-json '{\"provider\":\"codex\"}' --text",
     },
     setSettings: {
-      description: "Patch the per-provider account settings. Omitted fields keep their current value.",
-      input: "object { provider: \"claude\" | \"codex\", settings: { smartBalance?: boolean, autoStartWindows?: boolean } }",
+      description:
+        "Patch the per-provider account settings. Omitted fields keep their current value. compaction, "
+        + "subagentPromptCacheTtl and onExtraUsage belong to one account and need instanceId; null clears them. "
+        + "subagentPromptCacheTtl and onExtraUsage are Claude only.",
+      input: "object { provider: \"claude\" | \"codex\", instanceId?: string, settings: { smartBalance?: boolean, "
+        + "autoStartWindows?: boolean, compaction?: object | null, subagentPromptCacheTtl?: \"1h\" | null, "
+        + "onExtraUsage?: \"stop\" | null } }",
       example: "ade actions run provider_instances.setSettings --input-json '{\"provider\":\"codex\",\"settings\":{\"smartBalance\":true}}' --text",
     },
     loginCommand: {

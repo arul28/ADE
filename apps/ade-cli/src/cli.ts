@@ -30940,6 +30940,7 @@ function formatProviderAccounts(value: unknown): string {
       ["replaced login", isRecord(instance.replacedAccount) ? instance.replacedAccount.email : undefined],
       ["accent", instance.accentColor],
       ["subagent cache", instance.subagentPromptCacheTtl === "1h" ? "1 hour" : undefined],
+      ["extra usage", instance.onExtraUsage === "stop" ? "stop the turn" : undefined],
       ["config home", instance.configHome],
       ["created", instance.createdAt],
     ]);

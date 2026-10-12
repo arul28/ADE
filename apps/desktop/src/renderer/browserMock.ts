@@ -108,6 +108,7 @@ import {
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
 import type { ProviderCompactionSettings } from "../shared/compactionSettings";
+import type { ProviderInstanceSettingsPatch } from "../shared/types/providerInstances";
 import type {
   ApiCredentialGetArgs,
   ApiCredentialListArgs,
@@ -842,6 +843,7 @@ const mockProviderInstances: Array<{
   sameLoginAs?: string;
   replacedAccount?: { email: string; plan?: string; replacedAt: string };
   subagentPromptCacheTtl?: "1h";
+  onExtraUsage?: "stop";
   compaction?: ProviderCompactionSettings;
 }> = [
   {
@@ -7859,7 +7861,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setSettings: async (args: {
         provider: "claude" | "codex";
         instanceId?: string;
-        settings: { smartBalance?: boolean; autoStartWindows?: boolean; subagentPromptCacheTtl?: "1h" | null; compaction?: ProviderCompactionSettings | null };
+        settings: ProviderInstanceSettingsPatch;
       }) => {
         const current = mockProviderInstanceSettings[args.provider];
         const account = args.instanceId ? mockProviderInstances.find((entry) => entry.id === args.instanceId) : undefined;
@@ -7870,6 +7872,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         if (account && args.settings && Object.hasOwn(args.settings, "subagentPromptCacheTtl")) {
           if (args.settings.subagentPromptCacheTtl === "1h") account.subagentPromptCacheTtl = "1h";
           else delete account.subagentPromptCacheTtl;
+        }
+        if (account && args.settings && Object.hasOwn(args.settings, "onExtraUsage")) {
+          if (args.settings.onExtraUsage === "stop") account.onExtraUsage = "stop";
+          else delete account.onExtraUsage;
         }
         if (typeof args.settings?.smartBalance === "boolean") current.smartBalance = args.settings.smartBalance;
         if (typeof args.settings?.autoStartWindows === "boolean") {

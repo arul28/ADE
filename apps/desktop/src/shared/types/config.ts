@@ -579,6 +579,8 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "session.limit_reached",
   "session.failed",
   "session.ended_without_pr",
+  // A chat was settled (filed as done). The session service reports it.
+  "session.settled",
   "lane.created",
   "lane.archived",
   "lane.merged",
