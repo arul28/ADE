@@ -150,7 +150,8 @@ export function useUsageSnapshot({
      * the one showing the older figure. Waking re-reads the host's cached
      * snapshot; the ordering guard drops it if it is not newer.
      *
-     * A read, never a poll — no interval is added here. Coalesced on the read
+     * A read, never a provider poll; only a pinned reader, which gets no
+     * pushes, repeats it on an interval (below). Coalesced on the read
      * itself, because a single wake fires `visibilitychange` and `focus`
      * together.
      */
@@ -168,11 +169,7 @@ export function useUsageSnapshot({
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", readOnWake);
     // A cached read, never a provider poll, and only while the page is shown.
-    const pinnedReread = pin
-      ? window.setInterval(() => {
-        if (document.visibilityState === "visible") readOnWake();
-      }, PINNED_SNAPSHOT_REREAD_MS)
-      : null;
+    const pinnedReread = pin ? window.setInterval(onVisibilityChange, PINNED_SNAPSHOT_REREAD_MS) : null;
 
     return () => {
       cancelled = true;

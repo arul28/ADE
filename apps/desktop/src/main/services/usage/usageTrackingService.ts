@@ -849,6 +849,8 @@ function accountRateLimitNextAttemptAtMs(accountId: string, nowMs: number = Date
   return entry.nextAttemptAtMs;
 }
 
+const CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
+
 /**
  * When each account last had its stale Claude login refreshed by a background
  * poll, by usage account id.
@@ -860,7 +862,6 @@ function accountRateLimitNextAttemptAtMs(accountId: string, nowMs: number = Date
  * at most once per {@link CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS} per account so
  * a CLI that keeps failing is not spawned on every cadence tick.
  */
-const CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
 const claudeBackgroundRefreshAt = new Map<string, number>();
 
 /**
