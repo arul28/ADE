@@ -2286,9 +2286,9 @@ not carry the install command.
   account out first (`removeProviderAccount`, shared by every surface), so
   adding it again starts from a fresh sign-in. A sign-out that fails does not
   block the removal; the card's error says the login was left in place. Both
-  ask for confirmation, and any refusal shows the store's own sentence. Both
-  clear a saved login, so they are CTO-only actions: agents cannot call them,
-  and the user's terminal needs `ade --role cto`.
+  ask for confirmation in Settings, and any refusal shows the store's own
+  sentence. Agents may call both too (account management is theirs by design);
+  the default account is refused either way.
 - **Panels fold.** `ProviderPanel` takes `autoCollapsed` and `summary`: a panel
   with nothing to show folds to its header (API keys with none saved reads
   `API keys · 0 None saved`), and a click on the title flips any panel. Sheets

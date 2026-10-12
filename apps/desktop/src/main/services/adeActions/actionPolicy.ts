@@ -42,11 +42,6 @@ export type CtoOnlyRule =
  * must be listed here.
  */
 export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> = {
-  // Both clear a saved provider login (remove signs out first), so an agent
-  // cannot sign the user's accounts out; Settings and the user's CLI can.
-  provider_instances: {
-    only: ["signOut", "remove"],
-  },
   account: {
     only: [
       "startLogin",
@@ -1216,8 +1211,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * or returns a token: the provider's own CLI writes its credentials inside
    * that directory, `loginCommand` only hands back the argv and the one env var
    * that points the CLI at it, and none of them can leak a credential.
-   * `signOut` and `remove` (which signs out first) do destroy one, the saved
-   * login, so those two are CTO-only (`ADE_ACTION_CTO_ONLY.provider_instances`).
+   * `signOut` and `remove` (which signs out first) clear one account's saved
+   * login. They stay open to agents on purpose: the user wants an agent to
+   * manage accounts end to end, and the default account is refused by both.
    *
    * `loginStart`/`loginSubmitCode` run the provider's own sign-in for one
    * account in a private PTY. That opens the user's browser and, once the user
@@ -1229,9 +1225,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * The locked decision is that an agent may both see and manage accounts:
    * a worker agent that needs a second Claude login (rate limits, a separate
    * work identity) must be able to create it and point a session at it without
-   * an operator round-trip. If you are here to "fix" a missing CTO-only rule
-   * for anything but `signOut` and `remove`, this is that rule's absence, on
-   * purpose.
+   * an operator round-trip. If you are here to "fix" a missing CTO-only rule,
+   * this is that rule's absence, on purpose.
    */
   provider_instances: [
     "list",
