@@ -11,7 +11,7 @@ import {
   isSecretBearingAdeAction,
 } from "./actionPolicy";
 import type { AdeActionDomain } from "./domains";
-import { ADE_ACTION_ACCESS } from "../../../shared/adeActionAccess";
+import { ADE_ACTION_ACCESS, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 
 /**
  * The gate, tested over the tables alone.
@@ -314,6 +314,25 @@ describe("ADE_ACTION_ACCESS", () => {
       }
     }
     expect(problems).toEqual([]);
+  });
+
+  // The runtime pools run a call again after a dropped connection only when
+  // this says so; a replayed write could run twice.
+  it.each([
+    ["lane", "list", true],
+    ["file", "readFile", true],
+    ["chat", "getChatEventHistory", true],
+    ["search", "query", true],
+    ["file", "refreshGitDecorations", true],
+    ["lane", "delete", false],
+    ["chat", "sendMessage", false],
+    ["file", "writeTextAtomic", false],
+    ["ai", "getCursorAgentUsage", false],
+    ["automations", "webhookList", false],
+    ["chat", "waitFor", false],
+    ["lane", "getaway", false],
+  ])("replays %s.%s after a dropped connection: %s", (domain, action, replayable) => {
+    expect(isReplaySafeAdeAction(domain, action)).toBe(replayable);
   });
 });
 

@@ -6480,6 +6480,47 @@ describe("preload Apple device input routing", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
   });
 
+  it("fails a private drafts read with the switching error when a project switch never ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const invoke = vi.fn(async (channel: string) => {
+        // A switch that hangs: the read must not wait on it forever.
+        if (channel === IPC.projectSwitchToPath) return new Promise(() => {});
+        throw new Error(`unexpected IPC: ${channel}`);
+      });
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+      const bridge = (globalThis as any).__adeBridge;
+      void bridge.project.switchToPath("/next");
+
+      const pendingList = bridge.agentChat.drafts.list();
+      const outcome = expect(pendingList).rejects.toThrow(/Project is switching.*reading project state/i);
+      await vi.advanceTimersByTimeAsync(59_000);
+      let settled = false;
+      void pendingList.then(() => { settled = true; }, () => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await outcome;
+      expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("routes local runtime reads to the target project while a project switch is in flight", async () => {
     let resolveSwitch!: (project: unknown) => void;
     const switchPromise = new Promise((resolve) => {

@@ -480,6 +480,51 @@ describe("AppleDevicePane states", () => {
     expect(emptyCard()).toBeNull();
   });
 
+  it("reads the list again when a read that met a project switch fails after the switch ended", async () => {
+    const { iosSimulator } = setup({ lane: null, installed: [] });
+    act(() => {
+      useAppStore.setState({ projectTransition: { kind: "switching", rootPath: "/next", startedAtMs: 0 } });
+    });
+    let rejectRead: (error: Error) => void = () => {};
+    iosSimulator.deviceList = vi.fn(() => new Promise<never>((_, reject) => {
+      rejectRead = reject;
+    }));
+    renderPane();
+    await waitFor(() => expect(iosSimulator.deviceList).toHaveBeenCalledTimes(1));
+
+    // The switch ends while the read is still out; only then does it fail.
+    act(() => {
+      useAppStore.setState({ projectTransition: null });
+    });
+    const firstRead = iosSimulator.deviceList;
+    iosSimulator.deviceList = vi.fn(async () => ({ installed: [PRO, MAX], lane: null }));
+    await act(async () => {
+      rejectRead(new Error("Remote ADE service connection closed."));
+    });
+
+    await waitFor(() => expect(screen.getByText(MAX.name)).toBeTruthy());
+    expect(firstRead).toHaveBeenCalledTimes(1);
+    expect(document.querySelector("[data-apple-list-failed]")).toBeNull();
+  });
+
+  it("never lets another lane's device stand in while a new lane's list loads", async () => {
+    const { iosSimulator } = setup({ lane: LANE_DEVICE, stream: "live" });
+    const view = renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+
+    iosSimulator.deviceList = vi.fn(() => new Promise<never>(() => {}));
+    view.rerender(
+      <AppleDevicePane sessionId="chat-1" laneId="lane-2" projectRoot="/repo" runtimePin={null} ignoreChatOwnership />,
+    );
+
+    expect(paneState()).toBe("no-device");
+    expect(screen.queryByTestId("apple-stage")).toBeNull();
+    expect(iosSimulator.deviceList).toHaveBeenCalledWith(
+      expect.objectContaining({ laneId: "lane-2" }),
+      null,
+    );
+  });
+
   it("switching device asks inline, never in a modal", async () => {
     const { iosSimulator } = setup({ lane: LANE_DEVICE });
     renderPane();
