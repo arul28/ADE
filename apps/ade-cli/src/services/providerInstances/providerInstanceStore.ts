@@ -622,6 +622,8 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const file = readFile();
     const record = allRecords(file).find((entry) => entry.id === trimmed);
     if (!record) throw new Error(`No provider account with id ${JSON.stringify(trimmed)}.`);
+    // A second removal racing the first one's sign-out must not report success.
+    if (signingOut.has(trimmed)) throw new Error("This account is already being signed out.");
     if (isDefaultProviderInstanceId(trimmed)) {
       throw new Error("The machine's own provider login cannot be removed; it is where the provider reads its config.");
     }

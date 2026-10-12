@@ -43,7 +43,7 @@ async function runLogoutCommand(command: ProviderInstanceLoginCommand): Promise<
     const timer = setTimeout(() => {
       timedOut = true;
       if (process.platform === "win32" && child.pid) void killWindowsProcessTreeAsync(child.pid);
-      else child.kill();
+      else child.kill("SIGKILL");
     }, SIGN_OUT_TIMEOUT_MS);
   });
 }

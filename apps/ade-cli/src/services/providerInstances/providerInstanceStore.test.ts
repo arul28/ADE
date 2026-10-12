@@ -490,6 +490,7 @@ describe("providerInstanceStore", () => {
 
     // It would come out of the logout as a signed-out default.
     expect(() => store.setDefault(created.instance.id)).toThrow(/being signed out/);
+    expect(() => store.remove(created.instance.id)).toThrow(/being signed out/);
     await expect(store.whileSigningOut(created.instance.id, async () => undefined)).rejects.toThrow(/already/);
 
     finish();
