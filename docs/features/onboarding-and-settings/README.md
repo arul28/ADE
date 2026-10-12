@@ -2294,10 +2294,19 @@ not carry the install command.
   own login, a new account named after the email) and
   **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own
   once any account holds that email again.
-- **The card menu (⋯)** carries Rename, Sign in / Sign in again, and Remove.
-  Remove is not offered
-  on the default or the machine's own login, which the store refuses; it asks
-  for confirmation, and any other refusal shows the store's own sentence.
+- **The card menu (⋯)** carries Rename, Sign in / Sign in again, Sign out, and
+  Remove. Every card but the default offers **Sign out**
+  (`provider_instances.signOut` → `signOutProviderAccount`), which runs the
+  provider CLI's own `claude auth logout` / `codex logout` in that account's
+  config home and keeps the card; on the machine's own login the confirm says
+  the terminal's CLI is signed out too. **Remove** is not offered on the default
+  or the machine's own login, which the store refuses; it signs a signed-in
+  account out first (`removeProviderAccount`, shared by every surface), so
+  adding it again starts from a fresh sign-in. A sign-out that fails does not
+  block the removal; the card's error says the login was left in place. Both
+  ask for confirmation in Settings, and any refusal shows the store's own
+  sentence. Agents may call both too (account management is theirs by design);
+  the default account is refused either way.
 - **Panels fold.** `ProviderPanel` takes `autoCollapsed` and `summary`: a panel
   with nothing to show folds to its header (API keys with none saved reads
   `API keys · 0 None saved`), and a click on the title flips any panel. Sheets

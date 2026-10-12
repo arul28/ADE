@@ -213,6 +213,7 @@ import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNamin
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
+import { removeProviderAccount, signOutProviderAccount } from "../providerAccounts/signOutProviderAccount";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
   getSessionLifecycleSettings,
@@ -3814,12 +3815,18 @@ export function buildProviderInstancesDomainService(
       capture("account_created", "completed", result.instance.provider);
       return result;
     },
-    remove(args: unknown) {
+    async remove(args: unknown) {
       const id = String((isRecord(args) ? args.id : "") ?? "");
       const provider = store.get(id)?.provider;
-      const result = store.remove(id);
+      const result = await removeProviderAccount(id);
       capture("account_removed", "completed", provider);
       return result;
+    },
+    async signOut(args: unknown) {
+      const id = String((isRecord(args) ? args.id : "") ?? "");
+      const instance = await signOutProviderAccount(id, runtime.usageTrackingService);
+      capture("account_signed_out", "completed", instance?.provider);
+      return { instance };
     },
     rename(args: unknown) {
       const input = isRecord(args) ? args : {};

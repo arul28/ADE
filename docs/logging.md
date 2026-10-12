@@ -274,7 +274,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 
 | feature | action | outcome | provider property |
 | --- | --- | --- | --- |
-| `provider_accounts` | `account_created`, `account_removed`, `default_selected` | `completed` | Claude/Codex family |
+| `provider_accounts` | `account_created`, `account_removed`, `account_signed_out`, `default_selected` | `completed` | Claude/Codex family |
 | `provider_accounts` | `balance_changed`, `auto_start_changed` | `enabled`, `disabled` | Claude/Codex family |
 | `provider_accounts` | `subagent_cache_changed` | `enabled` (1 hour), `disabled` (the Claude default) | Claude only |
 | `api_credentials` | `credential_stored`, `credential_removed` | `completed` | coarse provider family |
@@ -528,9 +528,11 @@ which carry session and handoff ids, are not PostHog events.
 
 Provider-account mutations are captured at the `provider_instances` action
 domain in `apps/desktop/src/main/services/adeActions/registry.ts`, after the
-machine-local registry write succeeds. `create`, `remove`, and `setDefault`
-use `provider_accounts` with `account_created`, `account_removed`, or
-`default_selected` and `outcome: "completed"`. The two settings carried by
+machine-local registry write succeeds. `create`, `remove`, `signOut`, and
+`setDefault` use `provider_accounts` with `account_created`, `account_removed`,
+`account_signed_out`, or `default_selected` and `outcome: "completed"` (a
+sign-out is captured after the provider CLI's logout succeeds; a Remove of a
+signed-in account records both, at most a handful per cleanup). The two settings carried by
 `setSettings` are split into `balance_changed` and `auto_start_changed`, with
 `outcome: "enabled"` or `"disabled"`. A Claude account's subagent prompt cache
 choice, also carried by `setSettings`, is `subagent_cache_changed`: `enabled`

@@ -215,6 +215,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // the event.
   "account_created",
   "account_removed",
+  "account_signed_out",
   "default_selected",
   "balance_changed",
   "auto_start_changed",

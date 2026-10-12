@@ -463,6 +463,41 @@ describe("providerInstanceStore", () => {
     expect(store.get(second.instance.id)?.sameLoginAs).toBe(first.instance.id);
   });
 
+  it.each([
+    { provider: "claude" as const, args: ["auth", "logout"], envKey: "CLAUDE_CONFIG_DIR" },
+    { provider: "codex" as const, args: ["logout"], envKey: "CODEX_HOME" },
+  ])("signs a $provider account out in its own home, and refuses the default", ({ provider, args, envKey }) => {
+    const { store } = makeStore();
+    const created = store.create({ provider, label: "Work" });
+
+    const command = store.logoutCommand(created.instance.id);
+    expect(command.args).toEqual(args);
+    expect(command.env[envKey]).toBe(created.instance.configHome);
+    // The machine's own login is the default until another account is.
+    expect(() => store.logoutCommand(provider)).toThrow(/default/);
+
+    store.setDefault(created.instance.id);
+    expect(() => store.logoutCommand(created.instance.id)).toThrow(/default/);
+    // Then it signs out wherever the environment points.
+    expect(store.logoutCommand(provider).env).toEqual({});
+  });
+
+  it("does not let an account become the default while its sign-out runs", async () => {
+    const { store } = makeStore();
+    const created = store.create({ provider: "claude", label: "Work" });
+    let finish: () => void = () => undefined;
+    const signingOut = store.whileSigningOut(created.instance.id, () => new Promise<void>((resolve) => { finish = resolve; }));
+
+    // It would come out of the logout as a signed-out default.
+    expect(() => store.setDefault(created.instance.id)).toThrow(/being signed out/);
+    expect(() => store.remove(created.instance.id)).toThrow(/being signed out/);
+    await expect(store.whileSigningOut(created.instance.id, async () => undefined)).rejects.toThrow(/already/);
+
+    finish();
+    await signingOut;
+    expect(store.setDefault(created.instance.id).isDefault).toBe(true);
+  });
+
   it("keeps a listener that throws from rolling back the write", () => {
     const { store } = makeStore();
     store.onChange(() => {

@@ -490,6 +490,15 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     };
   }
 
+  /** The provider CLI's own sign-out; the default is refused like `remove`. */
+  function logoutCommandFor(id: string): { instance: ProviderInstance; command: ProviderInstanceLoginCommand } {
+    const instance = get(id);
+    if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
+    if (instance.isDefault) throw new Error("This account is the default. Make another account the default first.");
+    const args = instance.provider === "claude" ? ["auth", "logout"] : ["logout"];
+    return { instance, command: { ...loginCommandFor(instance), args } };
+  }
+
   function uniqueInstanceId(provider: ProviderInstanceProvider, label: string, file: RegistryFile): string {
     const taken = new Set<string>([
       ...PROVIDER_INSTANCE_PROVIDERS,
@@ -577,9 +586,16 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     });
   }
 
+  /**
+   * Accounts whose provider CLI logout is running. The logout takes seconds,
+   * and an account made the default meanwhile would come out signed out.
+   */
+  const signingOut = new Set<string>();
+
   function setDefault(id: string): ProviderInstance {
     const trimmed = typeof id === "string" ? id.trim() : "";
     if (!trimmed) throw new Error("A provider account id is required.");
+    if (signingOut.has(trimmed)) throw new Error("This account is being signed out. Try again in a moment.");
     const file = readFile();
     const record = allRecords(file).find((entry) => entry.id === trimmed);
     if (!record) throw new Error(`No provider account with id ${JSON.stringify(trimmed)}.`);
@@ -606,6 +622,8 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const file = readFile();
     const record = allRecords(file).find((entry) => entry.id === trimmed);
     if (!record) throw new Error(`No provider account with id ${JSON.stringify(trimmed)}.`);
+    // A second removal racing the first one's sign-out must not report success.
+    if (signingOut.has(trimmed)) throw new Error("This account is already being signed out.");
     if (isDefaultProviderInstanceId(trimmed)) {
       throw new Error("The machine's own provider login cannot be removed; it is where the provider reads its config.");
     }
@@ -806,6 +824,27 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       const instance = get(id);
       if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
       return loginCommandFor(instance);
+    },
+    /**
+     * The provider CLI's own sign-out for one account, run against that
+     * account's config home. The default is refused like `remove`: new chats
+     * go to it, so it has to stay signed in until another account is the
+     * default.
+     */
+    logoutCommand: (id: string): ProviderInstanceLoginCommand => logoutCommandFor(id).command,
+    /**
+     * Runs one account's logout with `setDefault` refused for it meanwhile.
+     * The default check and the mark happen together, before any await.
+     */
+    async whileSigningOut<T>(id: string, run: (command: ProviderInstanceLoginCommand) => Promise<T>): Promise<T> {
+      const { instance, command } = logoutCommandFor(id);
+      if (signingOut.has(instance.id)) throw new Error("This account is already being signed out.");
+      signingOut.add(instance.id);
+      try {
+        return await run(command);
+      } finally {
+        signingOut.delete(instance.id);
+      }
     },
     refreshAccounts,
     setLoginBroken,

@@ -699,6 +699,7 @@ export const IPC = {
   providerInstancesSetDefault: "ade.providerInstances.setDefault",
   providerInstancesSetAccent: "ade.providerInstances.setAccent",
   providerInstancesDismissReplaced: "ade.providerInstances.dismissReplaced",
+  providerInstancesSignOut: "ade.providerInstances.signOut",
   providerInstancesLoginStart: "ade.providerInstances.loginStart",
   providerInstancesLoginStatus: "ade.providerInstances.loginStatus",
   providerInstancesLoginSubmitCode: "ade.providerInstances.loginSubmitCode",
