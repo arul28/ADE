@@ -564,7 +564,10 @@ gh run view "$RUN_ID" --repo arul28/ADE --json status,conclusion,url,jobs
 Expected shape:
 
 - runtime/resource jobs run first
-- `arm64 mac release` and `x64 mac release` build/sign/notarize independently
+- `arm64 mac release` and `x64 mac release` build, sign and notarize the app
+  independently, both on Apple Silicon; `smoke-mac-x64` then runs the x64
+  validator on an Intel runner, and the macOS result counts only when it passes.
+  DMGs are not notarized separately; the stapled app inside them is.
 - `build-win-release` builds/signs/validates Windows independently, in parallel
   with the mac jobs, when `platforms` includes `win`. With the gate off it is
   skipped, and a skipped Windows job does not block the mac release.

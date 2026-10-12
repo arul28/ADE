@@ -200,25 +200,24 @@ jobs:
     needs:
       - verify
       - build-runtime-binaries
-    # One job per arch, in parallel on native runners (arm64 -> macos-15,
-    # x64 -> macos-15-intel). Wall-clock ~= one arch's build+notarize instead of
-    # both serialized. Each job signs+notarizes+staples its own arch; the
-    # per-arch updater manifests are merged by the publish-release job in
-    # release-publish.yml.
+    # One job per arch, in parallel, both on Apple Silicon. Each job signs,
+    # notarizes and staples its own app; the per-arch updater manifests are
+    # merged by the publish-release job in release-publish.yml.
     #
-    # x64 stays on Intel. Building it on Apple Silicon with an x64 Node under
-    # Rosetta was measured on 2026-10-12: the signed build took 43 minutes
-    # against 24-30 on Intel, because every child process (Swift included)
-    # inherits Rosetta.
+    # x64 is packaged on Apple Silicon with the native arm64 Node, as t3code
+    # does: install-cross-arch-packages.mjs adds the darwin-x64 npm packages
+    # next to the arm64 ones, electron-builder packages Electron x64, and
+    # validate-mac-artifacts rejects any Mach-O without x64 code or an x64 twin.
+    # The Intel runner took 35-45 minutes for this job; an x64 Node under
+    # Rosetta took longer still (measured 2026-10-12). The one check that needs
+    # a real x64 machine, running the packaged app, is smoke-mac-x64 below.
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
-            runner: macos-15
           - arch: x64
-            runner: macos-15-intel
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-15
     concurrency:
       group: release-${{ inputs.release_tag }}-mac-${{ matrix.arch }}
       cancel-in-progress: true
@@ -244,8 +243,37 @@ jobs:
       - name: Install desktop dependencies
         run: cd apps/desktop && npm ci
 
+      - name: Add darwin-x64 npm platform packages
+        if: ${{ matrix.arch == 'x64' }}
+        run: cd apps/desktop && node scripts/install-cross-arch-packages.mjs --cpu=x64
+
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
+
+      # The transcribe.cpp binary and the four Swift helpers are universal and
+      # depend only on their own sources, yet compiling them took 16 minutes of
+      # every release. warm-release-caches.yml builds them on main; a release
+      # restores them here and builds from source only on a miss.
+      - name: Restore transcribe-cli
+        uses: actions/cache/restore@v4
+        with:
+          path: apps/desktop/resources/whisper/transcribe-cli
+          key: transcribe-cli-darwin-universal-${{ hashFiles('apps/desktop/scripts/materialize-whisper-resources.mjs') }}
+
+      - name: Restore native helpers
+        id: native-helpers
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/resources/native/ade-desktop-driver
+            apps/desktop/resources/native/ade-capture-helper
+            apps/desktop/resources/native/ade-sim-helper
+            apps/desktop/resources/native/ade-media
+          key: native-helpers-darwin-universal-${{ hashFiles('apps/desktop/native/ADEDesktopDriver/**', 'apps/desktop/native/ADECaptureHelper/**', 'apps/desktop/native/ADESimHelper/**', 'apps/desktop/native/ADEMedia/**', 'apps/desktop/scripts/build-mac-desktop-driver.mjs', 'apps/desktop/scripts/build-capture-helper.mjs', 'apps/desktop/scripts/build-sim-helper.mjs', 'apps/desktop/scripts/build-ade-media.mjs', '!apps/desktop/native/**/.build*/**') }}
+
+      - name: Use cached native helpers
+        if: ${{ steps.native-helpers.outputs.cache-hit == 'true' }}
+        run: echo "ADE_NATIVE_HELPERS_CACHED=1" >> "$GITHUB_ENV"
 
       # Only this job's own target. Downloading every ade-runtime-* artifact is
       # what let foreign-platform payloads into the bundle in the first place.
@@ -372,12 +400,10 @@ jobs:
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron-builder
         run: cd apps/desktop && npm run dist:mac:${{ matrix.arch }}:signed
 
-      - name: Notarize and staple ${{ matrix.arch }} DMG
-        env:
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: cd apps/desktop && npm run notarize:mac:dmg
-
+      # The DMG is not notarized separately: the app inside it is notarized
+      # and stapled, and that is what Gatekeeper checks when ADE is opened.
+      # electron-builder does not notarize DMGs by default either, and this
+      # step cost 4-7 minutes per job.
       - name: Validate ${{ matrix.arch }} release artifacts
         run: cd apps/desktop && npm run validate:mac:artifacts
 
@@ -455,6 +481,13 @@ jobs:
           if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_THUMBPRINT)) {
             throw "WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported by the Azure Artifact Signing pipeline; pin WINDOWS_SIGNING_EXPECTED_SUBJECT instead."
           }
+
+      # See the equivalent step in build-mac-release.
+      - name: Restore transcribe-cli
+        uses: actions/cache/restore@v4
+        with:
+          path: apps/desktop/resources/whisper/transcribe-cli.exe
+          key: transcribe-cli-win32-x64-${{ hashFiles('apps/desktop/scripts/materialize-whisper-resources.mjs') }}
 
       # Only this job's own target; see the equivalent step in build-mac-release.
       - name: Download ADE runtime binaries
@@ -826,6 +859,49 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  smoke-mac-x64:
+    # build-mac-release packages x64 on Apple Silicon, where running the x64 app
+    # under Rosetta is unreliable, so its validator skips the packaged-app
+    # smoke. This job reruns the full validator on a real x64 Mac against the
+    # exact zip that will be published. It only unzips and checks, so it adds a
+    # few minutes after the x64 build instead of a 35-minute Intel build.
+    needs: build-mac-release
+    runs-on: macos-15-intel
+    env:
+      ADE_RUNTIME_TARGET: darwin-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      # The validator needs only plain JS packages; skipping install scripts
+      # skips the Electron download and the native builds it does not use.
+      - name: Install validator dependencies
+        run: cd apps/desktop && npm ci --ignore-scripts
+
+      - name: Download x64 release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ade-mac-release-${{ inputs.release_tag }}-x64
+          path: apps/desktop/release
+
+      - name: Unpack the x64 app from its updater zip
+        run: |
+          set -euo pipefail
+          cd apps/desktop/release
+          zips=(ADE-*-x64.zip)
+          ditto -x -k "${zips[0]}" mac
+          mv latest-mac-x64.yml latest-mac.yml
+
+      - name: Validate x64 release on x64 hardware
+        run: cd apps/desktop && node scripts/validate-mac-artifacts.mjs --skip-dmg
+
   build-results:
     # This workflow deliberately holds no job that can write to the repository,
     # so the publish gate cannot be evaluated here (see release-publish.yml).
@@ -838,19 +914,23 @@ jobs:
     needs:
       - build-runtime-binaries
       - build-mac-release
+      - smoke-mac-x64
       - build-win-release
     runs-on: ubuntu-latest
     outputs:
       runtime_result: ${{ needs.build-runtime-binaries.result }}
-      mac_result: ${{ needs.build-mac-release.result }}
+      # The macOS build counts only when the x64 smoke on x64 hardware passed.
+      mac_result: ${{ needs.build-mac-release.result != 'success' && needs.build-mac-release.result || needs.smoke-mac-x64.result }}
       windows_result: ${{ needs.build-win-release.result }}
     steps:
       - name: Report build results
         env:
           RUNTIME_RESULT: ${{ needs.build-runtime-binaries.result }}
           MAC_RESULT: ${{ needs.build-mac-release.result }}
+          SMOKE_RESULT: ${{ needs.smoke-mac-x64.result }}
           WINDOWS_RESULT: ${{ needs.build-win-release.result }}
         run: |
           echo "build-runtime-binaries: $RUNTIME_RESULT"
           echo "build-mac-release: $MAC_RESULT"
+          echo "smoke-mac-x64: $SMOKE_RESULT"
           echo "build-win-release: $WINDOWS_RESULT"

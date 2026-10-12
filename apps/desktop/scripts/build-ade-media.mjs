@@ -16,6 +16,13 @@ const packageRoot = path.join(desktopRoot, "native", "ADEMedia");
 const outputRoot = path.join(desktopRoot, "resources", "native");
 const outputPath = path.join(outputRoot, "ade-media");
 
+// Release jobs restore this universal helper from a cache keyed on its sources
+// (warm-release-caches.yml) and set ADE_NATIVE_HELPERS_CACHED=1 on a hit.
+if (process.env.ADE_NATIVE_HELPERS_CACHED === "1" && fs.existsSync(outputPath)) {
+  console.log(`[native-helpers] Reusing cached ${path.basename(outputPath)}.`);
+  process.exit(0);
+}
+
 if (process.platform !== "darwin") {
   console.log("[ade-media] Skipping the demo engine build outside macOS.");
   process.exit(0);

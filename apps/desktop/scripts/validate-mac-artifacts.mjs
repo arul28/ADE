@@ -683,23 +683,81 @@ async function validateLatestMacFeed(latestMacPath) {
   );
 }
 
-// Confirm a DMG is notarized + stapled (no mount needed — the per-arch .app it
-// wraps is already validated directly).
-async function validateDmgStapled(dmgPath, description) {
+// Confirm a DMG is intact. The DMG itself is not notarized: the app it wraps
+// was notarized and stapled before the DMG was made, and is validated directly
+// above, so Gatekeeper finds the ticket on the app when ADE is opened.
+async function validateDmg(dmgPath, description) {
   await assertPathExists(dmgPath, description);
-  await staplerValidate(dmgPath);
+  await execFileAsync("hdiutil", ["verify", dmgPath]);
+}
+
+// Every Mach-O in a single-arch bundle must run on that arch. The x64 bundle is
+// packaged on Apple Silicon, so a native file built for the host, or a platform
+// package whose x64 copy never arrived, would otherwise ship unnoticed. A file
+// without the target arch is allowed only when its path names the other arch
+// (node-pty's prebuilds/darwin-arm64, say), and then the target-arch twin must
+// sit beside it.
+const MACHO_CPU = { x64: 0x01000007, arm64: 0x0100000c };
+const ARCH_PATH_TWINS = [
+  ["darwin-arm64", "darwin-x64"],
+  ["arm64-darwin", "x64-darwin"],
+];
+
+async function readMachOCpuTypes(filePath) {
+  const handle = await fs.open(filePath, "r");
   try {
-    await execFileAsync("spctl", ["-a", "-vvv", "--type", "open", dmgPath]);
-  } catch (error) {
-    const combinedOutput = `${error?.stdout ?? ""}\n${error?.stderr ?? ""}`;
-    if (!combinedOutput.includes("source=Insufficient Context")) {
-      throw error;
+    const header = Buffer.alloc(8);
+    const { bytesRead } = await handle.read(header, 0, 8, 0);
+    if (bytesRead < 8) return null;
+    const magic = header.readUInt32BE(0);
+    if (magic === 0xcffaedfe || magic === 0xcefaedfe) return [header.readUInt32LE(4)];
+    if (magic === 0xfeedfacf || magic === 0xfeedface) return [header.readUInt32BE(4)];
+    if (magic === 0xcafebabe || magic === 0xcafebabf) {
+      const count = header.readUInt32BE(4);
+      if (count === 0 || count > 8) return null; // a Java class file shares this magic
+      const stride = magic === 0xcafebabf ? 32 : 20;
+      const table = Buffer.alloc(count * stride);
+      await handle.read(table, 0, table.length, 8);
+      return Array.from({ length: count }, (_, index) => table.readUInt32BE(index * stride));
     }
-    console.warn(
-      `[release:mac] DMG Gatekeeper open assessment for ${description} returned 'Insufficient Context' ` +
-        "(expected for some locally-built, non-quarantined DMGs); notarization staple already validated.",
-    );
+    return null;
+  } finally {
+    await handle.close();
   }
+}
+
+async function assertMachOArchitectures(appPath, expectedArch, description) {
+  const expectedCpu = MACHO_CPU[expectedArch];
+  if (!expectedCpu) return;
+  const twins = ARCH_PATH_TWINS.map(([arm64, x64]) => (expectedArch === "x64" ? [arm64, x64] : [x64, arm64]));
+  const problems = [];
+  let checked = 0;
+  const walk = async (dir) => {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const cpus = await readMachOCpuTypes(entryPath);
+      if (!cpus) continue;
+      checked += 1;
+      if (cpus.includes(expectedCpu)) continue;
+      const relative = path.relative(appPath, entryPath);
+      const twin = twins.find(([foreign]) => relative.includes(foreign));
+      if (!twin) {
+        problems.push(`${relative} has no ${expectedArch} code`);
+      } else if (!(await pathExists(path.join(appPath, relative.split(twin[0]).join(twin[1]))))) {
+        problems.push(`${relative} has no ${expectedArch} twin at ${relative.split(twin[0]).join(twin[1])}`);
+      }
+    }
+  };
+  await walk(appPath);
+  if (problems.length > 0) {
+    throw new Error(`[release:mac] Wrong-architecture Mach-O files in ${description}:\n  ${problems.join("\n  ")}`);
+  }
+  console.log(`[release:mac] All ${checked} Mach-O files in ${description} carry ${expectedArch} code or a ${expectedArch} twin`);
 }
 
 const ARCH_OUTPUT_DIRS = [
@@ -733,6 +791,7 @@ for (const { arch, appPath } of archApps) {
   const label = `signed ${arch} app bundle`;
   await assertPathExists(appPath, label);
   await validateSignedApp(appPath, label);
+  await assertMachOArchitectures(appPath, arch, label);
   await validateProvisionedWebAuthnEntitlement(appPath, label);
   await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), label);
   await validatePackagedRuntime(appPath, label, arch, { deepSmoke: arch === "universal" || arch === hostArch });
@@ -745,7 +804,7 @@ if (!skipDmg) {
   for (const { arch } of archApps) {
     const dmgPath =
       resolveAbsolute(readFlag("--dmg")) ?? (await findArtifact(new RegExp(`^ADE-.+-${arch}\\.dmg$`), `${arch} mac dmg`));
-    await validateDmgStapled(dmgPath, `${arch} dmg artifact`);
+    await validateDmg(dmgPath, `${arch} dmg artifact`);
   }
 }
 
