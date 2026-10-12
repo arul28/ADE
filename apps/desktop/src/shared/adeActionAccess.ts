@@ -596,7 +596,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "list", "loginStatus", "getSettings",
     ],
     write: [
-      "create", "remove", "rename", "setDefault", "setAccent", "dismissReplaced", "loginStart",
+      "create", "remove", "signOut", "rename", "setDefault", "setAccent", "dismissReplaced", "loginStart",
       "loginSubmitCode", "loginCancel", "setSettings", "loginCommand", "refresh",
     ],
   },
