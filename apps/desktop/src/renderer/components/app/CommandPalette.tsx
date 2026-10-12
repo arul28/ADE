@@ -119,10 +119,9 @@ import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import {
-  paletteQueryFreeText,
-  preferredChatFindTarget,
-  setPendingChatFind,
-} from "../chat/chatFindTargets";
+  CHAT_FIND_PALETTE_GROUP,
+  useChatFindPaletteCommand,
+} from "../chat/chatFindPalette";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { writeStoredProjectRoute } from "./projectRouteStorage";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
@@ -197,6 +196,21 @@ const PALETTE_SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 
 /** Stable empty array so the "no sessions yet" case never re-memoizes the index. */
 const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
+
+/**
+ * Anchor a session's content at the hit a search result's deep link names: the
+ * message (chat, event seq) or scrollback byte (terminal, offset). The surface
+ * consumes the anchor when it next mounts.
+ */
+function anchorSessionHit(sessionId: string, deepLink: string | null | undefined): void {
+  const linkTarget = deepLink ? parseDeeplink(deepLink) : null;
+  if (linkTarget?.ok && linkTarget.target.kind === "session") {
+    setPendingSessionAnchor(sessionId, {
+      event: linkTarget.target.event,
+      offset: linkTarget.target.offset,
+    });
+  }
+}
 
 export function CommandPalette({
   open,
@@ -909,35 +923,29 @@ export function CommandPalette({
     }
     return groups;
   }, [filtered]);
+  // The order the command rows render in. `grouped` can differ from `filtered`:
+  // a command pushed after the others but filed under an earlier group (e.g.
+  // "Restart agent session" under Actions) renders with that group. The keyboard
+  // index must resolve against this order, not `filtered`.
+  const renderedCommands = useMemo(
+    () => grouped.flatMap((group) => group.items),
+    [grouped],
+  );
 
   const trimmedQuery = q.trim();
   const entityQuery = parsedWorkQuery.backendQuery.trim();
 
-  // "Find "…" in this chat": offered while a chat is on screen. Read when the
-  // palette opens — once it has focus, "the chat you were in" is history.
-  const [chatFindAvailable, setChatFindAvailable] = useState(false);
-  useEffect(() => {
-    if (open) setChatFindAvailable(preferredChatFindTarget() != null);
-  }, [open]);
-  /** Radix would hand focus back to where it was; a find bar opened from here keeps it. */
-  const keepFocusOnCloseRef = useRef(false);
-  const chatFindQuery = useMemo(() => paletteQueryFreeText(trimmedQuery), [trimmedQuery]);
-  const chatFindCommand = useMemo<Command | null>(() => {
-    if (!chatFindAvailable || mode !== "default" || !chatFindQuery) return null;
-    return {
-      id: "chat-find",
-      title: `Find “${chatFindQuery}” in this chat`,
-      hint: "Highlights every match; ↵ and ⇧↵ step through them",
-      shortcut: "⌘F",
-      group: "This chat",
-      run: () => {
-        const target = preferredChatFindTarget();
-        if (!target) return;
-        keepFocusOnCloseRef.current = true;
-        target.open(chatFindQuery);
-      },
-    };
-  }, [chatFindAvailable, chatFindQuery, mode]);
+  // "Find "…" in this chat" and the hand-off of the typed words to a chat opened
+  // from a palette hit both come from chatFindPalette.ts.
+  const chatFindWords = useMemo(
+    () => parsedWorkQuery.terms.join(" "),
+    [parsedWorkQuery.terms],
+  );
+  const {
+    command: chatFindCommand,
+    keepFocusOnCloseRef,
+    handOffChatFind,
+  } = useChatFindPaletteCommand({ open, inDefaultMode: mode === "default", words: chatFindWords });
   const canEntitySearch =
     open &&
     mode === "default" &&
@@ -1053,6 +1061,7 @@ export function CommandPalette({
     q,
     filtered.map((command) => command.title),
   );
+  const chatFindOffered = chatFindCommand != null;
   const paletteSections = useMemo(
     () =>
       buildPaletteSections({
@@ -1060,10 +1069,10 @@ export function CommandPalette({
         threadCount: visibleWorkResults.length,
         commandCount: filtered.length,
         entityCount: flatEntities.length,
-        chatFindCount: chatFindCommand ? 1 : 0,
+        chatFindOffered,
       }),
     [
-      chatFindCommand,
+      chatFindOffered,
       commandsLead,
       filtered.length,
       flatEntities.length,
@@ -1458,26 +1467,11 @@ export function CommandPalette({
     [navigate, onOpenChange],
   );
 
-  /**
-   * Leave the palette's words for a chat opened from a message hit, so it
-   * opens with its find bar holding them and ↵ walks every match there. The
-   * bar shows the count without moving the view.
-   */
-  const handOffChatFind = useCallback((sessionId: string) => {
-    const words = paletteQueryFreeText(q.trim());
-    if (!words) return;
-    keepFocusOnCloseRef.current = true;
-    setPendingChatFind(sessionId, words);
-  }, [q]);
-
   /** A thread row; one that matched on a message opens at that message, with find ready. */
   const activateThreadResult = useCallback(
     (entry: ThreadIndexEntry, contentHit: SearchResultItem | null) => {
       if (contentHit?.kind === "chat" && contentHit.sessionId === entry.session.id && !entry.binding) {
-        const linkTarget = parseDeeplink(contentHit.deepLink);
-        if (linkTarget.ok && linkTarget.target.kind === "session" && linkTarget.target.event != null) {
-          setPendingSessionAnchor(entry.session.id, { event: linkTarget.target.event });
-        }
+        anchorSessionHit(entry.session.id, contentHit.deepLink);
         handOffChatFind(entry.session.id);
       }
       activateThread(entry);
@@ -1495,13 +1489,7 @@ export function CommandPalette({
           // Message/chunk hits carry an anchor in their deep link (event seq
           // for chat, byte offset for terminal scrollback) — hand it off so
           // the session's content surface positions to the hit.
-          const linkTarget = parseDeeplink(item.deepLink);
-          if (linkTarget.ok && linkTarget.target.kind === "session") {
-            setPendingSessionAnchor(sessionId, {
-              event: linkTarget.target.event,
-              offset: linkTarget.target.offset,
-            });
-          }
+          anchorSessionHit(sessionId, item.deepLink);
           // The jump above lands on the hit; the find bar then walks the rest.
           if (item.kind === "chat") handOffChatFind(sessionId);
           // The Work tab stays mounted (keep-alive), so its select-session
@@ -1635,7 +1623,7 @@ export function CommandPalette({
         return;
       }
       if (hit.section.key === "commands") {
-        const command = filtered[hit.offset];
+        const command = renderedCommands[hit.offset];
         if (command) runCommand(command);
         return;
       }
@@ -1648,9 +1636,9 @@ export function CommandPalette({
       activateResult,
       activateThreadResult,
       chatFindCommand,
-      filtered,
       flatEntities,
       paletteSections,
+      renderedCommands,
       runCommand,
       toggleExpandKind,
       visibleWorkResults,
@@ -2678,9 +2666,9 @@ export function CommandPalette({
                               groups: { label: string; items: Command[] }[],
                               startIndex: number,
                             ) => {
-                              // The groups are consecutive slices of `filtered`,
-                              // so a group's first flat index is the running sum
-                              // of the groups before it.
+                              // The groups are consecutive slices of
+                              // `renderedCommands`, so a group's first flat index
+                              // is the running sum of the groups before it.
                               let cursor = startIndex;
                               const groupStarts = groups.map((group) => {
                                 const start = cursor;
@@ -2824,7 +2812,7 @@ export function CommandPalette({
                                 if (section.key === "chatFind") {
                                   return chatFindCommand
                                     ? renderCommandGroups(
-                                        [{ label: "This chat", items: [chatFindCommand] }],
+                                        [{ label: CHAT_FIND_PALETTE_GROUP, items: [chatFindCommand] }],
                                         startIndex,
                                       )
                                     : [];

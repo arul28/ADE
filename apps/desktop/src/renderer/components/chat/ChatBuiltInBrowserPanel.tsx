@@ -56,7 +56,7 @@ import {
   urlLockKind,
 } from "../../lib/browserUrl";
 import { claimAppMenuCommands } from "../../lib/appMenuCommands";
-import { lastPointerInOtherFindScope } from "../../lib/findScope";
+import { findTargetIsElsewhere } from "../../lib/findScope";
 import { isTypingTarget } from "../../lib/typingTarget";
 import { claimAppZoomCommands } from "../../lib/appZoomCommands";
 import {
@@ -305,14 +305,13 @@ function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boole
 
 /**
  * ⌘F only: "focus is nowhere" also follows a click on plain text elsewhere (a
- * chat reply, a diff line). While this window still has focus — so the page is
- * not what the user clicked into — the text they pressed owns find.
+ * chat reply, a diff line). While this window still has focus — so the page,
+ * a separate WebContents, is not what the user clicked into — the find scope
+ * they are in owns find (`lib/findScope`).
  */
 function findBelongsElsewhere(panel: HTMLElement | null): boolean {
   if (!panel || typeof document === "undefined" || !document.hasFocus()) return false;
-  const active = document.activeElement;
-  if (active && panel.contains(active)) return false;
-  return lastPointerInOtherFindScope(panel);
+  return findTargetIsElsewhere(panel);
 }
 
 

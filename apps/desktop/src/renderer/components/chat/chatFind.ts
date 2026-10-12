@@ -10,17 +10,20 @@
  * tool calls and tool output are not searched.
  *
  * Painting is separate (ChatFindLayer): the rows that ARE mounted are searched
- * again in the DOM to place highlights.
+ * again in the DOM (`data-chat-find-text` elements) to place highlights.
  */
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
 import { SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
-import { parseThreadReviewBlock } from "../../../shared/threadComments";
 import { countOccurrences, foldFindCase } from "../../lib/findText";
-import { userTextLooksLikeMarkdown } from "./chatUserMessageCards";
+import { resolveUserMessageBody, userMessageBodySearchText } from "./userMessageBody";
+import { transcriptEventDrawsNothing } from "./chatThoughtRuns";
 import type { ChatTranscriptGroupedEnvelope } from "./chatTranscriptRows";
+
+/** Marks the elements of a row whose text find searches and paints. */
+export const CHAT_FIND_TEXT_ATTRIBUTE = "data-chat-find-text";
 
 type MdNode = {
   type: string;
@@ -76,7 +79,7 @@ let cachedChars = 0;
  * a match never runs from one paragraph into the next. Cached by source text:
  * a reply is parsed once, however many queries are typed.
  */
-export function markdownDisplayedText(markdown: string): string {
+function markdownDisplayedText(markdown: string): string {
   const cached = displayedTextCache.get(markdown);
   if (cached !== undefined) return cached;
   let text: string;
@@ -88,46 +91,41 @@ export function markdownDisplayedText(markdown: string): string {
     text = markdown;
   }
   displayedTextCache.set(markdown, text);
-  cachedChars += markdown.length;
+  cachedChars += markdown.length + text.length;
   while (displayedTextCache.size > MAX_CACHED_TEXTS || cachedChars > MAX_CACHED_CHARS) {
     const oldest = displayedTextCache.keys().next().value;
     if (oldest === undefined) break;
+    cachedChars -= oldest.length + (displayedTextCache.get(oldest)?.length ?? 0);
     displayedTextCache.delete(oldest);
-    cachedChars -= oldest.length;
   }
   return text;
 }
 
-type UserMessageEvent = Extract<ChatTranscriptGroupedEnvelope["event"], { type: "user_message" }>;
-
-/** What a user bubble shows, following the same branches as its renderer. */
-function userMessageSource(event: UserMessageEvent): { text: string; markdown: boolean } {
-  const displayText = event.displayText?.trim() ?? "";
-  if (event.metadata?.hideFullPrompt === true) return { text: displayText, markdown: false };
-  const pastedPrompt = event.attachments?.some(
-    (attachment) => attachment.type === "file" && attachment.intent === "user_prompt",
-  ) === true;
-  const review = parseThreadReviewBlock(event.text);
-  if (review) {
-    const typed = pastedPrompt ? displayText : displayText || review.rest.trim();
-    return { text: typed, markdown: false };
-  }
-  if (pastedPrompt) return { text: displayText, markdown: false };
-  const shown = displayText && displayText !== event.text.trim() ? displayText : event.text;
-  return { text: shown, markdown: userTextLooksLikeMarkdown(shown) };
-}
+type RowSource = { text: string; markdown: boolean } | null;
 
 /**
- * The row's searchable source, or null when the row is not searched. Cheap: no
- * parsing, so it can run over every row on each update.
+ * Sources by event object. Rows are rebuilt on every streamed delta, but their
+ * events keep their identity unless they changed, so each user message's
+ * review-block and chip parsing runs once, not once per update.
  */
-export function chatFindRowSource(row: ChatTranscriptGroupedEnvelope): { text: string; markdown: boolean } | null {
+const rowSourceByEvent = new WeakMap<object, RowSource>();
+
+/** The row's searchable source, or null when the row is not searched. No markdown parsing. */
+function chatFindRowSource(row: ChatTranscriptGroupedEnvelope): RowSource {
   const event = row.event;
+  const cached = rowSourceByEvent.get(event);
+  if (cached !== undefined) return cached;
+  const source = computeRowSource(event);
+  rowSourceByEvent.set(event, source);
+  return source;
+}
+
+function computeRowSource(event: ChatTranscriptGroupedEnvelope["event"]): RowSource {
   switch (event.type) {
     case "user_message":
-      // A staged steer is not shown in the thread until it is sent.
-      if ((event as { deliveryState?: unknown }).deliveryState === "queued") return null;
-      return userMessageSource(event);
+      // A queued steer lives in the composer's staging area, not the timeline.
+      if (transcriptEventDrawsNothing(event)) return null;
+      return userMessageBodySearchText(resolveUserMessageBody(event));
     case "text":
       return event.text ? { text: event.text, markdown: true } : null;
     case "plan": {
@@ -141,7 +139,7 @@ export function chatFindRowSource(row: ChatTranscriptGroupedEnvelope): { text: s
 }
 
 /** One searchable row: its key, and its displayed text case-folded. */
-export type ChatFindDoc = { key: string; folded: string };
+type ChatFindDoc = { key: string; folded: string };
 
 /**
  * The searchable rows of a transcript, kept up to date incrementally.
@@ -178,8 +176,8 @@ export class ChatFindIndex {
     return true;
   }
 
-  /** Rows whose folded text is not computed yet. */
-  get pending(): boolean {
+  /** True while some rows' folded text is not computed yet. */
+  hasPending(): boolean {
     this.skipReady();
     return this.cursor < this.order.length;
   }
@@ -193,8 +191,8 @@ export class ChatFindIndex {
   }
 
   /** Fold rows for about `budgetMs`. Returns true when every row is ready. */
-  indexSome(budgetMs: number, now: () => number = () => performance.now()): boolean {
-    const deadline = now() + budgetMs;
+  indexSome(budgetMs: number): boolean {
+    const deadline = performance.now() + budgetMs;
     for (;;) {
       this.skipReady();
       if (this.cursor >= this.order.length) return true;
@@ -202,7 +200,7 @@ export class ChatFindIndex {
       const shown = entry.markdown ? markdownDisplayedText(entry.text) : entry.text;
       this.folded.set(entry.key, { source: entry.text, folded: foldFindCase(shown) });
       this.cursor += 1;
-      if (now() >= deadline) return this.cursor >= this.order.length;
+      if (performance.now() >= deadline) return this.cursor >= this.order.length;
     }
   }
 
@@ -286,11 +284,4 @@ export function chatFindStartIndex(
     if (order !== undefined && order >= fromOrder) return entry.start;
   }
   return 0;
-}
-
-/** Step `delta` matches from `index`, wrapping at both ends. */
-export function stepChatFindIndex(total: number, index: number | null, delta: 1 | -1): number | null {
-  if (total <= 0) return null;
-  if (index == null) return delta > 0 ? 0 : total - 1;
-  return (((index + delta) % total) + total) % total;
 }

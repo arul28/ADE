@@ -3209,13 +3209,19 @@ button, [role="button"] {
 /* Find (⌘F) in a chat or a diff: every match amber, the current one gold with
    dark text, so neither reads as a code tint or a comment highlight. Diffs
    repeat these two rules inside their shadow roots (AdeDiffViewer). */
+:root {
+  --ade-find-match: rgba(253, 184, 51, 0.3);
+  --ade-find-current: #eea52b;
+  --ade-find-current-fg: #1a1206;
+}
+
 ::highlight(ade-find) {
-  background-color: rgba(253, 184, 51, 0.3);
+  background-color: var(--ade-find-match);
 }
 
 ::highlight(ade-find-active) {
-  background-color: #eea52b;
-  color: #1a1206;
+  background-color: var(--ade-find-current);
+  color: var(--ade-find-current-fg);
 }
 
 .ade-liquid-glass-menu {

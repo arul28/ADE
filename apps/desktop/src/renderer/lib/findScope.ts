@@ -11,23 +11,36 @@
  * pointer press stands in for it. Diff lines live in open shadow roots, so
  * both walks cross shadow boundaries.
  */
-import { isMac } from "./platform";
+import { isInParkedSurface } from "./parkedSurface";
 
-export const FIND_SCOPE_ATTRIBUTE = "data-ade-find-scope";
+const FIND_SCOPE_ATTRIBUTE = "data-ade-find-scope";
 
 /**
- * ⌘<key> on a Mac, Ctrl+<key> elsewhere, without Alt. Ctrl on a Mac is left
- * alone: Ctrl-F and Ctrl-G edit text there.
+ * A surface marks its root `data-ade-find-scope="<name>"`, written literally in
+ * its JSX: `chat-pane` (a whole chat pane, composer included),
+ * `chat-transcript`, `diff`, `diff-editor`, `code-editor`, `browser`.
  */
-export function isFindChord(event: KeyboardEvent, key: string): boolean {
-  if (event.altKey || event.key.toLowerCase() !== key) return false;
-  return isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+const CHAT_PANE_SCOPE_SELECTOR = `[${FIND_SCOPE_ATTRIBUTE}="chat-pane"]`;
+
+/** The chat pane around `element` (composer included), when there is one. */
+export function chatPaneOf(element: Element | null): Element | null {
+  return element?.closest(CHAT_PANE_SCOPE_SELECTOR) ?? null;
 }
+
+/** Elements (and their subtree) that find never searches: hover actions, cards, attachments. */
+export const FIND_SKIP_ATTRIBUTE = "data-ade-find-skip";
+
+/**
+ * A button whose label is content, not chrome (a file link in a reply). Find
+ * skips buttons — Copy, close, expand — unless they carry this.
+ */
+export const FIND_INCLUDE_ATTRIBUTE = "data-ade-find-include";
 
 let lastPointerTarget: Element | null = null;
 let trackingInstalled = false;
 
-function ensureTracking(): void {
+/** Start tracking presses (idempotent). Called by every claimant, so the first ⌘F already knows the last click. */
+export function trackFindTargets(): void {
   if (trackingInstalled || typeof document === "undefined") return;
   trackingInstalled = true;
   document.addEventListener(
@@ -47,7 +60,7 @@ function composedParent(node: Node): Node | null {
 }
 
 /** The nearest element marked as a find scope, crossing shadow roots. */
-export function closestFindScope(node: Node | null): Element | null {
+function closestFindScope(node: Node | null): Element | null {
   for (let current = node; current; current = composedParent(current)) {
     if (current instanceof Element && current.hasAttribute(FIND_SCOPE_ATTRIBUTE)) return current;
   }
@@ -62,34 +75,35 @@ function deepActiveElement(): Element | null {
 
 /**
  * Where the user is: the focused element, or the last thing they pressed when
- * focus is on nothing in particular.
+ * focus is on nothing in particular. Null before the first press with nothing focused.
  */
-export function currentFindTarget(): Element | null {
-  ensureTracking();
+function currentFindTarget(): Element | null {
+  trackFindTargets();
   const active = deepActiveElement();
   if (active && active !== document.body && active !== document.documentElement) return active;
   return lastPointerTarget?.isConnected ? lastPointerTarget : null;
 }
 
-/** True when `scope` is the innermost find scope around where the user is. */
+/** Mounted and on screen: not detached, not in a parked or inert surface. */
+export function isLiveFindScope(scope: Element | null): scope is Element {
+  return Boolean(scope && scope.isConnected && !isInParkedSurface(scope));
+}
+
+/** True when `scope` is live and the innermost find scope around where the user is. */
 export function findScopeOwnsTarget(scope: Element | null): boolean {
-  if (!scope || !scope.isConnected) return false;
+  if (!isLiveFindScope(scope)) return false;
   return closestFindScope(currentFindTarget()) === scope;
 }
 
 /**
- * True when the user last pressed inside a find scope other than `scope` (and
- * not inside `scope` itself). Lets a surface that takes ⌘F "when focus is
- * nowhere" step aside for the text the user just clicked.
+ * True when the user is somewhere known and it belongs to another find scope.
+ * Lets a surface that takes ⌘F "when focus is nowhere" (the built-in browser,
+ * whose page is a separate WebContents) step aside for the text the user just
+ * clicked.
  */
-export function lastPointerInOtherFindScope(scope: Element): boolean {
-  ensureTracking();
-  if (!lastPointerTarget?.isConnected) return false;
-  const owner = closestFindScope(lastPointerTarget);
+export function findTargetIsElsewhere(scope: Element): boolean {
+  const target = currentFindTarget();
+  if (!target || scope.contains(target)) return false;
+  const owner = closestFindScope(target);
   return owner != null && owner !== scope && !scope.contains(owner);
-}
-
-/** Start tracking presses early, so the first ⌘F already knows the last click. */
-export function installFindTargetTracking(): void {
-  ensureTracking();
 }

@@ -5,12 +5,12 @@
  *   palette asks for the chat the user was last in.
  * - Opening a chat from a palette result: the palette leaves the typed words
  *   for that session, and its transcript opens find with them once it mounts
- *   (or right away when it is already on screen).
+ *   (or right away when it is already on screen). A hand-off that nothing picks
+ *   up soon after it was left is dropped, not replayed later.
  */
-import { isInParkedSurface } from "../../lib/parkedSurface";
+import { isLiveFindScope } from "../../lib/findScope";
 
 export type ChatFindTarget = {
-  sessionId: string | null;
   root: () => HTMLElement | null;
   /** Open the bar with `query` and go to the first match in or below the view. */
   open: (query: string) => void;
@@ -34,7 +34,7 @@ export function markChatFindTargetActive(target: ChatFindTarget): void {
 
 function onScreen(target: ChatFindTarget): boolean {
   const root = target.root();
-  if (!root || !root.isConnected || isInParkedSurface(root)) return false;
+  if (!isLiveFindScope(root)) return false;
   const rect = root.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0;
 }
@@ -47,7 +47,9 @@ export function preferredChatFindTarget(): ChatFindTarget | null {
 }
 
 const PENDING_EVENT = "ade:chat-find:pending";
-const pendingBySession = new Map<string, string>();
+/** A hand-off older than this is stale: the chat it was left for has moved on. */
+const PENDING_CHAT_FIND_TTL_MS = 10_000;
+const pendingBySession = new Map<string, { query: string; at: number }>();
 
 /** Leave `query` for `sessionId`'s find bar; it shows the matches without moving the view. */
 export function setPendingChatFind(sessionId: string, query: string): void {
@@ -55,14 +57,15 @@ export function setPendingChatFind(sessionId: string, query: string): void {
     pendingBySession.delete(sessionId);
     return;
   }
-  pendingBySession.set(sessionId, query);
+  pendingBySession.set(sessionId, { query, at: Date.now() });
   window.dispatchEvent(new CustomEvent(PENDING_EVENT, { detail: { sessionId } }));
 }
 
 export function takePendingChatFind(sessionId: string): string | null {
-  const query = pendingBySession.get(sessionId) ?? null;
+  const pending = pendingBySession.get(sessionId);
   pendingBySession.delete(sessionId);
-  return query;
+  if (!pending || Date.now() - pending.at > PENDING_CHAT_FIND_TTL_MS) return null;
+  return pending.query;
 }
 
 export function onPendingChatFind(listener: (sessionId: string) => void): () => void {
@@ -72,23 +75,4 @@ export function onPendingChatFind(listener: (sessionId: string) => void): () => 
   };
   window.addEventListener(PENDING_EVENT, handler);
   return () => window.removeEventListener(PENDING_EVENT, handler);
-}
-
-/**
- * The words of a palette query, without its filters: `kind:chat lane:x "exact
- * phrase" retry` → `exact phrase retry`. Filter syntax is `key:value`.
- */
-export function paletteQueryFreeText(query: string): string {
-  const words: string[] = [];
-  const pattern = /"([^"]*)"?|(\S+)/g;
-  for (let match = pattern.exec(query); match; match = pattern.exec(query)) {
-    if (match[1] !== undefined) {
-      if (match[1].trim()) words.push(match[1].trim());
-      continue;
-    }
-    const token = match[2]!;
-    if (/^-?[a-z]+:/i.test(token)) continue;
-    words.push(token);
-  }
-  return words.join(" ");
 }

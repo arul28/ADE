@@ -220,10 +220,10 @@ the first editor opened. Keep them in step with `index.css`.
 Monaco's own ⌘F keybinding never fires on the packaged app: ⌘F is a native menu
 accelerator that Electron consumes in the browser process. `CodeViewer` claims
 the `find` app-menu command instead (`lib/appMenuCommands.ts`) and runs the same
-`actions.find` Monaco would have — but only when the editor host is connected,
-not inside an `inert` single-surface column, and actually focused. Declining
-leaves the chord to whoever does own it (the built-in browser's find bar), or to
-nothing.
+`actions.find` Monaco would have — when the editor is on screen (not a parked or
+`inert` column) and has Monaco's text focus or owns ⌘F under the shared rule
+below. Declining leaves the
+chord to whoever does own it, or to nothing.
 
 Every ⌘F surface marks its root with `data-ade-find-scope` (`code-editor`,
 `diff`, `diff-editor`, `browser`, `chat-pane`, `chat-transcript`), and
@@ -241,13 +241,17 @@ of the file's diff into an open shadow root, so the hook searches each
 `[data-line]` element there, orders matches top to bottom (old side before new),
 paints them with the shared highlight names (the two `::highlight` rules are
 repeated in the viewer's `unsafeCSS`, because the document's CSS does not reach
-a shadow root), and scrolls the current one into view, sideways too for long
+a shadow root; their colours are the `--ade-find-*` variables from `index.css`,
+which do inherit into it), and scrolls the current one into view, sideways too for long
 lines. Collapsed unchanged lines are not drawn: when a file holds more matches
 than were drawn on its side, the viewer draws the whole file (`expandUnchanged`;
 a patch view switches to the full files it was given) until the bar closes.
-A truncated preview has no full files, so its collapsed lines stay unsearched.
-The editable working-tree diff (`MonacoDiffView`) claims ⌘F itself and opens
-Monaco's find on the side that has focus.
+A truncated patch has no full files, so its collapsed lines stay unsearched; a
+truncated file-pair preview searches and expands the text it was drawn from.
+`resolveDiffView` picks what the viewer draws (patch, files, or a state message)
+in one place, find's full-files case included. The editable working-tree diff
+(`MonacoDiffView`) claims ⌘F under the same rule and opens Monaco's find on the
+side that has focus.
 
 `monacoModelRegistry.ts` keeps one Monaco text model per
 workspace-relative path. Switching tabs calls `editor.setModel(existing)`

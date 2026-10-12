@@ -262,6 +262,11 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 .kit-icon-btn:hover:not(:disabled) { background: var(--kit-active); color: var(--color-fg); }
 .kit-icon-btn:disabled { opacity: 0.45; cursor: default; }
 
+/* The floating ⌘F bar over a chat transcript or a diff (shared/FindBar.tsx):
+   one row in a card, small icon buttons. */
+.kit-find-bar { flex-direction: row; align-items: center; gap: 6px; height: 36px; padding: 0 4px 0 10px; }
+.kit-find-bar .kit-icon-btn { flex: none; width: 24px; height: 24px; }
+
 /* Buttons for card surfaces (the recovery screen, the error screens). One
    primary per card — the thing to do next — drawn in the theme's own ink, so
    it reads on light and dark themes and never borrows a status colour. */

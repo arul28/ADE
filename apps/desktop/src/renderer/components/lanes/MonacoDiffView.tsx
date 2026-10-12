@@ -5,8 +5,7 @@ import { cn } from "../ui/cn";
 import { applyMonacoTheme } from "../../theme/codeTheme";
 import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
 import { claimAppMenuCommands } from "../../lib/appMenuCommands";
-import { findScopeOwnsTarget, installFindTargetTracking } from "../../lib/findScope";
-import { isInParkedSurface } from "../../lib/parkedSurface";
+import { findScopeOwnsTarget, trackFindTargets } from "../../lib/findScope";
 
 export type MonacoDiffHandle = {
   getModifiedValue: () => string | null;
@@ -109,12 +108,12 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
      */
     const scopeRef = useRef<HTMLDivElement | null>(null);
     useEffect(() => {
-      installFindTargetTracking();
+      trackFindTargets();
       return claimAppMenuCommands((command) => {
         if (command !== "find") return false;
         const scope = scopeRef.current;
         const editor = diffEditorRef.current;
-        if (!scope || !editor || isInParkedSurface(scope) || !findScopeOwnsTarget(scope)) return false;
+        if (!editor || !findScopeOwnsTarget(scope)) return false;
         const original = editor.getOriginalEditor();
         const target = original.hasTextFocus() ? original : editor.getModifiedEditor();
         void target.getAction("actions.find")?.run();

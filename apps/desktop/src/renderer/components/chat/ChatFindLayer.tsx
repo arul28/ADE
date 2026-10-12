@@ -2,30 +2,28 @@
  * Find in a chat (⌘F).
  *
  * The bar counts matches over the whole transcript this pane holds
- * (`chatFind.ts`), not over the page: the list is virtualized and turns fold,
- * so most rows are not mounted. Moving to a match asks the list to reveal its
- * row (opening a fold when it has to), then finds the words in the mounted row
- * and scrolls them into view. Highlights use the CSS Custom Highlight API on
- * the mounted rows only, so the reply's DOM is never touched.
+ * (`useChatFindIndex`), not over the page: the list is virtualized and turns
+ * fold, so most rows are not mounted. Moving to a match asks the list to reveal
+ * its row (opening a fold when it has to), then finds the words in the mounted
+ * row and scrolls them into view. Highlights use the CSS Custom Highlight API
+ * on the mounted rows only, so the reply's DOM is never touched.
  *
- * Closed, the layer does no work: it neither reads rows nor watches the DOM.
+ * Closed, the layer keeps only its ⌘F claim and palette registration: no row
+ * subscription, index, DOM observer or timers.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
-import { claimAppMenuCommands } from "../../lib/appMenuCommands";
-import { findScopeOwnsTarget, installFindTargetTracking, isFindChord, FIND_SCOPE_ATTRIBUTE } from "../../lib/findScope";
-import { findCountLabel, findTextRanges, foldFindCase, publishFindHighlights } from "../../lib/findText";
-import { isInParkedSurface } from "../../lib/parkedSurface";
-import { cssZoomOf } from "../../lib/webZoom";
-import { FindBar, focusFindInput } from "../shared/FindBar";
+import { chatPaneOf, findScopeOwnsTarget } from "../../lib/findScope";
+import { findCountLabel, foldFindCase, publishFindHighlights, scrollRangeIntoView, stepFindIndex } from "../../lib/findText";
+import { FindBar } from "../shared/FindBar";
+import { useFindSession } from "../shared/useFindSession";
+import { chatFindIndexOf, chatFindMatchAt } from "./chatFind";
 import {
-  ChatFindIndex,
-  chatFindIndexOf,
-  chatFindMatchAt,
-  chatFindStartIndex,
-  computeChatFindMatches,
-  stepChatFindIndex,
-  type ChatFindMatches,
-} from "./chatFind";
+  CHAT_ROW_SELECTOR,
+  chatRowSelectorFor,
+  paintedRowRanges,
+  startSelection,
+  type FindSelection,
+} from "./chatFindGeometry";
 import {
   markChatFindTargetActive,
   onPendingChatFind,
@@ -34,40 +32,19 @@ import {
   type ChatFindTarget,
 } from "./chatFindTargets";
 import type { ChatTranscriptGroupedEnvelope } from "./chatTranscriptRows";
+import { useChatFindIndex, type ChatFindSource } from "./useChatFindIndex";
 
-/** What the list hands the layer: its rows, without re-rendering the layer on every delta. */
-export type ChatFindSourceSnapshot = {
-  /** Rows before folding, in transcript order. */
-  rows: readonly ChatTranscriptGroupedEnvelope[];
-  /** Rows the list never draws (an earlier copy of a turn's answer). */
-  excludedKeys: ReadonlySet<string>;
-  /** Older history is still being paged in, so counts may grow. */
-  hasOlderHistory: boolean;
-};
-
-export type ChatFindSource = {
-  get: () => ChatFindSourceSnapshot;
-  subscribe: (listener: () => void) => () => void;
-};
-
-/** Pane scope attribute value: the whole chat pane, composer included. */
-export const CHAT_PANE_FIND_SCOPE = "chat-pane";
-/** Marks the elements of a row whose text find searches and paints. */
-export const CHAT_FIND_TEXT_ATTRIBUTE = "data-chat-find-text";
-
-const EMPTY_MATCHES: ChatFindMatches = { entries: [], total: 0 };
-/** Slice of markdown parsing per task while building the index (under one 240 Hz frame). */
-const INDEX_SLICE_MS = 3;
-/** Streaming re-counts at most this often. */
-const LIVE_RECOUNT_MS = 300;
 /** Give up placing a match whose row never mounts (a fold that did not open). */
 const REVEAL_TIMEOUT_MS = 1_500;
 /** Paints that re-check a revealed match's placement while its rows settle. */
 const SETTLE_PAINTS = 3;
+/** DOM changes (a streaming reply, rows mounting) repaint at most this often. */
+const MUTATION_REPAINT_MS = 100;
 
-let nextSurfaceId = 0;
-
-type Selection = { key: string; occurrence: number };
+/** A selection still to be scrolled into view once its row is painted. */
+type PendingReveal = { selection: FindSelection; since: number; askedList: boolean; settle: number };
+/** What Enter should do once the first count lands: start, step, or nothing yet. */
+type PendingStep = 1 | -1 | "start" | null;
 
 /**
  * Memoized: every prop is stable, so the list's per-token re-renders while a
@@ -89,132 +66,46 @@ export const ChatFindLayer = memo(function ChatFindLayer({
   sessionId: string | null;
   /** Open the fold around a row if needed and scroll it near the top. */
   revealRow: (rowKey: string) => void;
-  /** Scroll the transcript to `top`, leaving bottom-follow like a user scroll would. */
+  /** Scroll the transcript to `top`, letting go of bottom-follow like a reader's scroll would. */
   scrollContainerTo: (top: number) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [matches, setMatches] = useState<ChatFindMatches>(EMPTY_MATCHES);
-  const [indexing, setIndexing] = useState(false);
-  const [hasOlderHistory, setHasOlderHistory] = useState(false);
   // Null: the bar shows a count but no match is selected (opened from a
   // palette result, before the first Enter).
-  const [selection, setSelection] = useState<Selection | null>(null);
-
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const indexRef = useRef<ChatFindIndex | null>(null);
+  const [selection, setSelection] = useState<FindSelection | null>(null);
   const queryRef = useRef(query);
-  queryRef.current = query;
-  const matchesRef = useRef(matches);
-  matchesRef.current = matches;
   const selectionRef = useRef(selection);
-  selectionRef.current = selection;
-  const openRef = useRef(open);
-  openRef.current = open;
-  const surfaceIdRef = useRef(`chat-find-${(nextSurfaceId += 1)}`);
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
-  /** A selection that still has to be scrolled into view once its row is painted. */
-  const pendingRevealRef = useRef<{ selection: Selection; since: number; askedList: boolean; settle: number } | null>(null);
-  /** Navigation asked for before the index was ready (Enter while "Searching…"). */
-  const pendingStepRef = useRef<1 | -1 | "start" | null>(null);
+  const pendingRevealRef = useRef<PendingReveal | null>(null);
+  const pendingStepRef = useRef<PendingStep>(null);
+  const mutationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const index = () => {
-    if (!indexRef.current) indexRef.current = new ChatFindIndex();
-    return indexRef.current;
+  // The session owns ⌘F, the bar, Escape, focus and the paint frame; it calls
+  // back through refs so the callbacks below can use what it returns.
+  const handlers = useRef({ step: (_direction: 1 | -1) => {}, reset: () => {}, paint: () => {} });
+  const session = useFindSession({
+    // This list, or the whole chat pane around it (composer included).
+    ownsFind: () => findScopeOwnsTarget(rootRef.current) || findScopeOwnsTarget(chatPaneOf(rootRef.current)),
+    onStep: (direction) => handlers.current.step(direction),
+    onClosed: () => handlers.current.reset(),
+    paint: () => handlers.current.paint(),
+    escapeRootRef: rootRef,
+  });
+  const { open, openRef, surfaceId, openBar, closeBar, schedulePaint } = session;
+  const { matches, matchesRef, partial, rowsStillFolding, recountNow } = useChatFindIndex({ source, open, queryRef });
+
+  const select = useCallback((next: FindSelection | null) => {
+    selectionRef.current = next;
+    setSelection(next);
+    pendingRevealRef.current = next ? { selection: next, since: performance.now(), askedList: false, settle: SETTLE_PAINTS } : null;
+    if (next) schedulePaint();
+  }, [schedulePaint]);
+
+  handlers.current.reset = () => {
+    queryRef.current = "";
+    setQuery("");
+    select(null);
+    pendingStepRef.current = null;
   };
-
-  /** The scope ⌘F answers for: the chat pane when there is one, else this list. */
-  const scopeElement = useCallback((): Element | null => {
-    const root = rootRef.current;
-    if (!root) return null;
-    const pane = root.closest(`[${FIND_SCOPE_ATTRIBUTE}="${CHAT_PANE_FIND_SCOPE}"]`);
-    return pane ?? root;
-  }, [rootRef]);
-
-  const ownsFind = useCallback((): boolean => {
-    const root = rootRef.current;
-    if (!root || !root.isConnected || isInParkedSurface(root)) return false;
-    if (findScopeOwnsTarget(root)) return true;
-    const scope = scopeElement();
-    return scope !== root && findScopeOwnsTarget(scope);
-  }, [rootRef, scopeElement]);
-
-  // ── Recount ──
-  const recountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastRecountAtRef = useRef(0);
-  const indexTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const recountNow = useCallback(() => {
-    if (recountTimerRef.current) {
-      clearTimeout(recountTimerRef.current);
-      recountTimerRef.current = null;
-    }
-    lastRecountAtRef.current = performance.now();
-    const next = computeChatFindMatches(index().docs(), queryRef.current);
-    setMatches(next);
-  }, []);
-
-  const scheduleRecount = useCallback(() => {
-    if (recountTimerRef.current) return;
-    const wait = Math.max(0, LIVE_RECOUNT_MS - (performance.now() - lastRecountAtRef.current));
-    recountTimerRef.current = setTimeout(() => {
-      recountTimerRef.current = null;
-      if (openRef.current) recountNow();
-    }, wait);
-  }, [recountNow]);
-
-  /** Fold rows in slices until the index is complete, recounting as it fills. */
-  const runIndexing = useCallback(() => {
-    if (indexTimerRef.current) return;
-    const step = () => {
-      indexTimerRef.current = null;
-      if (!openRef.current) return;
-      const done = index().indexSome(INDEX_SLICE_MS);
-      if (done) {
-        setIndexing(false);
-        recountNow();
-        return;
-      }
-      setIndexing(true);
-      scheduleRecount();
-      indexTimerRef.current = setTimeout(step, 0);
-    };
-    indexTimerRef.current = setTimeout(step, 0);
-  }, [recountNow, scheduleRecount]);
-
-  const syncFromSource = useCallback((options?: { immediate?: boolean }) => {
-    const snapshot = source.get();
-    setHasOlderHistory(snapshot.hasOlderHistory);
-    const changed = index().update(snapshot.rows, snapshot.excludedKeys);
-    if (!changed) return;
-    if (index().pending) {
-      if (options?.immediate) {
-        // First open: fold what fits in one slice now so short chats answer
-        // on the first keystroke, then finish in the background.
-        index().indexSome(INDEX_SLICE_MS);
-      }
-      runIndexing();
-    }
-    if (options?.immediate) recountNow();
-    else scheduleRecount();
-  }, [recountNow, runIndexing, scheduleRecount, source]);
-
-  // Subscribe to the list's rows only while open.
-  useEffect(() => {
-    if (!open) return;
-    syncFromSource({ immediate: true });
-    return source.subscribe(() => syncFromSource());
-  }, [open, source, syncFromSource]);
-
-  // Handles are cleared, not just cancelled: a remount (React's dev double
-  // mount, a parked surface coming back) must be able to schedule again.
-  useEffect(() => () => {
-    if (recountTimerRef.current) clearTimeout(recountTimerRef.current);
-    if (indexTimerRef.current) clearTimeout(indexTimerRef.current);
-    recountTimerRef.current = null;
-    indexTimerRef.current = null;
-    publishFindHighlights(surfaceIdRef.current, null);
-  }, []);
 
   // ── Geometry ──
   /** Each row's position in the transcript, rebuilt only when the row list changes. */
@@ -229,81 +120,28 @@ export const ChatFindLayer = memo(function ChatFindLayer({
     return order;
   }, [source]);
 
-  /** Position of the first transcript row in or below the view, for "first match below". */
-  const firstVisibleRowOrder = useCallback((): number | null => {
+  const selectStart = useCallback((counted = matchesRef.current) => {
+    select(startSelection({
+      counted,
+      scroll: scrollRef.current,
+      content: contentRef.current,
+      order: rowOrder(),
+      foldedNeedle: foldFindCase(queryRef.current),
+    }));
+  }, [contentRef, matchesRef, rowOrder, scrollRef, select]);
+
+  const revealRange = useCallback((range: Range) => {
     const scroll = scrollRef.current;
-    const content = contentRef.current;
-    if (!scroll || !content) return null;
-    const viewTop = scroll.getBoundingClientRect().top;
-    const order = rowOrder();
-    for (const element of content.querySelectorAll<HTMLElement>("[data-chat-row-key]")) {
-      if (element.getBoundingClientRect().bottom <= viewTop + 1) continue;
-      // A drawn row that is not a transcript row (a fold, a merged run): the
-      // next transcript row below it stands in.
-      const position = order.get(element.dataset.chatRowKey ?? "");
-      if (position !== undefined) return position;
-    }
-    return null;
-  }, [contentRef, rowOrder, scrollRef]);
-
-  const orderOf = useCallback((key: string): number | undefined => rowOrder().get(key), [rowOrder]);
-
-  /** The painted occurrences in one mounted row, in reading order. */
-  const rowRanges = useCallback((row: Element, needle: string): Range[] => {
-    const ranges: Range[] = [];
-    for (const scope of row.querySelectorAll<HTMLElement>(`[${CHAT_FIND_TEXT_ATTRIBUTE}]`)) {
-      ranges.push(...findTextRanges(scope, needle));
-    }
-    return ranges;
-  }, []);
-
-  /**
-   * The first match in or below the view. Inside a long reply that starts
-   * above the view, that is the first occurrence on screen, not the reply's
-   * first one; a reply whose matches are all above the view hands over to the
-   * next match.
-   */
-  const startSelection = useCallback((counted: ChatFindMatches): Selection | null => {
-    const at = chatFindStartIndex(counted, firstVisibleRowOrder(), orderOf);
-    const first = at == null ? null : chatFindMatchAt(counted, at);
-    const scroll = scrollRef.current;
-    const content = contentRef.current;
-    if (!first || !scroll || !content) return first;
-    const row = content.querySelector(`[data-chat-row-key="${CSS.escape(first.key)}"]`);
-    if (!row) return first;
-    const viewTop = scroll.getBoundingClientRect().top;
-    const ranges = rowRanges(row, foldFindCase(queryRef.current));
-    const onScreen = ranges.findIndex((range) => range.getBoundingClientRect().bottom > viewTop);
-    if (onScreen >= 0) return { key: first.key, occurrence: onScreen };
-    if (!ranges.length) return first;
-    const entry = counted.entries.find((candidate) => candidate.key === first.key);
-    const after = entry ? entry.start + entry.count : 0;
-    return chatFindMatchAt(counted, after < counted.total ? after : 0);
-  }, [contentRef, firstVisibleRowOrder, orderOf, rowRanges, scrollRef]);
-
-  /** Scroll so `range` sits in the reading band; no scroll when already there. */
-  const ensureRangeVisible = useCallback((range: Range) => {
-    const scroll = scrollRef.current;
-    if (!scroll) return;
-    const rect = range.getBoundingClientRect();
-    if (!rect.height && !rect.width) return;
-    const box = scroll.getBoundingClientRect();
-    const margin = Math.min(80, box.height / 4);
-    if (rect.top >= box.top + margin && rect.bottom <= box.bottom - margin) return;
-    const zoom = cssZoomOf(scroll) || 1;
-    const delta = (rect.top - box.top - box.height * 0.35) / zoom;
-    scrollContainerTo(scroll.scrollTop + delta);
+    if (scroll) scrollRangeIntoView(scroll, range, scrollContainerTo);
   }, [scrollContainerTo, scrollRef]);
 
   // ── Paint ──
-  const paintFrameRef = useRef<number | null>(null);
-  const paint = useCallback(() => {
-    paintFrameRef.current = null;
+  handlers.current.paint = () => {
     const content = contentRef.current;
     const needle = foldFindCase(queryRef.current);
     const current = matchesRef.current;
-    if (!openRef.current || !content || !queryRef.current.trim() || current.total === 0) {
-      publishFindHighlights(surfaceIdRef.current, null);
+    if (!openRef.current || !content || !needle || current.total === 0) {
+      publishFindHighlights(surfaceId, null);
       return;
     }
     const wanted = new Set(current.entries.map((entry) => entry.key));
@@ -311,10 +149,10 @@ export const ChatFindLayer = memo(function ChatFindLayer({
     let active: Range | null = null;
     const selected = selectionRef.current;
     let selectedRowMounted = false;
-    for (const row of content.querySelectorAll<HTMLElement>("[data-chat-row-key]")) {
+    for (const row of content.querySelectorAll<HTMLElement>(CHAT_ROW_SELECTOR)) {
       const key = row.dataset.chatRowKey ?? "";
       if (!wanted.has(key)) continue;
-      const ranges = rowRanges(row, needle);
+      const ranges = paintedRowRanges(row, needle);
       all.push(...ranges);
       if (selected && key === selected.key) {
         selectedRowMounted = true;
@@ -323,28 +161,28 @@ export const ChatFindLayer = memo(function ChatFindLayer({
         active = ranges[Math.min(selected.occurrence, ranges.length - 1)] ?? null;
       }
     }
-    publishFindHighlights(surfaceIdRef.current, { all, active });
+    publishFindHighlights(surfaceId, { all, active });
 
     const pending = pendingRevealRef.current;
     if (!pending || !selected || pending.selection !== selected) return;
     if (active) {
       // Newly mounted rows still measure, and a fold reveal re-lands its row
       // for two frames: check the placement again for a few frames.
-      ensureRangeVisible(active);
+      revealRange(active);
       pending.settle -= 1;
       if (pending.settle <= 0) pendingRevealRef.current = null;
-      else paintFrameRef.current = requestAnimationFrame(paint);
+      else schedulePaint();
       return;
     }
     if (selectedRowMounted) {
       // Mounted but the words are not drawn as text: the row itself is the
       // best we can show.
       pendingRevealRef.current = null;
-      const row = content.querySelector<HTMLElement>(`[data-chat-row-key="${CSS.escape(selected.key)}"]`);
+      const row = content.querySelector<HTMLElement>(chatRowSelectorFor(selected.key));
       if (row) {
         const range = document.createRange();
         range.selectNodeContents(row);
-        ensureRangeVisible(range);
+        revealRange(range);
       }
       return;
     }
@@ -354,75 +192,66 @@ export const ChatFindLayer = memo(function ChatFindLayer({
     } else if (performance.now() - pending.since > REVEAL_TIMEOUT_MS) {
       pendingRevealRef.current = null;
     }
-  }, [contentRef, ensureRangeVisible, revealRow, rowRanges]);
+  };
 
-  const schedulePaint = useCallback(() => {
-    if (paintFrameRef.current != null) return;
-    paintFrameRef.current = requestAnimationFrame(paint);
-  }, [paint]);
-
-  useEffect(() => () => {
-    if (paintFrameRef.current != null) cancelAnimationFrame(paintFrameRef.current);
-    paintFrameRef.current = null;
-  }, []);
-
-  // Rows mount and unmount as the list scrolls, folds open, replies stream:
-  // repaint on any change under the transcript, once per frame, while open.
+  // Rows mount and unmount as the list scrolls, folds open, replies stream.
+  // Repaint at most every MUTATION_REPAINT_MS — at once while a reveal lands.
   useEffect(() => {
     if (!open) return;
     const content = contentRef.current;
     if (!content || typeof MutationObserver === "undefined") return;
-    const observer = new MutationObserver(schedulePaint);
+    const observer = new MutationObserver(() => {
+      if (pendingRevealRef.current) {
+        schedulePaint();
+        return;
+      }
+      if (mutationTimerRef.current != null) return;
+      mutationTimerRef.current = setTimeout(() => {
+        mutationTimerRef.current = null;
+        schedulePaint();
+      }, MUTATION_REPAINT_MS);
+    });
     observer.observe(content, { childList: true, subtree: true, characterData: true });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (mutationTimerRef.current != null) clearTimeout(mutationTimerRef.current);
+      // Cleared, not just cancelled, so a reopen can schedule again.
+      mutationTimerRef.current = null;
+    };
   }, [contentRef, open, schedulePaint]);
 
   useLayoutEffect(() => {
     if (open) schedulePaint();
-    else publishFindHighlights(surfaceIdRef.current, null);
   }, [matches, open, query, schedulePaint, selection]);
 
   // ── Navigation ──
-  const select = useCallback((next: Selection | null) => {
-    selectionRef.current = next;
-    setSelection(next);
-    pendingRevealRef.current = next ? { selection: next, since: performance.now(), askedList: false, settle: SETTLE_PAINTS } : null;
-    schedulePaint();
-  }, [schedulePaint]);
-
-  const selectAt = useCallback((at: number | null) => {
-    select(at == null ? null : chatFindMatchAt(matchesRef.current, at));
-  }, [select]);
-
-  const goToStart = useCallback(() => {
-    select(startSelection(matchesRef.current));
-  }, [select, startSelection]);
-
   const step = useCallback((direction: 1 | -1) => {
     const current = matchesRef.current;
     if (!queryRef.current.trim()) return;
     if (current.total === 0) {
       // Still folding older rows: act once the first count lands.
-      if (indexRef.current?.pending) pendingStepRef.current = direction;
+      if (rowsStillFolding()) pendingStepRef.current = direction;
       return;
     }
     const selected = selectionRef.current;
     const at = selected ? chatFindIndexOf(current, selected) : null;
     if (at == null) {
-      goToStart();
+      selectStart();
       return;
     }
-    selectAt(stepChatFindIndex(current.total, at, direction));
-  }, [goToStart, selectAt]);
+    const next = stepFindIndex(current.total, at, direction);
+    select(next == null ? null : chatFindMatchAt(current, next));
+  }, [rowsStillFolding, matchesRef, select, selectStart]);
+  handlers.current.step = step;
 
   // A navigation asked for while the first count was still coming.
   useEffect(() => {
     const pendingStep = pendingStepRef.current;
     if (pendingStep == null || matches.total === 0) return;
     pendingStepRef.current = null;
-    if (pendingStep === "start") goToStart();
+    if (pendingStep === "start") selectStart();
     else step(pendingStep);
-  }, [goToStart, matches, step]);
+  }, [matches, selectStart, step]);
 
   // Keep the selection on the same words when matches move under it
   // (streaming, a retracted reply); drop it when its row lost every match.
@@ -446,9 +275,7 @@ export const ChatFindLayer = memo(function ChatFindLayer({
   const changeQuery = useCallback((next: string) => {
     queryRef.current = next;
     setQuery(next);
-    const counted = computeChatFindMatches(index().docs(), next);
-    matchesRef.current = counted;
-    setMatches(counted);
+    const counted = recountNow(next);
     if (!next.trim()) {
       select(null);
       pendingStepRef.current = null;
@@ -457,103 +284,43 @@ export const ChatFindLayer = memo(function ChatFindLayer({
     // A new query starts at the first match in or below the view.
     if (counted.total > 0) {
       pendingStepRef.current = null;
-      select(startSelection(counted));
+      selectStart(counted);
     } else {
       select(null);
-      if (indexRef.current?.pending) pendingStepRef.current = "start";
+      if (rowsStillFolding()) pendingStepRef.current = "start";
     }
-  }, [select, startSelection]);
+  }, [rowsStillFolding, recountNow, select, selectStart]);
 
-  // ── Open / close ──
-  const focusInput = useCallback(() => {
-    focusFindInput(inputRef);
-  }, []);
-
-  const openBar = useCallback((options?: { query?: string; passive?: boolean }) => {
-    if (!openRef.current) {
-      const active = document.activeElement;
-      restoreFocusRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
-      openRef.current = true;
-      setOpen(true);
-    }
-    if (options?.query !== undefined) {
-      const next = options.query;
-      queryRef.current = next;
-      setQuery(next);
-      // Counted when the subscription syncs; navigation waits for the count.
-      select(null);
-      pendingStepRef.current = options.passive ? null : "start";
-      if (indexRef.current) recountNow();
-    }
-    focusInput();
-  }, [focusInput, recountNow, select]);
-
-  const closeBar = useCallback(() => {
-    openRef.current = false;
-    setOpen(false);
+  /**
+   * Open with `nextQuery` filled in, from the palette. `then` is what happens
+   * once it is counted: "start" goes to the first match in view, null only
+   * shows the count (a palette hit already put the reader on its message).
+   */
+  const openWithQuery = useCallback((nextQuery: string, then: "start" | null) => {
+    openBar();
+    queryRef.current = nextQuery;
+    setQuery(nextQuery);
+    // Already open: count the new words now (opening counts on its own).
+    recountNow(nextQuery);
     select(null);
-    pendingStepRef.current = null;
-    publishFindHighlights(surfaceIdRef.current, null);
-    const restore = restoreFocusRef.current;
-    restoreFocusRef.current = null;
-    if (restore?.isConnected) restore.focus({ preventScroll: true });
-  }, [select]);
+    pendingStepRef.current = then;
+  }, [openBar, recountNow, select]);
 
-  // A different chat in this list: start over.
+  // A different chat in this list: the words and position belonged to the old one.
   useEffect(() => {
-    indexRef.current = null;
-    setMatches(EMPTY_MATCHES);
-    select(null);
     if (openRef.current) closeBar();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [closeBar, openRef, sessionId]);
 
-  // ⌘F from the native menu (and the web client's key handler).
-  useEffect(() => {
-    installFindTargetTracking();
-    return claimAppMenuCommands((command) => {
-      if (command !== "find" || !ownsFind()) return false;
-      openBar();
-      return true;
-    });
-  }, [openBar, ownsFind]);
-
-  // ⌘G / ⇧⌘G and Escape while the bar is open and this chat is where the user is.
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      if (event.key === "Escape") {
-        // Escape from the transcript itself (the field handles its own).
-        const target = event.target;
-        const root = rootRef.current;
-        const fromTranscript = target === document.body || (target instanceof Node && Boolean(root?.contains(target)));
-        if (!fromTranscript || !ownsFind()) return;
-        event.preventDefault();
-        closeBar();
-        return;
-      }
-      if (isFindChord(event, "g")) {
-        if (!ownsFind()) return;
-        event.preventDefault();
-        step(event.shiftKey ? -1 : 1);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeBar, open, ownsFind, rootRef, step]);
-
-  // The palette's "Find in this chat", and the words left by a palette result.
-  const openBarRef = useRef(openBar);
-  openBarRef.current = openBar;
+  // The palette's "Find in this chat", and the words a palette result left for this chat.
+  const openWithQueryRef = useRef(openWithQuery);
+  openWithQueryRef.current = openWithQuery;
   useEffect(() => {
     const target: ChatFindTarget = {
-      sessionId,
       root: () => rootRef.current,
-      open: (nextQuery) => openBarRef.current({ query: nextQuery }),
+      open: (nextQuery) => openWithQueryRef.current(nextQuery, "start"),
     };
     const unregister = registerChatFindTarget(target);
-    const scope = scopeElement();
+    const scope = chatPaneOf(rootRef.current) ?? rootRef.current;
     const markActive = () => markChatFindTargetActive(target);
     scope?.addEventListener("pointerdown", markActive, { capture: true, passive: true });
     scope?.addEventListener("focusin", markActive);
@@ -562,13 +329,13 @@ export const ChatFindLayer = memo(function ChatFindLayer({
       scope?.removeEventListener("pointerdown", markActive, { capture: true });
       scope?.removeEventListener("focusin", markActive);
     };
-  }, [rootRef, scopeElement, sessionId]);
+  }, [rootRef]);
 
   useEffect(() => {
     if (!sessionId) return;
     const consume = () => {
       const pendingQuery = takePendingChatFind(sessionId);
-      if (pendingQuery) openBarRef.current({ query: pendingQuery, passive: true });
+      if (pendingQuery) openWithQueryRef.current(pendingQuery, null);
     };
     consume();
     return onPendingChatFind((target) => {
@@ -581,23 +348,17 @@ export const ChatFindLayer = memo(function ChatFindLayer({
     () => (selection ? chatFindIndexOf(matches, selection) : null),
     [matches, selection],
   );
-  const partial = indexing || hasOlderHistory;
-  const status = findCountLabel({ query, total: matches.total, activeIndex, partial });
-
   if (!open) return null;
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-end px-3">
-      <FindBar
-        inputRef={inputRef}
-        query={query}
-        onQueryChange={changeQuery}
-        onStep={step}
-        onClose={closeBar}
-        status={status}
-        canStep={matches.total > 0 || (partial && Boolean(query.trim()))}
-        placeholder="Find in chat"
-        className="pointer-events-auto w-[min(360px,100%)]"
-      />
-    </div>
+    <FindBar
+      inputRef={session.inputRef}
+      query={query}
+      onQueryChange={changeQuery}
+      onStep={step}
+      onClose={closeBar}
+      status={findCountLabel({ query, total: matches.total, activeIndex, partial })}
+      canStep={matches.total > 0 || (partial && Boolean(query.trim()))}
+      placeholder="Find in chat"
+    />
   );
 });

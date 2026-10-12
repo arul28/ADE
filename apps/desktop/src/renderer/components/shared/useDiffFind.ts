@@ -2,26 +2,37 @@
  * Find in a diff (⌘F) for AdeDiffViewer's Pierre views.
  *
  * Pierre draws every line of a file's diff into an open shadow root (ADE does
- * not use its virtualized CodeView), so the lines are on the page — but the
+ * not use its virtualized CodeView), so the lines are on the page, but the
  * browser's find does not see into shadow roots, and the desktop app binds ⌘F
  * to its menu. This searches each drawn line's text, paints matches with the
- * CSS Custom Highlight API (the highlight rules live in the diff's own CSS),
- * and scrolls the current one into view.
+ * CSS Custom Highlight API and scrolls the current one into view. The bar's
+ * lifecycle (⌘F claim, focus, ⌘G, Escape) is useFindSession's.
  *
  * Unchanged stretches longer than the viewer's threshold are collapsed and not
  * drawn. When the file's full text holds a match, the viewer is asked to draw
- * everything (`expandAll`) while the bar is open.
+ * everything (`expandAll`) until the bar closes.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
-import { claimAppMenuCommands } from "../../lib/appMenuCommands";
-import { findScopeOwnsTarget, installFindTargetTracking, isFindChord } from "../../lib/findScope";
-import { countOccurrences, findCountLabel, findTextRanges, foldFindCase, publishFindHighlights } from "../../lib/findText";
-import { isInParkedSurface } from "../../lib/parkedSurface";
-import { focusFindInput } from "./FindBar";
+import { findScopeOwnsTarget } from "../../lib/findScope";
+import {
+  countOccurrences,
+  findCountLabel,
+  findTextRanges,
+  foldFindCase,
+  publishFindHighlights,
+  scrollRangeIntoView,
+  stepFindIndex,
+} from "../../lib/findText";
+import { useFindSession } from "./useFindSession";
 
+/** Pierre's element that wraps one file's diff; its lines live in its open shadow root. */
 const DIFFS_TAG_NAME = "diffs-container";
 
-let nextSurfaceId = 0;
+/** The old and new text of one file. */
+type FileText = { old: string; new: string };
+
+/** The last full text folded, kept for as long as its source strings are unchanged. */
+type FoldedFileTextCache = { source: FileText; folded: FileText };
 
 function shadowRootsUnder(root: Element): ShadowRoot[] {
   const roots: ShadowRoot[] = [];
@@ -43,11 +54,11 @@ function lineSides(line: Element): { old: boolean; new: boolean } {
 
 /**
  * Every match in drawn order (top to bottom, then the old side before the
- * new), and how many were drawn from each file — so a file holding more
+ * new), and how many were drawn from each file, so a file holding more
  * matches than were drawn has some in collapsed lines.
  */
 function collectRanges(root: Element, needle: string): { ranges: Range[]; oldDrawn: number; newDrawn: number } {
-  const found: { range: Range; top: number; left: number }[] = [];
+  const lines: { ranges: Range[]; top: number; left: number }[] = [];
   let oldDrawn = 0;
   let newDrawn = 0;
   for (const shadow of shadowRootsUnder(root)) {
@@ -58,15 +69,26 @@ function collectRanges(root: Element, needle: string): { ranges: Range[]; oldDra
       if (sides.old) oldDrawn += ranges.length;
       if (sides.new) newDrawn += ranges.length;
       const rect = line.getBoundingClientRect();
-      ranges.forEach((range, order) => found.push({ range, top: rect.top, left: rect.left + order }));
+      lines.push({ ranges, top: rect.top, left: rect.left });
     }
   }
-  found.sort((a, b) => a.top - b.top || a.left - b.left);
-  return { ranges: found.map((entry) => entry.range), oldDrawn, newDrawn };
+  // The sort is stable, so the matches of one line keep their order.
+  lines.sort((a, b) => a.top - b.top || a.left - b.left);
+  return { ranges: lines.flatMap((line) => line.ranges), oldDrawn, newDrawn };
 }
 
 function hasCollapsedContext(root: Element): boolean {
   return shadowRootsUnder(root).some((shadow) => shadow.querySelector("[data-expand-button], [data-unmodified-lines]") != null);
+}
+
+/** Folds a file's full text once per distinct source string, not per recompute. */
+function foldedFileText(source: FileText | null, cacheRef: MutableRefObject<FoldedFileTextCache | null>): FileText | null {
+  if (!source) return null;
+  const cached = cacheRef.current;
+  if (cached && cached.source.old === source.old && cached.source.new === source.new) return cached.folded;
+  const folded = { old: foldFindCase(source.old), new: foldFindCase(source.new) };
+  cacheRef.current = { source, folded };
+  return folded;
 }
 
 export function useDiffFind({
@@ -79,105 +101,120 @@ export function useDiffFind({
   /** The element that scrolls the diff vertically. */
   scrollRef: MutableRefObject<HTMLElement | null>;
   /** Old and new file text when the viewer has them (not for a bare patch). */
-  fullText: { old: string; new: string } | null;
+  fullText: FileText | null;
 }) {
-  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [total, setTotal] = useState(0);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [expandAll, setExpandAll] = useState(false);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const surfaceIdRef = useRef(`diff-find-${(nextSurfaceId += 1)}`);
-  const rangesRef = useRef<Range[]>([]);
   const queryRef = useRef(query);
   queryRef.current = query;
   const activeRef = useRef(activeIndex);
   activeRef.current = activeIndex;
-  const openRef = useRef(open);
-  openRef.current = open;
-  /** The next recompute picks the first match at or below the view instead of keeping the index. */
-  const restartRef = useRef(false);
-  const scrollToActiveRef = useRef(false);
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const expandAllRef = useRef(expandAll);
   expandAllRef.current = expandAll;
-  // Folded once per file text, not per keystroke.
-  const foldedFullTextRef = useRef<{ old: string; new: string } | null>(null);
-  const foldedSourceRef = useRef<{ old: string; new: string } | null>(null);
-  if (fullText?.old !== foldedSourceRef.current?.old || fullText?.new !== foldedSourceRef.current?.new) {
-    foldedSourceRef.current = fullText;
-    foldedFullTextRef.current = fullText ? { old: foldFindCase(fullText.old), new: foldFindCase(fullText.new) } : null;
-  }
+  const rangesRef = useRef<Range[]>([]);
+  const fullTextRef = useRef(fullText);
+  fullTextRef.current = fullText;
+  const foldedFullTextRef = useRef<FoldedFileTextCache | null>(null);
+  /** The diff is redrawing with every line: reveal the current match once it lands. */
+  const revealAfterExpandRef = useRef(false);
 
-  const ensureVisible = useCallback((range: Range) => {
-    const scroller = scrollRef.current;
-    const rect = range.getBoundingClientRect();
-    if (!scroller || (!rect.width && !rect.height)) return;
-    const box = scroller.getBoundingClientRect();
-    if (rect.top < box.top + 24 || rect.bottom > box.bottom - 24) {
-      scroller.scrollTop += rect.top - box.top - box.height * 0.4;
-    }
-    // Long lines scroll sideways inside their own code column.
-    const line = range.startContainer.parentElement?.closest<HTMLElement>("[data-line]");
-    let column: HTMLElement | null = line?.parentElement ?? null;
-    while (column && column.scrollWidth <= column.clientWidth) column = column.parentElement;
-    if (column) {
-      const after = range.getBoundingClientRect();
-      const columnBox = column.getBoundingClientRect();
-      if (after.left < columnBox.left + 16 || after.right > columnBox.right - 16) {
-        column.scrollLeft += after.left - columnBox.left - columnBox.width / 3;
-      }
-    }
-  }, [scrollRef]);
+  const ownsFind = useCallback(() => findScopeOwnsTarget(rootRef.current), [rootRef]);
+
+  // The session owns ⌘F, the bar, Escape, focus and the paint frame. These
+  // callbacks need the surface id it returns, so it reaches them through refs.
+  const handlers = useRef({ step: (_direction: 1 | -1) => {}, clearMatches: () => {}, recompute: () => {} });
+  const session = useFindSession({
+    ownsFind,
+    onStep: (direction) => handlers.current.step(direction),
+    onClosed: () => handlers.current.clearMatches(),
+    paint: () => handlers.current.recompute(),
+    escapeRootRef: rootRef,
+  });
+  const { open, openRef, inputRef, surfaceId, closeBar, schedulePaint: scheduleRecompute } = session;
 
   const recompute = useCallback(() => {
     const root = rootRef.current;
     if (!openRef.current || !root || !queryRef.current.trim()) {
       rangesRef.current = [];
+      activeRef.current = null;
       setTotal(0);
       setActiveIndex(null);
-      publishFindHighlights(surfaceIdRef.current, null);
+      publishFindHighlights(surfaceId, null);
       return;
     }
     const needle = foldFindCase(queryRef.current);
     const { ranges, oldDrawn, newDrawn } = collectRanges(root, needle);
     rangesRef.current = ranges;
     // A match in collapsed unchanged lines: draw the whole file while open.
-    const full = foldedFullTextRef.current;
-    if (!expandAllRef.current && full && hasCollapsedContext(root)
-      && (countOccurrences(full.old, needle) > oldDrawn || countOccurrences(full.new, needle) > newDrawn)) {
-      expandAllRef.current = true;
-      setExpandAll(true);
+    if (!expandAllRef.current && hasCollapsedContext(root)) {
+      const full = foldedFileText(fullTextRef.current, foldedFullTextRef);
+      if (full && (countOccurrences(full.old, needle) > oldDrawn || countOccurrences(full.new, needle) > newDrawn)) {
+        expandAllRef.current = true;
+        revealAfterExpandRef.current = true;
+        setExpandAll(true);
+      }
     }
     setTotal(ranges.length);
+    // No active match (a new query, or a fresh open) starts at the first match
+    // at or below the top of the view; otherwise the current match is kept.
     let next = activeRef.current;
-    if (restartRef.current || next == null) {
-      restartRef.current = false;
+    let revealActive = false;
+    // The redraw with every line lands after the expand request: the match the
+    // first pass revealed has moved, so reveal it again once all lines are drawn.
+    if (revealAfterExpandRef.current && !hasCollapsedContext(root)) {
+      revealAfterExpandRef.current = false;
+      revealActive = true;
+    }
+    if (next == null) {
       const viewTop = scrollRef.current?.getBoundingClientRect().top ?? 0;
       const firstBelow = ranges.findIndex((range) => range.getBoundingClientRect().bottom > viewTop);
       next = ranges.length ? Math.max(0, firstBelow) : null;
-      scrollToActiveRef.current = next != null;
+      revealActive = next != null;
     } else if (next >= ranges.length) {
       next = ranges.length ? ranges.length - 1 : null;
     }
     activeRef.current = next;
     setActiveIndex(next);
     const active = next != null ? ranges[next] ?? null : null;
-    publishFindHighlights(surfaceIdRef.current, { all: ranges, active });
-    if (active && scrollToActiveRef.current) {
-      scrollToActiveRef.current = false;
-      ensureVisible(active);
-    }
-  }, [ensureVisible, rootRef, scrollRef]);
+    publishFindHighlights(surfaceId, { all: ranges, active });
+    const scroller = scrollRef.current;
+    if (active && revealActive && scroller) scrollRangeIntoView(scroller, active);
+  }, [openRef, rootRef, scrollRef, surfaceId]);
+  handlers.current.recompute = recompute;
 
-  const frameRef = useRef<number | null>(null);
-  const scheduleRecompute = useCallback(() => {
-    if (frameRef.current != null) return;
-    frameRef.current = requestAnimationFrame(() => {
-      frameRef.current = null;
-      recompute();
-    });
-  }, [recompute]);
+  const step = useCallback((direction: 1 | -1) => {
+    const ranges = rangesRef.current;
+    const next = stepFindIndex(ranges.length, activeRef.current, direction);
+    if (next == null) return;
+    const active = ranges[next];
+    if (!active) return;
+    activeRef.current = next;
+    setActiveIndex(next);
+    publishFindHighlights(surfaceId, { all: ranges, active });
+    const scroller = scrollRef.current;
+    if (scroller) scrollRangeIntoView(scroller, active);
+  }, [scrollRef, surfaceId]);
+  handlers.current.step = step;
+
+  const clearMatches = useCallback(() => {
+    expandAllRef.current = false;
+    revealAfterExpandRef.current = false;
+    setExpandAll(false);
+    activeRef.current = null;
+    setActiveIndex(null);
+    rangesRef.current = [];
+  }, []);
+  handlers.current.clearMatches = clearMatches;
+
+  const changeQuery = useCallback((next: string) => {
+    queryRef.current = next;
+    setQuery(next);
+    // A new query starts again at the first match at or below the view.
+    activeRef.current = null;
+    setActiveIndex(null);
+  }, []);
 
   // Pierre redraws lines after highlighting, on option changes and when
   // context expands: recompute on any change in its shadow roots while open.
@@ -210,94 +247,6 @@ export function useDiffFind({
   useLayoutEffect(() => {
     if (open) scheduleRecompute();
   }, [open, query, scheduleRecompute]);
-
-  useEffect(() => () => {
-    if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
-    frameRef.current = null;
-    publishFindHighlights(surfaceIdRef.current, null);
-  }, []);
-
-
-  const changeQuery = useCallback((next: string) => {
-    queryRef.current = next;
-    setQuery(next);
-    restartRef.current = true;
-  }, []);
-
-  const step = useCallback((direction: 1 | -1) => {
-    const ranges = rangesRef.current;
-    if (!ranges.length) return;
-    const current = activeRef.current;
-    const next = current == null
-      ? (direction > 0 ? 0 : ranges.length - 1)
-      : (((current + direction) % ranges.length) + ranges.length) % ranges.length;
-    activeRef.current = next;
-    setActiveIndex(next);
-    const active = ranges[next]!;
-    publishFindHighlights(surfaceIdRef.current, { all: ranges, active });
-    ensureVisible(active);
-  }, [ensureVisible]);
-
-  const openBar = useCallback(() => {
-    if (!openRef.current) {
-      const active = document.activeElement;
-      restoreFocusRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
-      openRef.current = true;
-      restartRef.current = true;
-      setOpen(true);
-    }
-    focusFindInput(inputRef);
-  }, []);
-
-  const closeBar = useCallback(() => {
-    openRef.current = false;
-    setOpen(false);
-    expandAllRef.current = false;
-    setExpandAll(false);
-    setActiveIndex(null);
-    activeRef.current = null;
-    rangesRef.current = [];
-    publishFindHighlights(surfaceIdRef.current, null);
-    const restore = restoreFocusRef.current;
-    restoreFocusRef.current = null;
-    if (restore?.isConnected) restore.focus({ preventScroll: true });
-  }, []);
-
-  const ownsFind = useCallback(() => {
-    const root = rootRef.current;
-    return Boolean(root && root.isConnected && !isInParkedSurface(root) && findScopeOwnsTarget(root));
-  }, [rootRef]);
-
-  useEffect(() => {
-    installFindTargetTracking();
-    return claimAppMenuCommands((command) => {
-      if (command !== "find" || !ownsFind()) return false;
-      openBar();
-      return true;
-    });
-  }, [openBar, ownsFind]);
-
-  // ⌘G / ⇧⌘G, and Escape from the diff itself, while open.
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || !ownsFind()) return;
-      if (event.key === "Escape") {
-        const target = event.target;
-        const root = rootRef.current;
-        if (target !== document.body && !(target instanceof Node && root?.contains(target))) return;
-        event.preventDefault();
-        closeBar();
-        return;
-      }
-      if (isFindChord(event, "g")) {
-        event.preventDefault();
-        step(event.shiftKey ? -1 : 1);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeBar, open, ownsFind, rootRef, step]);
 
   return {
     open,

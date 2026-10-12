@@ -47,8 +47,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
-import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
-import { isFindChord } from "../../lib/findScope";
+import { consumeAppMenuCommand, installFindKeyBridge } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { cn } from "../ui/cn";
 import {
@@ -935,21 +934,8 @@ export function TopBar({
   useEffect(() => {
     const onMenuCommand = window.ade?.app?.onMenuCommand;
     if (typeof onMenuCommand !== "function") {
-      /*
-        No native menu (the web client): ⌘F arrives as a keydown. Offer it to
-        the same claims; when a surface takes it, the browser's own find (which
-        sees only the rows a virtualized list has mounted) stays closed. When
-        nothing claims it, the browser's find opens as usual.
-      */
-      const onKeyDown = (event: KeyboardEvent) => {
-        if (event.defaultPrevented || !event.isTrusted) return;
-        if (event.shiftKey || !isFindChord(event, "f")) return;
-        if (!consumeAppMenuCommand("find")) return;
-        event.preventDefault();
-        event.stopPropagation();
-      };
-      window.addEventListener("keydown", onKeyDown, true);
-      return () => window.removeEventListener("keydown", onKeyDown, true);
+      // No native menu (the web client): ⌘F arrives as a keydown.
+      return installFindKeyBridge();
     }
     return onMenuCommand((command) => {
       if (consumeAppMenuCommand(command)) return;
