@@ -431,6 +431,7 @@ import {
 } from "./services/updates/runtimeRestartVerification";
 import { createProjectRecoveryService, restartBrainForRepair } from "./services/runtime/projectRecoveryService";
 import { createQuitPrompt } from "./services/runtime/quitPrompt";
+import { registerBackgroundServiceControls } from "./services/runtime/backgroundServiceControls";
 import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnosticsService";
 import { resolveAutoDiagnosticsStateFile } from "./services/diagnostics/autoDiagnosticsStore";
 import { collectDiagnosticReport } from "./services/diagnostics/diagnosticReportService";
@@ -7980,9 +7981,10 @@ app.whenReady().then(async () => {
     return chats;
   };
 
-  // Arms one durable continue row per chat the update interrupted. Called on
-  // the launch that lands an install, with the ids the previous process
-  // persisted — a freshly started brain has no live turns to discover.
+  // Arms one durable continue row per chat a restart interrupted: on the
+  // launch that lands an install, with the ids the previous process persisted
+  // (a freshly started brain has no live turns to discover), and after a
+  // quit-prompt Repair.
   const armResumeForSessions = async (
     sessionIds: readonly string[],
   ): Promise<UpdateInterruptedChat[]> => {
@@ -8138,19 +8140,19 @@ app.whenReady().then(async () => {
   const quitPrompt = createQuitPrompt({
     logger: localRuntimeLogger,
     globalStatePath,
-    manageService: shouldRepairRuntimeServiceOnFallback,
     getRuntimeStatus: () => localRuntimePool.getStatus(),
     collectImpact: () => collectUpdateInstallImpactBounded(),
     restartService: () => restartBrainForRepair(machineRecoveryService, productAnalyticsService),
+    isRecovering: () => machineRecoveryService.isRecovering(),
     armResume: (sessionIds) => armResumeForSessions(sessionIds),
+  });
+  registerBackgroundServiceControls({
+    logger: localRuntimeLogger,
+    manageService: shouldRepairRuntimeServiceOnFallback,
+    pool: localRuntimePool,
+    collectImpact: () => collectUpdateInstallImpactBounded(),
     getRunningLaneDeleteLabels,
-    countRunningAgents: () => localRuntimePool.activitySummary().then((summary) => summary.activeAgentTurns, () => null),
-    holdServiceRepair: (reason) => localRuntimePool.beginUpdateWindow(reason),
-    releaseServiceRepair: (reason) => localRuntimePool.endUpdateWindow(reason),
-    uninstallService: async () => {
-      await localRuntimePool.waitForServiceInstall();
-      await localRuntimePool.uninstallServiceBestEffort();
-    },
+    isRepairing: () => quitPrompt.isRepairing(),
     isShuttingDown: () => shutdownRequested,
     shutdown: (reason) => requestAppShutdown({ reason, exitCode: 0 }),
   });

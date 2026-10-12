@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { BackgroundServiceSummary } from "../../../shared/types";
+import { pluralCount } from "../../../shared/formatting";
 import { agentsAre } from "../../../shared/quitPromptModel";
 import { confirmDialog } from "../ui/dialog";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
@@ -17,7 +18,7 @@ function stopWarning(summary: BackgroundServiceSummary | null): string {
   const unlisted = count - (summary?.runningChats.length ?? 0);
   const stops = count === 0
     ? "No agents are working right now. Open terminals and test runs stop too."
-    : `This stops ${count === 1 ? "1 working agent" : `all ${count} working agents`}, and any open terminals and test runs.`;
+    : `This stops ${count === 1 ? "the working agent" : `all ${pluralCount(count, "working agent")}`}, and any open terminals and test runs.`;
   const elsewhere = unlisted > 0
     ? ` ${unlisted === 1 ? "1 of them is" : `${unlisted} of them are`} in a project that isn't open in ADE.`
     : "";

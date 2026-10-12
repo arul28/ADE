@@ -1,33 +1,30 @@
+import { pluralCount } from "./formatting";
 import type { QuitPromptChoice, QuitPromptRequest } from "./types";
-
-/** "1 agent", "3 agents". */
-export function agentCount(count: number): string {
-  return count === 1 ? "1 agent" : `${count} agents`;
-}
 
 /** "1 agent is", "3 agents are". */
 export function agentsAre(count: number): string {
-  return `${agentCount(count)} ${count === 1 ? "is" : "are"}`;
+  return `${pluralCount(count, "agent")} ${count === 1 ? "is" : "are"}`;
 }
 
-/** "it", "them". */
-export function agentsPronoun(count: number): string {
-  return count === 1 ? "it" : "them";
+/** "it", "they" as a subject; "it", "them" as an object. */
+export function agentsPronoun(count: number, role: "subject" | "object"): string {
+  if (count === 1) return "it";
+  return role === "subject" ? "they" : "them";
 }
 
-export type QuitPromptAction = {
+type QuitPromptAction = {
   choice: QuitPromptChoice;
   label: string;
   /** The default: focused in ADE's dialog, `defaultId` in the native box. */
   primary?: boolean;
 };
 
-export type QuitPromptModel = {
+type QuitPromptModel = {
   title: string;
   description: string;
   tone: "accent" | "warning";
-  /** "Don't ask again", unticked. Never offered when quitting stops agents. */
-  offerDontAskAgain: boolean;
+  /** The "Don't ask again" checkbox, unticked. Null when quitting stops agents. */
+  dontAskAgainLabel: string | null;
   /** In display order, the cancel action first. */
   actions: QuitPromptAction[];
 };
@@ -48,8 +45,9 @@ function appOwnedFix(
 
 /**
  * The quit confirmation: words and buttons, shared by ADE's dialog and the
- * native box main falls back to, so the two never disagree. `canRepair` is
- * false for the native box, which has nowhere to show a repair's progress.
+ * native box main falls back to. The one difference is `canRepair`: false for
+ * the native box, which has nowhere to show a repair's progress, so it offers
+ * no repair action and points at the banner instead.
  */
 export function quitPromptModel(request: QuitPromptRequest, options: { canRepair: boolean }): QuitPromptModel {
   const verb = request.relaunch ? "Restart" : "Quit";
@@ -57,19 +55,21 @@ export function quitPromptModel(request: QuitPromptRequest, options: { canRepair
   const owned = request.appOwnedService;
   if (owned) {
     const stops = count > 0
-      ? `ADE is running ${agentCount(count)} itself for now, so ${request.relaunch ? "restarting" : "quitting"} stops ${agentsPronoun(count)}.`
+      ? `ADE is running ${pluralCount(count, "agent")} itself for now, so ${request.relaunch ? "restarting" : "quitting"} stops ${agentsPronoun(count, "object")}.`
       : "ADE is running it itself for now.";
-    const repairLabel = owned.repair === "system_settings" ? "Open System Settings" : "Repair service";
     const offerRepair = options.canRepair && owned.repair !== "wait";
+    const fixAction: QuitPromptAction = owned.repair === "system_settings"
+      ? { choice: "settings", label: "Open System Settings", primary: true }
+      : { choice: "repair", label: "Repair service", primary: true };
     return {
       title: "ADE's background service isn't running",
       description: `${stops} ${appOwnedFix(owned.repair, count, options.canRepair)}`,
       tone: "warning",
-      offerDontAskAgain: false,
+      dontAskAgainLabel: null,
       actions: [
         { choice: "keep", label: "Keep ADE open", primary: !offerRepair },
         { choice: "quit", label: `${verb} anyway` },
-        ...(offerRepair ? [{ choice: "repair" as const, label: repairLabel, primary: true }] : []),
+        ...(offerRepair ? [fixAction] : []),
       ],
     };
   }
@@ -80,7 +80,7 @@ export function quitPromptModel(request: QuitPromptRequest, options: { canRepair
     title: `${verb} ADE?`,
     description,
     tone: "accent",
-    offerDontAskAgain: true,
+    dontAskAgainLabel: "Don't ask again",
     actions: [
       { choice: "keep", label: "Keep ADE open" },
       { choice: "quit", label: `${verb} ADE`, primary: true },

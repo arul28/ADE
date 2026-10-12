@@ -1,7 +1,7 @@
-import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import {
   RECOVERY_COPY,
   REPAIR_STEP_LABELS,
@@ -434,6 +434,11 @@ export class ProjectRecoveryService {
    * `uninstallServiceBestEffort`). Repair wins; the button can be pressed again
    * after it finishes.
    */
+  /** A repair or a brain restart is running; quitting or stopping now would cut it off. */
+  isRecovering(): boolean {
+    return this.repairInFlight || this.restartInFlight != null;
+  }
+
   async restartBrain(): Promise<void> {
     if (this.repairInFlight) throw new Error("Recovery is already running.");
     const restart = this.restartServiceAndWait(true);

@@ -22,7 +22,11 @@ export type QuitPromptRequest = {
   appOwnedService: QuitPromptAppOwnedService | null;
 };
 
-export type QuitPromptChoice = "quit" | "keep" | "repair";
+/**
+ * `repair` restarts the service. `settings` opens macOS's Allow in the
+ * Background, which only the person can change, so ADE stays open.
+ */
+export type QuitPromptChoice = "quit" | "keep" | "repair" | "settings";
 
 /** The window's answer; the "it is on screen" signal is a separate send. */
 export type QuitPromptAnswer = {

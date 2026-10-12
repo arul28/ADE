@@ -153,6 +153,22 @@ export function readGlobalState(filePath: string): GlobalState {
   }
 }
 
+/**
+ * `readGlobalState` for a read-modify-write: a missing file is `{}`, but an
+ * unreadable or corrupt one throws, so the write cannot wipe what it held.
+ */
+export function readGlobalStateForUpdate(filePath: string): GlobalState {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  const parsed = JSON.parse(raw) as GlobalState;
+  return parsed && typeof parsed === "object" ? parsed : {};
+}
+
 export function writeGlobalState(filePath: string, state: GlobalState): void {
   let tempPath: string | null = null;
   let fd: number | null = null;

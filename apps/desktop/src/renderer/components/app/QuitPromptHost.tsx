@@ -6,14 +6,15 @@
  * Normally agents run in the background service and keep going after the
  * desktop quits, so the dialog reassures and offers "Don't ask again"
  * (unticked). When the desktop is running the service itself, quitting stops
- * running agents, so it says so and offers to repair the service first.
+ * running agents, so it says so and offers the fix the model names: Repair,
+ * System Settings, or none while ADE retries on its own.
  */
 import { useEffect, useState } from "react";
 import { Power } from "@phosphor-icons/react";
 import type { QuitPromptChoice, QuitPromptRequest } from "../../../shared/types";
-import { agentsAre, quitPromptModel } from "../../../shared/quitPromptModel";
+import { agentsAre, agentsPronoun, quitPromptModel } from "../../../shared/quitPromptModel";
 import { Dialog, type DialogAction } from "../ui/dialog";
-import { READABLE_TOAST_DURATION_MS, showToast, updateToast } from "./toast/toastStore";
+import { dismissToast, READABLE_TOAST_DURATION_MS, showToast, updateToast } from "./toast/toastStore";
 
 const REPAIR_TOAST_ID = "quit-prompt-repair";
 
@@ -56,7 +57,7 @@ function repairFromQuitPrompt(requestId: string): void {
     busy: false,
     title: "ADE's background service is running",
     message: resumedChats > 0
-      ? `${agentsAre(resumedChats)} picking up where ${resumedChats === 1 ? "it" : "they"} left off. You can quit now and they keep going.`
+      ? `${agentsAre(resumedChats)} picking up where ${agentsPronoun(resumedChats, "subject")} left off. You can quit now and they keep going.`
       : "You can quit now and your agents keep going.",
     durationMs: READABLE_TOAST_DURATION_MS,
     dismissible: true,
@@ -69,9 +70,11 @@ function repairFromQuitPrompt(requestId: string): void {
     durationMs: READABLE_TOAST_DURATION_MS,
     dismissible: true,
   });
-  void (window.ade.app.answerQuitPrompt?.({ requestId, choice: "repair", dontAskAgain: false }) ?? Promise.resolve(null))
+  void window.ade.app.answerQuitPrompt?.({ requestId, choice: "repair", dontAskAgain: false })
     .then((result) => {
-      if (result?.repaired) repaired(result.resumedChats);
+      // Null: the prompt was already gone, so no repair ran.
+      if (!result) dismissToast(REPAIR_TOAST_ID);
+      else if (result.repaired) repaired(result.resumedChats);
       else failed();
     })
     .catch(failed);
@@ -87,18 +90,14 @@ function QuitPromptDialog({ request, onDone }: { request: QuitPromptRequest; onD
   };
 
   const choose = (choice: QuitPromptChoice) => {
-    if (choice !== "repair") {
-      answer(choice);
+    if (choice === "repair") {
+      onDone();
+      repairFromQuitPrompt(request.requestId);
       return;
     }
-    if (request.appOwnedService?.repair === "system_settings") {
-      // Only the person can allow the background item; ADE stays open meanwhile.
-      answer("keep");
-      void window.ade.recovery?.openBackgroundSettings?.().catch(() => undefined);
-      return;
-    }
-    onDone();
-    repairFromQuitPrompt(request.requestId);
+    answer(choice);
+    // Only the person can allow the background item; ADE stays open meanwhile.
+    if (choice === "settings") void window.ade.recovery?.openBackgroundSettings?.().catch(() => undefined);
   };
 
   const actions: DialogAction[] = model.actions.map((action) => ({
@@ -115,6 +114,8 @@ function QuitPromptDialog({ request, onDone }: { request: QuitPromptRequest; onD
         if (!next) answer("keep");
       }}
       role="alertdialog"
+      // Quitting can happen while another dialog is open; the question goes on top.
+      layer="nestedDialog"
       size="sm"
       tone={model.tone}
       icon={model.tone === "warning" ? true : <Power size={16} weight="bold" />}
@@ -122,14 +123,14 @@ function QuitPromptDialog({ request, onDone }: { request: QuitPromptRequest; onD
       description={model.description}
       hideClose
       testId="quit-prompt"
-      footerStart={model.offerDontAskAgain ? (
+      footerStart={model.dontAskAgainLabel ? (
         <label className="ade-dialog-checkbox ade-dialog-checkbox--footer">
           <input
             type="checkbox"
             checked={dontAskAgain}
             onChange={(event) => setDontAskAgain(event.target.checked)}
           />
-          <span>Don't ask again</span>
+          <span>{model.dontAskAgainLabel}</span>
         </label>
       ) : undefined}
       actions={actions}
