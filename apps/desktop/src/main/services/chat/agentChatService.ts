@@ -338,6 +338,7 @@ import {
 import {
   getMachineProviderInstanceStore,
   claudeAccountPromptCacheEnv,
+  claudeAccountStopsOnExtraUsage,
   providerInstanceEnvPatch,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -927,10 +928,13 @@ import {
 import {
   buildClaudeSessionQuotaCard,
   classifyClaudeRateLimitInfo,
+  CLAUDE_EXTRA_USAGE_STOP_NOTICE,
+  claudeRateLimitInfoUsesExtraUsage,
   claudeSessionQuotaCardId,
   formatClaudeSessionQuotaResetLabel,
   isClaudeSessionQuotaText,
   mergeClaudeSessionQuotaSnapshot,
+  normalizeResetsAtMs,
   snapshotFromClaudeSessionQuotaText,
   type ClaudeSessionQuotaSnapshot,
 } from "../../../shared/claudeSessionQuota";
@@ -27049,6 +27053,20 @@ export function createAgentChatService(args: {
     if (msg.type === "rate_limit_event") {
       const info = asRecord(record.rate_limit_info) ?? {};
       const classified = classifyClaudeRateLimitInfo(info);
+      if (claudeRateLimitInfoUsesExtraUsage(info) && claudeAccountStopsOnExtraUsage(managed.session.instanceId)) {
+        // The account's owner chose to stay inside the plan. Same ending as a
+        // rejected quota: arm the resume, then finish the idle turn.
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "rate_limit",
+          severity: "warning",
+          message: CLAUDE_EXTRA_USAGE_STOP_NOTICE,
+          ...(state.turnId ? { turnId: state.turnId } : {}),
+        });
+        noteClaudeSessionQuota(managed, claudeExtraUsageQuotaSnapshot(info), state.turnId);
+        await settleClaudeQuotaRejectedIdleTurn(managed, runtime, state);
+        return;
+      }
       if (classified.kind === "ignore") return;
       if (classified.kind === "rejected") {
         noteClaudeSessionQuota(managed, classified.snapshot, state.turnId);
@@ -27806,6 +27824,8 @@ export function createAgentChatService(args: {
     const claudeRequestTally = createClaudeTurnRequestTally();
     let resultTerminalStatus: ClaudeTerminalStatus = "completed";
     let quotaTrippedThisTurn = false;
+    /** The account stops on extra usage and this turn drew on it; set once per turn. */
+    let extraUsageStopRequested = false;
     let resultTerminalReason: string | undefined;
     let resultCanonicalModel: string | undefined;
     let resultModelProvider: string | undefined;
@@ -28458,6 +28478,33 @@ export function createAgentChatService(args: {
           const rateMsg = msg as any;
           const info = rateMsg.rate_limit_info ?? {};
           const classified = classifyClaudeRateLimitInfo(info);
+          if (claudeRateLimitInfoUsesExtraUsage(info) && claudeAccountStopsOnExtraUsage(managed.session.instanceId)) {
+            if (!extraUsageStopRequested) {
+              // The account's owner chose to stay inside the plan. Claude reports
+              // extra usage after the response, so this request is already
+              // billed; the stop prevents the next ones. The turn then ends on
+              // the same path as a rejected quota: card, armed resume, reset.
+              extraUsageStopRequested = true;
+              quotaTrippedThisTurn = true;
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "rate_limit",
+                severity: "warning",
+                message: CLAUDE_EXTRA_USAGE_STOP_NOTICE,
+                turnId,
+              });
+              noteClaudeSessionQuota(managed, claudeExtraUsageQuotaSnapshot(info), turnId);
+              const stopControl = getClaudeQueryControl(runtime.query);
+              void stopControl.interrupt?.().catch((error: unknown) => {
+                logger.warn("agent_chat.claude_extra_usage_stop_failed", {
+                  sessionId: managed.session.id,
+                  turnId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              });
+            }
+            continue;
+          }
           if (classified.kind === "ignore") continue;
           if (classified.kind === "rejected") {
             quotaTrippedThisTurn = true;
@@ -29774,8 +29821,9 @@ export function createAgentChatService(args: {
               );
             }
             for (const err of resultErrors.userFacing) {
-              // An image_error turn is explained by its failure notice alone.
-              if (isClaudeUsageLimitResultError(err) || isClaudeImageErrorResult(resultMsg)) continue;
+              // An image_error turn is explained by its failure notice alone,
+              // and a turn ADE stopped for extra usage by its own notice.
+              if (extraUsageStopRequested || isClaudeUsageLimitResultError(err) || isClaudeImageErrorResult(resultMsg)) continue;
               emitChatEvent(managed, {
                 type: "error",
                 message: err,
@@ -29791,7 +29839,7 @@ export function createAgentChatService(args: {
             contextOverflow: recoverFromContextOverflow,
             assistantText,
           });
-          if (failureNotice) emitChatEvent(managed, { type: "error", ...failureNotice, turnId });
+          if (failureNotice && !extraUsageStopRequested) emitChatEvent(managed, { type: "error", ...failureNotice, turnId });
           // A result frame is the provider's definitive acknowledgement of the
           // submitted prompt even when it reports a terminal failure. Keep the
           // turn on the normal result path so terminal_reason and overflow
@@ -45371,6 +45419,16 @@ export function createAgentChatService(args: {
     }, 5_000);
     crossMachineHandoffSweepTimer.unref?.();
   }
+
+  /**
+   * The quota card's numbers for a turn ADE stops for extra usage. The plan
+   * window is the one that reopens; the extra-usage window is not a reset the
+   * owner waits for.
+   */
+  const claudeExtraUsageQuotaSnapshot = (info: Record<string, unknown>): ClaudeSessionQuotaSnapshot => ({
+    utilizationPct: null,
+    resetsAtMs: info.rateLimitType === "overage" ? null : normalizeResetsAtMs(info.resetsAt),
+  });
 
   const noteClaudeSessionQuota = (
     managed: ManagedChatSession,

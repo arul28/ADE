@@ -40,6 +40,7 @@ export function AccountCard({
   replacedNote,
   compactionControl,
   onSetPromptCache,
+  onSetExtraUsage,
   renaming,
   onCommitRename,
   onCancelRename,
@@ -61,6 +62,8 @@ export function AccountCard({
   compactionControl?: React.ReactNode;
   /** Claude only: sets this account's subagent prompt cache; null is the Claude default. */
   onSetPromptCache?: (instance: ProviderInstance, value: "1h" | null) => void;
+  /** Claude only: stop a turn that draws on extra usage; null lets it continue. */
+  onSetExtraUsage?: (instance: ProviderInstance, value: "stop" | null) => void;
   renaming: boolean;
   onCommitRename: (instance: ProviderInstance, label: string) => void;
   onCancelRename: () => void;
@@ -70,7 +73,7 @@ export function AccountCard({
   const [focusWithin, setFocusWithin] = useState(false);
   const [draftLabel, setDraftLabel] = useState(instance.label);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [menuView, setMenuView] = useState<"main" | "compaction" | "cache">("main");
+  const [menuView, setMenuView] = useState<"main" | "compaction" | "cache" | "extraUsage">("main");
   const closeMenu = useCallback(() => {
     setMenuOpen(false);
     setMenuView("main");
@@ -83,6 +86,7 @@ export function AccountCard({
   // broken login; the header says it only when the row cannot.
   const rowSaysSignedOut = limitRow?.account?.login === "signed_out";
   const longPromptCache = instance.subagentPromptCacheTtl === "1h";
+  const stopsOnExtraUsage = instance.extraUsage === "stop";
   const menuItemStyle = (danger = false): React.CSSProperties => ({
     display: "block",
     width: "100%",
@@ -121,7 +125,7 @@ export function AccountCard({
     color: COLORS.textMuted,
   };
   /** A main-menu row that opens one page of the menu and shows that page's current value. */
-  const subviewRow = (view: "compaction" | "cache", text: string, value: string) => (
+  const subviewRow = (view: "compaction" | "cache" | "extraUsage", text: string, value: string) => (
     <button
       type="button"
       role="menuitem"
@@ -146,8 +150,7 @@ export function AccountCard({
       {text}
     </button>
   );
-  const cacheChoice = (value: "1h" | null, text: string, note: string) => {
-    const checked = longPromptCache === (value === "1h");
+  const menuChoice = (checked: boolean, pick: () => void, text: string, note: string) => {
     return (
       <button
         type="button"
@@ -155,7 +158,7 @@ export function AccountCard({
         aria-checked={checked}
         onClick={() => {
           closeMenu();
-          if (!checked) onSetPromptCache?.(instance, value);
+          if (!checked) pick();
         }}
         style={{ ...menuItemStyle(), display: "flex", alignItems: "flex-start", gap: 8 }}
       >
@@ -167,6 +170,10 @@ export function AccountCard({
       </button>
     );
   };
+  const cacheChoice = (value: "1h" | null, text: string, note: string) =>
+    menuChoice(longPromptCache === (value === "1h"), () => onSetPromptCache?.(instance, value), text, note);
+  const extraUsageChoice = (value: "stop" | null, text: string, note: string) =>
+    menuChoice(stopsOnExtraUsage === (value === "stop"), () => onSetExtraUsage?.(instance, value), text, note);
 
   return (
     <div
@@ -304,7 +311,7 @@ export function AccountCard({
             remeasureKey={`${menuView}:${instance.compaction ? "custom" : "default"}`}
             style={{
               minWidth: 170,
-              width: menuView === "main" ? undefined : menuView === "cache" ? 264 : 340,
+              width: menuView === "main" ? undefined : menuView === "compaction" ? 340 : 264,
               padding: "4px 0",
               background: COLORS.cardBgSolid,
               border: `1px solid ${COLORS.outlineBorder}`,
@@ -316,9 +323,10 @@ export function AccountCard({
               <>
                 {item("rename", "Rename")}
                 {item("signIn", signedOut ? "Sign in" : "Sign in again")}
-                {compactionControl || onSetPromptCache ? <div style={menuRuleStyle} /> : null}
+                {compactionControl || onSetPromptCache || onSetExtraUsage ? <div style={menuRuleStyle} /> : null}
                 {compactionControl ? subviewRow("compaction", "Auto-compact", instance.compaction ? "Custom" : "Default") : null}
                 {onSetPromptCache ? subviewRow("cache", "Subagent cache", longPromptCache ? "1 hour" : "5 minutes") : null}
+                {onSetExtraUsage ? subviewRow("extraUsage", "Extra usage", stopsOnExtraUsage ? "Stop the turn" : "Continue") : null}
                 {/* The store refuses both: the default, and the machine's own login. */}
                 {instance.isDefault || isBaseProviderInstance(instance) ? null : (
                   <>
@@ -331,6 +339,14 @@ export function AccountCard({
               <>
                 {subviewHead("Auto-compact")}
                 <div style={{ padding: "2px 8px 6px" }}>{compactionControl}</div>
+              </>
+            ) : menuView === "extraUsage" ? (
+              <>
+                {subviewHead("Extra usage")}
+                <p style={menuNoteStyle}>What happens when a turn passes the plan limit and Claude starts to bill extra usage.</p>
+                {extraUsageChoice(null, "Continue", "Default. The turn keeps going and Claude bills the extra usage.")}
+                {extraUsageChoice("stop", "Stop the turn", "ADE stops the turn and resumes it when the limit resets. One request can be billed before the stop.")}
+                <p style={{ ...menuNoteStyle, color: COLORS.textDim }}>Applies to ADE chats on this account.</p>
               </>
             ) : (
               <>

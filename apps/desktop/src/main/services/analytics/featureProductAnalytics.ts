@@ -30,6 +30,7 @@ export type FeatureAnalyticsAction =
   | "balance_changed"
   | "auto_start_changed"
   | "subagent_cache_changed"
+  | "extra_usage_stop_changed"
   | "credential_stored"
   | "credential_removed"
   | "preset_created"
@@ -135,7 +136,7 @@ export function captureFeatureUsedAnalytics(args: {
 
 type ProviderAccountAnalyticsAction = Extract<
   FeatureAnalyticsAction,
-  "account_created" | "account_removed" | "default_selected" | "balance_changed" | "auto_start_changed" | "subagent_cache_changed"
+  "account_created" | "account_removed" | "default_selected" | "balance_changed" | "auto_start_changed" | "subagent_cache_changed" | "extra_usage_stop_changed"
 >;
 
 type ProviderAccountAnalyticsOutcome = Extract<

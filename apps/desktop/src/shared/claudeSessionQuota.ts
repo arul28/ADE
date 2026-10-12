@@ -69,6 +69,17 @@ export function classifyClaudeRateLimitInfo(info: Record<string, unknown> | null
   return { kind: "rejected", snapshot, status };
 }
 
+/**
+ * True when Claude reports that the request drew on extra usage: usage billed
+ * past the plan limit. Such an event has status `allowed`, so the classifier
+ * above ignores it, and Claude Code continues the turn.
+ */
+export function claudeRateLimitInfoUsesExtraUsage(info: Record<string, unknown> | null | undefined): boolean {
+  return info?.isUsingOverage === true || info?.overageInUse === true;
+}
+
+export const CLAUDE_EXTRA_USAGE_STOP_NOTICE = "Extra usage is off for this account, so ADE stopped this turn.";
+
 export function parseClaudeSessionQuotaResetAt(
   text: string,
   nowMs: number = Date.now(),

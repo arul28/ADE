@@ -241,6 +241,15 @@ export function ProviderAccountsPanel({
     [openSheet, pin, providerLabel, run],
   );
 
+  const setExtraUsage = useCallback(
+    (instance: ProviderInstance, extraUsage: "stop" | null) => {
+      const api = pinnedProviderInstances(pin);
+      if (!api) return;
+      void run(() => api.setSettings({ provider, instanceId: instance.id, settings: { extraUsage } }));
+    },
+    [pin, provider, run],
+  );
+
   const setPromptCache = useCallback(
     (instance: ProviderInstance, subagentPromptCacheTtl: "1h" | null) => {
       const api = pinnedProviderInstances(pin);
@@ -438,6 +447,7 @@ export function ProviderAccountsPanel({
                 instance={instance}
                 compactionControl={instances.length > 1 ? <CompactionSettings provider={provider} account value={instance.compaction} onChange={async (compaction) => { await window.ade.providerInstances.setSettings({ provider, instanceId: instance.id, settings: { compaction } }, pin); await reload(); }} /> : null}
                 onSetPromptCache={provider === "claude" ? setPromptCache : undefined}
+                onSetExtraUsage={provider === "claude" ? setExtraUsage : undefined}
                 limitRow={accountLimitRow(snapshot, provider, instance, nowMs)}
                 state={state}
                 badge={badge}

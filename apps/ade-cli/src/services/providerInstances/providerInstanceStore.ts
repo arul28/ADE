@@ -69,6 +69,7 @@ const DEFAULT_INSTANCE_CREATED_AT = new Date(0).toISOString();
 type StoredInstance = {
   compaction?: ProviderCompactionSettings;
   subagentPromptCacheTtl?: "1h";
+  extraUsage?: "stop";
   id: string;
   provider: ProviderInstanceProvider;
   label: string;
@@ -201,6 +202,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     ...(accentColor ? { accentColor } : {}),
     ...(isRecord(value.compaction) ? { compaction: normalizeCompactionSettings(value.compaction) } : {}),
     ...(provider === "claude" && value.subagentPromptCacheTtl === "1h" ? { subagentPromptCacheTtl: "1h" as const } : {}),
+    ...(provider === "claude" && value.extraUsage === "stop" ? { extraUsage: "stop" as const } : {}),
     configHome,
     createdAt: createdAt ?? DEFAULT_INSTANCE_CREATED_AT,
     ...(account && (account.email || account.plan) ? { account } : {}),
@@ -371,6 +373,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       id: stored.id,
       ...(stored.compaction ? { compaction: stored.compaction } : {}),
       ...(stored.subagentPromptCacheTtl ? { subagentPromptCacheTtl: stored.subagentPromptCacheTtl } : {}),
+      ...(stored.extraUsage ? { extraUsage: stored.extraUsage } : {}),
       provider: stored.provider,
       label: stored.label,
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
@@ -640,6 +643,10 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
           if (resolved === "claude" && settings.subagentPromptCacheTtl === "1h") next.subagentPromptCacheTtl = "1h";
           else delete next.subagentPromptCacheTtl;
         }
+        if (Object.hasOwn(settings, "extraUsage")) {
+          if (resolved === "claude" && settings.extraUsage === "stop") next.extraUsage = "stop";
+          else delete next.extraUsage;
+        }
         return next;
       });
       return { ...getProviderSettings(resolved), compaction: updated.compaction };
@@ -647,6 +654,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     // An account setting with no account would be dropped and reported as saved.
     if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
       throw new Error("The subagent cache setting needs a provider account id.");
+    }
+    if (Object.hasOwn(settings, "extraUsage")) {
+      throw new Error("The extra usage setting needs a provider account id.");
     }
     const file = readFile();
     const current = { ...DEFAULT_PROVIDER_INSTANCE_SETTINGS, ...(file.settings[resolved] ?? {}) };
@@ -828,6 +838,19 @@ export function claudeAccountPromptCacheEnv(
   } catch {
     // An unreadable registry must not stop a launch; Claude Code's default applies.
     return {};
+  }
+}
+
+/**
+ * True when this Claude account's owner chose to stop a turn that draws on
+ * extra usage. An unreadable registry answers false: Claude Code's own
+ * behavior (continue) applies.
+ */
+export function claudeAccountStopsOnExtraUsage(instanceId: string | null | undefined): boolean {
+  try {
+    return getMachineProviderInstanceStore().resolve("claude", instanceId).instance.extraUsage === "stop";
+  } catch {
+    return false;
   }
 }
 

@@ -83,6 +83,12 @@ export type ProviderInstance = {
    * and Claude Code applies its own default (5 minutes).
    */
   subagentPromptCacheTtl?: "1h";
+  /**
+   * Claude only. `"stop"` means ADE stops a turn when Claude reports that the
+   * turn draws on extra usage (billed past the plan limit). Absent means the
+   * turn continues, which is what Claude Code does by itself.
+   */
+  extraUsage?: "stop";
 };
 
 export type ProviderInstanceReplacedAccount = {
@@ -200,12 +206,14 @@ export type ProviderInstanceSetSettingsArgs = {
 };
 
 /**
- * `compaction` and `subagentPromptCacheTtl` are account settings: they need an
- * `instanceId`, a missing key leaves the stored value alone, and null clears it.
+ * `compaction`, `subagentPromptCacheTtl` and `extraUsage` are account settings:
+ * they need an `instanceId`, a missing key leaves the stored value alone, and
+ * null clears it.
  */
 export type ProviderInstanceSettingsPatch = Omit<Partial<ProviderInstanceSettings>, "compaction"> & {
   compaction?: ProviderCompactionSettings | null;
   subagentPromptCacheTtl?: "1h" | null;
+  extraUsage?: "stop" | null;
 };
 
 /** The env var Claude Code reads for the prompt cache TTL outside the main conversation. */

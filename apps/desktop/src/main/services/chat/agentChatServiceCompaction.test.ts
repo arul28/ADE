@@ -21,6 +21,7 @@ import {
   writeTestTranscriptEnvelopes,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 
 describe("createAgentChatService", () => {
   describe("compaction flush", () => {
@@ -2066,6 +2067,49 @@ describe("createAgentChatService", () => {
       const afterSend = await service.getSessionSummary(session.id);
       expect(afterSend?.usageLimitParkedUntil ?? null).toBeNull();
       expect(onUsageLimitAutoResumed).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { extraUsage: "stop" as const, interrupts: 1, turnStatus: "failed", parked: true },
+      { extraUsage: null, interrupts: 0, turnStatus: "completed", parked: false },
+    ])("ends a turn on extra usage only for an account set to stop (extraUsage: $extraUsage)", async (row) => {
+      const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      const interrupt = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // Claude allows the request and reports that it was billed past the plan.
+        yield {
+          type: "rate_limit_event",
+          session_id: "sdk-session-extra-usage",
+          rate_limit_info: { status: "allowed", rateLimitType: "five_hour", resetsAt, isUsingOverage: true },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      const sdkSession = { send, stream, close, interrupt, sessionId: "sdk-session-extra-usage" };
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkSession as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkSession as any);
+
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const accounts = getMachineProviderInstanceStore();
+      const account = accounts.resolve("claude", session.instanceId).instance;
+      accounts.setProviderSettings("claude", { extraUsage: row.extraUsage }, account.id);
+
+      await service.runSessionTurn({ sessionId: session.id, text: "keep going", timeoutMs: 15_000 });
+
+      expect(interrupt).toHaveBeenCalledTimes(row.interrupts);
+      const done = events.filter((entry) => entry.event.type === "done").at(-1);
+      expect(done?.event).toMatchObject({ status: row.turnStatus });
+      const summary = await service.getSessionSummary(session.id);
+      expect(Boolean(summary?.usageLimitParkedUntil)).toBe(row.parked);
     });
 
     it("settles the idle turn, its subagents, and stays forkable when the idle reader hits a quota rejection", async () => {
