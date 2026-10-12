@@ -503,12 +503,12 @@ ade sync status --text                    # works with no registered project: th
 ade sync pin generate --text              # pair a phone with a machine that has never opened a project
 ade connect                               # account + login service + account-directory row, idempotent
 ade connect --status --text               # report the three steps without changing anything
-ade connect --headless                    # force the copy-paste device flow
+ade connect --headless                    # sign in from another device: QR code, link, and code
 ade connect --no-login --no-service       # opt out of either half
 ade setup                                 # finish/redo install setup: agent CLIs, account, desktop app, verification, summary
 ade setup --no-desktop --no-prompt        # non-interactive; skips the ~1 GB desktop download
-ade login                                 # loopback OAuth, or device flow on SSH/headless hosts
-ade login --headless                      # print verification URL + user code
+ade login                                 # browser here, plus a QR code + link + code to finish on another device
+ade login --headless                      # open no browser here: QR code + verification URL + user code only
 ade auth status --text                    # account identity + loopback/device/env-token source
 ade account token create --text           # print a self-contained durable ADE_ACCOUNT_TOKEN once
 ade logout

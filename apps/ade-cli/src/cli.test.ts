@@ -8145,6 +8145,118 @@ describe("ADE CLI", () => {
     }
   });
 
+  posixIt("signs in from another device while the browser sign-in on this machine is still pending", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-login-both-"));
+    const socketPath = path.join(root, "ade.sock");
+    // A stand-in for the OS opener, so the browser handoff succeeds and no
+    // real browser opens.
+    const binDir = path.join(root, "bin");
+    fs.mkdirSync(binDir);
+    for (const opener of ["open", "xdg-open"]) {
+      fs.writeFileSync(path.join(binDir, opener), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    }
+    const authorizeUrl = "https://accounts.example/authorize";
+    const verificationUri = "https://directory.example/device";
+    const requests: Array<{ method: string; params?: any }> = [];
+    const answer = (action: string, result: unknown) => ({ domain: "account", action, result, statusHints: {} });
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              buildHash: null,
+              defaultRole: "cto",
+              packageChannel: null,
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        if (request.method === "account.call") {
+          const action = request.params?.action;
+          if (action === "status") {
+            return answer(action, { signedIn: false, userId: null, email: null, name: null, expiresAt: null, source: null });
+          }
+          if (action === "startLogin") {
+            return answer(action, {
+              sessionId: "loopback-1",
+              authorizeUrl,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            });
+          }
+          if (action === "startDeviceLogin") {
+            return answer(action, {
+              sessionId: "device-1",
+              userCode: "ABCD-EFGH",
+              verificationUri,
+              verificationUriComplete: `${verificationUri}?user_code=ABCD-EFGH`,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              intervalSec: 0.01,
+            });
+          }
+          // Nobody uses the browser on this machine.
+          if (action === "pollLogin") return answer(action, { status: "pending", message: null });
+          if (action === "pollDeviceLogin") {
+            return answer(action, {
+              status: "signed_in",
+              authStatus: { signedIn: true, email: "person@example.com", source: "device" },
+            });
+          }
+          if (action === "cancelLogin") return answer(action, { signedIn: true });
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    const envKeys = [
+      "ADE_ACCOUNT_TOKEN",
+      "DISPLAY",
+      "PATH",
+      "SSH_CLIENT",
+      "SSH_CONNECTION",
+      "SSH_TTY",
+      "WAYLAND_DISPLAY",
+    ] as const;
+    const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      delete process.env.ADE_ACCOUNT_TOKEN;
+      process.env.DISPLAY = ":0";
+      process.env.PATH = binDir;
+      delete process.env.SSH_CLIENT;
+      delete process.env.SSH_CONNECTION;
+      delete process.env.SSH_TTY;
+      delete process.env.WAYLAND_DISPLAY;
+
+      const result = await runCli(["--socket", socketPath, "login", "--max-wait", "5", "--text"]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("person@example.com");
+      // Both ways in were offered by the one command.
+      const printed = stderrWrite.mock.calls.flat().join("");
+      expect(printed).toContain(authorizeUrl);
+      expect(printed).toContain(verificationUri);
+      expect(printed).toContain("ABCD-EFGH");
+      // The listener on this machine is closed, so the browser tab that is
+      // still open here cannot finish a second sign-in.
+      const cancelled = requests
+        .filter((request) => request.method === "account.call" && request.params?.action === "cancelLogin")
+        .map((request) => request.params?.args?.sessionId);
+      expect(cancelled).toEqual(["loopback-1"]);
+    } finally {
+      stderrWrite.mockRestore();
+      for (const [key, value] of previousEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   posixIt("advises starting the machine brain when a personal chat connection fails", async () => {
     const socketPath = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-personal-chat-missing-")),
