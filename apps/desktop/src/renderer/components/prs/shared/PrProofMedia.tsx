@@ -119,17 +119,10 @@ export function PrProofMedia({
   );
 }
 
-function sideTone(title: string): string {
-  return /^after\b/i.test(title) ? COLORS.success : COLORS.textMuted;
-}
-
 function CompareSide({ side }: { side: PrCompareSide }) {
   return (
     <div className="min-w-0" data-pr-compare-side={side.title}>
-      <div
-        className="mb-1 text-[10.5px] font-semibold uppercase tracking-[0.08em]"
-        style={{ color: sideTone(side.title) }}
-      >
+      <div className="mb-1 text-[12.5px] font-semibold" style={{ color: COLORS.textSecondary }}>
         {side.title}
       </div>
       <PrProofMedia artifactId={side.artifactId} url={side.url} alt={side.label ?? side.title} compact />
