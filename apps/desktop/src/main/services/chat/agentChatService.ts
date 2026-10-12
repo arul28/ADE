@@ -376,6 +376,7 @@ import {
 } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
+import { resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
 import { decodeRoutePresetId, isRoutePresetId } from "../../../shared/harnessRoutes";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
@@ -10012,6 +10013,13 @@ export function createAgentChatService(args: {
    * (tests, embedders) keeps them in memory only, never in someone's real home.
    */
   machineAdeHome?: string | null;
+  /**
+   * One account-vault secret by key, or null when this machine does not hold
+   * it. The MCP registry's env and header values are read through it at
+   * launch. Absent (tests, the in-process desktop) launches registry servers
+   * without their secret values.
+   */
+  readAccountSecret?: ((vaultKey: string) => string | null) | null;
   /** Optional main-process analytics sink for successful desktop voice starts. */
   analytics?: FeatureAnalytics | null;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
@@ -10442,12 +10450,58 @@ export function createAgentChatService(args: {
    * servers again with `updateSession({ mcpServers })` (the SDK does this on
    * open when the host supplies `refresh.mcpServers`).
    */
+  /** Which registry gaps each chat was last told about, so a notice is written once, not once per launch. */
+  const mcpRegistryNoticeBySession = new Map<string, string>();
+
+  /**
+   * The servers the user defined once in Settings (the MCP registry), for an
+   * ordinary chat. A chat that asked for a strict MCP surface, and the light
+   * profile (side jobs, embedders, personal chats), get none: those callers
+   * decide their own servers.
+   */
+  const registryMcpServersForLaunch = (managed: ManagedChatSession): CallerMcpServers | null => {
+    const adeHome = args.machineAdeHome?.trim();
+    if (!adeHome) return null;
+    if (managed.session.strictMcpConfig === true || managed.session.sessionProfile === "light") return null;
+    const registry = resolveMcpRegistryForLaunch({
+      adeHome,
+      projectRoot: args.projectRoot,
+      provider: managed.session.provider,
+      readSecret: (vaultKey) => args.readAccountSecret?.(vaultKey) ?? null,
+    });
+    const gaps = [
+      ...(registry.missing.length
+        ? [`These MCP servers started without a secret value this computer does not have (add it in Settings > MCP servers): ${registry.missing.join(", ")}.`]
+        : []),
+      ...(registry.unsupported.length
+        ? [`This provider cannot connect to these MCP servers, so they were left out: ${registry.unsupported.join(", ")}.`]
+        : []),
+    ];
+    const key = gaps.join("\n");
+    if (!key) {
+      mcpRegistryNoticeBySession.delete(managed.session.id);
+    } else if (mcpRegistryNoticeBySession.get(managed.session.id) !== key) {
+      mcpRegistryNoticeBySession.set(managed.session.id, key);
+      for (const message of gaps) {
+        emitChatEvent(managed, { type: "system_notice", noticeKind: "warning", severity: "warning", message });
+      }
+    }
+    return registry.servers;
+  };
+
+  /** The caller's servers on top of the registry's: a caller that names a server keeps its own definition. */
+  const withRegistryMcpServers = (managed: ManagedChatSession, caller: CallerMcpServers | null): CallerMcpServers | null => {
+    const registry = registryMcpServersForLaunch(managed);
+    if (!registry) return caller;
+    return { ...registry, ...(caller ?? {}) };
+  };
+
   const callerMcpServersForLaunch = (managed: ManagedChatSession): CallerMcpServers | null => {
     const servers = managed.session.mcpServers ?? null;
     const notice = callerMcpMissingHeadersNotice(servers);
     if (!notice) {
       callerMcpMissingHeadersNoticeBySession.delete(managed.session.id);
-      return servers;
+      return withRegistryMcpServers(managed, servers);
     }
     if (callerMcpMissingHeadersNoticeBySession.get(managed.session.id) !== notice.key) {
       callerMcpMissingHeadersNoticeBySession.set(managed.session.id, notice.key);
@@ -10458,7 +10512,7 @@ export function createAgentChatService(args: {
         message: notice.message,
       });
     }
-    return servers;
+    return withRegistryMcpServers(managed, servers);
   };
 
   const codexThreadConfigArgsFor = async (
