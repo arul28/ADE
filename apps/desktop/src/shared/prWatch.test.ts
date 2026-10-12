@@ -77,6 +77,22 @@ describe("evaluatePrWatch", () => {
     expect(remarkChange?.kind === "remarks" ? remarkChange.remarks.map((entry) => entry.id) : []).toEqual(["human-1"]);
   });
 
+  it("tells a review bot's edit of its old comment one time, and not a comment that did not change", () => {
+    let state = initialPrWatchState(iso(T0), "head-1");
+    const summary = remark("bot-summary", "coderabbitai[bot]", T0 + 60_000, true);
+    const first = step("watch", state, { remarks: [summary], nowMs: T0 + 120_000 });
+    expect(kinds(first)).toEqual(["remarks"]);
+    state = first.next;
+
+    // The bot reviews the next push by editing the same comment: same id, same createdAt.
+    const edited = { ...summary, body: "second review", editedAt: iso(T0 + 600_000) };
+    const second = step("watch", state, { remarks: [edited], nowMs: T0 + 660_000 });
+    expect(kinds(second)).toEqual(["remarks"]);
+    state = second.next;
+
+    expect(kinds(step("watch", state, { remarks: [edited], nowMs: T0 + 720_000 }))).toEqual([]);
+  });
+
   it("Ship holds news until CI finishes and review bots are heard, but a conflict goes out at once", () => {
     const pushedAt = T0 + 60_000;
     // A head pushed after the watch began starts the bot grace clock.

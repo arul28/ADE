@@ -51,6 +51,12 @@ export type PrWatchRemark = {
   line?: number | null;
   url?: string | null;
   createdAt: string | null;
+  /**
+   * When a bot last edited this comment, if after `createdAt`. Review bots
+   * report a new review of a push by editing their old summary comment, so the
+   * edit is news even though the comment is not new.
+   */
+  editedAt?: string | null;
   kind: "comment" | "review" | "review_comment";
   /** Set on a submitted review. */
   reviewState?: "approved" | "changes_requested" | "commented" | "dismissed" | "pending" | null;
@@ -158,6 +164,11 @@ function isAgentReviewer(remark: PrWatchRemark): boolean {
   return classifyPrAuthor(remark.author, remark.authorIsBot).role === "agent-reviewer";
 }
 
+/** The instant a remark last said something: its edit when it has one. */
+function remarkAt(remark: PrWatchRemark): string | null {
+  return timeMs(remark.editedAt) > timeMs(remark.createdAt) ? remark.editedAt ?? null : remark.createdAt;
+}
+
 function timeMs(iso: string | null | undefined): number {
   const value = iso ? Date.parse(iso) : Number.NaN;
   return Number.isFinite(value) ? value : 0;
@@ -203,16 +214,16 @@ function readFreshRemarks(
   const fresh = remarks.filter((remark) => {
     if (ignored.has(remark.id)) return false;
     if (!isPrWatchRemarkAuthorRelevant(remark.author, remark.authorIsBot)) return false;
-    const at = timeMs(remark.createdAt);
+    const at = timeMs(remarkAt(remark));
     // GitHub times are per second; remarks on the boundary are told apart by id.
     return at > through || (at === through && !previous.remarkIds.includes(remark.id));
-  }).sort((left, right) => timeMs(left.createdAt) - timeMs(right.createdAt));
+  }).sort((left, right) => timeMs(remarkAt(left)) - timeMs(remarkAt(right)));
   if (fresh.length === 0) return unchanged;
-  const latest = Math.max(through, ...fresh.map((remark) => timeMs(remark.createdAt)));
-  const atLatest = fresh.filter((remark) => timeMs(remark.createdAt) === latest);
+  const latest = Math.max(through, ...fresh.map((remark) => timeMs(remarkAt(remark))));
+  const atLatest = fresh.filter((remark) => timeMs(remarkAt(remark)) === latest);
   return {
     fresh,
-    remarksThrough: latest === through ? previous.remarksThrough : (atLatest[0]?.createdAt ?? previous.remarksThrough),
+    remarksThrough: latest === through ? previous.remarksThrough : (atLatest[0] ? remarkAt(atLatest[0]) : null) ?? previous.remarksThrough,
     remarkIds: latest === through
       ? [...previous.remarkIds, ...atLatest.map((remark) => remark.id)]
       : atLatest.map((remark) => remark.id),

@@ -88,6 +88,8 @@ function toRemarks(comments: PrComment[] | null, reviews: PrReview[] | null, ign
       line: comment.line,
       url: comment.url,
       createdAt: comment.createdAt,
+      // Only a bot's edit is news: a person who fixes a typo must not wake the agent.
+      ...(comment.authorIsBot && comment.updatedAt ? { editedAt: comment.updatedAt } : {}),
       kind: comment.source === "review" ? "review_comment" : "comment",
     });
   }
