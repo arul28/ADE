@@ -13,7 +13,7 @@
 
 import { isSessionMetaOnly } from "./sessionMetaEvents";
 
-/** The mod UI actions, in every list that must name them (policy, RPC guard). */
+/** The mod UI actions, in every list that must name them (policy, RPC guard). `adeActionAccess.ts` declares each one too. */
 export const CLAUDE_PLUGIN_UI_ACTION_NAMES = [
   "getClaudePluginUi",
   "actOnClaudePluginUi",

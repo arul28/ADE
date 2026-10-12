@@ -7,6 +7,7 @@ import {
   MAX_CLAUDE_PLUGIN_UI_INPUT_CHARS,
   MAX_CLAUDE_PLUGIN_UI_PANES,
   MAX_CLAUDE_PLUGIN_UI_STATUSES,
+  claudePluginUiHasContent,
   cleanClaudePluginUiText,
   normalizeClaudePluginUiTarget,
   sanitizeClaudePluginUiTree,
@@ -44,7 +45,10 @@ type Entry = {
   query: object | null;
   /** The query's control-request sender; null when this SDK build has none. */
   request: ControlRequest | null;
+  /** What clients show. Its `toast` is always null: a toast rides one publish and is not kept. */
   snapshot: Snapshot;
+  /** The trees of `snapshot` as one string, to tell a redraw that changed nothing. */
+  drawn: string;
   /** The controls of each tree in the snapshot, by render site. An action must name one. */
   targetsBySite: Map<string, ClaudePluginUiTarget[]>;
   rendering: boolean;
@@ -153,16 +157,22 @@ export function createClaudePluginUiService(deps: {
   logger: Logger;
 }) {
   const entries = new Map<string, Entry>();
-  // Starts at the clock, so a restarted host never reuses a generation a
-  // window still holds a snapshot of.
+  // Starts at the clock, so a restarted host does not reuse a generation a
+  // window still holds a snapshot of (it would need more attaches than
+  // milliseconds since it started).
   let generationCounter = Date.now();
   let toastCounter = 0;
 
-  const update = (sessionId: string, entry: Entry, patch: Partial<Snapshot>): void => {
+  /** Applies a change and tells clients. A toast is news once: it rides this publish and is not kept. */
+  const update = (
+    sessionId: string,
+    entry: Entry,
+    patch: Partial<Omit<Snapshot, "toast">>,
+    toast: ClaudePluginUiToast | null = null,
+  ): void => {
     if (entries.get(sessionId) !== entry) return;
-    // A toast is news once: it rides the publish that raised it and no later one.
-    entry.snapshot = { ...entry.snapshot, toast: null, ...patch, revision: entry.snapshot.revision + 1 };
-    deps.publish(sessionId, entry.snapshot);
+    entry.snapshot = { ...entry.snapshot, ...patch, revision: entry.snapshot.revision + 1 };
+    deps.publish(sessionId, toast ? { ...entry.snapshot, toast } : entry.snapshot);
   };
 
   const send = async (request: ControlRequest, body: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
@@ -198,10 +208,10 @@ export function createClaudePluginUiService(deps: {
         client_id: CLIENT_ID,
         props,
       });
-      // A reply with no body is no answer: the site keeps what it shows.
-      if (!response) return null;
+      // A reply that does not say whether a mod drew is no answer: the site keeps what it shows.
+      if (typeof response?.hooked !== "boolean") return null;
       // `hooked: false`, or a tree of type `engine`, is Claude Code's own placeholder.
-      if (response.hooked !== true) return { tree: null, targets: [] };
+      if (!response.hooked) return { tree: null, targets: [] };
       if (isRecord(response.tree) && response.tree.type === "engine") return { tree: null, targets: [] };
       return sanitizeClaudePluginUiTree(response.tree);
     } catch (error) {
@@ -243,8 +253,9 @@ export function createClaudePluginUiService(deps: {
       panes: drawnPanes,
     };
     // A mod may ask for a redraw that draws the same thing; clients need no word of it.
-    const { live, band: shownBand, panes: shownPanes } = entry.snapshot;
-    if (JSON.stringify(next) === JSON.stringify({ live, band: shownBand, panes: shownPanes })) return;
+    const drawn = JSON.stringify(next);
+    if (drawn === entry.drawn) return;
+    entry.drawn = drawn;
     update(sessionId, entry, next);
   };
 
@@ -270,25 +281,19 @@ export function createClaudePluginUiService(deps: {
     entry.timer.unref?.();
   };
 
-  /** Drops a chat's mod UI without a word to clients (the chat ended or was deleted). */
+  /** Drops a chat's mod UI, and takes it off every client that shows some. */
   const forget = (sessionId: string): void => {
     const entry = entries.get(sessionId);
     if (!entry) return;
     if (entry.timer) clearTimeout(entry.timer);
     entries.delete(sessionId);
-  };
-
-  /** Takes a chat's mod UI off every client. */
-  const clear = (sessionId: string): void => {
-    if (!entries.has(sessionId)) return;
-    forget(sessionId);
-    deps.publish(sessionId, EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT);
+    if (claudePluginUiHasContent(entry.snapshot)) deps.publish(sessionId, EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT);
   };
 
   /** Names the live query of a chat and asks it for its trees. */
   const attach = (sessionId: string, query: object): void => {
     if (!deps.isEnabled()) {
-      clear(sessionId);
+      forget(sessionId);
       return;
     }
     const previous = entries.get(sessionId);
@@ -297,14 +302,16 @@ export function createClaudePluginUiService(deps: {
       query,
       request: controlRequestOf(query),
       // The band of the last process stays on screen, not pressable, until
-      // this process draws its own: no flicker on a restart. Status lines and
-      // open panes belong to the process that set them.
+      // this process draws its own: no flicker on a restart. Status lines are
+      // gone with the process that set them. So are panes: which panes are
+      // open is this process's list (`ui_panes`), and it starts with none.
       snapshot: {
         ...EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT,
         band: previous?.snapshot.band ?? null,
         generation: ++generationCounter,
         revision: 1,
       },
+      drawn: "",
       targetsBySite: new Map(),
       rendering: false,
       renderAgain: false,
@@ -322,9 +329,8 @@ export function createClaudePluginUiService(deps: {
     if (!entry) return;
     const { band, panes } = entry.snapshot;
     if (!band && !panes.length) {
-      // Nothing worth keeping on screen. Tell clients only if they show something.
-      if (entry.snapshot.statuses.length) clear(sessionId);
-      else forget(sessionId);
+      // Nothing worth keeping on screen.
+      forget(sessionId);
       return;
     }
     if (entry.timer) clearTimeout(entry.timer);
@@ -332,7 +338,8 @@ export function createClaudePluginUiService(deps: {
     entry.query = null;
     entry.request = null;
     entry.targetsBySite = new Map();
-    update(sessionId, entry, { live: false, statuses: [], toast: null });
+    entry.drawn = "";
+    update(sessionId, entry, { live: false, statuses: [] });
   };
 
   const applyMessage = (sessionId: string, entry: Entry, subtype: string, message: Record<string, unknown>): void => {
@@ -344,18 +351,18 @@ export function createClaudePluginUiService(deps: {
       }
       case "ui_toast": {
         const toast = toastFrom(message, () => `toast-${++toastCounter}`);
-        if (toast) update(sessionId, entry, { toast });
+        if (toast) update(sessionId, entry, {}, toast);
         return;
       }
       case "ui_panes": {
         const panes = panesFrom(entry.snapshot, message);
         // A site exists exactly for each pane this process lists. A new one
         // has no controls until its render answers.
-        const listed = new Set(panes.map((pane) => paneSite(pane.id)));
+        const listedSites = new Set(panes.map((pane) => paneSite(pane.id)));
         for (const site of [...entry.targetsBySite.keys()]) {
-          if (site !== BAND_SITE && !listed.has(site)) entry.targetsBySite.delete(site);
+          if (site !== BAND_SITE && !listedSites.has(site)) entry.targetsBySite.delete(site);
         }
-        for (const site of listed) {
+        for (const site of listedSites) {
           if (!entry.targetsBySite.has(site)) entry.targetsBySite.set(site, []);
         }
         update(sessionId, entry, { panes });
@@ -385,7 +392,7 @@ export function createClaudePluginUiService(deps: {
       if (!query) return isUi;
       if (!deps.isEnabled()) {
         // Turned off while this chat was drawing: take the drawing down.
-        clear(sessionId);
+        forget(sessionId);
         return isUi;
       }
       // No entry: the setting was turned on after this query started, so it was never named.
@@ -405,9 +412,7 @@ export function createClaudePluginUiService(deps: {
 
   const get = (sessionId: unknown): Snapshot => {
     const id = typeof sessionId === "string" ? sessionId.trim() : "";
-    const snapshot = deps.isEnabled() ? entries.get(id)?.snapshot : null;
-    // A toast is news only in the publish that raised it, never in a read.
-    return snapshot ? { ...snapshot, toast: null } : EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT;
+    return (deps.isEnabled() ? entries.get(id)?.snapshot : null) ?? EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT;
   };
 
   /**

@@ -2134,16 +2134,19 @@ with Claude Code 2.1.293 (SDK 0.3.293).
   open a file or an ADE deeplink.
 - **Attribution.** A status line starts with the name of the mod that set it
   (Claude Code's [mods API docs](https://code.claude.com/docs/en/plugins/mods/api),
-  v2.1.290, show `my-mod: checks: 3 passing`), and a toast carries
+  the page for v2.1.290, show `my-mod: checks: 3 passing`), and a toast carries
   the mod's name as its title. A newer toast of one mod replaces its older
   one. A toast rides only the publish that raised it, and the window shows it
   only for the chat on screen, so opening a chat never repeats an old one.
 - **Keys.** A control with a `key` keeps its state (typed text) by that key.
   Controls without one are tracked by position; Claude Code's
   [interface docs](https://code.claude.com/docs/en/plugins/mods/interface) tell
-  a mod to give each control a key. A text field also starts over when its
-  key, label or placeholder changes, so typed text never moves to another
-  field.
+  a mod to give each control a key. A text field is the same field while its
+  key holds (without a key: its label and placeholder); a new field starts
+  from its own value, so typed text never moves to another field.
+- **A press that does not come back.** A press is never sent twice by ADE
+  (`actOnClaudePluginUi` is a declared write). When the call fails, the window
+  says the mod may still have run it.
 - **Colours.** Claude Code's theme keys, terminal names, hex, `rgb()` and
   `ansi256()` map to theme colours in `claudeModUiStyle.ts`; the terminal's
   black, white and greys follow the theme so they read on a light one. No
@@ -2168,8 +2171,9 @@ panes stay on screen, dimmed and not pressable (`live: false`). The next
 process starts with that band still dimmed, until one of its renders answers,
 and with no panes: a pane belongs to the process that opened it. A late
 message of a closed or replaced process is dropped. A `generation` starts at
-the host's clock, so a restarted host never reuses one a window still holds.
-A redraw that draws the same trees is not published. Status lines belong to the process that set them and are
+the host's clock, so a restarted host does not reuse one a window still holds.
+A redraw that draws the same trees is not published. When a chat ends, its
+mod UI is taken off the window. Status lines belong to the process that set them and are
 cleared.
 
 ### Surfaces
@@ -2177,7 +2181,7 @@ cleared.
 | Surface | State |
 |---|---|
 | Desktop chat | One dock on the composer, as wide as the prompt box: a header with the status lines, then panes and the band, centred. The header folds the dock down to one row; the choice is kept in this window's storage. Toasts use the app toast stack. |
-| Hosted web client | Not drawn. The adapter answers an empty snapshot, and the setting is hidden. |
+| Hosted web client | Not drawn. The setting is hidden. |
 | `ade code` (TUI) | Not drawn yet. |
 | iOS | Not drawn. Snapshots are not sent over sync. |
 | Tracked CLI session | The real Claude terminal draws its own mod UI. |
@@ -2187,8 +2191,8 @@ It is **off unless set to true**, because the channel is private to Claude
 Code. Turning it off takes the drawing down at the chat's next message from
 Claude; turning it on draws at the next message too.
 
-While the setting is off, an open Claude chat on this window's own machine
-(not the hosted client, not a subagent view, not a chat on another machine)
+While the setting is off, an open Claude chat of this tab's own project (not
+the hosted client, not a subagent view, not a chat pinned to another runtime)
 offers it once: a floating
 prompt ("ADE can show your Claude mods in chats") with a button that opens the
 setting. The offer shows only when `chat.listClaudePlugins` reports a plugin

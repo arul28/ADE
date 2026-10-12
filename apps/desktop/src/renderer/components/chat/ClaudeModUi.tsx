@@ -9,6 +9,7 @@ import {
   type ClaudePluginUiAction,
   type ClaudePluginUiSite,
 } from "../../../shared/claudePluginUi";
+import { showToast } from "../app/toast/toastStore";
 import { INERT_ATTR } from "../shared/inertAttr";
 import { ModTree } from "./ClaudeModTree";
 import { setClaudeModUiCollapsed, useClaudeModUiCollapsed } from "./claudeModUiPrefs";
@@ -48,7 +49,13 @@ export const ClaudeModUi = memo(function ClaudeModUi(props: {
     const api = claudeModUiApi();
     if (!api || !live) return;
     void api.act({ sessionId, generation, ...action }, pinRef.current ?? null).catch(() => {
-      // The process that drew the control is gone; the next snapshot says so.
+      // The call did not come back (a dropped connection, a timeout), so the
+      // mod may or may not have run it. Say so; a silent miss invites a second press.
+      showToast({
+        title: "The mod did not answer",
+        message: "It may still have run. Check before you press again.",
+        tone: "warning",
+      });
     });
   }, [sessionId, generation, live]);
 
@@ -63,7 +70,7 @@ export const ClaudeModUi = memo(function ClaudeModUi(props: {
       <span className="ade-mod-statuses">
         {snapshot.statuses.map((status) => (
           // As in Claude Code: its mods API docs (code.claude.com/docs/en/plugins/mods/api,
-          // v2.1.290) show a status line as `my-mod: checks: 3 passing`.
+          // the page for v2.1.290) show a status line as `my-mod: checks: 3 passing`.
           <span key={status.plugin} className="ade-mod-status">
             <span className="ade-mod-status-name">{status.plugin}:</span> {status.text}
           </span>

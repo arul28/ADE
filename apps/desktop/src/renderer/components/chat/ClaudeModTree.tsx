@@ -105,8 +105,13 @@ export function ModTree({ node, site, act, live }: ModTreeProps): ReactNode {
           <ChatMarkdown componentOverrides={MARKDOWN_OVERRIDES}>{str(props.text) ?? ""}</ChatMarkdown>
         </div>
       );
-    case "Input":
-      return <ModInput element={node} site={site} act={act} live={live} />;
+    case "Input": {
+      // A field is the same field while its key holds; a mod that gave none is
+      // told apart by label and placeholder. A new field starts from its own
+      // value, so typed text never moves to another field.
+      const field = key ? [key] : [str(props.label), str(props.placeholder)];
+      return <ModInput key={JSON.stringify(field)} element={node} site={site} act={act} live={live} />;
+    }
     case "Select": {
       const options = Array.isArray(props.options) ? props.options : [];
       const label = str(props.label);
@@ -120,8 +125,8 @@ export function ModTree({ node, site, act, live }: ModTreeProps): ReactNode {
             onChange={(event) => target && act({ kind: "select", target, key, value: event.target.value, site })}
           >
             {options.map((option, index) => (
-              // A mod may repeat a value; the place keeps React's keys unique.
-              <option key={`${index}:${option.value}`} value={option.value}>{option.label}</option>
+              // By place: a mod may repeat a value.
+              <option key={index} value={option.value}>{option.label}</option>
             ))}
           </select>
         </label>
@@ -138,10 +143,7 @@ function ModInput({ element, site, act, live }: Omit<ModTreeProps, "node"> & { e
   const label = str(props.label);
   const [value, setValue] = useState(hostValue);
   // The mod's own value wins when it changes (a submit it accepted or cleared).
-  // A different field in the same place (another key, label or placeholder)
-  // starts from its own value too: typed text never moves to another field.
-  const field = `${str(props.key) ?? ""}|${label ?? ""}|${str(props.placeholder) ?? ""}`;
-  useEffect(() => setValue(hostValue), [hostValue, field]);
+  useEffect(() => setValue(hostValue), [hostValue]);
   const disabled = !live || !target;
   return (
     <form

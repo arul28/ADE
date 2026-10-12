@@ -22,6 +22,8 @@ function findInstalledMods(sessionId: string): Promise<boolean> {
         hasModsBySession.delete(sessionId);
         return false;
       });
+    // One small entry per chat opened in this window; start over before it can grow large.
+    if (hasModsBySession.size >= 500) hasModsBySession.clear();
     hasModsBySession.set(sessionId, found);
   }
   return found;
@@ -29,10 +31,10 @@ function findInstalledMods(sessionId: string): Promise<boolean> {
 
 /**
  * Offers the mod UI setting, once, to a person who has Claude Code mods
- * installed and has the setting off. Runs for an open Claude chat on this
- * window's own machine (not the hosted client, not a subagent view, not a
- * chat on another machine: the setting and the plugins read here would be
- * this machine's).
+ * installed and has the setting off. Runs for an open Claude chat of this
+ * tab's own project (not the hosted client, not a subagent view, not a chat
+ * pinned to another runtime: the setting and the plugins read here are this
+ * project's).
  */
 export function useClaudeModsPrompt(sessionId: string | null): void {
   const navigate = useNavigate();
