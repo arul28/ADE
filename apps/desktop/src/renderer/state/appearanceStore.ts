@@ -12,6 +12,7 @@ import {
   type AdeTheme,
 } from "../../shared/theme";
 import { isWebClientMode } from "../lib/webClientMode";
+import { MAX_WORK_GRID_TILES } from "../lib/workGrid";
 import { DEFAULT_SCENE_PREFERENCES, normalizeScenePreferences, type ScenePreferences } from "../scene/scenePreferences";
 import { applyInterfacePreferences } from "../theme/applyInterface";
 import { applyAdeTheme } from "../theme/applyTheme";
@@ -42,13 +43,30 @@ export type InterfacePreferences = {
   monoFont: InterfaceMonoFont;
   /** Stops transitions and animations across the app, whatever the OS says. */
   reduceMotion: boolean;
+  /**
+   * The most chats one Focus grid page shows on this computer (1 to
+   * `MAX_WORK_GRID_TILES`), or null to let the grid decide from the space it has. A screen is a fact about the
+   * computer, so this is never synced.
+   */
+  focusGridMaxChats: number | null;
   scene: ScenePreferences;
 };
+
+/** The Focus grid page sizes a user can pick: one chat up to the work grid's cap. */
+export const FOCUS_GRID_MAX_CHATS_OPTIONS: readonly number[] = Array.from(
+  { length: MAX_WORK_GRID_TILES },
+  (_, index) => index + 1,
+);
+
+function normalizeFocusGridMaxChats(value: unknown): number | null {
+  return typeof value === "number" && FOCUS_GRID_MAX_CHATS_OPTIONS.includes(value) ? value : null;
+}
 
 export const DEFAULT_INTERFACE_PREFERENCES: InterfacePreferences = {
   sansFont: "geist",
   monoFont: "jetbrains",
   reduceMotion: false,
+  focusGridMaxChats: null,
   scene: DEFAULT_SCENE_PREFERENCES,
 };
 
@@ -58,7 +76,13 @@ export function normalizeInterfacePreferences(value: unknown): InterfacePreferen
     raw.sansFont === "system" || raw.sansFont === "geist-mono" ? raw.sansFont : "geist";
   const monoFont: InterfaceMonoFont =
     raw.monoFont === "geist-mono" || raw.monoFont === "system" ? raw.monoFont : "jetbrains";
-  return { sansFont, monoFont, reduceMotion: raw.reduceMotion === true, scene: normalizeScenePreferences(raw.scene) };
+  return {
+    sansFont,
+    monoFont,
+    reduceMotion: raw.reduceMotion === true,
+    focusGridMaxChats: normalizeFocusGridMaxChats(raw.focusGridMaxChats),
+    scene: normalizeScenePreferences(raw.scene),
+  };
 }
 
 export const USER_PREFERENCES_STORAGE_KEY = "ade.userPreferences.v1";

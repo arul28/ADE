@@ -820,6 +820,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "openCursorCloudChat",
     "watchCursorCloudMirror",
     "getCursorCloudFleet",
+    "getCursorAgentUsage",
     "resolveCursorCloudAgentLane",
     "pullCursorCloudAgentIntoLane",
     "stopCursorCloudAgentRun",
@@ -1210,9 +1211,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. The store never reads, writes, copies
    * or returns a token: the provider's own CLI writes its credentials inside
    * that directory, `loginCommand` only hands back the argv and the one env var
-   * that points the CLI at it, and `remove` forgets the entry without deleting
-   * anything on disk. So none of these methods can leak or destroy a
-   * credential, which is the bar the CTO gate exists to enforce.
+   * that points the CLI at it, and none of them can leak a credential.
+   * `signOut` and `remove` (which signs out first) clear one account's saved
+   * login. They stay open to agents on purpose: the user wants an agent to
+   * manage accounts end to end, and the default account is refused by both.
    *
    * `loginStart`/`loginSubmitCode` run the provider's own sign-in for one
    * account in a private PTY. That opens the user's browser and, once the user
@@ -1231,6 +1233,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "list",
     "create",
     "remove",
+    "signOut",
     "rename",
     "setDefault",
     "setAccent",

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatContextTokens } from "./usage/contextUsageModel";
 import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { linearIssueRef } from "../../../shared/issueRefs";
@@ -2940,7 +2941,14 @@ export function AgentChatComposer({
   // the full composer only, not grid tiles or parallel launches. Desktop only
   // for now: the web client has no path to the brain's voice host.
   const codexVoicePreferences = useAppStore((s) => s.codexVoice);
-  const codexAuth = useProviderAuthStatus().status.openai;
+  // Voice runs on the chat machine's brain and Codex sign-in, not this window's.
+  // The chat-scope pin is null when the chat is on the tab's machine, which
+  // keeps the unpinned route (transition guard + local fallback) there.
+  const chatRuntimePin = useChatRuntimeScope().pin;
+  const chatRuntimePinRef = useRef(chatRuntimePin);
+  chatRuntimePinRef.current = chatRuntimePin;
+  const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  const codexAuth = useProviderAuthStatus({ runtimePin: chatRuntimePin }).status.openai;
   const codexVoiceOffered = Boolean(
     sessionId
     && projectChatPane
@@ -2952,6 +2960,7 @@ export function AgentChatComposer({
   );
   const codexVoice = useCodexVoice({
     sessionId: codexVoiceOffered ? sessionId ?? null : null,
+    runtimePin: chatRuntimePin,
     preferences: codexVoicePreferences,
     onError: setVoiceError,
   });
@@ -3131,11 +3140,11 @@ export function AgentChatComposer({
   useEffect(() => {
     if (!sessionId) return;
     try {
-      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" })?.catch?.(() => {});
+      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, chatRuntimePinRef.current)?.catch?.(() => {});
     } catch {
       // warming is best-effort
     }
-  }, [sessionId]);
+  }, [chatRuntimePinKey, sessionId]);
 
   const revokePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url || !objectPreviewUrlsRef.current.has(url)) return;

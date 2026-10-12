@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import {
   PROJECT_FOLDER_MISSING_COPY,
   RECOVERY_COPY,
@@ -440,6 +441,11 @@ export class ProjectRecoveryService {
       return { ok: false, reason: "ping_error", detail: errorMessage(error) };
     }
     return { ok: true };
+  }
+
+  /** A repair or a brain restart is running; quitting or stopping now would cut it off. */
+  isRecovering(): boolean {
+    return this.repairInFlight || this.restartInFlight != null;
   }
 
   /**
@@ -993,4 +999,32 @@ export class ProjectRecoveryService {
 
 export function createProjectRecoveryService(deps: ProjectRecoveryServiceDeps): ProjectRecoveryService {
   return new ProjectRecoveryService(deps);
+}
+
+/**
+ * The Repair button's brain restart, with its one coarse analytics fact.
+ * Every Repair (the banner's and the quit prompt's) goes through here, so each
+ * is counted. The 1 h dedupe bounds a frustrated click-loop to ≤24 events/day.
+ */
+export async function restartBrainForRepair(
+  service: Pick<ProjectRecoveryService, "restartBrain">,
+  analytics: Pick<ProductAnalyticsService, "capture"> | null | undefined,
+): Promise<void> {
+  const capture = (outcome: "completed" | "failed") => {
+    analytics?.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "connections", action: "brain_repair", outcome },
+      projectId: null,
+      dedupeKey: `brain_repair:${outcome}`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    });
+  };
+  try {
+    await service.restartBrain();
+  } catch (error) {
+    capture("failed");
+    throw error;
+  }
+  capture("completed");
 }

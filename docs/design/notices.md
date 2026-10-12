@@ -141,7 +141,7 @@ clicks ×. It does not run on auto-dismiss.
 | Kind | `durationMs` |
 |---|---|
 | Ordinary event | omit it: the 6 s default |
-| Worth reading: PR checks failed, review requested, a multi-line message | `18_000` (see `PR_TOAST_DURATION_MS`) |
+| Worth reading: PR checks failed, review requested, a multi-line message | `READABLE_TOAST_DURATION_MS` (18 s, from `toastStore`) |
 | Represents live state or needs an answer: a progress list, "N sessions idle" | `0` (sticky; dismiss or update it yourself) |
 
 Hovering a toast pauses its timer. Pass a stable `id` to replace a toast in

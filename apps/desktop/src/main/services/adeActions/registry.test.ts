@@ -2443,6 +2443,7 @@ describe("runtime AI actions", () => {
       "getOpenCodeRuntimeDiagnostics",
       "isOpenCodeInstalled",
       "cursorCloudStreamRun",
+      "getCursorAgentUsage",
       "storeApiKey",
       "deleteApiKey",
       "listApiKeys",

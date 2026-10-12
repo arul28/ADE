@@ -146,6 +146,7 @@ import {
 import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
+import { removeProviderAccount, signOutProviderAccount } from "../providerAccounts/signOutProviderAccount";
 import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
 import { readGithubContributionCalendar } from "../usage/githubActivityStats";
 import {
@@ -991,7 +992,7 @@ import type { createLinearCredentialService } from "../cto/linearCredentialServi
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { LOCAL_RUNTIME_SYNC_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
-import { createProjectRecoveryService, ProjectRecoveryService } from "../runtime/projectRecoveryService";
+import { createProjectRecoveryService, ProjectRecoveryService, restartBrainForRepair } from "../runtime/projectRecoveryService";
 import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
 import { forgetLocalProjectDatabaseIdentity } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
@@ -4339,25 +4340,7 @@ export function registerIpc({
     if (!projectRecoveryService) {
       throw new Error("This window does not manage the ADE background service.");
     }
-    // One coarse fact per Repair click, captured where the outcome is known.
-    // The 1 h dedupe bounds a frustrated click-loop to ≤24 accepted events/day.
-    const captureRepairOutcome = (outcome: "completed" | "failed") => {
-      productAnalyticsService?.capture({
-        event: "ade_feature_used",
-        surface: "desktop",
-        properties: { feature: "connections", action: "brain_repair", outcome },
-        projectId: null,
-        dedupeKey: `brain_repair:${outcome}`,
-        minimumIntervalMs: 60 * 60 * 1_000,
-      });
-    };
-    try {
-      await projectRecoveryService.restartBrain();
-    } catch (error) {
-      captureRepairOutcome("failed");
-      throw error;
-    }
-    captureRepairOutcome("completed");
+    await restartBrainForRepair(projectRecoveryService, productAnalyticsService);
   });
 
   ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
@@ -6920,7 +6903,7 @@ export function registerIpc({
     const id = providerInstanceId(arg);
     // Read the provider before the removal: afterwards the record is gone.
     const provider = store.get(id)?.provider;
-    const result = store.remove(id);
+    const result = await removeProviderAccount(id);
     captureProviderAccount("account_removed", "completed", provider);
     return result;
   });
@@ -6942,6 +6925,12 @@ export function registerIpc({
     // only accepts `string | null`.
     const accentColor = typeof raw === "string" ? raw : null;
     return getMachineProviderInstanceStore().setAccent(providerInstanceId(arg), accentColor);
+  });
+
+  ipcMain.handle(IPC.providerInstancesSignOut, async (_event, arg: unknown): Promise<ProviderInstance | null> => {
+    const instance = await signOutProviderAccount(providerInstanceId(arg), getCtx().usageTrackingService);
+    captureProviderAccount("account_signed_out", "completed", instance?.provider);
+    return instance;
   });
 
   ipcMain.handle(IPC.providerInstancesDismissReplaced, async (_event, arg: unknown): Promise<ProviderInstance> => {

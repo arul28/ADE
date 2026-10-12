@@ -450,15 +450,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [handleSelectSession, machineRouter],
   );
 
-  const handleInfoClick = useCallback(
+  const handleInfoClick = useLatestCallback(
     (session: TerminalSessionSummary, e: React.MouseEvent) => {
       const r = e.currentTarget.getBoundingClientRect();
       setInfoPopover({
         session,
         anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
+        runtimePin: resolveSessionRuntimePin(session),
       });
     },
-    [],
   );
 
   const handleContextMenu = useLatestCallback(

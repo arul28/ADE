@@ -82,6 +82,12 @@
   cursor: pointer;
   user-select: none;
 }
+/* A checkbox in the footer, beside the actions (`footerStart`). */
+.ade-dialog-checkbox.ade-dialog-checkbox--footer {
+  margin-top: 0;
+  align-items: center;
+}
+
 .ade-dialog-checkbox input[type="checkbox"] {
   width: 14px;
   height: 14px;

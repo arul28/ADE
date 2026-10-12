@@ -456,7 +456,7 @@ armed session is consumed from the persisted list, so a later launch does not
 arm it twice; a chat whose project was not reachable stays on the list and gets
 another attempt.
 
-Each row delivers the "ADE restarted to install an update…" continue prompt
+Each row delivers the "ADE restarted, so your last turn ended early…" continue prompt (the same rows re-arm chats after a quit-prompt Repair)
 once. Only rows that actually landed `scheduled` (not paused) are reported in
 the post-update "Scheduled N chats to resume" notice, and typing into a chat
 cancels its pending resume. Remote-machine chats and terminals are never

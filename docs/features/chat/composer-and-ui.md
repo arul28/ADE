@@ -1565,8 +1565,8 @@ with the user's ChatGPT sign-in. It is desktop-only.
 
 **Who sees it.** The composer shows the waveform button when all of these
 are true: the "Voice conversations" setting is on (Settings → Chat), Codex is
-signed in (`availableProviders.codex`), the surface is the desktop app, and the
-composer is not a grid tile or a parallel launch. A Codex sign-in on the Free or
+signed in on the chat's machine (`availableProviders.codex`), the surface is the
+desktop app, and the composer is not a grid tile or a parallel launch. A Codex sign-in on the Free or
 Go plan, or with an API key, gets a clear refusal when voice starts.
 
 **Audio path.** The renderer (`useCodexVoice`) owns the microphone, the
@@ -1576,6 +1576,13 @@ token. Audio never passes through ADE. Do not trim the offer: SDP lines end in
 CRLF, and OpenAI rejects a trimmed offer with "unmarshal SDP: EOF". Always send
 `version: "v3"`; WebRTC otherwise defaults to v1, which OpenAI's call endpoint
 rejects.
+
+**Which brain.** Every voice call (`startCodexRealtime`, `stopCodexRealtime`,
+`getCodexRealtimeState`) carries the chat's runtime pin
+(`useChatRuntimeScope().pin`), so a chat whose lane lives on another connected
+machine starts voice on that machine's brain and its Codex sign-in. The
+connection keeps the pin it started with, so its stop and state reads reach the
+same brain. Audio still flows from the computer the user is sitting at.
 
 **Two modes.**
 

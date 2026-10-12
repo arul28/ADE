@@ -7,9 +7,8 @@ import type { NavigateFunction } from "react-router-dom";
 import type { PrEventPayload } from "../../../../shared/types";
 
 import { ToastStack } from "./ToastStack";
-import { dismissToast, getToasts, showToast } from "./toastStore";
+import { dismissToast, getToasts, READABLE_TOAST_DURATION_MS, showToast } from "./toastStore";
 import {
-  PR_TOAST_DURATION_MS,
   buildAutoLinkedPrToast,
   buildPrNotificationToast,
 } from "./usePrEventToasts";
@@ -85,7 +84,7 @@ describe("PR notification toast", () => {
     expect(toast.chips?.map((chip) => chip.label)).toEqual(["Lane One", "feature -> main", "acme/app"]);
     expect(toast.chips?.[0]?.color).toBe("var(--color-accent)");
     expect(toast.actions?.map((action) => action.label)).toEqual(["Open in ADE", "Open on GitHub"]);
-    expect(toast.durationMs).toBe(PR_TOAST_DURATION_MS);
+    expect(toast.durationMs).toBe(READABLE_TOAST_DURATION_MS);
     // The same PR + kind refreshes one card instead of stacking a twin.
     expect(buildPrNotificationToast(notification(), null, vi.fn() as unknown as NavigateFunction).id).toBe(toast.id);
   });

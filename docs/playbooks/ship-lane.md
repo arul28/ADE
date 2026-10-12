@@ -334,12 +334,14 @@ post-rebase, Phase 3b, and force-finalize supply only their commit message, diff
 base, narrow test targets, and push command; they do not restate this algorithm.
 
 1. Clear `qualityValidatedSha`, `qualityValidatedTree`, and
-   `qualityValidatedBaseSha` before editing. Fetch the intended base, set
-   `QUALITY_VALIDATED_BASE_SHA` to that fetched commit, and require it to be an
-   ancestor of the candidate head. If it is not, preserve the work, route
-   through Phase 3a, and restart this procedure after the rebase; do not bind a
-   behind-base tree. This works before PR creation; Phase 0 uses `main` in
-   ordinary mode and the persisted direct parent in stack mode. In stack mode,
+   `qualityValidatedBaseSha` before editing. Fetch the intended base and set
+   `QUALITY_VALIDATED_BASE_SHA` to that fetched commit; it records what the
+   review saw and is not a gate. In ordinary mode a head that is behind the base
+   is fine: route through Phase 3a only when the head conflicts with the base
+   (`git merge-tree --write-tree "$QUALITY_VALIDATED_BASE_SHA" HEAD` exits
+   non-zero), then restart this procedure after the rebase. This works before
+   PR creation; Phase 0 uses `main` in ordinary mode and the persisted direct
+   parent in stack mode. In stack mode,
    pushing this lane's own layer branch is part of the procedure, but rebasing
    it is not: if the fetched direct parent is not an ancestor of the candidate
    head, stop here and exit `stack-coordinator-sync-required` instead of routing
@@ -398,14 +400,14 @@ base, narrow test targets, and push command; they do not restate this algorithm.
 
 5. Push with the phase-appropriate command and verify the remote branch head
    equals `QUALITY_VALIDATED_SHA`. If a PR already exists, also require its
-   `headRefOid` and `baseRefOid` to equal `QUALITY_VALIDATED_SHA` and
-   `QUALITY_VALIDATED_BASE_SHA`. Before the PR exists, retain the fetched
-   intended base as a provisional binding; Phase 0.5 performs the PR-field
-   verification immediately after creation. In both modes, require the base to
-   be an ancestor of the head and `HEAD^{tree}` to still equal
-   `QUALITY_VALIDATED_TREE` before writing all three values to ship state. Also
-   set `qualityReviewedSha` to `QUALITY_VALIDATED_SHA`. Any later edit, head
-   mismatch, or base movement clears the binding and restarts this procedure.
+   `headRefOid` to equal `QUALITY_VALIDATED_SHA`; its `baseRefOid` moves every
+   time another PR lands and is not compared. Phase 0.5 performs the PR-field
+   verification immediately after creation. Require `HEAD^{tree}` to still equal
+   `QUALITY_VALIDATED_TREE` before writing all three values to ship state (in
+   stack mode, also require the direct parent to be an ancestor of the head).
+   Also set `qualityReviewedSha` to `QUALITY_VALIDATED_SHA`. Any later edit,
+   head mismatch, or conflict with the base clears the binding and restarts
+   this procedure. Base movement without a conflict does not.
 
 **Held commits.** Step 5 pushes only when the push rule in **Early PR and
 harvests** allows it. When a review bot is still in flight on the remote head,
@@ -422,10 +424,11 @@ tree rather than claiming to know or validate that future commit OID.
 ### Validate the current quality binding
 
 This is the only pre-merge binding check. Read the three values from ship state,
-then require the local head SHA/tree and the PR head/base SHAs to match them,
-require the base to be an ancestor of HEAD, and require the quality gate to be
-explicitly empty. Any mismatch clears the binding and routes back through the
-canonical revalidation procedure (via Phase 3a first when the base moved).
+then require the local head SHA/tree and the PR head SHA to match them, require
+the PR not to conflict with its base (`mergeStateStatus` is not `DIRTY`), and
+require the quality gate to be explicitly empty. A PR that is only behind its
+base passes. Any mismatch clears the binding and routes back through the
+canonical revalidation procedure (via Phase 3a first when it conflicts).
 
 ### Confirm the validated merge result
 
@@ -719,9 +722,8 @@ lane's to address.
 
 ### 0.5 Write initial state
 
-After PR creation, verify its `headRefOid` and `baseRefOid` match the quality
-binding. If either differs, clear all quality binding fields and revalidate the
-actual PR head and base.
+After PR creation, verify its `headRefOid` matches the quality binding. If it
+differs, clear all quality binding fields and revalidate the actual PR head.
 
 ```json
 {
@@ -928,10 +930,10 @@ evidence. Populate `inactiveReviewBots` when the 12-minute grace window has
 elapsed and every available surface has zero evidence for that bot. Do not infer
 that a bot is running merely because it is usually expected in this repository.
 
-`behindBase` is the canonical poll field. It is derived from `mergeStateStatus`
-being `BEHIND` or `DIRTY`, or
-from `git merge-base --is-ancestor "origin/$SHIP_BASE_BRANCH" HEAD` returning
-non-zero. When resuming an older ordinary-mode state file only, map its legacy
+`conflicting` (`mergeStateStatus` is `DIRTY`) is the only poll field that sends
+the loop to Phase 3a. `behindBase` is informational: it is true when the base has
+moved past the branch (`BEHIND`, `DIRTY`, or a non-ancestor base), which is the
+normal state while other PRs land, and it never triggers a rebase on its own. When resuming an older ordinary-mode state file only, map its legacy
 `behindMain` value to `behindBase`; never emit both fields, and never use the
 legacy field for stack state.
 
@@ -945,7 +947,7 @@ Pure logic on the poll summary:
 | --- | --- |
 | `mode == "stack"` (evaluate before every ordinary row) | If externally merged, report `stack-coordinator-merged` without running merge confirmation/deletion. If the parent, base, or head moved outside this lane, clear this and upstack bindings and exit `stack-coordinator-sync-required`. If CI or review is still in flight, schedule the next wake. If both signals are terminal and fix work exists on this layer, go to **Phase 3b** and fix it. If terminal-green with nothing outstanding, go to **3c.0** only. Never enter 3a, 3c.1–3c.5, or 3d. |
 | `merged == true` | Run **Confirm the validated merge result**; exit `done-clean` only when it succeeds. |
-| `behindBase == true` | In ordinary mode, go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. In stack mode this is external movement and the stack row above already routed it to `stack-coordinator-sync-required`. |
+| `conflicting == true` | In ordinary mode, go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. In stack mode this is external movement and the stack row above already routed it to `stack-coordinator-sync-required`. A PR that is only behind its base (`behindBase` without `conflicting`) does not come here; it continues down this table. |
 | `ciRunning == true` OR `reviewBotsRunning == true` | Do NOT iterate on a partial signal. Go to Phase 5 (schedule next wake). This applies even if the other signal already shows failures/comments — pushing a fix now means the next CI+review cycle races the fix and you likely re-push for the other half. |
 | `ciFailed` empty, `newComments` empty, `localAhead == false`, `ciRunning == false`, `reviewBotsRunning == false` | Go to **Phase 3c**. Done-clean does not mean "stop and leave for human" — it means everything is green, and the lane should land on `main`. |
 | Otherwise (both signals terminal, fix work exists) | Go to Phase 3b (fix). Fix CI failures and review comments **in the same iteration / same push**. Held commits (`localAhead == true`) are fix work: when nothing else needs fixing, 3b still runs to push them. A 3b pass that only pushes held commits does not increment `iteration`. |
@@ -1217,7 +1219,7 @@ gh pr merge "$PR_NUMBER" --squash --match-head-commit "$QUALITY_VALIDATED_SHA"
 
 ### 3c.3 Handle branch protection
 
-If `gh pr merge` fails with `the base branch policy prohibits the merge` (typical when the repo requires a CODEOWNER review that the loop can't produce on its own), retry with admin override **only if the running user has admin rights on the repo**:
+If `gh pr merge` fails with `the base branch policy prohibits the merge` (typical when the repo requires a CODEOWNER review that the loop can't produce on its own, or when the ruleset requires branches to be up to date with the base and the PR is only behind), retry with admin override **only if the running user has admin rights on the repo**:
 
 ```bash
 gh pr merge "$PR_NUMBER" --squash --admin --match-head-commit "$QUALITY_VALIDATED_SHA"
@@ -1328,7 +1330,7 @@ Schedule the next wake at the normal post-push cadence (270s if CI hasn't starte
 When the next wake polls:
 
 - `merged == true` → run **Confirm the validated merge result**; exit `done-clean` only when it succeeds.
-- `behindBase == true` → run Phase 3a (rebase) once, push, schedule next wake. Do NOT count it as a new iteration; force-finalize already ran.
+- `conflicting == true` → run Phase 3a (rebase) once, push, schedule next wake. Do NOT count it as a new iteration; force-finalize already ran.
 - CI terminal AND green → route **immediately** through Phase 3c. Do NOT wait on review bots; review is intentionally bypassed in this phase.
 - CI terminal AND any required check still failing → exit `blocked`, `exitReason: "force-finalize-ci-failed"`, post a PR comment listing the failing job names + links. Do not start a seventh iteration.
 - CI still running → sleep on the normal cadence; do not act on a partial signal.

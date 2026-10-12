@@ -1,5 +1,5 @@
 import { IPC } from "../../../shared/ipc";
-import { isRetryableRemoteAction } from "../remoteRuntime/retryableRemoteActions";
+import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   localRuntimeActionIpcTimeoutMs,
   LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS,
@@ -119,7 +119,7 @@ function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
 function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null {
   const request = readRuntimeActionRequest(args);
   if (!request?.action) return null;
-  return isRetryableRemoteAction(request.domain, request.action)
+  return isReplaySafeAdeAction(request.domain, request.action)
     ? REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS
     : null;
 }

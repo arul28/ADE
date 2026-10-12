@@ -285,6 +285,11 @@ is no separate column.
   web viewer, or a desktop reconnect on a device that is off shows
   "{name} is off." with Start. Only Start, the picker, `apple start`,
   `stream-start`, `open-device` and `launch` power a device on.
+- Until the lane's device list has answered once, the pane does not show the
+  picker: it shows "Loading simulators…", or an inline error banner with the
+  reason and **Retry** when the read failed, never the "No Apple simulators are
+  installed." card. A read that met a project switch is read again once the
+  switch is over.
 - The **tools card** names the lane's device and its power state
   (`{name} · Running | Starting | Shut down`) and carries a corner menu that
   boots, opens, releases, or — for an ADE device only — deletes the device

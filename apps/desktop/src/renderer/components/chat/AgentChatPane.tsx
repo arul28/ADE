@@ -8310,10 +8310,13 @@ export function AgentChatPane({
     if (!sessionsApi?.onChanged || !sessionsApi.get || !chatTerminalVisible) return undefined;
 
     let disposed = false;
+    // The chat's agent opens its terminals on the chat's machine, so that is
+    // the machine to hear them from and read them on.
+    const pin = chatRuntimePinRef.current;
     const revealCreatedTerminal = async (sessionId: string) => {
       let session: TerminalSessionDetail | null = null;
       try {
-        session = await sessionsApi.get(sessionId);
+        session = await sessionsApi.get(sessionId, pin);
       } catch {
         return;
       }
@@ -8338,12 +8341,12 @@ export function AgentChatPane({
     const unsubscribe = sessionsApi.onChanged((event) => {
       if (event.reason !== "created") return;
       void revealCreatedTerminal(event.sessionId);
-    });
+    }, pin);
     return () => {
       disposed = true;
       unsubscribe();
     };
-  }, [chatTerminalVisible, hasExternalTerminalPane, laneId, openTerminalPanel]);
+  }, [chatRuntimePinKey, chatTerminalVisible, hasExternalTerminalPane, laneId, openTerminalPanel]);
 
   // Is this simulator session about the chat this pane is showing? Unscoped
   // events only apply to the active tile. Hoisted out of the subscription below

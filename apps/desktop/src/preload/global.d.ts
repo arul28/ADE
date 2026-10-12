@@ -136,6 +136,12 @@ import type {
   ApplyConflictProposalArgs,
   AppInfo,
   LocalRuntimeStatus,
+  BackgroundServiceSummary,
+  QuitPromptAnswer,
+  QuitPromptRepairResult,
+  QuitPromptRequest,
+  StopBackgroundServiceRequest,
+  StopBackgroundServiceResult,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -1134,6 +1140,24 @@ declare global {
          * touch a launch agent, so callers must feature-detect before offering it.
          */
         restartBackgroundService?: () => Promise<void>;
+        /**
+         * The quit confirmation main asks this window to show. Call
+         * `quitPromptShown` once it is on screen, then answer. Native desktop
+         * only; absent on the hosted-web client and browser mock.
+         */
+        onQuitPrompt?: (cb: (request: QuitPromptRequest) => void) => () => void;
+        /** Main is asking natively instead; drop the prompt with this id. */
+        onQuitPromptDismiss?: (cb: (requestId: string) => void) => () => void;
+        quitPromptShown?: (requestId: string) => void;
+        /** Resolves with the repair outcome for a "repair" choice, else null. */
+        answerQuitPrompt?: (answer: QuitPromptAnswer) => Promise<QuitPromptRepairResult | null>;
+        /** Whether ADE confirms before quitting; "Don't ask again" turns it off. */
+        getAskBeforeQuit?: () => Promise<boolean>;
+        setAskBeforeQuit?: (ask: boolean) => Promise<boolean>;
+        /** What runs agents on this computer, and what stopping would end. */
+        getBackgroundService?: () => Promise<BackgroundServiceSummary>;
+        /** Stops the background service and every agent in it, then quits ADE. */
+        stopBackgroundServiceAndQuit?: (request: StopBackgroundServiceRequest) => Promise<StopBackgroundServiceResult>;
         getLatestRelease: () => Promise<LatestReleaseInfo | null>;
         getProject: () => Promise<ProjectInfo | null>;
         getWindowSession: () => Promise<{
@@ -1905,8 +1929,8 @@ declare global {
       };
       usage: {
         getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;
-        getSnapshot: () => Promise<UsageSnapshot | null>;
-        refresh: () => Promise<UsageSnapshot | null>;
+        getSnapshot: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null>;
+        refresh: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null>;
         refreshHistory: () => Promise<UsageSnapshot | null>;
         noteDemand: () => Promise<UsageSnapshot | null>;
         /**
@@ -3648,6 +3672,11 @@ declare global {
           args: ProviderInstanceDismissReplacedArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ProviderInstance>;
+        /** Signs the account out with the provider CLI; refused for the default. */
+        signOut: (
+          args: ProviderInstanceDismissReplacedArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance | null>;
         loginStart: (args: ProviderLoginStartArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         loginStatus: (args: ProviderLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         loginSubmitCode: (args: ProviderLoginSubmitCodeArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;

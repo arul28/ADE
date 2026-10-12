@@ -928,10 +928,18 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     remove: {
       description:
-        "Forget a provider account. Nothing on disk is deleted — the config home is returned so the caller can say what is "
-        + "still there. The machine's own login and the current default cannot be removed.",
+        "Forget a provider account, signing it out first (the provider CLI's own logout) so adding it again starts "
+        + "from a fresh sign-in. The config home directory is never deleted and is returned; `signOutError` says when "
+        + "the sign-out failed and the login is still there. The machine's own login and the current default cannot be removed.",
       input: "object { id: string }",
       example: "ade actions run provider_instances.remove --input-json '{\"id\":\"work\"}' --text",
+    },
+    signOut: {
+      description:
+        "Sign one provider account out with the provider CLI's own logout in its config home, keeping the account. "
+        + "Refused for the current default. On the machine's own login this also signs out the terminal's CLI.",
+      input: "object { id: string }",
+      example: "ade actions run provider_instances.signOut --input-json '{\"id\":\"work\"}' --text",
     },
     rename: {
       description: "Rename one provider account. Labels are at most 60 characters.",
