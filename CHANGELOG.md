@@ -11,8 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Desktop and web
 
-- Loaded project tabs switch on press; warm switching measured 44–51 ms, down from 136–137 ms (#1585).
-- Tab detachment waits for the pending project switch before closing the source tab (#1585).
+- Find in a chat or any diff with ⌘F, plus "Find in this chat" in ⌘K (#1600).
+- Claude Code mod UI (status lines, toasts, band, panes) in ADE chat, opt-in (#1601).
+- Readable agent-written PRs, a "needs you" line, side-by-side proof, and Add to chat in the PRs tab (#1595).
+- Chat fixes: steered turns keep their tool list, photo paste, kept chat models, browser preview sizing (#1598, #1602).
+- Multi-machine chats: voice, terminal logs, sign-in and session diffs reach the owning machine (#1592).
+- Sign out of non-default accounts; remove signs out first (#1593, #1599).
+- Idle Claude accounts stay readable for smart balance; option to stop turns on extra usage (#1587, #1588).
+- Project switching keeps the right lane, protects moved project data, and no longer breaks the simulator pane (#1589, #1594).
+- Background git status no longer blocks your commits; PR Watch wakes on bot comment edits; chat-settled automation trigger (#1587).
+- ADE-styled quit prompt and a Background service stop; readable Focus grid with a chats-per-page setting (#1590, #1591).
+- Project tabs switch on press, 44–51 ms warm (#1585).
 
 ## [1.2.100] - 2026-10-11
 
