@@ -29,6 +29,13 @@ shows the screen too. From there:
   project, has the background service drop it, clears the marker, and reopens
   with new data. The old data stays wherever it went.
 
+When a relocated database is disposed, ADE defers native SQLite close and
+extension finalization. This prevents shutdown or garbage collection from
+checkpointing pending WAL into the moved file. Those handles remain retained
+until the original file returns and another database open reaps them, or until
+process exit releases the OS handles. Normal disposal still finalizes the
+extension and releases its handles immediately, including on Windows.
+
 ## Source file map
 
 | Path | Role |

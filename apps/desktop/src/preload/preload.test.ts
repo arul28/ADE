@@ -1216,7 +1216,7 @@ describe("preload Apple device input routing", () => {
     });
   });
 
-  it.each(["local", "remote"])("drops a late %s lane poll after switching projects", async (kind) => {
+  it.each([["local", "git"], ["remote", "git"], ["local", "file"], ["remote", "file"]])("drops a late %s %s read after switching projects", async (kind, domain) => {
     const binding = kind === "local"
       ? { kind: "local", key: "local:/a", rootPath: "/a", displayName: "A" }
       : { kind: "remote", key: "remote:target:project-a", rootPath: "/a", displayName: "A", targetId: "target", projectId: "project-a", runtimeName: "Remote" };
@@ -1239,7 +1239,9 @@ describe("preload Apple device input routing", () => {
     await import("./preload");
     const bridge = (globalThis as any).__adeBridge;
     bridge.app.onProjectBindingChanged(vi.fn());
-    const read = bridge.git.getSyncStatus({ laneId: "lane-a" });
+    const read = domain === "file"
+      ? bridge.files.quickOpen({ query: "src" })
+      : bridge.git.getSyncStatus({ laneId: "lane-a" });
     const rejected = expect(read).rejects.toThrow(/Project is switching/);
     await started;
     const bindingListener = on.mock.calls.find(([channel]) => channel === IPC.appProjectBindingChanged)?.[1];
