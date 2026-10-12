@@ -545,6 +545,9 @@ struct WorkChatSessionView: View {
   /// The transcript's handle on its own `UICollectionView`. Replaces the
   /// `ScrollViewProxy` that used to be threaded through every row builder.
   @State var transcriptScroller = WorkChatTranscriptScroller()
+  /// What the scenes in this transcript reach the chat through: the timeline,
+  /// to see whether the reader answered, and the prompt box.
+  @State var sceneBridge = WorkSceneChatBridge()
   @State var contextUsageViewModelCache = WorkContextUsageViewModelCache()
   /// One presentation host for every box in this transcript. Boxes reach it
   /// through `\.workOutputViewer` rather than each carrying its own cover.
@@ -1851,6 +1854,9 @@ struct WorkChatSessionView: View {
         // point at another entry by now (a prepend, a fold). Resolve by id;
         // nil (the row is gone) draws nothing and is reconfigured by the
         // next apply rather than measured into the height cache.
+        sceneBridge.sessionId = session.id
+        sceneBridge.canReply = canComposeMessages
+        sceneBridge.timeline = { [thread] in thread.untrackedFrame?.snapshot.timeline ?? [] }
         var row = requested
         if case .entry(let index) = requested.kind {
           let entries = visibleTimelineRenderEntries
@@ -1875,6 +1881,7 @@ struct WorkChatSessionView: View {
             .modifier(WorkOptionalSyncServiceObject(service: syncServiceReference.service))
             .environment(\.workOutputViewer, outputViewer)
             .environment(\.workProofCitations, proofCitationContext)
+            .environment(\.workSceneBridge, sceneBridge)
             .modifier(
               WorkChatTranscriptEnvironmentModifier(
                 provider: chatSummaryContext.provider,
@@ -2140,6 +2147,8 @@ struct WorkChatSessionView: View {
         .onChange(of: timelinePresentation.timelineLastId) { oldTailId, newTailId in
           guard oldTailId != newTailId else { return }
           lastTimelineTailId = newTailId
+          // A new message may be the reader answering a scene on screen.
+          sceneBridge.timelineChanged()
         }
         .onChange(of: isNearBottom) { _, nearBottom in
           guard nearBottom, unreadBelowCount > 0 else { return }
@@ -3068,6 +3077,11 @@ private struct WorkChatComposerDraftInput: View {
     .task(id: composerDraftRestore?.id) {
       draftState.applyRestore(composerDraftRestore)
     }
+    // A scene's button put a reply in this chat's prompt box. Never sent here.
+    .onReceive(WorkSceneReplyCenter.replies) { request in
+      guard request.sessionId == sessionId else { return }
+      draftState.applySceneReply(request.text)
+    }
     // The 400ms autosave debounce can't survive a navigation pop; flush here so
     // backing out of a chat mid-sentence keeps the sentence.
     .onDisappear { draftState.flushDraft() }
@@ -3652,6 +3666,7 @@ final class WorkChatComposerDraftState: ObservableObject {
   }
   @Published var isFocused = false
   private var appliedRestoreId: UUID?
+  private var lastSceneReply: String?
   /// Surface this composer's draft is persisted under. Empty means "don't
   /// persist" (the key is unresolved), which is the safe default.
   private var persistenceKey = ""
@@ -3687,6 +3702,7 @@ final class WorkChatComposerDraftState: ObservableObject {
     let isFirstBind = persistenceKey.isEmpty
     flushDraft()
     persistenceKey = key
+    lastSceneReply = nil
     let stored = key.isEmpty ? "" : WorkComposerDraftStore.load(key)
 
     guard !isFirstBind else {
@@ -3801,6 +3817,21 @@ final class WorkChatComposerDraftState: ObservableObject {
       }
     }
     isFocused = true
+  }
+
+  /// A reply a scene offered. It joins the draft and is never sent: the reader
+  /// can add to it. Picking another option swaps the earlier pick for the new
+  /// one, and anything the reader typed stays (desktop: `handleSceneReply`).
+  func applySceneReply(_ reply: String) {
+    let previous = lastSceneReply
+    lastSceneReply = reply
+    if let previous, let range = text.range(of: previous) {
+      text.replaceSubrange(range, with: reply)
+    } else if trimmedText.isEmpty {
+      text = reply
+    } else {
+      text += (text.hasSuffix("\n") ? "" : "\n") + reply
+    }
   }
 
   func applyRestore(_ restore: WorkChatComposerDraftRestore?) {

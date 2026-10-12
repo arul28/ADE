@@ -417,7 +417,9 @@ struct WorkChatMessageBubble: View, Equatable {
           markdown: preview.text,
           streamingCacheKey: isStreaming ? message.id : nil
         )
-          .accessibilityElement(children: .ignore)
+          .environment(\.workSceneMessageId, message.id)
+          // A scene's own controls must stay reachable; prose reads as one label.
+          .accessibilityElement(children: preview.text.contains("```scene") ? .contain : .ignore)
           .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
       }
     }

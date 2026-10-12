@@ -584,6 +584,7 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
       block: model.block,
       isStreamingTail: model.isStreamingTail
     )
+      .environment(\.workSceneMessageId, model.messageId)
       .frame(maxWidth: .infinity, alignment: .leading)
       .workAssistantMessageContextMenu(
         onCopy: onCopyMessage,
