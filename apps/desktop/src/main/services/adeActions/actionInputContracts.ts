@@ -456,6 +456,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string, text: string, attachments? }",
       example: "ade actions run chat.sendMessage --input-json '{\"sessionId\":\"chat-123\",\"text\":\"next step\"}'",
     },
+    getClaudePluginUi: {
+      description: "Read what Claude Code mods draw for a chat right now: status lines, the latest toast, the band above the prompt and open panes. User clients only.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.getClaudePluginUi --input-json '{\"sessionId\":\"chat-123\"}' --json",
+    },
+    actOnClaudePluginUi: {
+      description: "Press a button, submit a field, pick an option or close a pane that a Claude Code mod drew. Names the generation and the control from getClaudePluginUi. User clients only.",
+      input: "object { sessionId: string, generation: number, kind: \"press\" | \"input\" | \"select\" | \"closePane\", target?: { plugin, handle }, key?, value?, site?: { component: \"AbovePrompt\" } | { component: \"Pane\", paneId }, paneId? }",
+      example: "ade actions run chat.actOnClaudePluginUi --input-json '{\"sessionId\":\"chat-123\",\"generation\":1,\"kind\":\"press\",\"target\":{\"plugin\":\"my-mod\",\"handle\":42}}' --json",
+    },
     listThreadComments: {
       description: "List a chat's pending thread comments (the user's unsent notes on parts of agent replies). User clients only.",
       input: "object { sessionId: string }",

@@ -11,6 +11,12 @@ import type {
   ChatThreadCommentUpdateArgs,
 } from "../shared/threadComments";
 import type {
+  ClaudePluginUiActArgs,
+  ClaudePluginUiActResult,
+  ClaudePluginUiGetArgs,
+  ClaudePluginUiSnapshot,
+} from "../shared/claudePluginUi";
+import type {
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
   AppleDeviceStopArgs,
@@ -2544,6 +2550,10 @@ declare global {
             args: DraftDeleteArgs,
             pin?: OpenProjectBinding | null,
           ) => Promise<{ ok: boolean; error?: string }>;
+        };
+        claudePluginUi: {
+          get: (args: ClaudePluginUiGetArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiSnapshot>;
+          act: (args: ClaudePluginUiActArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiActResult>;
         };
         threadComments: {
           list: (args: ChatThreadCommentListArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment[]>;

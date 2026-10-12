@@ -1,4 +1,5 @@
 import { THREAD_COMMENT_ACTION_NAMES } from "./threadComments";
+import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "./claudePluginUi";
 import type { SyncFileRequest, SyncRemoteCommandAction } from "./types";
 import { PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS } from "./types/sync";
 
@@ -168,6 +169,8 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "chat.claimDraft",
   // Thread comments. An older brain omits them, and the phone hides the chip.
   ...THREAD_COMMENT_ACTION_NAMES.map((action) => `chat.${action}` as const),
+  // Claude mod UI. An older brain omits it, and a client draws none.
+  ...CLAUDE_PLUGIN_UI_ACTION_NAMES.map((action) => `chat.${action}` as const),
   // Sources favicons improve the compact phone Sources list; older hosts keep
   // working with the domain-initial fallback.
   "chat.resolveSourceFavicons",

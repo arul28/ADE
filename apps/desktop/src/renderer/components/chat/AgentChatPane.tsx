@@ -165,6 +165,8 @@ import {
   setThreadComments,
   useThreadComments,
 } from "./threadCommentsStore";
+import { ClaudeModUi } from "./ClaudeModUi";
+import { useClaudeModsPrompt } from "./useClaudeModsPrompt";
 import { threadReviewCountLabel } from "../../../shared/threadComments";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
@@ -4785,6 +4787,7 @@ export function AgentChatPane({
   // thread comments are a project-runtime action the personal scope lacks.
   const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning && !personalScope ? composerSessionId : null;
   const threadComments = useThreadComments(threadCommentsSessionId, chatRuntimePin);
+  useClaudeModsPrompt(selectedSession?.provider === "claude" ? threadCommentsSessionId : null);
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;
@@ -15935,6 +15938,11 @@ export function AgentChatPane({
   const compactFirstEnabled = compactFirst.choice?.sessionId === selectedSessionId
     ? compactFirst.choice.value : selectedSession?.compactionIdleMode === "always";
   compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
+  // What Claude mods draw for the open chat. Same gate as thread comments: a
+  // readable project chat whose composer and transcript agree on the session.
+  const claudeModUi = selectedProvider === "claude" && !subagentView
+    ? <ClaudeModUi sessionId={threadCommentsSessionId} pin={chatRuntimePin} />
+    : null;
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
@@ -16665,6 +16673,7 @@ export function AgentChatPane({
         </div>
       ) : null}
       {usageLimitPill}
+      {claudeModUi}
       {composerElement}
     </div>
   );
@@ -17092,6 +17101,7 @@ export function AgentChatPane({
                         {crossMachineMoveBanner}
                         {crossMachineArrivalBanner}
                         {usageLimitPill}
+                        {claudeModUi}
                         {composerElement}
                       </div>
                     ) : null}

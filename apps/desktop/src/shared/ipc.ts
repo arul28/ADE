@@ -364,6 +364,8 @@ export const IPC = {
   agentChatDraftsUpdate: "ade.agentChat.drafts.update",
   agentChatDraftsClaim: "ade.agentChat.drafts.claim",
   agentChatDraftsSendNow: "ade.agentChat.drafts.sendNow",
+  agentChatClaudePluginUiGet: "ade.agentChat.claudePluginUi.get",
+  agentChatClaudePluginUiAct: "ade.agentChat.claudePluginUi.act",
   agentChatThreadCommentsList: "ade.agentChat.threadComments.list",
   agentChatThreadCommentsCreate: "ade.agentChat.threadComments.create",
   agentChatThreadCommentsUpdate: "ade.agentChat.threadComments.update",

@@ -143,6 +143,13 @@ import {
 } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import { forkCodexThreadInEphemeralAppServer } from "./codexEphemeralFork";
+import { createClaudePluginUiService } from "./claudePluginUiService";
+import type {
+  ClaudePluginUiActArgs,
+  ClaudePluginUiActResult,
+  ClaudePluginUiGetArgs,
+  ClaudePluginUiSnapshot,
+} from "../../../shared/claudePluginUi";
 import {
   CODEX_COMPACTION_STALL_MS,
   type CodexCompactionFailReason,
@@ -20398,6 +20405,15 @@ export function createAgentChatService(args: {
     }
   };
 
+  // Mod UI is live state of one Claude process: pushed whole, never stored.
+  const claudePluginUi = createClaudePluginUiService({
+    isEnabled: () => projectConfigService.get().effective.ai?.chat?.claudePluginUiEnabled === true,
+    publish: (sessionId, snapshot) => {
+      emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", claudePluginUi: snapshot });
+    },
+    logger,
+  });
+
   const threadComments = createThreadCommentService({
     chatSessionsDir,
     logger,
@@ -20414,6 +20430,12 @@ export function createAgentChatService(args: {
     }
     return id;
   };
+
+  const getClaudePluginUi = (args: ClaudePluginUiGetArgs): ClaudePluginUiSnapshot =>
+    claudePluginUi.get(typeof args?.sessionId === "string" ? args.sessionId.trim() : "");
+
+  const actOnClaudePluginUi = (args: ClaudePluginUiActArgs): Promise<ClaudePluginUiActResult> =>
+    claudePluginUi.act(args);
 
   const listThreadComments = (args: ChatThreadCommentListArgs): ChatThreadComment[] =>
     threadComments.list({ sessionId: assertThreadCommentSession(args?.sessionId) });
@@ -24437,6 +24459,7 @@ export function createAgentChatService(args: {
       runtime.inputPump = null;
       runtime.warmQuery = null;
       runtime.warmupDone = null;
+      claudePluginUi.detach(managed.session.id);
       // Query is already null, so settle every visible background/native task
       // without trying provider stopTask on the dead control channel.
       void clearClaudeSubagentStartIdsAfterSettlement(
@@ -24707,6 +24730,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
+    claudePluginUi.forget(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
     laneBranchAtTurnStart.delete(managed.session.id);
@@ -26890,6 +26914,7 @@ export function createAgentChatService(args: {
     state: ClaudeIdleTurnState,
   ): Promise<void> => {
     const record = msg as unknown as Record<string, unknown>;
+    if (claudePluginUi.ingest(managed.session.id, runtime.query, msg)) return;
     const messageSessionId = compactString(record.session_id);
     if (messageSessionId && runtime.sdkSessionId !== messageSessionId) {
       adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
@@ -27580,6 +27605,7 @@ export function createAgentChatService(args: {
       runtime.query = null;
       runtime.inputPump = null;
       runtime.warmupDone = null;
+      claudePluginUi.detach(managed.session.id);
       resetClaudeProcessBackgroundLevel(runtime);
       claudeSubprocessReaper.reapForSession(managed.session.id, reaperReason);
 
@@ -28212,6 +28238,9 @@ export function createAgentChatService(args: {
         }
         if (nextMessage.done) break;
         const msg = nextMessage.value;
+        // What a mod draws is no part of the turn: it must not reset the idle
+        // deadline, or a mod that redraws on a timer keeps a hung turn alive.
+        if (claudePluginUi.ingest(managed.session.id, runtime.query, msg)) continue;
         const msgSubtype = typeof (msg as any).subtype === "string" ? (msg as any).subtype : null;
         if (pendingWorkerShutdownReason && !(msg.type === "system" && msgSubtype === "worker_shutting_down")) {
           pendingWorkerShutdownReason = null;
@@ -30101,6 +30130,7 @@ export function createAgentChatService(args: {
         runtime.query = null;
         runtime.inputPump = null;
         runtime.warmupDone = null;
+        claudePluginUi.detach(managed.session.id);
         claudeSubprocessReaper.reapForSession(managed.session.id, "claude_turn_failed");
       }
       if (!(runtime.interrupted && runtime.spareBackgroundOnInterrupt)) {
@@ -39703,6 +39733,7 @@ export function createAgentChatService(args: {
     runtime.query = null;
     runtime.inputPump = null;
     runtime.queryGeneration += 1;
+    claudePluginUi.detach(managed.session.id);
     runtime.queryStartPromise = null;
     runtime.pendingPostResultNext = null;
     runtime.pendingPostResultNextSettledAt = null;
@@ -40189,6 +40220,7 @@ export function createAgentChatService(args: {
     runtime.query = sessionQuery;
     runtime.inputPump = pump;
     runtime.warmQuery = null;
+    claudePluginUi.attach(managed.session.id, sessionQuery);
     observeClaudeInitializationResult(managed, sessionQuery);
     if (runtime.forkFromSdkSessionId) {
       runtime.forkFromSdkSessionId = null;
@@ -57637,6 +57669,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
+    claudePluginUi.forget(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
     releaseChatBrowser(sessionId);
@@ -60036,6 +60069,7 @@ export function createAgentChatService(args: {
       ]);
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
+      claudePluginUi.forget(trimmedSessionId);
       forgetCursorCloudHydrationState(trimmedSessionId);
       forgetDevinCloudAttentionState(trimmedSessionId);
     } else {
@@ -64627,6 +64661,8 @@ export function createAgentChatService(args: {
       requireCrossMachineHandoff().acknowledge(ackArgs.sourceSessionId, ackArgs.handoffId),
     emitAdeCard,
     sendMessage,
+    getClaudePluginUi,
+    actOnClaudePluginUi,
     listThreadComments,
     createThreadComment,
     updateThreadComment,

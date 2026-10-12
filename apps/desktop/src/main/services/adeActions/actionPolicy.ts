@@ -4,6 +4,7 @@ import {
   USER_BROWSER_RUNTIME_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
+import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../../shared/claudePluginUi";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
@@ -187,6 +188,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // agent that could write or delete them could edit what the user is
       // about to tell it.
       ...THREAD_COMMENT_ACTION_NAMES,
+      // What a mod draws is for the person at the chat. A press runs plugin
+      // code on the host; an agent must not press a control on its own chat.
+      ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
       "startCodexRealtime",
       "stopCodexRealtime",
       "getCodexRealtimeState",
@@ -708,6 +712,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "claimDraft",
     "sendDraftNow",
     ...THREAD_COMMENT_ACTION_NAMES,
+    ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
     "messageSession",
     "modelCatalog",
     "approveToolUse",

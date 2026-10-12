@@ -168,6 +168,12 @@ import type {
 } from "../shared/types";
 import { adeActionAccess } from "../shared/adeActionAccess";
 import type {
+  ClaudePluginUiActArgs,
+  ClaudePluginUiActResult,
+  ClaudePluginUiGetArgs,
+  ClaudePluginUiSnapshot,
+} from "../shared/claudePluginUi";
+import type {
   ChatThreadComment,
   ChatThreadCommentCreateArgs,
   ChatThreadCommentDeleteArgs,
@@ -1939,6 +1945,9 @@ const CHAT_HOST_READS = new Set<string>([
   "getDraft",
   "listThreadComments",
   "getCodexRealtimeState",
+  // Mod UI is live state of a Claude process on the chat's host; this window's
+  // own process has none.
+  "getClaudePluginUi",
 ]);
 
 // Live model inventories (OpenCode, ollama, LM Studio, cursor-agent) are facts
@@ -8416,6 +8425,22 @@ const adeBridge = {
           "sendDraftNow",
           { args },
           () => ipcRenderer.invoke(IPC.agentChatDraftsSendNow, args),
+        ),
+    },
+    claudePluginUi: {
+      get: async (
+        args: ClaudePluginUiGetArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<ClaudePluginUiSnapshot> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "chat", "getClaudePluginUi", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatClaudePluginUiGet, args),
+        ),
+      act: async (
+        args: ClaudePluginUiActArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<ClaudePluginUiActResult> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "chat", "actOnClaudePluginUi", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatClaudePluginUiAct, args),
         ),
     },
     threadComments: {
