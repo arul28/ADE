@@ -18,6 +18,7 @@ import {
 import { parseDeeplink } from "../../../shared/deeplinks";
 import type { SceneDataPayload } from "../../../shared/sceneDataProjection";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
@@ -76,6 +77,13 @@ const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 960;
 /** The least time between two links a scene may open. */
 const SCENE_OPEN_MIN_INTERVAL_MS = 800;
+/** The page the hosted web client loads a scene in; served with the scene policy. */
+const SCENE_WEB_FRAME_PATH = "/scene-frame.html";
+function isSceneBootRequest(value: unknown): boolean {
+  return Boolean(value) && typeof value === "object"
+    && (value as { __adeSceneBoot?: unknown }).__adeSceneBoot === 1
+    && (value as { ready?: unknown }).ready === true;
+}
 /** A floor between replies, so a scene that loops cannot churn the prompt box. */
 const SCENE_REPLY_MIN_INTERVAL_MS = 150;
 
@@ -277,13 +285,16 @@ export function SceneFrame({
   const src = doc && prepared && prepared.nonce === doc.nonce ? prepared.url : null;
   const srcRef = useRef<string | null>(null);
   const nonceRef = useRef<string | null>(null);
+  /** The document the frame is showing, for the web client's scene page to ask for. */
+  const docHtmlRef = useRef<string | null>(null);
   /** The theme the frame currently has: built in, or last posted. */
   const frameThemeRef = useRef<SceneTheme | null>(null);
   useEffect(() => {
     srcRef.current = src;
     nonceRef.current = src ? prepared?.nonce ?? null : null;
+    docHtmlRef.current = src ? doc?.html ?? null : null;
     frameThemeRef.current = src ? prepared?.theme ?? null : null;
-  }, [src, prepared]);
+  }, [src, prepared, doc]);
 
   const [stage, setStage] = useState<FrameStage | null>(null);
   const current = stage && src !== null && stage.src === src ? stage : null;
@@ -327,6 +338,14 @@ export function SceneFrame({
       return;
     }
     const fallBackToBlob = () => {
+      // On the hosted web client a blob: document inherits the app's policy,
+      // which refuses inline script, so the scene would draw and never run.
+      // There the frame loads a page served with the scene policy, which asks
+      // for the document once it is up (`__adeSceneBoot`, answered below).
+      if (isWebClientMode()) {
+        show(`${SCENE_WEB_FRAME_PATH}?n=${encodeURIComponent(doc.nonce)}`);
+        return;
+      }
       const blob = new Blob([doc.html], { type: "text/html" });
       revoked = URL.createObjectURL(blob);
       show(revoked);
@@ -431,6 +450,14 @@ export function SceneFrame({
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+      // The web client's scene page is up and asks for its document.
+      if (isSceneBootRequest(event.data)) {
+        const html = docHtmlRef.current;
+        if (html && srcRef.current?.startsWith(SCENE_WEB_FRAME_PATH)) {
+          try { frameRef.current.contentWindow?.postMessage({ __adeSceneBoot: 1, html }, "*"); } catch { /* frame gone */ }
+        }
+        return;
+      }
       const message = parseSceneHostMessage(event.data);
       if (!message) return;
       if (!message.nonce || message.nonce !== nonceRef.current) return;

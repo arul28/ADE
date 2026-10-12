@@ -138,6 +138,10 @@ export const SCENE_SETTLE_QUIET_MS = 600;
  */
 export const SCENE_SETTLE_MAX_MS = 4_000;
 
+/**
+ * The hosted web client serves this same policy as a response header for
+ * `/scene-frame.html` (`src/renderer/webclient/public/_headers`). Change both.
+ */
 export const SCENE_CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
   "script-src 'unsafe-inline'",

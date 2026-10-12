@@ -48,7 +48,8 @@ function webClientDevEntry(): Plugin {
         const accepts = String(req.headers.accept ?? "");
         const isNavigation = accepts.includes("text/html");
         const isAsset = pathname.includes(".") && !pathname.endsWith(".html");
-        if (isNavigation && !isAsset && pathname !== "/webclient.html") {
+        // The scene frame is a real page of its own (public/scene-frame.html).
+        if (isNavigation && !isAsset && pathname !== "/webclient.html" && pathname !== "/scene-frame.html") {
           req.url = "/webclient.html";
         }
         next();

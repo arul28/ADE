@@ -6,6 +6,14 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=()
   Cache-Control: no-cache
 
+# The scene frame runs agent-written HTML in a sandboxed iframe, so it carries
+# the scene policy (SCENE_CONTENT_SECURITY_POLICY in src/shared/chatScene.ts)
+# in place of the app's, and the app may frame it.
+/scene-frame.html
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'self'
+
 /assets/*
   ! Cache-Control
   Cache-Control: public, max-age=31536000, immutable
