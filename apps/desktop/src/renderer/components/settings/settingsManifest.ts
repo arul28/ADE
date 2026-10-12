@@ -273,7 +273,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "machine",
     // The question is asked by the desktop app when it quits.
     web: "hidden",
-    group: "Quitting",
+    group: "Background service",
   },
   {
     id: "general.auto-updates",

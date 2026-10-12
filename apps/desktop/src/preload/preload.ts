@@ -4526,6 +4526,12 @@ const adeBridge = {
       ipcRenderer.on(IPC.appQuitPrompt, listener);
       return () => ipcRenderer.removeListener(IPC.appQuitPrompt, listener);
     },
+    onQuitPromptDismiss: (cb: (requestId: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, requestId: string) => cb(requestId);
+      ipcRenderer.on(IPC.appQuitPromptDismiss, listener);
+      return () => ipcRenderer.removeListener(IPC.appQuitPromptDismiss, listener);
+    },
+    quitPromptShown: (requestId: string): void => ipcRenderer.send(IPC.appQuitPromptShown, requestId),
     answerQuitPrompt: async (answer: QuitPromptAnswer): Promise<QuitPromptRepairResult | null> =>
       ipcRenderer.invoke(IPC.appAnswerQuitPrompt, answer),
     getAskBeforeQuit: async (): Promise<boolean> => ipcRenderer.invoke(IPC.appGetAskBeforeQuit),

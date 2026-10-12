@@ -22,13 +22,13 @@ import {
   getPrToastSummary,
   getPrToastTone,
 } from "../prToastPresentation";
-import { dismissToast, showToast, updateToast, type ToastCardAction, type ToastChip, type ToastInput } from "./toastStore";
+import { dismissToast, READABLE_TOAST_DURATION_MS, showToast, updateToast, type ToastCardAction, type ToastChip, type ToastInput } from "./toastStore";
 
 type PrNotificationEvent = Extract<PrEventPayload, { type: "pr-notification" }>;
 type PrAutoLinkedEvent = Extract<PrEventPayload, { type: "pr-auto-linked" }>;
 
 /** PR notices stay up long enough to read a failing-check summary. */
-export const PR_TOAST_DURATION_MS = 18_000;
+export const PR_TOAST_DURATION_MS = READABLE_TOAST_DURATION_MS;
 
 type LaneRef = Pick<LaneSummary, "id" | "name" | "color">;
 

@@ -13,6 +13,10 @@ export const IPC = {
   appRestartBackgroundService: "ade.app.restartBackgroundService",
   /** main → window: ask the quit confirmation in ADE's own dialog. */
   appQuitPrompt: "ade.app.quitPrompt",
+  /** window → main: the prompt is on screen, so main does not ask natively too. */
+  appQuitPromptShown: "ade.app.quitPromptShown",
+  /** main → window: drop the prompt; main is asking natively instead. */
+  appQuitPromptDismiss: "ade.app.quitPromptDismiss",
   appAnswerQuitPrompt: "ade.app.answerQuitPrompt",
   appGetAskBeforeQuit: "ade.app.getAskBeforeQuit",
   appSetAskBeforeQuit: "ade.app.setAskBeforeQuit",

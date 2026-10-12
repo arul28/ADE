@@ -1140,11 +1140,14 @@ declare global {
          */
         restartBackgroundService?: () => Promise<void>;
         /**
-         * The quit confirmation main asks this window to show. Answer once with
-         * no choice when it is on screen, then with the choice. Native desktop
+         * The quit confirmation main asks this window to show. Call
+         * `quitPromptShown` once it is on screen, then answer. Native desktop
          * only; absent on the hosted-web client and browser mock.
          */
         onQuitPrompt?: (cb: (request: QuitPromptRequest) => void) => () => void;
+        /** Main is asking natively instead; drop the prompt with this id. */
+        onQuitPromptDismiss?: (cb: (requestId: string) => void) => () => void;
+        quitPromptShown?: (requestId: string) => void;
         /** Resolves with the repair outcome for a "repair" choice, else null. */
         answerQuitPrompt?: (answer: QuitPromptAnswer) => Promise<QuitPromptRepairResult | null>;
         /** Whether ADE confirms before quitting; "Don't ask again" turns it off. */
