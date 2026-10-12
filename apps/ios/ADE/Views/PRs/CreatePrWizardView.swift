@@ -1247,14 +1247,15 @@ struct CreateIntegrationRequest: Equatable {
 }
 
 struct PrMarkdownRenderer: View {
-  let markdown: String
+  /// Split once when the row is made, not on every draw: a PR thread holds
+  /// one of these for each comment, and they redraw while the list scrolls.
+  private let pieces: [PrDescriptionPiece]
 
-  private var pieces: [PrDescriptionPiece] {
-    prDescriptionPieces(normalizePrMarkdownText(markdown))
+  init(markdown: String) {
+    pieces = prDescriptionPieces(normalizePrMarkdownText(markdown))
   }
 
   var body: some View {
-    let pieces = pieces
     // Text with no media is one renderer, exactly as before.
     if pieces.count == 1, case .markdown(let text) = pieces[0] {
       markdownText(text)
