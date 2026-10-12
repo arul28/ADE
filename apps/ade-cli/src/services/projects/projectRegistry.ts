@@ -43,6 +43,9 @@ export type ProjectRecord = {
   registrationSource: ProjectRegistrationSource;
 };
 
+/** A database file's device and inode, as decimal strings. A move keeps both. */
+export type ProjectDatabaseIdentity = { dev: string; ino: string };
+
 type ProjectRegistryFile = {
   version: 2;
   projects: ProjectRecord[];
@@ -345,7 +348,7 @@ export class ProjectRegistry {
     } catch {
       return;
     }
-    const identity = { dev: stat.dev.toString(), ino: stat.ino.toString() };
+    const identity: ProjectDatabaseIdentity = { dev: stat.dev.toString(), ino: stat.ino.toString() };
     const known = this.readDatabaseIdentity(projectId);
     if (known?.dev === identity.dev && known.ino === identity.ino) return;
     const identityPath = this.databaseIdentityPath(projectId);
@@ -354,7 +357,7 @@ export class ProjectRegistry {
   }
 
   /** The device and inode of the database this machine last opened for the project. */
-  readDatabaseIdentity(projectId: ProjectId): { dev: string; ino: string } | null {
+  readDatabaseIdentity(projectId: ProjectId): ProjectDatabaseIdentity | null {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.databaseIdentityPath(projectId), "utf8")) as { dev?: unknown; ino?: unknown };
       return typeof parsed.dev === "string" && typeof parsed.ino === "string" ? { dev: parsed.dev, ino: parsed.ino } : null;
@@ -396,7 +399,9 @@ export class ProjectRegistry {
     if (!record || !this.isProjectDataMissing(record)) return;
     const adeDir = path.join(record.rootPath, ".ade");
     throw codedError(
-      `ADE's data for this project is missing from ${adeDir}. Open the project in the ADE app to restore it or start fresh, or put the .ade folder back from the Trash. ADE has not created a replacement.`,
+      fs.existsSync(record.rootPath)
+        ? `ADE's data for this project is missing from ${adeDir}. Open the project in the ADE app to restore it or start fresh, or put the .ade folder back from the Trash. ADE has not created a replacement.`
+        : `The project folder ${record.rootPath} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`,
       "project_data_missing",
     );
   }
@@ -518,7 +523,7 @@ export function isLocalProjectDataMissing(projectRoot: string): boolean {
   return registry.isProjectDataMissing(registry.findByRootPath(projectRoot));
 }
 
-export function readLocalProjectDatabaseIdentity(projectRoot: string): { dev: string; ino: string } | null {
+export function readLocalProjectDatabaseIdentity(projectRoot: string): ProjectDatabaseIdentity | null {
   return new ProjectRegistry().readDatabaseIdentity(deriveProjectId(normalizeRoot(projectRoot)));
 }
 

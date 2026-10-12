@@ -2,6 +2,7 @@ import { ArrowLeft, CircleNotch } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  PROJECT_FOLDER_MISSING_COPY,
   RECOVERY_COPY,
   REPAIR_STEPS,
   stateForCode,
@@ -546,7 +547,11 @@ export function ProjectRecoveryScreen() {
   // the stored code, via the shared mapping. The words come from the shared
   // table either way, so the two can never disagree.
   const state: DiagnosisState = diagnosis?.state ?? stateForCode(code);
-  const copy = RECOVERY_COPY[state] ?? RECOVERY_COPY.unknown_failure;
+  // A project folder that is itself gone has its own words: nothing can be
+  // restored into it, only brought back.
+  const copy = state === "data_missing" && diagnosis?.projectFolderMissing
+    ? { ...RECOVERY_COPY.data_missing, ...PROJECT_FOLDER_MISSING_COPY }
+    : RECOVERY_COPY[state] ?? RECOVERY_COPY.unknown_failure;
   const canAutoRepair = Boolean(
     rootPath && (diagnosis ? diagnosis.canAutoRepair : copy.canAutoRepair),
   );
@@ -565,7 +570,9 @@ export function ProjectRecoveryScreen() {
     && typeof window.ade?.recovery?.restoreProjectData === "function";
   // The project folder itself is gone: nothing to restore into or start in.
   const projectFolderMissing = dataMissing && diagnosis?.projectFolderMissing === true;
-  const startFreshAvailable = !projectFolderMissing && typeof window.ade?.recovery?.startFresh === "function";
+  // Only once the diagnosis says the project folder is there to start in.
+  const startFreshAvailable = Boolean(diagnosis) && !projectFolderMissing
+    && typeof window.ade?.recovery?.startFresh === "function";
   const restartAvailable = canRestartAde();
   // Report issue renders nothing on a preload without the diagnostics bridge;
   // its hint must not be left standing alone.

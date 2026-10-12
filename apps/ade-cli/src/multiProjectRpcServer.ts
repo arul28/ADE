@@ -2584,6 +2584,11 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.removeIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
+      // Removing the override rewrites `.ade/local.yaml`, which would recreate
+      // a project folder that was moved, deleted or unplugged.
+      if (!fs.existsSync(project.rootPath)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Project folder not found: ${project.rootPath}`);
+      }
       removeProjectIconOverride(project.rootPath);
       return await resolveIconBeforeDeadline(
         resolveRemoteProjectIconInWorker,

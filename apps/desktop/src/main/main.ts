@@ -3206,9 +3206,11 @@ app.whenReady().then(async () => {
     adeHome: machineAdeLayout.adeDir,
     logger: localRuntimeLogger,
     connectionPool: localRuntimePool,
-    openProjectDataStatus: (projectRoot) => openProjectDataWatch.status(normalizeProjectRoot(projectRoot)),
+    openProjectDataProblem: (projectRoot) => openProjectDataWatch.problem(normalizeProjectRoot(projectRoot)),
     closeProject: async (projectRoot) => {
       await closeProjectByPath(projectRoot);
+      // After the close, so a tick that was already running cannot put the
+      // closed project's identity back.
       openProjectDataWatch.forget(normalizeProjectRoot(projectRoot));
     },
     // One call at the point the diagnosis is final. The service's own budget

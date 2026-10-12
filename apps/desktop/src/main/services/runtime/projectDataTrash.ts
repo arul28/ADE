@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { normalizeProjectRootPath } from "../../../../../ade-cli/src/services/projects/projectRoots";
+import type { ProjectDatabaseIdentity } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { openReadonlyDatabase } from "../state/kvDb";
 
 /**
@@ -9,8 +10,6 @@ import { openReadonlyDatabase } from "../state/kvDb";
  * filesystem work with no service state, kept apart from the recovery
  * service that offers it.
  */
-
-type DatabaseIdentity = { dev: string; ino: string };
 
 /** Folders a deleted `.ade` lands in. Empty where ADE can't look. */
 function trashDirs(): string[] {
@@ -31,7 +30,7 @@ const TRASHED_ADE_NAMES = [".ade", ...Array.from({ length: 49 }, (_, index) => `
  * this machine last opened for it (a move keeps the file's identity), or,
  * failing that, when the database's own project row names this project.
  */
-function trashedDataBelongsTo(candidate: string, projectRoot: string, identity: DatabaseIdentity | null): boolean {
+function trashedDataBelongsTo(candidate: string, projectRoot: string, identity: ProjectDatabaseIdentity | null): boolean {
   const dbPath = path.join(candidate, "ade.db");
   let stat: fs.BigIntStats;
   try {
@@ -56,21 +55,17 @@ function trashedDataBelongsTo(candidate: string, projectRoot: string, identity: 
 /**
  * How long a lookup is reused. The recovery screen asks every 2 seconds while
  * it waits, and each lookup may open every trashed `.ade` database read-only.
- * Keyed by the identity too, so a newly recorded database is looked up fresh.
  */
 const LOOKUP_CACHE_MS = 5_000;
-const lookupCache = new Map<string, { at: number; result: string | null }>();
-
-function lookupKey(projectRoot: string, identity: DatabaseIdentity | null): string {
-  return `${projectRoot}\0${identity ? `${identity.dev}:${identity.ino}` : ""}`;
-}
+/** One entry per project; a different recorded identity is looked up fresh. */
+const lookupCache = new Map<string, { identityKey: string; at: number; result: string | null }>();
 
 /** The newest `.ade` in the Trash whose database belongs to this project. */
-export function findTrashedProjectData(projectRoot: string, identity: DatabaseIdentity | null): string | null {
+export function findTrashedProjectData(projectRoot: string, identity: ProjectDatabaseIdentity | null): string | null {
   const normalizedRoot = normalizeProjectRootPath(projectRoot);
-  const key = lookupKey(normalizedRoot, identity);
-  const cached = lookupCache.get(key);
-  if (cached && Date.now() - cached.at < LOOKUP_CACHE_MS) return cached.result;
+  const identityKey = identity ? `${identity.dev}:${identity.ino}` : "";
+  const cached = lookupCache.get(normalizedRoot);
+  if (cached && cached.identityKey === identityKey && Date.now() - cached.at < LOOKUP_CACHE_MS) return cached.result;
   const candidates: Array<{ path: string; mtimeMs: number }> = [];
   for (const dir of trashDirs()) {
     let names: string[];
@@ -93,14 +88,13 @@ export function findTrashedProjectData(projectRoot: string, identity: DatabaseId
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   const result = candidates[0]?.path ?? null;
-  lookupCache.set(key, { at: Date.now(), result });
+  lookupCache.set(normalizedRoot, { identityKey, at: Date.now(), result });
   return result;
 }
 
-/** Drops cached lookups for a project once its trashed data has moved. */
+/** Drops the cached lookup, so the next one sees the Trash as it is now. */
 export function forgetTrashLookup(projectRoot: string): void {
-  const prefix = `${normalizeProjectRootPath(projectRoot)}\0`;
-  for (const key of lookupCache.keys()) if (key.startsWith(prefix)) lookupCache.delete(key);
+  lookupCache.delete(normalizeProjectRootPath(projectRoot));
 }
 
 function isCrossDevice(error: unknown): boolean {

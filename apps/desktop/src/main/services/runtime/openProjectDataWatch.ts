@@ -12,7 +12,8 @@ type Known = { dev: bigint; ino: bigint; reported: ProjectDataProblem | null };
  * its place, so the window can show the recovery screen instead of every
  * panel failing. Restoring the same file clears it.
  *
- * Only "not found" counts as missing; any other error (a volume that is
+ * Only "not found" (ENOENT, or ENOTDIR when a parent became a file) counts
+ * as missing; any other error (a volume that is
  * asleep or slow to answer) skips the tick. A project folder that is itself
  * gone, an unplugged drive included, also reads as missing: the recovery
  * screen tells that case apart and offers nothing that would recreate the
@@ -66,7 +67,7 @@ export function createOpenProjectDataWatch(args: {
   timer.unref?.();
 
   return {
-    status: (projectRoot: string): ProjectDataProblem | null => known.get(projectRoot)?.reported ?? null,
+    problem: (projectRoot: string): ProjectDataProblem | null => known.get(projectRoot)?.reported ?? null,
     /** Start over for a project that is closing or opening with new data. */
     forget: (projectRoot: string): void => {
       known.delete(projectRoot);

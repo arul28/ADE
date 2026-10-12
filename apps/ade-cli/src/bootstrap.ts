@@ -903,7 +903,7 @@ export async function createAdeRuntime(args: {
     db = await openKvDb(paths.dbPath, logger, {
       hasSyncPeers,
     });
-    // Every entry point that opens the database records it, so a project used
+    // The app and the brain's project scope record it too, so a project used
     // only from the CLI is protected the same way as one opened in the app.
     recordLocalProjectDatabaseIdentity(projectRoot, logger);
   } catch (error) {

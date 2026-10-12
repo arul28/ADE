@@ -110,6 +110,18 @@ export type ProjectRecoveryDiagnosis = {
 
 export type ProjectDataRestoreResult = { restored: true } | { restored: false; reason: string };
 
+/**
+ * `data_missing` when the project folder itself is gone (moved, deleted, or on
+ * a drive that is not plugged in): nothing can be restored into it, so the
+ * screen only says how to bring it back.
+ */
+export const PROJECT_FOLDER_MISSING_COPY = {
+  headline: "This project's folder isn't there",
+  body: "If it's on a drive, plug it in. If you moved it, move it back. Your files aren't touched.",
+  /** Why Restore, Start fresh and Repair refuse. */
+  refusal: "The project folder itself isn't there. Put it back first.",
+} as const;
+
 /** What happened to a project's ADE data: gone, or swapped for another copy while open. */
 export type ProjectDataProblem = "missing" | "replaced";
 

@@ -43,8 +43,8 @@ desktops see live lanes, agent chats, and work sessions.
 
 Each local project this machine has opened gets an identity file at
 `~/.ade/project-data/<projectId>.json` holding its database file's device and
-inode. Every entry point that opens the database records it (desktop, the
-brain's project scope, the CLI). It lives outside `projects.json` because an
+inode. The desktop, the brain's project scope and the CLI record it when they
+open the database. It lives outside `projects.json` because an
 older ADE that rewrites that file drops fields it does not know. If a
 registered project's folder or its `.ade` folder disappears, or a database the
 identity file records is missing, registration and open stop with
