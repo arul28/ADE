@@ -102,6 +102,7 @@ Run without the app (`scripts/perf/service/`).
 | Reading a 10 MB request, Content-Length framed | `rpc-read.bench.mts` | 240 ms | 10.8 ms | 30 ms |
 | Reading a 10 MB request, JSONL | `rpc-read.bench.mts` | 99 ms | 8.7 ms | 30 ms |
 | CLI PATH lookup once its cache has expired | `shell-path.bench.mts` | 1,265 ms | 2–11 ms | 20 ms |
+| Settings › MCP servers: scan of the provider CLI configs (169 KB `~/.claude.json`, 17 KB Codex `config.toml`; runs in Electron main, twice per page open) | one-off `tsx` loop over `scanProviderMcpConfigs`, 20 runs (no bench file yet) | — | 4–6 ms, 18 ms cold | 25 ms |
 
 ### Open items (measured, over budget or unbudgeted)
 

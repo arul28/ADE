@@ -58,6 +58,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/builtInBrowser/` | Main-process broker and security boundary for the in-app browser. `builtInBrowserService.ts` uses the single persistent `persist:ade-browser` profile for every remote-content tab while keeping visible tab collections independent by ADE window plus project/personal collection. The exception is an isolated tab (`ade browser open --isolated` / `--profile <name>`): `builtInBrowserIsolation.ts` gives it an in-memory partition (no `persist:`) keyed by window service, chat or lane, and profile name, so two chats' `viewer` sign-ins stay apart and an agent can sign in as a test account without signing the user out. Isolated sessions get the same permission, network, WebAuthn and download setup as the global profile; a popup inherits its opener's partition; isolated tabs are never saved for restore; the last tab's close wipes the partition's storage and cache, and the next tab with that profile waits for the wipe and reuses the partition rather than leaking a new session. A tab's sign-in is fixed at open, so `open` reuses only a tab in the sign-in it asked for, and the runtime refuses to forward an isolated open to another desktop. `builtInBrowserProfileMigration.ts` performs one bounded, idempotent migration of unexpired persistent cookies from this channel's legacy project partitions; global cookies win, session cookies are excluded, and legacy directories remain because DOM storage, IndexedDB, service-worker state, and WebAuthn credentials cannot be safely merged. `builtInBrowserStateStore.ts` restores bounded HTTP(S)/blank tab URLs and active-tab selection, but never agent ownership, lightweight sessions, or synthesized session cookies. The service caps each collection at 10 tabs, routes global-session network events by webContents id, preserves OAuth opener relationships, sanitizes download names, captures observations/traces/selections, and tracks per-tab owner/lease metadata. `builtInBrowserAuthentication.ts` owns non-persisted HTTP/proxy credential prompts and explicit client-certificate choice. `builtInBrowserPermissions.ts` persists deny-by-default decisions per requesting/embedding origin. `builtInBrowserAgentAccess.ts` requires a non-persistent human grant for every agent-used non-local origin and for local origins with an allowed privileged permission; it intercepts cross-origin navigation/redirects and blocks sensitive popups until approved. `desktopBridgeServer.ts` serves the runtime over the owner-only bridge socket with no secret and no per-chat token, trusting the chat, lane and collection the runtime tagged each call with. Unbound/elevated callers cannot force takeovers, forge scope, read another agent's tab status, inspect cookie-domain diagnostics, or administer permissions. `builtInBrowserPresence.ts` derives "an agent is using the browser" from the commands themselves — touched for every bridge call that carries a chat, held while a tab records, cleared on tab close / login handoff, and expiring twenty seconds after the last command (see [An agent is using the browser](#an-agent-is-using-the-browser)). `builtInBrowserPresenceRouter.ts` is the one place that turns those facts into presence and presence into per-window events: the event-stream transitions, the project-scope projection every seed and push shares, the tracker subscription, and the close/dispose hooks the coordinator calls at each lifecycle boundary. `builtInBrowserNavigation.ts` owns protocol policy and `builtInBrowserWebAuthn.ts` resolves credential account selection. Project scratch observations live under `.ade/cache/browser-observations/`; personal observations use the channel user-data `browser-observations/personal/` root. Both can be promoted through the proof broker's narrow import allowlist. The service backs `ade.builtInBrowser.*` and is consumed by `ChatBuiltInBrowserPanel` and `openExternal.ts`. |
 | `apps/desktop/src/shared/types/builtInBrowser.ts` | Cross-process types for the built-in browser: `BuiltInBrowserStatus`, `BuiltInBrowserTab` (including per-tab owner/lease metadata), `BuiltInBrowserSession`, `BuiltInBrowserContextItem` (`kind: "built_in_browser_element" | "built_in_browser_capture"`), `BuiltInBrowserSelectResult`, `BuiltInBrowserScreenshot`, `BuiltInBrowserObservation` / `BuiltInBrowserDomSnapshot` / `BuiltInBrowserObservationElementMap`, browser diagnostics/action trace DTOs, agent action args for click/type/key/scroll/fill/clear/wait, `BuiltInBrowserOpenPanelArgs`, and the `BuiltInBrowserEventPayload` union (`status`, `open-request`, `selection`, `selection-cleared`, `found-in-page`, `diagnostics`, `dev-server-detected`, `error`). `BuiltInBrowserTab` also carries `isLaunchpad` (an unnavigated `about:blank` tab, titled "New tab") and `faviconUrl` (Chromium's own icon URL, cleared on cross-origin navigation), and `emulation` doubles as the letterboxing contract described below. Navigate / create-tab / switch-tab args carry an optional `openPanel: boolean` so callers can ask for the Work tools pane's Browser tool to open atomically with the navigation. |
 | `apps/desktop/src/shared/types/personalChats.ts` | Machine-scope personal-chat action, capability, result, queue-policy, and event-stream contract layered over the same `AgentChatSession` DTOs. `PersonalChatCapabilities` optionally advertises `pushEvents` and `mcpServers` so a client can tell a runtime that supports push subscribe and caller-injected MCP from an older one that would ignore them. |
+| `apps/desktop/src/shared/mcpRegistry.ts`, `apps/desktop/src/main/services/chat/mcpRegistryLaunch.ts` | The MCP registry: servers defined once in Settings › MCP servers (`mcp.servers` account setting, off lists per computer and per repository, secret values in the account vault) and resolved for each ordinary chat launch. See [MCP servers](../onboarding-and-settings/mcp-servers.md). |
 | `apps/desktop/src/shared/callerMcpServers.ts` | Caller-injected MCP: validation (name/url/transport/reserved ADE names/`MAX_CALLER_MCP_SERVERS`), per-provider `CALLER_MCP_SUPPORT` (level / mechanism / residual / delivery), and `resolveCallerMcpCapability` — the one report `createSession` and model-switch both emit. Shared by desktop, ade-cli, and summarized by `@ade-dev/sdk`. |
 | `packages/sdk/` | Embeddable sidecar client. See [ADE SDK](../sdk/README.md). |
 | `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds Claude SDK user messages for the `query()` input stream. Handles base64 image content blocks and MIME inference. |
@@ -743,6 +744,36 @@ provider cannot express (Codex has no SSE client), more than 32 servers, or
 injected servers on Pi. An empty `mcpServers` map is not a request — it is
 omitted entirely so a capability report is not invented for a chat that asked
 for nothing.
+
+## The MCP registry
+
+A user defines MCP servers once in Settings › MCP servers, and every ordinary
+chat gets them at launch, next to whatever the provider's own config loads.
+The list is the account setting `mcp.servers`; names can be switched off on
+one computer (`device.<deviceId>.mcp.off`) or in one repository (`mcp.off` in
+the `repo:<remote>` scope). Secret values are never in the list: env and header
+values live in the account vault and are read by the brain at launch
+(`readAccountSecret`). The page, the data and the import are in
+[MCP servers](../onboarding-and-settings/mcp-servers.md).
+
+`registryMcpServersForLaunch` in `agentChatService.ts` resolves the registry
+through `resolveMcpRegistryForLaunch` (`mcpRegistryLaunch.ts`), which reads this
+computer's account settings cache, so a server added in Settings reaches the
+next chat with no restart and an offline launch still gets the servers this
+computer knows. Registry servers go under caller-injected ones: a caller that
+names a server keeps its own definition.
+
+What a chat does not get:
+
+- A chat on the light session profile (personal chats, side jobs, SDK chats)
+  or with `strictMcpConfig: true` gets none. Those callers decide their own
+  servers.
+- A provider with no row in `CALLER_MCP_SUPPORT` (Copilot, Grok, Kimi, Qwen,
+  Devin) or with level `unsupported` (Pi) gets none.
+- A server on a transport the provider has no client for is left out, with a
+  warning notice in the chat (Codex and SSE).
+- A server whose secret value this computer does not hold still starts, without
+  that value, and the chat gets a warning notice naming it.
 
 ## Caller-supplied permission policy
 

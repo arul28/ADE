@@ -1788,6 +1788,10 @@ banner):
   (the program ADE runs) and a model provider (the account, key, or
   subscription that answers for it), managed in Settings › Providers › Custom
   and selectable from the Custom tab of every model picker.
+- [mcp-servers.md](./mcp-servers.md) — Settings › MCP servers: servers
+  defined once in the account and handed to every agent, switched off per
+  computer or per project, with secret values in the account vault and an
+  import from the provider CLIs' own configs.
 
 ## Onboarding responsibilities
 
@@ -1948,7 +1952,7 @@ of repeated as a badge on every row:
 
 | Group | Saves to | Pages |
 |---|---|---|
-| **Account** | Your ADE account, everywhere | Account, Chat, Notifications, Activity, Usage |
+| **Account** | Your ADE account, everywhere | Account, Chat, Notifications, Activity, MCP servers, Usage |
 | **Project** | Your account, for this repository | Secrets |
 | **Machines** | The selected machine | General, Appearance (This computer), Apple devices (This computer), Providers, Lanes, Integrations, Diagnostics |
 
