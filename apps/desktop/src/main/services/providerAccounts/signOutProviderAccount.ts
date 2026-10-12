@@ -4,6 +4,7 @@ import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/serv
 import {
   isBaseProviderInstance,
   type ProviderInstance,
+  type ProviderInstanceLoginCommand,
   type ProviderInstanceRemoveResult,
 } from "../../../shared/types/providerInstances";
 import { invalidateCachedClaudeCredentials } from "../ai/providerCredentialSources";
@@ -17,7 +18,10 @@ type UsageRefresher = { forceRefresh: () => Promise<unknown> } | null | undefine
 
 /** Runs the provider CLI's logout for one account; rejects with a short sentence. */
 async function runLogout(id: string): Promise<void> {
-  const command = getMachineProviderInstanceStore().logoutCommand(id);
+  await getMachineProviderInstanceStore().whileSigningOut(id, runLogoutCommand);
+}
+
+async function runLogoutCommand(command: ProviderInstanceLoginCommand): Promise<void> {
   const env: NodeJS.ProcessEnv = { ...userProcessEnv(), ...command.env };
   const invocation = resolveCliSpawnInvocation(command.command, command.args, env);
   await new Promise<void>((resolve, reject) => {

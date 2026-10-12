@@ -482,6 +482,21 @@ describe("providerInstanceStore", () => {
     expect(store.logoutCommand(provider).env).toEqual({});
   });
 
+  it("does not let an account become the default while its sign-out runs", async () => {
+    const { store } = makeStore();
+    const created = store.create({ provider: "claude", label: "Work" });
+    let finish: () => void = () => undefined;
+    const signingOut = store.whileSigningOut(created.instance.id, () => new Promise<void>((resolve) => { finish = resolve; }));
+
+    // It would come out of the logout as a signed-out default.
+    expect(() => store.setDefault(created.instance.id)).toThrow(/being signed out/);
+    await expect(store.whileSigningOut(created.instance.id, async () => undefined)).rejects.toThrow(/already/);
+
+    finish();
+    await signingOut;
+    expect(store.setDefault(created.instance.id).isDefault).toBe(true);
+  });
+
   it("keeps a listener that throws from rolling back the write", () => {
     const { store } = makeStore();
     store.onChange(() => {
