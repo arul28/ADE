@@ -663,6 +663,8 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     instanceId?: string,
   ): ProviderInstanceSettings {
     const resolved = requireProvider(provider);
+    const patchesProvider = typeof settings?.smartBalance === "boolean" || typeof settings?.autoStartWindows === "boolean";
+    let accountCompaction: { compaction?: ProviderCompactionSettings } | null = null;
     if (instanceId) {
       const account = get(instanceId);
       if (!account || account.provider !== resolved) throw new Error("Provider account does not match this setting.");
@@ -683,14 +685,18 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
         }
         return next;
       });
-      return { ...getProviderSettings(resolved), compaction: updated.compaction };
-    }
-    // An account setting with no account would be dropped and reported as saved.
-    if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
-      throw new Error("The subagent cache setting needs a provider account id.");
-    }
-    if (Object.hasOwn(settings, "onExtraUsage")) {
-      throw new Error("The extra usage setting needs a provider account id.");
+      // One patch can carry account settings and provider settings; the
+      // provider part is applied below, not dropped.
+      if (!patchesProvider) return { ...getProviderSettings(resolved), compaction: updated.compaction };
+      accountCompaction = { compaction: updated.compaction };
+    } else {
+      // An account setting with no account would be dropped and reported as saved.
+      if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+        throw new Error("The subagent cache setting needs a provider account id.");
+      }
+      if (Object.hasOwn(settings, "onExtraUsage")) {
+        throw new Error("The extra usage setting needs a provider account id.");
+      }
     }
     const file = readFile();
     const current = { ...DEFAULT_PROVIDER_INSTANCE_SETTINGS, ...(file.settings[resolved] ?? {}) };
@@ -702,7 +708,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     file.settings[resolved] = next;
     writeFile(file);
     emit({ reason: "setSettings", provider: resolved });
-    return next;
+    return accountCompaction ? { ...next, ...accountCompaction } : next;
   }
 
   /**

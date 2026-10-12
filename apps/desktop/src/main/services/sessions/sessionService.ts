@@ -954,9 +954,9 @@ export function createSessionService({
     const ids = normalizeSessionIds(sessionIds);
     if (!ids.length) return [];
     const placeholders = ids.map(() => "?").join(", ");
-    const settling = db.all<{ id: string; laneId: string; toolType: string | null }>(
+    const settling = db.all<{ id: string; laneId: string; toolType: string | null; resumeCommand: string | null }>(
       `
-        select id, lane_id as laneId, tool_type as toolType from terminal_sessions
+        select id, lane_id as laneId, tool_type as toolType, resume_command as resumeCommand from terminal_sessions
         where (settled_at is null or settle_override is not null)
           and id in (${placeholders})
       `,
@@ -985,11 +985,15 @@ export function createSessionService({
     }
     if (announce) {
       for (const row of settling) {
-        if (!isChatToolType(row.toolType)) continue;
+        // The same inference a session row gets when it is read: an old chat
+        // row can carry tool type "other" and name its provider only in its
+        // resume command.
+        const toolType = inferToolTypeFromResumeCommand(normalizeToolType(row.toolType), row.resumeCommand);
+        if (!isChatToolType(toolType)) continue;
         // The settle has landed. A listener that throws must not turn it into
         // a failed settle; the listener reports its own failure.
         try {
-          announce({ sessionId: row.id, laneId: row.laneId, provider: chatToolProvider(row.toolType) });
+          announce({ sessionId: row.id, laneId: row.laneId, provider: chatToolProvider(toolType) });
         } catch {
           // See above.
         }

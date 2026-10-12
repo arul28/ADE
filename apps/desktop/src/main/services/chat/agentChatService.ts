@@ -27836,8 +27836,11 @@ export function createAgentChatService(args: {
     let quotaTrippedThisTurn = false;
     /** The account stops on extra usage and this turn drew on it; set once per turn. */
     let extraUsageStopRequested = false;
-    /** The polite stop failed and its fallback already reaped the query. */
-    let extraUsageQueryReaped = false;
+    /**
+     * Set when the polite stop failed and its fallback reaps the query:
+     * resolves true once the query is reaped, false when that failed too.
+     */
+    let extraUsageReap: Promise<boolean> | null = null;
     let resultTerminalReason: string | undefined;
     let resultCanonicalModel: string | undefined;
     let resultModelProvider: string | undefined;
@@ -28523,7 +28526,7 @@ export function createAgentChatService(args: {
               noteClaudeExtraUsageStop(managed, info, turnId);
               const stopControl = getClaudeQueryControl(runtime.query);
               void (stopControl.interrupt ? stopControl.interrupt() : Promise.reject(new Error("Claude interrupt is unavailable.")))
-                .catch(async (error: unknown) => {
+                .catch((error: unknown) => {
                   logger.warn("agent_chat.claude_extra_usage_stop_failed", {
                     sessionId: managed.session.id,
                     turnId,
@@ -28532,14 +28535,17 @@ export function createAgentChatService(args: {
                   // The polite stop did not land. Reap the query so no further
                   // request of this turn is billed. Marked as an interrupt, so
                   // the loop ends on the same path as a Stop that kills
-                  // background work, whether the stream ends or throws.
-                  if (managed.runtime === runtime && runtime.activeTurnId === turnId) {
-                    runtime.interrupted = true;
-                    extraUsageQueryReaped = true;
+                  // background work, whether the stream ends or throws. The
+                  // turn tail waits for this reap and does its own when this
+                  // one fails.
+                  if (managed.runtime !== runtime || runtime.activeTurnId !== turnId) return;
+                  runtime.interrupted = true;
+                  extraUsageReap = (async () => {
                     // Arm, then reap: the same order as every other quota reset.
                     await waitForArmedResumeBounded(managed.session.id);
-                    await resetClaudeQuerySession(managed, runtime, "interrupt").catch(() => undefined);
-                  }
+                    await resetClaudeQuerySession(managed, runtime, "interrupt");
+                    return true;
+                  })().catch(() => false);
                 });
             }
             continue;
@@ -30002,13 +30008,13 @@ export function createAgentChatService(args: {
           runtime,
           turnId,
           "Interrupted",
-          extraUsageQueryReaped ? { stopSource: "system", stopReason: CHAT_STOP_REASON_RUNTIME_EXITED } : undefined,
+          extraUsageReap ? { stopSource: "system", stopReason: CHAT_STOP_REASON_RUNTIME_EXITED } : undefined,
         );
       }
       dropFinishedForegroundClaudeTasks(managed, runtime, turnId);
       // ADE's extra-usage stop ends "failed", like a rejected quota, also when
       // its fallback had to mark the turn interrupted to reap the query.
-      const finalStatus: ClaudeTerminalStatus = runtime.interrupted && !extraUsageQueryReaped
+      const finalStatus: ClaudeTerminalStatus = runtime.interrupted && !extraUsageReap
         ? "interrupted"
         : quotaTrippedThisTurn
           ? "failed"
@@ -30040,7 +30046,8 @@ export function createAgentChatService(args: {
         // the same ceiling, so a scheduler that never finishes loading cannot
         // hold the finished turn open.
         await waitForArmedResumeBounded(managed.session.id);
-        if (!extraUsageQueryReaped) await resetClaudeQuerySession(managed, runtime, "session_reset");
+        const alreadyReaped = extraUsageReap ? await extraUsageReap : false;
+        if (!alreadyReaped) await resetClaudeQuerySession(managed, runtime, "session_reset");
       } else if (runtimeStillCurrent && finalStatus === "completed") {
         dismissClaudeSessionQuota(managed);
       }

@@ -1606,7 +1606,7 @@ describe("sessionService resume metadata", () => {
         throw new Error("listener failed");
       },
     });
-    const toolTypes = { chat: "claude-chat", subagent: "claude-chat", "cursor-chat": "cursor", shell: "shell" } as const;
+    const toolTypes = { chat: "claude-chat", subagent: "claude-chat", "cursor-chat": "cursor", shell: "shell", "shell-turned-legacy": "shell" } as const;
     for (const [sessionId, toolType] of Object.entries(toolTypes)) {
       service.create({
         sessionId,
@@ -1620,15 +1620,21 @@ describe("sessionService resume metadata", () => {
       });
     }
 
+    // An old chat row: tool type "other", provider named only by its resume command.
+    db.run(
+      "update terminal_sessions set tool_type = 'other', resume_command = 'chat:claude:legacy-1' where id = 'shell-turned-legacy'",
+    );
     expect(await service.settleSessions(["chat", "cursor-chat", "shell"])).toEqual(["chat", "cursor-chat", "shell", "subagent"]);
     expect(reported).toEqual([
       { sessionId: "chat", laneId: "lane-1", provider: "claude" },
       { sessionId: "cursor-chat", laneId: "lane-1", provider: "cursor" },
     ]);
+    expect(await service.settleSessions(["shell-turned-legacy"])).toEqual(["shell-turned-legacy"]);
+    expect(reported.at(-1)).toEqual({ sessionId: "shell-turned-legacy", laneId: "lane-1", provider: "claude" });
 
     // Already settled: nothing new landed, so nothing is reported again.
     expect(await service.settleSessions(["chat"])).toEqual([]);
-    expect(reported).toHaveLength(2);
+    expect(reported).toHaveLength(3);
   });
 
   it("settles a parent's subagents with it, reaches them through an already-settled parent, and brings them back on unsettle", async () => {

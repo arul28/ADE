@@ -4612,8 +4612,15 @@ export function createAutomationService({
         ...(args.summary ? { summary: args.summary } : {}),
         session: args.session,
       };
-      trigger.summary = summarizeTrigger(trigger);
-      void dispatchTrigger(trigger).catch(reportFailure);
+      void (async () => {
+        // The summary names the lane, so it is written after the lane's name
+        // is known. A summary the caller supplied is kept.
+        const { laneBranch, laneName } = await resolveTriggerLaneInfo(trigger);
+        trigger.branch = trigger.branch ?? laneBranch;
+        trigger.laneName = trigger.laneName ?? laneName;
+        trigger.summary = summarizeTrigger(trigger);
+        await dispatchTrigger(trigger);
+      })().catch(reportFailure);
     } catch (error) {
       reportFailure(error);
     }

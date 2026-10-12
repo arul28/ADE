@@ -322,6 +322,15 @@ describe("providerInstanceStore", () => {
 
     // With no account named there is nothing to set it on; saying "saved" would be a lie.
     expect(() => store.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" })).toThrow(/account id/);
+    expect(() => store.setProviderSettings("claude", { onExtraUsage: "stop" })).toThrow(/account id/);
+    // One patch that names an account setting and a provider setting saves both.
+    const before = store.getProviderSettings("claude").smartBalance;
+    const mixed = store.setProviderSettings("claude", { onExtraUsage: "stop", smartBalance: !before }, work.id);
+    expect(mixed.smartBalance).toBe(!before);
+    expect(store.getProviderSettings("claude").smartBalance).toBe(!before);
+    expect(store.get(work.id)).toMatchObject({ onExtraUsage: "stop", subagentPromptCacheTtl: "1h" });
+    store.setProviderSettings("claude", { onExtraUsage: null }, work.id);
+    expect(store.get(work.id)?.onExtraUsage).toBeUndefined();
     store.setProviderSettings("codex", { subagentPromptCacheTtl: "1h" }, codex.id);
     expect(store.get(codex.id)?.subagentPromptCacheTtl).toBeUndefined();
     store.setProviderSettings("claude", { subagentPromptCacheTtl: "2h" as never }, work.id);
