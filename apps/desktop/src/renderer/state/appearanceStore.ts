@@ -12,6 +12,7 @@ import {
   type AdeTheme,
 } from "../../shared/theme";
 import { isWebClientMode } from "../lib/webClientMode";
+import { MAX_WORK_GRID_TILES } from "../lib/workGrid";
 import { DEFAULT_SCENE_PREFERENCES, normalizeScenePreferences, type ScenePreferences } from "../scene/scenePreferences";
 import { applyInterfacePreferences } from "../theme/applyInterface";
 import { applyAdeTheme } from "../theme/applyTheme";
@@ -43,19 +44,22 @@ export type InterfacePreferences = {
   /** Stops transitions and animations across the app, whatever the OS says. */
   reduceMotion: boolean;
   /**
-   * The most chats one Focus grid page shows on this computer, or null to let
-   * the grid decide from the space it has. A screen is a fact about the
+   * The most chats one Focus grid page shows on this computer (1 to
+   * `MAX_WORK_GRID_TILES`), or null to let the grid decide from the space it has. A screen is a fact about the
    * computer, so this is never synced.
    */
   focusGridMaxChats: number | null;
   scene: ScenePreferences;
 };
 
-/** The Focus grid page sizes a user can pick; every tile mounts a full chat, so the work grid's cap is the top. */
-export const FOCUS_GRID_MAX_CHATS_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
+/** The Focus grid page sizes a user can pick: one chat up to the work grid's cap. */
+export const FOCUS_GRID_MAX_CHATS_OPTIONS: readonly number[] = Array.from(
+  { length: MAX_WORK_GRID_TILES },
+  (_, index) => index + 1,
+);
 
 function normalizeFocusGridMaxChats(value: unknown): number | null {
-  return (FOCUS_GRID_MAX_CHATS_OPTIONS as readonly unknown[]).includes(value) ? (value as number) : null;
+  return typeof value === "number" && FOCUS_GRID_MAX_CHATS_OPTIONS.includes(value) ? value : null;
 }
 
 export const DEFAULT_INTERFACE_PREFERENCES: InterfacePreferences = {

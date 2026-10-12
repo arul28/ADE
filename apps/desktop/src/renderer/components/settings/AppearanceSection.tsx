@@ -12,7 +12,6 @@ import {
   X,
 } from "@phosphor-icons/react";
 import {
-  DEFAULT_TERMINAL_FONT_FAMILY,
   selectEffectiveThemeId,
   useAppStore,
   type InterfaceMonoFont,
@@ -27,19 +26,13 @@ import type {
   CodeBlockCopyButtonPosition,
 } from "../../state/appStore";
 import {
-  TERMINAL_FONT_FAMILY_OPTIONS,
-  TERMINAL_FONT_SIZE_OPTIONS,
-  TERMINAL_LINE_HEIGHT_OPTIONS,
-  TERMINAL_SCROLLBACK_OPTIONS,
-} from "./terminalOptions";
-import {
   ADE_THEME_FAMILIES,
   resolveTheme,
   resolveThemeById,
-  type AdeTerminalPalette,
   type ResolvedAdeThemePalette,
 } from "../../../shared/theme";
-import { ModernSection, SettingsColumn, SettingsSectionAction, SettingsSelect, SettingsToggle } from "./primitives";
+import { ModernRow, ModernSection, SettingsColumn, SettingsSectionAction, SettingsSelect, SettingsToggle } from "./primitives";
+import { TerminalSettings } from "./AppearanceTerminal";
 import { ThemeGallery, useThemeMode, type ThemeMode } from "./ThemeGallery";
 import { ThemeCustomizer } from "./ThemeCustomizer";
 import { ThemeFilesHelp, ThemeImportExport } from "./ThemeImportExport";
@@ -225,23 +218,21 @@ export function AppearanceSection() {
           </ModernSection>
 
           <ModernSection group="Interface" anchor="focus-grid-chats" title="Focus grid">
-            <div className="ade-ap-rowcard">
-              <div>
-                <div className="ade-ap-rowtitle">Chats per page</div>
-                <div className="ade-ap-rowhint">
-                  The most chats one Focus grid page shows on this computer. Automatic fits as many as stay readable.
-                </div>
-              </div>
-              <SettingsSelect
-                ariaLabel="Focus grid chats per page"
-                value={interfacePreferences.focusGridMaxChats == null ? "auto" : String(interfacePreferences.focusGridMaxChats)}
-                onChange={(next) => setInterfacePreferences({ focusGridMaxChats: next === "auto" ? null : Number(next) })}
-                options={[
-                  { value: "auto", label: "Automatic" },
-                  ...FOCUS_GRID_MAX_CHATS_OPTIONS.map((count) => ({ value: String(count), label: `Up to ${count}` })),
-                ]}
-              />
-            </div>
+            <ModernRow
+              title="Chats per page"
+              hint="Automatic fits as many as stay readable."
+              control={(
+                <SettingsSelect
+                  ariaLabel="Focus grid chats per page"
+                  value={interfacePreferences.focusGridMaxChats == null ? "auto" : String(interfacePreferences.focusGridMaxChats)}
+                  onChange={(next) => setInterfacePreferences({ focusGridMaxChats: next === "auto" ? null : Number(next) })}
+                  options={[
+                    { value: "auto", label: "Automatic" },
+                    ...FOCUS_GRID_MAX_CHATS_OPTIONS.map((count) => ({ value: String(count), label: `Up to ${count}` })),
+                  ]}
+                />
+              )}
+            />
           </ModernSection>
 
           <ModernSection group="Terminal" anchor="terminal-text" title="Terminal" hint="Work terminals, lane shells and the chat drawer.">
@@ -777,86 +768,6 @@ function SpecimenGrid<T extends string>({
   );
 }
 
-/* ── Terminal ───────────────────────────────────────────────────────── */
-
-function TerminalSettings() {
-  const terminalPreferences = useAppStore((s) => s.terminalPreferences);
-  const setTerminalPreferences = useAppStore((s) => s.setTerminalPreferences);
-  const usingCustomTerminalFont = !TERMINAL_FONT_FAMILY_OPTIONS.some((option) => option.value === terminalPreferences.fontFamily);
-  return (
-    <div className="ade-ap-terminal">
-      <TerminalPreview
-        fontFamily={terminalPreferences.fontFamily}
-        fontSize={terminalPreferences.fontSize}
-        lineHeight={terminalPreferences.lineHeight}
-      />
-      <div className="ade-ap-terminal-controls">
-        <label className="ade-ap-field">
-          <span className="kit-eyebrow">Font</span>
-          <SettingsSelect
-            ariaLabel="Terminal font family"
-            value={usingCustomTerminalFont ? "__custom__" : terminalPreferences.fontFamily}
-            onChange={(next) => {
-              if (next === "__custom__") return;
-              setTerminalPreferences({ fontFamily: next });
-            }}
-            options={[
-              ...TERMINAL_FONT_FAMILY_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
-              { value: "__custom__", label: "Custom stack…" },
-            ]}
-          />
-        </label>
-        <label className="ade-ap-field">
-          <span className="kit-eyebrow">Size</span>
-          <SettingsSelect
-            ariaLabel="Terminal font size"
-            value={String(terminalPreferences.fontSize)}
-            onChange={(next) => setTerminalPreferences({ fontSize: Number(next) })}
-            options={TERMINAL_FONT_SIZE_OPTIONS.map((value) => ({
-              value: String(value),
-              label: `${value.toFixed(1).replace(/\.0$/, "")} px`,
-            }))}
-          />
-        </label>
-        <label className="ade-ap-field">
-          <span className="kit-eyebrow">Line height</span>
-          <SettingsSelect
-            ariaLabel="Terminal line height"
-            value={String(terminalPreferences.lineHeight)}
-            onChange={(next) => setTerminalPreferences({ lineHeight: Number(next) })}
-            options={TERMINAL_LINE_HEIGHT_OPTIONS.map((value) => ({
-              value: String(value),
-              label: value.toFixed(2).replace(/0$/, ""),
-            }))}
-          />
-        </label>
-        <label className="ade-ap-field">
-          <span className="kit-eyebrow">Scrollback</span>
-          <SettingsSelect
-            ariaLabel="Terminal scrollback"
-            value={String(terminalPreferences.scrollback)}
-            onChange={(next) => setTerminalPreferences({ scrollback: Number(next) })}
-            options={TERMINAL_SCROLLBACK_OPTIONS.map((value) => ({
-              value: String(value),
-              label: `${value.toLocaleString()} lines`,
-            }))}
-          />
-        </label>
-      </div>
-      {usingCustomTerminalFont ? (
-        <input
-          id="terminal-custom-font"
-          aria-label="Custom font stack"
-          className="ade-ap-input"
-          value={terminalPreferences.fontFamily}
-          onChange={(event) => setTerminalPreferences({ fontFamily: event.target.value })}
-          placeholder={DEFAULT_TERMINAL_FONT_FAMILY}
-        />
-      ) : null}
-    </div>
-  );
-}
-
 /* ── Preview ────────────────────────────────────────────────────────── */
 
 /**
@@ -966,52 +877,5 @@ function PreviewBackdrop({ scene, palette }: { scene: ActiveScene; palette: Reso
         background: `radial-gradient(110% 80% at 15% 10%, color-mix(in srgb, ${deep} 80%, transparent), transparent 60%), radial-gradient(90% 80% at 90% 30%, color-mix(in srgb, ${glow} 40%, transparent), transparent 55%), radial-gradient(120% 90% at 60% 100%, color-mix(in srgb, ${bright} 55%, transparent), transparent 60%), ${base}`,
       }}
     />
-  );
-}
-
-/**
- * A few lines of a real-looking session in the active theme's terminal colours
- * and the chosen font, so a font or theme change shows before a terminal opens.
- */
-function TerminalPreview({
-  fontFamily,
-  fontSize,
-  lineHeight,
-}: {
-  fontFamily: string;
-  fontSize: number;
-  lineHeight: number;
-}) {
-  const themeId = useAppStore(selectEffectiveThemeId);
-  const customThemes = useAppStore((s) => s.customThemes);
-  const t: AdeTerminalPalette = useMemo(
-    () => resolveTheme(resolveThemeById(themeId, customThemes)).terminal,
-    [themeId, customThemes],
-  );
-  const c = (color: string | undefined, children: React.ReactNode, bold = false) => (
-    <span style={{ color, fontWeight: bold ? 700 : undefined }}>{children}</span>
-  );
-  return (
-    <div
-      aria-hidden
-      className="ade-ap-terminal-preview"
-      style={{
-        background: t.background,
-        color: t.foreground,
-        fontFamily,
-        fontSize,
-        lineHeight,
-      }}
-    >
-      <div>{c(t.green, "➜", true)} {c(t.cyan, "ade", true)} {c(t.blue, "git:(")}{c(t.red, "main")}{c(t.blue, ")")} npm run dev</div>
-      <div>{" "}</div>
-      <div>  {c(t.green, "VITE", true)} {c(t.green, "v7.1.1")}  ready in {c(t.foreground, "1.24s", true)}</div>
-      <div>  {c(t.green, "➜")}  Local:   {c(t.cyan, "http://127.0.0.1:5173/")}</div>
-      <div>  {c(t.brightBlack, "✓")} {c(t.green, "85 passed")}  {c(t.yellow, "△ 2 warnings")}  {c(t.red, "✗ 0 failed")}</div>
-      <div>
-        {c(t.green, "➜", true)} {c(t.cyan, "ade", true)}{" "}
-        <span style={{ display: "inline-block", width: "0.6em", height: "1.1em", verticalAlign: "text-bottom", background: t.cursor }} />
-      </div>
-    </div>
   );
 }

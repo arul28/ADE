@@ -2,7 +2,7 @@ import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { useLatestCallback } from "../../lib/stableIdentity";
-import { useAppStore } from "../../state/appStore";
+import { useAppearanceStore } from "../../state/appearanceStore";
 import { cn } from "../ui/cn";
 import { makeGridLayoutId, MAX_WORK_GRID_TILES } from "../../lib/workGrid";
 import type { WorkFocusCardMark } from "./SessionCard";
@@ -81,11 +81,10 @@ export function useWorkFocusGrid({
   // Page size follows the space the grid has: a small window gets fewer,
   // usable tiles per page instead of six cramped ones. Measured on the grid's
   // own box; state changes only when the number of tiles that fit changes.
-  // Every tile mounts a full chat, so the hand-made grid's cap still applies,
-  // and only the page on screen is mounted. This computer's "chats per page"
+  // Every tile mounts a full chat, so `MAX_WORK_GRID_TILES` still applies, and
+  // only the page on screen is mounted. This computer's "chats per page"
   // setting lowers that cap; it never raises a page above what fits.
-  const maxChats = useAppStore((s) => s.interfacePreferences.focusGridMaxChats);
-  const maxTiles = Math.min(MAX_WORK_GRID_TILES, maxChats ?? MAX_WORK_GRID_TILES);
+  const maxTiles = useAppearanceStore((s) => s.interfacePreferences.focusGridMaxChats) ?? MAX_WORK_GRID_TILES;
   const [gridNode, setGridNode] = useState<HTMLDivElement | null>(null);
   const [fit, setFit] = useState<FocusFit>({ columns: 3, rows: 2, capacity: maxTiles });
   useEffect(() => {
@@ -106,7 +105,11 @@ export function useWorkFocusGrid({
   }, [gridNode, maxTiles]);
 
   // As few pages as fit, with the chats spread evenly across them.
-  const pages = useMemo(() => focusEvenPages(ordered, fit.capacity), [fit.capacity, ordered]);
+  // The setting is applied here too, not only in the measured fit: the box is
+  // measured while the grid is on screen, so a setting changed while it was
+  // off would otherwise mount one page at the old size.
+  const capacity = Math.min(fit.capacity, maxTiles);
+  const pages = useMemo(() => focusEvenPages(ordered, capacity), [capacity, ordered]);
   const pageById = useMemo(() => {
     const map = new Map<string, number>();
     pages.forEach((entries, index) => entries.forEach((session) => map.set(session.id, index)));

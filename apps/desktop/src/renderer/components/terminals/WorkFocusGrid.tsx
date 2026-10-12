@@ -76,9 +76,8 @@ export function WorkFocusGridEmpty({
  * the reply, and the composer with its controls on one row. The height is
  * high on purpose: a short tile is mostly composer, so a laptop-height grid
  * pages side-by-side tiles instead of stacking two rows. The box is measured
- * in CSS pixels, which grow as the app zooms out, so the height also has to
- * keep a zoomed-out laptop (1512 × 982 at 70% is a 1890 × ~1080 box) on one
- * row: two rows there are six tiles about 430 points tall.
+ * in CSS pixels, which grow as the app zooms out, so the height is set to keep
+ * a zoomed-out laptop on one row as well.
  */
 const FOCUS_TILE_MIN_WIDTH = 420;
 const FOCUS_TILE_MIN_HEIGHT = 600;
