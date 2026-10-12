@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PR_ATTACHMENT_TITLE,
   parsePrCompareFence,
   prBodyProofIds,
   prProofIdFromTitle,
@@ -103,6 +104,25 @@ describe("proof in a pull request's text", () => {
     // A table of data that happens to mention "before" is not a comparison.
     const data = "| Before | After |\n| --- | --- |\n| 137 ms | 47 ms |";
     expect(preparePrBodyProofForAde(data)).toBe(data);
+  });
+
+  it("draws a GitHub attachment alone on its line as media, as GitHub does, and leaves one in a sentence or in code alone", () => {
+    const url = "https://github.com/user-attachments/assets/83908590-2459-482d-bce8-9fbe8c7b7974";
+    const text = `## Proof\n\n${url}\n\nSee ${url} for the run.\n\n\`\`\`\n${url}\n\`\`\``;
+    const ade = preparePrBodyProofForAde(text);
+    expect(ade).toContain(`\n![](${url} "${PR_ATTACHMENT_TITLE}")\n`);
+    expect(ade).toContain(`See ${url} for the run.`);
+    expect(ade).toContain(`\`\`\`\n${url}\n\`\`\``);
+    // A link that only looks like an attachment is a link.
+    const other = "https://github.com/user-attachments/files/123/report.zip";
+    expect(preparePrBodyProofForAde(other)).toBe(other);
+
+    // An uploaded video pair comes back from GitHub as bare links with their proof ids.
+    const pair = `**Before** — Slow\n\n${url}<!-- ade-proof:vid1 -->\n\n**After** — Fast\n\n${url}<!-- ade-proof:vid2 -->`;
+    expect(figures(preparePrBodyProofForAde(pair))[0]!.sides.map((side) => [side.artifactId, side.url, side.label])).toEqual([
+      ["vid1", url, "Slow"],
+      ["vid2", url, "Fast"],
+    ]);
   });
 
   it("accepts only an https picture and a well-formed proof id from a fence that any commenter can write", () => {
