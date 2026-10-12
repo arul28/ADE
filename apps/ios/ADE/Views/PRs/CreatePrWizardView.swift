@@ -1340,6 +1340,13 @@ struct PrDescriptionMediaView: View {
             .onReceive(player.publisher(for: \.currentItem?.status).receive(on: DispatchQueue.main)) { status in
               if status == .failed { videoFailed = true }
             }
+            // A file can load and then fail part way, with no change of status.
+            .onReceive(NotificationCenter.default.publisher(
+              for: .AVPlayerItemFailedToPlayToEndTime,
+              object: player.currentItem
+            ).receive(on: DispatchQueue.main)) { _ in
+              videoFailed = true
+            }
         } else {
           Button {
             let next = AVPlayer(url: media.url)

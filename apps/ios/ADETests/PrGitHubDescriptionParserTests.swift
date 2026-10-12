@@ -310,6 +310,9 @@ final class PrGitHubDescriptionParserTests: XCTestCase {
     [1]: https://github.com/arul28/ADE/issues/1
     """
     XCTAssertEqual(prDescriptionPieces(text), [.markdown(text)])
+    // CommonMark needs no space after the colon.
+    let tight = "See [it][1].\n\n![x](\(attachment))\n\n[1]:https://github.com/arul28/ADE/issues/1"
+    XCTAssertEqual(prDescriptionPieces(tight), [.markdown(tight)])
   }
 
   func testAnAttachmentIndentedAsCodeStaysCode() {
@@ -334,6 +337,7 @@ final class PrGitHubDescriptionParserTests: XCTestCase {
     <img width="800" alt="The old list" src="\(attachment)" />
     <img alt="A chart" src="https://tracker.example.com/pixel.png">
     <img src="\(attachment)">
+    <img alt="before > after" src="\(attachment)">
     """)
 
     guard case .markdown(_, let markdown) = blocks[0] else {
@@ -345,6 +349,8 @@ final class PrGitHubDescriptionParserTests: XCTestCase {
       .markdown("[Image: A chart]"),
       // GitHub's own uploads often carry no alt text at all.
       .media(image(attachment, "")),
+      // A `>` inside the alt text does not end the tag early.
+      .media(image(attachment, "before > after")),
     ])
   }
 }

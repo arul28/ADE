@@ -26,7 +26,8 @@ private enum PrGitHubDescriptionRegex {
   static let link = htmlExpression(#"<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a\s*>"#)
   static let heading = htmlExpression(#"<h([1-6])\b[^>]*>(.*?)</h[1-6]\s*>"#)
   static let listItem = htmlExpression(#"<li\b[^>]*>(.*?)</li\s*>"#)
-  static let image = htmlExpression(#"<img\b[^>]*>"#)
+  // A `>` inside a quoted attribute (alt="before > after") does not end the tag.
+  static let image = htmlExpression(#"<img\b(?:[^>"']|"[^"]*"|'[^']*')*>"#)
   static let imageAlt = expression(#"\balt\s*=\s*["']([^"']*)["']"#, options: [.caseInsensitive])
   static let lineBreak = expression(#"<br\s*/?>"#, options: [.caseInsensitive])
   static let paragraph = expression(#"</?p\b[^>]*>"#, options: [.caseInsensitive])
@@ -643,7 +644,7 @@ private enum PrDescriptionMediaRegex {
   )
   /// `[label]: url` on its own line: a link or footnote used elsewhere.
   static let referenceDefinition = try! NSRegularExpression(
-    pattern: #"^ {0,3}\[[^\]\n]+\]:\s+\S"#,
+    pattern: #"^ {0,3}\[[^\]\n]+\]:\s*\S"#,
     options: [.anchorsMatchLines]
   )
 }
