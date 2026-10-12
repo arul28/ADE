@@ -521,10 +521,14 @@ export function buildTimelineEvents(args: {
     });
   }
 
+  // The comment list names a comment `issue:<node id>` and the activity feed
+  // names the same one `comment-issue:<node id>`. The node id is what the two
+  // share, so it is the key; by the whole id every comment showed twice.
+  const commentKey = (id: string) => id.slice(id.lastIndexOf(":") + 1);
   const seenCommentIds = new Set(
     events
       .filter((event): event is Extract<PrTimelineEvent, { type: "issue_comment" }> => event.type === "issue_comment")
-      .map((event) => event.commentId),
+      .map((event) => commentKey(event.commentId)),
   );
   const seenReviewIds = new Set(
     events
@@ -534,8 +538,8 @@ export function buildTimelineEvents(args: {
   for (const act of args.activity) {
     if (act.type === "comment") {
       const source = readActivityString(act, "source") ?? "issue";
-      if (source !== "issue" || seenCommentIds.has(act.id)) continue;
-      seenCommentIds.add(act.id);
+      if (source !== "issue" || seenCommentIds.has(commentKey(act.id))) continue;
+      seenCommentIds.add(commentKey(act.id));
       events.push({
         id: `comment:${act.id}`,
         type: "issue_comment",
