@@ -550,7 +550,7 @@ export function ProjectRecoveryScreen() {
   // A project folder that is itself gone has its own words: nothing can be
   // restored into it, only brought back.
   const copy = state === "data_missing" && diagnosis?.projectFolderMissing
-    ? { ...RECOVERY_COPY.data_missing, ...PROJECT_FOLDER_MISSING_COPY }
+    ? { ...RECOVERY_COPY.data_missing, headline: PROJECT_FOLDER_MISSING_COPY.headline, body: PROJECT_FOLDER_MISSING_COPY.body }
     : RECOVERY_COPY[state] ?? RECOVERY_COPY.unknown_failure;
   const canAutoRepair = Boolean(
     rootPath && (diagnosis ? diagnosis.canAutoRepair : copy.canAutoRepair),

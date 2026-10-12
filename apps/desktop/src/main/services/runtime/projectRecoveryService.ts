@@ -518,18 +518,21 @@ export class ProjectRecoveryService {
    * background service's (removing the project disposes it; the reopen
    * registers it again). Both may hold a paused handle on the old file.
    */
-  private async releaseProject(projectRoot: string, reason: string): Promise<void> {
+  private async releaseProject(
+    projectRoot: string,
+    events: { closeFailed: string; runtimeRemoveFailed: string },
+  ): Promise<void> {
     try {
       await this.deps.closeProject?.(projectRoot);
     } catch (error) {
-      this.deps.logger.warn(`project.${reason}_close_failed`, { projectRoot, error: errorMessage(error) });
+      this.deps.logger.warn(events.closeFailed, { projectRoot, error: errorMessage(error) });
     }
     const record = new ProjectRegistry().findByRootPath(projectRoot);
     if (!record) return;
     try {
       await this.deps.connectionPool.removeProject(projectRoot, record.projectId);
     } catch (error) {
-      this.deps.logger.warn(`project.${reason}_runtime_remove_failed`, { projectRoot, error: errorMessage(error) });
+      this.deps.logger.warn(events.runtimeRemoveFailed, { projectRoot, error: errorMessage(error) });
     }
   }
 
@@ -568,11 +571,18 @@ export class ProjectRecoveryService {
     this.deps.logger.info("project.data_restored", { projectRoot: normalizedRoot });
     // Only after the files are back: releasing drops the project's record,
     // and a failed restore must keep it so the next open still refuses to
-    // create empty data. Closing the paused handles now cannot write to the
-    // restored copy: SQLite skips its closing checkpoint when the file at the
-    // path is not the one it opened (a copy from another volume's Trash), and
-    // a moved-back file is the same file. A reopen then starts fresh handles.
-    await this.releaseProject(normalizedRoot, "data_restore");
+    // create empty data. Closing the paused handles now is safe. For a copy
+    // from another volume's Trash the file at the path is not the one the
+    // handle opened, and SQLite's pager skips its closing checkpoint then
+    // (SQLITE_FCNTL_HAS_MOVED; checked by hand with a pending write-ahead log,
+    // which stayed untouched). A moved-back file is the very file the handle
+    // opened, so its closing checkpoint writes that file's own committed
+    // pages into it. If the background service fails to let go, its old
+    // handle stays paused by the identity guard and cannot write either.
+    await this.releaseProject(normalizedRoot, {
+      closeFailed: "project.data_restore_close_failed",
+      runtimeRemoveFailed: "project.data_restore_runtime_remove_failed",
+    });
     this.clearStartupProblem(normalizedRoot);
     return { restored: true };
   }
@@ -588,7 +598,10 @@ export class ProjectRecoveryService {
       // deleted, or that lives on a drive that is not plugged in.
       throw new Error(PROJECT_FOLDER_MISSING_COPY.refusal);
     }
-    await this.releaseProject(normalizedRoot, "start_fresh");
+    await this.releaseProject(normalizedRoot, {
+      closeFailed: "project.start_fresh_close_failed",
+      runtimeRemoveFailed: "project.start_fresh_runtime_remove_failed",
+    });
     forgetLocalProjectDatabaseIdentity(normalizedRoot);
     // An empty `.ade` is what a first open expects. Without it a project whose
     // `.ade` folder is gone still reads as missing data, whether or not the
@@ -805,7 +818,8 @@ export class ProjectRecoveryService {
     // Repair opens the database, which would create an empty replacement for
     // data that is only missing (or recreate a folder that is gone). The
     // recovery screen offers restore instead.
-    if (!fs.existsSync(normalizedRoot) || isLocalProjectDataMissing(normalizedRoot)) {
+    const projectFolderPresent = fs.existsSync(normalizedRoot);
+    if (!projectFolderPresent || isLocalProjectDataMissing(normalizedRoot)) {
       return {
         ok: false,
         steps: [],
@@ -814,7 +828,7 @@ export class ProjectRecoveryService {
         chatsNeedingAttention: null,
         filesRemoved: 0,
         failureCode: "project_data_missing",
-        nextAction: fs.existsSync(normalizedRoot)
+        nextAction: projectFolderPresent
           ? "This project's ADE data is missing. Restore it from the Trash or start fresh instead."
           : PROJECT_FOLDER_MISSING_COPY.refusal,
       };

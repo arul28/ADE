@@ -689,14 +689,22 @@ function ProjectTabHost() {
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
   // The project's .ade folder or database disappeared (or was swapped) while
   // it was open: show the recovery screen instead of letting every panel fail.
-  // Asked when the window loads (with no project: the one that could not
-  // reopen at launch) and whenever its project changes, so a reload or a
-  // second window learns what the main process already knows.
+  // Asked once when the window loads (the project that could not reopen at
+  // launch) and whenever its project changes, so a reload or a second window
+  // learns what the main process already knows. A window that later goes
+  // back to the welcome screen does not bring the launch problem back.
   const activeProjectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   React.useEffect(() => {
-    void window.ade?.recovery?.projectDataStatus?.(activeProjectRoot ?? undefined).then((problem) => {
+    void window.ade?.recovery?.projectDataStatus?.().then((problem) => {
+      if (!problem || useAppStore.getState().project) return;
+      useAppStore.getState().reportProjectDataProblem(problem.projectRoot, problem.status);
+    }).catch(() => undefined);
+  }, []);
+  React.useEffect(() => {
+    if (!activeProjectRoot) return;
+    void window.ade?.recovery?.projectDataStatus?.(activeProjectRoot).then((problem) => {
       // Dropped if the window moved to another project while this was asked.
-      if (!problem || (useAppStore.getState().project?.rootPath ?? null) !== activeProjectRoot) return;
+      if (!problem || useAppStore.getState().project?.rootPath !== activeProjectRoot) return;
       useAppStore.getState().reportProjectDataProblem(problem.projectRoot, problem.status);
     }).catch(() => undefined);
   }, [activeProjectRoot]);

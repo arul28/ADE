@@ -1964,6 +1964,11 @@ const MACHINE_INVENTORY_CHAT_ACTIONS = new Set<string>([
   "getLaunchDefaults",
 ]);
 
+/**
+ * Whether a runtime action's result belongs to the project the window was
+ * bound to when it started. Machine inventories (the model catalog) belong to
+ * the machine, so a project switch does not make them stale.
+ */
 function guardsProjectBinding(domain: string, action: string): boolean {
   return !(domain === "chat" && MACHINE_INVENTORY_CHAT_ACTIONS.has(action));
 }

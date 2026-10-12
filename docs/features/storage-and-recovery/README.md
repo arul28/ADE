@@ -9,8 +9,8 @@ connection. This protection is shared by desktop and headless runtime clients,
 including sync and database maintenance.
 
 The desktop also checks each open project's `ade.db` every 5 seconds
-(`services/runtime/openProjectDataWatch.ts`). Only "not found" counts as
-missing; other errors (a volume slow to answer) skip the tick. A project
+(`services/runtime/openProjectDataWatch.ts`). Only "not found" (ENOENT, or
+ENOTDIR when a parent became a file) counts as missing; other errors (a volume slow to answer) skip the tick. A project
 folder that is itself gone, an unplugged drive included, gets its own wording
 and no Restore or Start fresh, since either would recreate the folder.
 When the file disappears or is swapped, the window shows the project recovery
@@ -34,8 +34,10 @@ since opening the database would create an empty replacement. From there:
   in the project when the Trash is on another volume). The
   database goes back last, after its write-ahead log, and a copy from another
   volume's Trash lands under a temporary name before it is renamed into place,
-  so a failed restore can be retried. Nothing is deleted. The project then
-  closes and reopens, so it starts on a fresh database handle.
+  so a failed restore can be retried. Nothing is deleted. Once the files are
+  back, the window closes the project and the background service drops it,
+  so the reopen starts on fresh database handles; a failed restore keeps the
+  project's record, so the next open still refuses to create empty data.
 - The screen keeps checking, so putting the folder back by hand reopens the
   project.
 - **Start fresh** (or **Use this copy** for a swapped database) closes the
