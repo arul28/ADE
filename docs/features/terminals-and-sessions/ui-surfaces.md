@@ -676,8 +676,15 @@ own headers, chat action panes and floating previews); what differs:
   a new set starts from the even auto layout instead of squeezing a newcomer
   into the largest tile.
 - **Pages.** `focusFit` measures the grid's own box (ResizeObserver) at
-  `FOCUS_TILE_MIN_WIDTH` × `FOCUS_TILE_MIN_HEIGHT` (420 × 480; a shorter tile is mostly composer, so a laptop-height grid gets one row and more pages): columns, rows,
-  and a capacity between one and `MAX_WORK_GRID_TILES`. `focusEvenPages` uses
+  `FOCUS_TILE_MIN_WIDTH` × `FOCUS_TILE_MIN_HEIGHT`: columns, rows, and a
+  capacity between one and `MAX_WORK_GRID_TILES`. The minimum height is high
+  on purpose. A short tile is mostly composer, so a grid gets a second row
+  only when both rows clear that height, and otherwise pages side-by-side
+  tiles. The box is in CSS pixels, which grow as the app zooms out, so this
+  holds for a zoomed-out laptop too. The per-computer **Chats per page**
+  setting (Settings › Appearance › Focus grid,
+  `interfacePreferences.focusGridMaxChats`, Automatic by default) lowers the
+  capacity; it never puts more on a page than fits. `focusEvenPages` uses
   as few pages as that capacity allows and spreads the chats evenly (8 with
   room for 6 → 4 + 4; 7 → 4 + 3). `focusPageColumns` lays a page out side by
   side first: as few rows as the width allows, tiles spread evenly over them

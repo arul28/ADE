@@ -500,6 +500,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Interface",
   },
   {
+    id: "appearance.focus-grid-chats",
+    label: "Focus grid chats per page",
+    keywords: ["focus", "grid", "tiles", "columns", "layout", "work", "screen size"],
+    tab: "appearance",
+    anchor: "focus-grid-chats",
+    scope: "machine",
+    web: "browser",
+    group: "Interface",
+  },
+  {
     id: "appearance.terminal",
     label: "Terminal text",
     keywords: ["terminal", "font", "monospace", "size", "line height", "scrollback", "shell"],
