@@ -709,9 +709,21 @@ chat pane mount, which happens either way.
   show a pending thumbnail while ADE writes the temp attachment. Electron
   clipboard images use
   `ade.app.saveClipboardImageAttachment` when available so the main
-  process can save the PNG and return a small preview without sending
+  process can save the image and return a small preview without sending
   the full base64 payload through the renderer; the legacy
   `ade.agentChat.saveTempAttachment` path remains as the fallback.
+  The clipboard never holds the file that was copied: a photo copied out of
+  Messages or Photos is a decoded bitmap that Electron re-encodes as PNG, often
+  several times the size of the photo and over the 10 MB pasted-bytes ceiling.
+  Both main-process clipboard readers fit it with
+  `encodeClipboardImageWithinCap` (`clipboardImageEncoding.ts`): PNG when it
+  fits, otherwise JPEG, shrinking the long edge from 4096 px until it fits, and
+  refusing only below 768 px. On desktop a single pasted image over the
+  ceiling is routed to that reader instead of being refused, unless it is a
+  file with a path on disk (copied in Finder), which streams from its path; if
+  the clipboard turns out to hold no bitmap, the pasted file goes through the
+  normal path, which says why it is refused. The hosted web client keeps the
+  normal path, because its clipboard reader does no fitting.
   On macOS, `.heic` and `.heif` file drops are converted to JPEG through
   the main-process image bridge before the temp attachment is saved, so
   the preview and provider payload use the converted bytes. Windows and
@@ -2976,6 +2988,16 @@ is not loaded yet.
   shell read through equality-gated selectors. Adding a plain
   `useChatLaunchEntries()` to a page-level component re-renders it on every
   tick.
+- **The locked summary read retries.** A locked Work chat takes its title and
+  model only from its summary, and a finished chat gets no events that would
+  read it again, so `refreshLockedSessionSummary` never gives up on a read
+  that fails: it keeps the summary already held (and the turn flag it implies)
+  and retries on a 1, 2, 4, 8, 15, then every-30-seconds backoff while the pane
+  stays on that chat. A "not found" answer also keeps the held summary until it
+  has persisted for 60 seconds, so a chat briefly unknown while a project opens
+  or a handoff lands does not drop to "New chat" with "Select model". A read
+  that resolves after the pane moved to another chat writes nothing, and an
+  unmount or chat switch cancels the retry.
 - **Pending pane reads.** While `launchAwaitingSession`, the pane skips the
   locked summary read, history hydration, active-turn recovery, delta and
   computer-use reads; the history effect re-runs when it flips. Queued sends

@@ -1,5 +1,3 @@
-import type { NativeImage } from "electron";
-
 /** Long edge of the first JPEG attempt: sharp on any display, small on disk. */
 const FIRST_JPEG_EDGE_PX = 4096;
 /** Below this the picture is not worth sending; the caller reports the ceiling. */
@@ -14,7 +12,13 @@ export type EncodedClipboardImage = {
   mimeType: string;
 };
 
-type EncodableImage = Pick<NativeImage, "getSize" | "resize" | "toJPEG" | "toPNG">;
+/** The four `NativeImage` methods the encoder uses; Electron's image satisfies it. */
+type EncodableImage = {
+  getSize(): { width: number; height: number };
+  toPNG(): Buffer;
+  toJPEG(quality: number): Buffer;
+  resize(options: { width?: number; height?: number; quality?: "good" | "better" | "best" }): EncodableImage;
+};
 
 /**
  * Encodes a clipboard image so it fits the bytes-path attachment ceiling.
