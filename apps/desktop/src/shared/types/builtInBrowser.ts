@@ -99,9 +99,9 @@ export type BuiltInBrowserTab = {
   isLaunchpad: boolean;
   /**
    * Why the current page failed to load (connection refused, DNS, timeout), or
-   * null. Chromium shows such a page as plain white, so a preview of the tab
-   * says this instead. Cleared when the tab starts loading again. Absent on a
-   * main process that predates it, which reads as null.
+   * null. Chromium shows such a page as plain white, so the Work tab's floating
+   * preview hides while it is set. Cleared when the tab starts loading again.
+   * Absent on a main process that predates it, which reads as null.
    */
   loadError?: BuiltInBrowserTabLoadError | null;
   /**

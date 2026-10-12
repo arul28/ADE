@@ -3455,22 +3455,34 @@ export function AgentChatComposer({
   };
   addFileAttachmentsRef.current = addFileAttachments;
 
-  const addNativeClipboardImageAttachment = async () => {
+  /**
+   * Attach the clipboard's image through the host, which fits an oversized one
+   * under the ceiling. `fallbackFiles` are what the paste event carried: when
+   * the clipboard holds no bitmap after all (a file copied in Finder, say),
+   * they go through the normal path, which says why it refuses one.
+   */
+  const addNativeClipboardImageAttachment = async (fallbackFiles?: File[]) => {
     if (attachmentPersistenceUnavailableReason) {
       setAttachError(attachmentPersistenceUnavailableReason);
       return;
     }
-    if (!canAttach) return;
+    if (!canAttach) {
+      // The normal path is the one that says why attaching is blocked.
+      if (fallbackFiles?.length) void addFileAttachments(fallbackFiles);
+      return;
+    }
     if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     const attachmentOwnerBinding = composerMachineBinding;
+    let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
       if (!image) {
         dropPendingImageAttachment(pendingImage.id);
+        clipboardWasEmpty = true;
         return;
       }
       const { path: tempPath } = await agentChatApiRef.current.saveTempAttachment({
@@ -3497,6 +3509,7 @@ export function AgentChatComposer({
       setAttachError(reason || "Unable to attach clipboard image.");
     } finally {
       fileAddInProgressRef.current = false;
+      if (clipboardWasEmpty && fallbackFiles?.length) void addFileAttachments(fallbackFiles);
     }
   };
 
@@ -5710,13 +5723,18 @@ export function AgentChatComposer({
     // the pasted-bytes ceiling. The desktop clipboard reader fits it under the
     // ceiling instead of refusing it, so an oversized pasted image goes there.
     // The web adapter's reader does no fitting, so the web keeps the old path.
+    const [onlyFile] = collected;
+    // A file copied in Finder has a path on disk, which the normal path
+    // streams at the full ceiling; only an in-memory bitmap needs fitting.
     const oversizedClipboardImage = collected.length === 1
-      && collected[0]!.type.startsWith("image/")
-      && collected[0]!.size > LEGACY_MAX_CHAT_ATTACHMENT_BYTES
+      && onlyFile != null
+      && onlyFile.type.startsWith("image/")
+      && onlyFile.size > LEGACY_MAX_CHAT_ATTACHMENT_BYTES
+      && !window.ade?.project?.getDroppedPath?.(onlyFile)
       && !isWebClientMode()
       && typeof window.ade?.app?.readClipboardImage === "function";
     if (oversizedClipboardImage) {
-      void addNativeClipboardImageAttachment();
+      void addNativeClipboardImageAttachment(collected);
       return;
     }
     void addFileAttachments(collected);

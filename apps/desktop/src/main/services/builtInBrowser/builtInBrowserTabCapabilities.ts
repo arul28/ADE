@@ -511,12 +511,17 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     if (!tab.emulation) return;
     const wc = tab.webContents;
     if (wc.isDestroyed() || !wc.debugger.isAttached()) return;
-    void sendEmulationCommands(tab, tab.emulation).catch((error) => {
-      logger()?.debug("built_in_browser.emulation_reapply_failed", {
-        tabId: tab.id,
-        err: errorMessage(error),
-      });
-    });
+    // The applied scale is only known once the override lands, and a parked
+    // view is boxed at that scale, so the view is re-placed after it.
+    void sendEmulationCommands(tab, tab.emulation).then(
+      () => deps.onTabEmulationChanged?.(tab.id),
+      (error) => {
+        logger()?.debug("built_in_browser.emulation_reapply_failed", {
+          tabId: tab.id,
+          err: errorMessage(error),
+        });
+      },
+    );
   };
 
   /** The scale Chromium draws an emulating tab at: what its override last applied. */

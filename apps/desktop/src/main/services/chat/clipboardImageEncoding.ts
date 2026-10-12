@@ -1,5 +1,21 @@
 import type { NativeImage } from "electron";
 
+/** Long edge of the first JPEG attempt: sharp on any display, small on disk. */
+const FIRST_JPEG_EDGE_PX = 4096;
+/** Below this the picture is not worth sending; the caller reports the ceiling. */
+const MIN_JPEG_EDGE_PX = 768;
+const JPEG_QUALITY = 85;
+/** Each retry shrinks the long edge to this fraction of the last one. */
+const JPEG_EDGE_STEP = 0.75;
+
+export type EncodedClipboardImage = {
+  data: Buffer;
+  filename: string;
+  mimeType: string;
+};
+
+type EncodableImage = Pick<NativeImage, "getSize" | "resize" | "toJPEG" | "toPNG">;
+
 /**
  * Encodes a clipboard image so it fits the bytes-path attachment ceiling.
  *
@@ -12,21 +28,6 @@ import type { NativeImage } from "electron";
  * JPEG, shrinking the long edge until it fits. The models scale anything past
  * ~1.5k px down anyway, so the shrink costs nothing anyone can see.
  */
-
-/** Long edge of the first JPEG attempt: sharp on any display, small on disk. */
-const FIRST_JPEG_EDGE_PX = 4096;
-/** Below this the picture is not worth sending; the caller reports the ceiling. */
-const MIN_JPEG_EDGE_PX = 768;
-const JPEG_QUALITY = 85;
-
-export type EncodedClipboardImage = {
-  data: Buffer;
-  filename: string;
-  mimeType: string;
-};
-
-type EncodableImage = Pick<NativeImage, "getSize" | "resize" | "toJPEG" | "toPNG">;
-
 export function encodeClipboardImageWithinCap(
   image: EncodableImage,
   maxBytes: number,
@@ -48,6 +49,6 @@ export function encodeClipboardImageWithinCap(
       return { data: jpeg, filename: "clipboard.jpg", mimeType: "image/jpeg" };
     }
     if (edge <= MIN_JPEG_EDGE_PX) return null;
-    edge = Math.max(MIN_JPEG_EDGE_PX, Math.floor(edge * 0.75));
+    edge = Math.max(MIN_JPEG_EDGE_PX, Math.floor(edge * JPEG_EDGE_STEP));
   }
 }

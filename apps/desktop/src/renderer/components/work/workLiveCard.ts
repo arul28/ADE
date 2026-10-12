@@ -772,12 +772,10 @@ export function workLiveCardAspect(
   sourceAspect?: number | null,
 ): number {
   if (typeof sourceAspect === "number" && Number.isFinite(sourceAspect) && sourceAspect > 0) {
-    // The card takes the picture's own shape, browser included. A browser
-    // card used to be held at 4:3 or wider so a tab parked at a sliver of a
-    // pane would not become a sliver of a card, but parking now lays a hidden
-    // tab out at a usable size, so a tall picture is a real page — a phone
-    // preset, a tall pane — and a landscape box showed it as a strip using a
-    // third of the card. `workLiveCardSize` keeps a tall card inside the column.
+    // The card takes the picture's own shape, browser included: parking lays
+    // a hidden tab out at a usable size, so a tall picture is a real page (a
+    // phone preset, a tall pane), and a landscape box would show it as a strip.
+    // `workLiveCardSize` keeps a tall card inside the column.
     return sourceAspect;
   }
   return tool ? WORK_LIVE_TOOL_ASPECT[tool] : WORK_LIVE_CARD_DEFAULT_ASPECT;
@@ -836,17 +834,16 @@ export function workLiveCardSize(args: {
     height = maxHeight;
     width = height * aspect;
   }
-  // The user's floor is a hard one: for a source taller than
-  // `minWidth / maxHeight` (~0.59) the two constraints cannot both hold, and a
-  // 200px card that is taller than the soft cap is better than a 136px card
-  // nobody can see. The exact aspect is kept either way.
+  // The width floor beats the soft height cap: for a source taller than
+  // `minWidth / maxHeight` (~0.59) the two cannot both hold, and a 200px card
+  // taller than the cap is better than a 136px card nobody can see. The exact
+  // aspect is kept either way.
   if (width < bounds.min) {
     width = bounds.min;
     height = width / aspect;
-    // ...unless the column is too short for that card at all. A phone preset
-    // at the 200px floor is ~430px tall, and a card that cannot fit is not
-    // shown, so in a short window the preview vanished. Narrower than the
-    // floor but on screen beats the floor and gone.
+    // The column's own height beats the floor: a card that cannot fit is not
+    // shown, so a phone preset (~430px tall at the floor) in a short window
+    // would vanish. Narrower than the floor but on screen beats gone.
     if (height > availableHeight) {
       height = Math.max(1, availableHeight);
       width = height * aspect;
