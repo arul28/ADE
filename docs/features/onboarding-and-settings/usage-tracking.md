@@ -1045,9 +1045,10 @@ for each provider, mainly Claude and Codex. The wire contract is in
   row**. Every signed-in Claude or Codex account is a row, including one that
   has not reported a window yet: that row names the account and says `No usage
   yet` instead of omitting it. **One login is one row**: two local config homes
-  that report the same account email are collapsed to the first (the default),
-  and the later account's windows are dropped with it, so one quota is never
-  counted twice. Logins on different emails stay two rows. Each row
+  that report the same account email are collapsed to the owner the account
+  registry names (`sameLoginOwner`: the default when its login works, else the
+  first working login), and the other account's windows are dropped with it,
+  so one quota is never counted twice. Logins on different emails stay two rows. Each row
   names itself — provider mark, provider, `email · plan` — and
   carries that account's windows side by side underneath as meters: a short
   label (`5h` / `wk` / `mo`), a bar filled to the HEADROOM with the spent

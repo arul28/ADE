@@ -2263,8 +2263,8 @@ not carry the install command.
   (`ProviderInstance.sameLoginAs`, computed by the store) is badged `Copy` and
   says which account it copies, with **Sign in to another account**; it adds no
   quota and smart balance skips it. The usage snapshot keeps only the owner's
-  reading by the same rule, so the account balance counts is the one with
-  numbers.
+  reading by the same rule, so the account that balance counts is the one
+  with numbers.
 - **Machine scope**: the panel reads accounts and usage from the machine the
   Settings page names (`useUsageSnapshot({ pin })`), never usage from the tab's
   own machine under another machine's accounts.
@@ -2272,7 +2272,8 @@ not carry the install command.
   `claude /login` in a shell for the default account — the store records the old
   one as `replacedAccount`. The card says it was replaced outside ADE, with
   **Sign it back in** (into a `Copy` slot when there is one, so the accounts
-  shift instead of doubling; otherwise a new account named after the email) and
+  shift instead of doubling; otherwise, or when the only copy is the machine's
+  own login, a new account named after the email) and
   **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own
   once any account holds that email again.
 - **The card menu (⋯)** carries Rename, Sign in / Sign in again, and Remove.
