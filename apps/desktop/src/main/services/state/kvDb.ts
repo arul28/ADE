@@ -258,6 +258,23 @@ function ensureParentDir(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
+// SQLite's final close (including GC) can checkpoint a relocated WAL. Keep
+// such connections reachable until the original file returns or the process
+// exits, when the OS releases their handles without a SQLite checkpoint.
+const deferredDatabaseClosures = new Set<DatabaseSyncType>();
+const databasePathGuards = new WeakMap<DatabaseSyncType, () => void>();
+
+function reapRestoredDatabaseClosures(): void {
+  for (const db of deferredDatabaseClosures) {
+    try {
+      databasePathGuards.get(db)?.();
+    } catch {
+      continue;
+    }
+    closeDatabase(db);
+  }
+}
+
 // Guard the native boundary, including migrations, sync, maintenance and
 // direct prepared statements. Checking each operation avoids a polling
 // window in which SQLite could keep writing through a relocated handle.
@@ -283,6 +300,7 @@ function guardDatabasePath(db: DatabaseSyncType, dbPath: string): void {
       );
     }
   };
+  databasePathGuards.set(db, assertDatabasePath);
   const prepare = db.prepare.bind(db);
   const exec = db.exec.bind(db);
   db.prepare = (...args) => {
@@ -296,6 +314,7 @@ function guardDatabasePath(db: DatabaseSyncType, dbPath: string): void {
 }
 
 function openRawDatabase(dbPath: string): DatabaseSyncType {
+  reapRestoredDatabaseClosures();
   ensureParentDir(dbPath);
   const db = new DatabaseSync(dbPath, { allowExtension: true });
   try {
@@ -332,11 +351,20 @@ function openRawDatabase(dbPath: string): DatabaseSyncType {
  */
 function closeDatabase(db: DatabaseSyncType): void {
   try {
+    databasePathGuards.get(db)?.();
+  } catch {
+    // Finalization and native close are unsafe when identity cannot be
+    // verified. Retain the handle so GC cannot close it behind this guard.
+    deferredDatabaseClosures.add(db);
+    return;
+  }
+  try {
     db.exec("select crsql_finalize()");
   } catch {
     // Extension not loaded (or already finalized) — nothing to tear down.
   }
   db.close();
+  deferredDatabaseClosures.delete(db);
 }
 
 export function openReadonlyDatabase(dbPath: string): DatabaseSyncType {

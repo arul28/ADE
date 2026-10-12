@@ -6,6 +6,7 @@ import {
   ProjectRegistry,
   deriveProjectId,
   isDisallowedProjectRoot,
+  recordLocalProjectDatabaseIdentity,
 } from "./projectRegistry";
 import { createTestDirectoryLink, removeTestTree } from "../../test/filesystem";
 
@@ -25,6 +26,7 @@ function makeTempRoot(prefix = "ade-project-registry-"): string {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const root of tempRoots) {
     await removeTestTree(root);
   }
@@ -37,7 +39,7 @@ describe("ProjectRegistry", () => {
     spawnSyncMock.mockReturnValue({ status: 1, stdout: "" });
   });
 
-  it.each(["folder", "database"])("blocks recreating initialized project data after losing its %s and accepts restoration", (missing) => {
+  it.each([["folder", "brain"], ["database", "brain"], ["folder", "desktop"], ["database", "desktop"]])("blocks recreating initialized project data after losing its %s (%s) and accepts restoration", (missing, opener) => {
     const root = makeTempRoot();
     const projectRoot = path.join(root, "project");
     fs.mkdirSync(projectRoot);
@@ -48,7 +50,12 @@ describe("ProjectRegistry", () => {
     const adeDir = path.join(projectRoot, ".ade");
     const dbPath = path.join(adeDir, "ade.db");
     fs.writeFileSync(dbPath, "fixture");
-    registry.touch(record.projectId);
+    if (opener === "desktop") {
+      vi.stubEnv("ADE_HOME", registryDir);
+      recordLocalProjectDatabaseIdentity(projectRoot);
+    } else {
+      registry.touch(record.projectId);
+    }
     const source = missing === "folder" ? adeDir : dbPath;
     const saved = path.join(root, "saved");
     fs.renameSync(source, saved);

@@ -2375,8 +2375,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
   reportProjectDataProblem: (rootPath, status) => {
-    // The error already on screen wins; a later report must not replace it.
-    if (get().projectTransitionError) return;
+    // A recovery screen already up wins. A plain error with no recovery code
+    // (a slow switch, say) gives way, so missing data always gets its screen.
+    if (get().projectTransitionError?.code) return;
     set({
       projectTransitionError: {
         message: RECOVERY_COPY[status === "replaced" ? "data_replaced" : "data_missing"].headline,
