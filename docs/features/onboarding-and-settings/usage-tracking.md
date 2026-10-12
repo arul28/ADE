@@ -525,20 +525,22 @@ that gets the whole client rate-limited (429) by Anthropic:
   background polls reuse the live login instead of the file.
 - An expired token is reported as `expired` rather than returned or refreshed:
   the CLI renews it the next time a chat runs on that account, and a user
-  refresh may run the CLI fallback. A background poll of a scoped account also
-  runs the CLI fallback, at most once every 30 minutes per account
-  (`claimClaudeBackgroundRefresh`): smart balance does not send a chat to an
+  refresh may run the CLI fallback. A background poll also runs the CLI
+  fallback, at most once every 30 minutes per account
+  (`refreshClaudeLoginInBackground`): smart balance does not send a chat to an
   account it has no reading for, so an idle account's token (about eight
-  hours) used to expire and leave the account unread for days. The default
-  account's background poll skips the Keychain and could not see the refreshed
-  token, so it keeps waiting for a chat or a user refresh. A token with no refresh token at all is
+  hours) would otherwise expire and leave the account unread. The base
+  account (no scoped config home) on macOS is left out: its background poll
+  skips the Keychain and could not see the refreshed token, so it keeps
+  waiting for a chat or a user refresh. Off macOS the CLI rewrites the
+  credentials file the next poll reads, so the base account is refreshed too. A token with no refresh token at all is
   `signed_out`, because the CLI cannot renew it either. A failed Keychain read
   is `unreadable`, because a miss after it proves nothing about the login.
 - A 401 from the usage API drops only the cached access token
   (`invalidateCachedClaudeCredentials`) and marks the account `expired`; the
   next chat on the account, or an explicit refresh, lets the CLI refresh it. A
-  scoped account's background poll runs the CLI on the same 30-minute
-  allowance, because re-reading its Keychain item returns the same token.
+  background poll runs the CLI on the same 30-minute allowance (not for the
+  base account on macOS), because re-reading the login returns the same token.
 
 ## Reproducible baseline
 

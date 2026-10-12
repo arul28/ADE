@@ -2257,9 +2257,9 @@ not carry the install command.
   creation runs); clicking a card turns balance off and selects it.
 - **Signed out**: a `Signed out` pill (the usage row's own when the poller saw
   it, else a header badge), dimmed meters, and **Sign in**.
-- **Same login twice**: when two config homes hold one email, one card owns it:
-  the default account when it holds that email and its login works, else the
-  first working login in list order. Every other card
+- **Same login twice**: when two config homes hold one email, one card owns it
+  (`sameLoginOwner`): the default account when it holds that email and its
+  login works, else the first working login in list order. Every other card
   (`ProviderInstance.sameLoginAs`, computed by the store) is badged `Copy` and
   says which account it copies, with **Sign in to another account**; it adds no
   quota and smart balance skips it. The usage snapshot keeps only the owner's

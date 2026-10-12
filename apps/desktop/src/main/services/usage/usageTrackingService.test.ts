@@ -7118,7 +7118,6 @@ describe("per-account quota attribution", () => {
     // balance never sent one to an account it had no reading for, so the
     // account stayed dark for days.
     const expired = { accessToken: "stale", refreshToken: "refresh", expiresAt: Date.now() - 60_000 };
-    writeJson(path.join(tempHome, ".claude", ".credentials.json"), { claudeAiOauth: expired });
     writeJson(path.join(workHome, ".credentials.json"), { claudeAiOauth: expired });
     vi.stubEnv("CLAUDE_CODE_EXECUTABLE_PATH", "/fake/claude");
     vi.stubGlobal("fetch", vi.fn(async () => {
@@ -7148,7 +7147,7 @@ describe("per-account quota attribution", () => {
         const pending = _testing.pollClaudeUsage(
           logger as never,
           { reason: "automatic" },
-          [defaultInstance(), workInstance()],
+          [workInstance()],
         ).finally(() => { settled = true; });
         while (!settled) {
           await new Promise((resolve) => setImmediate(resolve));
@@ -7157,8 +7156,6 @@ describe("per-account quota attribution", () => {
         return await pending;
       };
       const first = await poll();
-      // Only the scoped account: the default's background poll cannot read the
-      // refreshed Keychain item, so a refresh there would only respawn the CLI.
       expect(spawnedHomes).toEqual([workHome]);
       const workWindows = first.windows.filter((window) => window.accountId === "claude:work");
       expect(workWindows.map((window) => [window.windowType, window.percentUsed]).sort())

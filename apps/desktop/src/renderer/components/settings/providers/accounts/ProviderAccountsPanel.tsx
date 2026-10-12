@@ -28,7 +28,11 @@ import { confirmDialog } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
 import { useUsageSnapshot } from "../../../usage/useUsageSnapshot";
 import { usePrefersReducedMotion } from "../../../../hooks/usePrefersReducedMotion";
-import type { ProviderInstance, ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
+import {
+  isBaseProviderInstance,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
+} from "../../../../../shared/types/providerInstances";
 import { accountLimitRow, accountSignedOut, providerHasFiveHourWindow } from "./accountPresentation";
 import { AccountCard, type CardState, type RowMenuAction } from "./AccountCard";
 import { useAccountSignInSheet } from "./AddProviderAccountSheet";
@@ -287,12 +291,15 @@ export function ProviderAccountsPanel({
   /**
    * Bring a replaced login back. A copy of THIS account is the natural slot:
    * signing it in to the replaced email turns two cards of one login back into
-   * two accounts. A copy of a different login is not that slot, so without one
-   * a new account is added, named after the email.
+   * two accounts. A copy of a different login is not that slot, and neither is
+   * the machine's own login (re-signing it would move the terminal's `claude`
+   * too), so without one a new account is added, named after the email.
    */
   const restoreReplaced = useCallback(
     (instance: ProviderInstance, email: string) => {
-      const slot = instances.find((candidate) => candidate.sameLoginAs === instance.id);
+      const slot = instances.find((candidate) => (
+        candidate.sameLoginAs === instance.id && !isBaseProviderInstance(candidate)
+      ));
       if (slot) openSheet({ existing: slot });
       else openSheet({ existing: null, label: labelFromEmail(email) });
     },

@@ -83,12 +83,16 @@ export function useUsageSnapshot({
     }
     const bridge = window.ade.usage;
     let cancelled = false;
-    if (pinRef.current !== pin) {
-      // Another machine's numbers must not stay up under this one's accounts.
-      pinRef.current = pin;
+    // Reads in flight for the previous machine or binding are discarded.
+    const dropSnapshot = () => {
       bindingGenerationRef.current += 1;
       snapshotRef.current = null;
       setSnapshot(null);
+    };
+    if (pinRef.current !== pin) {
+      // Another machine's numbers must not stay up under this one's accounts.
+      pinRef.current = pin;
+      dropSnapshot();
     }
     const unsubscribe = pin ? undefined : bridge.onUpdate?.((next) => {
       if (!cancelled) applySnapshot(next);
@@ -103,7 +107,7 @@ export function useUsageSnapshot({
       const requestedGeneration = bindingGenerationRef.current;
       let current: UsageSnapshot | null = null;
       try {
-        current = await (pin ? bridge.getSnapshot(pin) : bridge.getSnapshot());
+        current = await bridge.getSnapshot(pin);
       } catch {
         // Keep whatever is already on screen: a read that threw is not news
         // that the numbers went away.
@@ -130,9 +134,7 @@ export function useUsageSnapshot({
     if (readSnapshot) void load();
 
     const unsubscribeBinding = pin ? undefined : window.ade?.app?.onProjectBindingChanged?.(() => {
-      bindingGenerationRef.current += 1;
-      snapshotRef.current = null;
-      setSnapshot(null);
+      dropSnapshot();
       setBindingRevision((revision) => revision + 1);
       if (readSnapshot) void load();
     });
@@ -199,7 +201,7 @@ export function useUsageSnapshot({
     const requestedGeneration = bindingGenerationRef.current;
     setRefreshing(true);
     try {
-      const next = await (pin ? bridgeRefresh(pin) : bridgeRefresh());
+      const next = await bridgeRefresh(pin);
       if (requestedGeneration !== bindingGenerationRef.current) {
         return { ok: false, snapshot: null, error: null };
       }
