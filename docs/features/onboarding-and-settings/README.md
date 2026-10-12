@@ -2257,15 +2257,23 @@ not carry the install command.
   creation runs); clicking a card turns balance off and selects it.
 - **Signed out**: a `Signed out` pill (the usage row's own when the poller saw
   it, else a header badge), dimmed meters, and **Sign in**.
-- **Same login twice**: when two config homes hold one email the later card
+- **Same login twice**: when two config homes hold one email, one card owns it
+  (`sameLoginOwner`): the default account when it holds that email and its
+  login works, else the first working login in list order. Every other card
   (`ProviderInstance.sameLoginAs`, computed by the store) is badged `Copy` and
   says which account it copies, with **Sign in to another account**; it adds no
-  quota and smart balance skips it.
+  quota and smart balance skips it. The usage snapshot keeps only the owner's
+  reading by the same rule, so the account that balance counts is the one
+  with numbers.
+- **Machine scope**: the panel reads accounts and usage from the machine the
+  Settings page names (`useUsageSnapshot({ pin })`), never usage from the tab's
+  own machine under another machine's accounts.
 - **Replaced login**: when a config home's email changes to another email — a
   `claude /login` in a shell for the default account — the store records the old
   one as `replacedAccount`. The card says it was replaced outside ADE, with
   **Sign it back in** (into a `Copy` slot when there is one, so the accounts
-  shift instead of doubling; otherwise a new account named after the email) and
+  shift instead of doubling; otherwise, or when the only copy is the machine's
+  own login, a new account named after the email) and
   **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own
   once any account holds that email again.
 - **The card menu (⋯)** carries Rename, Sign in / Sign in again, and Remove.

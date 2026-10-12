@@ -1898,8 +1898,8 @@ declare global {
       };
       usage: {
         getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;
-        getSnapshot: () => Promise<UsageSnapshot | null>;
-        refresh: () => Promise<UsageSnapshot | null>;
+        getSnapshot: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null>;
+        refresh: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null>;
         refreshHistory: () => Promise<UsageSnapshot | null>;
         noteDemand: () => Promise<UsageSnapshot | null>;
         /**

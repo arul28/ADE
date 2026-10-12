@@ -6300,12 +6300,14 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.usageGetAdeStats, normalizedArgs),
       );
     },
-    getSnapshot: async (): Promise<UsageSnapshot | null> =>
-      callProjectRuntimeActionOr("usage", "getUsageSnapshot", {}, () =>
+    // `pin` reads one machine's snapshot (a Settings page for that machine);
+    // without it, the tab's own binding answers.
+    getSnapshot: async (pin?: OpenProjectBinding | null): Promise<UsageSnapshot | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "usage", "getUsageSnapshot", {}, () =>
         ipcRenderer.invoke(IPC.usageGetSnapshot),
       ),
-    refresh: async (): Promise<UsageSnapshot | null> =>
-      callProjectRuntimeActionOr("usage", "forceRefresh", {}, () =>
+    refresh: async (pin?: OpenProjectBinding | null): Promise<UsageSnapshot | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "usage", "forceRefresh", {}, () =>
         ipcRenderer.invoke(IPC.usageRefresh),
       ),
     refreshHistory: async (): Promise<UsageSnapshot | null> =>

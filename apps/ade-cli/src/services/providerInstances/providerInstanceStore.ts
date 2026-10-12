@@ -212,6 +212,25 @@ function sameEmail(a: string | undefined, b: string | undefined): boolean {
   return Boolean(a && b && a.trim().toLowerCase() === b.trim().toLowerCase());
 }
 
+/**
+ * Which of several accounts signed in to one login owns it; the rest are
+ * copies that add no quota and that smart balance skips.
+ *
+ * The default account owns it when it is one of them and its login works, else
+ * the first working login in `holders` order (the base identity, then creation
+ * order): a broken login has no quota to share. With no working login, the
+ * first holder owns it. The registry's `sameLoginAs` and the usage poller's
+ * duplicate filter both use this, so balance counts the account with numbers.
+ */
+export function sameLoginOwner<T extends { id: string }>(
+  holders: readonly T[],
+  defaultId: string,
+  isBroken: (id: string) => boolean,
+): T | undefined {
+  const working = holders.filter((holder) => !isBroken(holder.id));
+  return working.find((holder) => holder.id === defaultId) ?? working[0] ?? holders[0];
+}
+
 function emptyFile(): RegistryFile {
   return {
     version: REGISTRY_VERSION,
@@ -353,14 +372,11 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const loginBroken = known && brokenLogins.has(stored.id);
     const signedIn = known && !loginBroken;
     const siblings = allRecords(file).filter((record) => record.provider === stored.provider);
-    // Two config homes signed in to one email are one login and one quota. The
-    // first working login in list order (the base identity, then creation
-    // order) owns it: a broken login has no quota to share. With no working
-    // login, the first in list order owns it.
+    // Two config homes signed in to one email are one login and one quota.
     const holders = stored.account?.email
       ? siblings.filter((record) => sameEmail(record.account?.email, stored.account?.email))
       : [];
-    const owner = holders.find((record) => !brokenLogins.has(record.id)) ?? holders[0];
+    const owner = sameLoginOwner(holders, defaultIdFor(stored.provider, file), (id) => brokenLogins.has(id));
     const sameLoginAs = owner && owner.id !== stored.id ? owner.id : undefined;
     // A replaced login another account holds again is not lost.
     const replacedAccount = stored.replacedAccount

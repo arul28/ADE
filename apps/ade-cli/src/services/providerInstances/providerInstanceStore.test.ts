@@ -431,7 +431,7 @@ describe("providerInstanceStore", () => {
     expect(reused?.loginBroken).toBeUndefined();
   });
 
-  it("gives a shared login to the first working account, not a broken one", async () => {
+  it("gives a shared login to the working default account, else the first working one", async () => {
     const { store } = makeStore({
       readAccount: async (_provider, configHome) => (
         configHome.includes("provider-homes") ? { email: "shared@example.com" } : {}
@@ -449,6 +449,18 @@ describe("providerInstanceStore", () => {
     store.setLoginBroken(first.instance.id, true);
     expect(store.get(first.instance.id)?.sameLoginAs).toBe(second.instance.id);
     expect(store.get(second.instance.id)?.sameLoginAs).toBeUndefined();
+
+    // The default owns it whatever its place in the list, so smart balance
+    // counts the account the usage poller keeps the reading for.
+    store.setLoginBroken(first.instance.id, false);
+    store.setDefault(second.instance.id);
+    expect(store.get(second.instance.id)?.sameLoginAs).toBeUndefined();
+    expect(store.get(first.instance.id)?.sameLoginAs).toBe(second.instance.id);
+
+    // …unless the default's own login is broken.
+    store.setLoginBroken(second.instance.id, true);
+    expect(store.get(first.instance.id)?.sameLoginAs).toBeUndefined();
+    expect(store.get(second.instance.id)?.sameLoginAs).toBe(first.instance.id);
   });
 
   it("keeps a listener that throws from rolling back the write", () => {
