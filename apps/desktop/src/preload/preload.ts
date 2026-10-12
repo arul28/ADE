@@ -88,7 +88,7 @@ import {
   type DevServerRecord,
 } from "../shared/types/builtInBrowser";
 import type { SessionInputOrigin } from "../shared/sessionInputOrigin";
-import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   DiagnosticReportPayload,
@@ -5039,8 +5039,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.recoveryStartFresh, { projectRoot }),
     projectDataStatus: (projectRoot?: string): Promise<ProjectDataStatus | null> =>
       ipcRenderer.invoke(IPC.recoveryProjectDataStatus, projectRoot ? { projectRoot } : {}),
-    onProjectDataMissing: (cb: (payload: { projectRoot: string; status: "missing" | "replaced" }) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: { projectRoot: string; status: "missing" | "replaced" }) => cb(payload);
+    onProjectDataMissing: (cb: (payload: { projectRoot: string; status: ProjectDataProblem }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { projectRoot: string; status: ProjectDataProblem }) => cb(payload);
       ipcRenderer.on(IPC.recoveryProjectDataMissing, listener);
       return () => ipcRenderer.removeListener(IPC.recoveryProjectDataMissing, listener);
     },

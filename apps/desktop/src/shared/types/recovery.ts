@@ -100,13 +100,21 @@ export type ProjectRecoveryDiagnosis = {
   lastFailure?: AdeLastFailureReport;
   /** `data_missing` only: ADE found this project's data in the Trash and can put it back. */
   restoreAvailable?: boolean;
+  /**
+   * `data_missing` only: the project folder itself is gone (moved, deleted,
+   * or on a drive that is not plugged in). Nothing can be restored into it.
+   */
+  projectFolderMissing?: boolean;
   technicalDetail: string;
 };
 
 export type ProjectDataRestoreResult = { restored: true } | { restored: false; reason: string };
 
+/** What happened to a project's ADE data: gone, or swapped for another copy while open. */
+export type ProjectDataProblem = "missing" | "replaced";
+
 /** An open project whose ADE data went missing or was swapped, or one that could not reopen at launch. */
-export type ProjectDataStatus = { projectRoot: string; status: "missing" | "replaced" };
+export type ProjectDataStatus = { projectRoot: string; status: ProjectDataProblem };
 
 export type RepairStepId =
   | "check_space"

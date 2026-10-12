@@ -694,7 +694,9 @@ function ProjectTabHost() {
   const activeProjectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   React.useEffect(() => {
     void window.ade?.recovery?.projectDataStatus?.(activeProjectRoot ?? undefined).then((problem) => {
-      if (problem) useAppStore.getState().reportProjectDataProblem(problem.projectRoot, problem.status);
+      // Dropped if the window moved to another project while this was asked.
+      if (!problem || (useAppStore.getState().project?.rootPath ?? null) !== activeProjectRoot) return;
+      useAppStore.getState().reportProjectDataProblem(problem.projectRoot, problem.status);
     }).catch(() => undefined);
   }, [activeProjectRoot]);
   React.useEffect(() => window.ade?.recovery?.onProjectDataMissing?.(({ projectRoot, status }) => {

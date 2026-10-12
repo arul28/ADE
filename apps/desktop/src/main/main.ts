@@ -3208,8 +3208,8 @@ app.whenReady().then(async () => {
     connectionPool: localRuntimePool,
     openProjectDataStatus: (projectRoot) => openProjectDataWatch.status(normalizeProjectRoot(projectRoot)),
     closeProject: async (projectRoot) => {
-      openProjectDataWatch.forget(normalizeProjectRoot(projectRoot));
       await closeProjectByPath(projectRoot);
+      openProjectDataWatch.forget(normalizeProjectRoot(projectRoot));
     },
     // One call at the point the diagnosis is final. The service's own budget
     // makes a re-diagnosed screen cost nothing.

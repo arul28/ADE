@@ -506,9 +506,13 @@ Checks run per operation to avoid a polling window that can write to a moved
 file. These service measurements do not establish Electron idle, GPU, typing,
 or memory numbers. Full desktop scenarios were not measured for this change.
 
-The desktop main process also stats each open project's `ade.db` once every
-5 seconds (`openProjectDataWatch.ts`) to show the recovery screen when the file
-disappears. It is one asynchronous `stat` per open project per tick, about
-10 μs each (2,000-run median, same machine), and no renderer work until it
-fires. While the recovery screen waits on missing data it diagnoses every
-2 seconds; the Trash lookup inside is cached for 5 seconds per project.
+The desktop main process also checks each open project's `ade.db` every
+5 seconds (`openProjectDataWatch.ts`); no renderer work until it fires. While
+the recovery screen waits on missing data it diagnoses every 2 seconds; the
+Trash lookup inside is cached for 5 seconds per project. Measured with an
+ad-hoc Node loop (`fs.promises.stat(…, { bigint: true })`, 200 warm-up calls,
+then the mean of 2,000) on the same machine, commit `9ee2c4ae0`:
+
+| Metric | Before | After | Budget |
+|---|---|---|---|
+| Open-project data watch, per open project per 5 s tick | — | 10 μs | 100 μs |

@@ -41,16 +41,19 @@ per project root on first project-scoped JSON-RPC call, and is the
 single runtime through which desktop, `ade code`, and SSH-attached
 desktops see live lanes, agent chats, and work sessions.
 
-Each local project this machine has opened gets a marker file under
-`~/.ade/project-data/<projectId>.json` holding the database file's
-device and inode. It lives outside `projects.json` because an older ADE that
-rewrites that file drops fields it does not know. If a registered project's
-`.ade` folder disappears, or a database the marker records is missing,
-registration and open stop with `project_data_missing` before creating
-replacement state, and the desktop shows the project recovery screen
-(`data_missing`): Restore it (when the folder is in the Trash), steps to put it
-back by hand (the screen reopens the project when it returns), or Start fresh.
-Start fresh and removing a project from recents clear the marker. Fresh project
+Each local project this machine has opened gets an identity file at
+`~/.ade/project-data/<projectId>.json` holding its database file's device and
+inode. Every entry point that opens the database records it (desktop, the
+brain's project scope, the CLI). It lives outside `projects.json` because an
+older ADE that rewrites that file drops fields it does not know. If a
+registered project's folder or its `.ade` folder disappears, or a database the
+identity file records is missing, registration and open stop with
+`project_data_missing` before creating replacement state, and the desktop shows
+the project recovery screen (`data_missing`): Restore from Trash (when the
+folder is there), steps to put it back by hand (the screen reopens the project
+when it returns), or Start fresh. When the project folder itself is gone it
+offers neither, and says to plug the drive in or move the folder back. Start
+fresh and removing a project from recents forget the identity. Fresh project
 registration still creates its first database normally.
 
 ## Source file map

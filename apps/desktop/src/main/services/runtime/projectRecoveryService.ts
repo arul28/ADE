@@ -8,6 +8,7 @@ import {
   stateForCode,
   type AdeLastFailureReport,
   type AdeRecoveryErrorCode,
+  type ProjectDataProblem,
   type ProjectDataRestoreResult,
   type ProjectDataStatus,
   type ProjectRecoveryDiagnosis,
@@ -20,7 +21,7 @@ import {
   ProjectRegistry,
   forgetLocalProjectDatabaseIdentity,
   isLocalProjectDataMissing,
-  recordedLocalProjectDatabaseIdentity,
+  readLocalProjectDatabaseIdentity,
 } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { normalizeProjectRootPath } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import {
@@ -145,7 +146,7 @@ export type ProjectRecoveryServiceDeps = {
    * it disappeared, or another file took its place. Known even when the
    * registry has lost its record that the database existed.
    */
-  openProjectDataStatus?: (projectRoot: string) => "missing" | "replaced" | null;
+  openProjectDataStatus?: (projectRoot: string) => ProjectDataProblem | null;
   /** Closes this window's open copy of the project, so a fresh start reopens it clean. */
   closeProject?: (projectRoot: string) => Promise<void>;
 };
@@ -486,17 +487,26 @@ export class ProjectRecoveryService {
     this.startupProjectDataMissingRoot = path.resolve(projectRoot);
   }
 
-  /**
-   * What the recovery screen should show for a project's data, or for the
-   * project that failed to reopen at launch when no root is given.
-   */
-  projectDataStatus(projectRoot?: string): ProjectDataStatus | null {
-    const root = projectRoot ? path.resolve(projectRoot) : this.startupProjectDataMissingRoot;
-    if (!root) return null;
+  /** Whether this project's ADE data is missing or was swapped while open. */
+  projectDataStatus(projectRoot: string): ProjectDataStatus | null {
+    const root = path.resolve(projectRoot);
+    // Another project is open now; the one that failed at launch no longer
+    // needs to come back on its own.
+    if (this.startupProjectDataMissingRoot && root !== this.startupProjectDataMissingRoot) {
+      this.startupProjectDataMissingRoot = null;
+    }
     const open = this.deps.openProjectDataStatus?.(root) ?? null;
     if (open) return { projectRoot: root, status: open };
     if (isLocalProjectDataMissing(root)) return { projectRoot: root, status: "missing" };
-    if (root === this.startupProjectDataMissingRoot) this.startupProjectDataMissingRoot = null;
+    return null;
+  }
+
+  /** The project that could not reopen at launch, while its data is still missing. */
+  startupProjectDataStatus(): ProjectDataStatus | null {
+    const root = this.startupProjectDataMissingRoot;
+    if (!root) return null;
+    if (isLocalProjectDataMissing(root)) return { projectRoot: root, status: "missing" };
+    this.startupProjectDataMissingRoot = null;
     return null;
   }
 
@@ -506,12 +516,15 @@ export class ProjectRecoveryService {
    */
   async restoreProjectData(projectRoot: string): Promise<ProjectDataRestoreResult> {
     const normalizedRoot = normalizeProjectRootPath(projectRoot);
+    if (!fs.existsSync(normalizedRoot)) {
+      return { restored: false, reason: "The project folder itself isn't there. Put it back first." };
+    }
     const target = path.join(normalizedRoot, ".ade");
     if (fs.existsSync(path.join(target, "ade.db"))) {
       return { restored: false, reason: "This project already has ADE data, so nothing was moved." };
     }
     forgetTrashLookup(normalizedRoot);
-    const source = findTrashedProjectData(normalizedRoot, recordedLocalProjectDatabaseIdentity(normalizedRoot));
+    const source = findTrashedProjectData(normalizedRoot, readLocalProjectDatabaseIdentity(normalizedRoot));
     if (!source) {
       return { restored: false, reason: "ADE couldn't find this project's data in the Trash anymore." };
     }
@@ -524,6 +537,13 @@ export class ProjectRecoveryService {
       forgetTrashLookup(normalizedRoot);
     }
     this.deps.logger.info("project.data_restored", { projectRoot: normalizedRoot });
+    // A copy from another volume's Trash is a new file, and even a moved-back
+    // one left this window's handle paused: reopen from scratch.
+    try {
+      await this.deps.closeProject?.(normalizedRoot);
+    } catch (error) {
+      this.deps.logger.warn("project.data_restore_close_failed", { projectRoot: normalizedRoot, error: errorMessage(error) });
+    }
     return { restored: true };
   }
 
@@ -533,6 +553,11 @@ export class ProjectRecoveryService {
    */
   async startFresh(projectRoot: string): Promise<void> {
     const normalizedRoot = normalizeProjectRootPath(projectRoot);
+    if (!fs.existsSync(normalizedRoot)) {
+      // Starting fresh here would recreate a folder the person moved or
+      // deleted, or that lives on a drive that is not plugged in.
+      throw new Error("The project folder itself isn't there. Put it back first.");
+    }
     try {
       await this.deps.closeProject?.(normalizedRoot);
     } catch (error) {
@@ -550,9 +575,10 @@ export class ProjectRecoveryService {
     }
     forgetLocalProjectDatabaseIdentity(normalizedRoot);
     // An empty `.ade` is what a first open expects. Without it a project whose
-    // whole folder went missing still reads as missing data, whether or not
-    // the background service managed to drop its record above.
-    fs.mkdirSync(path.join(normalizedRoot, ".ade"), { recursive: true });
+    // `.ade` folder is gone still reads as missing data, whether or not the
+    // background service managed to drop its record above.
+    const adeDir = path.join(normalizedRoot, ".ade");
+    if (!fs.existsSync(adeDir)) fs.mkdirSync(adeDir);
     this.deps.logger.info("project.started_fresh", { projectRoot: normalizedRoot });
   }
 
@@ -564,11 +590,21 @@ export class ProjectRecoveryService {
     // No automatic diagnostics report here: a folder the person moved or
     // deleted is their action, not a fault in ADE.
     if (openDataStatus === "missing" || isLocalProjectDataMissing(normalizedRoot)) {
-      const trashed = findTrashedProjectData(normalizedRoot, recordedLocalProjectDatabaseIdentity(normalizedRoot));
+      const projectFolderMissing = !fs.existsSync(normalizedRoot);
+      const trashed = projectFolderMissing
+        ? null
+        : findTrashedProjectData(normalizedRoot, readLocalProjectDatabaseIdentity(normalizedRoot));
       return {
         state: "data_missing",
         code: "project_data_missing",
         ...diagnosisCopy("data_missing"),
+        ...(projectFolderMissing
+          ? {
+              headline: "This project's folder isn't there",
+              body: "If it's on a drive, plug it in. If you moved it, move it back. Your files aren't touched.",
+              projectFolderMissing: true,
+            }
+          : {}),
         restoreAvailable: Boolean(trashed),
         technicalDetail: [
           `projectData=${path.join(normalizedRoot, ".ade")} missing`,
@@ -751,8 +787,9 @@ export class ProjectRecoveryService {
   ): Promise<ProjectRepairReport> {
     const normalizedRoot = path.resolve(projectRoot);
     // Repair opens the database, which would create an empty replacement for
-    // data that is only missing. The recovery screen offers restore instead.
-    if (isLocalProjectDataMissing(normalizedRoot)) {
+    // data that is only missing (or recreate a folder that is gone). The
+    // recovery screen offers restore instead.
+    if (!fs.existsSync(normalizedRoot) || isLocalProjectDataMissing(normalizedRoot)) {
       return {
         ok: false,
         steps: [],
@@ -761,7 +798,7 @@ export class ProjectRecoveryService {
         chatsNeedingAttention: null,
         filesRemoved: 0,
         failureCode: "project_data_missing",
-        nextAction: "This project's ADE data is missing. Restore it or start fresh instead.",
+        nextAction: "This project's ADE data is missing. Restore it from the Trash or start fresh instead.",
       };
     }
     const dbPath = path.join(normalizedRoot, ".ade", "ade.db");

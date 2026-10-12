@@ -4994,7 +4994,7 @@ export function registerIpc({
   // window still shows the recovery screen.
   ipcMain.handle(IPC.recoveryProjectDataStatus, async (_event, arg?: { projectRoot?: string }): Promise<ProjectDataStatus | null> => {
     if (!projectRecoveryService) return null;
-    if (typeof arg?.projectRoot !== "string" || !arg.projectRoot.trim()) return projectRecoveryService.projectDataStatus();
+    if (typeof arg?.projectRoot !== "string" || !arg.projectRoot.trim()) return projectRecoveryService.startupProjectDataStatus();
     const projectRoot = resolveRequestedProjectRoot(arg.projectRoot.trim());
     return projectRoot ? projectRecoveryService.projectDataStatus(projectRoot) : null;
   });

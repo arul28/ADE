@@ -10,10 +10,10 @@ import { openReadonlyDatabase } from "../state/kvDb";
  * service that offers it.
  */
 
-export type DatabaseIdentity = { dev: string; ino: string };
+type DatabaseIdentity = { dev: string; ino: string };
 
 /** Folders a deleted `.ade` lands in. Empty where ADE can't look. */
-export function defaultTrashDirs(): string[] {
+function trashDirs(): string[] {
   if (process.platform === "darwin") return [path.join(os.homedir(), ".Trash")];
   if (process.platform === "linux") {
     const dataHome = process.env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local", "share");
@@ -56,21 +56,23 @@ function trashedDataBelongsTo(candidate: string, projectRoot: string, identity: 
 /**
  * How long a lookup is reused. The recovery screen asks every 2 seconds while
  * it waits, and each lookup may open every trashed `.ade` database read-only.
+ * Keyed by the identity too, so a newly recorded database is looked up fresh.
  */
 const LOOKUP_CACHE_MS = 5_000;
 const lookupCache = new Map<string, { at: number; result: string | null }>();
 
+function lookupKey(projectRoot: string, identity: DatabaseIdentity | null): string {
+  return `${projectRoot}\0${identity ? `${identity.dev}:${identity.ino}` : ""}`;
+}
+
 /** The newest `.ade` in the Trash whose database belongs to this project. */
-export function findTrashedProjectData(
-  projectRoot: string,
-  identity: DatabaseIdentity | null,
-  trashDirs: string[] = defaultTrashDirs(),
-): string | null {
+export function findTrashedProjectData(projectRoot: string, identity: DatabaseIdentity | null): string | null {
   const normalizedRoot = normalizeProjectRootPath(projectRoot);
-  const cached = lookupCache.get(normalizedRoot);
+  const key = lookupKey(normalizedRoot, identity);
+  const cached = lookupCache.get(key);
   if (cached && Date.now() - cached.at < LOOKUP_CACHE_MS) return cached.result;
   const candidates: Array<{ path: string; mtimeMs: number }> = [];
-  for (const dir of trashDirs) {
+  for (const dir of trashDirs()) {
     let names: string[];
     try {
       names = fs.readdirSync(dir).filter((name) => name.startsWith(".ade"));
@@ -91,12 +93,14 @@ export function findTrashedProjectData(
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   const result = candidates[0]?.path ?? null;
-  lookupCache.set(normalizedRoot, { at: Date.now(), result });
+  lookupCache.set(key, { at: Date.now(), result });
   return result;
 }
 
+/** Drops cached lookups for a project once its trashed data has moved. */
 export function forgetTrashLookup(projectRoot: string): void {
-  lookupCache.delete(normalizeProjectRootPath(projectRoot));
+  const prefix = `${normalizeProjectRootPath(projectRoot)}\0`;
+  for (const key of lookupCache.keys()) if (key.startsWith(prefix)) lookupCache.delete(key);
 }
 
 function isCrossDevice(error: unknown): boolean {
@@ -146,8 +150,9 @@ function restoreOrder(names: string[]): string[] {
 /**
  * Merges a trashed `.ade` into a `.ade` that reappeared meanwhile (from git,
  * or written by ADE while the data was gone: it makes new machine keys). On a
- * clash the original wins; the file written meanwhile is kept beside the
- * trashed copy as `<name>.created-while-missing`. Nothing is deleted.
+ * clash the original wins; the file written meanwhile is kept as
+ * `<name>.created-while-missing`, beside the trashed copy, or in the project
+ * when the Trash is on another volume. Nothing is deleted.
  */
 async function mergeEntries(source: string, target: string): Promise<void> {
   for (const name of restoreOrder(fs.readdirSync(source))) {

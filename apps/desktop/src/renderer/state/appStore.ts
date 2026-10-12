@@ -22,7 +22,7 @@ import {
   type AppleDevicePreferences,
 } from "../../shared/appleDeviceSettings";
 import { GIT_UNTRUSTED_FOLDER_CODE, parseCodedErrorMessage } from "../lib/codedError";
-import { RECOVERY_COPY, toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
+import { RECOVERY_COPY, toAdeRecoveryErrorCode, type AdeRecoveryErrorCode, type ProjectDataProblem } from "../../shared/types/recovery";
 import { defaultLaneId, pickRestoredLaneId } from "../lib/laneSelection";
 import { isWebClientMode } from "../lib/webClientMode";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
@@ -1582,7 +1582,7 @@ export type AppState = {
   setShowWelcome: (show: boolean) => void;
   clearProjectTransitionError: () => void;
   /** Shows the full-screen recovery flow for a project whose ADE data went missing or was replaced. No-op while another transition error is up. */
-  reportProjectDataProblem: (rootPath: string, status: "missing" | "replaced") => void;
+  reportProjectDataProblem: (rootPath: string, status: ProjectDataProblem) => void;
   setLanes: (lanes: LaneSummary[]) => void;
   setLaneDeleteProgressByLaneId: (
     next:

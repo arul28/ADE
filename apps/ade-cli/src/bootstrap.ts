@@ -1,4 +1,4 @@
-import { assertLocalProjectDataAvailable } from "./services/projects/projectRegistry";
+import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
 import os from "node:os";
@@ -903,6 +903,9 @@ export async function createAdeRuntime(args: {
     db = await openKvDb(paths.dbPath, logger, {
       hasSyncPeers,
     });
+    // Every entry point that opens the database records it, so a project used
+    // only from the CLI is protected the same way as one opened in the app.
+    recordLocalProjectDatabaseIdentity(projectRoot, logger);
   } catch (error) {
     // The path corroborates a bare errno: SQLite failures often carry no
     // `syscall`, and without a path the classifier refuses to call them

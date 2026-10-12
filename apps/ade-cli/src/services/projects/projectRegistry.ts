@@ -334,9 +334,9 @@ export class ProjectRegistry {
   }
 
   /**
-   * The marker also holds the database file's identity. Moving a folder to
-   * the Trash keeps it, so recovery can tell this project's trashed `.ade`
-   * from any other — even before the database has a project row.
+   * Records the database file's identity. Moving a folder to the Trash keeps
+   * it, so recovery can tell this project's trashed `.ade` from any other —
+   * even before the database has a project row.
    */
   private recordDatabaseIfPresent(projectId: ProjectId, rootPath: string): void {
     let stat: fs.BigIntStats;
@@ -346,15 +346,15 @@ export class ProjectRegistry {
       return;
     }
     const identity = { dev: stat.dev.toString(), ino: stat.ino.toString() };
-    const known = this.recordedDatabaseIdentity(projectId);
+    const known = this.readDatabaseIdentity(projectId);
     if (known?.dev === identity.dev && known.ino === identity.ino) return;
-    const marker = this.databaseIdentityPath(projectId);
-    fs.mkdirSync(path.dirname(marker), { recursive: true });
-    fs.writeFileSync(marker, JSON.stringify(identity));
+    const identityPath = this.databaseIdentityPath(projectId);
+    fs.mkdirSync(path.dirname(identityPath), { recursive: true });
+    fs.writeFileSync(identityPath, JSON.stringify(identity));
   }
 
   /** The device and inode of the database this machine last opened for the project. */
-  recordedDatabaseIdentity(projectId: ProjectId): { dev: string; ino: string } | null {
+  readDatabaseIdentity(projectId: ProjectId): { dev: string; ino: string } | null {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.databaseIdentityPath(projectId), "utf8")) as { dev?: unknown; ino?: unknown };
       return typeof parsed.dev === "string" && typeof parsed.ino === "string" ? { dev: parsed.dev, ino: parsed.ino } : null;
@@ -381,11 +381,11 @@ export class ProjectRegistry {
    * Whether a registered project's ADE data is gone: its whole `.ade` folder
    * (registering a project creates one, so even a record from before identity
    * files existed had it), or a database this machine recorded opening. A
-   * project folder that is itself gone is a different failure, left to the
-   * open path's own error.
+   * project folder that is itself gone counts too: opening it would recreate
+   * the folder with empty data.
    */
   isProjectDataMissing(record: ProjectRecord | null): boolean {
-    if (!record || !fs.existsSync(record.rootPath)) return false;
+    if (!record) return false;
     const adeDir = path.join(record.rootPath, ".ade");
     return !fs.existsSync(adeDir)
       || (fs.existsSync(this.databaseIdentityPath(record.projectId)) && !fs.existsSync(path.join(adeDir, "ade.db")));
@@ -518,8 +518,8 @@ export function isLocalProjectDataMissing(projectRoot: string): boolean {
   return registry.isProjectDataMissing(registry.findByRootPath(projectRoot));
 }
 
-export function recordedLocalProjectDatabaseIdentity(projectRoot: string): { dev: string; ino: string } | null {
-  return new ProjectRegistry().recordedDatabaseIdentity(deriveProjectId(normalizeRoot(projectRoot)));
+export function readLocalProjectDatabaseIdentity(projectRoot: string): { dev: string; ino: string } | null {
+  return new ProjectRegistry().readDatabaseIdentity(deriveProjectId(normalizeRoot(projectRoot)));
 }
 
 /** Let the next open of this project create new ADE data. */
@@ -541,7 +541,7 @@ export function recordLocalProjectDatabaseIdentity(
     const record = registry.findByRootPath(projectRoot);
     if (record) registry.recordDatabaseIdentity(record.projectId);
   } catch (error) {
-    logger?.warn("project.database_initialized_mark_failed", {
+    logger?.warn("project.database_identity_record_failed", {
       projectRoot,
       error: error instanceof Error ? error.message : String(error),
     });

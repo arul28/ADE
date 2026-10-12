@@ -563,7 +563,9 @@ export function ProjectRecoveryScreen() {
   const dataState = dataMissing || dataReplaced;
   const restoreAvailable = dataMissing && diagnosis?.restoreAvailable === true
     && typeof window.ade?.recovery?.restoreProjectData === "function";
-  const startFreshAvailable = typeof window.ade?.recovery?.startFresh === "function";
+  // The project folder itself is gone: nothing to restore into or start in.
+  const projectFolderMissing = dataMissing && diagnosis?.projectFolderMissing === true;
+  const startFreshAvailable = !projectFolderMissing && typeof window.ade?.recovery?.startFresh === "function";
   const restartAvailable = canRestartAde();
   // Report issue renders nothing on a preload without the diagnostics bridge;
   // its hint must not be left standing alone.
@@ -689,7 +691,7 @@ export function ProjectRecoveryScreen() {
                   ? { label: "Use this copy", onClick: reopenWithCurrentData, primary: true }
                   : { label: "Start fresh", onClick: () => void startFresh() }
                 : null}
-              manualSteps={dataMissing && !restoreAvailable ? putBackSteps(isWindowsPlatform()) : null}
+              manualSteps={dataMissing && !restoreAvailable && !projectFolderMissing ? putBackSteps(isWindowsPlatform()) : null}
               watching={dataMissing && !isFailure}
             />
           ) : null}

@@ -1,27 +1,28 @@
 import fs from "node:fs";
 import path from "node:path";
-
-export type OpenProjectDataStatus = "missing" | "replaced";
+import type { ProjectDataProblem } from "../../../shared/types/recovery";
 
 /** How often each open project's database file is checked. */
 const WATCH_INTERVAL_MS = 5_000;
 
-type Known = { dev: bigint; ino: bigint; reported: OpenProjectDataStatus | null };
+type Known = { dev: bigint; ino: bigint; reported: ProjectDataProblem | null };
 
 /**
  * Notices when an open project's `ade.db` disappears or another file takes
  * its place, so the window can show the recovery screen instead of every
  * panel failing. Restoring the same file clears it.
  *
- * Only "not found" counts as missing. Any other error (an external or network
- * volume that is asleep or unmounted) skips the tick, so a drive that comes
- * back is never offered "Start fresh". The stat is asynchronous so a hung
- * mount never blocks the main process.
+ * Only "not found" counts as missing; any other error (a volume that is
+ * asleep or slow to answer) skips the tick. A project folder that is itself
+ * gone, an unplugged drive included, also reads as missing: the recovery
+ * screen tells that case apart and offers nothing that would recreate the
+ * folder. The stat is asynchronous so a hung mount never blocks the main
+ * process.
  */
 export function createOpenProjectDataWatch(args: {
   /** Roots of the projects open right now. */
   openRoots: () => Iterable<string>;
-  onChange: (projectRoot: string, status: OpenProjectDataStatus) => void;
+  onChange: (projectRoot: string, status: ProjectDataProblem) => void;
 }) {
   const known = new Map<string, Known>();
   let ticking = false;
@@ -49,7 +50,7 @@ export function createOpenProjectDataWatch(args: {
           if (current) known.set(root, { dev: current.dev, ino: current.ino, reported: null });
           continue;
         }
-        const status: OpenProjectDataStatus | null = !current
+        const status: ProjectDataProblem | null = !current
           ? "missing"
           : current.dev !== entry.dev || current.ino !== entry.ino ? "replaced" : null;
         if (status === entry.reported) continue;
@@ -65,7 +66,7 @@ export function createOpenProjectDataWatch(args: {
   timer.unref?.();
 
   return {
-    status: (projectRoot: string): OpenProjectDataStatus | null => known.get(projectRoot)?.reported ?? null,
+    status: (projectRoot: string): ProjectDataProblem | null => known.get(projectRoot)?.reported ?? null,
     /** Start over for a project that is closing or opening with new data. */
     forget: (projectRoot: string): void => {
       known.delete(projectRoot);
