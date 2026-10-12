@@ -184,7 +184,8 @@ export function ProviderAccountsPanel({
   const { pin } = useSettingsMachineScope();
   const { instances, settings, loading, bridgeMissing, error, reload, saveSettings } =
     useProviderInstances(provider);
-  const { snapshot } = useUsageSnapshot();
+  // The usage numbers come from the same machine as the accounts.
+  const { snapshot } = useUsageSnapshot({ pin });
   const signInSheet = useAccountSignInSheet({ provider, providerLabel, onChanged: () => void reload() });
   const openSheet = signInSheet.open;
   const reducedMotion = usePrefersReducedMotion();

@@ -24,6 +24,7 @@ const mockState = vi.hoisted(() => ({
   spawn: vi.fn(),
   spawnSync: vi.fn(),
   resolveCodexExecutable: vi.fn(),
+  ptySpawn: vi.fn(),
 }));
 
 const requireForTest = createRequire(path.join(process.cwd(), "usage-test.cjs"));
@@ -32,6 +33,12 @@ vi.mock("node:child_process", () => ({
   spawn: (...args: unknown[]) => mockState.spawn(...args),
   spawnSync: (...args: unknown[]) => mockState.spawnSync(...args),
 }));
+
+// The Claude CLI `/usage` probe runs in a pty: the process boundary.
+vi.mock("node-pty", () => {
+  const spawn = (...args: unknown[]) => mockState.ptySpawn(...args);
+  return { spawn, default: { spawn } };
+});
 
 vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: (...args: unknown[]) => mockState.resolveCodexExecutable(...args),
@@ -7103,6 +7110,67 @@ describe("per-account quota attribution", () => {
 
     expect(result.errors).toEqual([]);
     expect(result.windows.every((window) => window.accountId === "claude:claude")).toBe(true);
+  });
+
+  it("has the Claude CLI refresh an idle account's expired login from a background poll, once per interval", async () => {
+    // Claude tokens last about eight hours and ADE never refreshes one itself.
+    // An idle second account used to wait for a chat to refresh it, and smart
+    // balance never sent one to an account it had no reading for, so the
+    // account stayed dark for days.
+    const expired = { accessToken: "stale", refreshToken: "refresh", expiresAt: Date.now() - 60_000 };
+    writeJson(path.join(tempHome, ".claude", ".credentials.json"), { claudeAiOauth: expired });
+    writeJson(path.join(workHome, ".credentials.json"), { claudeAiOauth: expired });
+    vi.stubEnv("CLAUDE_CODE_EXECUTABLE_PATH", "/fake/claude");
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("an expired token must not be sent");
+    }));
+    const spawnedHomes: Array<string | undefined> = [];
+    mockState.ptySpawn.mockImplementation((_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+      spawnedHomes.push(options.env.CLAUDE_CONFIG_DIR);
+      let emit: ((chunk: string) => void) | null = null;
+      return {
+        onData: (cb: (chunk: string) => void) => { emit = cb; },
+        onExit: () => undefined,
+        write: (data: string) => {
+          if (data.startsWith("/usage")) {
+            emit?.("Settings: Usage\nCurrent session\n70% left\nResets 5pm\nCurrent week (all models)\n12% used\nResets Jul 12 at 3pm\n");
+          }
+        },
+        kill: () => undefined,
+      };
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      // The poll reads real files between its timers, so the clock moves one
+      // step at a time and real I/O gets a turn in between.
+      const poll = async () => {
+        let settled = false;
+        const pending = _testing.pollClaudeUsage(
+          logger as never,
+          { reason: "automatic" },
+          [defaultInstance(), workInstance()],
+        ).finally(() => { settled = true; });
+        while (!settled) {
+          await new Promise((resolve) => setImmediate(resolve));
+          await vi.advanceTimersByTimeAsync(100);
+        }
+        return await pending;
+      };
+      const first = await poll();
+      // Only the scoped account: the default's background poll cannot read the
+      // refreshed Keychain item, so a refresh there would only respawn the CLI.
+      expect(spawnedHomes).toEqual([workHome]);
+      const workWindows = first.windows.filter((window) => window.accountId === "claude:work");
+      expect(workWindows.map((window) => [window.windowType, window.percentUsed]).sort())
+        .toEqual([["five_hour", 30], ["weekly", 12]]);
+
+      // A CLI run that did not fix the login is not repeated on the next tick.
+      await poll();
+      expect(spawnedHomes).toEqual([workHome]);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
   });
 
   it("keeps a signed-in account's last windows when a background pass cannot read its login", async () => {

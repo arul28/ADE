@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderInstance, ProviderLoginStatus } from "../../../../../shared/types/providerInstances";
 import type { UsageSnapshot } from "../../../../../shared/types";
 import { ProviderAccountsPanel } from "./ProviderAccountsPanel";
+import { SettingsMachineScopeProvider, settingsMachineScope } from "../../SettingsMachineScope";
 
 function instance(overrides: Partial<ProviderInstance> & { id: string }): ProviderInstance {
   return {
@@ -205,6 +206,52 @@ describe("ProviderAccountsPanel", () => {
 
     expect(within(work).getByText("Next chat")).toBeTruthy();
     expect(within(personal).queryByText("Next chat")).toBeNull();
+  });
+
+  it("shows the picked machine's usage, not the tab's, when Settings names another machine", async () => {
+    // The accounts come from the picked machine; numbers from the tab's own
+    // machine put one computer's login under another's account card.
+    const studio = {
+      kind: "remote" as const,
+      key: "studio",
+      targetId: "studio",
+      runtimeName: "Studio",
+      projectId: "p1",
+      rootPath: "/repo",
+      displayName: "repo",
+    };
+    const studioUsage = snapshot();
+    studioUsage.accounts = studioUsage.accounts!.map((account) => (
+      account.id === "claude:claude" ? { ...account, email: "studio@example.com" } : account
+    ));
+    const laptopUsage = snapshot();
+    laptopUsage.accounts = laptopUsage.accounts!.map((account) => (
+      account.id === "claude:claude" ? { ...account, email: "laptop@example.com" } : account
+    ));
+    installBridge();
+    const ade = (globalThis.window as unknown as {
+      ade: { usage: { getSnapshot: ReturnType<typeof vi.fn> } };
+    }).ade;
+    ade.usage.getSnapshot.mockImplementation(async (pin?: unknown) => (pin === studio ? studioUsage : laptopUsage));
+
+    render(
+      <SettingsMachineScopeProvider
+        scope={settingsMachineScope({
+          machineId: "studio",
+          machineName: "Studio",
+          target: { kind: "pinned", binding: studio },
+          isThisMachine: false,
+          isActiveBinding: false,
+          online: true,
+        })}
+      >
+        <ProviderAccountsPanel provider="claude" providerLabel="Claude Code" />
+      </SettingsMachineScopeProvider>,
+    );
+
+    const personal = await screen.findByRole("group", { name: "Personal account" });
+    expect(await within(personal).findByText("studio@example.com")).toBeTruthy();
+    expect(within(personal).queryByText("laptop@example.com")).toBeNull();
   });
 
   it("says a signed-in account has no usage yet when it has no windows", async () => {

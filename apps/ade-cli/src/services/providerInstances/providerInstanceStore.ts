@@ -354,13 +354,18 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const signedIn = known && !loginBroken;
     const siblings = allRecords(file).filter((record) => record.provider === stored.provider);
     // Two config homes signed in to one email are one login and one quota. The
-    // first working login in list order (the base identity, then creation
-    // order) owns it: a broken login has no quota to share. With no working
-    // login, the first in list order owns it.
+    // default account owns it when it is one of them and its login works; else
+    // the first working login in list order (the base identity, then creation
+    // order) does: a broken login has no quota to share. With no working
+    // login, the first in list order owns it. Default first is the usage
+    // poller's rule too, which keeps only the owner's reading: when the two
+    // disagreed, smart balance skipped the account that had the numbers.
     const holders = stored.account?.email
       ? siblings.filter((record) => sameEmail(record.account?.email, stored.account?.email))
       : [];
-    const owner = holders.find((record) => !brokenLogins.has(record.id)) ?? holders[0];
+    const defaultId = defaultIdFor(stored.provider, file);
+    const working = holders.filter((record) => !brokenLogins.has(record.id));
+    const owner = working.find((record) => record.id === defaultId) ?? working[0] ?? holders[0];
     const sameLoginAs = owner && owner.id !== stored.id ? owner.id : undefined;
     // A replaced login another account holds again is not lost.
     const replacedAccount = stored.replacedAccount

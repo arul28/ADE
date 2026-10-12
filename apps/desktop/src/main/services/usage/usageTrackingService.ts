@@ -849,10 +849,33 @@ function accountRateLimitNextAttemptAtMs(accountId: string, nowMs: number = Date
   return entry.nextAttemptAtMs;
 }
 
+/**
+ * When each account last had its expired Claude login refreshed by a
+ * background poll, by usage account id.
+ *
+ * ADE never refreshes a Claude token itself (see `readClaudeLogin`), so an
+ * expired login used to wait for the next chat on that account. Smart balance
+ * does not send a chat to an account it has no reading for, so an idle
+ * account's token expired after a few hours and the account stayed dark for
+ * days. A background poll now runs the Claude CLI for it, which refreshes and
+ * saves its own token, at most once per {@link CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS}
+ * per account so a CLI that keeps failing is not spawned on every cadence tick.
+ */
+const CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
+const claudeBackgroundRefreshAt = new Map<string, number>();
+
+function claimClaudeBackgroundRefresh(accountId: string, nowMs: number = Date.now()): boolean {
+  const last = claudeBackgroundRefreshAt.get(accountId);
+  if (last !== undefined && nowMs - last < CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS) return false;
+  claudeBackgroundRefreshAt.set(accountId, nowMs);
+  return true;
+}
+
 /** Drops the per-account cooldowns so a test starts from a clean cadence. */
 function resetAccountRateLimitsForTest(): void {
   accountRateLimits.clear();
   accountLogins.clear();
+  claudeBackgroundRefreshAt.clear();
 }
 
 /**
@@ -1215,14 +1238,27 @@ async function pollClaudeInstance(
     noteAccountLogin(accountId, instance.id, login.state);
   }
   if (login.state === "expired") {
-    // The CLI refreshes and saves its own token. A user poll may run it;
-    // a background poll waits for the next chat on this account to do it.
-    if (allowInteractiveSources) {
-      return await measureUsagePhase(
+    // The CLI refreshes and saves its own token. A user poll runs it every
+    // time. A background poll runs it for a scoped account at most once per
+    // interval, because an idle account has no chat coming to refresh it and
+    // the next background poll can read the refreshed Keychain item. The
+    // default account's background poll cannot (it skips the Keychain), so a
+    // refresh there would only respawn the CLI every interval.
+    const backgroundRefresh = !allowInteractiveSources
+      && configHome !== undefined
+      && claimClaudeBackgroundRefresh(accountId);
+    if (allowInteractiveSources || backgroundRefresh) {
+      const refreshed = await measureUsagePhase(
         logger,
         { provider: "claude", phase: "cli_fallback", reason: context.reason },
         () => pollClaudeViaCli(logger, configHome),
       );
+      if (backgroundRefresh && refreshed.windows.length > 0) noteAccountLogin(accountId, instance.id, "ok");
+      if (allowInteractiveSources || refreshed.windows.length > 0) return refreshed;
+      logger.warn("usage.poll.claude_background_refresh_failed", {
+        instanceId: instance.id,
+        errorKind: refreshed.errorKind ?? null,
+      });
     }
     if (!instance.isDefault) return null;
     return {
@@ -1277,13 +1313,26 @@ async function pollClaudeInstance(
       // off — which is exactly how a transient 429 becomes a sustained one.
       // Codex already refuses its CLI fallback for 403/409/429; same rule here.
       const httpErrorKind = errorKindForHttpStatus(result.status);
-      if (allowInteractiveSources && claudeCliFallbackFitsStatus(result.status)) {
+      // A scoped account's token comes from its own Keychain item, so a 401 is
+      // that login's token going stale early. Re-reading returns the same
+      // token, so it never reaches the `expired` branch; the CLI has to
+      // refresh it, on the same per-account allowance. The default account's
+      // background token can be a leftover credentials file, which a CLI run
+      // does not replace, so it keeps waiting for a user poll.
+      const backgroundRefresh = !allowInteractiveSources
+        && result.status === 401
+        && configHome !== undefined
+        && claimClaudeBackgroundRefresh(accountId);
+      if ((allowInteractiveSources || backgroundRefresh) && claudeCliFallbackFitsStatus(result.status)) {
         const fallback = await measureUsagePhase(
           logger,
           { provider: "claude", phase: "cli_fallback", reason: context.reason },
           () => pollClaudeViaCli(logger, configHome),
         );
-        if (fallback.windows.length > 0) return fallback;
+        if (fallback.windows.length > 0) {
+          if (backgroundRefresh) noteAccountLogin(accountId, instance.id, "ok");
+          return fallback;
+        }
       }
       return {
         windows: [],
@@ -3568,18 +3617,27 @@ async function stampProviderAccounts(
  * Two config homes can hold one login: signing a second account in while the
  * browser is still on the first account's claude.ai session does exactly that.
  * They are one quota, so the snapshot shows the login once and balance never
- * counts it twice. Accounts arrive default first, so the default stays.
+ * counts it twice. Accounts arrive default first, so the default stays unless
+ * its login is signed out; then the first working one does. That is the
+ * registry's `sameLoginAs` rule: the account kept here is the one smart
+ * balance counts, so the two must name the same owner.
  */
 function sameLoginDuplicates(accounts: readonly UsageAccount[]): string[] {
-  const seen = new Set<string>();
-  const duplicates: string[] = [];
-  for (const account of accounts) {
-    const email = account.email?.trim().toLowerCase();
-    if (!email || !account.instanceId) continue;
-    if (seen.has(email)) duplicates.push(account.id);
-    else seen.add(email);
+  const ownerByEmail = new Map<string, string>();
+  for (const workingOnly of [true, false]) {
+    for (const account of accounts) {
+      const email = account.email?.trim().toLowerCase();
+      if (!email || !account.instanceId || ownerByEmail.has(email)) continue;
+      if (workingOnly && accountLogins.get(account.id) === "signed_out") continue;
+      ownerByEmail.set(email, account.id);
+    }
   }
-  return duplicates;
+  return accounts
+    .filter((account) => {
+      const email = account.email?.trim().toLowerCase();
+      return Boolean(email && account.instanceId && ownerByEmail.get(email) !== account.id);
+    })
+    .map((account) => account.id);
 }
 
 function isQuotaInstanceProvider(provider: UsageProvider): provider is QuotaInstanceProvider {
