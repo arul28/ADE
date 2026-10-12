@@ -450,7 +450,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [handleSelectSession, machineRouter],
   );
 
-  const handleInfoClick = useCallback(
+  const handleInfoClick = useLatestCallback(
     (session: TerminalSessionSummary, e: React.MouseEvent) => {
       const r = e.currentTarget.getBoundingClientRect();
       setInfoPopover({
@@ -459,7 +459,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         runtimePin: resolveSessionRuntimePin(session),
       });
     },
-    [resolveSessionRuntimePin],
   );
 
   const handleContextMenu = useLatestCallback(

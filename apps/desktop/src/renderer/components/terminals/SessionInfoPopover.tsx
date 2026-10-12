@@ -90,8 +90,8 @@ export type SessionInfoAnchorRect = {
 export type InfoPopoverState = {
   session: TerminalSessionSummary;
   anchor: SessionInfoAnchorRect;
-  /** The session's machine; null means this window's project runtime. */
-  runtimePin?: OpenProjectBinding | null;
+  /** The session's machine; null is the tab's bound machine. */
+  runtimePin: OpenProjectBinding | null;
 } | null;
 
 export function SessionInfoPopover({
@@ -313,7 +313,7 @@ export function SessionInfoPopover({
           })
           : null}
 
-        {session.status !== "running" ? <SessionDeltaCard sessionId={session.id} runtimePin={popover.runtimePin ?? null} className="border-0 bg-fg/[0.02]" /> : null}
+        {session.status !== "running" ? <SessionDeltaCard sessionId={session.id} runtimePin={popover.runtimePin} className="border-0 bg-fg/[0.02]" /> : null}
 
         {health && !isChat
           ? sectionShell({

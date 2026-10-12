@@ -23,7 +23,6 @@ import { openExternalUrl } from "../../../lib/openExternal";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice/Banner";
 import type { OpenProjectBinding } from "../../../../shared/types";
-import { useSettingsMachineScope } from "../SettingsMachineScope";
 
 /**
  * Poll cadence for "are we signed in yet".
@@ -69,11 +68,10 @@ export type ProviderSignInModalProps = {
   /** Called once, after a successful sign-in, so the caller can refresh its own view. */
   onSignedIn?: () => void;
   /**
-   * The machine to sign in on, when the caller is not the Settings page (a
-   * chat's sign-in card passes its chat's machine). Omitted: the machine the
-   * Settings page is showing.
+   * The machine to sign in on: the machine the Settings page is showing, or a
+   * chat's machine for its sign-in card. Null is the tab's bound machine.
    */
-  runtimePin?: OpenProjectBinding | null;
+  runtimePin: OpenProjectBinding | null;
 };
 
 export function ProviderSignInModal({
@@ -84,12 +82,10 @@ export function ProviderSignInModal({
   checkSignedIn,
   onClose,
   onSignedIn,
-  runtimePin,
+  // The login runs on the caller's machine: its lane, its shell, its
+  // credential store.
+  runtimePin: pin,
 }: ProviderSignInModalProps) {
-  // The login runs on the machine the Settings page is showing, or the chat's
-  // machine when a chat opened it: its lane, its shell, its credential store.
-  const settingsPin = useSettingsMachineScope().pin;
-  const pin = runtimePin !== undefined ? runtimePin : settingsPin;
   // Effects key on the pin's identity, not the object: a chat's pin can be
   // rebuilt with the same key, which must not restart the login shell.
   const pinRef = useRef(pin);
@@ -108,6 +104,9 @@ export function ProviderSignInModal({
   useEffect(() => {
     let cancelled = false;
     const pin = pinRef.current;
+    // A new machine gets a new login shell; the old one's terminal is gone.
+    setTerminal(null);
+    openedUrlRef.current = null;
     void (async () => {
       try {
         if (!window.ade?.pty?.create) throw new Error("Terminals are not available in this window.");

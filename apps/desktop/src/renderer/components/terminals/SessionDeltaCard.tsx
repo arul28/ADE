@@ -5,12 +5,12 @@ import { cn } from "../ui/cn";
 
 export function SessionDeltaCard({
   sessionId,
-  runtimePin = null,
+  runtimePin,
   className,
 }: {
   sessionId: string;
-  /** The session's machine; null means this window's project runtime. */
-  runtimePin?: OpenProjectBinding | null;
+  /** The session's machine; null is the tab's bound machine. */
+  runtimePin: OpenProjectBinding | null;
   className?: string;
 }) {
   const runtimePinRef = useRef(runtimePin);

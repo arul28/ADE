@@ -84,13 +84,13 @@ function cleanError(error: unknown): string {
  */
 export function useCodexVoice({
   sessionId,
-  runtimePin = null,
+  runtimePin,
   preferences,
   onError,
 }: {
   sessionId: string | null;
-  /** The machine that owns the chat; `null` uses this window's project runtime. */
-  runtimePin?: OpenProjectBinding | null;
+  /** The machine that owns the chat; `null` is the tab's bound machine. */
+  runtimePin: OpenProjectBinding | null;
   preferences: CodexVoicePreferences;
   onError?: (message: string) => void;
 }): CodexVoiceController {

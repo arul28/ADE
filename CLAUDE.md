@@ -20,16 +20,22 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
 
 1. **Pass the scope.** Renderer calls take an optional `pin` (an
    `OpenProjectBinding`). Leave it out and the call silently goes to the
-   window's own machine. That works in local testing and fails for every remote
-   user with errors like "Chat session '…' was not found". In a chat subtree,
-   read `useChatRuntimeScope().pin`; on Work rows, use
-   `resolveSessionRuntimePin(session)`; in Settings,
-   `useSettingsMachineScope().pin`. Keep it for the whole flow: a start, its
-   stop, and its status reads go to the same machine.
+   machine the project tab is bound to. That works in local testing and fails
+   whenever the chat's machine is a different one, with errors like
+   "Chat session '…' was not found". In a chat subtree,
+   read `useChatRuntimeScope().pin`; on the Work page, the row's
+   `foreignRow.binding` or `useWorkSessions().resolveSessionRuntimePin`; in Settings,
+   `useSettingsMachineScope().pin`. These are null when the target is the
+   tab's own machine, which keeps the unpinned route; do not substitute the
+   tab binding. Keep the pin for the whole flow: a start, its stop, and its
+   status reads go to the same machine.
 2. **Make the contract carry it.** A new IPC/preload method that acts on a
    chat, session, lane or terminal takes `pin?: OpenProjectBinding | null` and
-   routes through `callPinnedOrBoundRuntimeActionOr`, and its runtime action is
-   reachable remotely (action domain + `actionPolicy`).
+   routes a pin through `callPinnedRuntimeAction` (or
+   `callPinnedOrBoundRuntimeActionOr`, which does both), and its runtime
+   action is reachable remotely (action domain + `actionPolicy`). Inside a
+   component, prefer a required `pin` prop over an optional one that quietly
+   defaults to the tab's machine.
 3. **Key effects on `pin?.key`, not the pin object.** A pin can be rebuilt with
    the same key; an effect keyed on the object restarts (a login shell, a voice
    call) for nothing.

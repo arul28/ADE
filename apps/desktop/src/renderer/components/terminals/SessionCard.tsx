@@ -685,7 +685,6 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   const delta = useSessionDelta(
     session.id,
     deltaEnabled && (!isRemoteProject || isSelected),
-    runtimePin,
   );
   const primaryText = primarySessionLabel(session);
   const settled = canonicalPhase === "settled";
