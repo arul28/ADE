@@ -48,7 +48,11 @@ export function ClaudeModsSection() {
   const [saving, setSaving] = useState(false);
   const [enabled, setEnabled] = useState(false);
 
+  // The setting is the host's project configuration, and the hosted client draws no mod UI.
+  const onWeb = isWebClientMode();
+
   useEffect(() => {
+    if (onWeb) return;
     let cancelled = false;
     void window.ade.projectConfig.get()
       .then((snapshot) => {
@@ -62,7 +66,7 @@ export function ClaudeModsSection() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [onWeb]);
 
   /** Saves optimistically; a failed save puts the toggle back and says so. */
   const save = useCallback(async (value: boolean) => {
@@ -83,8 +87,7 @@ export function ClaudeModsSection() {
     }
   }, [saving]);
 
-  // The setting is the host's project configuration, and the hosted client draws no mod UI.
-  if (isWebClientMode()) return null;
+  if (onWeb) return null;
 
   return (
     <ModernSection group="Claude mods" title="Claude mods" hint="Claude Code plugins that draw in the chat.">

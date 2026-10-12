@@ -6,27 +6,33 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { dismissClaudeModsOffer, isClaudeModsOfferDismissed } from "./claudeModUiPrefs";
 
 /**
- * Whether this person has a mod installed. Listing plugins reads the disk, so
- * the answer is kept for the window: a mod installed later is noticed after a
- * restart.
+ * Whether a chat has a mod installed. The plugin list is the chat's own (its
+ * lane can add plugins) and reading it reads the disk, so each chat is asked
+ * once per window: a mod installed later is noticed after a restart.
  */
-let hasModsInstalled: Promise<boolean> | null = null;
+const hasModsBySession = new Map<string, Promise<boolean>>();
 
 function findInstalledMods(sessionId: string): Promise<boolean> {
-  hasModsInstalled ??= window.ade.agentChat.listClaudePlugins({ sessionId })
-    .then((plugins) => plugins.some((plugin) => plugin.isMod === true))
-    .catch(() => {
-      // An older host cannot say. Ask again on the next chat.
-      hasModsInstalled = null;
-      return false;
-    });
-  return hasModsInstalled;
+  let found = hasModsBySession.get(sessionId);
+  if (!found) {
+    found = window.ade.agentChat.listClaudePlugins({ sessionId })
+      .then((plugins) => plugins.some((plugin) => plugin.isMod === true))
+      .catch(() => {
+        // An older host cannot say. Ask again when the chat opens next.
+        hasModsBySession.delete(sessionId);
+        return false;
+      });
+    hasModsBySession.set(sessionId, found);
+  }
+  return found;
 }
 
 /**
  * Offers the mod UI setting, once, to a person who has Claude Code mods
- * installed and has the setting off. Runs for an open Claude chat in the
- * desktop window only (not the hosted client, not a subagent view).
+ * installed and has the setting off. Runs for an open Claude chat on this
+ * window's own machine (not the hosted client, not a subagent view, not a
+ * chat on another machine: the setting and the plugins read here would be
+ * this machine's).
  */
 export function useClaudeModsPrompt(sessionId: string | null): void {
   const navigate = useNavigate();

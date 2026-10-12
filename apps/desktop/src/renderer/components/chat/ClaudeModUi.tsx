@@ -62,7 +62,8 @@ export const ClaudeModUi = memo(function ClaudeModUi(props: {
       <span className="kit-eyebrow">Mods</span>
       <span className="ade-mod-statuses">
         {snapshot.statuses.map((status) => (
-          // As in Claude Code, whose docs show a status line as `my-mod: checks: 3 passing`.
+          // As in Claude Code: its mods API docs (code.claude.com/docs/en/plugins/mods/api,
+          // v2.1.290) show a status line as `my-mod: checks: 3 passing`.
           <span key={status.plugin} className="ade-mod-status">
             <span className="ade-mod-status-name">{status.plugin}:</span> {status.text}
           </span>

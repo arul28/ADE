@@ -10,6 +10,7 @@
  *
  * Everything here is pure so the host, the renderer and the tests share it.
  */
+
 import { isSessionMetaOnly } from "./sessionMetaEvents";
 
 /** The mod UI actions, in every list that must name them (policy, preload, RPC guard). */
@@ -76,7 +77,7 @@ export type ClaudePluginUiSnapshot = {
   /** Bumped on every change, so a slow read cannot overwrite a newer push. */
   revision: number;
   statuses: ClaudePluginUiStatus[];
-  /** A toast a mod just raised. It rides only the publish that raised it, so a later read never repeats it. */
+  /** A toast a mod just raised. Only the publish that raised it carries one; a read never does. */
   toast: ClaudePluginUiToast | null;
   band: ClaudePluginUiElement | null;
   panes: Pane[];

@@ -5,6 +5,7 @@
  * Everything here is pure so the host (which builds the block on send), the
  * renderer (which shows the sent card) and the tests share one format.
  */
+
 import { isSessionMetaOnly } from "./sessionMetaEvents";
 
 /** The comment actions, in every list that must name them (policy, access table, RPC guard, mobile). */

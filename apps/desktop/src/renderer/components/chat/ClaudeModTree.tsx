@@ -119,8 +119,9 @@ export function ModTree({ node, site, act, live }: ModTreeProps): ReactNode {
             disabled={!live || !target}
             onChange={(event) => target && act({ kind: "select", target, key, value: event.target.value, site })}
           >
-            {options.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
+            {options.map((option, index) => (
+              // A mod may repeat a value; the place keeps React's keys unique.
+              <option key={`${index}:${option.value}`} value={option.value}>{option.label}</option>
             ))}
           </select>
         </label>
@@ -134,10 +135,13 @@ export function ModTree({ node, site, act, live }: ModTreeProps): ReactNode {
 function ModInput({ element, site, act, live }: Omit<ModTreeProps, "node"> & { element: ClaudePluginUiElement }): ReactNode {
   const { props, target } = element;
   const hostValue = str(props.value) ?? "";
+  const label = str(props.label);
   const [value, setValue] = useState(hostValue);
   // The mod's own value wins when it changes (a submit it accepted or cleared).
-  useEffect(() => setValue(hostValue), [hostValue]);
-  const label = str(props.label);
+  // A different field in the same place (another key, label or placeholder)
+  // starts from its own value too: typed text never moves to another field.
+  const field = `${str(props.key) ?? ""}|${label ?? ""}|${str(props.placeholder) ?? ""}`;
+  useEffect(() => setValue(hostValue), [hostValue, field]);
   const disabled = !live || !target;
   return (
     <form

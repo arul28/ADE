@@ -28240,6 +28240,7 @@ export function createAgentChatService(args: {
           if (runtime.interrupted) break;
           if (timeoutError) throw timeoutError;
           if (resultSeen) {
+            // A monotonic clock: a wall-clock step must not stretch the window.
             modUiDrainStartedAt ??= performance.now();
             if (performance.now() - modUiDrainStartedAt >= CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS) break;
           }

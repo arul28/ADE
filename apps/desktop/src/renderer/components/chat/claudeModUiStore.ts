@@ -22,18 +22,16 @@ const bySession = new Map<string, ClaudePluginUiSnapshot>();
 const writeVersion = new Map<string, number>();
 const listeners = new Set<() => void>();
 
-/** Stores a snapshot. Returns false for one that is older than what the store holds. */
-function setClaudeModUi(sessionId: string, snapshot: ClaudePluginUiSnapshot): boolean {
+function setClaudeModUi(sessionId: string, snapshot: ClaudePluginUiSnapshot): void {
   const current = bySession.get(sessionId);
   // Pushes of one Claude process arrive in order; a late older one is dropped.
-  if (current && current.generation === snapshot.generation && current.revision >= snapshot.revision) return false;
+  if (current && current.generation === snapshot.generation && current.revision >= snapshot.revision) return;
   // Generation 0 is the empty snapshot: the host has nothing for this chat.
-  if (snapshot.generation === 0 && !current) return false;
+  if (snapshot.generation === 0 && !current) return;
   if (snapshot.generation === 0) bySession.delete(sessionId);
   else bySession.set(sessionId, snapshot);
   writeVersion.set(sessionId, (writeVersion.get(sessionId) ?? 0) + 1);
   for (const listener of listeners) listener();
-  return true;
 }
 
 /** The API, when this client has it (an older preload or a mock may not). */
@@ -78,9 +76,11 @@ export function useClaudeModUi(
       // Only the chat on screen: another chat's toast here would name no chat.
       if (envelope.sessionId !== sessionId || envelope.event.type !== "session_meta_updated") return;
       const pushed = envelope.event.claudePluginUi;
-      if (!pushed || !setClaudeModUi(sessionId, pushed)) return;
-      // The host sends a toast only with the publish that raised it. One id
-      // per mod and chat: a newer toast replaces it, as in Claude Code.
+      if (!pushed) return;
+      setClaudeModUi(sessionId, pushed);
+      // The host sends a toast only with the publish that raised it, so it is
+      // shown even when a read already stored that revision. One id per mod
+      // and chat: a newer toast replaces it, as in Claude Code.
       const toast = pushed.toast;
       if (toast) {
         showToast({

@@ -4794,7 +4794,8 @@ export function AgentChatPane({
   const claudeModUiSessionId = selectedSession?.provider === "claude" && !subagentView && !isWebClientMode()
     ? threadCommentsSessionId
     : null;
-  useClaudeModsPrompt(claudeModUiSessionId);
+  // The offer reads this machine's setting and plugins, so a chat on another machine gets none.
+  useClaudeModsPrompt(chatRuntimePin ? null : claudeModUiSessionId);
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;

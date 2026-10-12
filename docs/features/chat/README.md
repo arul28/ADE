@@ -2133,13 +2133,17 @@ with Claude Code 2.1.293 (SDK 0.3.293).
   inside a mod's `Markdown` follow the same rule, not the chat's: a mod cannot
   open a file or an ADE deeplink.
 - **Attribution.** A status line starts with the name of the mod that set it
-  (Claude Code's docs show `my-mod: checks: 3 passing`), and a toast carries
+  (Claude Code's [mods API docs](https://code.claude.com/docs/en/plugins/mods/api),
+  v2.1.290, show `my-mod: checks: 3 passing`), and a toast carries
   the mod's name as its title. A newer toast of one mod replaces its older
   one. A toast rides only the publish that raised it, and the window shows it
   only for the chat on screen, so opening a chat never repeats an old one.
 - **Keys.** A control with a `key` keeps its state (typed text) by that key.
-  Controls without one are tracked by position, as Claude Code's docs advise
-  ("give each control one").
+  Controls without one are tracked by position; Claude Code's
+  [interface docs](https://code.claude.com/docs/en/plugins/mods/interface) tell
+  a mod to give each control a key. A text field also starts over when its
+  key, label or placeholder changes, so typed text never moves to another
+  field.
 - **Colours.** Claude Code's theme keys, terminal names, hex, `rgb()` and
   `ansi256()` map to theme colours in `claudeModUiStyle.ts`; the terminal's
   black, white and greys follow the theme so they read on a light one. No
@@ -2149,7 +2153,7 @@ with Claude Code 2.1.293 (SDK 0.3.293).
   action whose generation is not the current one, and one whose
   `{ plugin, handle }` is not in the trees it last sent. A typed value or a
   pick must also name the site (the band, or an open pane) the control was
-  drawn in. The arguments arrive as untyped JSON and each one is checked. Claude Code issues new
+  drawn in, and only a pane this process lists can be closed. The arguments arrive as untyped JSON and each one is checked. Claude Code issues new
   handles on every render, so an old control is also refused there.
 - **User clients only.** Both actions are in `CLAUDE_PLUGIN_UI_ACTION_NAMES`,
   which the action policy, the preload runtime-only list and the RPC guard
@@ -2158,9 +2162,12 @@ with Claude Code 2.1.293 (SDK 0.3.293).
   cannot call them.
 
 When the Claude process goes away (idle eviction, a reset), the band and the
-panes stay on screen, dimmed and not pressable (`live: false`), until a render
-of the next process answers. A late message of a closed or replaced process
-is dropped. Status lines belong to the process that set them and are
+panes stay on screen, dimmed and not pressable (`live: false`). The next
+process starts with that band still dimmed, until one of its renders answers,
+and with no panes: a pane belongs to the process that opened it. A late
+message of a closed or replaced process is dropped. A `generation` starts at
+the host's clock, so a restarted host never reuses one a window still holds.
+A redraw that draws the same trees is not published. Status lines belong to the process that set them and are
 cleared.
 
 ### Surfaces
@@ -2178,11 +2185,13 @@ It is **off unless set to true**, because the channel is private to Claude
 Code. Turning it off takes the drawing down at the chat's next message from
 Claude; turning it on draws at the next message too.
 
-While the setting is off, an open Claude chat in the desktop window (not the
-hosted client, not a subagent view) offers it once: a floating
+While the setting is off, an open Claude chat on this window's own machine
+(not the hosted client, not a subagent view, not a chat on another machine)
+offers it once: a floating
 prompt ("ADE can show your Claude mods in chats") with a button that opens the
 setting. The offer shows only when `chat.listClaudePlugins` reports a plugin
-with `isMod` (its `hooks/hooks.json` names a hooks module). Closing it, or
+with `isMod` (its `hooks/hooks.json` names a hooks module); each chat is asked
+once per window. Closing it, or
 following its button, ends the offer for good in that window's storage.
 
 ## Pi UI bridge, `ask_user`, and extensions

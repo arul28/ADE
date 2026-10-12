@@ -153,7 +153,9 @@ export function createClaudePluginUiService(deps: {
   logger: Logger;
 }) {
   const entries = new Map<string, Entry>();
-  let generationCounter = 0;
+  // Starts at the clock, so a restarted host never reuses a generation a
+  // window still holds a snapshot of.
+  let generationCounter = Date.now();
   let toastCounter = 0;
 
   const update = (sessionId: string, entry: Entry, patch: Partial<Snapshot>): void => {
@@ -196,8 +198,10 @@ export function createClaudePluginUiService(deps: {
         client_id: CLIENT_ID,
         props,
       });
+      // A reply with no body is no answer: the site keeps what it shows.
+      if (!response) return null;
       // `hooked: false`, or a tree of type `engine`, is Claude Code's own placeholder.
-      if (!response || response.hooked !== true) return { tree: null, targets: [] };
+      if (response.hooked !== true) return { tree: null, targets: [] };
       if (isRecord(response.tree) && response.tree.type === "engine") return { tree: null, targets: [] };
       return sanitizeClaudePluginUiTree(response.tree);
     } catch (error) {
@@ -233,11 +237,15 @@ export function createClaudePluginUiService(deps: {
     // A render that answered makes this process's controls the ones on screen.
     // While none has, the last process's trees stay dimmed.
     const answered = band !== null || [...panes.values()].some((drawn) => drawn !== null);
-    update(sessionId, entry, {
-      ...(answered ? { live: true } : {}),
-      ...(band ? { band: band.tree } : {}),
+    const next = {
+      live: entry.snapshot.live || answered,
+      band: band ? band.tree : entry.snapshot.band,
       panes: drawnPanes,
-    });
+    };
+    // A mod may ask for a redraw that draws the same thing; clients need no word of it.
+    const { live, band: shownBand, panes: shownPanes } = entry.snapshot;
+    if (JSON.stringify(next) === JSON.stringify({ live, band: shownBand, panes: shownPanes })) return;
+    update(sessionId, entry, next);
   };
 
   /** Asks for the trees; requests that land during a render fold into one more. */
@@ -288,16 +296,14 @@ export function createClaudePluginUiService(deps: {
     const entry: Entry = {
       query,
       request: controlRequestOf(query),
-      // The band and the panes of the last process stay on screen, not
-      // pressable, until this process draws its own: no flicker on a restart.
-      // Status lines belong to the process that set them.
+      // The band of the last process stays on screen, not pressable, until
+      // this process draws its own: no flicker on a restart. Status lines and
+      // open panes belong to the process that set them.
       snapshot: {
-        ...(previous?.snapshot ?? EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT),
-        live: false,
+        ...EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT,
+        band: previous?.snapshot.band ?? null,
         generation: ++generationCounter,
-        revision: (previous?.snapshot.revision ?? 0) + 1,
-        statuses: [],
-        toast: null,
+        revision: 1,
       },
       targetsBySite: new Map(),
       rendering: false,
@@ -343,8 +349,14 @@ export function createClaudePluginUiService(deps: {
       }
       case "ui_panes": {
         const panes = panesFrom(entry.snapshot, message);
+        // A site exists exactly for each pane this process lists. A new one
+        // has no controls until its render answers.
+        const listed = new Set(panes.map((pane) => paneSite(pane.id)));
         for (const site of [...entry.targetsBySite.keys()]) {
-          if (site !== BAND_SITE && !panes.some((pane) => paneSite(pane.id) === site)) entry.targetsBySite.delete(site);
+          if (site !== BAND_SITE && !listed.has(site)) entry.targetsBySite.delete(site);
+        }
+        for (const site of listed) {
+          if (!entry.targetsBySite.has(site)) entry.targetsBySite.set(site, []);
         }
         update(sessionId, entry, { panes });
         requestRender(sessionId, entry);
@@ -376,7 +388,7 @@ export function createClaudePluginUiService(deps: {
         clear(sessionId);
         return isUi;
       }
-      // Turned on after this query started, so it was never named.
+      // No entry: the setting was turned on after this query started, so it was never named.
       if (!entries.has(sessionId)) attach(sessionId, query);
       const entry = entries.get(sessionId);
       // A late message of a replaced or closed query must not draw over the current one.
@@ -393,7 +405,9 @@ export function createClaudePluginUiService(deps: {
 
   const get = (sessionId: unknown): Snapshot => {
     const id = typeof sessionId === "string" ? sessionId.trim() : "";
-    return (deps.isEnabled() ? entries.get(id)?.snapshot : null) ?? EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT;
+    const snapshot = deps.isEnabled() ? entries.get(id)?.snapshot : null;
+    // A toast is news only in the publish that raised it, never in a read.
+    return snapshot ? { ...snapshot, toast: null } : EMPTY_CLAUDE_PLUGIN_UI_SNAPSHOT;
   };
 
   /**
@@ -411,9 +425,8 @@ export function createClaudePluginUiService(deps: {
     if (!entry || !request || !deps.isEnabled() || entry.snapshot.generation !== raw.generation) return refused;
     try {
       if (raw.kind === "closePane") {
-        // Only a pane this process drew, and still shows, can be closed.
-        if (typeof raw.paneId !== "string" || !entry.snapshot.live || !entry.targetsBySite.has(paneSite(raw.paneId))) return refused;
-        if (!entry.snapshot.panes.some((pane) => pane.id === raw.paneId)) return refused;
+        // Only a pane this process lists has a site, so only that pane can be closed.
+        if (typeof raw.paneId !== "string" || !entry.targetsBySite.has(paneSite(raw.paneId))) return refused;
         const response = await send(request, { subtype: "ui_close", id: raw.paneId });
         return { handled: response?.closed === true };
       }
