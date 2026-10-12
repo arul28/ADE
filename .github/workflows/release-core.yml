@@ -197,9 +197,10 @@ jobs:
           fi
 
   build-mac-release:
+    # Not `needs: build-runtime-binaries`: the job does its own setup while the
+    # runtime binaries build, then waits for its one runtime artifact below.
     needs:
       - verify
-      - build-runtime-binaries
     # One job per arch, in parallel, both on Apple Silicon. Each job signs,
     # notarizes and staples its own app; the per-arch updater manifests are
     # merged by the publish-release job in release-publish.yml.
@@ -274,6 +275,11 @@ jobs:
       - name: Use cached native helpers
         if: ${{ steps.native-helpers.outputs.cache-hit == 'true' }}
         run: echo "ADE_NATIVE_HELPERS_CACHED=1" >> "$GITHUB_ENV"
+
+      - name: Wait for the darwin-${{ matrix.arch }} runtime binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/wait-for-run-artifact.sh "ade-runtime-darwin-${{ matrix.arch }}" "build-runtime-binaries (darwin-${{ matrix.arch }},"
 
       # Only this job's own target. Downloading every ade-runtime-* artifact is
       # what let foreign-platform payloads into the bundle in the first place.
@@ -432,9 +438,9 @@ jobs:
     # windows_proof input additionally builds Windows while the publication gate
     # is still off, so clean-host evidence can be collected deliberately.
     if: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof }}
+    # Waits for its own runtime artifact instead; see build-mac-release.
     needs:
       - verify
-      - build-runtime-binaries
     runs-on: windows-latest
     concurrency:
       group: release-${{ inputs.release_tag }}-win-x64
@@ -489,6 +495,12 @@ jobs:
           path: apps/desktop/resources/whisper/transcribe-cli.exe
           key: transcribe-cli-win32-x64-${{ hashFiles('apps/desktop/scripts/materialize-whisper-resources.mjs') }}
 
+      - name: Wait for the win32-x64 runtime binary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/wait-for-run-artifact.sh ade-runtime-win32-x64 "build-runtime-binaries (win32-x64,"
+
       # Only this job's own target; see the equivalent step in build-mac-release.
       - name: Download ADE runtime binaries
         uses: actions/download-artifact@v4
@@ -507,6 +519,16 @@ jobs:
       # Clean-host evidence still covers every published standalone runtime, so
       # the full artifact set is staged OUTSIDE resources/runtime, where it
       # cannot reach the desktop bundle.
+      - name: Wait for every runtime binary for proof
+        if: ${{ inputs.windows_proof }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
+            scripts/wait-for-run-artifact.sh "ade-runtime-$target" "build-runtime-binaries ($target,"
+          done
+
       - name: Download all standalone runtime artifacts for proof
         if: ${{ inputs.windows_proof }}
         uses: actions/download-artifact@v4
