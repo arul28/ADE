@@ -286,10 +286,10 @@ is no separate column.
   "{name} is off." with Start. Only Start, the picker, `apple start`,
   `stream-start`, `open-device` and `launch` power a device on.
 - Until the lane's device list has answered once, the pane does not show the
-  picker: it shows "Loading simulators…", or "Couldn't load this lane's
-  simulators." with the reason and **Retry** when the read failed. An empty
-  list from a failed read used to show as "No Apple simulators are installed."
-  A read refused by a project switch is read again when the switch ends.
+  picker: it shows "Loading simulators…", or an inline error banner with the
+  reason and **Retry** when the read failed, never the "No Apple simulators are
+  installed." card. A read that met a project switch is read again once the
+  switch is over.
 - The **tools card** names the lane's device and its power state
   (`{name} · Running | Starting | Shut down`) and carries a corner menu that
   boots, opens, releases, or — for an ADE device only — deletes the device

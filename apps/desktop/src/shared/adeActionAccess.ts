@@ -5,17 +5,17 @@
  * is declared here, once, as `read` or `write`; `actionPolicy.test.ts` fails
  * when the two disagree, so a new action cannot ship undeclared.
  *
- * The preload reads this table while a project tab is switching: a write is
- * refused then, because the project it was meant for is ambiguous, while a read
- * goes ahead. It used to guess from the action's name (`get…`, `list…`), and
- * every read named otherwise — `ios_simulator.deviceList`, `search.query` —
- * failed with "Project is switching" instead of answering.
+ * Two decisions read it. While a project tab is switching, the preload refuses
+ * a write, because the project it was meant for is ambiguous, and lets a read
+ * go ahead. After a dropped connection, the runtime pools run a read again and
+ * never a write (`isReplaySafeAdeAction`).
  *
- * A name is not proof either way. `lane.portGetLease` creates the lease it
- * cannot find, and `automations.webhookGetEndpoint` registers the URL with the
- * relay, so both are writes. When unsure, declare `write`: a read declared as a
- * write only fails during a switch, but a write declared as a read can land on
- * the wrong project.
+ * Declare by what the action does, not by its name. `lane.portGetLease`
+ * creates the lease it cannot find, and `automations.webhookGetEndpoint` and
+ * `automations.webhookList` register URLs with the relay, so all three are
+ * writes. When unsure, declare `write`: a read declared as a write only fails
+ * during a switch, but a write declared as a read can land on the wrong
+ * project.
  */
 export type AdeActionAccess = "read" | "write";
 
@@ -556,9 +556,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: [
       "list", "get", "getHistory", "listRuns", "getRunDetail", "getIngressStatus",
       "listIngressEvents", "listScheduledCleanups", "linearIngressGetStatus",
-      "webhookListDeliveries", "webhookGetDelivery", "webhookList",
+      "webhookListDeliveries", "webhookGetDelivery",
     ],
     write: [
+      "webhookList",
       "saveRule", "deleteRule", "toggleRule", "triggerManually", "planTest", "runTest",
       "cleanUpTestRun", "startIngress", "refreshWebhookGatewayStatus",
       "setWebhookGatewayPublicUrl", "cancelScheduledCleanup", "linearIngressSetup",
@@ -609,4 +610,37 @@ for (const [domain, declared] of Object.entries(ADE_ACTION_ACCESS)) {
 /** The declared access, or null for an action this table does not know. */
 export function adeActionAccess(domain: string, action: string): AdeActionAccess | null {
   return accessByAction.get(`${domain}.${action}`) ?? null;
+}
+
+// Writes that are idempotent, so a call whose answer was lost to a dropped
+// connection may run again: they prepare or record a state that a second run
+// leaves as it was.
+const REPLAY_SAFE_WRITES = new Set<string>([
+  "chat.prepareCrossMachineHandoff",
+  "chat.validateCrossMachineSource",
+  "chat.markCrossMachineHandoff",
+  "file.refreshGitDecorations",
+  "lane.portGetLease",
+]);
+
+// Reads that are never run again: they wait on purpose, call a model, or scan
+// every lane. A replay repeats the whole cost, and a replayable call gets a
+// shorter budget per attempt than these can need.
+const UNREPLAYED_READS = new Set<string>([
+  "chat.waitFor",
+  "chat.suggestLaneNameFromPrompt",
+  "chat.generateAutoLaneIdentity",
+  "conflicts.scanRebaseNeeds",
+]);
+
+/**
+ * May a runtime call whose connection dropped before it answered run again?
+ * Declared reads may, except the costly ones above; writes may not, except the
+ * idempotent ones named above. Never a `start`: a replayed start whose first
+ * answer was lost runs the work twice.
+ */
+export function isReplaySafeAdeAction(domain: string, action: string): boolean {
+  const key = `${domain}.${action}`;
+  if (REPLAY_SAFE_WRITES.has(key)) return true;
+  return accessByAction.get(key) === "read" && !UNREPLAYED_READS.has(key);
 }

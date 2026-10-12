@@ -57,6 +57,7 @@ import {
   LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE,
 } from "../../../shared/runtimeErrors";
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
+import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
@@ -986,40 +987,10 @@ export function isLocalRuntimeConnectionDropped(error: Error): boolean {
   return LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN.test(error.message);
 }
 
-// Conservative mirror of the preload's isReadOnlyRuntimeAction. Only these
-// actions are safe to transparently retry after a connection drop, because a
-// retry of a mutating action could re-run it against the reconnected daemon.
-const RETRYABLE_READ_ACTION_PREFIXES = [
-  "diagnosticsGet",
-  "get",
-  "list",
-  "oauthGet",
-  "oauthList",
-  "portList",
-  "proxyGet",
-  "read",
-  "search",
-] as const;
-
-const RETRYABLE_READ_ACTIONS = new Set<string>([
-  "chat.codexFuzzyFileSearch",
-  "chat.fileSearch",
-  "chat.modelCatalog",
-  "file.listTreeChildren",
-  "file.quickOpen",
-  "file.readFileRange",
-  "file.refreshGitDecorations",
-  "terminal.activeForChat",
-  "terminal.preview",
-]);
-
+// Only declared reads (and a few idempotent writes) run again after a dropped
+// connection: a retried write could run twice against the reconnected daemon.
 export function isRetryableReadAction(domain: string, action: string): boolean {
-  if (RETRYABLE_READ_ACTIONS.has(`${domain}.${action}`)) return true;
-  return RETRYABLE_READ_ACTION_PREFIXES.some(
-    (prefix) =>
-      action === prefix ||
-      (action.startsWith(prefix) && /^[A-Z]/.test(action.slice(prefix.length))),
-  );
+  return isReplaySafeAdeAction(domain, action);
 }
 
 /**

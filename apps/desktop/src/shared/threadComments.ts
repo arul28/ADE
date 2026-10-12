@@ -6,7 +6,7 @@
  * renderer (which shows the sent card) and the tests share one format.
  */
 
-/** The comment actions, in every list that must name them (policy, preload, RPC guard, mobile). */
+/** The comment actions, in every list that must name them (policy, access table, RPC guard, mobile). */
 export const THREAD_COMMENT_ACTION_NAMES = [
   "listThreadComments",
   "createThreadComment",

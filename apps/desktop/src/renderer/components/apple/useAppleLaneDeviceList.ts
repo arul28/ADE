@@ -45,7 +45,9 @@ export type AppleLaneDeviceList = {
    * `installed` and a null `laneDevice` mean "not known yet", not "none".
    */
   listLoaded: boolean;
-  /** Why the last list read failed; null once one succeeds. */
+  /** The last list read for this lane and chat failed. */
+  listFailed: boolean;
+  /** Why it failed, when `listFailed`. */
   listError: unknown;
   /**
    * The last list read that found the lane's device booted, else null. A new
@@ -90,15 +92,20 @@ export function useAppleLaneDeviceList({
   const [measuringDisk, setMeasuringDisk] = useState(false);
   const [listNonce, setListNonce] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  // The outcome of the list reads for one lane and chat; another key's is not
+  // this one's.
   const listKey = `${laneId ?? ""}\u0000${sessionId ?? ""}`;
-  const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const [failure, setFailure] = useState<{ key: string; cause: unknown } | null>(null);
-  const listLoaded = loadedKey === listKey;
-  const listError = failure?.key === listKey ? failure.cause : null;
-  // Read through a ref: the read's callback must see whether THIS lane has
-  // loaded, without the list effect re-running when it does.
+  const [listRead, setListRead] = useState<
+    { key: string; loaded: boolean; failed: boolean; error: unknown } | null
+  >(null);
+  const current = listRead?.key === listKey ? listRead : null;
+  const listLoaded = current?.loaded ?? false;
+  const listFailed = current?.failed ?? false;
   const listLoadedRef = useRef(listLoaded);
   listLoadedRef.current = listLoaded;
+  const switching = useAppStore((state) => state.projectTransition !== null);
+  const switchingRef = useRef(switching);
+  const switchStartsRef = useRef(0);
   const [bootedRead, setBootedRead] = useState<AppleLaneDeviceBootedRead | null>(null);
   // Read through a ref so a new closure from the pane never re-reads the list.
   const onErrorRef = useRef(onError);
@@ -141,13 +148,14 @@ export function useAppleLaneDeviceList({
 
   useEffect(() => {
     let cancelled = false;
+    const switchStarts = switchStartsRef.current;
+    const startedDuringSwitch = switchingRef.current;
     setRefreshing(true);
     void window.ade.iosSimulator
       .deviceList({ laneId, chatSessionId: sessionId, installed: true, runtimes: true }, runtimePinRef.current)
       .then((next) => {
         if (cancelled) return;
-        setLoadedKey(listKey);
-        setFailure(null);
+        setListRead({ key: listKey, loaded: true, failed: false, error: null });
         setInstalled(next.installed);
         setRuntimes(next.runtimes ?? []);
         setDefaultNewDevice(next.defaultNewDevice ?? null);
@@ -187,11 +195,14 @@ export function useAppleLaneDeviceList({
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        setFailure({ key: listKey, cause: cause ?? new Error("The simulator list did not load.") });
-        // Before the first answer the pane shows this failure in place of the
-        // picker; a banner as well would say it twice. A refresh that fails
-        // over a loaded list keeps the list, so the banner is the only word.
-        if (listLoadedRef.current) onErrorRef.current(cause);
+        const loaded = listLoadedRef.current;
+        setListRead({ key: listKey, loaded, failed: true, error: cause });
+        // Unloaded, the pane shows the failure in place of the picker.
+        if (loaded) onErrorRef.current(cause);
+        // A read that met a project switch is retried once the switch is over:
+        // now, or by the effect below when the switch ends.
+        const metSwitch = startedDuringSwitch || switchStartsRef.current !== switchStarts;
+        if (metSwitch && !switchingRef.current) refreshList();
       })
       .finally(() => {
         if (!cancelled) setRefreshing(false);
@@ -199,18 +210,14 @@ export function useAppleLaneDeviceList({
     return () => {
       cancelled = true;
     };
-  }, [laneId, listKey, listNonce, runtimePinRef, sessionId]);
+  }, [laneId, listKey, listNonce, refreshList, runtimePinRef, sessionId]);
 
-  // A read refused mid project switch ("Project is switching") is right the
-  // moment the switch ends, so read again then rather than wait for a click.
-  const switching = useAppStore((state) => state.projectTransition !== null);
-  const failed = listError != null;
-  const wasSwitchingRef = useRef(switching);
   useEffect(() => {
-    const switchEnded = wasSwitchingRef.current && !switching;
-    wasSwitchingRef.current = switching;
-    if (switchEnded && failed) refreshList();
-  }, [failed, refreshList, switching]);
+    const switchEnded = switchingRef.current && !switching;
+    if (switching && !switchingRef.current) switchStartsRef.current += 1;
+    switchingRef.current = switching;
+    if (switchEnded && listFailed) refreshList();
+  }, [listFailed, refreshList, switching]);
 
   return {
     status,
@@ -224,7 +231,8 @@ export function useAppleLaneDeviceList({
     defaultNewDevice,
     refreshing,
     listLoaded,
-    listError,
+    listFailed,
+    listError: current?.error ?? null,
     bootedRead,
     refreshList,
     dropLaneDevice,

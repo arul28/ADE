@@ -22,6 +22,7 @@ import type {
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
+import { Banner } from "../ui/notice";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
 import type { AppleDevice3DFailure, AppleDeviceDuoProps } from "./AppleDevice3DView";
 import {
@@ -204,6 +205,7 @@ export function AppleDevicePane({
     defaultNewDevice,
     refreshing,
     listLoaded,
+    listFailed,
     listError,
     bootedRead,
     refreshList,
@@ -809,12 +811,21 @@ export function AppleDevicePane({
         // Until a list read answers, "no device" only means "not known yet":
         // the picker's empty card would claim no simulators are installed.
         if (!listLoaded) {
-          return listError != null ? (
-            <PaneMessage
-              title="Couldn't load this lane's simulators."
-              description={describeAppleError(listError).sentence}
-              action={{ label: "Retry", busy: refreshing, onClick: refreshList }}
-            />
+          return listFailed ? (
+            <div data-apple-list-failed="" className="flex size-full items-start justify-center px-4 py-6">
+              <Banner
+                layout="inline"
+                style={{ width: "100%", maxWidth: 384 }}
+                model={{
+                  id: "apple-device-list",
+                  tone: "error",
+                  title: "Couldn't load this lane's simulators.",
+                  detail: describeAppleError(listError).sentence,
+                  busy: refreshing,
+                  actions: [{ label: "Retry", onClick: refreshList, disabled: refreshing }],
+                }}
+              />
+            </div>
           ) : (
             <PaneMessage title="Loading simulators…" description={null} />
           );
@@ -1196,15 +1207,7 @@ export function AppleDevicePane({
   );
 }
 
-function PaneMessage({
-  title,
-  description,
-  action,
-}: {
-  title: string;
-  description: string | null;
-  action?: { label: string; busy: boolean; onClick: () => void };
-}) {
+function PaneMessage({ title, description }: { title: string; description: string | null }) {
   return (
     <div
       data-apple-pane-message=""
@@ -1215,11 +1218,6 @@ function PaneMessage({
         <p className="min-w-0 break-words font-sans text-sm font-medium leading-5 text-fg">{title}</p>
         {description ? (
           <p className="min-w-0 break-words font-sans text-xs leading-5 text-muted-fg">{description}</p>
-        ) : null}
-        {action ? (
-          <Button variant="outline" size="sm" disabled={action.busy} onClick={action.onClick} className="mt-1 shrink-0">
-            {action.label}
-          </Button>
         ) : null}
       </div>
     </div>

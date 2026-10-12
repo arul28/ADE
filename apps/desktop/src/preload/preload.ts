@@ -1515,6 +1515,34 @@ const projectBindingChangedCallbacks = new Set<
 >();
 
 /**
+ * How long a read that must reach its own machine waits out a project switch.
+ * A switch that takes longer than this is stuck, and the read says so.
+ */
+const PROJECT_SWITCH_READ_WAIT_MS = 60_000;
+
+/**
+ * Resolve once no project transition is in flight; immediately when none is.
+ * A second switch that starts as the first ends is waited out too, all within
+ * one deadline.
+ */
+async function waitForProjectRuntimeTransitionToSettle(): Promise<void> {
+  if (!projectRuntimeTransitionSettled) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(projectSwitchingError("reading project state"));
+    }, PROJECT_SWITCH_READ_WAIT_MS);
+  });
+  try {
+    while (projectRuntimeTransitionSettled) {
+      await Promise.race([projectRuntimeTransitionSettled.promise, deadline]);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * The binding the renderer has been told about, as `kind:key`.
  *
  * `currentProjectBinding` moves for reasons the renderer must not see — it is
@@ -1735,9 +1763,7 @@ async function callRemoteProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
-    return { handled: false };
-  }
+  assertWritesAllowedDuringProjectSwitch(domain, action);
   const binding = await getRemoteProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
@@ -1873,9 +1899,7 @@ async function callLocalProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
-    return { handled: false };
-  }
+  assertWritesAllowedDuringProjectSwitch(domain, action);
   const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
@@ -1890,9 +1914,7 @@ async function callLocalProjectActionStrictIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
-    return { handled: false };
-  }
+  assertWritesAllowedDuringProjectSwitch(domain, action);
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
@@ -1939,8 +1961,10 @@ const MUTATING_SYNC_METHODS = new Set([
   "modelPicker.pushRecent",
 ]);
 
-const PROJECT_SWITCHING_MESSAGE =
-  "Project is switching. Wait for the current project to finish loading before changing project state.";
+/** "Project is switching", finished with what the caller was doing. */
+function projectSwitchingError(doing: string): Error {
+  return new Error(`Project is switching. Wait for the current project to finish loading before ${doing}.`);
+}
 
 let openRemoteProjectGeneration = 0;
 let activeRemoteProjectOpenGeneration: number | null = null;
@@ -1956,21 +1980,15 @@ function isMutatingRuntimeAction(domain: string, action: string): boolean {
   return adeActionAccess(domain, action) !== "read";
 }
 
-function projectSwitchingError(domain: string, action: string): Error {
-  const label = domain === "chat" ? "sending chat messages" : "changing project state";
-  return new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+function assertProjectRuntimeNotTransitioningForMutation(doing: string): void {
+  if (projectRuntimeTransitionDepth > 0) throw projectSwitchingError(doing);
 }
 
-function assertProjectRuntimeNotTransitioningForMutation(label: string): void {
-  if (projectRuntimeTransitionDepth > 0) {
-    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+/** Refuse a write to the active binding while a project switch is in flight. */
+function assertWritesAllowedDuringProjectSwitch(domain: string, action: string): void {
+  if (projectRuntimeTransitionDepth > 0 && isMutatingRuntimeAction(domain, action)) {
+    throw projectSwitchingError(domain === "chat" ? "sending chat messages" : "changing project state");
   }
-}
-
-function shouldBypassProjectRuntimeDuringTransition(domain: string, action: string): boolean {
-  if (projectRuntimeTransitionDepth <= 0) return false;
-  if (isMutatingRuntimeAction(domain, action)) throw projectSwitchingError(domain, action);
-  return false;
 }
 
 async function waitForRemoteProjectOpenIfActive(): Promise<boolean> {
@@ -1991,10 +2009,8 @@ async function callProjectRuntimeActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
   const freshBinding = domain === "chat";
+  assertWritesAllowedDuringProjectSwitch(domain, action);
   const mutating = isMutatingRuntimeAction(domain, action);
-  if (mutating && projectRuntimeTransitionDepth > 0) {
-    throw projectSwitchingError(domain, action);
-  }
   if (freshBinding && CHAT_HOST_READS.has(action)) {
     await waitForProjectRuntimeTransitionToSettle();
   }
@@ -2018,9 +2034,7 @@ async function callProjectRuntimeActionIfBound<T>(
   ) {
     rebindAttempts += 1;
     if (rebindAttempts >= MAX_REMOTE_PROJECT_OPEN_REBIND_ATTEMPTS) {
-      throw new Error(
-        PROJECT_SWITCHING_MESSAGE.replace("changing project state", "reading project state"),
-      );
+      throw projectSwitchingError("reading project state");
     }
   }
   const remote = await callRemoteProjectActionIfBound<T>(
@@ -2509,9 +2523,7 @@ async function callProjectFileRuntimeActionOr<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
   local: () => Promise<T>,
 ): Promise<T> {
-  if (shouldBypassProjectRuntimeDuringTransition("file", action)) {
-    return local();
-  }
+  assertWritesAllowedDuringProjectSwitch("file", action);
   const remote = await callRemoteProjectActionIfBound<T>(
     "file",
     action,
@@ -4233,7 +4245,7 @@ async function clearAround<T>(
 async function runProjectRuntimeTransition<T>(
   action: () => Promise<T>,
 ): Promise<T> {
-  if (projectRuntimeTransitionDepth === 0 && !projectRuntimeTransitionSettled) {
+  if (projectRuntimeTransitionDepth === 0) {
     let release = () => {};
     const promise = new Promise<void>((resolve) => {
       release = resolve;
@@ -4253,33 +4265,6 @@ async function runProjectRuntimeTransition<T>(
   }
 }
 
-/**
- * How long a read that must reach its own machine waits out a project switch.
- * A switch that takes longer than this is stuck, and the read says so.
- */
-const PROJECT_SWITCH_READ_WAIT_MS = 60_000;
-
-/**
- * Resolve once no project transition is in flight; immediately when none is.
- * A second switch that starts as the first ends is waited out too, all within
- * one deadline.
- */
-async function waitForProjectRuntimeTransitionToSettle(): Promise<void> {
-  if (!projectRuntimeTransitionSettled) return;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", "reading project state")));
-    }, PROJECT_SWITCH_READ_WAIT_MS);
-  });
-  try {
-    while (projectRuntimeTransitionSettled) {
-      await Promise.race([projectRuntimeTransitionSettled.promise, deadline]);
-    }
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 function createIpcEventFanout<T>(
   channel: string,

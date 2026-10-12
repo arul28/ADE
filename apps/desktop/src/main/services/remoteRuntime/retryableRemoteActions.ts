@@ -1,41 +1,6 @@
-export const RETRYABLE_REMOTE_ACTION_PREFIXES = [
-  "diagnosticsGet",
-  "get",
-  "list",
-  "oauthGet",
-  "oauthList",
-  "portGet",
-  "portList",
-  "proxyGet",
-  "read",
-  "search",
-] as const;
+import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 
-export const RETRYABLE_REMOTE_ACTIONS = new Set([
-  "chat.codexFuzzyFileSearch",
-  "chat.fileSearch",
-  "chat.modelCatalog",
-  "chat.prepareCrossMachineHandoff",
-  "chat.validateCrossMachineSource",
-  "chat.preflightCrossMachineDestination",
-  "chat.markCrossMachineHandoff",
-  // Reads only. Never `start`: a replayed start after a lost answer could
-  // begin a second move.
-  "chat.getCrossMachineHandoffOptions",
-  "chat.previewCrossMachineHandoff",
-  "file.listTreeChildren",
-  "file.quickOpen",
-  "file.readFileRange",
-  "file.refreshGitDecorations",
-  "terminal.activeForChat",
-  "terminal.preview",
-]);
-
+/** Whether a remote runtime action may run again after its connection dropped. */
 export function isRetryableRemoteAction(domain: string, action: string): boolean {
-  if (RETRYABLE_REMOTE_ACTIONS.has(`${domain}.${action}`)) {
-    return true;
-  }
-  return RETRYABLE_REMOTE_ACTION_PREFIXES.some((prefix) =>
-    action.startsWith(prefix),
-  );
+  return isReplaySafeAdeAction(domain, action);
 }

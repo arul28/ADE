@@ -67,9 +67,8 @@ workaround. This is High unless proven harmless.
 
 ## 4.5 Project-switch safety
 
-**Class:** A call or surface that breaks while a project tab is switching. A
-read refused as a write showed "Something went wrong with the simulator" and
-then "No Apple simulators are installed" for a list that never loaded.
+**Class:** A call or surface that breaks while a project tab is switching:
+a read refused as a write, or a failed load rendered as an empty state.
 
 **Check:** A new runtime action is declared `read` or `write` in
 `apps/desktop/src/shared/adeActionAccess.ts`, by what it does, not its name. A
