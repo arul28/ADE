@@ -10,6 +10,10 @@
 // natively; the afterPack hook then prunes whichever arch the target does not
 // use, and validate-mac-artifacts checks every Mach-O in the bundle.
 //
+// Packages that compiled a native addon from source during `npm ci` (ssh2's
+// crypto binding, cpu-features) built it for the host. Those are recompiled
+// for the target CPU here; nothing in the build itself loads them.
+//
 //   node scripts/install-cross-arch-packages.mjs --cpu=x64
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
@@ -86,3 +90,57 @@ for (const [packagePath, entry] of Object.entries(lock.packages ?? {})) {
 }
 
 console.log(`[cross-arch] Added ${added.length} darwin-${targetCpu} package(s):${added.map((name) => `\n  ${name}`).join("")}`);
+
+// Find every addon node-gyp built during install: a binding.gyp with a
+// build/Release/*.node beside it. Prebuilt addons (node-pty, msgpackr) have no
+// build/Release and are covered by their per-arch prebuilds.
+async function findCompiledAddons(dir, depth = 0, found = []) {
+  if (depth > 6) return found;
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return found;
+  }
+  if (entries.some((entry) => entry.isFile() && entry.name === "binding.gyp")) {
+    const releaseDir = path.join(dir, "build", "Release");
+    const addons = (await fs.readdir(releaseDir).catch(() => [])).filter((name) => name.endsWith(".node"));
+    for (const addon of addons) found.push(path.join(releaseDir, addon));
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "build") {
+      await findCompiledAddons(path.join(dir, entry.name), depth + 1, found);
+    }
+  }
+  return found;
+}
+
+const nodeModules = path.join(appDir, "node_modules");
+const compiled = await findCompiledAddons(nodeModules);
+const packageNames = [...new Set(compiled.map((addon) => {
+  const parts = path.relative(nodeModules, addon).split(path.sep);
+  return parts[0].startsWith("@") ? `${parts[0]}/${parts[1]}` : parts[0];
+}))];
+if (packageNames.length > 0) {
+  console.log(`[cross-arch] Rebuilding install-compiled addons for ${targetCpu}: ${packageNames.join(", ")}`);
+  await execFileAsync("npm", ["rebuild", ...packageNames], {
+    cwd: appDir,
+    maxBuffer: 1024 * 1024 * 50,
+    env: { ...process.env, npm_config_arch: targetCpu, npm_config_target_arch: targetCpu },
+  });
+  const lipoArch = targetCpu === "x64" ? "x86_64" : "arm64";
+  // ssh2's installer reports a failed build as success and leaves no addon, so
+  // require every addon that existed before the rebuild to exist after it.
+  const rebuilt = new Set(await findCompiledAddons(nodeModules));
+  const lost = compiled.filter((addon) => !rebuilt.has(addon));
+  if (lost.length > 0) {
+    throw new Error(`[cross-arch] Rebuilding for ${targetCpu} dropped: ${lost.map((addon) => path.relative(appDir, addon)).join(", ")}`);
+  }
+  for (const addon of rebuilt) {
+    const { stdout } = await execFileAsync("lipo", ["-archs", addon]);
+    if (!stdout.trim().split(/\s+/).includes(lipoArch)) {
+      throw new Error(`[cross-arch] ${path.relative(appDir, addon)} is ${stdout.trim()} after rebuild, not ${lipoArch}.`);
+    }
+    console.log(`[cross-arch] ${path.relative(appDir, addon)}: ${stdout.trim()}`);
+  }
+}
