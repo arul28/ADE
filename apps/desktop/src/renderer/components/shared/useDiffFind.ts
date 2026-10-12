@@ -13,6 +13,7 @@
  * everything (`expandAll`) until the bar closes.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
+import { captureFindOpened } from "../../lib/findAnalytics";
 import { findScopeOwnsTarget } from "../../lib/findScope";
 import {
   countOccurrences,
@@ -131,6 +132,7 @@ export function useDiffFind({
     onClosed: () => handlers.current.clearMatches(),
     paint: () => handlers.current.recompute(),
     escapeRootRef: rootRef,
+    openedByShortcut: () => captureFindOpened("diff_shortcut"),
   });
   const { open, openRef, inputRef, surfaceId, closeBar, schedulePaint: scheduleRecompute } = session;
 

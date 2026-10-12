@@ -13,6 +13,7 @@
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { chatPaneOf, findScopeOwnsTarget } from "../../lib/findScope";
+import { captureFindOpened } from "../../lib/findAnalytics";
 import { findCountLabel, foldFindCase, publishFindHighlights, scrollRangeIntoView, stepFindIndex } from "../../lib/findText";
 import { FindBar } from "../shared/FindBar";
 import { useFindSession } from "../shared/useFindSession";
@@ -89,6 +90,7 @@ export const ChatFindLayer = memo(function ChatFindLayer({
     onClosed: () => handlers.current.reset(),
     paint: () => handlers.current.paint(),
     escapeRootRef: rootRef,
+    openedByShortcut: () => captureFindOpened("chat_shortcut"),
   });
   const { open, openRef, surfaceId, openBar, closeBar, schedulePaint } = session;
   const { matches, matchesRef, partial, rowsStillFolding, recountNow } = useChatFindIndex({ source, open, queryRef });
@@ -317,7 +319,10 @@ export const ChatFindLayer = memo(function ChatFindLayer({
   useEffect(() => {
     const target: ChatFindTarget = {
       root: () => rootRef.current,
-      open: (nextQuery) => openWithQueryRef.current(nextQuery, "start"),
+      open: (nextQuery) => {
+        captureFindOpened("chat_palette");
+        openWithQueryRef.current(nextQuery, "start");
+      },
     };
     const unregister = registerChatFindTarget(target);
     const scope = chatPaneOf(rootRef.current) ?? rootRef.current;
@@ -335,7 +340,9 @@ export const ChatFindLayer = memo(function ChatFindLayer({
     if (!sessionId) return;
     const consume = () => {
       const pendingQuery = takePendingChatFind(sessionId);
-      if (pendingQuery) openWithQueryRef.current(pendingQuery, null);
+      if (!pendingQuery) return;
+      captureFindOpened("chat_palette_hit");
+      openWithQueryRef.current(pendingQuery, null);
     };
     consume();
     return onPendingChatFind((target) => {

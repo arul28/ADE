@@ -30,6 +30,7 @@ export function useFindSession({
   onClosed,
   paint,
   escapeRootRef,
+  openedByShortcut,
 }: {
   /** True when ⌘F, ⌘G and Escape belong to this surface right now. */
   ownsFind: () => boolean;
@@ -40,6 +41,8 @@ export function useFindSession({
   paint: () => void;
   /** Escape pressed from inside this element (not the field) also closes the bar. */
   escapeRootRef: MutableRefObject<HTMLElement | null>;
+  /** Called when ⌘F opens the bar. Not when ⌘F lands on a bar already open, nor for other openers. */
+  openedByShortcut?: () => void;
 }): FindSession {
   const [open, setOpen] = useState(false);
   const openRef = useRef(false);
@@ -48,6 +51,8 @@ export function useFindSession({
   const surfaceId = useId();
   const ownsFindRef = useRef(ownsFind);
   ownsFindRef.current = ownsFind;
+  const openedByShortcutRef = useRef(openedByShortcut);
+  openedByShortcutRef.current = openedByShortcut;
   const onStepRef = useRef(onStep);
   onStepRef.current = onStep;
   const onClosedRef = useRef(onClosed);
@@ -101,7 +106,9 @@ export function useFindSession({
     trackFindTargets();
     return claimAppMenuCommands((command) => {
       if (command !== "find" || !ownsFindRef.current()) return false;
+      const wasOpen = openRef.current;
       openBar();
+      if (!wasOpen) openedByShortcutRef.current?.();
       return true;
     });
   }, [openBar]);

@@ -2063,6 +2063,30 @@ describe("product analytics producers", () => {
     })).toEqual({ feature: "home", action });
   });
 
+  it.each([
+    "chat_shortcut",
+    "chat_palette",
+    "chat_palette_hit",
+    "diff_shortcut",
+  ])("keeps the find-opened outcome %s and nothing about the query, chat, or diff", (outcome) => {
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "find",
+      action: "find_opened",
+      outcome,
+      source: "renderer_route",
+      // None of these is on `ade_feature_used`'s key list.
+      query: "the words typed",
+      chat_id: "chat-1",
+      match_count: 12,
+    })).toEqual({ feature: "find", action: "find_opened", outcome, source: "renderer_route" });
+    // An outcome nobody registered is dropped, not widened.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "find",
+      action: "find_opened",
+      outcome: "find_query_text",
+    })).toEqual({ feature: "find", action: "find_opened" });
+  });
+
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {
     // The pane is a picker plus one active tool, so the closed id set IS the
     // dimension. `WORK_TOOL_IDS` is the source of truth; a tool added there and
