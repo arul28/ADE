@@ -692,6 +692,18 @@ function CodeBlockWithHeader({ fileName, code, language }: { fileName: string; c
   );
 }
 
+/**
+ * The heading steps of a description that reads as a document. The Brief
+ * draws its part headings with the same steps, so a Brief looks like the
+ * document it is.
+ */
+export const PR_DOCUMENT_HEADING_CLASS = {
+  1: "text-[20px] mt-6 mb-3 tracking-[-0.01em]",
+  2: "text-[17px] mt-6 mb-2.5 tracking-[-0.01em]",
+  3: "text-[15px] mt-5 mb-2",
+  4: "text-[13.5px] mt-4 mb-1.5",
+} as const;
+
 function buildPrOverrides({
   tone,
   dense,
@@ -710,15 +722,7 @@ function buildPrOverrides({
   // A description reads as a document: real heading steps in the text color,
   // not the small tinted labels a comment uses.
   const headerTone = doc ? COLORS.textPrimary : toneAccent(tone);
-  const headingClass = (level: 1 | 2 | 3 | 4): string => {
-    if (!doc) return "";
-    return {
-      1: "text-[20px] mt-6 mb-3 tracking-[-0.01em]",
-      2: "text-[17px] mt-6 mb-2.5 tracking-[-0.01em]",
-      3: "text-[15px] mt-5 mb-2",
-      4: "text-[13.5px] mt-4 mb-1.5",
-    }[level];
-  };
+  const headingClass = (level: 1 | 2 | 3 | 4): string => (doc ? PR_DOCUMENT_HEADING_CLASS[level] : "");
 
   return {
     p: ({ children }) => (

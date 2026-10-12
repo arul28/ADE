@@ -404,6 +404,14 @@ export function summarizePrWatchChanges(changes: readonly PrWatchChange[]): stri
 }
 
 /**
+ * The rule that keeps a PR's list of open work true. ADE shows every
+ * unresolved thread as work that waits for a person, so a thread an agent
+ * handled and left open is a false alarm on every later visit.
+ */
+export const PR_THREAD_CLOSEOUT_RULE =
+  "Close out every review thread you handle, in the same turn. Fixed it: reply with what changed (`ade prs reply <pr> --thread <id> --body \"...\"`) and resolve it (`ade prs resolve-thread <pr> --thread <id>`). Not changing it: reply with the reason and resolve it. Leave a thread open only when a person must decide, and say what you need from them in the reply.";
+
+/**
  * Standing instructions for Ship. Written for any repository — it names no
  * skill, script, or bot this repo happens to use.
  */
@@ -412,7 +420,7 @@ export const PR_SHIP_STANDING_BRIEF = [
   "1. Read every failing check (open its log) and every new review comment before changing anything. Fix CI failures and valid review findings together, then commit and push once.",
   "2. Verify each fix with the narrowest check that proves it — the failing test file, the touched package's typecheck or lint. Do not run the whole suite.",
   "3. Rebase or merge the base branch only when the PR has a real conflict, then re-run the affected checks.",
-  "4. Reply to each review thread you addressed, or explain why a comment is wrong, and resolve the threads you fixed.",
+  `4. ${PR_THREAD_CLOSEOUT_RULE}`,
   "5. When the required checks pass and nothing is left unaddressed, merge the PR with the repository's usual merge method (`gh pr merge` or `ade prs land`).",
   "ADE wakes you with the next change once CI and the review bots have finished, so end your turn after you push.",
 ].join("\n");
@@ -473,7 +481,7 @@ function closingLine(ctx: PrWatchWakeContext): string {
     default:
       return ctx.mode === "ship"
         ? "Follow your shipping instructions. ADE keeps watching and wakes you on the next change."
-        : "Look into each item and act on it as your task requires. ADE keeps watching and wakes you on the next change, so end your turn when you are done. Run `ade prs unwatch` when you no longer need updates.";
+        : `Look into each item and act on it as your task requires. ${ctx.changes.some((change) => change.kind === "remarks") ? `${PR_THREAD_CLOSEOUT_RULE} ` : ""}ADE keeps watching and wakes you on the next change, so end your turn when you are done. Run \`ade prs unwatch\` when you no longer need updates.`;
   }
 }
 

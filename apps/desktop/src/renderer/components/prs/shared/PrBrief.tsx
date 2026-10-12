@@ -1,55 +1,38 @@
 import { memo, useContext, useMemo } from "react";
-import { CheckCircle, Eye, GitDiff, Question, Scales, type Icon } from "@phosphor-icons/react";
-
 import {
   parsePrBrief,
   prBriefPlaceholder,
   type PrBrief,
   type PrBriefPart,
-  type PrBriefPartKind,
 } from "../../../../shared/prBrief";
 import { COLORS } from "../../lanes/laneDesignTokens";
-import { PrMarkdown } from "./PrMarkdown";
+import { PR_DOCUMENT_HEADING_CLASS, PrMarkdown } from "./PrMarkdown";
 import { PrMarkdownEnvContext, PrQuoteSourceContext } from "./prMarkdownContext";
 import { PrAddToChatButton } from "./PrProofMedia";
 
 /**
- * A PR description drawn as a Brief (see `shared/prBrief.ts`): the lead, then
- * one labelled part per question a reader has. A description that is not a
- * Brief renders as the plain document it is.
+ * A PR description drawn as a Brief (see `shared/prBrief.ts`).
  *
- * Colour carries meaning only: the part that says what was NOT checked is the
- * one a reader must not skim past, so it alone is tinted.
+ * It looks like the document the author wrote: the same headings, the same
+ * text. What the parts add is behaviour, not decoration: each part can be
+ * quoted in the chat, and evidence that is still a placeholder says so.
  */
-
-const PART_GLYPH: Record<PrBriefPartKind, Icon | null> = {
-  why: Question,
-  changed: GitDiff,
-  evidence: CheckCircle,
-  not_checked: Eye,
-  choices: Scales,
-  other: null,
-};
-
-function partTone(kind: PrBriefPartKind): string {
-  return kind === "not_checked" ? COLORS.warning : COLORS.textMuted;
-}
-
 function BriefPart({
   part,
+  first,
   repoOwner,
   repoName,
   from,
 }: {
   part: PrBriefPart;
+  /** Nothing is above it, so its heading takes no top margin. */
+  first: boolean;
   repoOwner: string;
   repoName: string;
   /** "the description". */
   from: string;
 }) {
   const env = useContext(PrMarkdownEnvContext);
-  const Glyph = PART_GLYPH[part.kind];
-  const tone = partTone(part.kind);
   // Evidence that still says "pending" proves nothing yet; say so beside it.
   const notFinal = useMemo(
     () => (part.kind === "evidence" ? prBriefPlaceholder(part.body) : null),
@@ -57,30 +40,18 @@ function BriefPart({
   );
   const source = `the "${part.heading}" part of ${from}`;
   const addToChat = env?.onAddToChat;
-  const caution = part.kind === "not_checked";
+  const Heading = `h${part.level}` as "h1" | "h2" | "h3";
   return (
-    <section
-      data-testid="pr-brief-part"
-      data-part={part.kind}
-      className="group/part relative"
-      style={caution ? {
-        // The one tinted part: a reader must see what was left unchecked.
-        background: `color-mix(in srgb, ${COLORS.warning} 6%, transparent)`,
-        borderRadius: 10,
-        padding: "8px 12px 10px",
-        margin: "0 -12px",
-      } : undefined}
-    >
-      <header className="mb-1.5 flex min-h-[20px] items-center gap-1.5">
-        {Glyph ? <Glyph size={13} weight={part.kind === "evidence" ? "fill" : "bold"} style={{ color: tone, flexShrink: 0 }} /> : null}
-        <h3 className="m-0 text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: tone }}>
+    <section data-testid="pr-brief-part" data-part={part.kind} className="group/part">
+      <div className={`flex items-baseline gap-2 ${PR_DOCUMENT_HEADING_CLASS[part.level]} ${first ? "!mt-0" : ""}`}>
+        <Heading className="m-0 min-w-0 font-semibold leading-snug" style={{ color: COLORS.textPrimary, fontSize: "inherit" }}>
           {part.heading}
-        </h3>
+        </Heading>
         {notFinal ? (
           <span
             data-testid="pr-brief-not-final"
             title={`The text still says "${notFinal}".`}
-            className="rounded-[5px] px-1.5 text-[10.5px] font-medium leading-[1.6]"
+            className="shrink-0 rounded-[5px] px-1.5 text-[10.5px] font-medium leading-[1.6] tracking-normal"
             style={{ color: COLORS.warning, background: `color-mix(in srgb, ${COLORS.warning} 12%, transparent)` }}
           >
             Not final
@@ -90,19 +61,17 @@ function BriefPart({
         {addToChat && part.body.trim() ? (
           <PrAddToChatButton
             onClick={() => addToChat({ text: part.body, from: source })}
-            className="opacity-0 group-hover/part:opacity-100 focus-visible:opacity-100"
+            className="self-center tracking-normal opacity-0 group-hover/part:opacity-100 focus-visible:opacity-100"
           />
         ) : null}
-      </header>
+      </div>
       {part.body.trim() ? (
         <PrQuoteSourceContext.Provider value={source}>
           <PrMarkdown repoOwner={repoOwner} repoName={repoName} variant="document">
             {part.body}
           </PrMarkdown>
         </PrQuoteSourceContext.Provider>
-      ) : (
-        <p className="m-0 text-[13px] italic" style={{ color: COLORS.textMuted }}>Nothing written.</p>
-      )}
+      ) : null}
     </section>
   );
 }
@@ -110,10 +79,10 @@ function BriefPart({
 function PrBriefParts({ brief, repoOwner, repoName, from }: { brief: PrBrief; repoOwner: string; repoName: string; from: string }) {
   const kinds = new Set(brief.parts.map((part) => part.kind));
   return (
-    <div data-testid="pr-brief" className="flex flex-col gap-5">
+    <div data-testid="pr-brief">
       {brief.lead ? (
         <PrQuoteSourceContext.Provider value={from}>
-          <div data-testid="pr-brief-lead" className="text-[14.5px]">
+          <div data-testid="pr-brief-lead">
             <PrMarkdown repoOwner={repoOwner} repoName={repoName} variant="document">
               {brief.lead}
             </PrMarkdown>
@@ -121,15 +90,22 @@ function PrBriefParts({ brief, repoOwner, repoName, from }: { brief: PrBrief; re
         </PrQuoteSourceContext.Provider>
       ) : null}
       {brief.parts.map((part, index) => (
-        <BriefPart key={`${part.heading}:${index}`} part={part} repoOwner={repoOwner} repoName={repoName} from={from} />
+        <BriefPart
+          key={`${part.heading}:${index}`}
+          part={part}
+          first={index === 0 && !brief.lead}
+          repoOwner={repoOwner}
+          repoName={repoName}
+          from={from}
+        />
       ))}
       {!kinds.has("evidence") ? (
-        <p data-testid="pr-brief-no-evidence" className="m-0 text-[12px]" style={{ color: COLORS.textMuted }}>
+        <p data-testid="pr-brief-no-evidence" className="mb-0 mt-4 text-[12px]" style={{ color: COLORS.textMuted }}>
           The author did not say how this was checked.
         </p>
       ) : null}
       {brief.footer ? (
-        <div className="text-[11.5px] opacity-70" data-testid="pr-brief-footer">
+        <div className="mt-4 text-[11.5px] opacity-70" data-testid="pr-brief-footer">
           <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
             {brief.footer}
           </PrMarkdown>

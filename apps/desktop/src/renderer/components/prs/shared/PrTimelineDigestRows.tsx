@@ -22,11 +22,12 @@ import type { DigestRenderItem } from "./prDigestTimelineModel";
 /* ══════════════════ Digest rows (Overview triage layout) ══════════════════ */
 
 const ATTENTION_TONE = COLORS.warning;
-/**
- * Pinned rows before "Show more". The block sits above the description, so it
- * names what needs the reader and leaves the description on the first screen.
- */
-const ATTENTION_VISIBLE_ROWS = 3;
+/** Rows of the open list before "Show more": the block must never bury the thread. */
+const ATTENTION_VISIBLE_ROWS = 6;
+
+function countOf(count: number, one: string, many: string): string {
+  return count === 1 ? `1 ${one}` : `${count} ${many}`;
+}
 
 /**
  * Bot blocks split out of the PR body become synthetic bot comments. The PR
@@ -135,26 +136,45 @@ export function NeedsAttentionBlock({
   onFixChecksInChat?: () => void;
   onOpenChecks?: () => void;
 }) {
+  // One line by default: a reader opens a PR to see what is in it, so the
+  // description stays on top of the page and this line says what waits.
+  const [open, setOpen] = useState(false);
   const [showAll, setShowAll] = useState(false);
-  // The failing-checks row takes one of the pinned places.
-  const pinned = Math.max(1, ATTENTION_VISIBLE_ROWS - (item.failingChecks.length ? 1 : 0));
-  const visible = showAll ? item.items : item.items.slice(0, pinned);
+  const visible = showAll ? item.items : item.items.slice(0, ATTENTION_VISIBLE_ROWS);
   const hidden = item.items.length - visible.length;
+  const fromPeople = item.items.filter((entry) => !entry.identity.isBot).length;
+  const summary = [
+    item.failingChecks.length ? countOf(item.failingChecks.length, "check fails", "checks fail") : null,
+    item.items.length
+      ? `${countOf(item.items.length, "open thread", "open threads")}${fromPeople && fromPeople < item.items.length ? `, ${fromPeople} from people` : ""}`
+      : null,
+  ].filter(Boolean).join(" · ");
   return (
     <section
       data-testid="pr-digest-attention"
-      aria-label="Needs attention"
+      aria-label="Needs you"
       className="relative overflow-hidden rounded-[10px]"
-      style={{ background: `color-mix(in srgb, ${ATTENTION_TONE} 6%, transparent)` }}
+      style={{ background: `color-mix(in srgb, ${ATTENTION_TONE} ${open ? 6 : 5}%, transparent)` }}
     >
-      <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ background: ATTENTION_TONE }} />
-      <header className="flex items-center gap-2 px-4 pb-1 pt-2.5">
-        <WarningCircle size={13} weight="fill" style={{ color: ATTENTION_TONE }} />
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em]" style={{ color: ATTENTION_TONE }}>
-          Needs attention
-        </span>
-        <span className="font-mono text-[10.5px]" style={{ color: COLORS.textMuted }}>{item.items.length + (item.failingChecks.length ? 1 : 0)}</span>
-      </header>
+      <button
+        type="button"
+        data-testid="pr-digest-attention-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-fg/[0.03]"
+        style={{ background: "transparent", border: "none", cursor: "pointer" }}
+      >
+        <WarningCircle size={13} weight="fill" style={{ color: ATTENTION_TONE, flexShrink: 0 }} />
+        <span className="shrink-0 text-[12px] font-semibold" style={{ color: COLORS.textPrimary }}>Needs you</span>
+        <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: COLORS.textSecondary }}>{summary}</span>
+        <CaretRight
+          size={12}
+          weight="bold"
+          className="shrink-0 transition-transform"
+          style={{ color: COLORS.textMuted, transform: open ? "rotate(90deg)" : "rotate(0deg)" }}
+        />
+      </button>
+      {open ? (
       <ul className="flex flex-col pb-1.5">
         {item.failingChecks.length > 0 ? (
           <li>
@@ -256,7 +276,8 @@ export function NeedsAttentionBlock({
           );
         })}
       </ul>
-      {hidden > 0 ? (
+      ) : null}
+      {open && hidden > 0 ? (
         <button
           type="button"
           onClick={() => setShowAll(true)}

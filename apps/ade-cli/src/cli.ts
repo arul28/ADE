@@ -110,6 +110,7 @@ import {
   type ProofPublishResult,
 } from "./proofPublish";
 import { prBriefHints } from "../../desktop/src/shared/prBrief";
+import { PR_THREAD_CLOSEOUT_RULE } from "../../desktop/src/shared/prWatch";
 import { prBodyProofIds } from "../../desktop/src/shared/prBodyProof";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
@@ -28676,6 +28677,9 @@ function formatPrComments(value: unknown): string {
   }
   if (threads.length === 0 && comments.length === 0)
     lines.push("(no comments)");
+  // ADE shows every open thread as work that waits for a person. Say how to
+  // close one out where the agent that handles it will read it.
+  if (threads.some((thread) => !thread.isResolved)) lines.push("", PR_THREAD_CLOSEOUT_RULE);
   return lines.join("\n");
 }
 

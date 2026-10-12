@@ -27,6 +27,8 @@ export type PrBriefPart = {
   kind: PrBriefPartKind;
   /** The heading as the author wrote it. */
   heading: string;
+  /** Its markdown level, 1 to 3: the view draws it as the heading it is. */
+  level: 1 | 2 | 3;
   /** The markdown under the heading. */
   body: string;
 };
@@ -101,11 +103,11 @@ export function parsePrBrief(markdown: string | null | undefined): PrBrief | nul
   const text = (markdown ?? "").replace(/\r\n?/g, "\n");
   if (!text.trim() || REFERENCE_DEFINITION.test(text)) return null;
   const lines = markdownFenceLines(text);
-  const cuts: Array<{ line: number; heading: string; level: number }> = [];
+  const cuts: Array<{ line: number; heading: string; level: 1 | 2 | 3 }> = [];
   lines.forEach(({ line, fence }, index) => {
     if (fence !== null) return;
     const heading = /^(#{1,3})\s+(.+?)\s*#*\s*$/.exec(line);
-    if (heading) cuts.push({ line: index, heading: heading[2]!.trim(), level: heading[1]!.length });
+    if (heading) cuts.push({ line: index, heading: heading[2]!.trim(), level: heading[1]!.length as 1 | 2 | 3 });
   });
   // The parts are the headings of the shallowest level that names one; a
   // deeper heading under a part belongs to that part's body.
@@ -119,6 +121,7 @@ export function parsePrBrief(markdown: string | null | undefined): PrBrief | nul
   const parts: PrBriefPart[] = top.map((cut, index) => ({
     kind: headingKind(cut.heading),
     heading: cut.heading.replace(/[:.]\s*$/, ""),
+    level: cut.level,
     body: join(cut.line + 1, top[index + 1]?.line ?? lines.length),
   }));
 

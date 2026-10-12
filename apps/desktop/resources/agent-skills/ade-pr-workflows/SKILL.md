@@ -140,6 +140,31 @@ ade prs watch-status   # what this chat is watching
 wake lists exactly what changed; act on it and end your turn — ADE wakes you
 on the next change. Comments you post through `ade prs` never wake you.
 
+## Close out every review thread you handle
+
+ADE's PR view shows each open review thread under "Needs you", as work that
+waits for a person. A thread you fixed and left open is a false alarm for
+every person who opens the PR after you. So, in the same turn that you handle
+a thread:
+
+```bash
+ade prs comments <pr> --text                                  # the open threads and their ids
+ade prs reply <pr> --thread <id> --body "Fixed in <sha>. <what changed>"
+ade prs resolve-thread <pr> --thread <id>
+```
+
+- **Fixed it:** reply with what changed, then resolve.
+- **Not changing it:** reply with the reason, then resolve. A rejected comment
+  with a reason is closed work too.
+- **A person must decide:** reply with what you need from them, and leave the
+  thread open. This is the only case for an open thread.
+- A review comment that is not a thread (a bot's summary, a general comment)
+  has nothing to resolve. Answer it with `ade prs comment <pr> --body "..."`
+  when it asked for something.
+
+Do this for bot comments and for people's comments alike, and before you say
+the PR is ready.
+
 ## GitHub stacked PRs
 
 A stack is two or more dependency-ordered, independently reviewable PRs. ADE
