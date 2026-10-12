@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.101] - 2026-10-12
+
+### Desktop and web
+
+- Loaded project tabs switch on press; warm switching measured 44–51 ms, down from 136–137 ms (#1585).
+- Tab detachment waits for the pending project switch before closing the source tab (#1585).
+
 ## [1.2.100] - 2026-10-11
 
 ### Desktop and web
