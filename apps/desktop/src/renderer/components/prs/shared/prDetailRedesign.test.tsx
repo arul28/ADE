@@ -264,7 +264,8 @@ describe("buildDigestTimelineModel", () => {
     const description: PrTimelineEvent = { id: "desc", type: "description", timestamp: "2026-01-01T00:00:00Z", author: "dev", avatarUrl: null, body: "The text." };
     const thread: PrTimelineEvent = {
       id: "t1", type: "review_thread", timestamp: "2026-01-01T02:00:00Z", author: "octocat", avatarUrl: null,
-      threadId: "t1", path: "a.ts", line: 3, startLine: null, isResolved: false, isOutdated: false, commentCount: 1, firstCommentBody: "why?",
+      threadId: "t1", path: "a.ts", line: 3, startLine: null, originalLine: null, originalStartLine: null, diffSide: null,
+      isResolved: false, isOutdated: false, commentCount: 1, firstCommentBody: "why?", comments: [],
     };
     const events = [description, push("c1", "aaaaaaa1", "2026-01-01T01:00:00Z"), thread];
     const order = (model: ReturnType<typeof buildDigestTimelineModel>) => model.items.map((item) => (item.kind === "event" ? item.event.id : item.kind));
