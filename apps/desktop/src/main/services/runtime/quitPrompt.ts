@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { BrowserWindow, dialog, ipcMain } from "electron";
 import { IPC } from "../../../shared/ipc";
-import { quitPromptModel } from "../../../shared/quitPromptModel";
+import { appOwnedService, quitPromptModel } from "../../../shared/quitPromptModel";
 import type {
   LocalRuntimeStatus,
   QuitPromptAnswer,
-  QuitPromptAppOwnedService,
   QuitPromptChoice,
   QuitPromptRepairResult,
   QuitPromptRequest,
@@ -14,7 +13,7 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { readGlobalState, readGlobalStateForUpdate, writeGlobalState } from "../state/globalState";
-import { isTrustedAdeRendererSender } from "../ipc/trustedRendererSender";
+import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 
 /** The window has this long to show the prompt before main asks natively. */
 const QUIT_PROMPT_SHOWN_TIMEOUT_MS = 1_500;
@@ -25,10 +24,10 @@ export type QuitPromptDeps = {
   getRuntimeStatus: () => LocalRuntimeStatus;
   /** Chats with a live turn right now, bounded so a quit is never held up. */
   collectImpact: () => Promise<UpdateInstallImpact>;
+  /** The same, for a decision that stops agents: null when ADE could not check. */
+  collectLiveChats: () => Promise<UpdateInterruptedChat[] | null>;
   /** The Repair button's restart; throws when the service does not come back. */
   restartService: () => Promise<void>;
-  /** Any Repair or brain restart is running, whichever surface started it. */
-  isRecovering: () => boolean;
   /** Queues each chat to continue where it stopped once a brain is back. */
   armResume: (sessionIds: readonly string[]) => Promise<UpdateInterruptedChat[]>;
 };
@@ -40,11 +39,11 @@ export type QuitPrompt = {
    * stop running agents.
    */
   confirm: (ownerWindow: BrowserWindow | null | undefined, relaunch: boolean) => Promise<boolean>;
-  /** A repair is handing agents over; quitting or stopping now would cut it off. */
+  /** "Repair service" from this prompt is running, including the resumes after it. */
   isRepairing: () => boolean;
 };
 
-const QUIT_CHOICES: ReadonlySet<string> = new Set<QuitPromptChoice>(["quit", "keep", "repair", "settings"]);
+const QUIT_CHOICES: ReadonlySet<string> = new Set<QuitPromptChoice>(["quit", "keep", "repair", "system_settings"]);
 
 function isQuitChoice(value: unknown): value is QuitPromptChoice {
   return typeof value === "string" && QUIT_CHOICES.has(value);
@@ -55,16 +54,6 @@ function parseAnswer(raw: unknown): QuitPromptAnswer | null {
   const { requestId, choice, dontAskAgain } = raw as Record<string, unknown>;
   if (typeof requestId !== "string" || !isQuitChoice(choice)) return null;
   return { requestId, choice, dontAskAgain: dontAskAgain === true };
-}
-
-/**
- * Agents survive a quit unless this desktop is running the service itself:
- * the fallback when the service cannot start, or an isolated brain.
- */
-export function appOwnedService(status: LocalRuntimeStatus): QuitPromptAppOwnedService | null {
-  if (status.runtimeMode === "primary") return null;
-  if (status.runtimeMode === "isolated") return { repair: "wait" };
-  return { repair: status.appFallback?.reason === "background_item_blocked" ? "system_settings" : "restart" };
 }
 
 /**
@@ -95,11 +84,8 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
     return ask;
   };
 
-  const trusted = (event: Parameters<typeof isTrustedAdeRendererSender>[0], channel: string): boolean => {
-    if (isTrustedAdeRendererSender(event)) return true;
-    deps.logger.warn("ipc.quit_prompt.untrusted_sender", { channel });
-    return false;
-  };
+  const trusted = (event: Parameters<typeof isTrustedAdeRendererSenderOrWarn>[0], channel: string): boolean =>
+    isTrustedAdeRendererSenderOrWarn(event, deps.logger, channel);
 
   ipcMain.handle(IPC.appGetAskBeforeQuit, (event) => {
     if (!trusted(event, IPC.appGetAskBeforeQuit)) throw new Error("Untrusted sender.");
@@ -125,33 +111,36 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
 
   /**
    * "Repair service". Restarting the service stops the chats the desktop was
-   * running, and a failed restart may already have stopped them too. So
-   * afterwards every chat that is no longer running is queued to continue,
-   * the same way an update resumes them; a chat still running is left alone.
+   * running, so once the service is back each chat that stopped is queued to
+   * continue, the same way an update resumes them. Only on a confirmed
+   * handover, and only from fresh before and after reads: a chat that finished
+   * on its own, or is still running, must not be told its turn ended early.
    */
-  const repair = async (impact: UpdateInstallImpact): Promise<QuitPromptRepairResult> => {
-    let restarted = true;
+  const repair = async (): Promise<QuitPromptRepairResult> => {
+    const before = await deps.collectLiveChats();
     try {
       await deps.restartService();
     } catch (error) {
-      restarted = false;
       deps.logger.warn("quit_prompt.repair_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
+      return { repaired: false, resumedChats: 0 };
     }
-    const repaired = restarted && deps.getRuntimeStatus().runtimeMode === "primary";
-    const stillRunning = new Set((await deps.collectImpact()).interruptedChats.map((chat) => chat.sessionId));
-    const stopped = impact.interruptedChats.map((chat) => chat.sessionId).filter((id) => !stillRunning.has(id));
+    if (deps.getRuntimeStatus().runtimeMode !== "primary") return { repaired: false, resumedChats: 0 };
+    if (!before || before.length === 0) return { repaired: true, resumedChats: 0 };
+    const after = await deps.collectLiveChats();
+    if (!after) {
+      deps.logger.warn("quit_prompt.resume_skipped", { reason: "live_chats_unknown", chats: before.length });
+      return { repaired: true, resumedChats: 0 };
+    }
+    const stillRunning = new Set(after.map((chat) => chat.sessionId));
+    const stopped = before.map((chat) => chat.sessionId).filter((id) => !stillRunning.has(id));
     const resumed = await deps.armResume(stopped);
-    return { repaired, resumedChats: resumed.length };
+    return { repaired: true, resumedChats: resumed.length };
   };
 
   /** Null when the window could not show the prompt; the caller asks natively. */
-  const askInWindow = (
-    win: BrowserWindow,
-    request: QuitPromptRequest,
-    impact: UpdateInstallImpact,
-  ): Promise<QuitPromptAnswer | null> => {
+  const askInWindow = (win: BrowserWindow, request: QuitPromptRequest): Promise<QuitPromptAnswer | null> => {
     if (win.isDestroyed() || win.webContents.isLoading() || win.webContents.isCrashed()) {
       return Promise.resolve(null);
     }
@@ -193,7 +182,7 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
           // Repair keeps ADE open; the window waits for the outcome.
           repairing = true;
           try {
-            return await repair(impact);
+            return await repair();
           } finally {
             repairing = false;
           }
@@ -251,7 +240,7 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
       parentWindow.show();
       parentWindow.focus();
     }
-    const answer = (parentWindow ? await askInWindow(parentWindow, request, impact) : null)
+    const answer = (parentWindow ? await askInWindow(parentWindow, request) : null)
       ?? await askNatively(parentWindow && !parentWindow.isDestroyed() ? parentWindow : null, request);
     if (answer.choice !== "quit") return false;
     if (answer.dontAskAgain && !owned) {
@@ -264,5 +253,5 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
     return true;
   };
 
-  return { confirm, isRepairing: () => repairing || deps.isRecovering() };
+  return { confirm, isRepairing: () => repairing };
 }

@@ -1,28 +1,31 @@
 import { useCallback, useEffect, useState } from "react";
-import type { BackgroundServiceSummary } from "../../../shared/types";
+import type { BackgroundServiceActivity, BackgroundServiceSummary } from "../../../shared/types";
 import { pluralCount } from "../../../shared/formatting";
 import { agentsAre } from "../../../shared/quitPromptModel";
 import { confirmDialog } from "../ui/dialog";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 
+const OTHER_PROJECTS_NOTE = "Agents may also be working in projects that aren't open in ADE.";
+
 function statusLine(summary: BackgroundServiceSummary | null): string {
   if (!summary) return "Checking…";
   if (summary.runner === "desktop") return "Not running. ADE is running your agents itself until it is repaired.";
-  const count = summary.runningAgentsTotal;
-  const status = count > 0 ? `Running. ${agentsAre(count)} working.` : "Running. No agents are working right now.";
+  const activity = summary.activity;
+  let status = "Running. ADE couldn't check which agents are working.";
+  if (activity) {
+    const count = activity.runningChats.length;
+    status = count > 0 ? `Running. ${agentsAre(count)} working.` : "Running. No agents are working in open projects.";
+    if (activity.otherProjectsBusy) status = `${status} ${OTHER_PROJECTS_NOTE}`;
+  }
   return summary.manageable ? status : `${status} This build of ADE can't stop it; the installed ADE can.`;
 }
 
-function stopWarning(summary: BackgroundServiceSummary | null): string {
-  const count = summary?.runningAgentsTotal ?? 0;
-  const unlisted = count - (summary?.runningChats.length ?? 0);
+function stopWarning(activity: BackgroundServiceActivity): string {
+  const count = activity.runningChats.length;
   const stops = count === 0
-    ? "No agents are working right now. Open terminals and test runs stop too."
-    : `This stops ${count === 1 ? "the working agent" : `all ${pluralCount(count, "working agent")}`}, and any open terminals and test runs.`;
-  const elsewhere = unlisted > 0
-    ? ` ${unlisted === 1 ? "1 of them is" : `${unlisted} of them are`} in a project that isn't open in ADE.`
-    : "";
-  return `${stops}${elsewhere} Opening ADE starts the service again.`;
+    ? "This stops any open terminals and test runs."
+    : `This stops ${count === 1 ? "the working agent" : `all ${pluralCount(count, "working agent")}`} and any open terminals and test runs.`;
+  return activity.otherProjectsBusy ? `${stops} ${OTHER_PROJECTS_NOTE}` : `${stops} Opening ADE starts the service again.`;
 }
 
 /**
@@ -42,12 +45,10 @@ export function BackgroundServiceSection() {
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    try {
-      setSummary((await api?.getBackgroundService?.()) ?? null);
-    } catch {
-      setSummary(null);
-    }
+  const refresh = useCallback(async (): Promise<BackgroundServiceSummary | null> => {
+    const next = (await api?.getBackgroundService?.().catch(() => null)) ?? null;
+    setSummary(next);
+    return next;
   }, [api]);
 
   useEffect(() => {
@@ -75,11 +76,15 @@ export function BackgroundServiceSection() {
   const stop = async () => {
     setError(null);
     // Re-read so the warning names what is running now, not at page load.
-    const latest = (await api.getBackgroundService?.().catch(() => null)) ?? summary;
-    const chats = latest?.runningChats ?? [];
+    const activity = (await refresh())?.activity;
+    if (!activity) {
+      setError("ADE couldn't check which agents are working, so it stopped nothing. Try again.");
+      return;
+    }
+    const chats = activity.runningChats;
     const confirmed = await confirmDialog({
       title: "Stop the background service and quit ADE?",
-      message: stopWarning(latest),
+      message: stopWarning(activity),
       children: chats.length > 0 ? (
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6 }}>
           {chats.map((chat) => (
@@ -99,10 +104,12 @@ export function BackgroundServiceSection() {
     try {
       const result = await api.stopBackgroundServiceAndQuit?.({
         confirmedSessionIds: chats.map((chat) => chat.sessionId),
-        confirmedTotal: latest?.runningAgentsTotal ?? chats.length,
+        confirmedOtherProjectsBusy: activity.otherProjectsBusy,
       });
-      if (result && !result.ok) void refresh();
-      if (result && !result.ok) setError(result.message);
+      if (result && !result.ok) {
+        setError(result.message);
+        void refresh();
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {

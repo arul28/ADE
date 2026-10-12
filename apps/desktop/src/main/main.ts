@@ -7961,7 +7961,7 @@ app.whenReady().then(async () => {
 
   // Chats with a live turn on this machine right now. An ADE restart stops
   // them mid-flight, so the install dialog names them and offers to resume.
-  const collectInterruptedChats = async (): Promise<UpdateInterruptedChat[]> => {
+  const collectInterruptedChats = async (options: { strict?: boolean } = {}): Promise<UpdateInterruptedChat[]> => {
     const chats: UpdateInterruptedChat[] = [];
     await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
@@ -7974,12 +7974,26 @@ app.whenReady().then(async () => {
         for (const chat of refs) {
           chats.push({ sessionId: chat.sessionId, title: chat.title, projectName });
         }
-      } catch {
-        // Best-effort probe.
+      } catch (error) {
+        // Best-effort for the dialogs; a decision that stops agents needs every project.
+        if (options.strict) throw error;
       }
     });
     return chats;
   };
+
+  /**
+   * Live chats for a decision that stops or resumes agents. Null when any
+   * project could not answer in time, so "unknown" is never read as "none".
+   */
+  const collectLiveChatsOrNull = async (timeoutMs = 3_000): Promise<UpdateInterruptedChat[] | null> =>
+    await Promise.race([
+      collectInterruptedChats({ strict: true }).catch((): null => null),
+      new Promise<null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
 
   // Arms one durable continue row per chat a restart interrupted: on the
   // launch that lands an install, with the ids the previous process persisted
@@ -8142,17 +8156,17 @@ app.whenReady().then(async () => {
     globalStatePath,
     getRuntimeStatus: () => localRuntimePool.getStatus(),
     collectImpact: () => collectUpdateInstallImpactBounded(),
+    collectLiveChats: () => collectLiveChatsOrNull(),
     restartService: () => restartBrainForRepair(machineRecoveryService, productAnalyticsService),
-    isRecovering: () => machineRecoveryService.isRecovering(),
     armResume: (sessionIds) => armResumeForSessions(sessionIds),
   });
   registerBackgroundServiceControls({
     logger: localRuntimeLogger,
     manageService: shouldRepairRuntimeServiceOnFallback,
     pool: localRuntimePool,
-    collectImpact: () => collectUpdateInstallImpactBounded(),
+    collectLiveChats: () => collectLiveChatsOrNull(),
     getRunningLaneDeleteLabels,
-    isRepairing: () => quitPrompt.isRepairing(),
+    isRepairing: () => quitPrompt.isRepairing() || machineRecoveryService.isRecovering(),
     isShuttingDown: () => shutdownRequested,
     shutdown: (reason) => requestAppShutdown({ reason, exitCode: 0 }),
   });

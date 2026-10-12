@@ -23,10 +23,10 @@ export type QuitPromptRequest = {
 };
 
 /**
- * `repair` restarts the service. `settings` opens macOS's Allow in the
+ * `repair` restarts the service. `system_settings` opens macOS's Allow in the
  * Background, which only the person can change, so ADE stays open.
  */
-export type QuitPromptChoice = "quit" | "keep" | "repair" | "settings";
+export type QuitPromptChoice = "quit" | "keep" | "repair" | "system_settings";
 
 /** The window's answer; the "it is on screen" signal is a separate send. */
 export type QuitPromptAnswer = {
@@ -42,6 +42,20 @@ export type QuitPromptRepairResult = {
   resumedChats: number;
 };
 
+/**
+ * What is working right now, as far as ADE can tell. Null in a summary when
+ * ADE could not check in time: unknown is never read as "nothing running".
+ */
+export type BackgroundServiceActivity = {
+  /** Chats with a live turn in projects open in ADE; stopping ends them. */
+  runningChats: UpdateInterruptedChat[];
+  /**
+   * The service reports work in more projects than the open ones account
+   * for. It counts busy projects, not agents, so the UI says "may".
+   */
+  otherProjectsBusy: boolean;
+};
+
 /** Settings → Background service: what is running, and whether it can be stopped here. */
 export type BackgroundServiceSummary = {
   /**
@@ -51,19 +65,13 @@ export type BackgroundServiceSummary = {
   manageable: boolean;
   /** `service`: the login service runs agents. `desktop`: this app runs them itself. */
   runner: "service" | "desktop";
-  /** Chats with a live turn right now in projects open in ADE; stopping ends them. */
-  runningChats: UpdateInterruptedChat[];
-  /**
-   * Live agent turns across every project the service runs, including ones
-   * no ADE window has open. At least `runningChats.length`.
-   */
-  runningAgentsTotal: number;
+  activity: BackgroundServiceActivity | null;
 };
 
 /** What the person saw and agreed to stop; main refuses if more is running now. */
 export type StopBackgroundServiceRequest = {
   confirmedSessionIds: string[];
-  confirmedTotal: number;
+  confirmedOtherProjectsBusy: boolean;
 };
 
 export type StopBackgroundServiceResult =

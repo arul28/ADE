@@ -1,5 +1,20 @@
 import { pluralCount } from "./formatting";
-import type { QuitPromptChoice, QuitPromptRequest } from "./types";
+import type {
+  LocalRuntimeStatus,
+  QuitPromptAppOwnedService,
+  QuitPromptChoice,
+  QuitPromptRequest,
+} from "./types";
+
+/**
+ * Agents survive a quit unless this desktop is running the service itself:
+ * the fallback when the service cannot start, or an isolated brain.
+ */
+export function appOwnedService(status: LocalRuntimeStatus): QuitPromptAppOwnedService | null {
+  if (status.runtimeMode === "primary") return null;
+  if (status.runtimeMode === "isolated") return { repair: "wait" };
+  return { repair: status.appFallback?.reason === "background_item_blocked" ? "system_settings" : "restart" };
+}
 
 /** "1 agent is", "3 agents are". */
 export function agentsAre(count: number): string {
@@ -59,7 +74,7 @@ export function quitPromptModel(request: QuitPromptRequest, options: { canRepair
       : "ADE is running it itself for now.";
     const offerRepair = options.canRepair && owned.repair !== "wait";
     const fixAction: QuitPromptAction = owned.repair === "system_settings"
-      ? { choice: "settings", label: "Open System Settings", primary: true }
+      ? { choice: "system_settings", label: "Open System Settings", primary: true }
       : { choice: "repair", label: "Repair service", primary: true };
     return {
       title: "ADE's background service isn't running",

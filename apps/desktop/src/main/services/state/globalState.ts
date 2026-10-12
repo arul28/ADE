@@ -145,9 +145,7 @@ export type GlobalState = {
 
 export function readGlobalState(filePath: string): GlobalState {
   try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw) as GlobalState;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    return readGlobalStateForUpdate(filePath);
   } catch {
     return {};
   }

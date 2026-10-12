@@ -27,7 +27,6 @@ import { dismissToast, READABLE_TOAST_DURATION_MS, showToast, updateToast, type 
 type PrNotificationEvent = Extract<PrEventPayload, { type: "pr-notification" }>;
 type PrAutoLinkedEvent = Extract<PrEventPayload, { type: "pr-auto-linked" }>;
 
-
 type LaneRef = Pick<LaneSummary, "id" | "name" | "color">;
 
 function prNotificationIcon(kind: PrNotificationEvent["kind"]) {

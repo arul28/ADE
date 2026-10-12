@@ -66,11 +66,11 @@ function repairFromQuitPrompt(requestId: string): void {
     tone: "warning",
     busy: false,
     title: "ADE's background service still won't start",
-    message: "Try again from the banner, or restart your computer.",
+    message: "Agents ADE was running may have stopped; open them to continue, or try Repair again from the banner.",
     durationMs: READABLE_TOAST_DURATION_MS,
     dismissible: true,
   });
-  void window.ade.app.answerQuitPrompt?.({ requestId, choice: "repair", dontAskAgain: false })
+  void (window.ade.app.answerQuitPrompt?.({ requestId, choice: "repair", dontAskAgain: false }) ?? Promise.resolve(null))
     .then((result) => {
       // Null: the prompt was already gone, so no repair ran.
       if (!result) dismissToast(REPAIR_TOAST_ID);
@@ -97,7 +97,7 @@ function QuitPromptDialog({ request, onDone }: { request: QuitPromptRequest; onD
     }
     answer(choice);
     // Only the person can allow the background item; ADE stays open meanwhile.
-    if (choice === "settings") void window.ade.recovery?.openBackgroundSettings?.().catch(() => undefined);
+    if (choice === "system_settings") void window.ade.recovery?.openBackgroundSettings?.().catch(() => undefined);
   };
 
   const actions: DialogAction[] = model.actions.map((action) => ({

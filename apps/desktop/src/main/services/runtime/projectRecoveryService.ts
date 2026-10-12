@@ -422,6 +422,11 @@ export class ProjectRecoveryService {
     return { ok: true };
   }
 
+  /** A repair or a brain restart is running; quitting or stopping now would cut it off. */
+  isRecovering(): boolean {
+    return this.repairInFlight || this.restartInFlight != null;
+  }
+
   /**
    * Machine-scoped brain restart for the "Repair" button. Only the main
    * process can observe when the replacement brain is actually answering, so
@@ -434,11 +439,6 @@ export class ProjectRecoveryService {
    * `uninstallServiceBestEffort`). Repair wins; the button can be pressed again
    * after it finishes.
    */
-  /** A repair or a brain restart is running; quitting or stopping now would cut it off. */
-  isRecovering(): boolean {
-    return this.repairInFlight || this.restartInFlight != null;
-  }
-
   async restartBrain(): Promise<void> {
     if (this.repairInFlight) throw new Error("Recovery is already running.");
     const restart = this.restartServiceAndWait(true);
