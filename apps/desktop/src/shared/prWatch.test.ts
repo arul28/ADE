@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { PrCheck } from "./types/prs";
 import {
   PR_SHIP_REVIEW_BOT_GRACE_MS,
+  PR_THREAD_CLOSEOUT_RULE,
   PR_WATCH_COMMENT_ONLY_WAKE_LIMIT,
+  buildPrWatchWakeText,
   evaluatePrWatch,
   initialPrWatchState,
   type PrWatchMode,
@@ -160,6 +162,17 @@ describe("evaluatePrWatch", () => {
     expect(kinds(merged)).toEqual(["remarks", "merged"]);
     expect(merged.stop).toBe("merged");
     expect(merged.next.remarkIds).toEqual(["thanks"]);
+  });
+
+  it("tells an agent to close out review threads when a wake carries comments, and not when it carries checks", () => {
+    const wake = (mode: PrWatchMode, changes: Parameters<typeof buildPrWatchWakeText>[0]["changes"]) =>
+      buildPrWatchWakeText({ mode, pr: pr(), changes, stop: null });
+    const comments = [{ kind: "remarks" as const, remarks: [remark("c-1", "reviewer", T0)] }];
+    const checks = [{ kind: "checks_passed" as const }];
+    expect(wake("watch", comments)).toContain(PR_THREAD_CLOSEOUT_RULE);
+    expect(wake("watch", checks)).not.toContain(PR_THREAD_CLOSEOUT_RULE);
+    // Ship carries the rule in its standing instructions on every wake.
+    expect(wake("ship", checks)).toContain(PR_THREAD_CLOSEOUT_RULE);
   });
 
   it("ends a watch that only ever hears comments", () => {

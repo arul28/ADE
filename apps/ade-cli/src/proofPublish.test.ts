@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   assertGhSupportsAttach,
+  publishProofIntoPullRequestBody,
   publishProofToPullRequest,
   resolveStoredProofFile,
   type PublishableArtifact,
@@ -179,5 +180,99 @@ describe("publishProofToPullRequest", () => {
       run,
       artifacts: [artifact()],
     })).toThrow(/no pull requests found/);
+  });
+});
+
+describe("publishProofIntoPullRequestBody", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const PR_URL = "https://github.com/owner/repo/pull/12";
+
+  /** A project with the named proof files, and a gh that holds `body` as the PR text. */
+  function setup(body: string, files: string[]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-proof-publish-"));
+    dirs.push(root);
+    fs.mkdirSync(path.join(root, ".ade", "artifacts"), { recursive: true });
+    for (const file of files) fs.writeFileSync(path.join(root, ".ade", "artifacts", file), file);
+    const sent = { body: null as string | null, attached: [] as string[], staged: [] as string[] };
+    const run = vi.fn((_cmd: string, args: readonly string[], options?: { cwd?: string }) => {
+      if (args[0] === "--version") return { status: 0, stdout: "gh version 2.101.0 (2024-01-01)" };
+      if (args[0] === "pr" && args[1] === "view") return { status: 0, stdout: JSON.stringify({ url: PR_URL, body }) };
+      if (args[0] === "pr" && args[1] === "edit") {
+        sent.body = fs.readFileSync(path.join(options!.cwd!, "body.md"), "utf8");
+        sent.attached = args.filter((_arg, index) => args[index - 1] === "--attach");
+        sent.staged = fs.readdirSync(options!.cwd!).filter((name) => name !== "body.md").sort();
+        return { status: 0, stdout: PR_URL };
+      }
+      return { status: 1, stderr: "unexpected gh call" };
+    }) as unknown as Run;
+    return { root, run, sent };
+  }
+
+  const picture = (id: string, file: string) => artifact({ id, uri: `.ade/artifacts/${file}`, description: `Caption of ${id}` });
+
+  it("uploads the proof the PR text cites and rewrites each citation where it stands", () => {
+    const body = [
+      "## Evidence",
+      "![The new list](ade-proof://pic-a)",
+      "",
+      "```proof-compare",
+      "before: pic-b Old",
+      "after: pic-c New",
+      "```",
+      "",
+      "<!-- ade:link -->footer ADE added<!-- /ade:link -->",
+    ].join("\n");
+    const { root, run, sent } = setup(body, ["a.png", "b.png", "c.png", "unused.png"]);
+
+    const result = publishProofIntoPullRequestBody({
+      pr: "12",
+      projectRoot: root,
+      run,
+      // A record the text does not cite is not uploaded.
+      artifacts: [picture("pic-a", "a.png"), picture("pic-b", "b.png"), picture("pic-c", "c.png"), picture("pic-z", "unused.png")],
+    });
+
+    expect(result.prUrl).toBe(PR_URL);
+    expect(result.posted.map((entry) => entry.id)).toEqual(["pic-a", "pic-b", "pic-c"]);
+    expect(sent.attached).toEqual(["./proof-1.png", "./proof-2.png", "./proof-3.png"]);
+    expect(sent.staged).toEqual(["proof-1.png", "proof-2.png", "proof-3.png"]);
+    // The text GitHub held is what goes back, with only the citations changed.
+    expect(sent.body).toContain("![The new list](./proof-1.png)<!-- ade-proof:pic-a -->");
+    expect(sent.body).toContain("| Before | After |");
+    expect(sent.body).toContain("<!-- ade:link -->footer ADE added<!-- /ade:link -->");
+    expect(sent.body).not.toContain("ade-proof://");
+  });
+
+  it("does not attach one side of a comparison whose other side cannot go up, and says which items stayed behind", () => {
+    const body = "![Alone](ade-proof://pic-a)\n\n```proof-compare\nbefore: pic-b Old\nafter: gone New\n```\n\n![Not mine](ade-proof://other-chat)";
+    const { root, run, sent } = setup(body, ["a.png", "b.png"]);
+
+    const result = publishProofIntoPullRequestBody({
+      pr: "12",
+      projectRoot: root,
+      run,
+      artifacts: [picture("pic-a", "a.png"), picture("pic-b", "b.png"), picture("gone", "missing.png")],
+    });
+
+    expect(result.posted.map((entry) => entry.id)).toEqual(["pic-a"]);
+    expect(sent.attached).toEqual(["./proof-1.png"]);
+    expect(Object.fromEntries(result.skipped.map((entry) => [entry.id, entry.reason]))).toEqual({
+      "gone": expect.stringContaining("not on this machine"),
+      "pic-b": "the other side of its comparison could not be uploaded",
+      "other-chat": "not in this chat's or lane's proof",
+    });
+    // The pair is still the citation the author wrote, so ADE can show it.
+    expect(sent.body).toContain("```proof-compare\nbefore: pic-b Old\nafter: gone New\n```");
+  });
+
+  it("changes nothing on GitHub when no cited proof can go up", () => {
+    const { root, run, sent } = setup("![Lost](ade-proof://gone)", []);
+    expect(() => publishProofIntoPullRequestBody({ pr: "12", projectRoot: root, run, artifacts: [picture("gone", "missing.png")] }))
+      .toThrow(/nothing to upload: gone \(its stored file is not on this machine/);
+    expect(sent.body).toBeNull();
   });
 });

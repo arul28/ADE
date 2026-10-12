@@ -602,6 +602,8 @@ ade search "flaky test" --kind chat,terminal --lane fix-login --text  # exit 1 w
 ade search --status --text                                  # index doc counts, backfill state, index path
 ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # prints GitHub + ADE PR URLs
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge
+ade prs create --lane lane-id --title "Fix checkout flow" --body-file pr.md --text  # uploads proof the text cites; prints what a reader will miss
+ade prs body 123 --body-file pr.md --text                                        # replace the PR text; same upload and notes
 ade prs list-open --text
 ade prs github-snapshot --include-external-closed --history-page-limit 4
 ade prs github-snapshot --include-state-counts --no-revalidate
@@ -680,6 +682,7 @@ ade proof list --arg ownerKind=chat --arg ownerId=session-id
 ade proof attach shots/result.png --caption "Checkout complete"
                                                       # every filing command prints a `cite:` snippet for the agent's answer
 ade proof publish --pr 123 --heading "Proof" --note "Checkout flow" artifact-id [artifact-id ...]
+ade proof publish --pr 123 --in-body                                             # upload the proof the PR text cites, in place
                                                       # one PR comment; gh 2.99+ --attach uploads the chosen proof, then a github_pr link is added
 ade proof rm artifact-id
 ade proof broken --text                              # list missing/unimported proof records
