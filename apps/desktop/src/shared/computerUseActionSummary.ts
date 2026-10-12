@@ -194,10 +194,24 @@ type OutputFilter = "none" | "cite" | "other";
 type ShellConditional = "or" | "and" | null;
 
 /**
- * One simple command, the operators on either side of it, and the command its
- * output is piped into.
+ * One simple command, whether a `||` or `&&` makes it conditional, and the
+ * command its output is piped into. `tokens` are its words; `redirections` are
+ * what the shell consumes itself (`2>&1`, `>out`, `2> err` with its target), kept apart
+ * so `click --text 2>&1` has no click target.
  */
-type ShellCommand = { tokens: string[]; conditional: ShellConditional; pipedInto: string[] | null };
+type ShellCommand = {
+  tokens: string[];
+  redirections: string[];
+  conditional: ShellConditional;
+  pipedInto: string[] | null;
+};
+
+/** An unquoted redirection: `2>&1`, `>out`, `2>/dev/null`, `&>log`, `<in`, PowerShell `*>$null`. */
+const REDIRECTION = /^(?:\d+|&|\*)?(?:>>?|<)/;
+/** A redirection whose target is the next word: `> out`, `2> err`, `>& log`. */
+const BARE_REDIRECTION = /^(?:\d+|&|\*)?(?:>>?|<)&?$/;
+/** What may sit before a redirection's `>` in the same word: `2`, `&`, `*`, a first `>`. */
+const REDIRECTION_PREFIX = /^(?:\d+|&|\*)?>?$/;
 
 /**
  * Split a shell command into simple commands. Quote-aware, with `&&`, `||`,
@@ -208,31 +222,50 @@ type ShellCommand = { tokens: string[]; conditional: ShellConditional; pipedInto
 function splitShellCommands(source: string): ShellCommand[] {
   const commands: ShellCommand[] = [];
   let tokens: string[] = [];
+  let redirections: string[] = [];
   let current = "";
   let hasToken = false;
+  // The word is literal, never a redirection: quoting or an escape came before
+  // any `<` / `>` in it (`"x">`, `2"">`, `\>`).
+  let literal = false;
+  // The previous word was a bare redirection, so this one is its target.
+  let redirectionTarget = false;
   let quote: "'" | "\"" | null = null;
-  // The operator before the command being read; a newline after `||` / `&&`
-  // continues it.
+  // The operator before the command being read; a newline right after an
+  // operator continues it.
   let before: string | null = null;
   const pushToken = () => {
-    if (hasToken) tokens.push(current);
+    if (hasToken) {
+      if (redirectionTarget) {
+        redirections.push(current);
+        redirectionTarget = false;
+      } else if (!literal && REDIRECTION.test(current)) {
+        redirections.push(current);
+        redirectionTarget = BARE_REDIRECTION.test(current);
+      } else {
+        tokens.push(current);
+      }
+    }
     current = "";
     hasToken = false;
+    literal = false;
   };
   const pushCommand = (after: string | null) => {
     pushToken();
-    if (tokens.length) {
+    if (tokens.length || redirections.length) {
       const conditional: ShellConditional = before === "||" || after === "||"
         ? "or"
         : before === "&&" ? "and" : null;
-      commands.push({ tokens, conditional, pipedInto: null });
+      commands.push({ tokens, redirections, conditional, pipedInto: null });
       const piping = before === "|" ? commands[commands.length - 2] : undefined;
       if (piping) piping.pipedInto = tokens;
       tokens = [];
       before = after;
-    } else if (after !== "\n" || before === null) {
+    } else if (after !== "\n") {
       before = after;
     }
+    redirections = [];
+    redirectionTarget = false;
   };
   for (let index = 0; index < source.length; index += 1) {
     const char = source[index]!;
@@ -253,6 +286,7 @@ function splitShellCommands(source: string): ShellCommand[] {
       continue;
     }
     if (char === "'" || char === "\"") {
+      if (!/[<>]/.test(current)) literal = true;
       quote = char;
       hasToken = true;
       continue;
@@ -263,14 +297,28 @@ function splitShellCommands(source: string): ShellCommand[] {
         index += 1;
         continue;
       }
+      if (!/[<>]/.test(current)) literal = true;
       current += next;
       hasToken = true;
       index += 1;
       continue;
     }
     // `2>&1` and `&>file` are redirections, not the background operator: a
-    // split there would cut `ade … 2>&1 || true` off from its `||`.
-    if (char === "&" && (/[<>]$/.test(current) || source[index + 1] === ">")) {
+    // split there would cut `ade … 2>&1 || true` off from its `||`. Only an
+    // unquoted `<` / `>` right before counts: in `echo ">"&` the `&` is the
+    // background operator.
+    const afterOperator = /[<>]/.test(source[index - 1] ?? "") && source[index - 2] !== "\\";
+    if (char === "&" && (afterOperator || source[index + 1] === ">")) {
+      if (!afterOperator && hasToken) pushToken();
+      current += char;
+      hasToken = true;
+      continue;
+    }
+    // An unquoted `<` / `>` ends the word before it, the shell's own rule:
+    // `snapshot>out` is `snapshot` then `>out`, and `"">out` an empty word then
+    // `>out`. `2>`, `&>`, `*>` and `>>` stay one word.
+    if (char === "<" || char === ">") {
+      if (hasToken && (literal || !REDIRECTION_PREFIX.test(current))) pushToken();
       current += char;
       hasToken = true;
       continue;
@@ -554,15 +602,15 @@ function collectAliasVars(source: string): Set<string> {
   return vars;
 }
 
-/** Stdout sent to a file or `/dev/null`: `>out`, `> out`, `1>>log`, `&>/dev/null`. Not `2>&1`. */
-const STDOUT_REDIRECT = /^(?:1|&)?>>?(?!&)/;
+/** Stdout sent to a file or `/dev/null`: `>out`, `> out`, `1>>log`, `&>/dev/null`, `*>$null`. Not `2>&1`. */
+const STDOUT_REDIRECT = /^(?:1|&|\*)?>>?(?!&)/;
 
 /** Line filters, POSIX and Windows (`findstr`, PowerShell's `Select-String`). */
 const TEXT_FILTERS = new Set(["grep", "egrep", "rg", "findstr", "select-string", "sls"]);
 
 /** What reached the transcript of a command's output; see `ParsedInvocation.outputFilter`. */
 function outputFilterOf(command: ShellCommand): OutputFilter {
-  if (command.tokens.some((token) => STDOUT_REDIRECT.test(token))) return "other";
+  if (command.redirections.some((word) => STDOUT_REDIRECT.test(word))) return "other";
   const pipe = command.pipedInto;
   if (!pipe) return "none";
   const head = basename(pipe[0] ?? "").replace(/\.exe$/, "");

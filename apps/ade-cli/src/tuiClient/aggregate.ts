@@ -11,7 +11,7 @@ import type {
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
 import { normalizeSubagentLifecycleEvent } from "../../../desktop/src/shared/chatSubagents";
-import { isSettledSteerDeliveryState } from "../../../desktop/src/shared/chatTranscript";
+import { isSettledSteerDeliveryState, userMessageStartsTurn } from "../../../desktop/src/shared/chatTranscript";
 import {
   formatLegacyProviderRetryActivityDetail,
   formatProviderRetryActivityDetail,
@@ -194,6 +194,16 @@ function safeMs(value: string): number {
 
 function validDurationMs(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** The turn tagged on the newest block of the open tool-activity segment, if any. */
+function openSegmentTurnId(blocks: AggregatedBlock[], segmentStart: number): string | null {
+  for (let index = blocks.length - 1; index >= segmentStart; index -= 1) {
+    const block = blocks[index]!;
+    const turnId = "turnId" in block ? block.turnId : null;
+    if (turnId) return turnId;
+  }
+  return null;
 }
 
 function workItemKey(turnId: string | null, itemId: string): string {
@@ -1079,6 +1089,13 @@ export function aggregateChatBlocks(args: {
             text: event.displayText ?? event.text,
           });
         }
+        continue;
+      }
+      // A message that stays inside the live turn keeps its tool activity, live
+      // state, and turn start; it still shows as a bubble and its delivery line.
+      if (!userMessageStartsTurn(event, openSegmentTurnId(blocks, toolActivitySegmentStart))) {
+        passthrough(id, "user-bubble");
+        passthrough(`${id}:delivery`, "notice");
         continue;
       }
       for (const block of blocks.slice(toolActivitySegmentStart)) {
