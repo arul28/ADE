@@ -1268,6 +1268,22 @@ describe("appStore", () => {
       });
     });
 
+    it.each([
+      { name: "no error", existing: null, raised: true },
+      { name: "a plain error with no recovery code", existing: { message: "Switching took longer than 30 seconds" }, raised: true },
+      { name: "another recovery screen", existing: { message: "Out of space", code: "disk_full", rootPath: "/repo/b" }, raised: false },
+    ])("reportProjectDataProblem raises the recovery screen over $name", ({ existing, raised }) => {
+      useAppStore.setState({ projectTransitionError: existing });
+      useAppStore.getState().reportProjectDataProblem("/repo/a", "missing");
+      const error = useAppStore.getState().projectTransitionError;
+      if (raised) {
+        expect(error).toMatchObject({ code: "project_data_missing", rootPath: "/repo/a" });
+        expect(error?.message).toBeTruthy();
+      } else {
+        expect(error).toEqual(existing);
+      }
+    });
+
     it("clearProjectTransitionError clears project action errors", () => {
       useAppStore.setState({ projectTransitionError: { message: "Switch failed" } });
       useAppStore.getState().clearProjectTransitionError();

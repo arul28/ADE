@@ -7,6 +7,10 @@ import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runt
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import type { Logger } from "../logging/logger";
 import {
+  ProjectRegistry,
+  assertLocalProjectDataAvailable,
+} from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import {
   createProjectRecoveryService,
   type ProjectRecoveryConnectionPool,
   type ProjectRecoveryServiceDeps,
@@ -689,5 +693,91 @@ describe("ProjectRecoveryService.restartBrain", () => {
 
     await expect(restart).rejects.toThrow("launchctl bootstrap failed");
     await expect(repair).resolves.toMatchObject({ ok: true });
+  });
+});
+
+// Missing project data, end to end through the service: a real registry and
+// identity file under a temporary ADE home, and the Trash inside a temporary
+// home directory. Only the connection pool and the window close are faked.
+describe.skipIf(process.platform === "win32")("ProjectRecoveryService project data", () => {
+  function machine() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-data-"));
+    roots.push(home);
+    // The Trash lives under the user's home: never let a test reach the real one.
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+    vi.stubEnv("XDG_DATA_HOME", path.join(home, ".local", "share"));
+    vi.stubEnv("ADE_HOME", path.join(home, ".ade-machine"));
+    const trash = process.platform === "darwin"
+      ? path.join(home, ".Trash")
+      : path.join(home, ".local", "share", "Trash", "files");
+    fs.mkdirSync(trash, { recursive: true });
+    const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(home, "project-")));
+    const adeDir = path.join(projectRoot, ".ade");
+    fs.mkdirSync(path.join(adeDir, "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(adeDir, "ade.db"), "original database");
+    fs.writeFileSync(path.join(adeDir, "secrets", "machine-key"), "original key");
+    const record = new ProjectRegistry().add(projectRoot);
+    const connectionPool = pool();
+    const closeProject = vi.fn(async () => {});
+    const service = createProjectRecoveryService(deps({ connectionPool, closeProject }));
+    return { trash, projectRoot, adeDir, record, connectionPool, closeProject, service };
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("restores trashed data the original way round and lets go of the project", async () => {
+    const { trash, projectRoot, adeDir, record, connectionPool, closeProject, service } = machine();
+    fs.renameSync(adeDir, path.join(trash, ".ade"));
+    // ADE wrote a new key while the data was gone.
+    fs.mkdirSync(path.join(adeDir, "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(adeDir, "secrets", "machine-key"), "key written meanwhile");
+
+    const diagnosis = await service.diagnose(projectRoot);
+    expect(diagnosis).toMatchObject({ state: "data_missing", code: "project_data_missing", restoreAvailable: true });
+
+    await expect(service.restoreProjectData(projectRoot)).resolves.toEqual({ restored: true });
+    expect(fs.readFileSync(path.join(adeDir, "ade.db"), "utf8")).toBe("original database");
+    expect(fs.readFileSync(path.join(adeDir, "secrets", "machine-key"), "utf8")).toBe("original key");
+    expect(fs.readFileSync(path.join(trash, ".ade", "secrets", "machine-key.created-while-missing"), "utf8"))
+      .toBe("key written meanwhile");
+    expect(closeProject).toHaveBeenCalledWith(projectRoot);
+    expect(connectionPool.removeProject).toHaveBeenCalledWith(projectRoot, record.projectId);
+  });
+
+  it("starts fresh even when the background service keeps the project's record", async () => {
+    const { projectRoot, adeDir, record, connectionPool, closeProject, service } = machine();
+    fs.rmSync(adeDir, { recursive: true });
+
+    expect(await service.diagnose(projectRoot)).toMatchObject({ state: "data_missing", restoreAvailable: false });
+    await service.startFresh(projectRoot);
+
+    expect(closeProject).toHaveBeenCalledWith(projectRoot);
+    expect(connectionPool.removeProject).toHaveBeenCalledWith(projectRoot, record.projectId);
+    // The faked pool removed nothing, so the record survives; the project
+    // still opens with new data.
+    expect(new ProjectRegistry().get(record.projectId)).not.toBeNull();
+    expect(fs.existsSync(adeDir)).toBe(true);
+    expect(() => assertLocalProjectDataAvailable(projectRoot)).not.toThrow();
+    expect((await service.diagnose(projectRoot)).state).not.toBe("data_missing");
+  });
+
+  it("never recreates a project folder that is gone", async () => {
+    const { projectRoot, connectionPool, closeProject, service } = machine();
+    fs.rmSync(projectRoot, { recursive: true });
+
+    expect(await service.diagnose(projectRoot)).toMatchObject({
+      state: "data_missing",
+      projectFolderMissing: true,
+      restoreAvailable: false,
+    });
+    await expect(service.restoreProjectData(projectRoot)).resolves.toMatchObject({ restored: false });
+    await expect(service.startFresh(projectRoot)).rejects.toThrow();
+    await expect(service.repair(projectRoot)).resolves.toMatchObject({ ok: false, failureCode: "project_data_missing" });
+
+    expect(fs.existsSync(projectRoot)).toBe(false);
+    expect(closeProject).not.toHaveBeenCalled();
+    expect(connectionPool.removeProject).not.toHaveBeenCalled();
   });
 });

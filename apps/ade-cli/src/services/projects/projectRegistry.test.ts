@@ -39,7 +39,15 @@ describe("ProjectRegistry", () => {
     spawnSyncMock.mockReturnValue({ status: 1, stdout: "" });
   });
 
-  it.each([["folder", "brain"], ["database", "brain"], ["folder", "desktop"], ["database", "desktop"]])("blocks recreating initialized project data after losing its %s (%s) and accepts restoration", (missing, opener) => {
+  it.each([
+    ["folder", "brain"],
+    ["database", "brain"],
+    ["folder", "desktop"],
+    ["database", "desktop"],
+    // An older ADE on the same machine rewrites projects.json with only the
+    // fields it knows; the record that the database existed must survive.
+    ["database", "brain, then an older ADE rewrites projects.json"],
+  ])("blocks recreating initialized project data after losing its %s (%s) and accepts restoration", (missing, opener) => {
     const root = makeTempRoot();
     const projectRoot = path.join(root, "project");
     fs.mkdirSync(projectRoot);
@@ -55,6 +63,20 @@ describe("ProjectRegistry", () => {
       recordLocalProjectDatabaseIdentity(projectRoot);
     } else {
       registry.touch(record.projectId);
+    }
+    if (opener.includes("older ADE")) {
+      const file = JSON.parse(fs.readFileSync(layout.projectsPath, "utf8"));
+      file.projects = file.projects.map((project: Record<string, unknown>) => ({
+        projectId: project.projectId,
+        rootPath: project.rootPath,
+        displayName: project.displayName,
+        addedAt: project.addedAt,
+        lastOpenedAt: project.lastOpenedAt,
+        gitOriginUrl: project.gitOriginUrl,
+        catalogVisibility: project.catalogVisibility,
+        registrationSource: project.registrationSource,
+      }));
+      fs.writeFileSync(layout.projectsPath, JSON.stringify(file));
     }
     const source = missing === "folder" ? adeDir : dbPath;
     const saved = path.join(root, "saved");

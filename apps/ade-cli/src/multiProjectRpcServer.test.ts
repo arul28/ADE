@@ -3761,6 +3761,23 @@ describe("projects.setIcon / projects.removeIcon", () => {
 
     handler.dispose();
   });
+
+  // Both write `.ade/local.yaml`, which would bring a moved, deleted or
+  // unplugged project folder back empty.
+  it.each([
+    { method: "projects.removeIcon", params: {} },
+    { method: "projects.setIcon", params: { fileName: "icon.png", dataBase64: PNG_BASE64 } },
+  ])("$method refuses a project whose folder is gone, without recreating it", async ({ method, params }) => {
+    const { projectRoot, handler } = await makeHandler();
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+
+    await expect(
+      handler({ jsonrpc: "2.0", id: 3, method, params: { rootPath: projectRoot, ...params } }),
+    ).rejects.toThrow("Project folder not found");
+    expect(fs.existsSync(projectRoot)).toBe(false);
+
+    handler.dispose();
+  });
 });
 
 describe("calls from another machine's agents", () => {

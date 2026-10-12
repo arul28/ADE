@@ -4962,14 +4962,39 @@ export function registerIpc({
     });
   });
 
+  // One coarse fact per choice and outcome: how often project data goes
+  // missing and which way people recover. Nothing about the project. The 1 h
+  // dedupe bounds a retry loop to 24 events per key per day.
+  const captureProjectDataRecovery = (
+    action: "project_data_restore" | "project_data_start_fresh",
+    outcome: "completed" | "failed",
+  ) => {
+    productAnalyticsService?.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "storage_doctor", action, outcome },
+      projectId: null,
+      dedupeKey: `${action}:${outcome}`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    });
+  };
+
   ipcMain.handle(IPC.recoveryRestoreProjectData, async (_event, arg: { projectRoot: string }): Promise<ProjectDataRestoreResult> => {
     const { projectRoot, service } = recoveryTarget(arg);
-    return await service.restoreProjectData(projectRoot);
+    const result = await service.restoreProjectData(projectRoot);
+    captureProjectDataRecovery("project_data_restore", result.restored ? "completed" : "failed");
+    return result;
   });
 
   ipcMain.handle(IPC.recoveryStartFresh, async (_event, arg: { projectRoot: string }): Promise<void> => {
     const { projectRoot, service } = recoveryTarget(arg);
-    await service.startFresh(projectRoot);
+    try {
+      await service.startFresh(projectRoot);
+    } catch (error) {
+      captureProjectDataRecovery("project_data_start_fresh", "failed");
+      throw error;
+    }
+    captureProjectDataRecovery("project_data_start_fresh", "completed");
   });
 
   // With no root: the project that failed to reopen at launch. A window asks

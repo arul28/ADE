@@ -128,6 +128,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "header_opened",
   "preferences_changed",
   "brain_repair",
+  // The project recovery screen's choices when a project's ADE data went
+  // missing or was swapped: put it back from the Trash, or open with new data
+  // (Start fresh, Use this copy). completed | failed.
+  "project_data_restore",
+  "project_data_start_fresh",
   // Settings → Background service → "Stop and quit ADE": whether people turn
   // the always-on service off at all. completed | rejected (a guard refused) | failed.
   "background_service_stop",

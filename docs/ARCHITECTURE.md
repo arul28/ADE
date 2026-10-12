@@ -854,8 +854,12 @@ ade.recovery.*               # brain-independent project-open recovery: diagnose
                              # (projectRecoveryService against projectRecoveryConnectionPool),
                              # plus the main → renderer push ade.recovery.repairStep, one
                              # RepairStepResult as each step finishes so a long restart wait
-                             # reads as progress rather than a hang. diagnose/repair validate
-                             # the renderer-supplied root against services/ipc/knownProjectRoots.ts.
+                             # reads as progress rather than a hang. Missing project data:
+                             # restoreProjectData / startFresh, projectDataStatus (no root:
+                             # the project that failed to reopen at launch), and the push
+                             # ade.recovery.projectDataMissing from the open-data watch.
+                             # All validate the renderer-supplied root against
+                             # services/ipc/knownProjectRoots.ts.
                              # See features/storage-and-recovery/README.md
 ade.diagnostics.*            # openIssue: assemble the redacted diagnostic report behind every
                              # error surface's "Report issue" button, save it under

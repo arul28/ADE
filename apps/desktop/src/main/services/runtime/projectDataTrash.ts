@@ -4,6 +4,8 @@ import path from "node:path";
 import { normalizeProjectRootPath } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import type { ProjectDatabaseIdentity } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { openReadonlyDatabase } from "../state/kvDb";
+import { pathsEqual } from "../shared/pathCompare";
+import { readRecycleBinOriginalPath, recycleBinDataName } from "./recycleBinRecord";
 
 /**
  * Finding a project's `.ade` folder in the Trash and putting it back. Plain
@@ -11,19 +13,52 @@ import { openReadonlyDatabase } from "../state/kvDb";
  * service that offers it.
  */
 
-/** Folders a deleted `.ade` lands in. Empty where ADE can't look. */
-function trashDirs(): string[] {
-  if (process.platform === "darwin") return [path.join(os.homedir(), ".Trash")];
-  if (process.platform === "linux") {
-    const dataHome = process.env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local", "share");
-    return [path.join(dataHome, "Trash", "files")];
-  }
-  // The Recycle Bin keeps files under opaque names; the screen says where to look.
-  return [];
-}
-
 /** Finder names a second `.ade` in the Trash ".ade 2", then ".ade 3", and so on. */
 const TRASHED_ADE_NAMES = [".ade", ...Array.from({ length: 49 }, (_, index) => `.ade ${index + 2}`)];
+
+function listDir(dir: string): string[] | null {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where a deleted `.ade` for this project could be. macOS and Linux name it
+ * `.ade` (or `.ade 2`…) in the home Trash; macOS refuses to list the Trash
+ * without Full Disk Access but still opens a path it is given, so the Finder
+ * names are tried then. Windows keeps it as `$R…` in the drive's Recycle Bin,
+ * found through the `$I…` record that names the original path.
+ */
+function trashCandidates(projectRoot: string): string[] {
+  if (process.platform === "win32") {
+    const recycleBin = path.join(path.parse(projectRoot).root, "$Recycle.Bin");
+    const original = path.join(projectRoot, ".ade");
+    const candidates: string[] = [];
+    // One folder per user SID; another user's is not readable and is skipped.
+    for (const sid of listDir(recycleBin) ?? []) {
+      const sidDir = path.join(recycleBin, sid);
+      for (const name of listDir(sidDir) ?? []) {
+        const dataName = recycleBinDataName(name);
+        if (!dataName) continue;
+        let record: Buffer;
+        try {
+          record = fs.readFileSync(path.join(sidDir, name));
+        } catch {
+          continue;
+        }
+        if (pathsEqual(readRecycleBinOriginalPath(record), original)) candidates.push(path.join(sidDir, dataName));
+      }
+    }
+    return candidates;
+  }
+  const dir = process.platform === "darwin"
+    ? path.join(os.homedir(), ".Trash")
+    : path.join(process.env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local", "share"), "Trash", "files");
+  const names = listDir(dir)?.filter((name) => name.startsWith(".ade")) ?? TRASHED_ADE_NAMES;
+  return names.map((name) => path.join(dir, name));
+}
 
 /**
  * A trashed `.ade` belongs to this project when its database is the very file
@@ -67,23 +102,12 @@ export function findTrashedProjectData(projectRoot: string, identity: ProjectDat
   const cached = lookupCache.get(normalizedRoot);
   if (cached && cached.identityKey === identityKey && Date.now() - cached.at < LOOKUP_CACHE_MS) return cached.result;
   const candidates: Array<{ path: string; mtimeMs: number }> = [];
-  for (const dir of trashDirs()) {
-    let names: string[];
+  for (const candidate of trashCandidates(normalizedRoot)) {
+    if (!trashedDataBelongsTo(candidate, normalizedRoot, identity)) continue;
     try {
-      names = fs.readdirSync(dir).filter((name) => name.startsWith(".ade"));
+      candidates.push({ path: candidate, mtimeMs: fs.statSync(candidate).mtimeMs });
     } catch {
-      // macOS refuses to list the Trash without Full Disk Access, but still
-      // opens a path it is given: try the names Finder gives a trashed .ade.
-      names = TRASHED_ADE_NAMES;
-    }
-    for (const name of names) {
-      const candidate = path.join(dir, name);
-      if (!trashedDataBelongsTo(candidate, normalizedRoot, identity)) continue;
-      try {
-        candidates.push({ path: candidate, mtimeMs: fs.statSync(candidate).mtimeMs });
-      } catch {
-        // Emptied while we looked.
-      }
+      // Emptied while we looked.
     }
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
@@ -180,5 +204,11 @@ export async function restoreTrashedProjectData(source: string, target: string):
     await mergeEntries(source, target);
   } else {
     await moveEntry(source, target);
+  }
+  // A Recycle Bin item whose data went back leaves its `$I…` record behind;
+  // Explorer would list it as a deleted `.ade` that can no longer be restored.
+  const name = path.basename(source);
+  if (process.platform === "win32" && name.startsWith("$R") && !fs.existsSync(source)) {
+    fs.rmSync(path.join(path.dirname(source), `$I${name.slice(2)}`), { force: true });
   }
 }
