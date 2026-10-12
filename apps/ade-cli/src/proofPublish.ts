@@ -277,7 +277,19 @@ export function publishProofIntoPullRequestBody(args: {
         `nothing to upload: ${skipped.map((entry) => `${entry.id} (${entry.reason})`).join("; ") || "the PR text cites no proof"}`,
       );
     }
-    fs.writeFileSync(path.join(staging, "body.md"), rewritePrBodyProofForGithub(body, (id) => files.get(id) ?? null));
+    const rewritten = rewritePrBodyProofForGithub(body, (id) => files.get(id) ?? null);
+    // A comparison goes up whole or stays as written. A side staged for a pair
+    // whose other side could not go up is in no sentence of the new text, so
+    // it is not attached and not reported as uploaded.
+    for (const entry of [...posted]) {
+      if (rewritten.includes(`](./${entry.file})`)) continue;
+      posted.splice(posted.indexOf(entry), 1);
+      skipped.push({ id: entry.id, reason: "the other side of its comparison could not be uploaded" });
+    }
+    if (!posted.length) {
+      throw new ProofPublishError(`nothing to upload: ${skipped.map((entry) => `${entry.id} (${entry.reason})`).join("; ")}`);
+    }
+    fs.writeFileSync(path.join(staging, "body.md"), rewritten);
     const edit = run(
       "gh",
       ["pr", "edit", prUrl, "--body-file", "body.md", ...posted.flatMap((entry) => ["--attach", `./${entry.file}`])],

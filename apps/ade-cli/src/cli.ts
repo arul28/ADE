@@ -782,6 +782,11 @@ export type CliPlan =
        */
       proofFiling?: { command: string; verify: boolean };
       /**
+       * The text a PR command sent, and the PR it named, for the notes the
+       * summary prints for the reader. `ref` is absent for a PR being made.
+       */
+      prText?: { body: string; ref?: string | null };
+      /**
        * Run a recovery step and re-execute the plan once, when the first result
        * says the command cannot succeed without it. Returning false leaves the
        * first result exactly as it was, so the plan's normal formatting, output
@@ -7719,7 +7724,7 @@ function publishableArtifact(artifact: JsonObject) {
   };
 }
 
-function buildPrPlan(args: string[]): CliPlan {
+function buildPrPlan(args: string[], explicitProjectRoot: string | null = null): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "actions")
     return {
@@ -7793,16 +7798,9 @@ function buildPrPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "PR create",
+      prText: { body: body ?? "" },
       steps: [
-        {
-          ...actionCallStep("result", "create_pr_from_lane"),
-          // The text travels beside the result so the summary can say what a
-          // reader will miss in it.
-          params: (values) => {
-            values.prBody = body ?? "";
-            return { name: "create_pr_from_lane", arguments: createArgs };
-          },
-        },
+        actionCallStep("result", "create_pr_from_lane", createArgs),
         // Proof the text cites goes up after the PR exists. A failed upload
         // leaves a made PR; the summary says how to run the upload again.
         ...(citedProof.length
@@ -7813,6 +7811,7 @@ function buildPrPlan(args: string[]): CliPlan {
               return url;
             },
             ids: citedProof,
+            explicitProjectRoot,
             optional: true,
           })
           : []),
@@ -7940,15 +7939,9 @@ function buildPrPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "PR update body",
       formatter: "pr-body",
+      prText: { body, ref: target ?? null },
       steps: [
-        {
-          ...actionCallStep("result", "pr_update_body"),
-          params: (values) => {
-            values.prBody = body;
-            values.prRef = target ?? null;
-            return { name: "pr_update_body", arguments: updateArgs };
-          },
-        },
+        actionCallStep("result", "pr_update_body", updateArgs),
         ...(citedProof.length
           ? proofIntoPrBodySteps({
             pr: () => {
@@ -7960,6 +7953,7 @@ function buildPrPlan(args: string[]): CliPlan {
               return ref;
             },
             ids: citedProof,
+            explicitProjectRoot,
             optional: true,
           })
           : []),
@@ -19778,7 +19772,7 @@ function buildCliPlan(
   if (primary === "diff" || primary === "diffs") return buildDiffPlan(args);
   if (primary === "files" || primary === "file") return buildFilesPlan(args);
   if (primary === "search") return buildSearchPlan(args);
-  if (primary === "prs" || primary === "pr") return buildPrPlan(args);
+  if (primary === "prs" || primary === "pr") return buildPrPlan(args, options.projectRoot ?? null);
   if (primary === "shell" || primary === "pty") return buildShellPlan(args);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
@@ -28566,6 +28560,9 @@ function formatPrTextNotes(value: unknown, prRef: string | null): string {
     for (const entry of firstArray(proof, ["skipped"])) {
       lines.push(`  not uploaded ${asString(entry.id)}  ${asString(entry.reason)}`);
     }
+    for (const warning of Array.isArray(proof.warnings) ? proof.warnings : []) {
+      if (typeof warning === "string") lines.push(`  warning: ${warning}`);
+    }
   } else if (asString(record.proofInTextError)) {
     lines.push(
       `proof: not uploaded. GitHub shows the captions only. ${asString(record.proofInTextError)}`,
@@ -32248,16 +32245,28 @@ function summarizeExecution(args: {
     const summary = plan.label === "PR create"
       ? summarizePrCreateResult(values.result ?? values)
       : values.result;
-    if (!isRecord(summary)) return summary;
-    const body = typeof values.prBody === "string" ? values.prBody : null;
+    if (!isRecord(summary) || !plan.prText) return summary;
     const proofFailure = [values.proofList, values.proofLink]
       .map((step) => (isRecord(step) && step.ok === false ? asString(step.error) : null))
       .find(Boolean) ?? null;
     return {
       ...summary,
-      ...(plan.label === "PR update body" ? { prRef: values.prRef ?? null } : {}),
-      ...(body !== null ? { briefHints: prBriefHints(body).map((hint) => hint.message) } : {}),
-      ...(isRecord(values.publish) ? { proofInText: values.publish } : {}),
+      ...(plan.prText.ref !== undefined ? { prRef: plan.prText.ref } : {}),
+      briefHints: prBriefHints(plan.prText.body).map((hint) => hint.message),
+      ...(isRecord(values.publish)
+        ? {
+          proofInText: {
+            ...values.publish,
+            warnings: [
+              ...(Array.isArray(values.publish.warnings) ? values.publish.warnings : []),
+              // The pictures are in the text; only ADE's own record of the PR is missing.
+              ...(isRecord(values.proofLink) && values.proofLink.ok === false
+                ? [`uploaded, but ADE could not record the PR on the items: ${asString(values.proofLink.error) ?? "the runtime refused the link"}`]
+                : []),
+            ],
+          },
+        }
+        : {}),
       // The upload failed before anything reached the PR text.
       ...(proofFailure && !isRecord(values.publish) ? { proofInTextError: proofFailure } : {}),
     };
