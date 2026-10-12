@@ -6,8 +6,28 @@ operations with `db_path_changed` rather than continuing to query or write the
 moved file. Restore the original `.ade` folder to its original location to
 resume automatically. A replacement database is never adopted by the existing
 connection. This protection is shared by desktop and headless runtime clients,
-including sync and database maintenance; it does not move folders out of Trash
-or discard a replacement on the user's behalf.
+including sync and database maintenance.
+
+The desktop also checks each open project's `ade.db` every 5 seconds. When it
+disappears or is swapped, the window shows the project recovery screen instead
+of failing panel by panel (`data_missing` or `data_replaced` in
+`shared/types/recovery.ts`). A failed reopen at launch for the same reason
+shows the screen too. From there:
+
+- **Restore it** appears when `ProjectRecoveryService.findTrashedProjectData`
+  finds this project's `.ade` in the Trash, matched by the database file's
+  device and inode from the project-data marker (a move keeps them), with the
+  database's own `projects` row as a fallback. macOS refuses to list the Trash
+  without Full Disk Access, so it tries the names Finder gives (`.ade`,
+  `.ade 2`, …). Restoring merges into any `.ade` that reappeared meanwhile:
+  ADE writes some files (machine keys, for one) while the data is gone, so on
+  a clash the original wins and the newer file goes to the Trash as
+  `<name>.created-while-missing`. Nothing is deleted.
+- The screen keeps checking, so putting the folder back by hand reopens the
+  project.
+- **Start fresh** (or **Use this copy** for a swapped database) closes the
+  project, has the background service drop it, clears the marker, and reopens
+  with new data. The old data stays wherever it went.
 
 ## Source file map
 

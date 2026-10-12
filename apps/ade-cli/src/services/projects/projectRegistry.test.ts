@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ProjectRegistry,
-  assertRegisteredProjectDataAvailable,
   deriveProjectId,
   isDisallowedProjectRoot,
 } from "./projectRegistry";
@@ -55,8 +54,8 @@ describe("ProjectRegistry", () => {
     fs.renameSync(source, saved);
     // Re-read from disk as a restarted brain would.
     const restarted = new ProjectRegistry(layout);
-    expect(() => assertRegisteredProjectDataAvailable(restarted.get(record.projectId))).toThrow(/Restore the original/);
-    expect(() => restarted.add(projectRoot)).toThrow(/Restore the original/);
+    expect(() => restarted.assertProjectDataAvailable(restarted.get(record.projectId))).toThrowError(expect.objectContaining({ code: "project_data_missing" }));
+    expect(() => restarted.add(projectRoot)).toThrowError(expect.objectContaining({ code: "project_data_missing" }));
     expect(fs.existsSync(source)).toBe(false);
     fs.renameSync(saved, source);
     expect(() => restarted.add(projectRoot)).not.toThrow();

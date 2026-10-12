@@ -12,7 +12,9 @@ import {
   type RepairStepResult,
 } from "../../../shared/types/recovery";
 import { useAppStore } from "../../state/appStore";
+import { isWindowsPlatform } from "../../lib/windowsBetaNotice";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { confirmDialog } from "../ui/dialog";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import {
   ERROR_BODY,
@@ -48,7 +50,28 @@ type DiagnosisState = ProjectRecoveryDiagnosis["state"];
  * only has to watch: a booting brain, and a brain macOS will start the moment
  * "Allow in the Background" is switched back on.
  */
-const WATCHED_STATES: ReadonlySet<DiagnosisState> = new Set(["brain_starting", "background_blocked"]);
+const WATCHED_STATES: ReadonlySet<DiagnosisState> = new Set([
+  "brain_starting",
+  "background_blocked",
+  // The person may put the folder back by hand; open the project when they do.
+  "data_missing",
+  "data_replaced",
+]);
+
+/** What a person does to put a deleted or moved .ade folder back by hand. */
+function putBackSteps(windows: boolean): readonly string[] {
+  return windows
+    ? [
+        "Open the Recycle Bin, find the folder named .ade, and choose Restore.",
+        "If you moved it, move it back into the project folder.",
+        "ADE notices and opens the project.",
+      ]
+    : [
+        "Open the Trash, find the folder named .ade, and choose Put Back. It's hidden: press Command-Shift-Period in the Trash to see it.",
+        "If you moved it, move it back into the project folder.",
+        "ADE notices and opens the project.",
+      ];
+}
 
 /** Without Restart ADE, two failed fixes in a row hand the lead to Reset. */
 const FAILURES_BEFORE_RESET_LEADS = 2;
@@ -67,6 +90,9 @@ const RUNG_HINT = {
   restart: "Quits and reopens ADE.",
   reset: "Removes everything ADE put on this computer. Your code stays.",
   report: "Sends ADE what went wrong and gives you a reference.",
+  restore: "Moves this project's .ade folder back from the Trash.",
+  startFresh: "Opens the project with new ADE data. The old lanes and chat history won't come back.",
+  useCopy: "Reopens the project with the .ade folder that's there now.",
 } as const;
 
 /**
@@ -286,6 +312,7 @@ export function ProjectRecoveryScreen() {
     if (!rootPath || phase === "repairing" || repairInFlightRef.current) return;
     repairInFlightRef.current = true;
     reopenStartedRef.current = false;
+    setDataActionLabel(null);
     setReport(null);
     setRevealed(0);
     setLiveSteps([]);
@@ -382,6 +409,70 @@ export function ProjectRecoveryScreen() {
     });
   }, [rootPath, switchProjectToPath]);
 
+  // Restoring the folder, or starting fresh, ends like a successful fix: the
+  // success card, then the project reopens.
+  const [dataActionLabel, setDataActionLabel] = useState<string | null>(null);
+  // A restore's own plain-words reason it could not finish. Raw errors stay
+  // in the technical fold, like a failed fix's.
+  const [dataFailureReason, setDataFailureReason] = useState<string | null>(null);
+  const runDataAction = useCallback(async (label: string, action: () => Promise<{ ok: boolean; reason?: string }>) => {
+    if (!rootPath || repairInFlightRef.current) return;
+    repairInFlightRef.current = true;
+    setDataActionLabel(label);
+    setDataFailureReason(null);
+    reopenStartedRef.current = false;
+    setReport(null);
+    setRepairError(null);
+    setPhase("repairing");
+    try {
+      const result = await action();
+      if (result.ok) {
+        setPhase("success");
+      } else {
+        setDataFailureReason(result.reason ?? null);
+        setFailedFixes((count) => count + 1);
+        setPhase("failure");
+      }
+    } catch (error) {
+      setRepairError(error instanceof Error ? error.message : String(error));
+      setFailedFixes((count) => count + 1);
+      setPhase("failure");
+    } finally {
+      repairInFlightRef.current = false;
+    }
+  }, [rootPath]);
+
+  const restoreData = useCallback(() => {
+    const restore = window.ade?.recovery?.restoreProjectData;
+    if (!rootPath || !restore) return;
+    void runDataAction("Putting the folder back", async () => {
+      const result = await restore(rootPath);
+      return result.restored ? { ok: true } : { ok: false, reason: result.reason };
+    });
+  }, [rootPath, runDataAction]);
+
+  const startFresh = useCallback(async (confirm: boolean) => {
+    const start = window.ade?.recovery?.startFresh;
+    if (!rootPath || !start) return;
+    if (confirm && !(await confirmDialog({
+      title: "Start fresh?",
+      message: "ADE opens this project with new ADE data. Your code and git history stay as they are, but the lanes and chat history ADE had for this project won't come back.",
+      confirmLabel: "Start fresh",
+      destructive: true,
+    }))) return;
+    void runDataAction("Opening the project with new ADE data", async () => {
+      await start(rootPath);
+      // Starting fresh closes the project, which can take this screen down
+      // with it; reopen from here rather than from the success card.
+      reopenStartedRef.current = true;
+      clearRestartStamp();
+      void switchProjectToPath(rootPath).catch(() => {
+        reopenStartedRef.current = false;
+      });
+      return { ok: true };
+    });
+  }, [rootPath, runDataAction, switchProjectToPath]);
+
   const onRestart = useCallback(() => {
     setRestartFailed(false);
     void restartAde().then((started) => {
@@ -406,6 +497,12 @@ export function ProjectRecoveryScreen() {
   const isFailure = phase === "failure";
   const repairOffered = canAutoRepair && !starting;
   const storageRelevant = state === "disk_full" || state === "insufficient_headroom";
+  const dataMissing = state === "data_missing";
+  const dataReplaced = state === "data_replaced";
+  const dataState = dataMissing || dataReplaced;
+  const restoreAvailable = dataMissing && diagnosis?.restoreAvailable === true
+    && typeof window.ade?.recovery?.restoreProjectData === "function";
+  const startFreshAvailable = typeof window.ade?.recovery?.startFresh === "function";
   const restartAvailable = canRestartAde();
   // Report issue renders nothing on a preload without the diagnostics bridge;
   // its hint must not be left standing alone.
@@ -431,7 +528,9 @@ export function ProjectRecoveryScreen() {
     ? report.steps.slice(0, isRepairing ? revealed : undefined)
     : liveSteps;
   // What the fix is doing right now: the step after the last finished one.
-  const activeStepLabel = isRepairing && !report
+  const activeStepLabel = isRepairing && dataActionLabel
+    ? dataActionLabel
+    : isRepairing && !report
     ? (liveSteps.length ? REPAIR_STEP_LABELS[liveSteps.length] ?? null : REPAIR_STEP_LABELS[0])
     : null;
 
@@ -440,7 +539,9 @@ export function ProjectRecoveryScreen() {
     ? (failedStep ? FAILED_STEP_HEADLINE[failedStep] : "That didn't fix it")
     : copy.headline;
   const heroBody = isFailure
-    ? (report?.nextAction ?? "ADE tried, but the problem is still there. Nothing was removed.")
+    ? (report?.nextAction
+      ?? (dataState ? dataFailureReason : null)
+      ?? "ADE tried, but the problem is still there. Nothing was removed.")
     : copy.body;
 
   // Which rung leads, i.e. gets the one filled button. A failed fix climbs to
@@ -454,7 +555,20 @@ export function ProjectRecoveryScreen() {
 
   // The state's own first rung: what fixes this particular problem.
   let firstRung: { label: string; hint: string; onClick: () => void } | null = null;
-  if (backgroundBlocked) {
+  // The data states' own second rung: start over without the old data.
+  let freshRung: { label: string; hint: string; onClick: () => void } | null = null;
+  if (dataState) {
+    if (restoreAvailable) {
+      firstRung = { label: isFailure ? "Try again" : "Restore it", hint: RUNG_HINT.restore, onClick: restoreData };
+    } else if (dataMissing && rootPath) {
+      firstRung = { label: "Try again", hint: RUNG_HINT.retry, onClick: reopenProject };
+    }
+    if (startFreshAvailable) {
+      freshRung = dataReplaced
+        ? { label: "Use this copy", hint: RUNG_HINT.useCopy, onClick: () => void startFresh(false) }
+        : { label: "Start fresh", hint: RUNG_HINT.startFresh, onClick: () => void startFresh(true) };
+    }
+  } else if (backgroundBlocked) {
     firstRung = { label: "Open System Settings", hint: RUNG_HINT.settings, onClick: openBackgroundSettings };
   } else if (repairOffered) {
     firstRung = { label: isFailure ? "Try again" : "Fix it", hint: RUNG_HINT.fix, onClick: () => void runRepair() };
@@ -498,6 +612,9 @@ export function ProjectRecoveryScreen() {
           {/* What the person does themselves, in order. Only real chores. */}
           {!isSuccess && !isRepairing && !isFailure && !starting && copy.steps ? (
             <DoTheseSteps steps={copy.steps} />
+          ) : null}
+          {dataMissing && !restoreAvailable && !isSuccess && !isRepairing ? (
+            <DoTheseSteps steps={putBackSteps(isWindowsPlatform())} />
           ) : null}
 
           {/* Fix progress, or the checklist of a fix that did not work. */}
@@ -547,6 +664,20 @@ export function ProjectRecoveryScreen() {
                     failed={isFailure && repairOffered}
                   />
                 ) : null}
+                {freshRung ? (
+                  <Rung
+                    control={(
+                      <button
+                        type="button"
+                        onClick={freshRung.onClick}
+                        className={!firstRung && firstRungLeads ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON}
+                      >
+                        {freshRung.label}
+                      </button>
+                    )}
+                    hint={freshRung.hint}
+                  />
+                ) : null}
                 {storageRelevant && !isFailure ? (
                   <Rung
                     control={(
@@ -583,6 +714,13 @@ export function ProjectRecoveryScreen() {
                   hint={RUNG_HINT.reset}
                 />
               </ul>
+
+              {dataMissing && !isFailure ? (
+                <p className="mt-4 flex items-center gap-2 text-[12px] text-(color:--kit-text-3)">
+                  {SPINNER}
+                  Watching for the folder. ADE opens the project as soon as it's back.
+                </p>
+              ) : null}
 
               {backgroundBlocked ? (
                 <p className="mt-4 flex items-center gap-2 text-[12px] text-(color:--kit-text-3)">

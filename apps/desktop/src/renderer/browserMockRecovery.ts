@@ -43,6 +43,8 @@ const STATE_CODE: Partial<Record<RecoveryState, AdeRecoveryErrorCode>> = {
   insufficient_headroom: "insufficient_headroom",
   db_repair_needed: "db_integrity",
   storage_unreadable: "storage_read_failed",
+  data_missing: "project_data_missing",
+  data_replaced: "db_path_changed",
   brain_not_installed: "brain_not_installed",
   brain_crash_looping: "brain_crash_looping",
   brain_not_running: "brain_not_running",
@@ -167,6 +169,7 @@ export function createBrowserMockRecoveryBridges(): Record<string, unknown> {
       headline: copy.headline,
       body: copy.body,
       canAutoRepair: copy.canAutoRepair,
+      ...(current === "data_missing" ? { restoreAvailable: true } : {}),
       technicalDetail: mockTechnicalDetail(current),
     };
   };
@@ -228,6 +231,17 @@ export function createBrowserMockRecoveryBridges(): Record<string, unknown> {
         return { opened: true };
       },
       onRepairStep: () => () => {},
+      restoreProjectData: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        current = "healthy";
+        return { restored: true as const };
+      },
+      startFresh: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        current = "healthy";
+      },
+      onProjectDataMissing: () => () => {},
+      takeStartupProjectDataMissing: async () => null,
     },
     machineReset: {
       plan: async () => {

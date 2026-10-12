@@ -112,6 +112,14 @@ export const IPC = {
   recoveryRepairStep: "ade.recovery.repairStep",
   /** Open System Settings at Login Items, where "Allow in the Background" lives (macOS). */
   recoveryOpenBackgroundSettings: "ade.recovery.openBackgroundSettings",
+  /** Put a project's trashed .ade folder back. */
+  recoveryRestoreProjectData: "ade.recovery.restoreProjectData",
+  /** Let a project whose ADE data is gone open with new data. */
+  recoveryStartFresh: "ade.recovery.startFresh",
+  /** Main → renderer: an open project's .ade folder or database was moved or deleted. */
+  recoveryProjectDataMissing: "ade.recovery.projectDataMissing",
+  /** The project ADE tried to reopen at launch, when its ADE data was missing. Read once. */
+  recoveryTakeStartupProjectDataMissing: "ade.recovery.takeStartupProjectDataMissing",
   /** The hard reset's plan: every project, lane and machine item it would remove. */
   machineResetPlan: "ade.machineReset.plan",
   /** Hand the hard reset to a detached engine process, then quit. */

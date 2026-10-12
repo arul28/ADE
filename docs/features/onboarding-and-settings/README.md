@@ -41,11 +41,17 @@ per project root on first project-scoped JSON-RPC call, and is the
 single runtime through which desktop, `ade code`, and SSH-attached
 desktops see live lanes, agent chats, and work sessions.
 
-Registered local projects retain a machine-local record that their database has
-been initialized. If their `.ade` folder disappears, or an initialized database
-is missing, project registration and open stop before creating replacement
-state. Restore the original `.ade` folder from Trash or backup and reopen the
-project. Fresh project registration still creates its first database normally.
+Each local project this machine has opened gets a marker file under
+`~/.ade/project-data/<projectId>.initialized` holding the database file's
+device and inode. It lives outside `projects.json` because an older ADE that
+rewrites that file drops fields it does not know. If a registered project's
+`.ade` folder disappears, or a database the marker records is missing,
+registration and open stop with `project_data_missing` before creating
+replacement state, and the desktop shows the project recovery screen
+(`data_missing`): Restore it (when the folder is in the Trash), steps to put it
+back by hand (the screen reopens the project when it returns), or Start fresh.
+Start fresh and removing a project from recents clear the marker. Fresh project
+registration still creates its first database normally.
 
 ## Source file map
 

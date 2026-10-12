@@ -6,6 +6,10 @@ export const ADE_RECOVERY_ERROR_CODES = [
   "migration_unknown_state",
   /** The data files exist but the filesystem refuses to read them. */
   "storage_read_failed",
+  /** ADE opened this project's data before, and its .ade folder or database is gone. */
+  "project_data_missing",
+  /** The open database was moved or replaced while ADE was using it. */
+  "db_path_changed",
   "brain_not_installed",
   "brain_crash_looping",
   /** macOS loaded the launch agent but "Allow in the Background" is off for ADE. */
@@ -55,6 +59,16 @@ export type ProjectRecoveryDiagnosis = {
      * the fix is to move the folder.
      */
     | "storage_unreadable"
+    /**
+     * The project's .ade folder or its database was moved or deleted. Nothing
+     * is repaired automatically: the person puts it back, or starts fresh.
+     */
+    | "data_missing"
+    /**
+     * A different database appeared where the open one was. ADE never adopts
+     * it on its own; the person chooses to use it.
+     */
+    | "data_replaced"
     | "brain_crash_looping"
     | "brain_not_installed"
     /**
@@ -82,8 +96,12 @@ export type ProjectRecoveryDiagnosis = {
   requiresFreeSpaceBytes?: number;
   freeBytes?: number;
   lastFailure?: AdeLastFailureReport;
+  /** `data_missing` only: ADE found this project's data in the Trash and can put it back. */
+  restoreAvailable?: boolean;
   technicalDetail: string;
 };
+
+export type ProjectDataRestoreResult = { restored: true } | { restored: false; reason: string };
 
 export type RepairStepId =
   | "check_space"
@@ -167,6 +185,16 @@ export const RECOVERY_COPY: Record<RecoveryState, {
       "Move the project folder to a normal folder on this computer.",
       "Then choose Try again.",
     ],
+  },
+  data_missing: {
+    headline: "ADE's data for this project is missing",
+    body: "Your code is safe. ADE keeps this project's lanes and chat history in a hidden folder named .ade, and it was moved or deleted.",
+    canAutoRepair: false,
+  },
+  data_replaced: {
+    headline: "ADE's data for this project was swapped out",
+    body: "Your code is safe. The hidden .ade folder ADE was using was replaced by another copy while ADE was open.",
+    canAutoRepair: false,
   },
   brain_not_installed: {
     headline: "ADE's background service is missing",
@@ -285,6 +313,8 @@ export function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnos
     case "migration_incomplete":
     case "migration_unknown_state": return "db_repair_needed";
     case "storage_read_failed": return "storage_unreadable";
+    case "project_data_missing": return "data_missing";
+    case "db_path_changed": return "data_replaced";
     case "brain_crash_looping": return "brain_crash_looping";
     case "brain_not_installed": return "brain_not_installed";
     case "background_item_blocked": return "background_blocked";

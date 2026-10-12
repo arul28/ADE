@@ -29,6 +29,7 @@ import { LeftoverWorktreeDialogHost } from "../lanes/LeftoverWorktreeDialogHost"
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
+import { RECOVERY_COPY } from "../../../shared/types/recovery";
 import { ProjectHostRecoveryScreen, ProjectHostStartingBanner } from "./ProjectHostRecoveryScreen";
 import { PageErrorBoundary } from "./PageErrorBoundary";
 import { ProjectSidebar } from "./projectSidebar/ProjectSidebar";
@@ -686,6 +687,32 @@ function ProjectTabHost() {
   const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
+  // The project's .ade folder or database disappeared (or was swapped) while
+  // it was open: show the recovery screen instead of letting every panel fail.
+  React.useEffect(() => {
+    void window.ade?.recovery?.takeStartupProjectDataMissing?.().then((projectRoot) => {
+      if (!projectRoot || useAppStore.getState().projectTransitionError) return;
+      useAppStore.setState({
+        projectTransitionError: {
+          message: RECOVERY_COPY.data_missing.headline,
+          code: "project_data_missing",
+          rootPath: projectRoot,
+        },
+      });
+    }).catch(() => undefined);
+  }, []);
+  React.useEffect(() => window.ade?.recovery?.onProjectDataMissing?.(({ projectRoot, status }) => {
+    const state = useAppStore.getState();
+    if (state.project?.rootPath !== projectRoot || state.projectTransitionError) return;
+    const recoveryState = status === "replaced" ? "data_replaced" : "data_missing";
+    useAppStore.setState({
+      projectTransitionError: {
+        message: RECOVERY_COPY[recoveryState].headline,
+        code: status === "replaced" ? "db_path_changed" : "project_data_missing",
+        rootPath: projectRoot,
+      },
+    });
+  }), []);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots ?? EMPTY_PROJECT_TAB_ROOTS);
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot ?? EMPTY_PROJECT_INFO_BY_ROOT);

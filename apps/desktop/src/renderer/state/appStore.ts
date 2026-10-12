@@ -1844,6 +1844,8 @@ const RECOVERY_MESSAGE_BY_CODE: Partial<Record<AdeRecoveryErrorCode, string>> = 
   brain_not_running: "ADE's background service didn't start. Open the project to fix it.",
   socket_stale_no_owner: "ADE didn't close properly last time. Open the project to fix it.",
   socket_owned_by_other: "Another copy of ADE is open. Quit it, then try again.",
+  project_data_missing: "ADE's data for this project is missing. Open the project to restore it or start fresh.",
+  db_path_changed: "ADE's data for this project was swapped out. Open the project to choose what to use.",
 };
 
 const GENERIC_RECOVERY_MESSAGE = "ADE ran into a problem with this project.";

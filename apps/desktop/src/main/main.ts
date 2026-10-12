@@ -3182,10 +3182,60 @@ app.whenReady().then(async () => {
   // the verified restart sequence behind the Repair button, and the post-update
   // transaction below reuses it rather than growing a second restart path.
   // Sharing the instance also keeps its repair/restart mutual exclusion real.
+  // The database file each open project started with. A project whose file
+  // disappears or is swapped while open gets the recovery screen instead of
+  // every panel failing; restoring the same file clears it.
+  let startupProjectDataMissingRoot: string | null = null;
+  ipcMain.handle(IPC.recoveryTakeStartupProjectDataMissing, (): string | null => {
+    const root = startupProjectDataMissingRoot;
+    startupProjectDataMissingRoot = null;
+    return root;
+  });
+  const openProjectDataIdentity = new Map<string, { dev: bigint; ino: bigint; reported: "missing" | "replaced" | null }>();
+  const projectDataWatchTimer = setInterval(() => {
+    for (const root of openProjectDataIdentity.keys()) {
+      if (!projectContexts.get(root)?.project) openProjectDataIdentity.delete(root);
+    }
+    for (const [root, ctx] of projectContexts) {
+      if (!ctx.project) continue;
+      let current: fs.BigIntStats | null = null;
+      try {
+        current = fs.statSync(path.join(root, ".ade", "ade.db"), { bigint: true });
+      } catch {
+        current = null;
+      }
+      const known = openProjectDataIdentity.get(root);
+      if (!known) {
+        // Nothing to compare against until the project has a database.
+        if (current) openProjectDataIdentity.set(root, { dev: current.dev, ino: current.ino, reported: null });
+        continue;
+      }
+      const status = !current ? "missing" : current.dev !== known.dev || current.ino !== known.ino ? "replaced" : null;
+      if (status === known.reported) continue;
+      known.reported = status;
+      if (!status) continue;
+      localRuntimeLogger.warn("project.data_moved_while_open", { projectRoot: root, status });
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        try {
+          win.webContents.send(IPC.recoveryProjectDataMissing, { projectRoot: root, status });
+        } catch {
+          // A closing window has nothing to show it in.
+        }
+      }
+    }
+  }, 5_000);
+  projectDataWatchTimer.unref?.();
   const machineRecoveryService = createProjectRecoveryService({
     adeHome: machineAdeLayout.adeDir,
     logger: localRuntimeLogger,
     connectionPool: localRuntimePool,
+    openProjectDataStatus: (projectRoot) =>
+      openProjectDataIdentity.get(normalizeProjectRoot(projectRoot))?.reported ?? null,
+    closeProject: async (projectRoot) => {
+      openProjectDataIdentity.delete(normalizeProjectRoot(projectRoot));
+      await closeProjectByPath(projectRoot);
+    },
     // One call at the point the diagnosis is final. The service's own budget
     // makes a re-diagnosed screen cost nothing.
     onTerminalDiagnosis: ({ code, projectRoot }) => {
@@ -9340,7 +9390,12 @@ app.whenReady().then(async () => {
   if (shouldOpenStartupProject && startupProject.rootPath) {
     try {
       await switchProjectFromDialog(startupProject.rootPath);
-    } catch {
+    } catch (error) {
+      // The window asks for this once it loads and shows the recovery
+      // screen, instead of a bare welcome screen with no word of why.
+      if ((error as { code?: unknown })?.code === "project_data_missing") {
+        startupProjectDataMissingRoot = normalizeProjectRoot(startupProject.rootPath);
+      }
       setForegroundProject(null);
       replaceDormantContext();
     }

@@ -505,3 +505,8 @@ The representative query increases 7.75%. A trivial one-row KV read increases
 Checks run per operation to avoid a polling window that can write to a moved
 file. These service measurements do not establish Electron idle, GPU, typing,
 or memory numbers. Full desktop scenarios were not measured for this change.
+
+The desktop main process also stats each open project's `ade.db` once every
+5 seconds to show the recovery screen when the file disappears. That is one
+`stat` per open project per tick and no renderer work until it fires; it was
+not measured as a separate row.

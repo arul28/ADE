@@ -992,7 +992,8 @@ import { createLinearOAuthService, type LinearOAuthService } from "../cto/linear
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { LOCAL_RUNTIME_SYNC_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { createProjectRecoveryService, ProjectRecoveryService } from "../runtime/projectRecoveryService";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
+import type { ProjectDataRestoreResult, ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
+import { clearLocalProjectDatabaseInitialized } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
@@ -4841,6 +4842,15 @@ export function registerIpc({
     writeGlobalState(globalStatePath, next);
     clearRecentProjectSummaryCache();
     if (removed && !removed.remote) {
+      // Removing a project is the person's way to start over with it: adding
+      // it back no longer expects the old database. A project whose whole
+      // .ade folder is gone still opens on the recovery screen, where Start
+      // fresh is one click.
+      try {
+        clearLocalProjectDatabaseInitialized(removed.rootPath);
+      } catch {
+        // Best effort; the recovery screen still offers Start fresh.
+      }
       const catalogPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
       if (catalogPool) {
         try {
@@ -4964,6 +4974,24 @@ export function registerIpc({
         event.sender.send(IPC.recoveryRepairStep, { projectRoot, step });
       },
     });
+  });
+
+  ipcMain.handle(IPC.recoveryRestoreProjectData, async (_event, arg: { projectRoot: string }): Promise<ProjectDataRestoreResult> => {
+    const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!requested) throw new Error("Project root path is required.");
+    const projectRoot = resolveRequestedProjectRoot(requested);
+    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
+    if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
+    return await projectRecoveryService.restoreProjectData(projectRoot);
+  });
+
+  ipcMain.handle(IPC.recoveryStartFresh, async (_event, arg: { projectRoot: string }): Promise<void> => {
+    const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!requested) throw new Error("Project root path is required.");
+    const projectRoot = resolveRequestedProjectRoot(requested);
+    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
+    if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
+    await projectRecoveryService.startFresh(projectRoot);
   });
 
   // The one place "Allow in the Background" can be switched back on. Apple's
