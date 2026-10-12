@@ -699,6 +699,9 @@ describe("ProjectRecoveryService.restartBrain", () => {
 // Missing project data, end to end through the service: a real registry and
 // identity file under a temporary ADE home, and the Trash inside a temporary
 // home directory. Only the connection pool and the window close are faked.
+// Not on Windows: its Recycle Bin is `<drive>\$Recycle.Bin`, which a test
+// cannot place in a temporary folder; recycleBinRecord.test.ts pins its record
+// format.
 describe.skipIf(process.platform === "win32")("ProjectRecoveryService project data", () => {
   function machine() {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-data-"));
@@ -744,6 +747,17 @@ describe.skipIf(process.platform === "win32")("ProjectRecoveryService project da
       .toBe("key written meanwhile");
     expect(closeProject).toHaveBeenCalledWith(projectRoot);
     expect(connectionPool.removeProject).toHaveBeenCalledWith(projectRoot, record.projectId);
+  });
+
+  it("leaves no empty trashed folder behind when the restore needed no merge clashes", async () => {
+    const { trash, projectRoot, adeDir, service } = machine();
+    fs.renameSync(adeDir, path.join(trash, ".ade"));
+    // Only a folder git brought back; nothing clashes.
+    fs.mkdirSync(adeDir);
+
+    await expect(service.restoreProjectData(projectRoot)).resolves.toEqual({ restored: true });
+    expect(fs.readFileSync(path.join(adeDir, "ade.db"), "utf8")).toBe("original database");
+    expect(fs.existsSync(path.join(trash, ".ade"))).toBe(false);
   });
 
   it("starts fresh even when the background service keeps the project's record", async () => {

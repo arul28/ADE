@@ -4969,19 +4969,29 @@ export function registerIpc({
     action: "project_data_restore" | "project_data_start_fresh",
     outcome: "completed" | "failed",
   ) => {
-    productAnalyticsService?.capture({
-      event: "ade_feature_used",
-      surface: "desktop",
-      properties: { feature: "storage_doctor", action, outcome },
-      projectId: null,
-      dedupeKey: `${action}:${outcome}`,
-      minimumIntervalMs: 60 * 60 * 1_000,
-    });
+    try {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "storage_doctor", action, outcome },
+        projectId: null,
+        dedupeKey: `${action}:${outcome}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+    } catch {
+      // Counting a choice must never change its result.
+    }
   };
 
   ipcMain.handle(IPC.recoveryRestoreProjectData, async (_event, arg: { projectRoot: string }): Promise<ProjectDataRestoreResult> => {
     const { projectRoot, service } = recoveryTarget(arg);
-    const result = await service.restoreProjectData(projectRoot);
+    let result: ProjectDataRestoreResult;
+    try {
+      result = await service.restoreProjectData(projectRoot);
+    } catch (error) {
+      captureProjectDataRecovery("project_data_restore", "failed");
+      throw error;
+    }
     captureProjectDataRecovery("project_data_restore", result.restored ? "completed" : "failed");
     return result;
   });

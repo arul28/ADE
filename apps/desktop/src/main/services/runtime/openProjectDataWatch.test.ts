@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOpenProjectDataWatch } from "./openProjectDataWatch";
 
@@ -28,7 +29,7 @@ describe("createOpenProjectDataWatch", () => {
       stats(2n), // another file took its place
       errno("ENOTDIR"), // `.ade` became a file
     ];
-    vi.spyOn(fs.promises, "stat").mockImplementation((async () => {
+    const stat = vi.spyOn(fs.promises, "stat").mockImplementation((async () => {
       const next = ticks.shift();
       if (!next || next instanceof Error) throw next ?? errno("ENOENT");
       return next;
@@ -38,6 +39,7 @@ describe("createOpenProjectDataWatch", () => {
     const watch = createOpenProjectDataWatch({ openRoots: () => open, onChange });
 
     await vi.advanceTimersByTimeAsync(5_000 * 2);
+    expect(stat).toHaveBeenCalledWith(path.join("/projects/a", ".ade", "ade.db"), { bigint: true });
     expect(onChange).not.toHaveBeenCalled();
     expect(watch.problem("/projects/a")).toBeNull();
 

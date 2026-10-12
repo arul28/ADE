@@ -561,7 +561,7 @@ export class ProjectRecoveryService {
       return { restored: false, reason: "ADE couldn't find this project's data in the Trash anymore." };
     }
     try {
-      await restoreTrashedProjectData(source, target);
+      await restoreTrashedProjectData(source, target, this.deps.logger);
     } catch (error) {
       this.deps.logger.warn("project.data_restore_failed", { projectRoot: normalizedRoot, error: errorMessage(error) });
       return { restored: false, reason: "ADE couldn't move the folder back. Put it back from the Trash yourself, then choose Try again." };

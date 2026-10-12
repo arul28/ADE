@@ -179,6 +179,20 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it.each(["project_data_restore", "project_data_start_fresh"])("accepts the recovery screen's %s fact with only its coarse fields", (action) => {
+    const harness = makeHarness();
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "storage_doctor", action, outcome: "completed", root_path: "/Users/someone/project" },
+      projectId: null,
+      dedupeKey: `${action}:completed`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({ feature: "storage_doctor", action, outcome: "completed" });
+    expect(harness.messages[0]?.properties).not.toHaveProperty("root_path");
+  });
+
   it("accepts the connections brain_repair fact and strips anything beyond the coarse enums", () => {
     const harness = makeHarness();
     expect(harness.service.capture({

@@ -515,12 +515,16 @@ export function ProjectRecoveryScreen() {
     void runDataAction("Opening the project with new ADE data", async () => {
       await start(rootPath);
       // Starting fresh closes the project, which can take this screen down
-      // with it; reopen from here rather than from the success card.
+      // with it; reopen from here rather than from the success card, and only
+      // call it done once the project is open again.
       reopenStartedRef.current = true;
       clearRestartStamp();
-      void switchProjectToPath(rootPath).catch(() => {
+      try {
+        await switchProjectToPath(rootPath);
+      } catch {
         reopenStartedRef.current = false;
-      });
+        return { ok: false, reason: "ADE set up new data, but the project didn't open. Open it again from the project list." };
+      }
       return { ok: true };
     });
   }, [rootPath, runDataAction, switchProjectToPath]);

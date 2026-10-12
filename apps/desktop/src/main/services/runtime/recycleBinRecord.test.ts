@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { readRecycleBinOriginalPath, recycleBinDataName } from "./recycleBinRecord";
+import path from "node:path";
+import { readRecycleBinOriginalPath, recycleBinDataName, recycleBinRecordFor } from "./recycleBinRecord";
 
 const ORIGINAL = "C:\\Users\\ada\\Projects\\app\\.ade";
 
@@ -30,9 +31,10 @@ describe("readRecycleBinOriginalPath", () => {
     expect(readRecycleBinOriginalPath(input)).toBe(expected);
   });
 
-  it("pairs a record with the data item it describes", () => {
+  it("pairs a record and the data item it describes, both ways", () => {
     expect(recycleBinDataName("$IK7Q2ZX")).toBe("$RK7Q2ZX");
-    expect(recycleBinDataName("$RK7Q2ZX")).toBeNull();
     expect(recycleBinDataName("desktop.ini")).toBeNull();
+    expect(recycleBinRecordFor(path.join("bin", "$RK7Q2ZX"))).toBe(path.join("bin", "$IK7Q2ZX"));
+    expect(recycleBinRecordFor(path.join("trash", ".ade"))).toBeNull();
   });
 });

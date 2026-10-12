@@ -3773,7 +3773,7 @@ describe("projects.setIcon / projects.removeIcon", () => {
 
     await expect(
       handler({ jsonrpc: "2.0", id: 3, method, params: { rootPath: projectRoot, ...params } }),
-    ).rejects.toThrow("Project folder not found");
+    ).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidParams });
     expect(fs.existsSync(projectRoot)).toBe(false);
 
     handler.dispose();

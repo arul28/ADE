@@ -5,7 +5,7 @@ import { normalizeProjectRootPath } from "../../../../../ade-cli/src/services/pr
 import type { ProjectDatabaseIdentity } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { openReadonlyDatabase } from "../state/kvDb";
 import { pathsEqual } from "../shared/pathCompare";
-import { readRecycleBinOriginalPath, recycleBinDataName } from "./recycleBinRecord";
+import { readRecycleBinRecordFile, recycleBinDataName, recycleBinRecordFor } from "./recycleBinRecord";
 
 /**
  * Finding a project's `.ade` folder in the Trash and putting it back. Plain
@@ -25,39 +25,41 @@ function listDir(dir: string): string[] | null {
 }
 
 /**
- * Where a deleted `.ade` for this project could be. macOS and Linux name it
- * `.ade` (or `.ade 2`…) in the home Trash; macOS refuses to list the Trash
- * without Full Disk Access but still opens a path it is given, so the Finder
- * names are tried then. Windows keeps it as `$R…` in the drive's Recycle Bin,
- * found through the `$I…` record that names the original path.
+ * macOS and Linux name a deleted `.ade` `.ade` (or `.ade 2`…) in the home
+ * Trash. macOS refuses to list the Trash without Full Disk Access but still
+ * opens a path it is given, so the Finder names are tried then.
  */
-function trashCandidates(projectRoot: string): string[] {
-  if (process.platform === "win32") {
-    const recycleBin = path.join(path.parse(projectRoot).root, "$Recycle.Bin");
-    const original = path.join(projectRoot, ".ade");
-    const candidates: string[] = [];
-    // One folder per user SID; another user's is not readable and is skipped.
-    for (const sid of listDir(recycleBin) ?? []) {
-      const sidDir = path.join(recycleBin, sid);
-      for (const name of listDir(sidDir) ?? []) {
-        const dataName = recycleBinDataName(name);
-        if (!dataName) continue;
-        let record: Buffer;
-        try {
-          record = fs.readFileSync(path.join(sidDir, name));
-        } catch {
-          continue;
-        }
-        if (pathsEqual(readRecycleBinOriginalPath(record), original)) candidates.push(path.join(sidDir, dataName));
-      }
-    }
-    return candidates;
-  }
+function homeTrashCandidates(): string[] {
   const dir = process.platform === "darwin"
     ? path.join(os.homedir(), ".Trash")
     : path.join(process.env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local", "share"), "Trash", "files");
   const names = listDir(dir)?.filter((name) => name.startsWith(".ade")) ?? TRASHED_ADE_NAMES;
   return names.map((name) => path.join(dir, name));
+}
+
+/**
+ * Windows keeps a deleted `.ade` as `$R…` in its drive's Recycle Bin, found
+ * through the `$I…` record that names the original path. One folder per user
+ * SID; another user's is not readable and is skipped.
+ */
+function recycleBinCandidates(projectRoot: string): string[] {
+  const recycleBin = path.join(path.parse(projectRoot).root, "$Recycle.Bin");
+  const original = path.join(projectRoot, ".ade");
+  const candidates: string[] = [];
+  for (const sid of listDir(recycleBin) ?? []) {
+    const sidDir = path.join(recycleBin, sid);
+    for (const name of listDir(sidDir) ?? []) {
+      const dataName = recycleBinDataName(name);
+      if (dataName && pathsEqual(readRecycleBinRecordFile(path.join(sidDir, name)), original)) {
+        candidates.push(path.join(sidDir, dataName));
+      }
+    }
+  }
+  return candidates;
+}
+
+function trashCandidates(projectRoot: string): string[] {
+  return process.platform === "win32" ? recycleBinCandidates(projectRoot) : homeTrashCandidates();
 }
 
 /**
@@ -198,17 +200,52 @@ async function mergeEntries(source: string, target: string): Promise<void> {
   }
 }
 
-/** Puts a trashed `.ade` back at `target`, whole or merged into what is there. */
-export async function restoreTrashedProjectData(source: string, target: string): Promise<void> {
+/** Removes `dir` when it holds nothing but empty folders; true when it is gone. */
+function removeIfEmptyTree(dir: string): boolean {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return !fs.existsSync(dir);
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !removeIfEmptyTree(path.join(dir, entry.name))) return false;
+  }
+  try {
+    fs.rmdirSync(dir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Puts a trashed `.ade` back at `target`, whole or merged into what is there.
+ * Returns once the data is back; tidying the Trash afterwards is best effort.
+ */
+export async function restoreTrashedProjectData(
+  source: string,
+  target: string,
+  logger?: { warn: (event: string, data: Record<string, unknown>) => void },
+): Promise<void> {
   if (fs.existsSync(target)) {
     await mergeEntries(source, target);
   } else {
     await moveEntry(source, target);
   }
-  // A Recycle Bin item whose data went back leaves its `$I…` record behind;
-  // Explorer would list it as a deleted `.ade` that can no longer be restored.
-  const name = path.basename(source);
-  if (process.platform === "win32" && name.startsWith("$R") && !fs.existsSync(source)) {
-    fs.rmSync(path.join(path.dirname(source), `$I${name.slice(2)}`), { force: true });
+  // A merge empties the trashed folder without removing it. Once nothing is
+  // left in it, drop it and, on Windows, its `$I…` record: otherwise Explorer
+  // lists a deleted `.ade` whose restore would put back an empty folder. A
+  // folder still holding files (a preserved `.created-while-missing`, or a
+  // copy left on another volume) stays, record and all.
+  if (!removeIfEmptyTree(source)) return;
+  const record = process.platform === "win32" ? recycleBinRecordFor(source) : null;
+  if (!record) return;
+  try {
+    fs.rmSync(record, { force: true });
+  } catch (error) {
+    logger?.warn("project.data_restore_record_cleanup_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }

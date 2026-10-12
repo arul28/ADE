@@ -40,14 +40,14 @@ describe("ProjectRegistry", () => {
   });
 
   it.each([
-    ["folder", "brain"],
-    ["database", "brain"],
-    ["folder", "desktop"],
-    ["database", "desktop"],
+    ["folder", "brain", false],
+    ["database", "brain", false],
+    ["folder", "desktop", false],
+    ["database", "desktop", false],
     // An older ADE on the same machine rewrites projects.json with only the
     // fields it knows; the record that the database existed must survive.
-    ["database", "brain, then an older ADE rewrites projects.json"],
-  ])("blocks recreating initialized project data after losing its %s (%s) and accepts restoration", (missing, opener) => {
+    ["database", "brain", true],
+  ] as const)("blocks recreating initialized project data after losing its %s (%s, older ADE rewrote projects.json: %s) and accepts restoration", (missing, opener, olderAdeRewrites) => {
     const root = makeTempRoot();
     const projectRoot = path.join(root, "project");
     fs.mkdirSync(projectRoot);
@@ -64,7 +64,7 @@ describe("ProjectRegistry", () => {
     } else {
       registry.touch(record.projectId);
     }
-    if (opener.includes("older ADE")) {
+    if (olderAdeRewrites) {
       const file = JSON.parse(fs.readFileSync(layout.projectsPath, "utf8"));
       file.projects = file.projects.map((project: Record<string, unknown>) => ({
         projectId: project.projectId,

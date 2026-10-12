@@ -858,7 +858,7 @@ ade.recovery.*               # brain-independent project-open recovery: diagnose
                              # restoreProjectData / startFresh, projectDataStatus (no root:
                              # the project that failed to reopen at launch), and the push
                              # ade.recovery.projectDataMissing from the open-data watch.
-                             # All validate the renderer-supplied root against
+                             # Every renderer-supplied root is validated against
                              # services/ipc/knownProjectRoots.ts.
                              # See features/storage-and-recovery/README.md
 ade.diagnostics.*            # openIssue: assemble the redacted diagnostic report behind every
