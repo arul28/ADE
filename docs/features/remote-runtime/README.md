@@ -822,7 +822,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   current binding, tracks the newest open generation, waits for active remote
   opens before retrying read-only project calls, blocks mutating action/sync
   calls with the "Project is switching" error, and avoids refreshing a stale
-  runtime binding. Remote event polling suppresses buffered replay on the first
+  runtime binding. Read or write comes from each action's declaration in
+  `apps/desktop/src/shared/adeActionAccess.ts`, not from its name; chat reads
+  that must reach the chat's own host (drafts, thread comments) wait for the
+  switch to finish. Remote event polling suppresses buffered replay on the first
   live subscription, resets cursors on `eventEpoch` changes, notifies project
   refresh paths on `gap: true`, and backs off when idle; lane preview URLs
   returned by a remote runtime are localized through a local TCP forward before

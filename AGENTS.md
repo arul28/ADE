@@ -21,6 +21,8 @@ Day-to-day work follows a five-stage loop, each stage an agent-folder skill unde
 - **/test** — test steward: prune/consolidate/add + docs/mobile/CLI/TUI parity + CI-mirrored shards. Adds a test for a fixed bug only when no existing test would catch it, and never a tautological or change-detector test. Harvests the PR again before it finishes.
 - **/ship** — autonomous PR→merge loop (poll → fix → rebase → merge). It adopts the early PR with one round already fixed, so it mostly closes the PR out. After any ship-loop mutation it reruns commit-bound `/quality` revalidation on the delta only. Wraps `docs/playbooks/ship-lane.md`.
 
+Anything new must survive a project switch: declare each new runtime action `read` or `write` in `apps/desktop/src/shared/adeActionAccess.ts`, and make a surface that loads data say "couldn't load" with a retry, never a false empty state (`/quality` checks this: ADE review rule 4.5).
+
 The PR opens at the start of `/quality`, not at `/ship`. CI and the bots then work in parallel with quality and test, and each phase harvests their results (playbook: **Early PR and harvests**). Do not push while a review bot is in flight on the remote head — a push restarts Greptile.
 
 ### Running the dev app

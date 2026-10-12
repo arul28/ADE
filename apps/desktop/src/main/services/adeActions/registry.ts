@@ -2552,6 +2552,11 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       aiIntegrationService.deleteCursorCloudAgent(requireNonEmptyString(args?.agentId, "agentId")),
     getCursorCloudAgent: (args?: { agentId?: string }) =>
       aiIntegrationService.getCursorCloudAgent(requireNonEmptyString(args?.agentId, "agentId")),
+    getCursorAgentUsage: (args?: { agentId?: string; runId?: string | null }) =>
+      aiIntegrationService.getCursorAgentUsage({
+        agentId: requireNonEmptyString(args?.agentId, "agentId"),
+        ...(typeof args?.runId === "string" ? { runId: args.runId } : {}),
+      }),
     listCursorCloudArtifacts: async (args?: { agentId?: string }) => {
       const items = await aiIntegrationService.listCursorCloudArtifacts(requireNonEmptyString(args?.agentId, "agentId"));
       return items.map((entry) => ({

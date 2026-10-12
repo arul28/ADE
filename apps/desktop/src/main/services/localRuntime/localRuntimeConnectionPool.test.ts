@@ -33,7 +33,6 @@ import {
   defaultQueryServiceStatusAsync,
   isLocalChannelBuildOutputPath,
   isLocalRuntimeConnectionDropped,
-  isRetryableReadAction,
   localReleaseBuildOutputRuntimeBlock,
   LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE,
   LocalRuntimeConnectionPool,
@@ -4284,27 +4283,6 @@ describe("local runtime action retry classification", () => {
     expect(isLocalRuntimeConnectionDropped(new Error("Local ADE service action failed: ECONNRESET"))).toBe(false);
   });
 
-  it("only retries idempotent read actions, never mutations", () => {
-    // Reads — safe to retry after a connection drop.
-    expect(isRetryableReadAction("lane", "list")).toBe(true);
-    expect(isRetryableReadAction("lane", "listSnapshots")).toBe(true);
-    expect(isRetryableReadAction("diff", "getChanges")).toBe(true);
-    expect(isRetryableReadAction("diff", "getFilePatch")).toBe(true);
-    expect(isRetryableReadAction("file", "readFile")).toBe(true);
-    expect(isRetryableReadAction("chat", "getChatEventHistory")).toBe(true);
-    expect(isRetryableReadAction("file", "quickOpen")).toBe(true);
-
-    // Mutations — must NOT be retried (a retry could re-run the side effect).
-    expect(isRetryableReadAction("lane", "delete")).toBe(false);
-    expect(isRetryableReadAction("lane", "create")).toBe(false);
-    expect(isRetryableReadAction("lane", "archive")).toBe(false);
-    expect(isRetryableReadAction("file", "writeTextAtomic")).toBe(false);
-    expect(isRetryableReadAction("chat", "sendMessage")).toBe(false);
-    expect(isRetryableReadAction("pr", "merge")).toBe(false);
-    // Prefix must respect a camelCase boundary, not arbitrary substrings.
-    expect(isRetryableReadAction("lane", "getaway")).toBe(false);
-    expect(isRetryableReadAction("lane", "listenStop")).toBe(false);
-  });
 });
 
 describe("service health probe never blocks the main thread", () => {

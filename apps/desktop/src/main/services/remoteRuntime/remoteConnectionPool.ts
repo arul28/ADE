@@ -25,7 +25,7 @@ import {
 import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
-import { isRetryableRemoteAction } from "./retryableRemoteActions";
+import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
@@ -237,7 +237,7 @@ const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapabi
 function shouldRetryRemoteRuntimeAction(
   request: RemoteRuntimeActionRequest,
 ): boolean {
-  return isRetryableRemoteAction(request.domain, request.action);
+  return isReplaySafeAdeAction(request.domain, request.action);
 }
 
 function remoteRuntimeActionCallOptions(

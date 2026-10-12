@@ -166,7 +166,7 @@ import type {
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
 } from "../shared/types";
-import { THREAD_COMMENT_ACTION_NAMES } from "../shared/threadComments";
+import { adeActionAccess } from "../shared/adeActionAccess";
 import type {
   ChatThreadComment,
   ChatThreadCommentCreateArgs,
@@ -1498,6 +1498,8 @@ let projectBindingGeneration = 0;
 let projectBindingVersion = 0;
 let projectBindingRefreshPromise: Promise<OpenProjectBinding | null> | null = null;
 let projectRuntimeTransitionDepth = 0;
+/** Released when the outermost project transition ends. */
+let projectRuntimeTransitionSettled: { promise: Promise<void>; release: () => void } | null = null;
 let activeRemoteProjectOpenPromise: Promise<OpenProjectBinding> | null = null;
 /**
  * Kind of the binding this window was attached to when the in-flight project
@@ -1517,6 +1519,34 @@ let lastProjectRuntimeBindingKind: OpenProjectBinding["kind"] | null = null;
 const projectBindingChangedCallbacks = new Set<
   (binding: OpenProjectBinding | null) => void
 >();
+
+/**
+ * How long a read that must reach its own machine waits out a project switch.
+ * A switch that takes longer than this is stuck, and the read says so.
+ */
+const PROJECT_SWITCH_READ_WAIT_MS = 60_000;
+
+/**
+ * Resolve once no project transition is in flight; immediately when none is.
+ * A second switch that starts as the first ends is waited out too, all within
+ * one deadline.
+ */
+async function waitForProjectRuntimeTransitionToSettle(): Promise<void> {
+  if (!projectRuntimeTransitionSettled) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(projectSwitchingError("reading project state"));
+    }, PROJECT_SWITCH_READ_WAIT_MS);
+  });
+  try {
+    while (projectRuntimeTransitionSettled) {
+      await Promise.race([projectRuntimeTransitionSettled.promise, deadline]);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * The binding the renderer has been told about, as `kind:key`.
@@ -1739,9 +1769,7 @@ async function callRemoteProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
-    return { handled: false };
-  }
+  assertWritesAllowedDuringProjectSwitch(domain, action);
   const binding = await getRemoteProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
@@ -1877,9 +1905,7 @@ async function callLocalProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
-    return { handled: false };
-  }
+  assertWritesAllowedDuringProjectSwitch(domain, action);
   const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
@@ -1894,9 +1920,7 @@ async function callLocalProjectActionStrictIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
-    return { handled: false };
-  }
+  assertWritesAllowedDuringProjectSwitch(domain, action);
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
@@ -1906,88 +1930,15 @@ async function callLocalProjectActionStrictIfBound<T>(
   return { handled: true, result: response.result as T };
 }
 
-// Chat actions that mutate runtime state. Only these are gated by the
-// project-transition guard. Most read-only chat queries (e.g. `listSessions`,
-// `getSessionSummary`, `getChatEventHistory`) fall through to IPC while a
-// project switch is in flight so the UI can keep rendering. Machine
-// inventories (`modelCatalog`, `getAvailableModels`) stay on the runtime —
-// Electron's in-process registry is not that machine's OpenCode list.
-const MUTATING_CHAT_ACTIONS = new Set<string>([
-  "sendMessage",
-  "startLaunch",
-  "cancelLaunch",
-  "retryLaunch",
-  "startLaunchNow",
-  "queueLaunchMessage",
-  "completeLaunchClient",
-  "respondToInput",
-  "dismissPendingInput",
-  "approveToolUse",
-  "interrupt",
-  "stopTask",
-  "restartSession",
-  "restoreCancelledQueue",
-  "recoverTurn",
-  "recoverCodexTurn",
-  "resolveUnprocessedMessage",
-  "recoverContinuity",
-  "steer",
-  "cancelSteer",
-  "editSteer",
-  "moveSteer",
-  "dispatchSteer",
-  "cancelDispatchedSteer",
-  "createSession",
-  "regenerateSessionMetadata",
-  "archiveSession",
-  "unarchiveSession",
-  "deleteSession",
-  "updateSession",
-  "handoffSession",
-  "prepareCrossMachineHandoff",
-  "validateCrossMachineSource",
-  "markCrossMachineHandoff",
-  "startCrossMachineHandoff",
-  "cancelCrossMachineHandoff",
-  "retryCrossMachineHandoff",
-  "resolveCrossMachineHandoffApproval",
-  "acknowledgeCrossMachineHandoff",
-  "launchCli",
-  "launchHeadless",
-  "setClaudeOutputStyle",
-  "reloadClaudePlugins",
-  "setParallelLaunchState",
-  "createScheduledWork",
-  "cancelScheduledWork",
-  "resumeUsageLimitNow",
-  "continueUsageLimitOnAlternate",
-  "switchAccount",
-  "setScheduledWorkPaused",
-  "ensureCtoSession",
-  "warmupModel",
-  "rewindFiles",
-  "saveTempAttachment",
-  "copyTempAttachment",
-  "setCodexGoal",
-  "setCodexGoalStatus",
-  "clearCodexGoal",
-  "startCodexRealtime",
-  "stopCodexRealtime",
-  "getCodexRealtimeState",
-  "resetCodexMemory",
-  "terminateCodexBackgroundTerminal",
-  // Private draft state must never fall through to the process-global IPC
-  // database while the owning project binding is changing.
+// Chat reads that must answer from the chat's own machine. Falling through to
+// this window's IPC during a project switch would read the process-global
+// database (private drafts, thread comments, a realtime session) of whatever
+// machine the window happens to be, so they wait for the switch instead.
+const CHAT_HOST_READS = new Set<string>([
   "listDrafts",
-  "createDraft",
-  "updateDraft",
-  "claimDraft",
-  "deleteDraft",
-  // Delivering a send writes the row's status; it is a draft write like the rest.
-  "sendDraftNow",
-  // Thread comments live on the chat's host; a write that fell through to this
-  // window's process during a project switch would land on the wrong machine.
-  ...THREAD_COMMENT_ACTION_NAMES,
+  "getDraft",
+  "listThreadComments",
+  "getCodexRealtimeState",
 ]);
 
 // Live model inventories (OpenCode, ollama, LM Studio, cursor-agent) are facts
@@ -1997,31 +1948,6 @@ const MACHINE_INVENTORY_CHAT_ACTIONS = new Set<string>([
   "modelCatalog",
   "getAvailableModels",
   "getLaunchDefaults",
-]);
-
-const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
-  "diagnosticsGet",
-  "get",
-  "list",
-  "oauthGet",
-  "oauthList",
-  "portList",
-  "proxyGet",
-  "read",
-  "search",
-] as const;
-
-const READ_ONLY_RUNTIME_ACTIONS = new Set([
-  "chat.codexFuzzyFileSearch",
-  "chat.fileSearch",
-  "chat.listMentionSuggestions",
-  "chat.modelCatalog",
-  "chat.resolveSmartLinkPreview",
-  "chat.resolveSourceFavicons",
-  "file.quickOpen",
-  "ios_simulator.resolvePreviewMatch",
-  "terminal.activeForChat",
-  "terminal.preview",
 ]);
 
 const MUTATING_SYNC_METHODS = new Set([
@@ -2041,44 +1967,30 @@ const MUTATING_SYNC_METHODS = new Set([
   "modelPicker.pushRecent",
 ]);
 
-const PROJECT_SWITCHING_MESSAGE =
-  "Project is switching. Wait for the current project to finish loading before changing project state.";
+/** "Project is switching", finished with what the caller was doing. */
+function projectSwitchingError(doing: string): Error {
+  return new Error(`Project is switching. Wait for the current project to finish loading before ${doing}.`);
+}
 
 let openRemoteProjectGeneration = 0;
 let activeRemoteProjectOpenGeneration: number | null = null;
 const MAX_REMOTE_PROJECT_OPEN_REBIND_ATTEMPTS = 5;
 
-function isReadOnlyRuntimeAction(domain: string, action: string): boolean {
-  const key = `${domain}.${action}`;
-  if (READ_ONLY_RUNTIME_ACTIONS.has(key)) return true;
-  return READ_ONLY_RUNTIME_ACTION_PREFIXES.some(
-    (prefix) =>
-      action === prefix ||
-      (action.startsWith(prefix) && /^[A-Z]/.test(action.slice(prefix.length))),
-  );
-}
-
+/**
+ * Whether a runtime action may change project state, from the table each action
+ * declares itself in. An action the table does not know is treated as a write:
+ * refusing a read during a switch is a visible error, while letting a write
+ * through can land it on the wrong project.
+ */
 function isMutatingRuntimeAction(domain: string, action: string): boolean {
-  if (domain === "chat") return MUTATING_CHAT_ACTIONS.has(action);
-  return !isReadOnlyRuntimeAction(domain, action);
+  return adeActionAccess(domain, action) !== "read";
 }
 
-function assertProjectRuntimeNotTransitioningForMutation(label: string): void {
-  if (projectRuntimeTransitionDepth > 0) {
-    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+/** Refuse a write to the active binding while a project switch is in flight. */
+function assertWritesAllowedDuringProjectSwitch(domain: string, action: string): void {
+  if (projectRuntimeTransitionDepth > 0 && isMutatingRuntimeAction(domain, action)) {
+    throw projectSwitchingError(domain === "chat" ? "sending chat messages" : "changing project state");
   }
-}
-
-function shouldBypassProjectRuntimeDuringTransition(domain: string, action: string): boolean {
-  if (projectRuntimeTransitionDepth <= 0) return false;
-  if (isMutatingRuntimeAction(domain, action)) {
-    const label =
-      domain === "chat" && MUTATING_CHAT_ACTIONS.has(action)
-        ? "sending chat messages"
-        : "changing project state";
-    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
-  }
-  return false;
 }
 
 async function waitForRemoteProjectOpenIfActive(): Promise<boolean> {
@@ -2099,14 +2011,10 @@ async function callProjectRuntimeActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
   const freshBinding = domain === "chat";
-  const isMutatingChatAction =
-    freshBinding && MUTATING_CHAT_ACTIONS.has(action);
-  if (isMutatingRuntimeAction(domain, action) && projectRuntimeTransitionDepth > 0) {
-    const label =
-      isMutatingChatAction
-        ? "sending chat messages"
-        : "changing project state";
-    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+  assertWritesAllowedDuringProjectSwitch(domain, action);
+  const mutating = isMutatingRuntimeAction(domain, action);
+  if (freshBinding && CHAT_HOST_READS.has(action)) {
+    await waitForProjectRuntimeTransitionToSettle();
   }
   // During a project transition, let read-only chat calls fall through to
   // their IPC fallback instead of binding to a possibly-stale runtime.
@@ -2114,7 +2022,7 @@ async function callProjectRuntimeActionIfBound<T>(
   // selected machine's OpenCode inventory.
   if (
     freshBinding
-    && !isMutatingChatAction
+    && !mutating
     && projectRuntimeTransitionDepth > 0
     && !MACHINE_INVENTORY_CHAT_ACTIONS.has(action)
   ) {
@@ -2123,14 +2031,12 @@ async function callProjectRuntimeActionIfBound<T>(
   let rebindAttempts = 0;
   while (
     activeRemoteProjectOpenGeneration !== null &&
-    !isMutatingRuntimeAction(domain, action) &&
+    !mutating &&
     await waitForRemoteProjectOpenIfActive()
   ) {
     rebindAttempts += 1;
     if (rebindAttempts >= MAX_REMOTE_PROJECT_OPEN_REBIND_ATTEMPTS) {
-      throw new Error(
-        PROJECT_SWITCHING_MESSAGE.replace("changing project state", "reading project state"),
-      );
+      throw projectSwitchingError("reading project state");
     }
   }
   const remote = await callRemoteProjectActionIfBound<T>(
@@ -2619,9 +2525,7 @@ async function callProjectFileRuntimeActionOr<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
   local: () => Promise<T>,
 ): Promise<T> {
-  if (shouldBypassProjectRuntimeDuringTransition("file", action)) {
-    return local();
-  }
+  assertWritesAllowedDuringProjectSwitch("file", action);
   const remote = await callRemoteProjectActionIfBound<T>(
     "file",
     action,
@@ -2722,7 +2626,7 @@ async function callProjectRuntimeSyncOr<T>(
   local: () => Promise<T>,
 ): Promise<T> {
   if (MUTATING_SYNC_METHODS.has(method) && projectRuntimeTransitionDepth > 0) {
-    assertProjectRuntimeNotTransitioningForMutation("changing sync state");
+    throw projectSwitchingError("changing sync state");
   }
   const remote = await callRemoteProjectSyncIfBound<T>(method, params);
   if (remote.handled) return remote.result;
@@ -4343,11 +4247,23 @@ async function clearAround<T>(
 async function runProjectRuntimeTransition<T>(
   action: () => Promise<T>,
 ): Promise<T> {
+  if (projectRuntimeTransitionDepth === 0) {
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    projectRuntimeTransitionSettled = { promise, release };
+  }
   projectRuntimeTransitionDepth += 1;
   try {
     return await action();
   } finally {
     projectRuntimeTransitionDepth = Math.max(0, projectRuntimeTransitionDepth - 1);
+    if (projectRuntimeTransitionDepth === 0 && projectRuntimeTransitionSettled) {
+      const settled = projectRuntimeTransitionSettled;
+      projectRuntimeTransitionSettled = null;
+      settled.release();
+    }
   }
 }
 

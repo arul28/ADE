@@ -11,6 +11,7 @@ import {
   isSecretBearingAdeAction,
 } from "./actionPolicy";
 import type { AdeActionDomain } from "./domains";
+import { ADE_ACTION_ACCESS, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 
 /**
  * The gate, tested over the tables alone.
@@ -286,6 +287,52 @@ describe("isAllowedAdeAction", () => {
         expect(isAllowedAdeAction(domain, action)).toBe(true);
       }
     }
+  });
+});
+
+describe("ADE_ACTION_ACCESS", () => {
+  // The preload refuses writes during a project switch and lets reads through,
+  // reading the answer from this table. An allowlisted action missing from it
+  // is refused as a write, so a new read would fail on every switch.
+  it("declares every allowlisted action as exactly one of read or write", () => {
+    const problems: string[] = [];
+    const domains = new Set([...Object.keys(ADE_ACTION_ALLOWLIST), ...Object.keys(ADE_ACTION_ACCESS)]);
+    for (const domain of domains) {
+      const allowed = new Set(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? []);
+      const reads = ADE_ACTION_ACCESS[domain]?.read ?? [];
+      const writes = ADE_ACTION_ACCESS[domain]?.write ?? [];
+      const declared = new Set<string>();
+      for (const action of [...reads, ...writes]) {
+        if (declared.has(action)) problems.push(`${domain}.${action} is declared twice`);
+        declared.add(action);
+        if (!allowed.has(action)) problems.push(`${domain}.${action} is declared but not allowlisted`);
+      }
+      for (const action of allowed) {
+        if (!declared.has(action)) {
+          problems.push(`${domain}.${action} is allowlisted but not declared read or write in shared/adeActionAccess.ts`);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
+  // The runtime pools run a call again after a dropped connection only when
+  // this says so; a replayed write could run twice.
+  it.each([
+    ["lane", "list", true],
+    ["file", "readFile", true],
+    ["chat", "getChatEventHistory", true],
+    ["search", "query", true],
+    ["file", "refreshGitDecorations", true],
+    ["lane", "delete", false],
+    ["chat", "sendMessage", false],
+    ["file", "writeTextAtomic", false],
+    ["ai", "getCursorAgentUsage", false],
+    ["automations", "webhookList", false],
+    ["chat", "waitFor", false],
+    ["lane", "getaway", false],
+  ])("replays %s.%s after a dropped connection: %s", (domain, action, replayable) => {
+    expect(isReplaySafeAdeAction(domain, action)).toBe(replayable);
   });
 });
 
