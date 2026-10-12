@@ -113,7 +113,10 @@ export function McpServersSection() {
               id: "mcp-registry-unavailable",
               tone: "warning",
               title: "MCP servers can't be changed right now",
-              detail: registry.message ?? undefined,
+              // Plain words, not the service's own error text: that names
+              // internal parts ("Domain 'account_settings' ...") the reader
+              // cannot act on.
+              detail: "ADE's background service did not answer. This is the copy saved on this computer.",
               actions: [{ label: "Try again", onClick: () => void registry.reload() }],
             }}
           />
