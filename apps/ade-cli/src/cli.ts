@@ -7933,7 +7933,9 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
     };
   if (sub === "body" || sub === "update-body") {
     const target = prId ?? firstPositional(args);
-    const body = readTextOrFileOption(args, ["--body"], ["--body-file"]) ?? "";
+    const body = readTextOrFileOption(args, ["--body"], ["--body-file"]);
+    // A missing flag must not replace the text with nothing. `--body ""` still clears it.
+    if (body === undefined) throw new CliUsageError("prs body needs --body <text> or --body-file <path|->.");
     const updateArgs = withPr({ prId: target, body });
     const citedProof = prBodyProofIds(body);
     return {

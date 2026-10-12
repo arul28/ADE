@@ -267,6 +267,20 @@ describe("publishProofIntoPullRequestBody", () => {
     });
     // The pair is still the citation the author wrote, so ADE can show it.
     expect(sent.body).toContain("```proof-compare\nbefore: pic-b Old\nafter: gone New\n```");
+    expect(result.warnings).toEqual([]);
+
+    // The same item cited alone too: it goes up for that citation, and the
+    // author is told that the comparison stayed behind.
+    const twice = setup(`![Old alone](ade-proof://pic-b)\n\n\`\`\`proof-compare\nbefore: pic-b Old\nafter: gone New\n\`\`\``, ["b.png"]);
+    const second = publishProofIntoPullRequestBody({
+      pr: "12",
+      projectRoot: twice.root,
+      run: twice.run,
+      artifacts: [picture("pic-b", "b.png"), picture("gone", "missing.png")],
+    });
+    expect(second.posted.map((entry) => entry.id)).toEqual(["pic-b"]);
+    expect(twice.sent.attached).toEqual(["./proof-1.png"]);
+    expect(second.warnings).toEqual([expect.stringContaining("pic-b is uploaded, but it also stays as a citation")]);
   });
 
   it("changes nothing on GitHub when no cited proof can go up", () => {

@@ -289,6 +289,12 @@ export function publishProofIntoPullRequestBody(args: {
     if (!posted.length) {
       throw new ProofPublishError(`nothing to upload: ${skipped.map((entry) => `${entry.id} (${entry.reason})`).join("; ")}`);
     }
+    // An item cited two times can go up for one citation and stay behind in a
+    // comparison. It is uploaded, so it is not skipped; say what stayed.
+    const stillCited = new Set(prBodyProofIds(rewritten));
+    for (const entry of posted) {
+      if (stillCited.has(entry.id)) warnings.push(`${entry.id} is uploaded, but it also stays as a citation in a comparison whose other side could not be uploaded`);
+    }
     fs.writeFileSync(path.join(staging, "body.md"), rewritten);
     const edit = run(
       "gh",

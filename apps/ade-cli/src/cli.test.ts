@@ -11018,6 +11018,9 @@ describe("ADE CLI", () => {
     // The explicit command fails loudly when it cannot read the proof.
     expect(steps(["proof", "publish", "--pr", "12", "--in-body"])).toEqual([["proofList", false], ["proofLink", true]]);
     expect(() => buildCliPlan(["proof", "publish", "--pr", "12", "--in-body", "pic-1"])).toThrow(/takes no ids/);
+    // A missing flag must not replace the PR text with nothing; an explicit empty text may.
+    expect(() => buildCliPlan(["prs", "body", "12"])).toThrow(/needs --body/);
+    expect(steps(["prs", "body", "12", "--body", ""])).toEqual([["result", false]]);
   });
 
   it("summarizes PR create output with GitHub and ADE links", () => {
