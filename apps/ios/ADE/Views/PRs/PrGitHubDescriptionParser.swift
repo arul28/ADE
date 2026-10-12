@@ -344,6 +344,13 @@ func normalizePrGitHubHtmlFragment(_ source: String) -> String {
     regex: PrGitHubDescriptionRegex.image
   ) { match, original in
     let alt = prDecodeHtmlEntities(prHtmlCapture(match, in: original, index: 1))
+    // A picture GitHub hosts is drawn as a picture (`prDescriptionPieces`).
+    // Any other source stays words, as before.
+    if let source = prHtmlImageSource(original.substring(with: match.range)),
+       prIsGitHubMediaURL(source) {
+      let label = alt.replacingOccurrences(of: "[", with: "(").replacingOccurrences(of: "]", with: ")")
+      return "\n\n![\(label)](\(source))\n\n"
+    }
     return alt.isEmpty ? "" : "[Image: \(alt)]"
   }
 
@@ -575,4 +582,167 @@ private func prDecodeHtmlEntities(_ source: String) -> String {
     return String(Character(scalar))
   }
   return value
+}
+
+// MARK: - Pictures and videos in a PR text
+//
+// The desktop twin is `apps/desktop/src/shared/prBodyProof.ts`
+// (`preparePrBodyProofForAde`). A PR's text is written once and read on
+// GitHub, on the desktop and here, so the three must agree on what is a
+// picture, a video and a before/after pair.
+
+/// One run of a PR text: markdown the shared renderer draws, or media.
+enum PrDescriptionPiece: Equatable {
+  case markdown(String)
+  case media(PrDescriptionMedia)
+  /// A `| Before | After |` table whose one row holds one picture per cell.
+  case compare([PrDescriptionCompareSide])
+}
+
+struct PrDescriptionMedia: Equatable {
+  enum Kind: Equatable {
+    case image
+    /// A GitHub attachment written as a bare link on its own line. GitHub
+    /// stores an uploaded video that way and draws it as a player.
+    case video
+  }
+
+  let kind: Kind
+  let url: URL
+  let label: String
+}
+
+struct PrDescriptionCompareSide: Equatable {
+  let title: String
+  let media: PrDescriptionMedia
+}
+
+private enum PrDescriptionMediaRegex {
+  static let imageSource = try! NSRegularExpression(
+    pattern: #"\bsrc\s*=\s*["']([^"']+)["']"#,
+    options: [.caseInsensitive]
+  )
+  /// `![alt](url)` or `![alt](url "title")`, alone.
+  static let imageOnly = try! NSRegularExpression(
+    pattern: #"^!\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)$"#
+  )
+  static let attachmentOnly = try! NSRegularExpression(
+    pattern: #"^https://github\.com/user-attachments/assets/[0-9a-fA-F-]{36}$"#
+  )
+  static let tableRule = try! NSRegularExpression(
+    pattern: #"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$"#
+  )
+  static let compareTitle = try! NSRegularExpression(
+    pattern: #"^(before|after)\b"#,
+    options: [.caseInsensitive]
+  )
+}
+
+private func prFullMatch(_ regex: NSRegularExpression, _ text: String) -> NSTextCheckingResult? {
+  regex.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length))
+}
+
+func prHtmlImageSource(_ tag: String) -> String? {
+  guard let match = prFullMatch(PrDescriptionMediaRegex.imageSource, tag), match.numberOfRanges > 1 else { return nil }
+  return (tag as NSString).substring(with: match.range(at: 1))
+}
+
+/// Only media GitHub itself serves is loaded: an attachment, or one of its
+/// image hosts. A PR's text can be written by anyone who can open one, and any
+/// other URL would let its author see who read the PR.
+func prIsGitHubMediaURL(_ raw: String) -> Bool {
+  guard let url = URL(string: raw), url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else {
+    return false
+  }
+  if host == "github.com" { return url.path.hasPrefix("/user-attachments/") }
+  return host.hasSuffix(".githubusercontent.com")
+}
+
+private func prImageOnly(_ text: String) -> PrDescriptionMedia? {
+  let trimmed = text.trimmingCharacters(in: .whitespaces)
+  guard let match = prFullMatch(PrDescriptionMediaRegex.imageOnly, trimmed) else { return nil }
+  let ns = trimmed as NSString
+  let raw = ns.substring(with: match.range(at: 2))
+  guard prIsGitHubMediaURL(raw), let url = URL(string: raw) else { return nil }
+  return PrDescriptionMedia(kind: .image, url: url, label: ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespaces))
+}
+
+private func prTableCells(_ line: String) -> [String] {
+  var trimmed = line.trimmingCharacters(in: .whitespaces)
+  if trimmed.hasPrefix("|") { trimmed.removeFirst() }
+  if trimmed.hasSuffix("|") { trimmed.removeLast() }
+  return trimmed.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+}
+
+/// Splits a PR text into markdown and the media a reader should see as media.
+/// Lines inside a code fence are never media.
+func prDescriptionPieces(_ markdown: String) -> [PrDescriptionPiece] {
+  let lines = markdown.components(separatedBy: "\n")
+  var pieces: [PrDescriptionPiece] = []
+  var text: [String] = []
+  var fence: (char: Character, length: Int)?
+
+  func flushText() {
+    let joined = text.joined(separator: "\n").trimmingCharacters(in: .newlines)
+    if !joined.trimmingCharacters(in: .whitespaces).isEmpty { pieces.append(.markdown(joined)) }
+    text = []
+  }
+
+  var index = 0
+  while index < lines.count {
+    let line = lines[index]
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    if let first = trimmed.first, first == "`" || first == "~" {
+      let run = trimmed.prefix { $0 == first }.count
+      if run >= 3 {
+        if let open = fence {
+          if open.char == first && run >= open.length && trimmed.count == run { fence = nil }
+        } else {
+          fence = (first, run)
+        }
+        text.append(line)
+        index += 1
+        continue
+      }
+    }
+    if fence != nil {
+      text.append(line)
+      index += 1
+      continue
+    }
+
+    // A before/after table: headings, a rule, and one row of pictures.
+    if line.contains("|"), index + 2 < lines.count {
+      let titles = prTableCells(line)
+      let isCompare = (2...3).contains(titles.count)
+        && titles.allSatisfy { prFullMatch(PrDescriptionMediaRegex.compareTitle, $0) != nil }
+        && prFullMatch(PrDescriptionMediaRegex.tableRule, lines[index + 1]) != nil
+        && (index + 3 >= lines.count || !lines[index + 3].contains("|"))
+      if isCompare {
+        let media = prTableCells(lines[index + 2]).map(prImageOnly)
+        if media.count == titles.count, !media.contains(where: { $0 == nil }) {
+          flushText()
+          pieces.append(.compare(zip(titles, media).map { PrDescriptionCompareSide(title: $0.0, media: $0.1!) }))
+          index += 3
+          continue
+        }
+      }
+    }
+    if let image = prImageOnly(line) {
+      flushText()
+      pieces.append(.media(image))
+      index += 1
+      continue
+    }
+    if prFullMatch(PrDescriptionMediaRegex.attachmentOnly, trimmed) != nil, let url = URL(string: trimmed) {
+      flushText()
+      pieces.append(.media(PrDescriptionMedia(kind: .video, url: url, label: "")))
+      index += 1
+      continue
+    }
+    text.append(line)
+    index += 1
+  }
+  flushText()
+  return pieces
 }

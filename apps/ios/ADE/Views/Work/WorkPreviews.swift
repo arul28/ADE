@@ -1351,6 +1351,8 @@ enum ADEPreviewScreen: String, CaseIterable {
   case prDetail = "pr-detail"
   case prFiles = "pr-files"
   case prDiff = "pr-diff"
+  /// A PR description with a before/after pair, a picture and a video.
+  case prMedia = "pr-media"
   case prChecks = "pr-checks"
   /// The Activity surfaces on the four board columns. See
   /// `ActivityDrawerSheet.swift` (fixture screens).
@@ -1446,6 +1448,8 @@ struct ADEPreviewScreenHost: View {
       PrDetailPreviewHost(tab: .overview)
     case .prFiles:
       PrDetailPreviewHost(tab: .files)
+    case .prMedia:
+      PrDescriptionMediaPreviewHost()
     case .prDiff:
       PrDiffPreviewHost()
     case .prChecks:

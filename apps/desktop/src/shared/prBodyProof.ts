@@ -25,6 +25,11 @@ const MARKER = new RegExp(`<!--\\s*ade-proof:(${ID})\\s*-->`);
 export const PR_COMPARE_FENCE_LANGUAGE = "pr-compare";
 /** `title` prefix that carries a proof id on an image through the sanitizer. */
 export const PR_PROOF_TITLE_PREFIX = "ade-proof:";
+/**
+ * `title` that marks a GitHub attachment written as a bare link on its own
+ * line. GitHub draws such a line as a player, and so does ADE.
+ */
+export const PR_ATTACHMENT_TITLE = "github-attachment";
 /** Host of the placeholder URL for a citation that was never uploaded. */
 export const PR_PROOF_PLACEHOLDER_HOST = "ade-proof.invalid";
 
@@ -225,8 +230,14 @@ function tablesToCompare(text: string): string {
 
 /** Cheap test for text that `preparePrBodyProofForAde` could change. */
 export function prBodyMayHoldProof(markdown: string): boolean {
-  return markdown.includes("ade-proof:") || /\|\s*(before|after)\b/i.test(markdown) || markdown.includes(PROOF_COMPARE_FENCE_LANGUAGE);
+  return markdown.includes("ade-proof:")
+    || markdown.includes("/user-attachments/assets/")
+    || /\|\s*(before|after)\b/i.test(markdown)
+    || markdown.includes(PROOF_COMPARE_FENCE_LANGUAGE);
 }
+
+/** A GitHub attachment alone on its line: how GitHub stores an uploaded video. */
+const ATTACHMENT_LINE = /^([ \t]*)(https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f-]{36})[ \t]*$/gm;
 
 /**
  * The text as ADE's PR markdown draws it: proof ids moved from comments into
@@ -253,7 +264,8 @@ export function preparePrBodyProofForAde(markdown: string): string {
       .replace(MARKED_LINK, (_whole, lead: string, url: string, id: string) =>
         `${lead}![](${url} "${PR_PROOF_TITLE_PREFIX}${id}")`)
       .replace(CITATION, (_whole, caption: string, id: string) =>
-        `![${caption}](https://${PR_PROOF_PLACEHOLDER_HOST}/${id} "${PR_PROOF_TITLE_PREFIX}${id}")`));
+        `![${caption}](https://${PR_PROOF_PLACEHOLDER_HOST}/${id} "${PR_PROOF_TITLE_PREFIX}${id}")`)
+      .replace(ATTACHMENT_LINE, (_whole, indent: string, url: string) => `${indent}![](${url} "${PR_ATTACHMENT_TITLE}")`));
     return tablesToCompare(stackedPairsToCompare(marked));
   }).join("\n");
 }

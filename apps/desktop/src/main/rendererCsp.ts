@@ -91,6 +91,22 @@ export function isRendererFrameNavigationAllowed(
   }
 }
 
+/**
+ * Where a video attached to a pull request plays from. GitHub serves an
+ * attachment at `github.com/user-attachments/assets/<id>` and redirects to the
+ * file: its asset bucket for a public repository, a signed
+ * `private-user-images` URL for a private one. A redirect is checked against
+ * the host only, so each hop is named. Nothing else is allowed: no blanket
+ * `https:` and no `*.s3.amazonaws.com`, which would be every bucket there is.
+ * If GitHub moves the bucket, a video falls back to its "open on GitHub" link
+ * (`PrRemoteMedia`) until the new host is added here.
+ */
+export const GITHUB_ATTACHMENT_MEDIA_SOURCES = [
+  "https://github.com/user-attachments/",
+  "https://github-production-user-asset-6210df.s3.amazonaws.com",
+  "https://private-user-images.githubusercontent.com",
+] as const;
+
 export function buildRendererCspPolicy(isDevMode: boolean): string {
   const cspSources = isDevMode
     ? "'self' http://localhost:* http://127.0.0.1:*"
@@ -147,7 +163,7 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
     `script-src ${cspScriptSources}`,
     `style-src ${cspSources} 'unsafe-inline'`,
     `img-src ${cspImageSources} ade-artifact: data: blob:`,
-    `media-src ${cspSources}${cspLocalSources} ade-artifact: blob: data:`,
+    `media-src ${cspSources}${cspLocalSources} ${GITHUB_ATTACHMENT_MEDIA_SOURCES.join(" ")} ade-artifact: blob: data:`,
     `font-src ${cspSources} data:`,
     `connect-src ${cspSources}${cspConnectLocalSources}${cspWsSources}`,
     `worker-src 'self' blob:`,
