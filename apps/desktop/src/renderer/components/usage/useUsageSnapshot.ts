@@ -121,7 +121,8 @@ export function useUsageSnapshot({
       const requestedGeneration = bindingGenerationRef.current;
       await readCached();
       if (cancelled || requestedGeneration !== bindingGenerationRef.current) return;
-      if (!noteDemand) return;
+      // Demand answers with the tab's machine, not the pinned one.
+      if (!noteDemand || pin) return;
       try {
         const demanded = await bridge.noteDemand?.();
         if (!cancelled && requestedGeneration === bindingGenerationRef.current && demanded) {

@@ -863,6 +863,14 @@ function accountRateLimitNextAttemptAtMs(accountId: string, nowMs: number = Date
 const CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
 const claudeBackgroundRefreshAt = new Map<string, number>();
 
+/**
+ * The access token the usage API last rejected with a 401, by usage account id.
+ * Re-reading the login returns that same token until the CLI replaces it, so a
+ * background poll answers the 401 again without sending the token; the
+ * refresh allowance decides when the CLI tries again.
+ */
+const rejectedClaudeTokens = new Map<string, string>();
+
 function claimClaudeBackgroundRefresh(accountId: string, nowMs: number = Date.now()): boolean {
   const last = claudeBackgroundRefreshAt.get(accountId);
   if (last !== undefined && nowMs - last < CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS) return false;
@@ -875,6 +883,7 @@ function resetAccountRateLimitsForTest(): void {
   accountRateLimits.clear();
   accountLogins.clear();
   claudeBackgroundRefreshAt.clear();
+  rejectedClaudeTokens.clear();
 }
 
 /**
@@ -1311,6 +1320,16 @@ async function pollClaudeInstance(
     };
   }
   const creds = login.credentials;
+  const rejected = (): FreshUsageProviderPollResult => ({
+    windows: [],
+    source: "oauth",
+    extraUsage: null,
+    errors: ["claude: API returned 401"],
+    errorKind: errorKindForHttpStatus(401),
+  });
+  if (!allowInteractiveSources && rejectedClaudeTokens.get(accountId) === creds.accessToken) {
+    return await refreshClaudeLoginInBackground(logger, context, instance.id, accountId, configHome) ?? rejected();
+  }
 
   try {
     const result = await measureUsagePhase(
@@ -1329,6 +1348,7 @@ async function pollClaudeInstance(
         // next chat on this account, refreshes it.
         invalidateCachedClaudeCredentials(configHome);
         noteAccountLogin(accountId, instance.id, "expired");
+        rejectedClaudeTokens.set(accountId, creds.accessToken);
       }
 
       // A throttled or forbidden endpoint is the one status the CLI cannot fix:
@@ -1381,6 +1401,7 @@ async function pollClaudeInstance(
         errorKind: "invalid_response",
       };
     }
+    rejectedClaudeTokens.delete(accountId);
     return { windows: parsed.windows, source: "oauth", extraUsage: parsed.extraUsage, errors: [] };
   } catch (error) {
     if (allowInteractiveSources) {
