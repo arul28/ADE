@@ -122,6 +122,7 @@ function recoveryPool(): ProjectRecoveryConnectionPool {
     callSync: vi.fn(async () => ({ pong: true })) as any,
     ensureProject: vi.fn(async () => ({ projectId: "project-incident" } as any)),
     callActionForRoot: vi.fn(async () => ({ result: [] } as any)),
+    removeProject: vi.fn(async () => {}),
   };
 }
 

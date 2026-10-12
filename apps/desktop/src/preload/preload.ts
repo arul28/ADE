@@ -88,7 +88,7 @@ import {
   type DevServerRecord,
 } from "../shared/types/builtInBrowser";
 import type { SessionInputOrigin } from "../shared/sessionInputOrigin";
-import type { ProjectDataRestoreResult, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   DiagnosticReportPayload,
@@ -1736,18 +1736,18 @@ async function callRemoteProjectActionIfBound<T>(
   if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
     return { handled: false };
   }
-  const guardBinding = !(domain === "chat" && MACHINE_INVENTORY_CHAT_ACTIONS.has(action));
-  const generation = guardBinding && currentProjectBinding ? projectBindingGeneration : null;
+  const guardBinding = guardsProjectBinding(domain, action);
+  const checkBeforeBind = captureProjectBinding(guardBinding && Boolean(currentProjectBinding));
   const binding = await getRemoteProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
-  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkBeforeBind();
   if (!binding) return { handled: false };
-  const requestGeneration = guardBinding ? projectBindingGeneration : null;
+  const checkAfterInvoke = captureProjectBinding(guardBinding);
   const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
     id: binding.targetId,
     projectId: binding.projectId,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
-  if (requestGeneration != null && requestGeneration !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
 
@@ -1879,17 +1879,17 @@ async function callLocalProjectActionIfBound<T>(
   if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
     return { handled: false };
   }
-  const guardBinding = !(domain === "chat" && MACHINE_INVENTORY_CHAT_ACTIONS.has(action));
-  const generation = guardBinding && currentProjectBinding ? projectBindingGeneration : null;
+  const guardBinding = guardsProjectBinding(domain, action);
+  const checkBeforeBind = captureProjectBinding(guardBinding && Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
-  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkBeforeBind();
   if (!binding) return { handled: false };
-  const requestGeneration = guardBinding ? projectBindingGeneration : null;
+  const checkAfterInvoke = captureProjectBinding(guardBinding);
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
     rootPath: binding.rootPath,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
-  if (requestGeneration != null && requestGeneration !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
 
@@ -1901,16 +1901,16 @@ async function callLocalProjectActionStrictIfBound<T>(
   if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
     return { handled: false };
   }
-  const generation = currentProjectBinding ? projectBindingGeneration : null;
+  const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding();
-  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkBeforeBind();
   if (!binding) return { handled: false };
-  const requestGeneration = projectBindingGeneration;
+  const checkAfterInvoke = captureProjectBinding();
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
     rootPath: binding.rootPath,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
-  if (requestGeneration !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
 
@@ -2007,6 +2007,10 @@ const MACHINE_INVENTORY_CHAT_ACTIONS = new Set<string>([
   "getLaunchDefaults",
 ]);
 
+function guardsProjectBinding(domain: string, action: string): boolean {
+  return !(domain === "chat" && MACHINE_INVENTORY_CHAT_ACTIONS.has(action));
+}
+
 const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
   "diagnosticsGet",
   "get",
@@ -2051,6 +2055,14 @@ const MUTATING_SYNC_METHODS = new Set([
 
 const PROJECT_SWITCHING_MESSAGE =
   "Project is switching. Wait for the current project to finish loading before changing project state.";
+
+/** Captures the binding generation now; the returned check throws if the window switched projects since. */
+function captureProjectBinding(enabled = true): () => void {
+  const captured = enabled ? projectBindingGeneration : null;
+  return () => {
+    if (captured != null && captured !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  };
+}
 
 let openRemoteProjectGeneration = 0;
 let activeRemoteProjectOpenGeneration: number | null = null;
@@ -2106,8 +2118,9 @@ async function callProjectRuntimeActionIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  const generation = currentProjectBinding && !(domain === "chat" && MACHINE_INVENTORY_CHAT_ACTIONS.has(action))
-    ? projectBindingGeneration : null;
+  const checkBinding = captureProjectBinding(
+    Boolean(currentProjectBinding) && guardsProjectBinding(domain, action),
+  );
   const freshBinding = domain === "chat";
   const isMutatingChatAction =
     freshBinding && MUTATING_CHAT_ACTIONS.has(action);
@@ -2143,14 +2156,14 @@ async function callProjectRuntimeActionIfBound<T>(
       );
     }
   }
-  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkBinding();
   const remote = await callRemoteProjectActionIfBound<T>(
     domain,
     action,
     request,
     { freshBinding },
   );
-  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkBinding();
   if (remote.handled) return remote;
   return callLocalProjectActionIfBound<T>(domain, action, request, { freshBinding });
 }
@@ -2703,18 +2716,18 @@ async function callRemoteProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  const generation = currentProjectBinding ? projectBindingGeneration : null;
+  const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getRemoteProjectBinding();
-  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkBeforeBind();
   if (!binding) return { handled: false };
-  const requestGeneration = projectBindingGeneration;
+  const checkAfterInvoke = captureProjectBinding();
   const result = (await ipcRenderer.invoke(IPC.remoteRuntimeCallSync, {
     id: binding.targetId,
     projectId: binding.projectId,
     method,
     params,
   })) as T;
-  if (requestGeneration !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkAfterInvoke();
   return { handled: true, result };
 }
 
@@ -2722,17 +2735,17 @@ async function callLocalProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  const generation = currentProjectBinding ? projectBindingGeneration : null;
+  const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding();
-  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkBeforeBind();
   if (!binding) return { handled: false };
-  const requestGeneration = projectBindingGeneration;
+  const checkAfterInvoke = captureProjectBinding();
   const result = (await ipcRenderer.invoke(IPC.localRuntimeCallSync, {
     rootPath: binding.rootPath,
     method,
     params,
   })) as T;
-  if (requestGeneration !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkAfterInvoke();
   return { handled: true, result };
 }
 
@@ -2744,9 +2757,9 @@ async function callProjectRuntimeSyncOr<T>(
   if (MUTATING_SYNC_METHODS.has(method) && projectRuntimeTransitionDepth > 0) {
     assertProjectRuntimeNotTransitioningForMutation("changing sync state");
   }
-  const generation = currentProjectBinding ? projectBindingGeneration : null;
+  const checkBinding = captureProjectBinding(Boolean(currentProjectBinding));
   const remote = await callRemoteProjectSyncIfBound<T>(method, params);
-  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
+  checkBinding();
   if (remote.handled) return remote.result;
   let localRuntime: Awaited<ReturnType<typeof callLocalProjectSyncIfBound<T>>>;
   try {
@@ -5024,8 +5037,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.recoveryRestoreProjectData, { projectRoot }),
     startFresh: (projectRoot: string): Promise<void> =>
       ipcRenderer.invoke(IPC.recoveryStartFresh, { projectRoot }),
-    takeStartupProjectDataMissing: (): Promise<string | null> =>
-      ipcRenderer.invoke(IPC.recoveryTakeStartupProjectDataMissing),
+    projectDataStatus: (projectRoot?: string): Promise<ProjectDataStatus | null> =>
+      ipcRenderer.invoke(IPC.recoveryProjectDataStatus, projectRoot ? { projectRoot } : {}),
     onProjectDataMissing: (cb: (payload: { projectRoot: string; status: "missing" | "replaced" }) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: { projectRoot: string; status: "missing" | "replaced" }) => cb(payload);
       ipcRenderer.on(IPC.recoveryProjectDataMissing, listener);

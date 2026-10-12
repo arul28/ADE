@@ -302,7 +302,7 @@ export class ProjectRegistry {
     );
     if (nextProjects.length === file.projects.length) return false;
     this.write({ ...file, projects: nextProjects });
-    this.clearDatabaseInitialized(projectId);
+    this.forgetDatabaseIdentity(projectId);
     return true;
   }
 
@@ -323,13 +323,14 @@ export class ProjectRegistry {
   }
 
   /**
-   * Whether this machine has opened the project's database. Kept as one
-   * marker file per project beside the registry, not in projects.json: an
-   * older ADE that rewrites projects.json would drop a field it doesn't know,
-   * and with it the protection against silently creating a replacement.
+   * The identity (device and inode) of the database this machine opened for
+   * the project; its presence means the project had data here. One file per
+   * project beside the registry, not a field in projects.json: an older ADE
+   * that rewrites projects.json drops fields it doesn't know, and with it the
+   * protection against silently creating a replacement.
    */
-  private databaseMarkerPath(projectId: ProjectId): string {
-    return path.join(this.layout.adeDir, "project-data", `${projectId}.initialized`);
+  private databaseIdentityPath(projectId: ProjectId): string {
+    return path.join(this.layout.adeDir, "project-data", `${projectId}.json`);
   }
 
   /**
@@ -345,17 +346,17 @@ export class ProjectRegistry {
       return;
     }
     const identity = { dev: stat.dev.toString(), ino: stat.ino.toString() };
-    const known = this.databaseIdentity(projectId);
+    const known = this.recordedDatabaseIdentity(projectId);
     if (known?.dev === identity.dev && known.ino === identity.ino) return;
-    const marker = this.databaseMarkerPath(projectId);
+    const marker = this.databaseIdentityPath(projectId);
     fs.mkdirSync(path.dirname(marker), { recursive: true });
     fs.writeFileSync(marker, JSON.stringify(identity));
   }
 
   /** The device and inode of the database this machine last opened for the project. */
-  databaseIdentity(projectId: ProjectId): { dev: string; ino: string } | null {
+  recordedDatabaseIdentity(projectId: ProjectId): { dev: string; ino: string } | null {
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.databaseMarkerPath(projectId), "utf8")) as { dev?: unknown; ino?: unknown };
+      const parsed = JSON.parse(fs.readFileSync(this.databaseIdentityPath(projectId), "utf8")) as { dev?: unknown; ino?: unknown };
       return typeof parsed.dev === "string" && typeof parsed.ino === "string" ? { dev: parsed.dev, ino: parsed.ino } : null;
     } catch {
       return null;
@@ -366,21 +367,28 @@ export class ProjectRegistry {
    * Forget that the database existed, so the next open creates a new one.
    * Only for an explicit "start fresh" or removing the project from ADE.
    */
-  clearDatabaseInitialized(projectId: ProjectId): void {
-    fs.rmSync(this.databaseMarkerPath(projectId), { force: true });
+  forgetDatabaseIdentity(projectId: ProjectId): void {
+    fs.rmSync(this.databaseIdentityPath(projectId), { force: true });
   }
 
-  markDatabaseInitialized(projectId: ProjectId): void {
+  /** Called after a successful open; a no-op until the database file exists. */
+  recordDatabaseIdentity(projectId: ProjectId): void {
     const record = this.get(projectId);
     if (record) this.recordDatabaseIfPresent(projectId, record.rootPath);
   }
 
-  /** Whether ADE opened this project's data before and it is gone now. */
+  /**
+   * Whether a registered project's ADE data is gone: its whole `.ade` folder
+   * (registering a project creates one, so even a record from before identity
+   * files existed had it), or a database this machine recorded opening. A
+   * project folder that is itself gone is a different failure, left to the
+   * open path's own error.
+   */
   isProjectDataMissing(record: ProjectRecord | null): boolean {
-    if (!record) return false;
+    if (!record || !fs.existsSync(record.rootPath)) return false;
     const adeDir = path.join(record.rootPath, ".ade");
     return !fs.existsSync(adeDir)
-      || (fs.existsSync(this.databaseMarkerPath(record.projectId)) && !fs.existsSync(path.join(adeDir, "ade.db")));
+      || (fs.existsSync(this.databaseIdentityPath(record.projectId)) && !fs.existsSync(path.join(adeDir, "ade.db")));
   }
 
   /** Check before creating directories or opening SQLite on any local entry point. */
@@ -510,13 +518,13 @@ export function isLocalProjectDataMissing(projectRoot: string): boolean {
   return registry.isProjectDataMissing(registry.findByRootPath(projectRoot));
 }
 
-export function localProjectDatabaseIdentity(projectRoot: string): { dev: string; ino: string } | null {
-  return new ProjectRegistry().databaseIdentity(deriveProjectId(normalizeRoot(projectRoot)));
+export function recordedLocalProjectDatabaseIdentity(projectRoot: string): { dev: string; ino: string } | null {
+  return new ProjectRegistry().recordedDatabaseIdentity(deriveProjectId(normalizeRoot(projectRoot)));
 }
 
 /** Let the next open of this project create new ADE data. */
-export function clearLocalProjectDatabaseInitialized(projectRoot: string): void {
-  new ProjectRegistry().clearDatabaseInitialized(deriveProjectId(normalizeRoot(projectRoot)));
+export function forgetLocalProjectDatabaseIdentity(projectRoot: string): void {
+  new ProjectRegistry().forgetDatabaseIdentity(deriveProjectId(normalizeRoot(projectRoot)));
 }
 
 /**
@@ -524,14 +532,14 @@ export function clearLocalProjectDatabaseInitialized(projectRoot: string): void 
  * that finds it missing asks for restoration. Desktop opens it in-process and
  * its brain mirror is best-effort, so it records this itself.
  */
-export function markLocalProjectDatabaseInitialized(
+export function recordLocalProjectDatabaseIdentity(
   projectRoot: string,
   logger?: { warn: (event: string, data: Record<string, unknown>) => void },
 ): void {
   try {
     const registry = new ProjectRegistry();
     const record = registry.findByRootPath(projectRoot);
-    if (record) registry.markDatabaseInitialized(record.projectId);
+    if (record) registry.recordDatabaseIdentity(record.projectId);
   } catch (error) {
     logger?.warn("project.database_initialized_mark_failed", {
       projectRoot,

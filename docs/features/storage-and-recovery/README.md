@@ -8,26 +8,36 @@ resume automatically. A replacement database is never adopted by the existing
 connection. This protection is shared by desktop and headless runtime clients,
 including sync and database maintenance.
 
-The desktop also checks each open project's `ade.db` every 5 seconds. When it
-disappears or is swapped, the window shows the project recovery screen instead
-of failing panel by panel (`data_missing` or `data_replaced` in
+The desktop also checks each open project's `ade.db` every 5 seconds
+(`services/runtime/openProjectDataWatch.ts`). Only "not found" counts: a
+sleeping or unmounted external volume is skipped, never offered Start fresh.
+When the file disappears or is swapped, the window shows the project recovery
+screen instead of failing panel by panel (`data_missing` or `data_replaced` in
 `shared/types/recovery.ts`). A failed reopen at launch for the same reason
-shows the screen too. From there:
+shows the screen too; a window asks `recovery.projectDataStatus` when it loads
+and whenever its project changes, so a reload or a second window sees it. The
+screen shows at most two buttons; Restart, Reset and Report are hidden there
+because none of them helps. Repair refuses a project whose data is missing,
+since opening the database would create an empty replacement. From there:
 
-- **Restore it** appears when `ProjectRecoveryService.findTrashedProjectData`
-  finds this project's `.ade` in the Trash, matched by the database file's
-  device and inode from the project-data marker (a move keeps them), with the
-  database's own `projects` row as a fallback. macOS refuses to list the Trash
-  without Full Disk Access, so it tries the names Finder gives (`.ade`,
-  `.ade 2`, …). Restoring merges into any `.ade` that reappeared meanwhile:
-  ADE writes some files (machine keys, for one) while the data is gone, so on
-  a clash the original wins and the newer file goes to the Trash as
-  `<name>.created-while-missing`. Nothing is deleted.
+- **Restore from Trash** appears when `findTrashedProjectData`
+  (`services/runtime/projectDataTrash.ts`) finds this project's `.ade` in the
+  Trash, matched by the database file's device and inode from the project-data
+  identity file (a move keeps them), with the database's own `projects` row as
+  a fallback. macOS refuses to list the Trash without Full Disk Access, so it
+  tries the names Finder gives (`.ade`, `.ade 2`, …). Restoring merges into any
+  `.ade` that reappeared meanwhile: ADE writes some files (machine keys, for
+  one) while the data is gone, so on a clash the original wins and the newer
+  file is kept beside the trashed copy as `<name>.created-while-missing`. The
+  database goes back last, after its write-ahead log, and a copy from another
+  volume's Trash lands under a temporary name before it is renamed into place,
+  so a failed restore can be retried. Nothing is deleted.
 - The screen keeps checking, so putting the folder back by hand reopens the
   project.
 - **Start fresh** (or **Use this copy** for a swapped database) closes the
-  project, has the background service drop it, clears the marker, and reopens
-  with new data. The old data stays wherever it went.
+  project, has the background service drop it (and the desktop's cached
+  record of it), forgets the database identity, leaves an empty `.ade`, and
+  reopens with new data. The old data stays wherever it went.
 
 ## Source file map
 

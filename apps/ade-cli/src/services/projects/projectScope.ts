@@ -237,7 +237,7 @@ export class ProjectScopeRegistry {
           : {}),
       });
       try {
-        this.projectRegistry.markDatabaseInitialized(projectId);
+        this.projectRegistry.recordDatabaseIdentity(projectId);
       } catch (error) {
         runtime.dispose();
         throw error;

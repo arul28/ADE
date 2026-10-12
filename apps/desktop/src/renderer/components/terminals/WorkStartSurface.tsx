@@ -7,6 +7,7 @@ import type {
 } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { defaultLaneId } from "../../lib/laneSelection";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
 import type {
@@ -84,7 +85,7 @@ export function WorkStartSurface({
     [draftMachineId, laneForMachine],
   );
   const foreignDraft = Boolean(draftMachineId && draftMachineId !== boundMachineId);
-  const fallbackLaneId = lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? "";
+  const fallbackLaneId = defaultLaneId(lanes) ?? "";
   const [selectedLaneId, setSelectedLaneId] = useState<string>(() => {
     if (draftLaneId && (foreignDraft || isKnownLaneId(draftLaneId))) {
       return draftLaneId;
@@ -128,22 +129,24 @@ export function WorkStartSurface({
       return;
     }
     if ((!selectedLaneId || (!foreignDraft && !isKnownLaneId(selectedLaneId))) && lanes.length) {
-      const fallbackLaneId =
+      // `lanes` is non-empty here, so the render-scope fallback is a real lane id.
+      const nextLaneId =
         draftLaneId && isKnownLaneId(draftLaneId)
           ? draftLaneId
           : globallySelectedLaneId && isKnownLaneId(globallySelectedLaneId)
             ? globallySelectedLaneId
-            : lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]!.id;
-      setSelectedLaneId(fallbackLaneId);
-      onDraftLaneChange?.(fallbackLaneId);
+            : fallbackLaneId;
+      setSelectedLaneId(nextLaneId);
+      onDraftLaneChange?.(nextLaneId);
       if (!draftMachineId || draftMachineId === boundMachineId) {
-        selectLaneGlobal(fallbackLaneId);
+        selectLaneGlobal(nextLaneId);
       }
     }
   }, [
     draftLaneId,
     draftMachineId,
     boundMachineId,
+    fallbackLaneId,
     foreignDraft,
     globallySelectedLaneId,
     isKnownLaneId,

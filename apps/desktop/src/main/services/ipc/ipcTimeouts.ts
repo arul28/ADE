@@ -203,6 +203,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return 4 * 60_000;
     // On the 30s default the renderer showed a raw IPC timeout mid-repair.
     case IPC.recoveryRepair:
+    // Start fresh closes the project and waits for the background service to
+    // drop it; restoring may copy a folder back from another disk's Trash.
+    case IPC.recoveryStartFresh:
+    case IPC.recoveryRestoreProjectData:
       return PROJECT_REPAIR_IPC_TIMEOUT_MS;
     // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
     // merged PR. The 30s default reported a failure while the merge went on.

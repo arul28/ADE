@@ -67,6 +67,7 @@ function pool(statusValue = status()): ProjectRecoveryConnectionPool {
     callSync: vi.fn(async () => ({ pong: true })) as unknown as ProjectRecoveryConnectionPool["callSync"],
     ensureProject: vi.fn(async () => ({ projectId: "project-1" } as any)),
     callActionForRoot: vi.fn(async () => ({ result: [] } as any)),
+    removeProject: vi.fn(async () => {}),
   };
 }
 

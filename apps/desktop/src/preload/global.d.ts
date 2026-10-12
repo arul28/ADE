@@ -1050,7 +1050,7 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
-import type { ProjectDataRestoreResult, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   WorkToolId,
@@ -1343,8 +1343,8 @@ declare global {
         /** Optional: older preloads lack the missing-data recovery calls. */
         restoreProjectData?: (projectRoot: string) => Promise<ProjectDataRestoreResult>;
         startFresh?: (projectRoot: string) => Promise<void>;
-        /** The project ADE couldn't reopen at launch because its data was missing. Read once. */
-        takeStartupProjectDataMissing?: () => Promise<string | null>;
+        /** Whether a project's ADE data is missing or swapped; no root asks about the project that failed to reopen at launch. */
+        projectDataStatus?: (projectRoot?: string) => Promise<ProjectDataStatus | null>;
         /** An open project's .ade folder or database was moved or deleted. */
         onProjectDataMissing?: (cb: (payload: { projectRoot: string; status: "missing" | "replaced" }) => void) => () => void;
         /**

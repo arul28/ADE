@@ -4,7 +4,7 @@ import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import { codedError } from "../../../shared/codedError";
+import { codedError, isCodedError } from "../../../shared/codedError";
 import type { Logger } from "../logging/logger";
 import { isSqliteBusyOrLockedError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
@@ -258,16 +258,12 @@ function ensureParentDir(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
-function openRawDatabase(dbPath: string): DatabaseSyncType {
-  ensureParentDir(dbPath);
-  const db = new DatabaseSync(dbPath, { allowExtension: true });
-  let identity: fs.BigIntStats;
-  try {
-    identity = fs.statSync(dbPath, { bigint: true });
-  } catch (error) {
-    db.close();
-    throw error;
-  }
+// Guard the native boundary, including migrations, sync, maintenance and
+// direct prepared statements. Checking each operation avoids a polling
+// window in which SQLite could keep writing through a relocated handle.
+// Retaining the connection lets restoring the same file resume safely.
+function guardDatabasePath(db: DatabaseSyncType, dbPath: string): void {
+  const identity = fs.statSync(dbPath, { bigint: true });
   const assertDatabasePath = () => {
     let current: fs.BigIntStats;
     try {
@@ -287,10 +283,6 @@ function openRawDatabase(dbPath: string): DatabaseSyncType {
       );
     }
   };
-  // Guard the native boundary, including migrations, sync, maintenance and
-  // direct prepared statements. Checking each operation avoids a polling
-  // window in which SQLite could keep writing through a relocated handle.
-  // Retaining the connection lets restoring the same file resume safely.
   const prepare = db.prepare.bind(db);
   const exec = db.exec.bind(db);
   db.prepare = (...args) => {
@@ -301,6 +293,17 @@ function openRawDatabase(dbPath: string): DatabaseSyncType {
     assertDatabasePath();
     return exec(...args);
   };
+}
+
+function openRawDatabase(dbPath: string): DatabaseSyncType {
+  ensureParentDir(dbPath);
+  const db = new DatabaseSync(dbPath, { allowExtension: true });
+  try {
+    guardDatabasePath(db, dbPath);
+  } catch (error) {
+    closeDatabase(db);
+    throw error;
+  }
   // Allow concurrent access from multiple ADE processes (e.g. dogfooding).
   // Without this, a second instance gets SQLITE_BUSY immediately on writes.
   try {
@@ -378,7 +381,7 @@ function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue 
   try {
     return db.prepare(sql).run(...params.map((param, index) => toDbValue(param, index))) as { changes: number };
   } catch (error) {
-    if ((error as { code?: string })?.code === "db_path_changed") throw error;
+    if (isCodedError(error, "db_path_changed")) throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message} [sql=${statement}]`);
@@ -389,7 +392,7 @@ function getRow<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | S
   try {
     return (db.prepare(sql).get(...params.map((param, index) => toDbValue(param, index))) as T | undefined) ?? null;
   } catch (error) {
-    if ((error as { code?: string })?.code === "db_path_changed") throw error;
+    if (isCodedError(error, "db_path_changed")) throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message} [sql=${statement}]`);
@@ -400,7 +403,7 @@ function allRows<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | 
   try {
     return db.prepare(sql).all(...params.map((param, index) => toDbValue(param, index))) as T[];
   } catch (error) {
-    if ((error as { code?: string })?.code === "db_path_changed") throw error;
+    if (isCodedError(error, "db_path_changed")) throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message} [sql=${statement}]`);
@@ -4707,7 +4710,7 @@ export async function openKvDb(
     try {
       return operation();
     } catch (error) {
-      if ((error as { code?: string })?.code === "db_path_changed") throw error;
+      if (isCodedError(error, "db_path_changed")) throw error;
       logger.warn("db.maintenance_failed", {
         action,
         error: error instanceof Error ? error.message : String(error),
@@ -4738,7 +4741,7 @@ export async function openKvDb(
     try {
       return await operation();
     } catch (error) {
-      if ((error as { code?: string })?.code === "db_path_changed") throw error;
+      if (isCodedError(error, "db_path_changed")) throw error;
       logger.warn("db.maintenance_failed", {
         action,
         error: error instanceof Error ? error.message : String(error),

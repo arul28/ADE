@@ -29,7 +29,6 @@ import { LeftoverWorktreeDialogHost } from "../lanes/LeftoverWorktreeDialogHost"
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
-import { RECOVERY_COPY } from "../../../shared/types/recovery";
 import { ProjectHostRecoveryScreen, ProjectHostStartingBanner } from "./ProjectHostRecoveryScreen";
 import { PageErrorBoundary } from "./PageErrorBoundary";
 import { ProjectSidebar } from "./projectSidebar/ProjectSidebar";
@@ -689,29 +688,18 @@ function ProjectTabHost() {
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
   // The project's .ade folder or database disappeared (or was swapped) while
   // it was open: show the recovery screen instead of letting every panel fail.
+  // Asked when the window loads (with no project: the one that could not
+  // reopen at launch) and whenever its project changes, so a reload or a
+  // second window learns what the main process already knows.
+  const activeProjectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   React.useEffect(() => {
-    void window.ade?.recovery?.takeStartupProjectDataMissing?.().then((projectRoot) => {
-      if (!projectRoot || useAppStore.getState().projectTransitionError) return;
-      useAppStore.setState({
-        projectTransitionError: {
-          message: RECOVERY_COPY.data_missing.headline,
-          code: "project_data_missing",
-          rootPath: projectRoot,
-        },
-      });
+    void window.ade?.recovery?.projectDataStatus?.(activeProjectRoot ?? undefined).then((problem) => {
+      if (problem) useAppStore.getState().reportProjectDataProblem(problem.projectRoot, problem.status);
     }).catch(() => undefined);
-  }, []);
+  }, [activeProjectRoot]);
   React.useEffect(() => window.ade?.recovery?.onProjectDataMissing?.(({ projectRoot, status }) => {
-    const state = useAppStore.getState();
-    if (state.project?.rootPath !== projectRoot || state.projectTransitionError) return;
-    const recoveryState = status === "replaced" ? "data_replaced" : "data_missing";
-    useAppStore.setState({
-      projectTransitionError: {
-        message: RECOVERY_COPY[recoveryState].headline,
-        code: status === "replaced" ? "db_path_changed" : "project_data_missing",
-        rootPath: projectRoot,
-      },
-    });
+    if (useAppStore.getState().project?.rootPath !== projectRoot) return;
+    useAppStore.getState().reportProjectDataProblem(projectRoot, status);
   }), []);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots ?? EMPTY_PROJECT_TAB_ROOTS);

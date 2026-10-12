@@ -243,7 +243,7 @@ export function createBrowserMockRecoveryBridges(): Record<string, unknown> {
         current = "healthy";
       },
       onProjectDataMissing: () => () => {},
-      takeStartupProjectDataMissing: async () => null,
+      projectDataStatus: async () => null,
     },
     machineReset: {
       plan: async () => {

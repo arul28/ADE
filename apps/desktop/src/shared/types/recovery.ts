@@ -65,8 +65,10 @@ export type ProjectRecoveryDiagnosis = {
      */
     | "data_missing"
     /**
-     * A different database appeared where the open one was. ADE never adopts
-     * it on its own; the person chooses to use it.
+     * A different database appeared where the open one was, while the project
+     * was open. ADE does not switch to it mid-session; the person chooses to.
+     * (A database swapped while ADE was closed, such as a restored backup, is
+     * simply opened.)
      */
     | "data_replaced"
     | "brain_crash_looping"
@@ -102,6 +104,9 @@ export type ProjectRecoveryDiagnosis = {
 };
 
 export type ProjectDataRestoreResult = { restored: true } | { restored: false; reason: string };
+
+/** An open project whose ADE data went missing or was swapped, or one that could not reopen at launch. */
+export type ProjectDataStatus = { projectRoot: string; status: "missing" | "replaced" };
 
 export type RepairStepId =
   | "check_space"

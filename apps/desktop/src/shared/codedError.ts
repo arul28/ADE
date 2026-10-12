@@ -21,6 +21,11 @@ export function codedError<TCode extends string>(message: string, code: TCode): 
   return Object.assign(new Error(message), { code });
 }
 
+/** Whether `error` carries `code`, as a `codedError` with that code does. */
+export function isCodedError(error: unknown, code: string): boolean {
+  return (error as { code?: unknown })?.code === code;
+}
+
 /**
  * libuv can only name the errnos it has a mapping for. macOS returns EDEADLK
  * (errno 11) for a File-Provider read it cannot satisfy, which libuv does not

@@ -118,8 +118,8 @@ export const IPC = {
   recoveryStartFresh: "ade.recovery.startFresh",
   /** Main → renderer: an open project's .ade folder or database was moved or deleted. */
   recoveryProjectDataMissing: "ade.recovery.projectDataMissing",
-  /** The project ADE tried to reopen at launch, when its ADE data was missing. Read once. */
-  recoveryTakeStartupProjectDataMissing: "ade.recovery.takeStartupProjectDataMissing",
+  /** Whether a project's ADE data is missing or swapped (no root: the project that failed to reopen at launch). */
+  recoveryProjectDataStatus: "ade.recovery.projectDataStatus",
   /** The hard reset's plan: every project, lane and machine item it would remove. */
   machineResetPlan: "ade.machineReset.plan",
   /** Hand the hard reset to a detached engine process, then quit. */

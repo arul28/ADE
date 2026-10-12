@@ -96,8 +96,8 @@ function DataRecoveryChoices({
           </button>
         ) : null}
         {startFresh ? (
-          // Start fresh is never the filled button: it is the one choice that
-          // leaves the old lanes and history behind.
+          // Filled only for "Use this copy". "Start fresh" never is: it is the
+          // one choice that leaves the old lanes and history behind.
           <button
             type="button"
             onClick={startFresh.onClick}
@@ -280,6 +280,11 @@ export function ProjectRecoveryScreen() {
   // relaunch is how the screen knows that rung was already climbed.
   const [restartedRecently] = useState(() => restartedAdeRecently());
   const [restartFailed, setRestartFailed] = useState(false);
+  // What a restore or fresh start is doing, while it runs.
+  const [dataActionLabel, setDataActionLabel] = useState<string | null>(null);
+  // A restore's own plain-words reason it could not finish. Raw errors stay
+  // in the technical fold, like a failed fix's.
+  const [dataFailureReason, setDataFailureReason] = useState<string | null>(null);
   const reopenStartedRef = useRef(false);
 
   // Diagnose on mount / when the failed root changes. On failure fall back to
@@ -465,10 +470,6 @@ export function ProjectRecoveryScreen() {
 
   // Restoring the folder, or starting fresh, ends like a successful fix: the
   // success card, then the project reopens.
-  const [dataActionLabel, setDataActionLabel] = useState<string | null>(null);
-  // A restore's own plain-words reason it could not finish. Raw errors stay
-  // in the technical fold, like a failed fix's.
-  const [dataFailureReason, setDataFailureReason] = useState<string | null>(null);
   const runDataAction = useCallback(async (label: string, action: () => Promise<{ ok: boolean; reason?: string }>) => {
     if (!rootPath || repairInFlightRef.current) return;
     repairInFlightRef.current = true;
@@ -505,15 +506,11 @@ export function ProjectRecoveryScreen() {
     });
   }, [rootPath, runDataAction]);
 
-  const startFresh = useCallback(async (confirm: boolean) => {
+  // Both "Start fresh" and "Use this copy" end the same way: the project
+  // reopens with whatever ADE data is there now.
+  const reopenWithCurrentData = useCallback(() => {
     const start = window.ade?.recovery?.startFresh;
     if (!rootPath || !start) return;
-    if (confirm && !(await confirmDialog({
-      title: "Start fresh?",
-      message: "Your code stays as it is. The old lanes and chat history won't come back.",
-      confirmLabel: "Start fresh",
-      destructive: true,
-    }))) return;
     void runDataAction("Opening the project with new ADE data", async () => {
       await start(rootPath);
       // Starting fresh closes the project, which can take this screen down
@@ -526,6 +523,16 @@ export function ProjectRecoveryScreen() {
       return { ok: true };
     });
   }, [rootPath, runDataAction, switchProjectToPath]);
+
+  const startFresh = useCallback(async () => {
+    if (!(await confirmDialog({
+      title: "Start fresh?",
+      message: "Your code stays as it is. The old lanes and chat history won't come back.",
+      confirmLabel: "Start fresh",
+      destructive: true,
+    }))) return;
+    reopenWithCurrentData();
+  }, [reopenWithCurrentData]);
 
   const onRestart = useCallback(() => {
     setRestartFailed(false);
@@ -679,8 +686,8 @@ export function ProjectRecoveryScreen() {
               restore={restoreAvailable ? { label: isFailure ? "Try again" : "Restore from Trash", onClick: restoreData } : null}
               startFresh={startFreshAvailable
                 ? dataReplaced
-                  ? { label: "Use this copy", onClick: () => void startFresh(false), primary: true }
-                  : { label: "Start fresh", onClick: () => void startFresh(true) }
+                  ? { label: "Use this copy", onClick: reopenWithCurrentData, primary: true }
+                  : { label: "Start fresh", onClick: () => void startFresh() }
                 : null}
               manualSteps={dataMissing && !restoreAvailable ? putBackSteps(isWindowsPlatform()) : null}
               watching={dataMissing && !isFailure}

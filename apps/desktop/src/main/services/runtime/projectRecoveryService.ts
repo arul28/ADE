@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import {
   RECOVERY_COPY,
@@ -10,6 +9,7 @@ import {
   type AdeLastFailureReport,
   type AdeRecoveryErrorCode,
   type ProjectDataRestoreResult,
+  type ProjectDataStatus,
   type ProjectRecoveryDiagnosis,
   type ProjectRepairReport,
   type RepairStepId,
@@ -18,9 +18,9 @@ import {
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
   ProjectRegistry,
-  clearLocalProjectDatabaseInitialized,
+  forgetLocalProjectDatabaseIdentity,
   isLocalProjectDataMissing,
-  localProjectDatabaseIdentity,
+  recordedLocalProjectDatabaseIdentity,
 } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { normalizeProjectRootPath } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import {
@@ -39,6 +39,7 @@ import {
   runQuickCheck,
 } from "../state/kvDb";
 import { readVolumeSpace } from "../storage/volume";
+import { findTrashedProjectData, forgetTrashLookup, restoreTrashedProjectData } from "./projectDataTrash";
 import { isLocalReleaseBuildOutputError } from "../../../shared/runtimeErrors";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import { clearLastFailure, readLastFailure } from "./lastFailureStore";
@@ -100,7 +101,7 @@ type BrainRestartOutcome =
 
 export type ProjectRecoveryConnectionPool = Pick<
   LocalRuntimeConnectionPool,
-  "getStatus" | "installServiceBestEffort" | "uninstallServiceBestEffort" | "callSync" | "ensureProject" | "callActionForRoot"
+  "getStatus" | "installServiceBestEffort" | "uninstallServiceBestEffort" | "callSync" | "ensureProject" | "callActionForRoot" | "removeProject"
 >;
 
 export type ProjectRecoveryServiceDeps = {
@@ -139,10 +140,6 @@ export type ProjectRecoveryServiceDeps = {
     projectRoot: string;
   }) => void;
   now?: () => number;
-  /** Whether ADE opened this project's data before and it is gone now. */
-  isProjectDataMissing?: (projectRoot: string) => boolean;
-  /** Folders a deleted `.ade` lands in: the Trash. Empty where ADE can't look. */
-  trashDirs?: () => string[];
   /**
    * What happened to an open project's database file while ADE had it open:
    * it disappeared, or another file took its place. Known even when the
@@ -152,94 +149,6 @@ export type ProjectRecoveryServiceDeps = {
   /** Closes this window's open copy of the project, so a fresh start reopens it clean. */
   closeProject?: (projectRoot: string) => Promise<void>;
 };
-
-function defaultTrashDirs(): string[] {
-  if (process.platform === "darwin") return [path.join(os.homedir(), ".Trash")];
-  if (process.platform === "linux") {
-    const dataHome = process.env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local", "share");
-    return [path.join(dataHome, "Trash", "files")];
-  }
-  // The Recycle Bin keeps files under opaque names; the screen says where to look.
-  return [];
-}
-
-/** Finder names a second `.ade` in the Trash ".ade 2", then ".ade 3", and so on. */
-const TRASHED_ADE_NAMES = [".ade", ...Array.from({ length: 49 }, (_, index) => `.ade ${index + 2}`)];
-
-/**
- * A trashed `.ade` belongs to this project when its database is the very file
- * this machine last opened for it (a move keeps the file's identity), or,
- * failing that, when the database's own project row names this project.
- */
-function trashedDataBelongsTo(
-  candidate: string,
-  projectRoot: string,
-  identity: { dev: string; ino: string } | null,
-): boolean {
-  const dbPath = path.join(candidate, "ade.db");
-  let stat: fs.BigIntStats;
-  try {
-    stat = fs.statSync(dbPath, { bigint: true });
-  } catch {
-    return false;
-  }
-  if (identity && stat.dev.toString() === identity.dev && stat.ino.toString() === identity.ino) return true;
-  let db: ReturnType<typeof openReadonlyDatabase> | null = null;
-  try {
-    db = openReadonlyDatabase(dbPath);
-    const rows = db.prepare("select root_path from projects").all() as Array<{ root_path?: unknown }>;
-    return rows.some((row) => typeof row.root_path === "string"
-      && normalizeProjectRootPath(row.root_path) === projectRoot);
-  } catch {
-    return false;
-  } finally {
-    try { db?.close(); } catch { /* already closed */ }
-  }
-}
-
-function moveEntry(from: string, to: string): void {
-  try {
-    fs.renameSync(from, to);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code !== "EXDEV") throw error;
-    // Another volume's Trash: copy, and leave the trashed copy where it is.
-    fs.cpSync(from, to, { recursive: true, errorOnExist: true, force: false });
-  }
-}
-
-/**
- * Moves a trashed `.ade` back into the project's `.ade`. While the data was
- * gone ADE may have written new files there (a new machine key, for one), so
- * on a clash the original wins, and the file written meanwhile takes its
- * place in the Trash. Nothing is deleted either way.
- */
-function restoreEntries(source: string, target: string): void {
-  for (const name of fs.readdirSync(source)) {
-    const from = path.join(source, name);
-    const to = path.join(target, name);
-    let existing: fs.Stats | null = null;
-    try {
-      existing = fs.lstatSync(to);
-    } catch {
-      existing = null;
-    }
-    if (!existing) {
-      moveEntry(from, to);
-      continue;
-    }
-    if (existing.isDirectory() && fs.lstatSync(from).isDirectory()) {
-      restoreEntries(from, to);
-      continue;
-    }
-    try {
-      fs.renameSync(to, `${from}.created-while-missing`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== "EXDEV") throw error;
-      fs.renameSync(to, `${to}.created-while-missing`);
-    }
-    moveEntry(from, to);
-  }
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -566,32 +475,29 @@ export class ProjectRecoveryService {
     }
   }
 
-  /** The newest `.ade` in the Trash whose database belongs to this project. */
-  findTrashedProjectData(projectRoot: string): string | null {
-    const normalizedRoot = normalizeProjectRootPath(projectRoot);
-    const identity = localProjectDatabaseIdentity(normalizedRoot);
-    const candidates: Array<{ path: string; mtimeMs: number }> = [];
-    for (const dir of (this.deps.trashDirs ?? defaultTrashDirs)()) {
-      let names: string[];
-      try {
-        names = fs.readdirSync(dir).filter((name) => name.startsWith(".ade"));
-      } catch {
-        // macOS refuses to list the Trash without Full Disk Access, but still
-        // opens a path it is given: try the names Finder gives a trashed .ade.
-        names = TRASHED_ADE_NAMES;
-      }
-      for (const name of names) {
-        const candidate = path.join(dir, name);
-        if (!trashedDataBelongsTo(candidate, normalizedRoot, identity)) continue;
-        try {
-          candidates.push({ path: candidate, mtimeMs: fs.statSync(candidate).mtimeMs });
-        } catch {
-          // Emptied while we looked.
-        }
-      }
-    }
-    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    return candidates[0]?.path ?? null;
+  /**
+   * The project ADE could not reopen at launch because its data was missing.
+   * Kept until the data is back or a fresh start, so a window that loads
+   * late, or reloads, still learns about it.
+   */
+  private startupProjectDataMissingRoot: string | null = null;
+
+  noteStartupProjectDataMissing(projectRoot: string): void {
+    this.startupProjectDataMissingRoot = path.resolve(projectRoot);
+  }
+
+  /**
+   * What the recovery screen should show for a project's data, or for the
+   * project that failed to reopen at launch when no root is given.
+   */
+  projectDataStatus(projectRoot?: string): ProjectDataStatus | null {
+    const root = projectRoot ? path.resolve(projectRoot) : this.startupProjectDataMissingRoot;
+    if (!root) return null;
+    const open = this.deps.openProjectDataStatus?.(root) ?? null;
+    if (open) return { projectRoot: root, status: open };
+    if (isLocalProjectDataMissing(root)) return { projectRoot: root, status: "missing" };
+    if (root === this.startupProjectDataMissingRoot) this.startupProjectDataMissingRoot = null;
+    return null;
   }
 
   /**
@@ -604,19 +510,18 @@ export class ProjectRecoveryService {
     if (fs.existsSync(path.join(target, "ade.db"))) {
       return { restored: false, reason: "This project already has ADE data, so nothing was moved." };
     }
-    const source = this.findTrashedProjectData(normalizedRoot);
+    forgetTrashLookup(normalizedRoot);
+    const source = findTrashedProjectData(normalizedRoot, recordedLocalProjectDatabaseIdentity(normalizedRoot));
     if (!source) {
       return { restored: false, reason: "ADE couldn't find this project's data in the Trash anymore." };
     }
     try {
-      if (!fs.existsSync(target)) {
-        moveEntry(source, target);
-      } else {
-        restoreEntries(source, target);
-      }
+      await restoreTrashedProjectData(source, target);
     } catch (error) {
       this.deps.logger.warn("project.data_restore_failed", { projectRoot: normalizedRoot, error: errorMessage(error) });
       return { restored: false, reason: "ADE couldn't move the folder back. Put it back from the Trash yourself, then choose Try again." };
+    } finally {
+      forgetTrashLookup(normalizedRoot);
     }
     this.deps.logger.info("project.data_restored", { projectRoot: normalizedRoot });
     return { restored: true };
@@ -638,12 +543,16 @@ export class ProjectRecoveryService {
     const record = new ProjectRegistry().findByRootPath(normalizedRoot);
     if (record) {
       try {
-        await this.deps.connectionPool.callSync("projects.remove", { projectId: record.projectId }, { timeoutMs: 30_000 });
+        await this.deps.connectionPool.removeProject(normalizedRoot, record.projectId);
       } catch (error) {
         this.deps.logger.warn("project.start_fresh_runtime_remove_failed", { projectRoot: normalizedRoot, error: errorMessage(error) });
       }
     }
-    clearLocalProjectDatabaseInitialized(normalizedRoot);
+    forgetLocalProjectDatabaseIdentity(normalizedRoot);
+    // An empty `.ade` is what a first open expects. Without it a project whose
+    // whole folder went missing still reads as missing data, whether or not
+    // the background service managed to drop its record above.
+    fs.mkdirSync(path.join(normalizedRoot, ".ade"), { recursive: true });
     this.deps.logger.info("project.started_fresh", { projectRoot: normalizedRoot });
   }
 
@@ -652,13 +561,10 @@ export class ProjectRecoveryService {
     // Ahead of everything else, and cheap: the screen polls this while the
     // person puts the folder back, and nothing else here can help until then.
     const openDataStatus = this.deps.openProjectDataStatus?.(normalizedRoot) ?? null;
-    if (openDataStatus === "missing" || (this.deps.isProjectDataMissing ?? isLocalProjectDataMissing)(normalizedRoot)) {
-      const trashed = this.findTrashedProjectData(normalizedRoot);
-      try {
-        this.deps.onTerminalDiagnosis?.({ code: "project_data_missing", projectRoot: normalizedRoot });
-      } catch {
-        // A listener must never cost the user their diagnosis.
-      }
+    // No automatic diagnostics report here: a folder the person moved or
+    // deleted is their action, not a fault in ADE.
+    if (openDataStatus === "missing" || isLocalProjectDataMissing(normalizedRoot)) {
+      const trashed = findTrashedProjectData(normalizedRoot, recordedLocalProjectDatabaseIdentity(normalizedRoot));
       return {
         state: "data_missing",
         code: "project_data_missing",
@@ -844,6 +750,20 @@ export class ProjectRecoveryService {
     opts: { onStep?: (step: RepairStepResult) => void },
   ): Promise<ProjectRepairReport> {
     const normalizedRoot = path.resolve(projectRoot);
+    // Repair opens the database, which would create an empty replacement for
+    // data that is only missing. The recovery screen offers restore instead.
+    if (isLocalProjectDataMissing(normalizedRoot)) {
+      return {
+        ok: false,
+        steps: [],
+        dbHealthy: null,
+        chatsTotal: null,
+        chatsNeedingAttention: null,
+        filesRemoved: 0,
+        failureCode: "project_data_missing",
+        nextAction: "This project's ADE data is missing. Restore it or start fresh instead.",
+      };
+    }
     const dbPath = path.join(normalizedRoot, ".ade", "ade.db");
     const steps: RepairStepResult[] = [];
     let dbHealthy: boolean | null = null;

@@ -22,7 +22,8 @@ import {
   type AppleDevicePreferences,
 } from "../../shared/appleDeviceSettings";
 import { GIT_UNTRUSTED_FOLDER_CODE, parseCodedErrorMessage } from "../lib/codedError";
-import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
+import { RECOVERY_COPY, toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
+import { defaultLaneId, pickRestoredLaneId } from "../lib/laneSelection";
 import { isWebClientMode } from "../lib/webClientMode";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
@@ -1580,6 +1581,8 @@ export type AppState = {
   setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
   clearProjectTransitionError: () => void;
+  /** Shows the full-screen recovery flow for a project whose ADE data went missing or was replaced. No-op while another transition error is up. */
+  reportProjectDataProblem: (rootPath: string, status: "missing" | "replaced") => void;
   setLanes: (lanes: LaneSummary[]) => void;
   setLaneDeleteProgressByLaneId: (
     next:
@@ -2197,13 +2200,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             sessionId: null,
           }
         : null;
+      const restoreLanes = warmLaneCache?.lanes ?? [];
+      // One survival check serves both the lane and its session: the session
+      // is kept only when the saved lane is still there.
+      const savedLaneSurvived = cachedSelection !== null
+        && restoreLanes.some((lane) => lane.id === cachedSelection.laneId);
       const restoredSelection = cachedSelection && {
-        laneId: warmLaneCache?.lanes.some((lane) => lane.id === cachedSelection.laneId)
-          ? cachedSelection.laneId
-          : warmLaneCache?.lanes.find((lane) => lane.laneType === "primary")?.id ?? warmLaneCache?.lanes[0]?.id ?? null,
-        sessionId: warmLaneCache?.lanes.some((lane) => lane.id === cachedSelection.laneId)
-          ? cachedSelection.sessionId
-          : null,
+        laneId: savedLaneSurvived ? cachedSelection.laneId : defaultLaneId(restoreLanes),
+        sessionId: savedLaneSurvived ? cachedSelection.sessionId : null,
       };
       return {
         project,
@@ -2347,9 +2351,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? prev.laneCacheByProject[nextKey] ?? readPersistedLaneCache(nextKey)
         : null;
       const savedLaneId = prev.laneSelectionByProject[nextKey]?.laneId;
-      const restoredLaneId = laneCache?.lanes.some((lane) => lane.id === savedLaneId)
-        ? savedLaneId
-        : laneCache?.lanes.find((lane) => lane.laneType === "primary")?.id ?? laneCache?.lanes[0]?.id ?? null;
+      const restoredLaneId = pickRestoredLaneId(laneCache?.lanes ?? [], savedLaneId);
       return {
         projectBinding,
         ...(bindingChanged ? {
@@ -2372,6 +2374,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
+  reportProjectDataProblem: (rootPath, status) => {
+    // The error already on screen wins; a later report must not replace it.
+    if (get().projectTransitionError) return;
+    set({
+      projectTransitionError: {
+        message: RECOVERY_COPY[status === "replaced" ? "data_replaced" : "data_missing"].headline,
+        code: status === "replaced" ? "db_path_changed" : "project_data_missing",
+        rootPath,
+      },
+    });
+  },
   dismissWorktreeOpenPrompt: () => set({ worktreeOpenPrompt: null }),
   dismissGitFolderTrustPrompt: () => {
     const prompt = get().gitFolderTrustPrompt;

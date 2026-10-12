@@ -42,7 +42,7 @@ single runtime through which desktop, `ade code`, and SSH-attached
 desktops see live lanes, agent chats, and work sessions.
 
 Each local project this machine has opened gets a marker file under
-`~/.ade/project-data/<projectId>.initialized` holding the database file's
+`~/.ade/project-data/<projectId>.json` holding the database file's
 device and inode. It lives outside `projects.json` because an older ADE that
 rewrites that file drops fields it does not know. If a registered project's
 `.ade` folder disappears, or a database the marker records is missing,

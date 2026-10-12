@@ -173,7 +173,7 @@ import {
   runGit,
   trustGitSafeDirectory,
 } from "./services/git/git";
-import { codedError, GIT_UNTRUSTED_FOLDER_CODE } from "../shared/codedError";
+import { codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError } from "../shared/codedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -219,7 +219,7 @@ import {
   remoteBindingMatchesProject,
 } from "./services/attention/attentionItemRouting";
 import { pathsEqual } from "./services/shared/pathCompare";
-import { assertLocalProjectDataAvailable, deriveProjectId, markLocalProjectDatabaseInitialized } from "../../../ade-cli/src/services/projects/projectRegistry";
+import { assertLocalProjectDataAvailable, deriveProjectId, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
 import {
   detectDefaultBaseRef,
@@ -430,6 +430,7 @@ import {
   runVerifiedRuntimeRestart,
 } from "./services/updates/runtimeRestartVerification";
 import { createProjectRecoveryService } from "./services/runtime/projectRecoveryService";
+import { createOpenProjectDataWatch } from "./services/runtime/openProjectDataWatch";
 import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnosticsService";
 import { resolveAutoDiagnosticsStateFile } from "./services/diagnostics/autoDiagnosticsStore";
 import { collectDiagnosticReport } from "./services/diagnostics/diagnosticReportService";
@@ -3178,62 +3179,36 @@ app.whenReady().then(async () => {
     },
   });
 
-  // The one recovery service for this machine. It owns `restartServiceAndWait`,
-  // the verified restart sequence behind the Repair button, and the post-update
-  // transaction below reuses it rather than growing a second restart path.
-  // Sharing the instance also keeps its repair/restart mutual exclusion real.
-  // The database file each open project started with. A project whose file
-  // disappears or is swapped while open gets the recovery screen instead of
-  // every panel failing; restoring the same file clears it.
-  let startupProjectDataMissingRoot: string | null = null;
-  ipcMain.handle(IPC.recoveryTakeStartupProjectDataMissing, (): string | null => {
-    const root = startupProjectDataMissingRoot;
-    startupProjectDataMissingRoot = null;
-    return root;
-  });
-  const openProjectDataIdentity = new Map<string, { dev: bigint; ino: bigint; reported: "missing" | "replaced" | null }>();
-  const projectDataWatchTimer = setInterval(() => {
-    for (const root of openProjectDataIdentity.keys()) {
-      if (!projectContexts.get(root)?.project) openProjectDataIdentity.delete(root);
-    }
-    for (const [root, ctx] of projectContexts) {
-      if (!ctx.project) continue;
-      let current: fs.BigIntStats | null = null;
-      try {
-        current = fs.statSync(path.join(root, ".ade", "ade.db"), { bigint: true });
-      } catch {
-        current = null;
-      }
-      const known = openProjectDataIdentity.get(root);
-      if (!known) {
-        // Nothing to compare against until the project has a database.
-        if (current) openProjectDataIdentity.set(root, { dev: current.dev, ino: current.ino, reported: null });
-        continue;
-      }
-      const status = !current ? "missing" : current.dev !== known.dev || current.ino !== known.ino ? "replaced" : null;
-      if (status === known.reported) continue;
-      known.reported = status;
-      if (!status) continue;
-      localRuntimeLogger.warn("project.data_moved_while_open", { projectRoot: root, status });
+  // A project whose database disappears or is swapped while open gets the
+  // recovery screen instead of every panel failing.
+  const openProjectDataWatch = createOpenProjectDataWatch({
+    openRoots: function* () {
+      for (const [root, ctx] of projectContexts) if (ctx.project) yield root;
+    },
+    onChange: (projectRoot, status) => {
+      localRuntimeLogger.warn("project.data_moved_while_open", { projectRoot, status });
       for (const win of BrowserWindow.getAllWindows()) {
         if (win.isDestroyed()) continue;
         try {
-          win.webContents.send(IPC.recoveryProjectDataMissing, { projectRoot: root, status });
+          win.webContents.send(IPC.recoveryProjectDataMissing, { projectRoot, status });
         } catch {
           // A closing window has nothing to show it in.
         }
       }
-    }
-  }, 5_000);
-  projectDataWatchTimer.unref?.();
+    },
+  });
+  app.on("will-quit", () => openProjectDataWatch.dispose());
+  // The one recovery service for this machine. It owns `restartServiceAndWait`,
+  // the verified restart sequence behind the Repair button, and the post-update
+  // transaction below reuses it rather than growing a second restart path.
+  // Sharing the instance also keeps its repair/restart mutual exclusion real.
   const machineRecoveryService = createProjectRecoveryService({
     adeHome: machineAdeLayout.adeDir,
     logger: localRuntimeLogger,
     connectionPool: localRuntimePool,
-    openProjectDataStatus: (projectRoot) =>
-      openProjectDataIdentity.get(normalizeProjectRoot(projectRoot))?.reported ?? null,
+    openProjectDataStatus: (projectRoot) => openProjectDataWatch.status(normalizeProjectRoot(projectRoot)),
     closeProject: async (projectRoot) => {
-      openProjectDataIdentity.delete(normalizeProjectRoot(projectRoot));
+      openProjectDataWatch.forget(normalizeProjectRoot(projectRoot));
       await closeProjectByPath(projectRoot);
     },
     // One call at the point the diagnosis is final. The service's own budget
@@ -3469,7 +3444,7 @@ app.whenReady().then(async () => {
         hasSyncPeers,
       }),
     );
-    markLocalProjectDatabaseInitialized(projectRoot, logger);
+    recordLocalProjectDatabaseIdentity(projectRoot, logger);
     const keybindingsService = createKeybindingsService({ db });
     const agentToolsService = createAgentToolsService({ logger });
     const adeCliService = createAdeCliService({
@@ -6198,7 +6173,7 @@ app.whenReady().then(async () => {
       // this dormant fallback has no authoritative local peer signal.
       hasSyncPeers: () => true,
     });
-    markLocalProjectDatabaseInitialized(projectRoot, logger);
+    recordLocalProjectDatabaseIdentity(projectRoot, logger);
     const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
     const storageInsightsService = createStorageInsightsService({
       projectRoot,
@@ -9393,8 +9368,8 @@ app.whenReady().then(async () => {
     } catch (error) {
       // The window asks for this once it loads and shows the recovery
       // screen, instead of a bare welcome screen with no word of why.
-      if ((error as { code?: unknown })?.code === "project_data_missing") {
-        startupProjectDataMissingRoot = normalizeProjectRoot(startupProject.rootPath);
+      if (isCodedError(error, "project_data_missing")) {
+        machineRecoveryService.noteStartupProjectDataMissing(normalizeProjectRoot(startupProject.rootPath));
       }
       setForegroundProject(null);
       replaceDormantContext();
