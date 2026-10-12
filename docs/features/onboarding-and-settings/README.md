@@ -439,10 +439,17 @@ Renderer — onboarding:
   `components/account/useSignInFlow.ts` — the launch gate's sign-in. The card is
   a frosted glass panel floating over the window backdrop (styled by
   `onboarding/launchGateGlass.css`, which needs an `.ade-gate` ancestor for its
-  tokens), with the mark, one heading, the sign-in button, the awaiting/cancel
-  line, and the ADE Relay help affordance. `useSignInFlow` owns the shared
-  sign-in state — the browser login, the four session-state words, and the brain
-  repair offered when a stored session cannot be read — and the Account page's
+  tokens), with the mark, one heading, the sign-in button, the **Sign in with
+  your phone or another device** link, the awaiting/cancel line, and the ADE
+  Relay help affordance. That link starts a device-authorization sign-in that
+  opens no browser on this computer: `AnotherDeviceSignInPanel` draws the
+  verification link as a QR code and shows the user code, so a phone or another
+  computer completes the sign-in and the password is never typed here (a VM, a
+  shared machine). It is absent in the hosted web client, which is a browser
+  already. `useSignInFlow` owns the shared sign-in state — the browser login,
+  the sign-in from another device (`lib/accountDeviceLogin.ts`), the four
+  session-state words, and the brain repair offered when a stored session
+  cannot be read — and the Account page's
   `SignInCard` draws that same state its own way, so the two surfaces cannot
   drift on what "expired" or "unreadable" means.
 - `apps/desktop/src/renderer/components/account/AccountSignedOutBanner.tsx` —

@@ -42,6 +42,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { ModernPage, ModernRows, ModernSection } from "../settings/primitives";
 import "./accountPage.css";
+import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
 import { useSignInFlow } from "./useSignInFlow";
 
 export { describeThisComputerMissing } from "./YourMacsCard";
@@ -106,7 +107,7 @@ export function SignInCard({
    */
   sessionState?: AdeAccountSessionState;
 }) {
-  const { phase, error, beginLogin, cancel, busy, unreadable, expired, notice, repair, signInLabel } = useSignInFlow({
+  const { phase, error, beginLogin, cancel, busy, unreadable, expired, notice, repair, signInLabel, otherDevice } = useSignInFlow({
     onSignedIn,
     sessionState,
   });
@@ -214,6 +215,10 @@ export function SignInCard({
               Sign in anyway
             </button>
           </div>
+        ) : otherDevice.prompt ? (
+          <div style={{ marginTop: 22, color: COLORS.textPrimary }}>
+            <AnotherDeviceSignInPanel prompt={otherDevice.prompt} onCancel={otherDevice.cancel} />
+          </div>
         ) : (
           <div style={{ marginTop: 22 }}>
             <button
@@ -233,6 +238,28 @@ export function SignInCard({
               {busy ? <CircleNotch size={16} weight="bold" className="animate-spin" /> : <ArrowRight size={17} weight="bold" />}
               {signInLabel}
             </button>
+            {otherDevice.available ? (
+              <button
+                type="button"
+                disabled={!configured || otherDevice.starting}
+                onClick={() => void otherDevice.begin()}
+                style={{
+                  display: "block",
+                  margin: "10px auto 0",
+                  border: 0,
+                  padding: "6px 8px",
+                  background: "transparent",
+                  color: COLORS.textSecondary,
+                  fontFamily: SANS_FONT,
+                  fontSize: 12.5,
+                  cursor: !configured || otherDevice.starting ? "not-allowed" : "pointer",
+                  opacity: !configured || otherDevice.starting ? 0.55 : 1,
+                  WebkitAppRegion: "no-drag",
+                } as CSSProperties}
+              >
+                Sign in with your phone or another device
+              </button>
+            ) : null}
             <div
               style={{
                 marginTop: 10,

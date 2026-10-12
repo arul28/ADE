@@ -1,4 +1,4 @@
-import { isLoopbackHostname } from "./trustedOrigin";
+import { isLoopbackHostname, trustedHttpsOrigin } from "./trustedOrigin";
 import { boundedDisplayText } from "./displayText";
 
 const DEVICE_CODE_TTL_SECONDS = 10 * 60;
@@ -11,11 +11,28 @@ const DEVICE_AUTHORIZATION_RETENTION_MS = 60 * 60_000;
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_MACHINE_KEY_CHARS = 128;
 const MAX_MACHINE_NAME_CHARS = 80;
+const CLERK_BACKEND_API_URL = "https://api.clerk.com/v1";
+/** Long enough to open the sheet on the phone; the ticket is spent at once. */
+const APP_APPROVAL_TICKET_TTL_SECONDS = 120;
 
 export interface DeviceAuthorizationEnv {
   DB: D1Database;
   CLERK_ISSUER: string;
   CLERK_OAUTH_CLIENT_ID: string;
+  /**
+   * Clerk Backend API key. Optional: only `/device/approve` needs it, to mint
+   * the one-time sign-in ticket for a user who approved from a signed-in ADE
+   * app. Without it that route answers 503 and the app falls back to the
+   * browser page, which needs no key.
+   */
+  CLERK_SECRET_KEY?: string;
+  /**
+   * Origin of the page a person opens to confirm a sign-in, when it is not
+   * this worker: `https://ade-app.dev`, whose `/device` opens the ADE phone
+   * app as a universal link and otherwise redirects a browser here. Optional;
+   * unset, the link points at this worker's own `/device`.
+   */
+  DEVICE_PAGE_ORIGIN?: string;
 }
 
 export type DeviceAuthorizationRequestOptions = {
@@ -37,6 +54,15 @@ export type DeviceAuthorizationRequestOptions = {
     accessToken: string;
     machineKey: string;
   }) => Promise<string | null>;
+  /**
+   * Verifies the bearer of a `/device/approve` request and names its user.
+   * Injected for the same reason as `mintPairingGrant`: Clerk token
+   * verification stays in `callerToken.ts`. Without it the route refuses
+   * every caller.
+   */
+  authenticateCaller?: (request: Request) => Promise<
+    { ok: true; userId: string } | { ok: false; reason: string }
+  >;
 };
 
 type DeviceAuthorizationRow = {
@@ -398,7 +424,7 @@ async function handleDeviceCode(
     }
   }
 
-  const origin = new URL(request.url).origin;
+  const origin = trustedHttpsOrigin(env.DEVICE_PAGE_ORIGIN) ?? new URL(request.url).origin;
   const verificationUri = `${origin}/device`;
   return json({
     device_code: deviceCode,
@@ -489,14 +515,35 @@ async function handleDeviceApproval(
     return approvalMessage("Sign-in already started", "Finish the Clerk sign-in already open in this browser.", 409);
   }
 
+  const start = await startClerkAuthorization(env, row.device_code, url.origin, options);
+  if (start === "unconfigured") {
+    return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
+  }
+  if (start === "unavailable") {
+    return approvalMessage("Code unavailable", "Return to ADE and start sign-in again.", 409);
+  }
+  return continueToSignIn(start.authorizeUrl);
+}
+
+/**
+ * Claim a pending device authorization for one Clerk sign-in and build its
+ * authorize URL. The claim is atomic, so a code confirmed twice (two tabs, or
+ * the browser page and the app) starts exactly one sign-in.
+ */
+async function startClerkAuthorization(
+  env: DeviceAuthorizationEnv,
+  deviceCode: string,
+  origin: string,
+  options: Required<Pick<DeviceAuthorizationRequestOptions, "now" | "randomBytes">>,
+): Promise<{ authorizeUrl: string } | "unconfigured" | "unavailable"> {
   let issuer: string;
   try {
     issuer = normalizeIssuer(env.CLERK_ISSUER);
   } catch {
-    return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
+    return "unconfigured";
   }
   const clientId = env.CLERK_OAUTH_CLIENT_ID.trim();
-  if (!clientId) return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
+  if (!clientId) return "unconfigured";
 
   const codeVerifier = bytesToBase64Url(options.randomBytes(32));
   const codeChallenge = await sha256(codeVerifier);
@@ -507,20 +554,126 @@ async function handleDeviceApproval(
        set code_verifier = ?, oauth_state_hash = ?
      where device_code = ? and status = 'pending' and expires_at > ?
        and code_verifier is null and oauth_state_hash is null
-  `).bind(codeVerifier, oauthStateHash, row.device_code, now).run();
-  if (changes(updated) < 1) return approvalMessage("Code unavailable", "Return to ADE and start sign-in again.", 409);
+  `).bind(codeVerifier, oauthStateHash, deviceCode, options.now()).run();
+  if (changes(updated) < 1) return "unavailable";
 
-  const redirectUri = `${url.origin}/device/callback`;
-  const authorizeUrl = `${issuer}/oauth/authorize?${encodeQuery([
-    ["response_type", "code"],
-    ["client_id", clientId],
-    ["redirect_uri", redirectUri],
-    ["code_challenge", codeChallenge],
-    ["code_challenge_method", "S256"],
-    ["state", oauthState],
-    ["scope", "openid profile email offline_access"],
-  ])}`;
-  return continueToSignIn(authorizeUrl);
+  return {
+    authorizeUrl: `${issuer}/oauth/authorize?${encodeQuery([
+      ["response_type", "code"],
+      ["client_id", clientId],
+      ["redirect_uri", `${origin}/device/callback`],
+      ["code_challenge", codeChallenge],
+      ["code_challenge_method", "S256"],
+      ["state", oauthState],
+      ["scope", "openid profile email offline_access"],
+    ])}`,
+  };
+}
+
+/**
+ * Approval from a signed-in ADE app, for a person who scanned the sign-in QR
+ * code with a phone that already has their account.
+ *
+ * `GET /device/approve?user_code=` names the computer, so the app can ask
+ * before anything changes, and reports `status`, so the app can tell when the
+ * sign-in it opened has finished. `POST /device/approve` answers with one URL for the
+ * app to open in a web sheet: a one-time Clerk sign-in ticket for the caller,
+ * which continues to this sign-in's authorize URL. The person types no
+ * password, and the session the computer receives is the caller's own, because
+ * the ticket is minted for the user the bearer was verified as.
+ *
+ * The browser page (`/device`) stays the path for everything else, and the
+ * path the app falls back to when this route answers 503.
+ */
+async function handleDeviceAppApproval(
+  request: Request,
+  env: DeviceAuthorizationEnv,
+  options: Required<Pick<DeviceAuthorizationRequestOptions, "fetchImpl" | "now" | "randomBytes">>
+    & Pick<DeviceAuthorizationRequestOptions, "authenticateCaller">,
+): Promise<Response> {
+  if (request.method !== "GET" && request.method !== "POST") {
+    return new Response("method not allowed", { status: 405 });
+  }
+  const caller = await options.authenticateCaller?.(request);
+  if (!caller?.ok) {
+    return caller?.reason === "authentication unavailable"
+      ? json({ error: "unavailable" }, { status: 503 })
+      : json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const url = new URL(request.url);
+  const rawUserCode = request.method === "GET"
+    ? url.searchParams.get("user_code")
+    : nonEmptyString((await parseJsonBody(request))?.user_code);
+  const userCode = rawUserCode ? normalizeUserCode(rawUserCode) : null;
+  if (!userCode) {
+    return json({ error: "invalid_request", error_description: "user_code is required" }, { status: 400 });
+  }
+
+  const now = options.now();
+  // Only the POST is rate limited, like the browser page: the read changes
+  // nothing, and the app repeats it while its sign-in sheet is open.
+  if (
+    request.method === "POST"
+    && !(await checkDeviceRateLimit(request, env, now, "approval", APPROVAL_RATE_LIMIT_MAX_ATTEMPTS))
+  ) {
+    return json(
+      { error: "rate_limited" },
+      { status: 429, headers: { "retry-after": String(DEVICE_RATE_LIMIT_WINDOW_MS / 1000) } },
+    );
+  }
+  const row = await findByUserCode(env, userCode);
+  if (!row) return json({ error: "not_found" }, { status: 404 });
+  if (row.status === "approved" || row.status === "consumed") {
+    return request.method === "GET"
+      ? json({ status: "approved", machine_name: null })
+      : json({ error: "already_used" }, { status: 409 });
+  }
+  if (row.expires_at <= now || row.status === "expired") return json({ error: "expired" }, { status: 410 });
+  const started = row.status !== "pending" || Boolean(row.code_verifier || row.oauth_state_hash);
+  if (request.method === "GET") {
+    return json({
+      status: row.status === "error" ? "failed" : started ? "started" : "pending",
+      // The client-chosen name is shown only while the code can be confirmed.
+      machine_name: started ? null : row.machine_name,
+    });
+  }
+  if (started) return json({ error: "already_used" }, { status: 409 });
+
+  const secretKey = env.CLERK_SECRET_KEY?.trim();
+  if (!secretKey) return json({ error: "unavailable" }, { status: 503 });
+
+  // Ticket first, claim second: a ticket that is never handed out expires on
+  // its own, but a claim with no ticket would leave the code unusable in the
+  // browser too.
+  let ticketUrl: URL;
+  try {
+    const response = await options.fetchImpl(`${CLERK_BACKEND_API_URL}/sign_in_tokens`, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${secretKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        user_id: caller.userId,
+        expires_in_seconds: APP_APPROVAL_TICKET_TTL_SECONDS,
+      }),
+    });
+    const body: unknown = await response.json().catch(() => ({}));
+    const rawUrl = response.ok && isRecord(body) ? nonEmptyString(body.url) : null;
+    if (!rawUrl) return json({ error: "unavailable" }, { status: 502 });
+    ticketUrl = new URL(rawUrl);
+    if (ticketUrl.protocol !== "https:") return json({ error: "unavailable" }, { status: 502 });
+  } catch {
+    return json({ error: "unavailable" }, { status: 502 });
+  }
+
+  const start = await startClerkAuthorization(env, row.device_code, url.origin, options);
+  if (start === "unconfigured") return json({ error: "unavailable" }, { status: 503 });
+  if (start === "unavailable") return json({ error: "already_used" }, { status: 409 });
+  ticketUrl.searchParams.set("redirect_url", start.authorizeUrl);
+  return json({ url: ticketUrl.toString(), machine_name: row.machine_name });
 }
 
 async function handleDeviceCallback(
@@ -750,9 +903,11 @@ export async function handleDeviceAuthorizationRequest(
     now: options.now ?? Date.now,
     randomBytes: options.randomBytes ?? defaultRandomBytes,
     mintPairingGrant: options.mintPairingGrant,
+    authenticateCaller: options.authenticateCaller,
   };
   if (pathname === "/device/code") return handleDeviceCode(request, env, resolved);
   if (pathname === "/device") return handleDeviceApproval(request, env, resolved);
+  if (pathname === "/device/approve") return handleDeviceAppApproval(request, env, resolved);
   if (pathname === "/device/callback") return handleDeviceCallback(request, env, resolved);
   if (pathname === "/device/token") return handleDeviceToken(request, env, resolved);
   return null;

@@ -12,6 +12,11 @@
           {
             "/": "/pair*",
             "comment": "ADE mobile pairing"
+          },
+          {
+            "/": "/device",
+            "?": { "user_code": "?*" },
+            "comment": "ADE sign-in approval for another computer; a link with no code stays in the browser"
           }
         ]
       }

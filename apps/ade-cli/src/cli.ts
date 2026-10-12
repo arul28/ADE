@@ -408,6 +408,8 @@ import {
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
 import { getSharedAccountAuthService } from "./services/account/sharedAccountAuthService";
+import { renderTerminalQr } from "./services/account/terminalQr";
+import { detectTerminalCapabilities } from "./commands/setupRender";
 import {
   DEFAULT_SYNC_HOST_PORT,
   SYNC_HOST_MAX_PORT,
@@ -1354,14 +1356,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade connect                  Connect this machine (prompts to sign in)
     $ ade connect --status --text  Report only; never signs in or installs
-    $ ade connect --headless       Sign in with the copy-paste device flow
+    $ ade connect --headless       Sign in from another device (QR code, link, and code)
     $ ade connect --no-login       Install the service only; stay local/LAN-only
 
   Flags:
     --status                       Report the three steps without changing anything.
     --no-login                     Skip sign-in. The machine stays local/LAN-only.
     --no-service                   Do not register the login service.
-    --headless                     Force the copy-paste device authorization flow.
+    --headless                     Sign in from another device only. The password is
+                                   never typed on this machine.
     --timeout <seconds>            Bound the wait for the account-directory row
                                    (default 60). Also spelled --max-wait.
 
@@ -1403,14 +1406,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   provider keys to every machine you use, and connects them to each other.
   Work already on this machine is never blocked while you are signed out.
 
-    $ ade login                    Sign in with loopback OAuth or auto-detected device flow
-    $ ade login --headless         Print a verification URL + code for another browser
+    $ ade login                    Sign in in the browser here, or scan the QR code with a phone
+    $ ade login --headless         Open no browser here: print the QR code, a link, and a code
     $ ade logout                   Clear the shared machine account session
     $ ade auth status --text       Show the shared machine account status
     $ ade account token create     Print a self-contained durable token once for agent/CI setup
 
   Flags (login):
-    --headless                     Force the copy-paste device authorization flow.
+    --headless                     Sign in from another device only. The password is
+                                   never typed on this machine.
     --max-wait <seconds>           Give up waiting before the authorization
                                    session expires.
 `,
@@ -32364,6 +32368,8 @@ async function runAccountLogin(
   // Track either pending flow so every non-success exit drops daemon-held
   // verifier/secret state. Cleared on success so a completed login is not cancelled.
   let pendingSessionId: string | null = null;
+  // The device sign-in that runs beside a browser sign-in, when there is one.
+  let otherDeviceSessionId: string | null = null;
 
   try {
     const explicitHeadless = plan.explicitHeadless || options.headless;
@@ -32440,6 +32446,30 @@ async function runAccountLogin(
       };
     };
 
+    // How to finish a device sign-in somewhere else. A phone can scan the
+    // code, so the sign-in happens there and no password is typed on this
+    // machine. Only a real terminal gets the code: a pipe or a log file gets
+    // the plain link.
+    const otherDeviceInstructions = (
+      lead: string,
+      device: { userCode: string; verificationUri: string; verificationUriComplete: string | null },
+    ): string => {
+      const terminal = detectTerminalCapabilities(process.stderr);
+      const qr = terminal.unicode
+        ? renderTerminalQr(device.verificationUriComplete ?? device.verificationUri, {
+          color: terminal.color,
+          maxColumns: process.stderr.columns,
+        })
+        : null;
+      return (
+        (qr
+          ? `${lead}, scan this code with your phone:\n\n${qr}\n\n` +
+            `Or open ${device.verificationUri} and enter code: ${device.userCode}\n`
+          : `${lead}, open ${device.verificationUri} and enter code: ${device.userCode}\n`) +
+        (device.verificationUriComplete ? `Or open: ${device.verificationUriComplete}\n` : "")
+      );
+    };
+
     const runDeviceFlow = async (
       onStarted?: () => Promise<void>,
     ): Promise<{ output: string; exitCode: number }> => {
@@ -32462,8 +32492,7 @@ async function runAccountLogin(
         : 5;
       const deadlineMs = deadlineFor(expiresAt);
       process.stderr.write(
-        `\nTo finish signing in, open ${verificationUri} and enter code: ${userCode}\n` +
-        (verificationUriComplete ? `Or open: ${verificationUriComplete}\n` : "") +
+        `\n${otherDeviceInstructions("To finish signing in", { userCode, verificationUri, verificationUriComplete })}` +
         "\nWaiting for sign-in…\n",
       );
       while (true) {
@@ -32501,6 +32530,8 @@ async function runAccountLogin(
     }
     pendingSessionId = sessionId;
     const openResult = openUrlViaOs(authorizeUrl);
+    // Set when a device sign-in already failed to start, so it is tried once.
+    let deviceSignInUnavailable = false;
     if (detectAccountLoginMode({ browserOpenFailed: openResult.failed }) === "device") {
       process.stderr.write(
         `Could not open the browser automatically: ${openResult.message}\nTrying device sign-in.\n`,
@@ -32517,38 +32548,121 @@ async function runAccountLogin(
         });
       } catch (error) {
         if (deviceFlowStarted) throw error;
+        deviceSignInUnavailable = true;
         process.stderr.write(
           "Device sign-in is unavailable; continuing with manual browser sign-in.\n",
         );
       }
     }
+    // The browser on this machine is one way in. A device sign-in runs beside
+    // it, so the same command also works from a phone or another computer:
+    // whichever one the person completes signs this machine in. It is
+    // optional. When it cannot start, the browser sign-in continues alone.
+    let otherDevice: {
+      sessionId: string;
+      intervalSec: number;
+      expiresAt: string | null;
+      nextPollAtMs: number;
+    } | null = null;
+    let otherDeviceText = "";
+    try {
+      const deviceStart = deviceSignInUnavailable
+        ? {}
+        : await runAccountAction("startDeviceLogin", { projectRoot });
+      const deviceSessionId = asString(deviceStart.sessionId);
+      const userCode = asString(deviceStart.userCode);
+      const verificationUri = asString(deviceStart.verificationUri);
+      if (deviceSessionId && userCode && verificationUri) {
+        const intervalSec = typeof deviceStart.intervalSec === "number" && deviceStart.intervalSec > 0
+          ? deviceStart.intervalSec
+          : 5;
+        otherDevice = {
+          sessionId: deviceSessionId,
+          intervalSec,
+          expiresAt: asString(deviceStart.expiresAt),
+          nextPollAtMs: Date.now() + intervalSec * 1000,
+        };
+        otherDeviceSessionId = deviceSessionId;
+        otherDeviceText = `\n${otherDeviceInstructions("To sign in on another device instead", {
+          userCode,
+          verificationUri,
+          verificationUriComplete: asString(deviceStart.verificationUriComplete),
+        })}`;
+      }
+    } catch {
+      // Fixed fallback only: the browser sign-in below needs none of this.
+    }
     process.stderr.write(
-      `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n\nWaiting for sign-in…\n`,
+      `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n` +
+      otherDeviceText +
+      "\nWaiting for sign-in…\n",
     );
-    const deadlineMs = deadlineFor(expiresAt);
+    // The two sessions expire at different times; wait for the later one.
+    const browserDeadlineMs = deadlineFor(expiresAt);
+    const deadlineMs = otherDevice
+      ? Math.max(browserDeadlineMs, deadlineFor(otherDevice.expiresAt))
+      : browserDeadlineMs;
+    let browserFailure: { message: string; authStatus: JsonObject } | null = null;
     while (true) {
       await sleep(Number.isFinite(deadlineMs)
         ? Math.min(500, Math.max(1, deadlineMs - Date.now()))
         : 500);
-      const poll = await runAccountAction("pollLogin", { sessionId });
-      const pollStatus = asString(poll.status);
-      const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
-      if (pollStatus === "signed_in") return finishSignedIn(authStatus);
-      if (pollStatus === "pending") {
-        if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
-          return timedOut("pollLogin", sessionId);
+      if (!browserFailure) {
+        const poll = await runAccountAction("pollLogin", { sessionId });
+        const pollStatus = asString(poll.status);
+        const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
+        if (pollStatus === "signed_in") return finishSignedIn(authStatus);
+        if (pollStatus !== "pending") {
+          browserFailure = {
+            message: asString(poll.message) ?? "ADE account sign-in failed.",
+            authStatus,
+          };
         }
-        continue;
       }
-      const message = asString(poll.message) ?? "ADE account sign-in failed.";
-      process.stderr.write(`${message}\n`);
-      return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 1 };
+      if (otherDevice && Date.now() >= otherDevice.nextPollAtMs) {
+        const poll = await runAccountAction("pollDeviceLogin", { sessionId: otherDevice.sessionId });
+        const pollStatus = asString(poll.status);
+        if (pollStatus === "signed_in") {
+          // The other device won. Close this machine's listener first, so the
+          // browser tab that is still open here cannot complete a second time.
+          try {
+            await runAccountAction("cancelLogin", { sessionId });
+          } catch {
+            // The listener expires on its own.
+          }
+          otherDeviceSessionId = null;
+          return finishSignedIn(isRecord(poll.authStatus) ? poll.authStatus : poll);
+        }
+        if (pollStatus === "pending" || pollStatus === "slow_down") {
+          if (typeof poll.intervalSec === "number" && poll.intervalSec > 0) {
+            otherDevice.intervalSec = poll.intervalSec;
+          }
+          otherDevice.nextPollAtMs = Date.now() + otherDevice.intervalSec * 1000;
+        } else {
+          otherDevice = null;
+        }
+      }
+      if (browserFailure && !otherDevice) {
+        process.stderr.write(`${browserFailure.message}\n`);
+        return { output: formatOutput(browserFailure.authStatus, options, "account-auth"), exitCode: 1 };
+      }
+      if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+        if (otherDevice) {
+          const finalPoll = await runAccountAction("pollDeviceLogin", { sessionId: otherDevice.sessionId });
+          if (asString(finalPoll.status) === "signed_in") {
+            otherDeviceSessionId = null;
+            return finishSignedIn(isRecord(finalPoll.authStatus) ? finalPoll.authStatus : finalPoll);
+          }
+        }
+        return timedOut("pollLogin", sessionId);
+      }
     }
   } finally {
     // Best-effort and idempotent: cancellation must not mask the real result.
-    if (pendingSessionId) {
+    for (const sessionId of [pendingSessionId, otherDeviceSessionId]) {
+      if (!sessionId) continue;
       try {
-        await runAccountAction("cancelLogin", { sessionId: pendingSessionId });
+        await runAccountAction("cancelLogin", { sessionId });
       } catch {
         // The pending session may already be gone; the exit result is what matters.
       }

@@ -247,8 +247,22 @@ Send-to-Mac:
   `applinks:ade-app.dev`; `ADEApp.swift` routes
   `NSUserActivityTypeBrowsingWeb` activities into the router; the AASA file is
   served from `apps/web/public/.well-known/apple-app-site-association`
-  (appID `VQ372F39G6.com.ade.ios`, claiming only `/open*` and `/pair*`) with
+  (appID `VQ372F39G6.com.ade.ios`, claiming only `/open*`, `/pair*`, and
+  `/device` when it carries a `user_code`) with
   an `application/json` header set in `apps/web/vercel.json`.
+- `apps/ios/ADE/Views/Account/DeviceSignInApprovalSheet.swift` and
+  `apps/ios/ADE/Services/DeviceSignInApproval.swift` — the sign-in link of
+  another computer, `https://ade-app.dev/device?user_code=ABCD-EFGH` (also
+  `ade://device?user_code=…`). It is the QR code that `ade connect` and the
+  desktop sign-in card show. `DeepLinkRouter` posts `.adeDeviceSignInRequested`
+  and `ADEApp` presents the sheet: it reads the computer's name from the
+  account directory (`GET /device/approve`), and **Approve** opens the
+  directory's one-time Clerk sign-in in an ephemeral web sheet, where the
+  person taps **Allow** and types no password. The sheet polls the directory
+  and closes itself when the computer is signed in. A phone that is signed
+  out, or a directory that cannot approve from an app, hands off to the
+  browser page. In a browser, `apps/web/api/device.ts` redirects the same link
+  to the directory's `/device` page.
 - `apps/ios/ADE/Views/Deeplinks/SendToMacCard.swift` — SwiftUI sheet
   bound to `.adeSendToMacRequested`. Parses the URL (including the portable
   envelope) into a `SendToMacTarget` for a human-readable headline / detail,

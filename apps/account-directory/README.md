@@ -7,6 +7,11 @@ or changed.
 The Worker also hosts ADE's device-authorization bridge for headless sign-in:
 
 - `POST /device/code` creates a short-lived code bound to a daemon-generated secret.
+  The `verification_uri` it returns is this worker's own `/device`, or
+  `<DEVICE_PAGE_ORIGIN>/device` when that var is set. Production sets it to
+  `https://ade-app.dev`: that link opens ADE Mobile as a universal link, and
+  the website redirects a browser to this worker's `/device`. Deploy the
+  website before a worker that sets it.
   An optional `machine_key` names the machine signing in, which is what a pairing
   grant (below) can later be spent on. An optional `machine_name` (cleaned, at
   most 80 characters) is display text only.
@@ -23,6 +28,21 @@ The Worker also hosts ADE's device-authorization bridge for headless sign-in:
   meta refresh and a link), not a 302: browsers apply the page's
   `form-action 'self'` to every redirect after a form POST, and Clerk's
   authorize URL redirects on through more hosts.
+- `GET /device/approve?user_code=` and `POST /device/approve` are the approval
+  from a signed-in ADE app (a phone that scanned the sign-in QR code). Both take
+  an account bearer. `GET` answers `{ status, machine_name }`, so the app can
+  ask before anything changes and can tell when the sign-in it opened has
+  finished (`pending`, `started`, `approved`, `failed`); it is not rate
+  limited, like the browser page. `POST` mints a one-time Clerk sign-in ticket for the
+  verified caller (`CLERK_SECRET_KEY`, 120 seconds) and answers `{ url }`: the
+  ticket link with `redirect_url` set to this sign-in's authorize URL. The app
+  opens it in a web sheet, Clerk signs the caller in with no password and shows
+  its consent page, and the sign-in ends at `/device/callback` like any other.
+  The ticket is for the user the bearer was verified as, so the computer gets
+  the approver's own session. Errors are JSON: 401 `unauthorized`, 404
+  `not_found`, 410 `expired`, 409 `already_used`, 429 `rate_limited`, and
+  503/502 `unavailable` (no `CLERK_SECRET_KEY`, or Clerk refused). On
+  `unavailable` the app opens the `/device` page instead.
 - `GET /device/callback` exchanges the Clerk code and holds the token pair briefly.
 - `POST /device/token` lets the initiating daemon redeem the pair once, and returns
   a `pairing_grant` alongside it when the request declared a `machine_key`.
@@ -669,6 +689,9 @@ deployment:
    of the hosted ADE web client; this is the only cross-origin caller allowed
    to send an account bearer to `GET /account/machines`. Set `PUSH_RELAY_URL`
    to the push relay origin; machine removal fails loudly without it. Set
+   `CLERK_SECRET_KEY` (`npx wrangler secret put CLERK_SECRET_KEY`) to the Clerk
+   Backend API key of the same Clerk instance; it is optional, and only
+   `/device/approve` uses it. Set
    `DIRECTORY_AUTH_SECRET` (`npx wrangler secret put DIRECTORY_AUTH_SECRET`) to
    the same value configured on the push relay; machine removal and re-pairing
    both fail loudly without it.

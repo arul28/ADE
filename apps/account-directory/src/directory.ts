@@ -1140,6 +1140,8 @@ async function handleRequestCore(
       ...args,
       nowMs: (options.now ?? Date.now)(),
     })),
+    // `/device/approve` is the one device route that takes an account bearer.
+    authenticateCaller: options.authenticateCaller ?? ((caller) => authenticate(caller, env)),
   });
   if (deviceResponse) return deviceResponse;
 

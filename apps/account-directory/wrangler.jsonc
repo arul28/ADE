@@ -17,6 +17,13 @@
   // trusted to un-revoke a machine. Unset on either side fails closed: machine
   // removal reports 502 and re-pairing is refused.
   // Repeat the secret for `env.production` (`wrangler secret put --env production`).
+  //
+  // OPTIONAL SECRET — CLERK_SECRET_KEY
+  // The Clerk Backend API key of the Clerk instance this worker uses. Only
+  // `/device/approve` reads it, to mint the one-time sign-in ticket for a user
+  // who approved a sign-in from a signed-in ADE app. Unset, that route answers
+  // 503 and the app opens the browser page instead. It can sign in as any user
+  // of that instance, so it is set out of band like the secret above.
   "vars": {
     "ONLINE_WINDOW_MS": "90000",
     // Exact hosted web-client origin allowed to read /account/machines.
@@ -97,6 +104,12 @@
       // DIRECTORY_AUTH_SECRET is required here too and is set as a secret:
       //   wrangler secret put DIRECTORY_AUTH_SECRET --env production
       "vars": {
+        // The page a person opens to confirm a sign-in. `ade-app.dev/device`
+        // opens the ADE phone app as a universal link, and redirects a browser
+        // to this worker's `/device`. Production only: that page redirects to
+        // the production worker. Deploy the website before this worker, or
+        // every sign-in link is a 404.
+        "DEVICE_PAGE_ORIGIN": "https://ade-app.dev",
         "ONLINE_WINDOW_MS": "90000",
         "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
         "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev",
