@@ -1078,6 +1078,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     () => (activeWorkSession ? resolveSessionRuntimePin(activeWorkSession) : null),
     [activeWorkSession, resolveSessionRuntimePin],
   );
+  // Native tools and their delayed teardown belong to this session's project,
+  // including when it currently matches the active project tab.
+  const activeWorkToolRuntimePin = useMemo(
+    () => effectiveRuntimeBinding(activeWorkSessionRuntimePin, projectBinding),
+    [activeWorkSessionRuntimePin, projectBinding],
+  );
   const browserCheckoutRoot = useMemo(
     () => effectiveRuntimeBinding(activeWorkSessionRuntimePin, projectBinding)?.rootPath ?? projectRoot,
     [activeWorkSessionRuntimePin, projectBinding, projectRoot],
@@ -1647,7 +1653,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         six subscriptions, and two `offline` values that disagreed. The provider
         is the single owner; both children read `useNativeToolFeeds()`.
       */
-      <NativeToolFeedsProvider active={active} runtimePin={activeWorkSessionRuntimePin} laneId={activeLaneId}>
+      <NativeToolFeedsProvider active={active} runtimePin={activeWorkToolRuntimePin} laneId={activeLaneId}>
         <div
           className="relative flex h-full min-h-0 min-w-0 overflow-hidden"
           data-work-tools-maximized={workToolsMaximized ? "true" : undefined}
@@ -1679,7 +1685,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                 ? activeWorkSession.id
                 : null}
               sessionLaneId={activeWorkSession?.laneId || null}
-              runtimePin={activeWorkSessionRuntimePin}
+              runtimePin={activeWorkToolRuntimePin}
               onPick={setWorkSidebarTool}
             />
             {/*
@@ -1747,7 +1753,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                   onClose={closeWorkSidebar}
                   contextTarget={contextTarget}
                   contextDisabledReason={contextDisabledReason}
-                  runtimePin={activeWorkSessionRuntimePin}
+                  runtimePin={activeWorkToolRuntimePin}
                   maximized={workToolsMaximized}
                   onMaximizedChange={setWorkToolsMaximized}
                   showOwner={Boolean(activeWorkSession && findGridSetForSession(work.gridSets, activeWorkSession.id))}
@@ -1774,7 +1780,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.gridSets,
       activeLaneId,
       activeWorkSession,
-      activeWorkSessionRuntimePin,
+      activeWorkToolRuntimePin,
       active,
       contextTarget,
       contextDisabledReason,

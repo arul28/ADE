@@ -2036,7 +2036,7 @@ const MUTATING_SYNC_METHODS = new Set([
 ]);
 
 const PROJECT_SWITCHING_MESSAGE =
-  "Project is switching. Wait for the current project to finish loading before changing project state.";
+  "Project is switching. ADE cannot safely finish changing project state while the active project is changing. Wait for loading to finish, then try again. If this keeps happening, close and reopen the project tab.";
 
 let openRemoteProjectGeneration = 0;
 let activeRemoteProjectOpenGeneration: number | null = null;
@@ -2446,15 +2446,37 @@ function callPrReadRuntimeActionOr<T>(
 // keep the domain string from being retyped at ~50 call sites (where a typo is
 // a silent "unknown action" at runtime) while leaving each method statically
 // greppable by name.
-function callIosSimulatorActionOr<T>(
+async function callIosSimulatorActionOr<T>(
   pin: OpenProjectBinding | null | undefined,
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
   local: () => Promise<T>,
 ): Promise<T> {
-  return callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", action, request, () =>
-    iosSimulatorLocalFallback(action, local),
-  );
+  try {
+    // A simulator request belongs to the project that started it. Once that
+    // project is settled, a tab switch must not turn a completed shutdown or
+    // recording stop into a rejection from the global binding-generation guard.
+    // Calls begun during a transition still go through that guard.
+    const requestPin = pin ?? (projectRuntimeTransitionDepth === 0 ? currentProjectBinding : null);
+    return await callPinnedOrBoundRuntimeActionOr<T>(requestPin, "ios_simulator", action, request, () =>
+      iosSimulatorLocalFallback(action, local),
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Project is switching.")) {
+      const label = ({
+        shutdown: "end the simulator session",
+        deviceStop: "power off the simulator",
+        stopStream: "stop the simulator live view",
+        closeDevice: "close the simulator",
+        recordStop: "stop the simulator recording",
+      } as Record<string, string>)[action] ?? action.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+      throw new Error(
+        `Project is switching. ADE could not confirm the request to ${label} because the active project changed or is still loading. Wait for loading to finish, then return to the simulator's project and try again. If this keeps happening, close and reopen that project tab.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 /**

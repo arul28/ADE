@@ -481,6 +481,46 @@ describe("preload Apple device input routing", () => {
       .rejects.toThrow(/needs an open project/i);
     expect(ipcCalls).toBe(1);
   });
+
+  it.each([
+    ["local", "shutdown"], ["local", "recordStop"], ["local", "stopStream"],
+    ["remote", "shutdown"], ["remote", "recordStop"], ["remote", "stopStream"],
+  ])("finishes %s simulator %s on its original project during a tab switch", async (kind, action) => {
+    const binding = kind === "local"
+      ? { kind: "local", key: "local:/original", rootPath: "/original", displayName: "Original" }
+      : { kind: "remote", key: "remote:mac:original", rootPath: "/original", displayName: "Original", targetId: "mac", projectId: "original" };
+    let completeAction!: (result: unknown) => void;
+    const actionResult = new Promise((resolve) => { completeAction = resolve; });
+    let actionStarted!: () => void;
+    const started = new Promise<void>((resolve) => { actionStarted = resolve; });
+    let completeSwitch!: (result: unknown) => void;
+    const switchResult = new Promise((resolve) => { completeSwitch = resolve; });
+    const routedProjects: string[] = [];
+    const invoke = vi.fn(async (channel: string, payload?: any) => {
+      if (channel === IPC.appGetWindowSession) return { windowId: 1, binding };
+      if (channel === IPC.projectSwitchToPath) return switchResult;
+      if (channel === IPC.localRuntimeCallAction || channel === IPC.remoteRuntimeCallAction) {
+        routedProjects.push(payload.rootPath ?? payload.projectId);
+        actionStarted();
+        return actionResult;
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const bridge = await mountBridge(invoke);
+    await bridge.app.getWindowSession();
+    const finishing = action === "stopStream"
+      ? bridge.iosSimulator.stopStream(null, { laneId: "lane-1" })
+      : bridge.iosSimulator[action]({ laneId: "lane-1" });
+    await started;
+    const switching = bridge.project.switchToPath("/next");
+    // A new, unpinned mutation is still unsafe while the switch is in flight.
+    await expect(bridge.iosSimulator.shutdown({ laneId: "lane-2" })).rejects.toThrow(/Project is switching/);
+    completeAction({ result: { released: true } });
+    await finishing;
+    completeSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    await switching;
+    expect(routedProjects).toEqual([kind === "local" ? "/original" : "original"]);
+  });
 });
 
 
