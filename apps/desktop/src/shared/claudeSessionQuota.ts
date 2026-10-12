@@ -78,7 +78,20 @@ export function claudeRateLimitInfoUsesExtraUsage(info: Record<string, unknown> 
   return info?.isUsingOverage === true || info?.overageInUse === true;
 }
 
-export const CLAUDE_EXTRA_USAGE_STOP_NOTICE = "Extra usage is off for this account, so ADE stopped this turn.";
+/**
+ * The quota card's numbers for a turn ADE stops for extra usage. Only the plan
+ * window is a reset the owner waits for; an event about the extra-usage window
+ * itself gives no resume time.
+ */
+export function claudeExtraUsageQuotaSnapshot(info: Record<string, unknown>): ClaudeSessionQuotaSnapshot {
+  return {
+    utilizationPct: null,
+    resetsAtMs: info.rateLimitType === "overage" ? null : normalizeResetsAtMs(info.resetsAt),
+  };
+}
+
+export const CLAUDE_EXTRA_USAGE_STOP_NOTICE =
+  "ADE stopped this turn because Claude started to bill extra usage. The last request can be billed. To let turns continue, change Extra usage in this account's settings.";
 
 export function parseClaudeSessionQuotaResetAt(
   text: string,

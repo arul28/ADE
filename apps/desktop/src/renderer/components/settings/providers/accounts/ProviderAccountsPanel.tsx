@@ -34,7 +34,7 @@ import {
   type ProviderInstanceProvider,
 } from "../../../../../shared/types/providerInstances";
 import { accountLimitRow, accountSignedOut, providerHasFiveHourWindow } from "./accountPresentation";
-import { AccountCard, type CardState, type RowMenuAction } from "./AccountCard";
+import { AccountCard, type CardState, type ClaudeAccountSettingPatch, type RowMenuAction } from "./AccountCard";
 import { useAccountSignInSheet } from "./AddProviderAccountSheet";
 import { pinnedProviderInstances, useProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
@@ -268,20 +268,11 @@ export function ProviderAccountsPanel({
     [openSheet, pin, providerLabel, run],
   );
 
-  const setExtraUsage = useCallback(
-    (instance: ProviderInstance, extraUsage: "stop" | null) => {
+  const setClaudeSetting = useCallback(
+    (instance: ProviderInstance, settings: ClaudeAccountSettingPatch) => {
       const api = pinnedProviderInstances(pin);
       if (!api) return;
-      void run(() => api.setSettings({ provider, instanceId: instance.id, settings: { extraUsage } }));
-    },
-    [pin, provider, run],
-  );
-
-  const setPromptCache = useCallback(
-    (instance: ProviderInstance, subagentPromptCacheTtl: "1h" | null) => {
-      const api = pinnedProviderInstances(pin);
-      if (!api) return;
-      void run(() => api.setSettings({ provider, instanceId: instance.id, settings: { subagentPromptCacheTtl } }));
+      void run(() => api.setSettings({ provider, instanceId: instance.id, settings }));
     },
     [pin, provider, run],
   );
@@ -476,8 +467,7 @@ export function ProviderAccountsPanel({
                 key={instance.id}
                 instance={instance}
                 compactionControl={instances.length > 1 ? <CompactionSettings provider={provider} account value={instance.compaction} onChange={async (compaction) => { await window.ade.providerInstances.setSettings({ provider, instanceId: instance.id, settings: { compaction } }, pin); await reload(); }} /> : null}
-                onSetPromptCache={provider === "claude" ? setPromptCache : undefined}
-                onSetExtraUsage={provider === "claude" ? setExtraUsage : undefined}
+                onSetClaudeSetting={provider === "claude" ? setClaudeSetting : undefined}
                 limitRow={accountLimitRow(snapshot, provider, instance, nowMs)}
                 state={state}
                 badge={badge}

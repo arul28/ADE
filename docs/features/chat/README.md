@@ -1132,13 +1132,14 @@ arms the durable row exactly like Codex's. Ordering is explicit: the arm is
 awaited (`autoResume.whenArmed`) **before** `resetClaudeQuerySession`, because
 reaping first tore the runtime down while the upsert was still in flight.
 
-**Limits are only ever detected from structured provider signals.** Two sources,
-both from the provider: an SDK `rate_limit_event` whose status is rejected, and
-result-frame errors matching the SDK's `USAGE_LIMIT_ERROR_PREFIXES` or ADE's
-session-quota regex. One more structured signal applies only to a Claude account
-set to **Extra usage: Stop the turn**: an `allowed` `rate_limit_event` that
-reports `isUsingOverage` or `overageInUse`. ADE then interrupts the turn and
-ends it on the same path as a rejected quota. Assistant text is never scanned. It used to be, and an agent
+**Limits are only ever detected from structured provider signals.** Three
+sources, all from the provider: an SDK `rate_limit_event` whose status is
+rejected; result-frame errors matching the SDK's `USAGE_LIMIT_ERROR_PREFIXES` or
+ADE's session-quota regex; and, only for a Claude account set to **Extra usage:
+Stop the turn**, an `allowed` `rate_limit_event` that reports `isUsingOverage`
+or `overageInUse`. For the third, ADE interrupts the turn, cancels its queued
+messages, and ends it on the same path as a rejected quota. Assistant text is
+never scanned. It used to be, and an agent
 that merely quoted a limit message — reading a log, answering a question about
 quota — minted a quota card, marked its own completed turn failed, killed the
 process, and parked the chat until the next day.

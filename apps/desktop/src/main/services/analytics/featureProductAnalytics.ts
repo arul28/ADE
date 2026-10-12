@@ -381,3 +381,29 @@ export function captureNotificationSentAnalytics(args: {
 }): void {
   captureFeatureUsedAnalytics({ ...args, feature: "attention", action: "notification_sent" });
 }
+
+/**
+ * Report which account settings one settings patch changed. Both boundaries
+ * that accept the patch (desktop IPC and the runtime action) call this, so
+ * they cannot report different things. The two Claude settings belong to an
+ * account, so they count only when the patch names one.
+ */
+export function captureProviderAccountSettingsChange(
+  capture: ReturnType<typeof providerAccountAnalyticsCapture>,
+  args: { settings: Readonly<Record<string, unknown>>; provider: unknown; instanceId: string | undefined },
+): void {
+  const { settings, provider, instanceId } = args;
+  if (typeof settings.smartBalance === "boolean") {
+    capture("balance_changed", settings.smartBalance ? "enabled" : "disabled", provider);
+  }
+  if (typeof settings.autoStartWindows === "boolean") {
+    capture("auto_start_changed", settings.autoStartWindows ? "enabled" : "disabled", provider);
+  }
+  if (!instanceId || provider !== "claude") return;
+  if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+    capture("subagent_cache_changed", settings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", provider);
+  }
+  if (Object.hasOwn(settings, "onExtraUsage")) {
+    capture("extra_usage_stop_changed", settings.onExtraUsage === "stop" ? "enabled" : "disabled", provider);
+  }
+}

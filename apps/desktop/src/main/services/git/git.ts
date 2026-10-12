@@ -183,6 +183,15 @@ export type GitMergeTreeResult = GitRunResult & {
   usedWriteTree: boolean;
 };
 
+/**
+ * Env for a git process ADE starts beside the user's own git commands. Without
+ * it, a read such as `git status` takes `.git/index.lock` to save its refreshed
+ * index, and a commit or checkout the user runs at that moment fails with
+ * "Unable to create index.lock". It changes only the locks git calls optional;
+ * a command that must write the index still locks it.
+ */
+export const GIT_READ_ENV = { GIT_OPTIONAL_LOCKS: "0" } as const;
+
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const STALE_GIT_INDEX_LOCK_MIN_AGE_MS = 2 * 60_000;
 let mergeTreeMergeBaseSupportPromise: Promise<boolean> | null = null;
@@ -290,22 +299,18 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
   }
   const executable = await resolveGitExecutable();
   return await new Promise<GitRunResult>((resolve) => {
-    // ADE reads status beside the user's own git commands. Without this, a
-    // read such as `git status` takes `.git/index.lock` to save its refreshed
-    // index, and a commit or checkout the user runs at that moment fails with
-    // "Unable to create index.lock". It changes only locks git calls optional;
-    // a command that must write the index still locks it. A caller's env wins.
-    const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...(opts.env ?? {}) };
+    // A caller's env wins over GIT_READ_ENV.
+    const envPatch = { ...GIT_READ_ENV, ...(opts.env ?? {}) };
     // On Windows, CreateProcess runs on the calling thread, so a git spawned
     // here blocks the event loop for 5-1,000 ms. See offThreadSpawn.ts.
     const child: GitChild = offThreadSpawnEnabled()
       ? spawnOffThread(executable, args, {
         cwd: opts.cwd,
-        env,
+        envPatch,
       })
       : spawn(executable, args, {
         cwd: opts.cwd,
-        env,
+        env: { ...process.env, ...envPatch },
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });

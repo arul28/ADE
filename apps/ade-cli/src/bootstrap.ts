@@ -1136,9 +1136,7 @@ export async function createAdeRuntime(args: {
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
       onSettleResidue: (args) => settleTeardownRef.residue?.(args),
       // Read at call time: the automation service is built later.
-      onSessionsSettled: ({ sessions }) => {
-        for (const session of sessions) automationServiceRef?.onSessionSettled(session);
-      },
+      onChatSettled: (chat) => automationServiceRef?.onSessionSettled(chat),
       listSubagentLinks: async (parentSessionIds) =>
         settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
     });

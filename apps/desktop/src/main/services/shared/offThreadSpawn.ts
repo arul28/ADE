@@ -36,6 +36,7 @@ type SpawnRequest = {
   args: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  envPatch?: Record<string, string | undefined>;
   stdin: string | null;
 };
 
@@ -49,6 +50,12 @@ export type OffThreadSpawnOptions = {
   cwd?: string;
   /** The child's full environment. Omit to inherit this process's. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * A few variables laid over the environment the child would get (`env`, or
+   * this process's live one). Use it for a small overlay: a full `env` is
+   * cloned into every request.
+   */
+  envPatch?: Record<string, string | undefined>;
 };
 
 class OffThreadStream extends EventEmitter {}
@@ -147,7 +154,7 @@ const WORKER_SOURCE = String.raw`
       try {
         child = spawn(message.command, message.args, {
           cwd: message.cwd,
-          env: message.env,
+          env: message.envPatch ? { ...(message.env ?? process.env), ...message.envPatch } : message.env,
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         });
@@ -256,6 +263,7 @@ class OffThreadSpawner {
         args: [...args],
         cwd: options.cwd,
         env: options.env,
+        envPatch: options.envPatch,
         stdin: pendingStdin ?? "",
       });
       if (!sent) this.fail(id, "The off-thread spawner is unavailable.");

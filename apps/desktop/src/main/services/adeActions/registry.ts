@@ -231,6 +231,7 @@ import {
   captureProviderCliUpdateAnalytics,
   captureWebhookUrlCreatedAnalytics,
   captureAutomationTestAnalytics,
+  captureProviderAccountSettingsChange,
   providerAccountAnalyticsCapture,
 } from "../analytics/featureProductAnalytics";
 
@@ -3883,24 +3884,17 @@ export function buildProviderInstancesDomainService(
       const settings = store.setProviderSettings(input.provider, {
         ...(Object.hasOwn(requestedSettings, "compaction") ? { compaction: requestedSettings.compaction === null ? null : normalizeCompactionSettings(requestedSettings.compaction) } : {}),
         ...(Object.hasOwn(requestedSettings, "subagentPromptCacheTtl") ? { subagentPromptCacheTtl: requestedSettings.subagentPromptCacheTtl === "1h" ? "1h" as const : null } : {}),
-        ...(Object.hasOwn(requestedSettings, "extraUsage") ? { extraUsage: requestedSettings.extraUsage === "stop" ? "stop" as const : null } : {}),
+        ...(Object.hasOwn(requestedSettings, "onExtraUsage") ? { onExtraUsage: requestedSettings.onExtraUsage === "stop" ? "stop" as const : null } : {}),
         ...(typeof requestedSettings.smartBalance === "boolean" ? { smartBalance: requestedSettings.smartBalance } : {}),
         ...(typeof requestedSettings.autoStartWindows === "boolean"
           ? { autoStartWindows: requestedSettings.autoStartWindows }
           : {}),
       }, typeof input.instanceId === "string" ? input.instanceId : undefined);
-      if (typeof requestedSettings.smartBalance === "boolean") {
-        capture("balance_changed", requestedSettings.smartBalance ? "enabled" : "disabled", input.provider);
-      }
-      if (typeof requestedSettings.autoStartWindows === "boolean") {
-        capture("auto_start_changed", requestedSettings.autoStartWindows ? "enabled" : "disabled", input.provider);
-      }
-      if (typeof input.instanceId === "string" && input.provider === "claude" && Object.hasOwn(requestedSettings, "subagentPromptCacheTtl")) {
-        capture("subagent_cache_changed", requestedSettings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", input.provider);
-      }
-      if (typeof input.instanceId === "string" && input.provider === "claude" && Object.hasOwn(requestedSettings, "extraUsage")) {
-        capture("extra_usage_stop_changed", requestedSettings.extraUsage === "stop" ? "enabled" : "disabled", input.provider);
-      }
+      captureProviderAccountSettingsChange(capture, {
+        settings: requestedSettings,
+        provider: input.provider,
+        instanceId: typeof input.instanceId === "string" ? input.instanceId : undefined,
+      });
       return { settings };
     },
     loginCommand(args: unknown) {

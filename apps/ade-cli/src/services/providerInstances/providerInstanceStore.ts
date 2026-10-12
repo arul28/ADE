@@ -69,7 +69,7 @@ const DEFAULT_INSTANCE_CREATED_AT = new Date(0).toISOString();
 type StoredInstance = {
   compaction?: ProviderCompactionSettings;
   subagentPromptCacheTtl?: "1h";
-  extraUsage?: "stop";
+  onExtraUsage?: "stop";
   id: string;
   provider: ProviderInstanceProvider;
   label: string;
@@ -202,7 +202,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     ...(accentColor ? { accentColor } : {}),
     ...(isRecord(value.compaction) ? { compaction: normalizeCompactionSettings(value.compaction) } : {}),
     ...(provider === "claude" && value.subagentPromptCacheTtl === "1h" ? { subagentPromptCacheTtl: "1h" as const } : {}),
-    ...(provider === "claude" && value.extraUsage === "stop" ? { extraUsage: "stop" as const } : {}),
+    ...(provider === "claude" && value.onExtraUsage === "stop" ? { onExtraUsage: "stop" as const } : {}),
     configHome,
     createdAt: createdAt ?? DEFAULT_INSTANCE_CREATED_AT,
     ...(account && (account.email || account.plan) ? { account } : {}),
@@ -389,7 +389,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       id: stored.id,
       ...(stored.compaction ? { compaction: stored.compaction } : {}),
       ...(stored.subagentPromptCacheTtl ? { subagentPromptCacheTtl: stored.subagentPromptCacheTtl } : {}),
-      ...(stored.extraUsage ? { extraUsage: stored.extraUsage } : {}),
+      ...(stored.onExtraUsage ? { onExtraUsage: stored.onExtraUsage } : {}),
       provider: stored.provider,
       label: stored.label,
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
@@ -677,9 +677,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
           if (resolved === "claude" && settings.subagentPromptCacheTtl === "1h") next.subagentPromptCacheTtl = "1h";
           else delete next.subagentPromptCacheTtl;
         }
-        if (Object.hasOwn(settings, "extraUsage")) {
-          if (resolved === "claude" && settings.extraUsage === "stop") next.extraUsage = "stop";
-          else delete next.extraUsage;
+        if (Object.hasOwn(settings, "onExtraUsage")) {
+          if (resolved === "claude" && settings.onExtraUsage === "stop") next.onExtraUsage = "stop";
+          else delete next.onExtraUsage;
         }
         return next;
       });
@@ -689,7 +689,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
       throw new Error("The subagent cache setting needs a provider account id.");
     }
-    if (Object.hasOwn(settings, "extraUsage")) {
+    if (Object.hasOwn(settings, "onExtraUsage")) {
       throw new Error("The extra usage setting needs a provider account id.");
     }
     const file = readFile();
@@ -903,7 +903,7 @@ export function claudeAccountPromptCacheEnv(
  */
 export function claudeAccountStopsOnExtraUsage(instanceId: string | null | undefined): boolean {
   try {
-    return getMachineProviderInstanceStore().resolve("claude", instanceId).instance.extraUsage === "stop";
+    return getMachineProviderInstanceStore().resolve("claude", instanceId).instance.onExtraUsage === "stop";
   } catch {
     return false;
   }

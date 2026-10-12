@@ -440,6 +440,8 @@ export type AutomationSessionSignal = {
   summary?: string | null;
 };
 
+export type AutomationSessionSettled = { sessionId: string; laneId: string; provider?: string | null };
+
 export type LaneMergedNotification = {
   laneId: string;
   laneName: string;
@@ -467,13 +469,9 @@ export function summarizeTrigger(trigger: TriggerContext): string {
     const model = trigger.session?.modelId ?? trigger.session?.provider ?? "session";
     return `Session failed: ${model}`;
   }
-  if (trigger.triggerType === "session.ended_without_pr") {
+  if (trigger.triggerType === "session.ended_without_pr" || trigger.triggerType === "session.settled") {
     const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
-    return `Session ended without a PR: ${lane}`;
-  }
-  if (trigger.triggerType === "session.settled") {
-    const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
-    return `Session settled: ${lane}`;
+    return `${trigger.triggerType === "session.settled" ? "Session settled" : "Session ended without a PR"}: ${lane}`;
   }
   if (trigger.triggerType === "lane.created") return `Lane created: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;
   if (trigger.triggerType === "lane.archived") return `Lane archived: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;
@@ -4586,6 +4584,43 @@ export function createAutomationService({
     return { laneBranch, laneName };
   };
 
+  /**
+   * Build and dispatch a trigger that carries a chat session. Never throws and
+   * never rejects: the callers are host callbacks on the settle, end and
+   * failure paths of a chat, which must not fail because a rule could not load.
+   */
+  const dispatchSessionTrigger = (args: {
+    triggerType: AutomationTriggerType;
+    reason: string;
+    sessionId: string;
+    laneId?: string;
+    session: TriggerSessionContext;
+    summary?: string;
+  }): void => {
+    const reportFailure = (error: unknown) => {
+      logger.warn("automations.session_trigger_failed", {
+        triggerType: args.triggerType,
+        sessionId: args.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    try {
+      const trigger: TriggerContext = {
+        triggerType: args.triggerType,
+        sessionId: args.sessionId,
+        ...(args.laneId ? { laneId: args.laneId, branch: resolveLaneBranch(args.laneId) } : {}),
+        reason: args.reason,
+        scheduledAt: nowIso(),
+        ...(args.summary ? { summary: args.summary } : {}),
+        session: args.session,
+      };
+      trigger.summary = summarizeTrigger(trigger);
+      void dispatchTrigger(trigger).catch(reportFailure);
+    } catch (error) {
+      reportFailure(error);
+    }
+  };
+
   const dispatchTrigger = async (trigger: TriggerContext) => {
     const rules = listRules().filter((rule) => rule.enabled);
     const { laneBranch, laneName } = await resolveTriggerLaneInfo(trigger);
@@ -5495,42 +5530,35 @@ export function createAutomationService({
       // open to review. The PR lookup is local (the synced projection), so it
       // costs nothing when no rule listens.
       if (laneHasOpenPullRequest(args.laneId)) return;
-      const trigger: TriggerContext = {
+      dispatchSessionTrigger({
         triggerType: "session.ended_without_pr",
-        laneId: args.laneId,
-        sessionId: args.sessionId,
-        branch: resolveLaneBranch(args.laneId),
         reason: "session_end_without_pr",
-        scheduledAt: nowIso(),
+        sessionId: args.sessionId,
+        laneId: args.laneId,
         session,
-      };
-      trigger.summary = summarizeTrigger(trigger);
-      void dispatchTrigger(trigger);
+      });
     },
 
     /**
-     * Host callback for a settle that landed on this host. The session service
-     * reports the chat the caller settled, not the subagents that followed it.
+     * Host callback for a chat's settle that landed on this host. The session
+     * service reports the chat the caller settled, not the subagents that
+     * followed it, and not a shell or a tracked CLI session.
      */
-    onSessionSettled(args: { laneId: string; sessionId: string; provider?: string | null }) {
+    onSessionSettled(args: AutomationSessionSettled) {
       const sessionId = args.sessionId?.trim();
       if (!sessionId) return;
       const laneId = args.laneId?.trim() || undefined;
-      const session: TriggerSessionContext = {
-        sessionId,
-        ...(args.provider?.trim() ? { provider: args.provider.trim() } : {}),
-        ...(laneId ? { laneId } : {}),
-      };
-      const trigger: TriggerContext = {
+      dispatchSessionTrigger({
         triggerType: "session.settled",
-        sessionId,
-        ...(laneId ? { laneId, branch: resolveLaneBranch(laneId) } : {}),
         reason: "session_settled",
-        scheduledAt: nowIso(),
-        session,
-      };
-      trigger.summary = summarizeTrigger(trigger);
-      void dispatchTrigger(trigger);
+        sessionId,
+        laneId,
+        session: {
+          sessionId,
+          ...(args.provider?.trim() ? { provider: args.provider.trim() } : {}),
+          ...(laneId ? { laneId } : {}),
+        },
+      });
     },
 
     /**
@@ -5543,24 +5571,20 @@ export function createAutomationService({
       const sessionId = signal.sessionId?.trim();
       if (!sessionId) return;
       const laneId = signal.laneId?.trim() || undefined;
-      const session: TriggerSessionContext = {
-        sessionId,
-        ...(signal.provider?.trim() ? { provider: signal.provider.trim() } : {}),
-        ...(signal.modelId?.trim() ? { modelId: signal.modelId.trim() } : {}),
-        ...(laneId ? { laneId } : {}),
-        ...(signal.kind === "limit_reached" && signal.resetAt?.trim() ? { resetAt: signal.resetAt.trim() } : {}),
-      };
-      const trigger: TriggerContext = {
+      dispatchSessionTrigger({
         triggerType: signal.kind === "limit_reached" ? "session.limit_reached" : "session.failed",
-        sessionId,
-        ...(laneId ? { laneId, branch: resolveLaneBranch(laneId) } : {}),
         reason: signal.kind === "limit_reached" ? "session_limit_reached" : "session_failed",
-        scheduledAt: nowIso(),
-        ...(signal.summary?.trim() ? { summary: signal.summary.trim() } : {}),
-        session,
-      };
-      trigger.summary = summarizeTrigger(trigger);
-      void dispatchTrigger(trigger);
+        sessionId,
+        laneId,
+        summary: signal.summary?.trim() || undefined,
+        session: {
+          sessionId,
+          ...(signal.provider?.trim() ? { provider: signal.provider.trim() } : {}),
+          ...(signal.modelId?.trim() ? { modelId: signal.modelId.trim() } : {}),
+          ...(laneId ? { laneId } : {}),
+          ...(signal.kind === "limit_reached" && signal.resetAt?.trim() ? { resetAt: signal.resetAt.trim() } : {}),
+        },
+      });
     },
 
     onHeadChanged(args: { laneId: string; preHeadSha: string | null; postHeadSha: string | null; reason: string }) {

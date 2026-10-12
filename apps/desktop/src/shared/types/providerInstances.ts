@@ -88,7 +88,7 @@ export type ProviderInstance = {
    * turn draws on extra usage (billed past the plan limit). Absent means the
    * turn continues, which is what Claude Code does by itself.
    */
-  extraUsage?: "stop";
+  onExtraUsage?: "stop";
 };
 
 export type ProviderInstanceReplacedAccount = {
@@ -208,14 +208,14 @@ export type ProviderInstanceSetSettingsArgs = {
 };
 
 /**
- * `compaction`, `subagentPromptCacheTtl` and `extraUsage` are account settings:
+ * `compaction`, `subagentPromptCacheTtl` and `onExtraUsage` are account settings:
  * they need an `instanceId`, a missing key leaves the stored value alone, and
  * null clears it.
  */
 export type ProviderInstanceSettingsPatch = Omit<Partial<ProviderInstanceSettings>, "compaction"> & {
   compaction?: ProviderCompactionSettings | null;
   subagentPromptCacheTtl?: "1h" | null;
-  extraUsage?: "stop" | null;
+  onExtraUsage?: "stop" | null;
 };
 
 /** The env var Claude Code reads for the prompt cache TTL outside the main conversation. */

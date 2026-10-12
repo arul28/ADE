@@ -919,7 +919,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { captureAutomationTestAnalytics, capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { captureAutomationTestAnalytics, capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -7009,18 +7009,7 @@ export function registerIpc({
     // An account card's compaction setting targets that account, as the runtime action does.
     const instanceId = typeof record.instanceId === "string" ? record.instanceId : undefined;
     const result = getMachineProviderInstanceStore().setProviderSettings(provider, settings, instanceId);
-    if (typeof settings.smartBalance === "boolean") {
-      captureProviderAccount("balance_changed", settings.smartBalance ? "enabled" : "disabled", provider);
-    }
-    if (typeof settings.autoStartWindows === "boolean") {
-      captureProviderAccount("auto_start_changed", settings.autoStartWindows ? "enabled" : "disabled", provider);
-    }
-    if (instanceId && provider === "claude" && Object.hasOwn(settings, "subagentPromptCacheTtl")) {
-      captureProviderAccount("subagent_cache_changed", settings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", provider);
-    }
-    if (instanceId && provider === "claude" && Object.hasOwn(settings, "extraUsage")) {
-      captureProviderAccount("extra_usage_stop_changed", settings.extraUsage === "stop" ? "enabled" : "disabled", provider);
-    }
+    captureProviderAccountSettingsChange(captureProviderAccount, { settings, provider, instanceId });
     return result;
   });
 

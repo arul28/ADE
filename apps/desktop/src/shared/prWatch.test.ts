@@ -77,7 +77,7 @@ describe("evaluatePrWatch", () => {
     expect(remarkChange?.kind === "remarks" ? remarkChange.remarks.map((entry) => entry.id) : []).toEqual(["human-1"]);
   });
 
-  it("tells a review bot's edit of its old comment one time, and not a comment that did not change", () => {
+  it("tells a review bot's edit of its old comment one time, and not a person's edit or an unchanged comment", () => {
     let state = initialPrWatchState(iso(T0), "head-1");
     const summary = remark("bot-summary", "coderabbitai[bot]", T0 + 60_000, true);
     const first = step("watch", state, { remarks: [summary], nowMs: T0 + 120_000 });
@@ -91,6 +91,11 @@ describe("evaluatePrWatch", () => {
     state = second.next;
 
     expect(kinds(step("watch", state, { remarks: [edited], nowMs: T0 + 720_000 }))).toEqual([]);
+
+    // A person who edits an old comment has said nothing new.
+    const person = remark("human-1", "reviewer", T0 + 30_000);
+    const typoFix = { ...person, editedAt: iso(T0 + 900_000) };
+    expect(kinds(step("watch", state, { remarks: [edited, typoFix], nowMs: T0 + 960_000 }))).toEqual([]);
   });
 
   it("Ship holds news until CI finishes and review bots are heard, but a conflict goes out at once", () => {
