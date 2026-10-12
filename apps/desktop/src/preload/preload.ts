@@ -1736,13 +1736,18 @@ async function callRemoteProjectActionIfBound<T>(
   if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
     return { handled: false };
   }
+  const guardBinding = !(domain === "chat" && MACHINE_INVENTORY_CHAT_ACTIONS.has(action));
+  const generation = guardBinding && currentProjectBinding ? projectBindingGeneration : null;
   const binding = await getRemoteProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
+  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   if (!binding) return { handled: false };
+  const requestGeneration = guardBinding ? projectBindingGeneration : null;
   const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
     id: binding.targetId,
     projectId: binding.projectId,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
+  if (requestGeneration != null && requestGeneration !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   return { handled: true, result: response.result as T };
 }
 
@@ -1874,12 +1879,17 @@ async function callLocalProjectActionIfBound<T>(
   if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
     return { handled: false };
   }
+  const guardBinding = !(domain === "chat" && MACHINE_INVENTORY_CHAT_ACTIONS.has(action));
+  const generation = guardBinding && currentProjectBinding ? projectBindingGeneration : null;
   const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
+  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   if (!binding) return { handled: false };
+  const requestGeneration = guardBinding ? projectBindingGeneration : null;
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
     rootPath: binding.rootPath,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
+  if (requestGeneration != null && requestGeneration !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   return { handled: true, result: response.result as T };
 }
 
@@ -2092,6 +2102,8 @@ async function callProjectRuntimeActionIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  const generation = currentProjectBinding && !(domain === "chat" && MACHINE_INVENTORY_CHAT_ACTIONS.has(action))
+    ? projectBindingGeneration : null;
   const freshBinding = domain === "chat";
   const isMutatingChatAction =
     freshBinding && MUTATING_CHAT_ACTIONS.has(action);
@@ -2127,12 +2139,14 @@ async function callProjectRuntimeActionIfBound<T>(
       );
     }
   }
+  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   const remote = await callRemoteProjectActionIfBound<T>(
     domain,
     action,
     request,
     { freshBinding },
   );
+  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   if (remote.handled) return remote;
   return callLocalProjectActionIfBound<T>(domain, action, request, { freshBinding });
 }
@@ -2685,14 +2699,18 @@ async function callRemoteProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  const generation = currentProjectBinding ? projectBindingGeneration : null;
   const binding = await getRemoteProjectBinding();
+  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   if (!binding) return { handled: false };
+  const requestGeneration = projectBindingGeneration;
   const result = (await ipcRenderer.invoke(IPC.remoteRuntimeCallSync, {
     id: binding.targetId,
     projectId: binding.projectId,
     method,
     params,
   })) as T;
+  if (requestGeneration !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   return { handled: true, result };
 }
 
@@ -2700,13 +2718,17 @@ async function callLocalProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  const generation = currentProjectBinding ? projectBindingGeneration : null;
   const binding = await getLocalProjectBinding();
+  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   if (!binding) return { handled: false };
+  const requestGeneration = projectBindingGeneration;
   const result = (await ipcRenderer.invoke(IPC.localRuntimeCallSync, {
     rootPath: binding.rootPath,
     method,
     params,
   })) as T;
+  if (requestGeneration !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   return { handled: true, result };
 }
 
@@ -2718,7 +2740,9 @@ async function callProjectRuntimeSyncOr<T>(
   if (MUTATING_SYNC_METHODS.has(method) && projectRuntimeTransitionDepth > 0) {
     assertProjectRuntimeNotTransitioningForMutation("changing sync state");
   }
+  const generation = currentProjectBinding ? projectBindingGeneration : null;
   const remote = await callRemoteProjectSyncIfBound<T>(method, params);
+  if (generation != null && generation !== projectBindingGeneration) throw new Error(PROJECT_SWITCHING_MESSAGE);
   if (remote.handled) return remote.result;
   let localRuntime: Awaited<ReturnType<typeof callLocalProjectSyncIfBound<T>>>;
   try {

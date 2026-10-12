@@ -1,3 +1,4 @@
+import { assertLocalProjectDataAvailable } from "./services/projects/projectRegistry";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
 import os from "node:os";
@@ -865,6 +866,7 @@ export async function createAdeRuntime(args: {
     throw new Error(`Primary worktree path does not exist: ${primaryWorktreePath}`);
   }
 
+  assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   const baseRef = await detectDefaultBaseRef(projectRoot);
   const paths = ensureAdePaths(projectRoot);

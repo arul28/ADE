@@ -2189,12 +2189,20 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             [nextStateKey]: warmLaneCache,
           }
         : prev.laneCacheByProject;
-      const restoredSelection = shouldHydrateLanes
+      const cachedSelection = shouldHydrateLanes
         ? prev.laneSelectionByProject[nextStateKey] ?? {
             laneId: warmLaneCache?.lanes[0]?.id ?? null,
             sessionId: null,
           }
         : null;
+      const restoredSelection = cachedSelection && {
+        laneId: warmLaneCache?.lanes.some((lane) => lane.id === cachedSelection.laneId)
+          ? cachedSelection.laneId
+          : warmLaneCache?.lanes.find((lane) => lane.laneType === "primary")?.id ?? warmLaneCache?.lanes[0]?.id ?? null,
+        sessionId: warmLaneCache?.lanes.some((lane) => lane.id === cachedSelection.laneId)
+          ? cachedSelection.sessionId
+          : null,
+      };
       return {
         project,
         projectInfoByRoot: project && !matchingRemoteBinding && project !== knownProject
@@ -2330,8 +2338,27 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               )
             : [...prev.openRemoteProjectTabs, projectBinding]
           : prev.openRemoteProjectTabs;
+      const nextKey = projectBinding ? projectStateKeyForBinding(projectBinding) : "";
+      const bindingChanged = Boolean(projectBinding)
+        && nextKey !== selectActiveProjectStateKey(prev);
+      const laneCache = bindingChanged
+        ? prev.laneCacheByProject[nextKey] ?? readPersistedLaneCache(nextKey)
+        : null;
+      const savedLaneId = prev.laneSelectionByProject[nextKey]?.laneId;
+      const restoredLaneId = laneCache?.lanes.some((lane) => lane.id === savedLaneId)
+        ? savedLaneId
+        : laneCache?.lanes.find((lane) => lane.laneType === "primary")?.id ?? laneCache?.lanes[0]?.id ?? null;
       return {
         projectBinding,
+        ...(bindingChanged ? {
+          lanes: laneCache?.lanes ?? [],
+          laneSnapshots: laneCache?.laneSnapshots ?? [],
+          lanesLoading: !laneCache,
+          laneStatusStale: true,
+          ...(laneCache ? { laneCacheByProject: { ...prev.laneCacheByProject, [nextKey]: laneCache } } : {}),
+          selectedLaneId: restoredLaneId ?? null,
+          focusedSessionId: null,
+        } : {}),
         openRemoteProjectTabs,
         openProjectTabRoots: shouldDropStaleRemoteRoot
           ? prev.openProjectTabRoots.filter(

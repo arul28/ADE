@@ -3,7 +3,7 @@ import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
 import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/src/shared/types";
 import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
 import type { SyncHostBlocker } from "../sync/syncService";
-import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
+import { assertRegisteredProjectDataAvailable, type ProjectId, type ProjectRecord, type ProjectRegistry } from "./projectRegistry";
 
 type SwitchSyncHostOptions = {
   deactivatePreviousHost?: boolean;
@@ -216,6 +216,7 @@ export class ProjectScopeRegistry {
       throw new Error(`Unknown projectId: ${projectId}`);
     }
 
+    assertRegisteredProjectDataAvailable(record);
     const pending = (async () => {
       if (options.touch ?? true) {
         this.projectRegistry.touch(projectId);
@@ -235,6 +236,12 @@ export class ProjectScopeRegistry {
           ? { crossMachineHandoffTransport: this.options.crossMachineHandoffTransport }
           : {}),
       });
+      try {
+        this.projectRegistry.markDatabaseInitialized(projectId);
+      } catch (error) {
+        runtime.dispose();
+        throw error;
+      }
       return new ProjectScope({
         registryProjectId: projectId,
         record,

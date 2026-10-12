@@ -488,3 +488,19 @@ Open items from this pass:
 - The view cache keeps a chat until 128 MB of cached events are held. A
   session that visits many long chats holds all of them up to that limit; the
   heap row above is 16 chats.
+
+### Project database identity guard
+
+Measured on macOS arm64, Node 26.7.0, warm interleaved medians across seven
+runs of 20,000 SQLite operations (project relocation protection branch):
+
+| Metric | Before | After | Budget |
+|---|---|---|---|
+| 100-row KV list query | 32.64 μs | 35.17 μs | Existing 25% regression rule |
+| Device/inode guard incremental cost per operation | — | 2.53 μs | 5 μs |
+
+The representative query increases 7.75%. A trivial one-row KV read increases
+5.48 → 8.34 μs (+2.86 μs); this small query pays the full identity-check cost.
+Checks run per operation to avoid a polling window that can write to a moved
+file. These service measurements do not establish Electron idle, GPU, typing,
+or memory numbers. Full desktop scenarios were not measured for this change.

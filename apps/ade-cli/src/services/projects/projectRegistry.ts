@@ -7,6 +7,7 @@ import {
   resolveMachineAdeLayout,
   type MachineAdeLayout,
 } from "./machineLayout";
+import { codedError } from "../../../../desktop/src/shared/codedError";
 import { statIdentity } from "./fileIdentity";
 import { normalizeProjectRootPath } from "./projectRoots";
 
@@ -40,6 +41,8 @@ export type ProjectRecord = {
   gitOriginUrl: string | null;
   catalogVisibility: ProjectCatalogVisibility;
   registrationSource: ProjectRegistrationSource;
+  /** This machine has opened project data; a missing database requires restoration. */
+  databaseInitialized?: boolean;
 };
 
 type ProjectRegistryFile = {
@@ -168,6 +171,7 @@ function coerceRecord(
         : null,
     catalogVisibility: registration.catalogVisibility,
     registrationSource: registration.registrationSource,
+    ...(record.databaseInitialized === true ? { databaseInitialized: true } : {}),
   };
 }
 
@@ -232,8 +236,6 @@ export class ProjectRegistry {
       throw new Error(`Project root is not a directory: ${normalized}`);
     }
 
-    ensureProjectAdeDir(normalized);
-
     const file = this.read();
     const now = Date.now();
     const projectId = deriveProjectId(normalized);
@@ -242,6 +244,8 @@ export class ProjectRegistry {
         record.projectId === projectId || record.rootPath === normalized,
     );
     const existing = existingIndex >= 0 ? file.projects[existingIndex] : null;
+    assertRegisteredProjectDataAvailable(existing);
+    ensureProjectAdeDir(normalized);
     const next: ProjectRecord = {
       projectId,
       rootPath: normalized,
@@ -255,6 +259,8 @@ export class ProjectRegistry {
           ? "recent"
           : "system",
       registrationSource: registration.registrationSource,
+      ...(existing?.databaseInitialized || fs.existsSync(path.join(normalized, ".ade", "ade.db"))
+        ? { databaseInitialized: true } : {}),
     };
     if (existingIndex >= 0) {
       file.projects[existingIndex] = next;
@@ -312,10 +318,20 @@ export class ProjectRegistry {
     const next: ProjectRecord = {
       ...file.projects[index]!,
       lastOpenedAt: Date.now(),
+      ...(fs.existsSync(path.join(file.projects[index]!.rootPath, ".ade", "ade.db"))
+        ? { databaseInitialized: true } : {}),
     };
     file.projects[index] = next;
     this.write(file);
     return next;
+  }
+
+  markDatabaseInitialized(projectId: ProjectId): void {
+    const file = this.read();
+    const record = file.projects.find((project) => project.projectId === projectId);
+    if (!record || record.databaseInitialized || !fs.existsSync(path.join(record.rootPath, ".ade", "ade.db"))) return;
+    record.databaseInitialized = true;
+    this.write(file);
   }
 
   private read(): ProjectRegistryFile {
@@ -423,4 +439,20 @@ export class ProjectRegistry {
     fs.writeFileSync(tempPath, payload, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tempPath, this.layout.projectsPath);
   }
+}
+
+/** Check before creating directories or opening SQLite on any local entry point. */
+export function assertRegisteredProjectDataAvailable(record: ProjectRecord | null): void {
+  if (!record) return;
+  const adeDir = path.join(record.rootPath, ".ade");
+  if (!fs.existsSync(adeDir) || (record.databaseInitialized && !fs.existsSync(path.join(adeDir, "ade.db")))) {
+    throw codedError(
+      `ADE project data is missing at ${adeDir}. Restore the original .ade folder (including ade.db) from Trash or backup, then reopen the project. ADE has not created a replacement database.`,
+      "project_data_missing",
+    );
+  }
+}
+
+export function assertLocalProjectDataAvailable(projectRoot: string): void {
+  assertRegisteredProjectDataAvailable(new ProjectRegistry().findByRootPath(projectRoot));
 }

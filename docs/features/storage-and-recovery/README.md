@@ -1,5 +1,14 @@
 # Storage and recovery
 
+An open project database checks its file's device and inode before each SQLite
+operation. If `.ade/ade.db` disappears or is replaced, ADE pauses database
+operations with `db_path_changed` rather than continuing to query or write the
+moved file. Restore the original `.ade` folder to its original location to
+resume automatically. A replacement database is never adopted by the existing
+connection. This protection is shared by desktop and headless runtime clients,
+including sync and database maintenance; it does not move folders out of Trash
+or discard a replacement on the user's behalf.
+
 ## Source file map
 
 | Path | Role |

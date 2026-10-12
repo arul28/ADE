@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ProjectRegistry,
+  assertRegisteredProjectDataAvailable,
   deriveProjectId,
   isDisallowedProjectRoot,
 } from "./projectRegistry";
@@ -35,6 +36,31 @@ describe("ProjectRegistry", () => {
   beforeEach(() => {
     spawnSyncMock.mockReset();
     spawnSyncMock.mockReturnValue({ status: 1, stdout: "" });
+  });
+
+  it.each(["folder", "database"])("blocks recreating initialized project data after losing its %s and accepts restoration", (missing) => {
+    const root = makeTempRoot();
+    const projectRoot = path.join(root, "project");
+    fs.mkdirSync(projectRoot);
+    const registryDir = path.join(root, "machine");
+    const layout = { adeDir: registryDir, projectsPath: path.join(registryDir, "projects.json") } as any;
+    const registry = new ProjectRegistry(layout);
+    const record = registry.add(projectRoot);
+    const adeDir = path.join(projectRoot, ".ade");
+    const dbPath = path.join(adeDir, "ade.db");
+    fs.writeFileSync(dbPath, "fixture");
+    registry.touch(record.projectId);
+    const source = missing === "folder" ? adeDir : dbPath;
+    const saved = path.join(root, "saved");
+    fs.renameSync(source, saved);
+    // Re-read from disk as a restarted brain would.
+    const restarted = new ProjectRegistry(layout);
+    expect(() => assertRegisteredProjectDataAvailable(restarted.get(record.projectId))).toThrow(/Restore the original/);
+    expect(() => restarted.add(projectRoot)).toThrow(/Restore the original/);
+    expect(fs.existsSync(source)).toBe(false);
+    fs.renameSync(saved, source);
+    expect(() => restarted.add(projectRoot)).not.toThrow();
+    expect(fs.readFileSync(dbPath, "utf8")).toBe("fixture");
   });
 
   it("migrates v1 records by desktop membership or Git-root existence", () => {

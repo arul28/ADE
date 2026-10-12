@@ -41,6 +41,12 @@ per project root on first project-scoped JSON-RPC call, and is the
 single runtime through which desktop, `ade code`, and SSH-attached
 desktops see live lanes, agent chats, and work sessions.
 
+Registered local projects retain a machine-local record that their database has
+been initialized. If their `.ade` folder disappears, or an initialized database
+is missing, project registration and open stop before creating replacement
+state. Restore the original `.ade` folder from Trash or backup and reopen the
+project. Fresh project registration still creates its first database normally.
+
 ## Source file map
 
 Main process:

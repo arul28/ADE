@@ -231,6 +231,54 @@ afterEach(async () => {
 });
 
 describe("openKvDb SQL binding", () => {
+  // Windows holds SQLite's open files against rename; this relocation is a
+  // POSIX failure mode. The native-boundary identity guard is cross-platform.
+  it.skipIf(process.platform === "win32").each([false, true])("pauses a moved database and resumes after restoration (replacement: %s)", async (replacement) => {
+    const fixtureParent = path.join(process.cwd(), "node_modules", ".cache");
+    fs.mkdirSync(fixtureParent, { recursive: true });
+    const projectRoot = fs.mkdtempSync(path.join(fixtureParent, "ade-kvdb-relocation-"));
+    const adePath = path.join(projectRoot, ".ade");
+    const movedPath = path.join(projectRoot, "moved-ade");
+    const dbPath = path.join(adePath, "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => {
+      db.close();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    });
+    db.setJson("relocation:probe", "original");
+    db.flushNow();
+    fs.renameSync(adePath, movedPath);
+    if (replacement) {
+      fs.mkdirSync(adePath);
+      fs.copyFileSync(path.join(movedPath, "ade.db"), dbPath);
+    }
+    const movedContents = fs.readFileSync(path.join(movedPath, "ade.db"));
+    const operations = [
+      () => db.setJson("relocation:probe", "unsafe"),
+      () => db.getJson("relocation:probe"),
+      () => db.run("delete from kv"),
+      () => db.runChanged("delete from kv"),
+      () => db.get("select * from kv"),
+      () => db.all("select * from kv"),
+      () => db.flushNow(),
+      () => db.maintenance!.prunePrSnapshots(),
+    ];
+    for (const operation of operations) {
+      expect(operation).toThrowError(expect.objectContaining({ code: "db_path_changed" }));
+    }
+    await expect(db.maintenance!.pruneEventLogs()).rejects.toMatchObject({ code: "db_path_changed" });
+    if (db.sync?.isAvailable?.()) {
+      expect(() => db.sync!.exportChangesSince(0)).toThrowError(expect.objectContaining({ code: "db_path_changed" }));
+    }
+    expect(fs.readFileSync(path.join(movedPath, "ade.db"))).toEqual(movedContents);
+    expect(fs.existsSync(path.join(movedPath, "ade.db-wal")) && fs.statSync(path.join(movedPath, "ade.db-wal")).size).toBe(0);
+    if (replacement) fs.rmSync(adePath, { recursive: true });
+    fs.renameSync(movedPath, adePath);
+    expect(db.getJson("relocation:probe")).toBe("original");
+    db.setJson("relocation:probe", "resumed");
+    expect(db.getJson("relocation:probe")).toBe("resumed");
+  });
+
   it("binds boolean params and reports unsupported param types with context", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-bind-values-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

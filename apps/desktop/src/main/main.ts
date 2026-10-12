@@ -219,7 +219,7 @@ import {
   remoteBindingMatchesProject,
 } from "./services/attention/attentionItemRouting";
 import { pathsEqual } from "./services/shared/pathCompare";
-import { deriveProjectId } from "../../../ade-cli/src/services/projects/projectRegistry";
+import { assertLocalProjectDataAvailable, deriveProjectId } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
 import {
   detectDefaultBaseRef,
@@ -3345,6 +3345,7 @@ app.whenReady().then(async () => {
     // first-open marker, means this machine has not finished a real bind yet.
     const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
     const scaffoldedFirstOpen = consumeFirstOpenStabilityMarker(projectRoot);
+    assertLocalProjectDataAvailable(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     registerAccountConfigProjectRoot(projectRoot);
@@ -6136,6 +6137,7 @@ app.whenReady().then(async () => {
     baseRef: string;
     userSelectedProject: boolean;
   }): Promise<AppContext> => {
+    assertLocalProjectDataAvailable(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const project = toProjectInfo(projectRoot, baseRef);

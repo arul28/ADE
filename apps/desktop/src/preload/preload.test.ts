@@ -1216,6 +1216,39 @@ describe("preload Apple device input routing", () => {
     });
   });
 
+  it.each(["local", "remote"])("drops a late %s lane poll after switching projects", async (kind) => {
+    const binding = kind === "local"
+      ? { kind: "local", key: "local:/a", rootPath: "/a", displayName: "A" }
+      : { kind: "remote", key: "remote:target:project-a", rootPath: "/a", displayName: "A", targetId: "target", projectId: "project-a", runtimeName: "Remote" };
+    const actionChannel = kind === "local" ? IPC.localRuntimeCallAction : IPC.remoteRuntimeCallAction;
+    let resolveRead!: (value: unknown) => void;
+    let readStarted!: () => void;
+    const started = new Promise<void>((resolve) => { readStarted = resolve; });
+    const response = new Promise((resolve) => { resolveRead = resolve; });
+    const invoke = vi.fn(async (channel: string, _args?: unknown) => {
+      if (channel === IPC.appGetWindowSession) return { binding };
+      if (channel === actionChannel) { readStarted(); return response; }
+      return undefined;
+    });
+    const on = vi.fn();
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld: (_name: string, value: unknown) => { (globalThis as any).__adeBridge = value; } },
+      ipcRenderer: { invoke, on, removeListener: vi.fn() },
+      webFrame: { getZoomLevel: () => 0, setZoomLevel: vi.fn(), getZoomFactor: () => 1 },
+    }));
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    bridge.app.onProjectBindingChanged(vi.fn());
+    const read = bridge.git.getSyncStatus({ laneId: "lane-a" });
+    const rejected = expect(read).rejects.toThrow(/Project is switching/);
+    await started;
+    const bindingListener = on.mock.calls.find(([channel]) => channel === IPC.appProjectBindingChanged)?.[1];
+    bindingListener({}, { kind: "local", key: "local:/b", rootPath: "/b", displayName: "B" });
+    resolveRead({ result: { laneId: "lane-a" } });
+    await rejected;
+    expect(invoke.mock.calls.filter(([channel]) => channel === actionChannel).map(([, args]) => kind === "local" ? (args as any).rootPath : (args as any).projectId)).toEqual([kind === "local" ? "/a" : "project-a"]);
+  });
+
   it("does not let stale window-session refreshes overwrite a newer project binding", async () => {
     const oldLocalBinding = {
       kind: "local",

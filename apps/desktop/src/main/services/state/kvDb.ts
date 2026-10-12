@@ -261,11 +261,48 @@ function ensureParentDir(filePath: string) {
 function openRawDatabase(dbPath: string): DatabaseSyncType {
   ensureParentDir(dbPath);
   const db = new DatabaseSync(dbPath, { allowExtension: true });
+  const identity = fs.statSync(dbPath, { bigint: true });
+  const assertDatabasePath = () => {
+    let current: fs.BigIntStats;
+    try {
+      current = fs.statSync(dbPath, { bigint: true });
+    } catch {
+      throw codedError(
+        "The project database is no longer available at its original location. Restore the project's .ade folder to resume; ADE has paused database operations to protect your data.",
+        "db_path_changed",
+      );
+    }
+    if (current.dev !== identity.dev || current.ino !== identity.ino) {
+      throw codedError(
+        "The project database was moved or replaced. Restore the original .ade folder to resume; ADE will not write to the moved database or use its replacement.",
+        "db_path_changed",
+      );
+    }
+  };
+  // Guard the native boundary, including migrations, sync, maintenance and
+  // direct prepared statements. Checking each operation avoids a polling
+  // window in which SQLite could keep writing through a relocated handle.
+  // Retaining the connection lets restoring the same file resume safely.
+  const prepare = db.prepare.bind(db);
+  const exec = db.exec.bind(db);
+  db.prepare = (...args) => {
+    assertDatabasePath();
+    return prepare(...args);
+  };
+  db.exec = (...args) => {
+    assertDatabasePath();
+    return exec(...args);
+  };
   // Allow concurrent access from multiple ADE processes (e.g. dogfooding).
   // Without this, a second instance gets SQLITE_BUSY immediately on writes.
-  db.exec("PRAGMA busy_timeout = 5000");
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA synchronous = NORMAL");
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA synchronous = NORMAL");
+  } catch (error) {
+    closeDatabase(db);
+    throw error;
+  }
   return db;
 }
 
@@ -333,6 +370,7 @@ function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue 
   try {
     return db.prepare(sql).run(...params.map((param, index) => toDbValue(param, index))) as { changes: number };
   } catch (error) {
+    if ((error as { code?: string })?.code === "db_path_changed") throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message} [sql=${statement}]`);
@@ -343,6 +381,7 @@ function getRow<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | S
   try {
     return (db.prepare(sql).get(...params.map((param, index) => toDbValue(param, index))) as T | undefined) ?? null;
   } catch (error) {
+    if ((error as { code?: string })?.code === "db_path_changed") throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message} [sql=${statement}]`);
@@ -353,6 +392,7 @@ function allRows<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | 
   try {
     return db.prepare(sql).all(...params.map((param, index) => toDbValue(param, index))) as T[];
   } catch (error) {
+    if ((error as { code?: string })?.code === "db_path_changed") throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message} [sql=${statement}]`);
@@ -4659,6 +4699,7 @@ export async function openKvDb(
     try {
       return operation();
     } catch (error) {
+      if ((error as { code?: string })?.code === "db_path_changed") throw error;
       logger.warn("db.maintenance_failed", {
         action,
         error: error instanceof Error ? error.message : String(error),
@@ -4689,6 +4730,7 @@ export async function openKvDb(
     try {
       return await operation();
     } catch (error) {
+      if ((error as { code?: string })?.code === "db_path_changed") throw error;
       logger.warn("db.maintenance_failed", {
         action,
         error: error instanceof Error ? error.message : String(error),

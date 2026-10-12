@@ -16,6 +16,13 @@ the boundary. Do not make the project chat schema nullable or treat a missing
 lane/project id as personal scope. See [Personal chats](../personal-chats/README.md)
 for its separate RPC, sync, storage, and UI contracts.
 
+Work draft lanes and restored selections are checked against the active
+project's lane list. A stale local draft selects the active project's Primary
+lane before launching. Explicit drafts on another machine retain their machine
+scope while that machine's catalog loads. Project binding changes replace lane
+state immediately, and late runtime action or sync responses are rejected after
+switching projects so they cannot populate the new project's panes.
+
 ## Source file map
 
 | Path | Role |
