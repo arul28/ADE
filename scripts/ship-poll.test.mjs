@@ -131,7 +131,17 @@ test("routes the loop from every surface, never from CI alone", () => {
       { checks: [{ name: "windows-foundation", state: "FAILURE", bucket: "fail" }] },
       "fix",
     ],
-    ["a base that moved needs a rebase first", { behindBy: 1, threads: [thread(41)] }, "rebase"],
+    ["a base that moved without conflicts needs no rebase", { behindBy: 1 }, "merge"],
+    [
+      "a branch GitHub reports behind its base still merges",
+      { pr: { state: "OPEN", isDraft: false, mergeStateStatus: "BEHIND", headRefOid: "abc1234567", baseRefName: "main" } },
+      "merge",
+    ],
+    [
+      "a conflict with the base needs a rebase first",
+      { pr: { state: "OPEN", isDraft: false, mergeStateStatus: "DIRTY", headRefOid: "abc1234567", baseRefName: "main" }, threads: [thread(41)] },
+      "rebase",
+    ],
     ["held local commits are fix work", { localAhead: true }, "fix"],
     [
       "a person's comment since the last push is fix work",
