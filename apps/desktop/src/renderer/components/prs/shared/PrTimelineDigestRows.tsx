@@ -22,8 +22,11 @@ import type { DigestRenderItem } from "./prDigestTimelineModel";
 /* ══════════════════ Digest rows (Overview triage layout) ══════════════════ */
 
 const ATTENTION_TONE = COLORS.warning;
-/** Pinned rows before "Show more": the block must never bury the thread. */
-const ATTENTION_VISIBLE_ROWS = 6;
+/**
+ * Pinned rows before "Show more". The block sits above the description, so it
+ * names what needs the reader and leaves the description on the first screen.
+ */
+const ATTENTION_VISIBLE_ROWS = 3;
 
 /**
  * Bot blocks split out of the PR body become synthetic bot comments. The PR
@@ -133,7 +136,9 @@ export function NeedsAttentionBlock({
   onOpenChecks?: () => void;
 }) {
   const [showAll, setShowAll] = useState(false);
-  const visible = showAll ? item.items : item.items.slice(0, ATTENTION_VISIBLE_ROWS);
+  // The failing-checks row takes one of the pinned places.
+  const pinned = Math.max(1, ATTENTION_VISIBLE_ROWS - (item.failingChecks.length ? 1 : 0));
+  const visible = showAll ? item.items : item.items.slice(0, pinned);
   const hidden = item.items.length - visible.length;
   return (
     <section

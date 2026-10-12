@@ -212,6 +212,11 @@ const PLACEHOLDER = new RegExp(
   ].map((text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}|\\bTBD\\b|\\bTODO\\b|\\bpending \\/\\w+)`,
   "i",
 );
+/** The placeholder a text still holds ("pending /test", "TODO"), or null. */
+export function prBriefPlaceholder(markdown: string): string | null {
+  return PLACEHOLDER.exec(markdown)?.[0] ?? null;
+}
+
 /** Words of author prose up to which a text needs no parts at all. */
 export const PR_BRIEF_SHORT_WORDS = 60;
 /** Words of author prose past which a description stops being read. */

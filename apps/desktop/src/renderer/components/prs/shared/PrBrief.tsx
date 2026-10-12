@@ -5,6 +5,7 @@ import {
   parsePrBrief,
   prBriefEvidenceCounts,
   prBriefEvidenceSummary,
+  prBriefPlaceholder,
   type PrBrief,
   type PrBriefPart,
   type PrBriefPartKind,
@@ -55,6 +56,11 @@ function BriefPart({
     () => (part.kind === "evidence" ? prBriefEvidenceSummary(prBriefEvidenceCounts(part.body)) : null),
     [part.body, part.kind],
   );
+  // Evidence that still says "pending" proves nothing yet; say so beside it.
+  const notFinal = useMemo(
+    () => (part.kind === "evidence" ? prBriefPlaceholder(part.body) : null),
+    [part.body, part.kind],
+  );
   const source = `the "${part.heading}" part of ${from}`;
   const addToChat = env?.onAddToChat;
   const caution = part.kind === "not_checked";
@@ -73,9 +79,19 @@ function BriefPart({
     >
       <header className="mb-1.5 flex min-h-[20px] items-center gap-1.5">
         {Glyph ? <Glyph size={13} weight={part.kind === "evidence" ? "fill" : "bold"} style={{ color: tone, flexShrink: 0 }} /> : null}
-        <h3 className="m-0 text-[10.5px] font-semibold uppercase tracking-[0.08em]" style={{ color: tone }}>
+        <h3 className="m-0 text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: tone }}>
           {part.heading}
         </h3>
+        {notFinal ? (
+          <span
+            data-testid="pr-brief-not-final"
+            title={`The text still says "${notFinal}".`}
+            className="rounded-[5px] px-1.5 text-[10.5px] font-medium leading-[1.6]"
+            style={{ color: COLORS.warning, background: `color-mix(in srgb, ${COLORS.warning} 12%, transparent)` }}
+          >
+            Not final
+          </span>
+        ) : null}
         {summary ? (
           <span className="text-[11px]" style={{ color: COLORS.textDim }} data-testid="pr-brief-evidence-kinds">
             · {summary}
