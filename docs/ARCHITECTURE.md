@@ -513,7 +513,7 @@ browser PostHog transport. See [Web client](./features/web-client/README.md).
 
 ### 2.6 Web app (`apps/web/`)
 
-A Vite/React SPA that serves the public marketing site, download page, the internal smart-QR/App Clip pairing handoff, deeplink landing page, privacy/terms pages, and not-found route. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
+A Vite/React SPA that serves the public marketing site, download page, the internal smart-QR/App Clip pairing handoff, deeplink landing page, privacy/terms pages, and not-found route. `apps/web/api/` holds the redirect functions: installers and downloads, and `/device`, the account sign-in link, which redirects a browser to the account directory's own page and forwards only a well-formed code. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
 
 Public-site product analytics is separately consented and uses the `ade_marketing_*` namespace. `marketingAnalytics.ts` owns its closed taxonomy and durable 40-event browser/day budget; `marketingAnalyticsBrowser.ts` sends directly from the browser to PostHog's US Capture API with credentials and referrers omitted. It does not route through `apps/web/api/`, add a Vercel Function or Edge Function, enable Vercel Web Analytics, or create a log drain. The only Vercel impact is the small static JavaScript added to the normally cached site bundle. Production receives the public `VITE_POSTHOG_*` values; Preview and Development remain analytics-inert.
 

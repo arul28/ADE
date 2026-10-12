@@ -340,7 +340,9 @@ apps/ios/
 │   │   │                               # project action envelopes
 │   │   ├── DeepLinkRouter.swift     # ade:// and https://ade-app.dev/open
 │   │   │                            # handler. Compact PR links flip tabs via
-│   │   │                            # .adeDeepLinkRequested. Session links publish
+│   │   │                            # .adeDeepLinkRequested. A device sign-in
+│   │   │                            # link posts .adeDeviceSignInRequested, and
+│   │   │                            # ADEApp shows the approval sheet. Session links publish
 │   │   │                            # WorkSessionNavigationRequest with lane/repo/
 │   │   │                            # branch/event/offset scope; the app-root task
 │   │   │                            # routes the request to Hub or Work, including
@@ -384,6 +386,15 @@ apps/ios/
 │   │   │                            # install labels (channel/adeHome →
 │   │   │                            # installLabel/rowLabel) + Attention relay
 │   │   │                            # clients
+│   │   ├── DeviceSignInApproval.swift # the sign-in link of another computer
+│   │   │                            # (https://ade-app.dev/device?user_code=…):
+│   │   │                            # parses the code and calls the account
+│   │   │                            # directory's /device/approve to read what
+│   │   │                            # the code is for and to approve it. The
+│   │   │                            # sheet is Views/Account/
+│   │   │                            # DeviceSignInApprovalSheet.swift; every web
+│   │   │                            # sign-in sheet anchors through Views/
+│   │   │                            # Components/WebAuthPresentationAnchor.swift
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # per-host pairing secrets, stable device
 │   │   │                            # identity, and SSH credential storage

@@ -16,6 +16,7 @@ import {
   stableAssetUrl,
   type VercelRes,
 } from "./releaseAssets.js";
+import deviceHandler from "./device.js";
 import downloadHandler from "./download.js";
 import installHandler from "./install.js";
 
@@ -291,3 +292,41 @@ test("HEAD gets the same redirect as GET and neither reaches analytics", async (
   assert.equal(getInstall.headers["Cache-Control"], SCRIPT_CACHE_CONTROL);
 });
 
+// /device is the sign-in link `ade connect` prints and draws as a QR code. In a
+// browser it must land on the account directory's own page and nowhere else,
+// whatever the query says: it is a redirect that takes user input.
+test("the sign-in link forwards a well-formed code to the account directory, and nothing else", async () => {
+  const page = "https://ade-account-directory-production.arulsharma1028.workers.dev/device";
+  const cases: Array<[string | string[] | undefined, string]> = [
+    ["ABCD-EFGH", `${page}?user_code=ABCD-EFGH`],
+    // What a person types: lower case, no dash, stray spaces.
+    ["abcdefgh", `${page}?user_code=ABCD-EFGH`],
+    [" wxyz-2345 ", `${page}?user_code=WXYZ-2345`],
+    // No code, or not a code: the page that asks for one. Never an echo.
+    [undefined, page],
+    ["", page],
+    // 0, 1, I and O are not in the code alphabet.
+    ["ABCD-EFG0", page],
+    ["IIII-OOOO", page],
+    ["ABCD-EFGH&next=https://evil.example", page],
+    ["https://evil.example/device", page],
+    ["ABCD-EFGH\r\nSet-Cookie: x=1", page],
+    [["ABCD-EFGH", "https://evil.example"], `${page}?user_code=ABCD-EFGH`],
+  ];
+  for (const [userCode, location] of cases) {
+    const answer = captureResponse();
+    const captures = await withCountedCaptures(async () => {
+      await deviceHandler({ method: "GET", query: { user_code: userCode }, headers: {} }, answer.res);
+    });
+    assert.equal(answer.statusCode, 302, `status for ${JSON.stringify(userCode)}`);
+    assert.equal(answer.headers.Location, location, `location for ${JSON.stringify(userCode)}`);
+    // The code is single-use and short-lived, so the hop is never cached.
+    assert.equal(answer.headers["Cache-Control"], FALLBACK_CACHE_CONTROL);
+    assert.equal(captures, 0, "the redirect must not reach analytics");
+  }
+
+  const write = captureResponse();
+  await deviceHandler({ method: "POST", query: { user_code: "ABCD-EFGH" }, headers: {} }, write.res);
+  assert.equal(write.statusCode, 405);
+  assert.equal(write.headers.Location, undefined);
+});

@@ -1300,11 +1300,26 @@ describe("AccountAuthService device authorization", () => {
     });
   });
 
-  it("shares cancellation across coalesced device polls and rejects a late token", async () => {
+  it.each([
+    // The cancel lands while the directory is still answering the poll.
+    ["the directory answers", "token"],
+    // The cancel lands one step later, while the profile is being looked up:
+    // the token is already in hand, and it still must not be saved.
+    ["the profile lookup returns", "profile"],
+  ] as const)("shares cancellation across coalesced device polls and rejects a token that arrives after a cancel, before %s", async (_label, cancelDuring) => {
     const store = new MemoryCredentialStore();
     let resolveTokenResponse: ((response: Response) => void) | null = null;
     const tokenResponse = new Promise<Response>((resolve) => {
       resolveTokenResponse = resolve;
+    });
+    // As the directory answers: the token, and the OAuth application it came
+    // from, which is what makes the service look the profile up.
+    const lateToken = () => jsonResponse({
+      access_token: jwt({ sub: "late-device-user" }),
+      refresh_token: "late-refresh-token",
+      expires_in: 3600,
+      oauth_issuer: "https://clerk.example.test",
+      oauth_client_id: "client-public",
     });
     let tokenRequests = 0;
     const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
@@ -1317,8 +1332,12 @@ describe("AccountAuthService device authorization", () => {
           interval: 5,
         });
       }
+      if (input.endsWith("/oauth/userinfo")) {
+        service.cancelLogin("cancelled-coalesced-session");
+        return jsonResponse({ sub: "late-device-user", email: "late@example.com" });
+      }
       tokenRequests += 1;
-      return tokenResponse;
+      return cancelDuring === "token" ? tokenResponse : lateToken();
     });
     const service = createAccountAuthService({
       credentialStore: store,
@@ -1332,12 +1351,10 @@ describe("AccountAuthService device authorization", () => {
     const start = await service.startDeviceLogin();
     const firstPoll = service.pollDeviceLogin(start.sessionId);
     const secondPoll = service.pollDeviceLogin(start.sessionId);
-    service.cancelLogin(start.sessionId);
-    resolveTokenResponse!(jsonResponse({
-      access_token: jwt({ sub: "late-device-user" }),
-      refresh_token: "late-refresh-token",
-      expires_in: 3600,
-    }));
+    if (cancelDuring === "token") {
+      service.cancelLogin(start.sessionId);
+      resolveTokenResponse!(lateToken());
+    }
 
     await expect(Promise.all([firstPoll, secondPoll])).resolves.toEqual([
       expect.objectContaining({ status: "error", message: expect.stringContaining("cancelled") }),
@@ -1345,6 +1362,87 @@ describe("AccountAuthService device authorization", () => {
     ]);
     expect(tokenRequests).toBe(1);
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+    expect(service.getStatus().signedIn).toBe(false);
+  });
+
+  it("lets one sign-in win: completing one ends every other sign-in that is open on the machine", async () => {
+    // `ade login` runs a browser sign-in and a device sign-in at once, and the
+    // desktop app can have its own open. Whichever completes first owns the
+    // session; a second one completing a moment later would replace it,
+    // possibly with another account.
+    const store = new MemoryCredentialStore();
+    let deviceCodes = 0;
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/device/code")) {
+        deviceCodes += 1;
+        return jsonResponse({
+          device_code: `device-code-${deviceCodes}`,
+          user_code: "ABCD-EFGH",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        });
+      }
+      if (input.endsWith("/device/token")) {
+        return jsonResponse({
+          access_token: jwt({ sub: "phone-user", email: "phone@example.com" }),
+          refresh_token: "phone-refresh-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+        });
+      }
+      if (input.endsWith("/oauth/userinfo")) return jsonResponse({}, 503);
+      // The browser sign-in's code exchange at the issuer.
+      return jsonResponse({
+        access_token: jwt({ sub: "browser-user", email: "browser@example.com" }),
+        refresh_token: "browser-refresh-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      });
+    });
+    let sessions = 0;
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      randomUUID: () => `session-${++sessions}`,
+      fetchImpl,
+    });
+    activeServices.push(service);
+    const callbackUrl = (authorizeUrl: string, code: string) => {
+      const authorize = new URL(authorizeUrl);
+      return `${authorize.searchParams.get("redirect_uri")!}?code=${code}&state=${encodeURIComponent(authorize.searchParams.get("state")!)}`;
+    };
+
+    // A phone finishes while a browser sign-in and a second device sign-in are open.
+    const browser = await service.startLogin();
+    const phone = await service.startDeviceLogin();
+    const otherPhone = await service.startDeviceLogin();
+    await expect(service.pollLogin(browser.sessionId)).resolves.toMatchObject({ status: "pending" });
+    await expect(service.pollDeviceLogin(phone.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+      authStatus: { signedIn: true, email: "phone@example.com" },
+    });
+    // The browser tab that is still open cannot complete: its listener is closed.
+    await expect(fetch(callbackUrl(browser.authorizeUrl, "late-browser-code"))).rejects.toThrow();
+    // Whoever was waiting on the browser sign-in learns that the machine is signed in.
+    await expect(service.pollLogin(browser.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+      authStatus: { signedIn: true, email: "phone@example.com" },
+    });
+    // The other device code is forgotten, so approving it later changes nothing.
+    await expect(service.pollDeviceLogin(otherPhone.sessionId)).resolves.toMatchObject({ status: "error" });
+    expect(service.getStatus()).toMatchObject({ signedIn: true, email: "phone@example.com", source: "device" });
+
+    // The other direction: a browser sign-in completes while a device sign-in is open.
+    const secondBrowser = await service.startLogin();
+    const latePhone = await service.startDeviceLogin();
+    const completed = await fetch(callbackUrl(secondBrowser.authorizeUrl, "browser-code"));
+    expect(completed.status).toBe(200);
+    expect(service.getStatus()).toMatchObject({ signedIn: true, email: "browser@example.com", source: "loopback" });
+    await expect(service.pollDeviceLogin(latePhone.sessionId)).resolves.toMatchObject({ status: "error" });
+    expect(service.getStatus()).toMatchObject({ signedIn: true, email: "browser@example.com", source: "loopback" });
   });
 
   it("keeps an explicit device identity active instead of reverting to inherited env auth", async () => {
