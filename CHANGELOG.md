@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.103] - 2026-10-13
+
+### Desktop and web
+
+- Scenes can ask for a reply; Settings > MCP servers and MCP Apps (#1609).
+- Apple Music plays on macOS, and playback resumes where it stopped (#1611).
+- The update dialog says what a restart stops, and other machines can update from here (#1613).
+- Claude chats follow the real prompt cache time; clearer compaction line (#1608).
+- Browser commands use the browser on your machine; a cross-project search no longer freezes ADE (#1615).
+- The Windows installer is built with NSIS 3.12 to stop a first-install crash (#1605).
+
 ## [1.2.102] - 2026-10-13
 
 ### Desktop and web
@@ -2465,7 +2476,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.102...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.103...HEAD
+[1.2.103]: https://github.com/arul28/ADE/compare/v1.2.102...v1.2.103
 [1.2.102]: https://github.com/arul28/ADE/compare/v1.2.101...v1.2.102
 [1.2.101]: https://github.com/arul28/ADE/compare/v1.2.100...v1.2.101
 [1.2.100]: https://github.com/arul28/ADE/compare/v1.2.99...v1.2.100
