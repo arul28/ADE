@@ -1,33 +1,113 @@
-import type { AutoUpdateSnapshot, UpdateInterruptedChat } from "../../../shared/types";
-import { checkboxConfirmDialog, confirmDialog } from "../ui/dialog/confirm";
+import type { AutoUpdateSnapshot } from "../../../shared/types";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
+import { dismissToast, showToast } from "./toast/toastStore";
+import {
+  ChoiceCheckbox,
+  listOutdatedConnectedMachines,
+  MachinesRunningWork,
+  readMachinesRunningWork,
+  runningWorkFromInstallImpact,
+  RunningWorkSummary,
+  type OutdatedMachine,
+  type OutdatedMachineWork,
+  type RunningWork,
+} from "./updateRunningWork";
+
+const UPDATING_MACHINES_TOAST_ID = "ade-update-other-machines";
 
 function versionLabel(version: string | null): string {
   return version ? `v${version}` : "the latest update";
 }
 
+function machineNames(machines: readonly OutdatedMachine[]): string {
+  return machines.map((machine) => machine.name).join(", ");
+}
+
+type InstallChoices = { resumeChats: boolean; updateMachines: boolean };
+
 /**
- * The chats a restart will interrupt, as a compact list. Project names only
- * appear when the list spans more than one, so a single-project list stays
- * quiet.
+ * What the install stops, here and on the other machines it can bring along,
+ * with the two things the person can still decide.
  */
-function InterruptedChatList({ chats }: { chats: UpdateInterruptedChat[] }) {
-  const projectNames = new Set(chats.map((chat) => chat.projectName).filter(Boolean));
-  const showProject = projectNames.size > 1;
+function InstallImpactBody({
+  local,
+  machines,
+  choices,
+  offerResume,
+}: {
+  local: RunningWork;
+  machines: readonly OutdatedMachineWork[];
+  choices: InstallChoices;
+  offerResume: boolean;
+}) {
   return (
-    <div style={{ marginTop: 2 }}>
-      <div style={{ fontWeight: 600, marginBottom: 6, color: "var(--color-fg)" }}>
-        {chats.length === 1 ? "1 agent is running" : `${chats.length} agents are running`}
-      </div>
+    <div style={{ display: "grid", gap: 4 }}>
+      <RunningWorkSummary work={local} heading={machines.length > 0 ? "This computer" : undefined} />
+      {offerResume ? (
+        <ChoiceCheckbox choices={choices} name="resumeChats" label="Resume these chats when ADE is back" />
+      ) : null}
+      {machines.length > 0 ? (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--color-border)" }}>
+          <MachinesRunningWork machines={machines} />
+          <ChoiceCheckbox
+            choices={choices}
+            name="updateMachines"
+            label={machines.length === 1
+              ? `Update ${machines[0].name} too`
+              : `Update these ${machines.length} machines too`}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Other machines go first, because this computer's relaunch ends the run.
+ * Resolves false when one did not take the update and the person chose not to
+ * install here either.
+ */
+async function updateOtherMachinesFirst(
+  machines: readonly OutdatedMachine[],
+  targetVersion: string | null,
+): Promise<boolean> {
+  showToast({
+    id: UPDATING_MACHINES_TOAST_ID,
+    title: `Updating ${machineNames(machines)}`,
+    message: "This computer installs once they have started.",
+    tone: "info",
+    durationMs: 0,
+  });
+  const results = await Promise.all(machines.map(async (machine) => {
+    try {
+      const result = await window.ade.remoteRuntime.updateAndRestart(machine.id, targetVersion);
+      return { machine, ok: result.ok, message: result.message };
+    } catch (error) {
+      return { machine, ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  }));
+  dismissToast(UPDATING_MACHINES_TOAST_ID);
+  const failed = results.filter((result) => !result.ok);
+  if (failed.length === 0) return true;
+  return await confirmDialog({
+    title: failed.length === 1
+      ? `${failed[0].machine.name} did not update`
+      : `${failed.length} machines did not update`,
+    message: "Install on this computer anyway? You can update a machine later from its row in Machines.",
+    children: (
       <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 3 }}>
-        {chats.map((chat) => (
-          <li key={chat.sessionId} style={{ overflowWrap: "anywhere" }}>
-            {showProject ? `${chat.title} — ${chat.projectName}` : chat.title}
+        {failed.map((result) => (
+          <li key={result.machine.id} style={{ overflowWrap: "anywhere" }}>
+            {`${result.machine.name}: ${result.message}`}
           </li>
         ))}
       </ul>
-    </div>
-  );
+    ),
+    tone: "warning",
+    confirmLabel: "Install here",
+    cancelLabel: "Not now",
+  });
 }
 
 /** Shared confirmation and install action for every manual update affordance. */
@@ -35,11 +115,15 @@ export async function requestDownloadedUpdateInstall(
   snapshot: AutoUpdateSnapshot,
   onAccepted?: () => void,
 ): Promise<boolean> {
-  const impact = await Promise.resolve()
-    .then(() => window.ade.updateGetInstallImpact())
-    .catch(() => null);
+  const [impact, machines] = await Promise.all([
+    Promise.resolve()
+      .then(() => window.ade.updateGetInstallImpact())
+      .catch(() => null),
+    listOutdatedConnectedMachines(snapshot.version).then(readMachinesRunningWork),
+  ]);
   const phones = impact?.connectedPhones ?? [];
-  const interruptedChats = impact?.interruptedChats ?? [];
+  const local = runningWorkFromInstallImpact(impact);
+  const offerResume = local.chats.some((chat) => chat.resumable !== false);
   const title = `ADE will quit and reopen automatically to install ${versionLabel(snapshot.version)}.`;
   const lines: string[] = [];
   if (phones.length === 1) {
@@ -56,38 +140,32 @@ export async function requestDownloadedUpdateInstall(
     "",
     "You do not need to restart ADE yourself. Any unsaved work may be lost. Continue?",
   );
-  const message = lines.join("\n");
 
-  const accepted = async (resumeChats: boolean): Promise<boolean> => {
-    captureUpdatePromptDecision(snapshot, "accepted", { resumeChats });
-    onAccepted?.();
-    try {
-      return await window.ade.updateQuitAndInstall({ resumeChats });
-    } catch {
-      // The main process logs updater failures.
-      return false;
-    }
-  };
-
-  if (interruptedChats.length > 0) {
-    const result = await checkboxConfirmDialog({
-      title,
-      message,
-      children: <InterruptedChatList chats={interruptedChats} />,
-      checkbox: { label: "Resume these chats when ADE is back", defaultChecked: true },
-      confirmLabel: "Continue",
-    });
-    if (!result.confirmed) {
-      captureUpdatePromptDecision(snapshot, "deferred");
-      return false;
-    }
-    return await accepted(result.checked);
-  }
-
-  const confirmed = await confirmDialog({ title, message, confirmLabel: "Continue" });
+  const choices: InstallChoices = { resumeChats: offerResume, updateMachines: machines.length > 0 };
+  const confirmed = await confirmDialog({
+    title,
+    message: lines.join("\n"),
+    children: (
+      <InstallImpactBody local={local} machines={machines} choices={choices} offerResume={offerResume} />
+    ),
+    confirmLabel: "Continue",
+  });
   if (!confirmed) {
     captureUpdatePromptDecision(snapshot, "deferred");
     return false;
   }
-  return await accepted(false);
+
+  const resumeChats = offerResume && choices.resumeChats;
+  captureUpdatePromptDecision(snapshot, "accepted", { resumeChats });
+  onAccepted?.();
+  if (choices.updateMachines && machines.length > 0) {
+    const proceed = await updateOtherMachinesFirst(machines, snapshot.version);
+    if (!proceed) return false;
+  }
+  try {
+    return await window.ade.updateQuitAndInstall({ resumeChats });
+  } catch {
+    // The main process logs updater failures.
+    return false;
+  }
 }

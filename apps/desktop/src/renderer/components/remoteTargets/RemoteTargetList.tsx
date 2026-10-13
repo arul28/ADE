@@ -44,9 +44,6 @@ import {
   formatRemoteTargetError,
   describeMachineUpdateAttempt,
   isMachineVersionOutdated,
-  machineUpdateAttemptFromResult,
-  machineUpdateGraceMs,
-  type MachineUpdateAttempt,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   newestKnownAdeVersion,
@@ -58,6 +55,8 @@ import {
 } from "../../../shared/machinePresence";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
+import type { OutdatedMachine } from "../app/updateRunningWork";
+import { requestMachineUpdates, useMachineUpdates } from "./machineUpdates";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
 import { accountRowKey, useRowActions } from "./useRowActions";
@@ -217,28 +216,12 @@ export function RemoteTargetList({
   } = useRowActions();
   // An add/edit form submit is in flight. Locks the forms, never the rows.
   const [saving, setSaving] = useState(false);
-  const [updatingTargetId, setUpdatingTargetId] = useState<string | null>(null);
-  const [updateResultByTargetId, setUpdateResultByTargetId] = useState<
-    Record<string, MachineUpdateAttempt>
-  >({});
-  // Re-read once an in-flight update's grace runs out, so a machine that never
-  // came back on the new version gets told so instead of "reconnecting…".
-  const [updateClockMs, setUpdateClockMs] = useState(() => Date.now());
-  useEffect(() => {
-    let nextDeadlineMs: number | null = null;
-    for (const attempt of Object.values(updateResultByTargetId)) {
-      if (!attempt.pendingVersion) continue;
-      const deadlineMs = attempt.startedAtMs + machineUpdateGraceMs(attempt);
-      if (deadlineMs <= updateClockMs) continue;
-      nextDeadlineMs = nextDeadlineMs == null ? deadlineMs : Math.min(nextDeadlineMs, deadlineMs);
-    }
-    if (nextDeadlineMs == null) return;
-    const timer = window.setTimeout(
-      () => setUpdateClockMs(Date.now()),
-      Math.max(0, nextDeadlineMs - Date.now()) + 250,
-    );
-    return () => window.clearTimeout(timer);
-  }, [updateResultByTargetId, updateClockMs]);
+  const {
+    updatingIds: updatingTargetIds,
+    checkingIds: checkingUpdateIds,
+    attempts: updateResultByTargetId,
+    nowMs: updateClockMs,
+  } = useMachineUpdates();
   const updateSnapshot = useAutoUpdateSnapshot();
   const [trustingHostKey, setTrustingHostKey] = useState(false);
   const [formPrefill, setFormPrefill] =
@@ -1121,55 +1104,36 @@ export function RemoteTargetList({
     [updateSnapshot.currentVersion, updateSnapshot.latestKnownVersion],
   );
 
-  const updateAndRestartTarget = useCallback(
-    async (targetId: string, targetVersion: string | null, machineName: string) => {
-      if (!window.ade.remoteRuntime.updateAndRestart) return;
-      setUpdatingTargetId(targetId);
-      setUpdateResultByTargetId((current) => {
-        if (!(targetId in current)) return current;
-        const next = { ...current };
-        delete next[targetId];
-        return next;
-      });
-      try {
-        const result = await window.ade.remoteRuntime.updateAndRestart(
-          targetId,
-          targetVersion,
-        );
-        const nowMs = Date.now();
-        setUpdateClockMs(nowMs);
-        setUpdateResultByTargetId((current) => ({
-          ...current,
-          [targetId]: machineUpdateAttemptFromResult(
-            result,
-            `${machineName} updated — reconnecting…`,
-            nowMs,
-          ),
-        }));
-      } catch (err) {
-        setUpdateResultByTargetId((current) => ({
-          ...current,
-          [targetId]: {
-            ok: false,
-            message: extractError(err),
-            pendingVersion: null,
-            downloading: false,
-            startedAtMs: Date.now(),
-          },
-        }));
-      } finally {
-        setUpdatingTargetId(null);
-      }
-    },
-    [],
-  );
-
   function renderSection(section: MachineSection) {
     const rows = sections[section];
     if (rows.length === 0) return null;
+    // Connected machines behind the newest ADE this computer knows about.
+    const outdatedMachines: OutdatedMachine[] = section === "connected"
+      ? rows.flatMap((row) =>
+          row.kind === "saved"
+          && row.connected
+          && isMachineVersionOutdated(row.version, newestKnownVersion)
+            ? [{ id: row.target.id, name: row.target.name, version: row.version }]
+            : [])
+      : [];
+    const updateAllBusy = outdatedMachines.some((machine) =>
+      updatingTargetIds.has(machine.id) || checkingUpdateIds.has(machine.id));
     return (
       <div style={{ display: "grid", gap: 8 }}>
-        <div style={sectionHeaderStyle}>{SECTION_LABELS[section]}</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={sectionHeaderStyle}>{SECTION_LABELS[section]}</div>
+          {outdatedMachines.length > 1 ? (
+            <button
+              type="button"
+              disabled={updateAllBusy}
+              onClick={() => void requestMachineUpdates(outdatedMachines, newestKnownVersion)}
+              style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })}
+            >
+              <ArrowClockwise size={13} weight="bold" />
+              {`Update all ${outdatedMachines.length}`}
+            </button>
+          ) : null}
+        </div>
         {rows.map((row) => {
           if (row.kind === "saved") {
             const pairAgainMachine = accountMachineForTarget(row.target);
@@ -1225,14 +1189,14 @@ export function RemoteTargetList({
                     ? newestKnownVersion
                     : null
                 }
-                updating={updatingTargetId === row.target.id || updateStatus?.inFlight === true}
+                updating={updatingTargetIds.has(row.target.id) || updateStatus?.inFlight === true}
+                checkingUpdate={checkingUpdateIds.has(row.target.id)}
                 updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
                 localAdeVersion={updateSnapshot.currentVersion}
                 onUpdateAndRestart={(targetVersion) =>
-                  void updateAndRestartTarget(
-                    row.target.id,
+                  void requestMachineUpdates(
+                    [{ id: row.target.id, name: row.target.name, version: row.version }],
                     targetVersion,
-                    row.target.name,
                   )
                 }
                 hostKeyTrust={

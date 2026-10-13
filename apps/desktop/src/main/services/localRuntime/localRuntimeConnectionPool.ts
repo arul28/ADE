@@ -27,6 +27,7 @@ import type {
   AdeActionRegistryEntry,
   LocalRuntimeStatus,
   RuntimeActivitySummary,
+  RuntimeUpdateImpact,
   SyncCloudRelayStatus,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
@@ -1891,6 +1892,19 @@ export class LocalRuntimeConnectionPool {
     // in-memory turns is not that — it is the keep-awake poll's clock.
     return await this.callSync<RuntimeActivitySummary>(
       "runtime.activitySummary",
+      {},
+      { timeoutMs: LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS },
+    );
+  }
+
+  /**
+   * What restarting this machine's ADE would stop. Bounded like
+   * `activitySummary`: it reads live turns from memory, and the dialog asking
+   * must not wait on a wedged brain.
+   */
+  async updateImpact(): Promise<RuntimeUpdateImpact> {
+    return await this.callSync<RuntimeUpdateImpact>(
+      "runtime.updateImpact",
       {},
       { timeoutMs: LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS },
     );

@@ -343,7 +343,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   ],
   general: [
     {
-      entryIds: ["general.about", "general.auto-updates"],
+      entryIds: ["general.about", "general.auto-updates", "general.update-other-machines"],
       // About has no section file of its own, so the page supplies its anchor.
       render: () => (
         <div id="about" data-settings-anchor="about">

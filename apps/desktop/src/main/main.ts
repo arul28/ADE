@@ -269,6 +269,7 @@ import type {
   SyncProjectConnectionPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
+  RuntimeUpdateImpact,
   UpdateInstallImpact,
   UpdateInterruptedChat,
 } from "../shared/types";
@@ -2994,7 +2995,9 @@ app.whenReady().then(async () => {
     // here — the list is persisted with the pending install and only becomes a
     // resume on the launch that actually lands it. That is what makes an
     // aborted handoff harmless: no install, no resume rows.
-    const interruptedChats = resumeRequested ? await collectInterruptedChats() : [];
+    const interruptedChats = resumeRequested
+      ? (await collectInterruptedChats()).filter((chat) => chat.resumable !== false)
+      : [];
     if (!shouldRepairRuntimeServiceOnFallback) {
       updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
         serviceManaged: false,
@@ -7966,6 +7969,8 @@ app.whenReady().then(async () => {
       projectRoot: string;
       inProcessService: AppContext["agentChatService"] | null;
     }) => Promise<void>,
+    /** Projects with no tab open that the action must still reach. */
+    extraRoots: Iterable<string> = [],
   ): Promise<void> => {
     if (shouldUseInProcessProjectRuntime()) {
       for (const ctx of projectContexts.values()) {
@@ -7980,6 +7985,7 @@ app.whenReady().then(async () => {
     const roots = new Set<string>([
       ...rootsBoundToWindows(),
       ...projectContexts.keys(),
+      ...extraRoots,
     ]);
     await Promise.all(Array.from(roots).map(async (root) => {
       await run({ projectName: labelForProjectRoot(root), projectRoot: root, inProcessService: null });
@@ -7992,9 +7998,18 @@ app.whenReady().then(async () => {
     return Array.isArray(payload?.chats) ? payload.chats : [];
   };
 
-  // Chats with a live turn on this machine right now. An ADE restart stops
-  // them mid-flight, so the install dialog names them and offers to resume.
-  const collectInterruptedChats = async (options: { strict?: boolean } = {}): Promise<UpdateInterruptedChat[]> => {
+  /**
+   * Which project each running chat belongs to, as of the last read. A resume
+   * is armed per project, and the chat may sit in one with no tab open.
+   */
+  const runningChatProjectRoots = new Map<string, string>();
+
+  /**
+   * The same question, one project at a time, for the projects open in a
+   * window: all an in-process runtime has, and all a brain from before
+   * `runtime.updateImpact` can answer. It cannot see CLI sessions or terminals.
+   */
+  const collectRunningWorkPerProject = async (strict: boolean): Promise<RuntimeUpdateImpact> => {
     const chats: UpdateInterruptedChat[] = [];
     await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
@@ -8005,15 +8020,50 @@ app.whenReady().then(async () => {
               action: "listInterruptedChats",
             })).result);
         for (const chat of refs) {
-          chats.push({ sessionId: chat.sessionId, title: chat.title, projectName });
+          chats.push({ sessionId: chat.sessionId, title: chat.title, projectName, projectRoot });
         }
       } catch (error) {
         // Best-effort for the dialogs; a decision that stops agents needs every project.
-        if (options.strict) throw error;
+        if (strict) throw error;
       }
     });
-    return chats;
+    return { chats, cliSessions: 0, terminals: 0 };
   };
+
+  /**
+   * What restarting ADE on this machine stops right now: the chats mid-turn,
+   * and the CLI sessions and terminals with work in them. The brain answers
+   * for every project it has open, whether or not a window shows it.
+   */
+  const collectRunningWork = async (options: { strict?: boolean } = {}): Promise<RuntimeUpdateImpact> => {
+    let work: RuntimeUpdateImpact | null = null;
+    if (!shouldUseInProcessProjectRuntime()) {
+      try {
+        const answer = await localRuntimePool.updateImpact();
+        if (!Array.isArray(answer?.chats)) throw new Error("runtime.updateImpact returned no chat list.");
+        work = {
+          chats: answer.chats,
+          cliSessions: Number(answer.cliSessions) || 0,
+          terminals: Number(answer.terminals) || 0,
+        };
+      } catch (error) {
+        // A brain from before the method, most likely. Ask the old way.
+        updateLogger.info("autoUpdate.impact_probe_fallback", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    work ??= await collectRunningWorkPerProject(options.strict === true);
+    for (const chat of work.chats) {
+      if (chat.projectRoot) runningChatProjectRoots.set(chat.sessionId, chat.projectRoot);
+    }
+    return work;
+  };
+
+  // Chats with a live turn on this machine right now. An ADE restart stops
+  // them mid-flight, so the install dialog names them and offers to resume.
+  const collectInterruptedChats = async (options: { strict?: boolean } = {}): Promise<UpdateInterruptedChat[]> =>
+    (await collectRunningWork(options)).chats;
 
   /**
    * Live chats for a decision that stops or resumes agents. Null when any
@@ -8034,9 +8084,16 @@ app.whenReady().then(async () => {
   // quit-prompt Repair.
   const armResumeForSessions = async (
     sessionIds: readonly string[],
+    /** Project roots the caller already knows these chats live in. */
+    knownRoots: readonly string[] = [],
   ): Promise<UpdateInterruptedChat[]> => {
     if (sessionIds.length === 0) return [];
     const armed: UpdateInterruptedChat[] = [];
+    const chatRoots = new Set<string>(knownRoots);
+    for (const sessionId of sessionIds) {
+      const root = runningChatProjectRoots.get(sessionId);
+      if (root) chatRoots.add(root);
+    }
     await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
         const refs = inProcessService
@@ -8055,7 +8112,7 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    });
+    }, chatRoots);
     return armed;
   };
 
@@ -8084,11 +8141,11 @@ app.whenReady().then(async () => {
     }
   };
 
-  // Live-connection probe shown before an update install or quit. Mirrors the
-  // lane-delete quit probe: in-process services in dev, runtime actions against
-  // the brain in packaged builds. Best-effort — an unreachable runtime simply
-  // reports no phones.
-  const collectUpdateInstallImpact = async (): Promise<UpdateInstallImpact> => {
+  // Phones connected through ADE phone sync, which drop while ADE restarts.
+  // Mirrors the lane-delete quit probe: in-process services in dev, runtime
+  // actions against the brain in packaged builds. Best-effort — an unreachable
+  // runtime simply reports no phones.
+  const collectConnectedPhones = async (): Promise<UpdateInstallImpact["connectedPhones"]> => {
     const phonesById = new Map<string, string>();
     const recordPeers = (peers: readonly SyncPeerConnectionState[] | undefined): void => {
       for (const peer of peers ?? []) {
@@ -8123,32 +8180,60 @@ app.whenReady().then(async () => {
         }
       }));
     }
-    return {
-      connectedPhones: Array.from(phonesById, ([deviceId, deviceName]) => ({
-        deviceId,
-        deviceName,
-      })),
-      interruptedChats: await collectInterruptedChats(),
-    };
+    return Array.from(phonesById, ([deviceId, deviceName]) => ({ deviceId, deviceName }));
   };
 
-  const EMPTY_UPDATE_INSTALL_IMPACT: UpdateInstallImpact = {
-    connectedPhones: [],
-    interruptedChats: [],
-  };
-
-  // Quit/update dialogs are synchronous, so cap how long the impact probe can
-  // delay them. On timeout the dialog falls back to generic copy.
-  const collectUpdateInstallImpactBounded = async (
-    timeoutMs = 1_500,
-  ): Promise<UpdateInstallImpact> => {
-    return await Promise.race([
-      collectUpdateInstallImpact().catch((): UpdateInstallImpact => EMPTY_UPDATE_INSTALL_IMPACT),
-      new Promise<UpdateInstallImpact>((resolve) => {
-        const timer = setTimeout(() => resolve(EMPTY_UPDATE_INSTALL_IMPACT), timeoutMs);
+  /** `task`, or `fallback` when it has not settled in time or it failed. */
+  const settledWithin = async <T,>(task: Promise<T>, timeoutMs: number, fallback: T): Promise<T> =>
+    await Promise.race([
+      task.catch((): T => fallback),
+      new Promise<T>((resolve) => {
+        const timer = setTimeout(() => resolve(fallback), timeoutMs);
         timer.unref?.();
       }),
     ]);
+
+  // Shown before an update install or a quit, which wait on it, so both halves
+  // are capped. They run side by side: a slow phone probe used to spend the
+  // whole budget and leave the running agents unasked. A running-work probe
+  // that does not answer is reported as unknown, never as "nothing running".
+  const collectUpdateInstallImpactBounded = async (
+    timeoutMs = 1_500,
+  ): Promise<UpdateInstallImpact> => {
+    const startedAt = Date.now();
+    let failure: string | null = null;
+    const [connectedPhones, work] = await Promise.all([
+      settledWithin(collectConnectedPhones(), 1_500, []),
+      settledWithin<RuntimeUpdateImpact | null>(
+        collectRunningWork({ strict: true }).catch((error: unknown) => {
+          failure = error instanceof Error ? error.message : String(error);
+          return null;
+        }),
+        timeoutMs,
+        null,
+      ),
+    ]);
+    if (work) {
+      updateLogger.info("autoUpdate.impact_probe", {
+        chats: work.chats.length,
+        cliSessions: work.cliSessions,
+        terminals: work.terminals,
+        ms: Date.now() - startedAt,
+      });
+    } else {
+      updateLogger.warn("autoUpdate.impact_probe_unknown", {
+        reason: failure ?? "timeout",
+        timeoutMs,
+        ms: Date.now() - startedAt,
+      });
+    }
+    return {
+      connectedPhones,
+      interruptedChats: work?.chats ?? [],
+      cliSessions: work?.cliSessions ?? 0,
+      terminals: work?.terminals ?? 0,
+      checked: work != null,
+    };
   };
 
   const confirmNoRunningLaneDeleteForQuit = async (ownerWindow?: BrowserWindow | null): Promise<boolean> => {
@@ -9259,7 +9344,9 @@ app.whenReady().then(async () => {
         ctx.agentToolsCacheService = agentToolsCacheService;
       }
       if (!ctx.updateInstallImpactProvider) {
-        ctx.updateInstallImpactProvider = () => collectUpdateInstallImpactBounded();
+        // The update dialog opens on a click, so it can wait a little longer
+        // for a real answer than a quit can.
+        ctx.updateInstallImpactProvider = () => collectUpdateInstallImpactBounded(3_000);
       }
       return ctx;
     },
@@ -9402,7 +9489,10 @@ app.whenReady().then(async () => {
   // no landed install, no resumed chats, no rows.
   const resumedAfterUpdate = savedUpdateState.recentlyInstalledUpdate?.resumedChats ?? [];
   if (resumedAfterUpdate.length > 0) {
-    void armResumeForSessions(resumedAfterUpdate.map((chat) => chat.sessionId))
+    void armResumeForSessions(
+      resumedAfterUpdate.map((chat) => chat.sessionId),
+      resumedAfterUpdate.flatMap((chat) => (chat.projectRoot ? [chat.projectRoot] : [])),
+    )
       .then((armed) => consumeArmedResumeChats(armed.map((chat) => chat.sessionId)))
       .catch(() => undefined);
   }

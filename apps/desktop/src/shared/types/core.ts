@@ -250,6 +250,17 @@ export type UpdateInterruptedChat = {
   sessionId: string;
   title: string;
   projectName: string;
+  /**
+   * Where the chat's project lives on its machine. The resume after an install
+   * is armed per project, and the chat may belong to one with no tab open.
+   * Absent for a personal chat, and from any reader that predates the field.
+   */
+  projectRoot?: string | null;
+  /**
+   * False for a chat ADE cannot queue to continue (a personal chat). Absent
+   * means it can.
+   */
+  resumable?: boolean;
 };
 
 /**
@@ -382,15 +393,29 @@ export type RuntimeActivitySummary = RuntimeActivityCounts & {
   idle: boolean;
 };
 
+/**
+ * Everything a restart of one machine's ADE stops, answered by that machine's
+ * brain (`runtime.updateImpact`) for every project it has open and its
+ * personal chats, whether or not a window shows them.
+ */
+export type RuntimeUpdateImpact = {
+  /** Chats with a live turn right now. */
+  chats: UpdateInterruptedChat[];
+  /** Agent CLI sessions (Claude Code, Codex, …) that are running or waiting on input. */
+  cliSessions: number;
+  /** Other terminals with a command running. */
+  terminals: number;
+};
+
 export type UpdateInstallImpactPhone = {
   deviceId: string;
   deviceName: string;
 };
 
 /**
- * Live connections that drop while ADE (and its brain service) restarts for an
- * update. Best-effort: probes are time-boxed, so an empty list means "none
- * detected", not a guarantee.
+ * What stops or drops while ADE (and its brain service) restarts for an
+ * update. The probes are time-boxed; `checked` says whether the running-work
+ * half answered, so "nothing is running" is never read off a probe that failed.
  */
 export type UpdateInstallImpact = {
   connectedPhones: UpdateInstallImpactPhone[];
@@ -399,6 +424,15 @@ export type UpdateInstallImpact = {
    * machine is not interrupted by this update, so it never appears here.
    */
   interruptedChats: UpdateInterruptedChat[];
+  /** Running agent CLI sessions on this machine. Absent reads as zero. */
+  cliSessions?: number;
+  /** Other terminals with a command running on this machine. Absent reads as zero. */
+  terminals?: number;
+  /**
+   * False when ADE could not ask what is running in time, so the lists above
+   * mean "unknown", not "none". Absent reads as answered.
+   */
+  checked?: boolean;
 };
 
 export type ProjectInfo = {

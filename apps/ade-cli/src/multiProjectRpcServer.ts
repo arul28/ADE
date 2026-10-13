@@ -33,6 +33,7 @@ import type {
   ProjectBrowseInput,
   RuntimeActivityCounts,
   RuntimeActivitySummary,
+  RuntimeUpdateImpact,
   SearchDocKind,
   SearchQueryResult,
   SearchResultItem,
@@ -69,6 +70,7 @@ import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import {
   PersonalChatScope,
   summarizeRuntimeActivity,
+  summarizeRuntimeUpdateImpact,
 } from "./services/personalChats/personalChatScope";
 import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
 import { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai/providerStatusDetails";
@@ -301,7 +303,7 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
-  > & Partial<Pick<PersonalChatScope, "activitySummary" | "subscribeEvents">>;
+  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents">>;
   /**
    * Backs `providers.status`: what each CLI-backed provider actually is on this
    * machine (installed, where, which version, signed in). Injected like
@@ -409,6 +411,34 @@ export async function readMachineRuntimeActivitySummary(args: {
   };
 }
 
+/**
+ * What restarting this machine's ADE would stop, across every project the
+ * brain has booted and its personal chats. A project that is not booted has
+ * nothing running, and asking must not boot it.
+ */
+export async function readMachineUpdateImpact(args: {
+  projectRegistry: Pick<ProjectRegistry, "list">;
+  scopeRegistry: Pick<ProjectScopeRegistry, "getIfBooted">;
+  personalChatScope: Partial<Pick<PersonalChatScope, "updateImpact">>;
+}): Promise<RuntimeUpdateImpact> {
+  const empty: RuntimeUpdateImpact = { chats: [], cliSessions: 0, terminals: 0 };
+  const parts = await Promise.all([
+    ...args.projectRegistry.list().map(async (record) => {
+      const scope = await args.scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+      if (!scope) return empty;
+      return await summarizeRuntimeUpdateImpact(scope.runtime, record);
+    }),
+    typeof args.personalChatScope.updateImpact === "function"
+      ? args.personalChatScope.updateImpact()
+      : empty,
+  ]);
+  return {
+    chats: parts.flatMap((part) => part.chats),
+    cliSessions: parts.reduce((total, part) => total + part.cliSessions, 0),
+    terminals: parts.reduce((total, part) => total + part.terminals, 0),
+  };
+}
+
 const RUNTIME_METHODS = new Set([
   "machines.call",
   "machines.list",
@@ -421,6 +451,7 @@ const RUNTIME_METHODS = new Set([
   "exit",
   "runtime/info",
   "runtime.activitySummary",
+  "runtime.updateImpact",
   "account.call",
   "attention.call",
   "notify.send",
@@ -2506,6 +2537,22 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "runtime.activitySummary") {
       return await readMachineRuntimeActivitySummary({
+        projectRegistry,
+        scopeRegistry,
+        personalChatScope,
+      });
+    }
+
+    // Names every chat mid-turn on this machine, so it is the user's to ask,
+    // not an agent's: the same gate as the update it informs.
+    if (method === "runtime.updateImpact") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "runtime.updateImpact requires the cto role.",
+        );
+      }
+      return await readMachineUpdateImpact({
         projectRegistry,
         scopeRegistry,
         personalChatScope,

@@ -45,6 +45,9 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
   RemoteRuntimeUpdateAndRestartResult,
+  RemoteRuntimeUpdateImpact,
+  RuntimeActivitySummary,
+  RuntimeUpdateImpact,
   RuntimeEventsReleaseRequest,
   RuntimeEventsReleaseResult,
   SyncWebPairingInfo,
@@ -234,6 +237,8 @@ function trackPageFileWatch(
  * leaving the request open forever.
  */
 const REMOTE_MACHINE_UPDATE_TIMEOUT_MS = 15 * 60_000;
+/** A confirmation dialog waits on this, so it is a few seconds, not a work budget. */
+const REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS = 4_000;
 const REMOTE_RUNTIME_SYNC_METHODS = new Set([
   "sync.getStatus",
   "sync.refreshDiscovery",
@@ -1524,6 +1529,48 @@ export function registerRuntimeBridge({
           retryOnConnectionError: false,
         },
       );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeGetUpdateImpact,
+    async (_event, arg: { id: string }): Promise<RemoteRuntimeUpdateImpact> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const target = id ? remoteConnectionService.getTarget(id) : null;
+      if (!target) throw new Error("Remote target was not found.");
+      const unknown: RemoteRuntimeUpdateImpact = {
+        checked: false,
+        chats: [],
+        cliSessions: 0,
+        terminals: 0,
+      };
+      const ask = async <T,>(method: string): Promise<T> =>
+        await remoteConnectionService.callMachineMethod<T>(
+          target.id,
+          method,
+          {},
+          { timeoutMs: REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS, retryOnConnectionError: false },
+        );
+      try {
+        const impact = await ask<RuntimeUpdateImpact>("runtime.updateImpact");
+        if (!Array.isArray(impact?.chats)) return unknown;
+        return {
+          checked: true,
+          chats: impact.chats,
+          cliSessions: Number(impact.cliSessions) || 0,
+          terminals: Number(impact.terminals) || 0,
+        };
+      } catch {
+        // A machine that needs this update usually predates the method. It can
+        // still say whether anything is running, just not what.
+        try {
+          const activity = await ask<RuntimeActivitySummary>("runtime.activitySummary");
+          if (typeof activity?.idle !== "boolean") return unknown;
+          return { ...unknown, checked: true, busyWithoutDetail: !activity.idle };
+        } catch {
+          return unknown;
+        }
+      }
     },
   );
 

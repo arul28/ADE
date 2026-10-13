@@ -208,6 +208,7 @@ export const IPC = {
   remoteRuntimeCallAction: "ade.remoteRuntime.callAction",
   remoteRuntimeCallSync: "ade.remoteRuntime.callSync",
   remoteRuntimeUpdateAndRestart: "ade.remoteRuntime.updateAndRestart",
+  remoteRuntimeGetUpdateImpact: "ade.remoteRuntime.getUpdateImpact",
   remoteRuntimeEnsurePortForward: "ade.remoteRuntime.ensurePortForward",
   /**
    * Main → renderer: every loopback forward for this machine is gone.
