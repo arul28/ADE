@@ -5,7 +5,11 @@ param(
   [ValidateSet("stable", "beta", "alpha")]
   [string]$PackageChannel = "stable",
   [string]$ProductName = $(if ($PackageChannel -eq "stable") { "ADE" } else { "ADE " + (Get-Culture).TextInfo.ToTitleCase($PackageChannel) }),
-  [string]$CompanionInstallerPath = ""
+  [string]$CompanionInstallerPath = "",
+  # Proof runs only: install and uninstall this many times first, counting
+  # installer crashes without retrying, to measure the installer's crash rate.
+  [ValidateRange(0, 50)]
+  [int]$FreshInstallRepeat = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -267,6 +271,27 @@ $fileClass = if ($PackageChannel -eq "stable") { "com.ade.desktop.files" } else 
 $launchedApp = $null
 $uninstallVerified = $false
 try {
+  if ($FreshInstallRepeat -gt 0) {
+    $crashes = 0
+    for ($cycle = 1; $cycle -le $FreshInstallRepeat; $cycle++) {
+      $startedAt = Get-Date
+      $process = Start-Process -FilePath $installer -ArgumentList @("/S") -Wait -PassThru -WindowStyle Hidden
+      if ($process.ExitCode -ne 0) {
+        $crashes++
+        Write-Warning "Fresh install $cycle/$FreshInstallRepeat exited with code $($process.ExitCode)."
+        if ($process.ExitCode -eq $installerAccessViolation) { Write-InstallerCrashReport $startedAt }
+        continue
+      }
+      Assert-InstalledProduct "fresh install $cycle/$FreshInstallRepeat"
+      Stop-InstalledProductProcesses
+      Invoke-Uninstaller
+      Assert-UninstalledProduct
+      Write-Output "Fresh install $cycle/$FreshInstallRepeat installed and uninstalled cleanly."
+    }
+    Write-Output "Fresh install repeat: $FreshInstallRepeat cycles, $crashes installer failure(s)."
+    if ($crashes -gt 0) { throw "$crashes of $FreshInstallRepeat fresh installs failed." }
+  }
+
   Invoke-Installer
   Assert-InstalledProduct "fresh install"
 
