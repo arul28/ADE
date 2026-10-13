@@ -10485,6 +10485,9 @@ export function createAgentChatService(args: {
     const adeHome = args.machineAdeHome?.trim();
     if (!adeHome) return null;
     if (managed.session.strictMcpConfig === true || managed.session.sessionProfile === "light") return null;
+    // A personal chat runs outside any project, on its own MCP rules; an
+    // assistant chat is one of those even though it uses the workflow profile.
+    if (isPersonalSession(managed.session)) return null;
     const registry = resolveMcpRegistryForLaunch({
       adeHome,
       projectRoot: args.projectRoot,
@@ -11637,7 +11640,12 @@ export function createAgentChatService(args: {
   // Once, well after boot: apps left by chats another brain deleted.
   const mcpAppOrphanSweepTimer = setTimeout(() => {
     try {
-      const removed = mcpApps.sweepOrphans((sessionId) => Boolean(sessionService.get(sessionId)));
+      const removed = mcpApps.sweepOrphans((sessionId) =>
+        // A chat whose lane row is gone no longer answers `get`, yet its
+        // transcript may still be restorable; an app folder is an orphan only
+        // when the transcript is gone too.
+        Boolean(sessionService.get(sessionId))
+        || [".chat.jsonl", ".chat.jsonl.gz"].some((ext) => fs.existsSync(path.join(transcriptsDir, `${sessionId}${ext}`))));
       if (removed > 0) logger.info("agent_chat.mcp_app_orphans_removed", { removed });
     } catch (error) {
       logger.warn("agent_chat.mcp_app_orphan_sweep_failed", { error: error instanceof Error ? error.message : String(error) });

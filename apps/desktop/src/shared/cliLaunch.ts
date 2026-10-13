@@ -1354,7 +1354,13 @@ export function buildTrackedCliLaunchCommand(args: {
     return {
       command: "copilot",
       args: commandArgs,
-      startupCommand: commandArrayToLine(["copilot", ...commandArgs], { platform: "linux" }),
+      // The shell fallback types this line; it carries the user's prompt only.
+      // The guidance is several KB of multi-line text with apostrophes, which
+      // the direct argv path carries safely and a typed line does not.
+      startupCommand: commandArrayToLine(
+        ["copilot", ...commandArgs.map((arg) => (arg === copilotFirstMessage && initialPrompt ? initialPrompt : arg))],
+        { platform: "linux" },
+      ),
       ...(assignedSessionId ? { assignedSessionId } : {}),
       ...(copilotFirstMessage && !promptRidesInArgv
         ? { initialInput: copilotFirstMessage, initialInputDelayMs: 750 }
@@ -1374,13 +1380,20 @@ export function buildTrackedCliLaunchCommand(args: {
     // `.agents/skills/` in the lane itself, but neither names the `ade`
     // commands, so ADE's guidance rides in front of the first message. An
     // empty launch stays idle, as Cursor's does.
-    if (initialPrompt) {
-      commandArgs.push("--", workTabCliPrompt(initialPrompt, skillRoots, activityGuidance));
+    const devinFirstMessage = initialPrompt
+      ? workTabCliPrompt(initialPrompt, skillRoots, activityGuidance)
+      : null;
+    if (devinFirstMessage) {
+      commandArgs.push("--", devinFirstMessage);
     }
     return {
       command: "devin",
       args: commandArgs,
-      startupCommand: commandArrayToLine(["devin", ...commandArgs], { platform: "linux" }),
+      // As for Copilot: the typed fallback line carries the user's prompt only.
+      startupCommand: commandArrayToLine(
+        ["devin", ...commandArgs.map((arg) => (arg === devinFirstMessage && initialPrompt ? initialPrompt : arg))],
+        { platform: "linux" },
+      ),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }

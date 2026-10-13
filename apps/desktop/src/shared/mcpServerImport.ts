@@ -170,7 +170,15 @@ function urlHoldsSecret(text: string): boolean {
     if (!value || ENV_REFERENCE.test(value)) continue;
     if (SECRET_WORD.test(name) || looksLikeToken(value)) return true;
   }
-  return url.pathname.split("/").some((segment) => looksLikeToken(decodeURIComponent(segment)));
+  // A stray `%` is a legal thing to type and to have saved; it must not throw
+  // out of a render.
+  return url.pathname.split("/").some((segment) => {
+    try {
+      return looksLikeToken(decodeURIComponent(segment));
+    } catch {
+      return looksLikeToken(segment);
+    }
+  });
 }
 
 /**

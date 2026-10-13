@@ -236,6 +236,18 @@ export function useMcpRegistry(): McpRegistryApi {
     if (!registry) return NO_BRIDGE;
     const server = normalizeMcpRegistryServer(draft);
     if (!server) return "ADE can't save that server. Check its name and its command or URL.";
+    // A new name is checked against the brain's own list before anything is
+    // written: this page's list can be behind another computer's, and the
+    // values below would otherwise overwrite that server's.
+    if (mode === "create") {
+      const settings = window.ade?.accountSettings;
+      if (!settings) return NO_BRIDGE;
+      const row = await settings.get({ scope: ACCOUNT_SCOPE_ALL, key: MCP_SERVERS_SETTING_KEY });
+      if (!row.ok) return row.message;
+      if (normalizeMcpRegistry(row.value).some((entry) => entry.name === server.name)) {
+        return `You already have a server named ${server.name}.`;
+      }
+    }
     // Values first: once the server is in the list the next chat starts it,
     // and it must find its values already there.
     for (const secret of secrets) {

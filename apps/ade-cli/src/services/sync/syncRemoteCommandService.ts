@@ -5056,7 +5056,9 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   // Not for a viewer: this is what runs a tool. `userActivated` is the
   // controller's own word that the user just tapped inside the app's frame.
-  register("chat.mcpAppRequest", { viewerAllowed: false, queueable: false }, async (payload) => {
+  // `controllerAllowed` is what lets the owner's own phone through:
+  // `viewerAllowed: false` alone refuses every paired device.
+  register("chat.mcpAppRequest", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
     const method = payload.method === "tools/call" || payload.method === "resources/read" ? payload.method : null;
     if (!method) throw new Error("chat.mcpAppRequest requires method tools/call or resources/read.");
     return requireService(args.agentChatService, "Agent chat service not available.").mcpAppRequest({

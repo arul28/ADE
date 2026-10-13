@@ -152,7 +152,7 @@ export type SceneFrameProps = {
  * transcript, a preview) cannot reply. Context rather than a prop, so the
  * transcript's row memos never see it.
  */
-export const SceneReplyContext = createContext<((text: string) => void) | null>(null);
+export const SceneReplyContext = createContext<((text: string, sourceKey: string) => void) | null>(null);
 
 /**
  * The reader's message that followed each scene row, by row identity (the
@@ -390,6 +390,9 @@ export function SceneFrame({
   const lastOpenRef = useRef(0);
   const lastReplyRef = useRef(0);
   const replyToComposer = useContext(SceneReplyContext);
+  // Which scene a pick came from. A scene with no scope (a reasoning body, the
+  // expanded view of an unscoped one) is told apart by its source.
+  const replySourceKey = `scene:${scopeKey ?? source}`;
   /** The user just clicked or pressed a key inside this frame. */
   const framePressed = useCallback(() => {
     const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
@@ -440,9 +443,9 @@ export function SceneFrame({
       return;
     }
     lastReplyRef.current = now;
-    replyToComposer(text);
+    replyToComposer(text, replySourceKey);
     postToFrame({ type: "picked", payload: { id, ok: true } });
-  }, [replyToComposer, answeredText, framePressed, postToFrame]);
+  }, [replyToComposer, replySourceKey, answeredText, framePressed, postToFrame]);
 
   // Only messages from this frame's own contentWindow are considered, every one
   // is shape-checked before it reaches state, and every one must name the

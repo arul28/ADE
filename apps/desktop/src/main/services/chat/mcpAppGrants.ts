@@ -69,7 +69,11 @@ export function createMcpAppGrantStore(deps: {
     has: (server, tool, fingerprint) =>
       read().some((grant) => grant.server === server && grant.tool === tool && grant.fingerprint === fingerprint),
     add(server, tool, fingerprint) {
-      const kept = read().filter((grant) => !(grant.server === server && grant.tool === tool));
+      // Only the grant for this same definition is replaced. A Claude chat
+      // knows a server's fingerprint and a Codex chat may not, and dropping
+      // every grant for the name made each provider's "Always" undo the other's.
+      const kept = read().filter((grant) =>
+        !(grant.server === server && grant.tool === tool && grant.fingerprint === fingerprint));
       kept.push({ server, tool, fingerprint, grantedAt: new Date((deps.now ?? Date.now)()).toISOString() });
       deps.save({ grants: kept.slice(-MAX_GRANTS) });
     },

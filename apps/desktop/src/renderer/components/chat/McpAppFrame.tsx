@@ -350,7 +350,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
           }
           lastMessageRef.current = now;
           // A draft in the prompt box. Nothing is sent: the reader sends it.
-          replyToComposer(text);
+          replyToComposer(text, `app:${cacheKey}`);
           post({ id, result: {} });
           return;
         }

@@ -9888,12 +9888,17 @@ export function AgentChatPane({
   // A scene's `ade.reply` → the prompt box. Nothing is sent: the reader can
   // add to the draft and sends it themselves. Picking another option swaps
   // the earlier pick for the new one, and anything the reader typed stays.
-  const lastSceneReplyRef = useRef<string | null>(null);
-  const handleSceneReply = useLatestCallback((text: string) => {
-    const previous = lastSceneReplyRef.current;
-    lastSceneReplyRef.current = text;
+  // The last pick is remembered per source (one scene, one app): a second
+  // scene's pick is a second answer, added beside the first, not a swap.
+  const lastSceneReplyBySourceRef = useRef(new Map<string, string>());
+  const handleSceneReply = useLatestCallback((text: string, sourceKey: string) => {
+    const picks = lastSceneReplyBySourceRef.current;
+    const previous = picks.get(sourceKey);
+    if (picks.size >= 64 && !picks.has(sourceKey)) picks.clear();
+    picks.set(sourceKey, text);
     if (previous && draft.includes(previous)) {
-      replaceComposerDraft(draft.replace(previous, text));
+      // A function, not a string: `$&` or `$$` in a reply is text, not a pattern.
+      replaceComposerDraft(draft.replace(previous, () => text));
       return;
     }
     insertComposerDraft(text);
