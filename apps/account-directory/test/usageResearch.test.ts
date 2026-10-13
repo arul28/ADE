@@ -25,7 +25,9 @@ const MB = 1024 * 1024;
 type Env = UsageResearchEnv & { DB: FakeD1Database };
 
 function makeEnv(overrides: Partial<UsageResearchEnv> = {}): Env {
-  return { DB: new FakeD1Database(), ...overrides } as unknown as Env;
+  // MODEL_REGISTRY_REFRESH off: the cron handler would otherwise fetch the
+  // public model-registry sources, which these tests must not touch.
+  return { DB: new FakeD1Database(), MODEL_REGISTRY_REFRESH: "0", ...overrides } as unknown as Env;
 }
 
 /** What a report row counts against the storage ceiling. */
