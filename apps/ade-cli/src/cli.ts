@@ -8943,7 +8943,11 @@ function buildSearchPlan(args: string[]): CliPlan {
   }
 
   // `--query <text>` first: read after the positional, its value was taken as
-  // the query and the bare flag was left behind as an unknown option.
+  // the query and the bare flag was left behind as an unknown option. A flag
+  // after `--query` is not its value: it stays for the unknown-option check,
+  // so `--query --socket <path>` is refused rather than searched for.
+  const queryFlagIndex = args.findIndex((arg) => arg === "--query" || arg === "-q");
+  if (queryFlagIndex >= 0 && args[queryFlagIndex + 1]?.startsWith("-")) args.splice(queryFlagIndex, 1);
   const query = readValue(args, ["--query", "-q"]) ?? firstPositional(args);
   if (!query || !query.trim()) {
     throw new CliUsageError(

@@ -322,6 +322,12 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * produces frames. Resolves once the view is ready to be captured.
    */
   holdCaptureSurface?: (tabId: string) => Promise<() => void>;
+  /**
+   * Move the tab onto the fixed recording viewport and settle the layout before
+   * the first frame is captured, so a recording's opening frame is 1280×800
+   * rather than the pane's size (see `builtInBrowserRecordingViewport.ts`).
+   */
+  prepareRecordingViewport?: (tab: BrowserTabState) => Promise<void>;
   /** The desktop's Chromium demo engine, which makes a recording's video. */
   demoEngine: DemoEngine | null;
   tabById: (tabId: string | null | undefined) => BrowserTabState | null;
@@ -1328,9 +1334,20 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       : () => {};
     // The hold can wait out a warm; a second start that raced us is refused
     // here rather than opening a second recorder on the same tab.
-    if (tab.recording) {
+    if (tab.recording || tab.recordingStarting === true) {
       releaseCaptureHold();
       throw new Error(`Browser tab ${tab.id} is already recording. Stop the current recording first.`);
+    }
+    // The layout has to be fixed before the first frame, or the video opens at
+    // the pane's size and jumps to 1280×800 part-way through.
+    tab.recordingStarting = true;
+    try {
+      await deps.prepareRecordingViewport?.(tab);
+    } catch (error) {
+      tab.recordingStarting = false;
+      releaseCaptureHold();
+      emitStatus();
+      throw error;
     }
     let session: BuiltInBrowserRecordingSession;
     // Begun before the stream is negotiated: an action while it starts is
@@ -1396,11 +1413,14 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       };
       recordingPlain.set(session, plain);
     } catch (error) {
+      tab.recordingStarting = false;
       demoTrackRegistry.discard(trackKey);
       releaseCaptureHold();
+      emitStatus();
       throw error;
     }
     tab.recording = session;
+    tab.recordingStarting = false;
     const status: { startedAt: string; fps: number } = { startedAt: session.startedAt, fps };
     emit({
       type: "recording",

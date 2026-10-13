@@ -18,6 +18,7 @@ import {
 import { createDevServerRegistry } from "../devServers/devServerRegistry";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import { narrowPageHint } from "./builtInBrowserRecordingViewport";
+import type { BuiltInBrowserTabRecorder } from "./builtInBrowserRecording";
 
 const fakes = vi.hoisted(() => {
   type DebuggerHandler = (...args: unknown[]) => void;
@@ -632,6 +633,32 @@ type ServiceBrowserWindow = Parameters<
 >[0];
 
 /**
+ * A recorder that does nothing but satisfy the session's contract, so a
+ * recording can be started without Electron or a capture page. The factory
+ * seam the tests inject is `createTabRecorder`; the recording module calls it
+ * once, at the moment it is about to negotiate the stream.
+ */
+function fakeTabRecorder(): BuiltInBrowserTabRecorder {
+  return {
+    format: "webm",
+    mimeType: "video/webm",
+    start: async (): Promise<void> => undefined,
+    stop: async () => ({ filePath: "/tmp/ade-recording.webm", frameCount: 1, manifestPath: null }),
+    abort: (): void => undefined,
+  };
+}
+
+/**
+ * Let every promise already queued run. A recording's viewport move and an
+ * emulation re-apply both settle through chained promises with no timer, so a
+ * macrotask boundary (not a wall-clock sleep) is what makes their result
+ * observable.
+ */
+async function settlePromises(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/**
  * A service wired for project-scoped routing, plus the two registries it reads.
  *
  * Six tests built this by hand, each repeating the same `as unknown as
@@ -1178,6 +1205,83 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
       height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
     });
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("lays a recording's tab out on the fixed viewport before its first frame", async () => {
+    // The recorder is negotiated only after `prepareRecordingViewport` has
+    // settled, so what it reads here is the layout of the very first frame:
+    // without the fix the page is still the pane's size and relayouts to
+    // 1280×800 part-way through the video.
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rec-viewport-"));
+    const win = fakeBrowserWindow();
+    let capturedAtNegotiation: { width: number; height: number } | null = null;
+    let factoryCalls = 0;
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: () => projectRoot,
+      createTabRecorder: async () => {
+        factoryCalls += 1;
+        capturedAtNegotiation = service.getStatus({ projectRoot }).tabs[0]?.agentViewport ?? null;
+        return fakeTabRecorder();
+      },
+    });
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ projectRoot, url: "https://example.test", activate: true });
+    try {
+      await service.startRecording({ projectRoot });
+      expect(factoryCalls).toBe(1);
+      expect(capturedAtNegotiation).toEqual({ width: 1280, height: 800 });
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("leaves a tab on the pane's layout when a recording fails to start", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rec-start-fail-"));
+    const win = fakeBrowserWindow();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: () => projectRoot,
+      createTabRecorder: async () => {
+        throw new Error("recorder creation failed");
+      },
+    });
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ projectRoot, url: "https://example.test", activate: true });
+    try {
+      await expect(service.startRecording({ projectRoot })).rejects.toThrow(/recorder/i);
+      const tab = service.getStatus({ projectRoot }).tabs[0]!;
+      // The start flag is cleared and the viewport reconciled back: a failed
+      // start must not leave the tab pinned to 1280×800.
+      expect(tab.recording).toBeNull();
+      expect(tab.agentViewport).toBeNull();
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("keeps a hidden emulated tab at the device's full size, not the pane's shrunk fit", async () => {
+    // A pane closing reports the smallest fit (0). Read as a real fit, that
+    // would shrink the parked box to a sliver and every preview frame with it;
+    // a hidden tab is parked at the device's own size, scale 1.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+
+    await service.setBounds({ x: 0, y: 0, width: 640, height: 360, visible: true, scale: 1 });
+    await service.setEmulation({ tabId, width: 390, height: 844, mobile: true });
+    service.startPreviewStream({ tabId });
+    // Hide it, so it is parked with a surface to preview until the pane returns.
+    await service.setBounds({ x: 0, y: 0, width: 0, height: 0, visible: false, scale: 0 });
+    await settlePromises();
+
+    expect(view.boundsCalls.at(-1)).toMatchObject({ width: 390, height: 844 });
     service.stopPreviewStream({ tabId });
     service.dispose();
   });

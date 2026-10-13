@@ -421,6 +421,12 @@ export type BrowserTabState = {
   networkLogPending: Map<string, BuiltInBrowserNetworkLogEntry>;
   recording: BuiltInBrowserRecordingSession | null;
   /**
+   * Set for the moment a recording is starting, before its session exists, so
+   * the tab lays out at `BUILT_IN_BROWSER_RECORDING_VIEWPORT` for the very
+   * first frame rather than relaying out mid-video (`tabUsesRecordingViewport`).
+   */
+  recordingStarting?: boolean;
+  /**
    * Error tallies since this tab's last main-frame navigation, which is what
    * the Work tools pane's red activity dot reports. Kept as counters rather
    * than derived from the diagnostic buffers because those are capped rolling
@@ -3464,6 +3470,7 @@ function createBuiltInBrowserWindowService(args: {
       networkLog: createBuiltInBrowserNetworkLog(),
       networkLogPending: new Map(),
       recording: null,
+      recordingStarting: false,
       consoleErrorCount: 0,
       failedRequestCount: 0,
       debuggerHolds: new Set(),
@@ -4860,10 +4867,11 @@ function createBuiltInBrowserWindowService(args: {
       height: normalizeDimension(nextBounds.height),
     };
     const nextVisible = nextBounds.visible && normalized.width > 0 && normalized.height > 0;
-    // A collapsing pane reports a fit of 0. That is the smallest scale, not
-    // "no scale" (which the clamp reads as 1).
+    // A hidden tab is parked at its device's full size, whatever fit the
+    // closing pane last measured (0 once it reaches nothing). A visible pane's
+    // tiny fit is the smallest scale, not "no scale" (which the clamp reads as 1).
     const nextScale = clampBuiltInBrowserEmulationViewScale(
-      typeof nextBounds.scale === "number"
+      typeof nextBounds.scale === "number" && nextVisible
         ? Math.max(nextBounds.scale, BUILT_IN_BROWSER_MIN_EMULATION_VIEW_SCALE)
         : 1,
     );
@@ -6507,6 +6515,13 @@ function createBuiltInBrowserWindowService(args: {
       const release = acquireCaptureHold(tabId);
       await waitForWarmToFinish(tabId);
       return release;
+    },
+    // Pin the tab to the fixed recording viewport and wait for the override to
+    // land before the recorder negotiates its first frame, so the video opens
+    // at 1280×800 rather than the pane's size.
+    prepareRecordingViewport: async (tab) => {
+      reconcileRecordingViewports();
+      await settleRecordingViewport(tab);
     },
     createRecordingWindow: args.createRecordingWindow ?? null,
     createTabRecorder: args.createTabRecorder ?? null,

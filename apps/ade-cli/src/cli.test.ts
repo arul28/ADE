@@ -3355,6 +3355,7 @@ describe("ADE CLI", () => {
     // An option search does not know is refused, never dropped: a `--socket`
     // written after the command used to send the search to the default brain.
     expect(() => buildCliPlan(["search", "q", "--socket", "/tmp/test.sock"])).toThrow(/goes before the command/);
+    expect(() => buildCliPlan(["search", "--query", "--socket", "/tmp/test.sock"])).toThrow(/goes before the command/);
     expect(() => buildCliPlan(["search", "q", "--bogus"])).toThrow(/Unknown search option: --bogus/);
 
     // A missing query is a usage error, but --status / --rebuild are not queries.

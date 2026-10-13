@@ -21,7 +21,8 @@ import type { BrowserDebuggerHoldOwner, BrowserTabState } from "./builtInBrowser
 
 /**
  * Whether the tab is laid out at `BUILT_IN_BROWSER_RECORDING_VIEWPORT` rather than
- * at its box: it is being recorded.
+ * at its box: it is being recorded, or is about to be (`recordingStarting`, set
+ * before the first frame so the video never opens at the pane's size).
  *
  * Ownership alone does not pin it. An agent works fine at the pane's size, and
  * its screenshots then match what the person sees. A device preset is an
@@ -29,10 +30,10 @@ import type { BrowserDebuggerHoldOwner, BrowserTabState } from "./builtInBrowser
  * handoff hands the tab to a person, who gets the page at their pane's size.
  */
 export function tabUsesRecordingViewport(
-  tab: Pick<BrowserTabState, "emulation" | "devToolsMode" | "handoff" | "recording">,
+  tab: Pick<BrowserTabState, "emulation" | "devToolsMode" | "handoff" | "recording" | "recordingStarting">,
 ): boolean {
   if (tab.emulation || tab.devToolsMode !== null || tab.handoff) return false;
-  return Boolean(tab.recording);
+  return Boolean(tab.recording) || tab.recordingStarting === true;
 }
 
 /** How much the recording viewport shrinks to fit inside `box` (never grows). */
