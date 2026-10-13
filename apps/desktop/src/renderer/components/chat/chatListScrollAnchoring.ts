@@ -1,4 +1,4 @@
-import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
+import { readSpawnCompletedNotice, type AgentChatEventEnvelope } from "../../../shared/types/chat";
 import { buildDrawnRowKeyIndex } from "./chatDrawnRowIndex";
 import {
   collapseChatTranscriptEvents,
@@ -8,6 +8,7 @@ import {
   type ChatTranscriptGroupedEnvelope,
 } from "./chatTranscriptRows";
 import { CHAT_TIMELINE_ROW_GAP_PX } from "./chatUserMinimap.logic";
+import { findSpawnCompletionLine } from "./spawnCompletionLines";
 
 /** Number of extra rows to render above/below the visible viewport. */
 export const CHAT_TRANSCRIPT_OVERSCAN = 10;
@@ -258,6 +259,12 @@ export function resolveAnchoredChatRowIndex({
   const subagentCardKey = subagentCardKeyForLifecycleEvent(collapsedRows, events[eventIndex]!.event);
   const subagentCardIndex = subagentCardKey ? visibleKeys.get(subagentCardKey) : undefined;
   if (subagentCardIndex !== undefined) return subagentCardIndex;
+  // A child's older "finished its turn" notice folds into its newest one,
+  // which may sit further down; the anchor lands on that child's line.
+  const completedChildId = readSpawnCompletedNotice(events[eventIndex]!.event)?.childSessionId;
+  const completionLine = completedChildId ? findSpawnCompletionLine(groupedRows, completedChildId) : undefined;
+  const completionIndex = completionLine ? visibleKeys.get(completionLine.key) : undefined;
+  if (completionIndex !== undefined) return completionIndex;
   const directIndex = visibleKeys.get(targetRow.key);
   if (directIndex !== undefined) return directIndex;
 

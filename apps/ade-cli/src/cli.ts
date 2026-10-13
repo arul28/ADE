@@ -104,7 +104,15 @@ import {
 } from "../../desktop/src/shared/projectSecretPullSummary";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
-import { publishProofToPullRequest, type ProofPublishResult } from "./proofPublish";
+import {
+  publishProofIntoPullRequestBody,
+  publishProofToPullRequest,
+  readPullRequestBody,
+  type ProofPublishResult,
+} from "./proofPublish";
+import { prBriefHints } from "../../desktop/src/shared/prBrief";
+import { PR_THREAD_CLOSEOUT_RULE } from "../../desktop/src/shared/prWatch";
+import { prBodyProofIds } from "../../desktop/src/shared/prBodyProof";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
@@ -410,6 +418,13 @@ import {
 } from "./services/account/accountAuthService";
 import { getSharedAccountAuthService } from "./services/account/sharedAccountAuthService";
 import {
+  deviceSignInInstructions,
+  readDeviceSignInPoll,
+  readDeviceSignInStart,
+  waitForBrowserOrDeviceSignIn,
+  type DeviceSignInStart,
+} from "./commands/accountDeviceSignIn";
+import {
   DEFAULT_SYNC_HOST_PORT,
   SYNC_HOST_MAX_PORT,
 } from "./services/sync/syncProtocol";
@@ -549,6 +564,7 @@ export type FormatterId =
   | "files-search"
   | "prs-list"
   | "pr-create"
+  | "pr-body"
   | "pr-detail"
   | "pr-checks"
   | "pr-comments"
@@ -774,6 +790,11 @@ export type CliPlan =
        * it, so even a naive grep catches the difference.
        */
       proofFiling?: { command: string; verify: boolean };
+      /**
+       * The text a PR command sent, and the PR it named, for the notes the
+       * summary prints for the reader. `ref` is absent for a PR being made.
+       */
+      prText?: { body: string; ref?: string | null };
       /**
        * Run a recovery step and re-execute the plan once, when the first result
        * says the command cannot succeed without it. Returning false leaves the
@@ -1355,14 +1376,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade connect                  Connect this machine (prompts to sign in)
     $ ade connect --status --text  Report only; never signs in or installs
-    $ ade connect --headless       Sign in with the copy-paste device flow
+    $ ade connect --headless       Sign in from another device (QR code, link, and code)
     $ ade connect --no-login       Install the service only; stay local/LAN-only
 
   Flags:
     --status                       Report the three steps without changing anything.
     --no-login                     Skip sign-in. The machine stays local/LAN-only.
     --no-service                   Do not register the login service.
-    --headless                     Force the copy-paste device authorization flow.
+    --headless                     Sign in from another device only. The password is
+                                   never typed on this machine.
     --timeout <seconds>            Bound the wait for the account-directory row
                                    (default 60). Also spelled --max-wait.
 
@@ -1404,14 +1426,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   provider keys to every machine you use, and connects them to each other.
   Work already on this machine is never blocked while you are signed out.
 
-    $ ade login                    Sign in with loopback OAuth or auto-detected device flow
-    $ ade login --headless         Print a verification URL + code for another browser
+    $ ade login                    Sign in in the browser here, or scan the QR code with a phone
+    $ ade login --headless         Open no browser here: print the QR code, a link, and a code
     $ ade logout                   Clear the shared machine account session
     $ ade auth status --text       Show the shared machine account status
     $ ade account token create     Print a self-contained durable token once for agent/CI setup
 
   Flags (login):
-    --headless                     Force the copy-paste device authorization flow.
+    --headless                     Sign in from another device only. The password is
+                                   never typed on this machine.
     --max-wait <seconds>           Give up waiting before the authorization
                                    session expires.
 `,
@@ -2016,6 +2039,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open a GitHub PR from a lane; prints GitHub + ADE URLs
+    $ ade prs create --lane <lane> --title "fix(web): new chats no longer spike CPU" --body-file pr.md
+                                                    The text: "## Why", "## What changed", "## Evidence", "## Not checked".
+                                                    Proof cited in it (![caption](ade-proof://<id>), or a proof-compare
+                                                    block) is uploaded into the text. Prints what a reader will miss.
+    $ ade prs body <pr> --body-file pr.md           Replace the PR text; same upload and same notes
     $ ade prs create --lane <lane> --close-linear-issue-on-merge
     $ ade prs land <pr> --method squash             Merge; keeps the remote branch
     $ ade prs land <pr> --delete-remote-branch      Merge and delete the head branch on the remote
@@ -2568,6 +2596,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof capture --real-screen --caption "Done"  Capture the whole real screen
     $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
     $ ade proof publish --pr 12 <id> <id>           Post chosen proof to a PR as one comment (gh 2.99+)
+    $ ade proof publish --pr 12 --in-body           Upload the proof the PR text cites, in place (gh 2.99+)
     $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
@@ -3465,8 +3494,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   listed here.
 
   ADE never drives a provider's sign-in: \`add\` prints the exact command and env
-  var to run so the login lands in the new directory. \`remove\` forgets the
-  account and deletes nothing — the directory (and the login inside it) stays.
+  var to run so the login lands in the new directory. \`remove\` signs a
+  signed-in account out with the provider CLI's own logout, then forgets it; the
+  directory stays, and so does the login when that sign-out fails.
   The machine's own pre-existing login is always present, is always removable-
   proof, and starts out as the default.
 
@@ -3481,7 +3511,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade providers accounts default --instance work --text
                                                     Make an account the provider's default
     $ ade providers accounts remove --instance work --text
-                                                    Forget an account (nothing on disk is deleted)
+                                                    Sign an account out and forget it
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
     $ ade providers actions --text                  List raw provider-account service actions
 
@@ -7613,7 +7643,100 @@ function buildDiffPlan(args: string[]): CliPlan {
   };
 }
 
-function buildPrPlan(args: string[]): CliPlan {
+/**
+ * The two steps that put cited proof into a PR's own text: read the proof
+ * records, then upload the files, rewrite the citations and record the PR on
+ * each item. Without `ids` the citations are read from the text GitHub holds.
+ * The result lands in `values.publish`, as `ade proof publish` leaves it.
+ */
+function proofIntoPrBodySteps(options: {
+  pr: (values: JsonObject) => string;
+  ids?: string[];
+  explicitProjectRoot?: string | null;
+  optional?: boolean;
+}): InvocationStep[] {
+  const roots = () => {
+    // The same precedence the connection uses: --project-root, then
+    // ADE_PROJECT_ROOT, then the checkout the shell stands in.
+    const found = findProjectRoots(process.cwd());
+    return {
+      projectRoot: options.explicitProjectRoot ?? (process.env.ADE_PROJECT_ROOT?.trim() || found.projectRoot),
+      cwd: options.explicitProjectRoot ?? found.workspaceRoot,
+    };
+  };
+  const fail = (error: unknown): never => {
+    throw new CliToolError(`proof publish failed — ${error instanceof Error ? error.message : String(error)}`, {});
+  };
+  return [
+    {
+      key: "proofList",
+      method: "ade/actions/call",
+      unwrapToolResult: true,
+      optional: options.optional,
+      params: (values) => {
+        let ids = options.ids ?? [];
+        if (!options.ids) {
+          try {
+            ids = prBodyProofIds(readPullRequestBody(options.pr(values), { cwd: roots().cwd }).body);
+          } catch (error) {
+            fail(error);
+          }
+        }
+        if (!ids.length) {
+          throw new CliToolError(
+            "proof publish failed — the PR text cites no proof. Write ![caption](ade-proof://<id>) or a ```proof-compare block where the proof belongs, then run this again.",
+            {},
+          );
+        }
+        return { name: "list_computer_use_artifacts", arguments: { artifactIds: ids, limit: 200 } };
+      },
+    },
+    {
+      key: "proofLink",
+      method: "ade/actions/call",
+      unwrapToolResult: true,
+      // The text is already rewritten when this runs. A failed link must not
+      // hide that; the summary reports it as a warning instead.
+      optional: true,
+      params: (values) => {
+        // The list step failed and said why; an upload with no records would
+        // only spend a GitHub call to fail with a worse reason.
+        if (isRecord(values.proofList) && values.proofList.ok === false) {
+          throw new CliToolError(asString(values.proofList.error) ?? "proof publish failed — the proof records could not be read", {});
+        }
+        const listed = firstArray(unwrapActionEnvelope(values.proofList) as JsonObject, ["artifacts"]);
+        let published: ProofPublishResult;
+        try {
+          published = publishProofIntoPullRequestBody({
+            pr: options.pr(values),
+            ...roots(),
+            artifacts: listed.map(publishableArtifact),
+          });
+        } catch (error) {
+          return fail(error);
+        }
+        values.publish = published as unknown as JsonObject;
+        return {
+          name: "link_computer_use_artifacts_to_pr",
+          arguments: { artifactIds: published.posted.map((entry) => entry.id), prUrl: published.prUrl },
+        };
+      },
+    },
+  ];
+}
+
+function publishableArtifact(artifact: JsonObject) {
+  return {
+    id: asString(artifact.id) ?? "",
+    kind: asString(artifact.kind) ?? "",
+    title: asString(artifact.title) ?? "",
+    description: asString(artifact.description),
+    uri: asString(artifact.uri) ?? "",
+    mimeType: asString(artifact.mimeType),
+  };
+}
+
+function buildPrPlan(args: string[], explicitProjectRoot: string | null = null): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "actions")
     return {
@@ -7674,22 +7797,36 @@ function buildPrPlan(args: string[]): CliPlan {
     input.laneId = requireValue(laneId, "laneId");
     maybePut(input, "baseBranch", readValue(args, ["--base", "--base-branch"]));
     maybePut(input, "title", readValue(args, ["--title"]));
-    maybePut(input, "body", readValue(args, ["--body"]));
+    const body = readTextOrFileOption(args, ["--body"], ["--body-file"]);
+    maybePut(input, "body", body);
     input.draft = readFlag(args, ["--draft"]);
     input.closeLinearIssueOnMerge = readFlag(args, [
       "--close-linear-issue-on-merge",
       "--close-linear",
       "--fixes-linear-issue",
     ]);
+    const createArgs = collectGenericObjectArgs(args, input);
+    const citedProof = prBodyProofIds(body);
     return {
       kind: "execute",
       label: "PR create",
+      prText: { body: body ?? "" },
       steps: [
-        actionCallStep(
-          "result",
-          "create_pr_from_lane",
-          collectGenericObjectArgs(args, input),
-        ),
+        actionCallStep("result", "create_pr_from_lane", createArgs),
+        // Proof the text cites goes up after the PR exists. A failed upload
+        // leaves a made PR; the summary says how to run the upload again.
+        ...(citedProof.length
+          ? proofIntoPrBodySteps({
+            pr: (values) => {
+              const url = getPrCreateLinks(values.result).githubUrl;
+              if (!url) throw new CliToolError("the new PR has no GitHub URL to upload proof to", {});
+              return url;
+            },
+            ids: citedProof,
+            explicitProjectRoot,
+            optional: true,
+          })
+          : []),
       ],
     };
   }
@@ -7805,21 +7942,38 @@ function buildPrPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "body" || sub === "update-body")
+  if (sub === "body" || sub === "update-body") {
+    const target = prId ?? firstPositional(args);
+    const body = readTextOrFileOption(args, ["--body"], ["--body-file"]);
+    // A missing flag must not replace the text with nothing. `--body ""` still clears it.
+    if (body === undefined) throw new CliUsageError("prs body needs --body <text> or --body-file <path|->.");
+    const updateArgs = withPr({ prId: target, body });
+    const citedProof = prBodyProofIds(body);
     return {
       kind: "execute",
       label: "PR update body",
+      formatter: "pr-body",
+      prText: { body, ref: target ?? null },
       steps: [
-        actionCallStep(
-          "result",
-          "pr_update_body",
-          withPr({
-            prId: prId ?? firstPositional(args),
-            body: readValue(args, ["--body"]) ?? "",
-          }),
-        ),
+        actionCallStep("result", "pr_update_body", updateArgs),
+        ...(citedProof.length
+          ? proofIntoPrBodySteps({
+            pr: () => {
+              // gh takes a number or a URL. An ADE PR id names no PR to it.
+              const ref = String(target ?? "").replace(/^#/, "");
+              if (!/^\d+$/.test(ref) && !/^https:\/\//i.test(ref)) {
+                throw new CliToolError("to upload the cited proof, name the PR by its number or URL", {});
+              }
+              return ref;
+            },
+            ids: citedProof,
+            explicitProjectRoot,
+            optional: true,
+          })
+          : []),
       ],
     };
+  }
   if (sub === "link") {
     const laneId = readLaneId(args) ?? firstPositional(args);
     const prUrlOrNumber =
@@ -12382,6 +12536,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // the items. They go up as one PR comment through `gh --attach`, then
     // each gets a github_pr owner link so the drawer shows the PR.
     const pr = readValue(args, ["--pr", "--pull-request"]);
+    // `--in-body`: the proof goes into the PR's own text, where it is cited,
+    // not into a comment. The ids come from the text.
+    const inBody = readFlag(args, ["--in-body", "--in-text"]);
     const heading = readValue(args, ["--heading", "--title"]);
     const note = readValue(args, ["--note", "--body"]);
     // `firstPositional` and `readValue` removed "publish" and the flags with
@@ -12392,6 +12549,15 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
       .map((value) => value.trim())
       .filter(Boolean);
     if (!pr) throw new CliUsageError("proof publish needs --pr <number or URL>.");
+    if (inBody) {
+      if (ids.length) throw new CliUsageError("proof publish --in-body takes no ids: it uploads the proof the PR text cites.");
+      return {
+        kind: "execute",
+        label: "proof publish",
+        formatter: "proof-published",
+        steps: proofIntoPrBodySteps({ pr: () => pr, explicitProjectRoot }),
+      };
+    }
     if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or `ade proof list --text`.");
     return {
       kind: "execute",
@@ -12433,17 +12599,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
                 heading,
                 note,
                 cwd: explicitProjectRoot ?? roots.workspaceRoot,
-                artifacts: ids.map((id) => {
-                  const artifact = byId.get(id)!;
-                  return {
-                    id,
-                    kind: asString(artifact.kind) ?? "",
-                    title: asString(artifact.title) ?? "",
-                    description: asString(artifact.description),
-                    uri: asString(artifact.uri) ?? "",
-                    mimeType: asString(artifact.mimeType),
-                  };
-                }),
+                artifacts: ids.map((id) => publishableArtifact(byId.get(id)!)),
               });
             } catch (error) {
               throw new CliToolError(`proof publish failed — ${error instanceof Error ? error.message : String(error)}`, {});
@@ -17174,8 +17330,8 @@ function buildProxyPlan(args: string[]): CliPlan {
  * An account is a label plus a provider config directory (`CLAUDE_CONFIG_DIR` /
  * `CODEX_HOME`), never a credential: ADE does not drive the provider's OAuth
  * flow, so `add` prints the exact command and env var a shell must run for the
- * login to land in the new directory, and `remove` forgets the entry without
- * deleting anything on disk.
+ * login to land in the new directory, and `remove` signs the account out, then
+ * forgets the entry; the directory itself is never deleted.
  */
 function buildProvidersPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
@@ -19632,7 +19788,7 @@ function buildCliPlan(
   if (primary === "diff" || primary === "diffs") return buildDiffPlan(args);
   if (primary === "files" || primary === "file") return buildFilesPlan(args);
   if (primary === "search") return buildSearchPlan(args);
-  if (primary === "prs" || primary === "pr") return buildPrPlan(args);
+  if (primary === "prs" || primary === "pr") return buildPrPlan(args, options.projectRoot ?? null);
   if (primary === "shell" || primary === "pty") return buildShellPlan(args);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
@@ -28402,7 +28558,45 @@ function formatPrCreate(value: unknown): string {
     ["lane", pr.laneId],
     ["GitHub URL", githubUrl],
     ["ADE URL", adeUrl],
-  ]);
+  ]) + formatPrTextNotes(value, prNumber ? String(prNumber) : null);
+}
+
+/**
+ * What the author can still do for the reader, printed after a PR is made or
+ * its text is replaced. These lines guide; the PR exists whatever they say.
+ */
+function formatPrTextNotes(value: unknown, prRef: string | null): string {
+  const record = isRecord(value) ? value : {};
+  const lines: string[] = [];
+  const proof = isRecord(record.proofInText) ? record.proofInText : null;
+  const uploadCommand = `ade proof publish --pr ${prRef ?? "<number or URL>"} --in-body`;
+  if (proof) {
+    const posted = firstArray(proof, ["posted"]);
+    lines.push(`proof: ${posted.length} item${posted.length === 1 ? "" : "s"} uploaded into the PR text`);
+    for (const entry of firstArray(proof, ["skipped"])) {
+      lines.push(`  not uploaded ${asString(entry.id)}  ${asString(entry.reason)}`);
+    }
+    for (const warning of Array.isArray(proof.warnings) ? proof.warnings : []) {
+      if (typeof warning === "string") lines.push(`  warning: ${warning}`);
+    }
+  } else if (asString(record.proofInTextError)) {
+    lines.push(
+      `proof: not uploaded. GitHub shows the captions only. ${asString(record.proofInTextError)}`,
+      `  run it again: ${uploadCommand}`,
+    );
+  }
+  const hints = Array.isArray(record.briefHints)
+    ? record.briefHints.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  if (hints.length) {
+    lines.push(
+      "",
+      "For the reader (the PR is made; these are optional):",
+      ...hints.map((hint) => `  - ${hint}`),
+      `  Update the text: ade prs body ${prRef ?? "<pr>"} --body-file <file>`,
+    );
+  }
+  return lines.length ? `\n${lines.join("\n")}` : "";
 }
 
 /**
@@ -28498,6 +28692,9 @@ function formatPrComments(value: unknown): string {
   }
   if (threads.length === 0 && comments.length === 0)
     lines.push("(no comments)");
+  // ADE shows every open thread as work that waits for a person. Say how to
+  // close one out where the agent that handles it will read it.
+  if (threads.some((thread) => !thread.isResolved)) lines.push("", PR_THREAD_CLOSEOUT_RULE);
   return lines.join("\n");
 }
 
@@ -29300,7 +29497,7 @@ function formatProofPublished(value: unknown): string {
   const skipped = firstArray(record, ["skipped"]);
   const warnings = Array.isArray(record.warnings) ? record.warnings.filter((entry): entry is string => typeof entry === "string") : [];
   return [
-    `Posted ${posted.length} proof item${posted.length === 1 ? "" : "s"} to ${asString(record.prUrl) ?? "the PR"}`,
+    `${record.inBody === true ? "Put" : "Posted"} ${posted.length} proof item${posted.length === 1 ? "" : "s"} ${record.inBody === true ? "in the text of" : "to"} ${asString(record.prUrl) ?? "the PR"}`,
     ...(asString(record.commentUrl) ? [`comment: ${asString(record.commentUrl)}`] : []),
     ...posted.map((entry) => `  posted  ${asString(entry.id)}  ${asString(entry.caption)}`),
     ...skipped.map((entry) => `  skipped ${asString(entry.id)}  ${asString(entry.reason)}`),
@@ -29959,6 +30156,12 @@ function formatBrowserStatus(value: unknown): string {
     const profile = asString(tab.isolatedProfile);
     return profile ? `isolated profile "${profile}"` : "shared (the user's)";
   };
+  // A failed main-frame load shows as a plain white page, which a screenshot
+  // cannot explain; the status names the failure instead.
+  const loadFailureForTab = (tab: Record<string, unknown> | null | undefined): string | null => {
+    const failure = isRecord(tab?.loadError) ? tab.loadError : null;
+    return failure ? asString(failure.description) ?? "the page did not load" : null;
+  };
   // `open` / `new-tab` name the tab they drove in one line, so the agent does
   // not have to pick it out of the table (an agent's tab is not the active
   // one: agent opens do not take the human's focus).
@@ -29980,6 +30183,7 @@ function formatBrowserStatus(value: unknown): string {
       renderKeyValues("ADE browser", [
         ["title", targetTab?.title],
         ["loading", targetTab?.isLoading ?? targetTab?.loading],
+        ["load failed", loadFailureForTab(targetTab)],
         ["owner", targetTab ? ownerForTab(targetTab) : null],
         ["sign-in", targetTab ? signInForTab(targetTab) : null],
         ["other tabs", otherTabs > 0 ? `${otherTabs} (ade browser status lists them)` : null],
@@ -29994,6 +30198,7 @@ function formatBrowserStatus(value: unknown): string {
       ["url", status.url],
       ["title", status.title],
       ["loading", status.isLoading ?? status.loading],
+      ["load failed", loadFailureForTab(tabs.find((tab) => asString(tab.id) === activeTabId))],
       ["back", status.canGoBack],
       ["forward", status.canGoForward],
       ["inspecting", status.isInspecting ?? status.inspecting],
@@ -30747,7 +30952,9 @@ function formatProviderAccounts(value: unknown): string {
       ["same login as", instance.sameLoginAs],
       ["replaced login", isRecord(instance.replacedAccount) ? instance.replacedAccount.email : undefined],
       ["accent", instance.accentColor],
+      ["main chat cache", instance.mainPromptCacheTtl === "1h" ? "1 hour" : instance.mainPromptCacheTtl === "5m" ? "5 minutes" : undefined],
       ["subagent cache", instance.subagentPromptCacheTtl === "1h" ? "1 hour" : undefined],
+      ["extra usage", instance.onExtraUsage === "stop" ? "stop the turn" : undefined],
       ["config home", instance.configHome],
       ["created", instance.createdAt],
     ]);
@@ -31347,6 +31554,10 @@ function formatTextOutput(
       return formatPrList(value);
     case "pr-create":
       return formatPrCreate(value);
+    case "pr-body": {
+      const ref = isRecord(value) ? asString(value.prRef) : null;
+      return `Updated the text of pull request ${ref ?? ""}`.trimEnd() + formatPrTextNotes(value, ref);
+    }
     case "pr-detail":
       return renderKeyValues(
         "ADE pull request",
@@ -32032,24 +32243,54 @@ function summarizeExecution(args: {
   if (plan.label === "proof publish") {
     // No `publish` value means nothing reached the PR: the ids, gh or the
     // upload failed. That is a failed command, never a warning.
+    // `--in-body` names its link step `proofLink`; the comment form `result`.
+    const link = values.proofLink ?? values.result;
     if (!isRecord(values.publish)) {
-      const cause = isRecord(values.result) ? asString(values.result.error) : null;
+      const cause = isRecord(link) ? asString(link.error) : null;
       throw new CliToolError(cause ?? "proof publish failed — nothing was posted", {});
     }
     const published = values.publish;
-    const linkFailure = isRecord(values.result) && values.result.ok === false
-      ? asString(values.result.error) ?? "the runtime refused the link"
+    const linkFailure = isRecord(link) && link.ok === false
+      ? asString(link.error) ?? "the runtime refused the link"
       : null;
-    const linked = linkFailure ? [] : firstArray(unwrapActionEnvelope(values.result) as JsonObject, ["artifacts"]);
+    const linked = linkFailure ? [] : firstArray(unwrapActionEnvelope(link) as JsonObject, ["artifacts"]);
     const warnings = [
       ...(Array.isArray(published.warnings) ? published.warnings : []),
       ...(linkFailure ? [`posted, but ADE could not record the PR on the items: ${linkFailure}`] : []),
     ];
-    return { ok: true, ...published, warnings, linked: linked.length };
+    return { ok: true, ...published, warnings, linked: linked.length, inBody: values.proofLink !== undefined };
   }
 
-  if (plan.label === "PR create") {
-    return summarizePrCreateResult(values.result ?? values);
+  if (plan.label === "PR create" || plan.label === "PR update body") {
+    // The body update keeps the result it always returned, with the notes added.
+    const summary = plan.label === "PR create"
+      ? summarizePrCreateResult(values.result ?? values)
+      : values.result;
+    if (!isRecord(summary) || !plan.prText) return summary;
+    const proofFailure = [values.proofList, values.proofLink]
+      .map((step) => (isRecord(step) && step.ok === false ? asString(step.error) : null))
+      .find(Boolean) ?? null;
+    return {
+      ...summary,
+      ...(plan.prText.ref !== undefined ? { prRef: plan.prText.ref } : {}),
+      briefHints: prBriefHints(plan.prText.body).map((hint) => hint.message),
+      ...(isRecord(values.publish)
+        ? {
+          proofInText: {
+            ...values.publish,
+            warnings: [
+              ...(Array.isArray(values.publish.warnings) ? values.publish.warnings : []),
+              // The pictures are in the text; only ADE's own record of the PR is missing.
+              ...(isRecord(values.proofLink) && values.proofLink.ok === false
+                ? [`uploaded, but ADE could not record the PR on the items: ${asString(values.proofLink.error) ?? "the runtime refused the link"}`]
+                : []),
+            ],
+          },
+        }
+        : {}),
+      // The upload failed before anything reached the PR text.
+      ...(proofFailure && !isRecord(values.publish) ? { proofInTextError: proofFailure } : {}),
+    };
   }
 
   if (
@@ -32368,6 +32609,8 @@ async function runAccountLogin(
   // Track either pending flow so every non-success exit drops daemon-held
   // verifier/secret state. Cleared on success so a completed login is not cancelled.
   let pendingSessionId: string | null = null;
+  // The device sign-in that runs beside a browser sign-in, when there is one.
+  let otherDeviceSessionId: string | null = null;
 
   try {
     const explicitHeadless = plan.explicitHeadless || options.headless;
@@ -32447,50 +32690,39 @@ async function runAccountLogin(
     const runDeviceFlow = async (
       onStarted?: () => Promise<void>,
     ): Promise<{ output: string; exitCode: number }> => {
-      const start = await runAccountAction("startDeviceLogin", {
+      const answer = await runAccountAction("startDeviceLogin", {
         projectRoot,
         ignoreEnvCredential: plan.explicitHeadless || options.headless,
       });
-      const sessionId = asString(start.sessionId);
-      const userCode = asString(start.userCode);
-      const verificationUri = asString(start.verificationUri);
-      const verificationUriComplete = asString(start.verificationUriComplete);
-      const expiresAt = asString(start.expiresAt);
-      if (!sessionId || !userCode || !verificationUri) {
-        throw new CliExecutionError("ADE account device login did not start.", { start });
+      const device = readDeviceSignInStart(answer);
+      if (!device) {
+        throw new CliExecutionError("ADE account device login did not start.", { start: answer });
       }
       await onStarted?.();
-      pendingSessionId = sessionId;
-      let intervalSec = typeof start.intervalSec === "number" && start.intervalSec > 0
-        ? start.intervalSec
-        : 5;
-      const deadlineMs = deadlineFor(expiresAt);
+      pendingSessionId = device.sessionId;
+      let intervalSec = device.intervalSec;
+      const deadlineMs = deadlineFor(device.expiresAt);
       process.stderr.write(
-        `\nTo finish signing in, open ${verificationUri} and enter code: ${userCode}\n` +
-        (verificationUriComplete ? `Or open: ${verificationUriComplete}\n` : "") +
-        "\nWaiting for sign-in…\n",
+        `\n${deviceSignInInstructions("To finish signing in", device)}\nWaiting for sign-in…\n`,
       );
       while (true) {
         const sleepMs = Math.max(1, intervalSec) * 1000;
         await sleep(Number.isFinite(deadlineMs)
           ? Math.min(sleepMs, Math.max(1, deadlineMs - Date.now()))
           : sleepMs);
-        const poll = await runAccountAction("pollDeviceLogin", { sessionId });
-        const pollStatus = asString(poll.status);
-        const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
-        if (pollStatus === "signed_in") return finishSignedIn(authStatus);
-        if (pollStatus === "pending" || pollStatus === "slow_down") {
-          if (typeof poll.intervalSec === "number" && poll.intervalSec > 0) {
-            intervalSec = poll.intervalSec;
-          }
+        const poll = readDeviceSignInPoll(
+          await runAccountAction("pollDeviceLogin", { sessionId: device.sessionId }),
+        );
+        if (poll.kind === "signed_in") return finishSignedIn(poll.authStatus);
+        if (poll.kind === "waiting") {
+          intervalSec = poll.intervalSec ?? intervalSec;
           if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
-            return timedOut("pollDeviceLogin", sessionId);
+            return timedOut("pollDeviceLogin", device.sessionId);
           }
           continue;
         }
-        const message = asString(poll.message) ?? "ADE account device sign-in failed.";
-        process.stderr.write(`${message}\n`);
-        return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 1 };
+        process.stderr.write(`${poll.message ?? "ADE account device sign-in failed."}\n`);
+        return { output: formatOutput(poll.authStatus, options, "account-auth"), exitCode: 1 };
       }
     };
 
@@ -32505,6 +32737,8 @@ async function runAccountLogin(
     }
     pendingSessionId = sessionId;
     const openResult = openUrlViaOs(authorizeUrl);
+    // Set when a device sign-in already failed to start, so it is tried once.
+    let deviceSignInUnavailable = false;
     if (detectAccountLoginMode({ browserOpenFailed: openResult.failed }) === "device") {
       process.stderr.write(
         `Could not open the browser automatically: ${openResult.message}\nTrying device sign-in.\n`,
@@ -32521,38 +32755,75 @@ async function runAccountLogin(
         });
       } catch (error) {
         if (deviceFlowStarted) throw error;
+        deviceSignInUnavailable = true;
         process.stderr.write(
           "Device sign-in is unavailable; continuing with manual browser sign-in.\n",
         );
       }
     }
-    process.stderr.write(
-      `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n\nWaiting for sign-in…\n`,
-    );
-    const deadlineMs = deadlineFor(expiresAt);
-    while (true) {
-      await sleep(Number.isFinite(deadlineMs)
-        ? Math.min(500, Math.max(1, deadlineMs - Date.now()))
-        : 500);
-      const poll = await runAccountAction("pollLogin", { sessionId });
-      const pollStatus = asString(poll.status);
-      const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
-      if (pollStatus === "signed_in") return finishSignedIn(authStatus);
-      if (pollStatus === "pending") {
-        if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
-          return timedOut("pollLogin", sessionId);
-        }
-        continue;
+    // The browser on this machine is one way in. A device sign-in runs beside
+    // it, so the same command also works from a phone or another computer:
+    // whichever one the person completes signs this machine in. It is
+    // optional. When it cannot start, the browser sign-in continues alone.
+    let otherDevice: DeviceSignInStart | null = null;
+    if (!deviceSignInUnavailable) {
+      try {
+        otherDevice = readDeviceSignInStart(await runAccountAction("startDeviceLogin", { projectRoot }));
+        otherDeviceSessionId = otherDevice?.sessionId ?? null;
+      } catch {
+        // Fixed fallback only: the browser sign-in below needs none of this.
       }
-      const message = asString(poll.message) ?? "ADE account sign-in failed.";
-      process.stderr.write(`${message}\n`);
-      return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 1 };
+      // Said, so nobody waits for a QR code that is not coming.
+      if (!otherDevice) {
+        process.stderr.write(
+          "Sign-in from another device is not available right now; use the browser on this machine.\n",
+        );
+      }
     }
+    process.stderr.write(
+      `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n` +
+      (otherDevice ? `\n${deviceSignInInstructions("Or, to sign in on another device", otherDevice)}` : "") +
+      "\nWaiting for sign-in…\n",
+    );
+
+    const deviceSessionId = otherDevice?.sessionId;
+    const result = await waitForBrowserOrDeviceSignIn({
+      pollBrowser: () => runAccountAction("pollLogin", { sessionId }),
+      device: otherDevice && deviceSessionId
+        ? {
+          intervalSec: otherDevice.intervalSec,
+          poll: () => runAccountAction("pollDeviceLogin", { sessionId: deviceSessionId }),
+        }
+        : null,
+      // The two sessions expire at different times; wait for the later one.
+      deadlineMs: otherDevice
+        ? Math.max(deadlineFor(expiresAt), deadlineFor(otherDevice.expiresAt))
+        : deadlineFor(expiresAt),
+      sleep,
+      write: (text) => process.stderr.write(text),
+    });
+    if (result.winner === "browser") return finishSignedIn(result.authStatus);
+    if (result.winner === "device") {
+      // The other device won. Close this machine's listener first, so the
+      // browser tab that is still open here cannot complete a second time.
+      try {
+        await runAccountAction("cancelLogin", { sessionId });
+      } catch {
+        // The listener expires on its own.
+      }
+      otherDeviceSessionId = null;
+      return finishSignedIn(result.authStatus);
+    }
+    // The browser sign-in was still open at the deadline: one last look at it.
+    if (!result.browserStatus) return timedOut("pollLogin", sessionId);
+    if (result.timedOut) process.stderr.write("ADE account sign-in timed out.\n");
+    return { output: formatOutput(result.browserStatus, options, "account-auth"), exitCode: 1 };
   } finally {
     // Best-effort and idempotent: cancellation must not mask the real result.
-    if (pendingSessionId) {
+    for (const sessionId of [pendingSessionId, otherDeviceSessionId]) {
+      if (!sessionId) continue;
       try {
-        await runAccountAction("cancelLogin", { sessionId: pendingSessionId });
+        await runAccountAction("cancelLogin", { sessionId });
       } catch {
         // The pending session may already be gone; the exit result is what matters.
       }

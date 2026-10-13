@@ -184,6 +184,26 @@ describe("buildTimelineEvents fold", () => {
     expect(events.some((e) => e.type === "commit_push")).toBe(true);
   });
 
+  it("shows a comment one time when the comment list and the activity feed both carry it", () => {
+    // The two sources name the same GitHub comment with different prefixes.
+    const comment = {
+      id: "issue:IC_abc", author: "octocat", authorAvatarUrl: null, body: "Looks right.", source: "issue",
+      url: null, path: null, line: null, createdAt: "2026-01-02T00:00:00Z", updatedAt: null,
+    } as Parameters<typeof buildTimelineEvents>[0]["comments"][number];
+    const activity = (id: string, body: string): PrActivityEvent => ({
+      id, type: "comment", author: "octocat", avatarUrl: null, body, timestamp: "2026-01-02T00:00:00Z", metadata: { source: "issue" },
+    });
+    const rows = buildTimelineEvents(foldArgs({
+      comments: [comment],
+      activity: [activity("comment-issue:IC_abc", "Looks right."), activity("comment-issue:IC_other", "A second one.")],
+    })).filter((event) => event.type === "issue_comment");
+    // The copy from the comment list wins: it carries the ids that edit and react need.
+    expect(rows.map((row) => [row.id, row.body]).sort()).toEqual([
+      ["comment:comment-issue:IC_other", "A second one."],
+      ["comment:issue:IC_abc", "Looks right."],
+    ]);
+  });
+
   it("suppresses a bodyless 'commented' review but keeps one with a summary body", () => {
     const reviews: PrReview[] = [
       { reviewer: "bot", reviewerAvatarUrl: null, state: "commented", body: "   ", submittedAt: "2026-01-03T00:00:00Z" },

@@ -2,6 +2,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types";
+import { getAppearanceState } from "../../state/appearanceStore";
 import { focusEvenPages, focusFit, focusPageColumns } from "./WorkFocusGrid";
 import { useWorkFocusGrid } from "./useWorkFocusGrid";
 import { useWorkFocusQueueReport, type WorkFocusQueueItem } from "./useWorkFocusQueueReport";
@@ -57,6 +58,11 @@ describe("Focus grid page math", () => {
     // Product decision: a short tile is mostly composer, so this window pages
     // two tiles side by side instead of stacking a 2 × 2.
     expect(focusFit(936, 836, 6)).toEqual({ columns: 2, rows: 1, capacity: 2 });
+    // The box is in CSS pixels, so the same laptop zoomed out is a bigger box.
+    // It still gets one row, now four across, not two rows of three.
+    expect(focusFit(1890, 1080, 6)).toEqual({ columns: 4, rows: 1, capacity: 4 });
+    // A box tall enough for two readable rows still stacks them.
+    expect(focusFit(1890, 1300, 6)).toEqual({ columns: 4, rows: 2, capacity: 6 });
   });
 });
 
@@ -75,6 +81,7 @@ describe("useWorkFocusGrid", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    getAppearanceState().setInterfacePreferences({ focusGridMaxChats: null });
   });
 
   function setup(sidebarIsRoster = false) {
@@ -118,6 +125,43 @@ describe("useWorkFocusGrid", () => {
     expect(hook.result.current.members.map((s) => s.id)).toEqual(["a", "b"]);
     // A chat with no tile is not focusable.
     act(() => { expect(hook.result.current.focusSession("zz")).toBe(false); });
+  });
+
+  it("caps a page at this computer's chats-per-page setting, re-pages on a change, and never shows more than fit", () => {
+    const setMaxChats = (focusGridMaxChats: number | null) => act(() => getAppearanceState().setInterfacePreferences({ focusGridMaxChats }));
+    size.width = 1300; // three tiles per page
+    const { hook, report } = setup();
+    report(queue("a", "b", "c", "d", "e", "f"));
+    expect(hook.result.current.members.map((s) => s.id)).toEqual(["a", "b", "c"]);
+
+    // The user is in "c". A lower setting re-spreads the pages, and the view follows the tile.
+    act(() => { hook.result.current.focusSession("c"); });
+    setMaxChats(2);
+    expect(hook.result.current.members.map((s) => s.id)).toEqual(["c", "d"]);
+    expect(hook.result.current.activeId).toBe("c");
+    expect(hook.result.current.columns).toBe(2);
+
+    // A setting above what the box holds changes nothing; Automatic is the same.
+    setMaxChats(6);
+    expect(hook.result.current.members.map((s) => s.id)).toEqual(["a", "b", "c"]);
+    setMaxChats(null);
+    expect(hook.result.current.members.map((s) => s.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("applies a setting changed before the grid's box is measured", () => {
+    // The grid's box is only on the page while the grid shows, so the setting
+    // can change with nothing to measure. The first page must already obey it.
+    const hook = renderHook(() => useWorkFocusGrid({
+      enabled: true,
+      sidebarIsRoster: false,
+      projectStateKey: "project-1",
+      rememberSessionPin: () => {},
+    }));
+    act(() => hook.result.current.setQueueItems(queue("a", "b", "c", "d", "e", "f")));
+    act(() => getAppearanceState().setInterfacePreferences({ focusGridMaxChats: 2 }));
+    expect(hook.result.current.members.map((s) => s.id)).toEqual(["a", "b"]);
+    expect(hook.result.current.rosterProps?.pages.map((page) => page.length)).toEqual([2, 2, 2]);
+    expect(hook.result.current.activeId).toBe("a");
   });
 
   it("lets go of a focused chat that left, so its return does not pull the view away", () => {

@@ -478,11 +478,12 @@ read back as a real choice on the next launch, pinning it forever. The session's
 own cached value is therefore consulted *after* the settings files, not before.
 
 ADE states no prompt cache TTL of its own. A Claude account can choose the
-1-hour subagent prompt cache in Settings; `claudeAccountPromptCacheEnv`
-(`providerInstanceStore.ts`) then sets `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`
+1-hour subagent prompt cache, and a 5-minute or 1-hour main-conversation cache,
+in Settings; `claudeAccountPromptCacheEnv` (`providerInstanceStore.ts`) then
+sets `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` and `CLAUDE_CODE_PROMPT_CACHE_TTL`
 for that account's SDK chats and terminal `claude` sessions (in
-`ptyService.create`, the one path every fresh launch and resume takes). It adds
-nothing when the environment already states a TTL, and a launch on a preset or
+`ptyService.create`, the one path every fresh launch and resume takes). It leaves
+out a TTL that the environment already states, and a launch on a preset or
 a stored credential never gets it. See
 [Onboarding and settings](../onboarding-and-settings/README.md).
 
@@ -672,7 +673,10 @@ Claude permission mode can be changed mid-session via the SDK
 `done.usage` is the SDK result's `usage`, which is already the turn total.
 `extractClaudeResultMetadata` adds `usage.cache_creation.ephemeral_1h_input_tokens`
 as `done.usage.cacheWrite1hTokens` (the one-hour-TTL share of
-`cacheCreationTokens`). The result's `modelUsage` map is keyed by the model that
+`cacheCreationTokens`). At turn end the pair becomes the session's
+`promptCache` (`claudePromptCacheTtlOfWrites`, with the last request's start
+time from the per-turn request tally), which times the cache
+countdown and the Compact first offer. The result's `modelUsage` map is keyed by the model that
 served each request. `done.servedModel` is set when that map names a different
 model than the session asked for: its only key, or, when subagents or side calls
 ran on other models, the key with the most output tokens (a tie names none).

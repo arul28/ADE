@@ -340,7 +340,9 @@ apps/ios/
 │   │   │                               # project action envelopes
 │   │   ├── DeepLinkRouter.swift     # ade:// and https://ade-app.dev/open
 │   │   │                            # handler. Compact PR links flip tabs via
-│   │   │                            # .adeDeepLinkRequested. Session links publish
+│   │   │                            # .adeDeepLinkRequested. A device sign-in
+│   │   │                            # link posts .adeDeviceSignInRequested, and
+│   │   │                            # ADEApp shows the approval sheet. Session links publish
 │   │   │                            # WorkSessionNavigationRequest with lane/repo/
 │   │   │                            # branch/event/offset scope; the app-root task
 │   │   │                            # routes the request to Hub or Work, including
@@ -391,6 +393,15 @@ apps/ios/
 │   │   │                            # install labels (channel/adeHome →
 │   │   │                            # installLabel/rowLabel) + Attention relay
 │   │   │                            # clients
+│   │   ├── DeviceSignInApproval.swift # the sign-in link of another computer
+│   │   │                            # (https://ade-app.dev/device?user_code=…):
+│   │   │                            # parses the code and calls the account
+│   │   │                            # directory's /device/approve to read what
+│   │   │                            # the code is for and to approve it. The
+│   │   │                            # sheet is Views/Account/
+│   │   │                            # DeviceSignInApprovalSheet.swift; every web
+│   │   │                            # sign-in sheet anchors through Views/
+│   │   │                            # Components/WebAuthPresentationAnchor.swift
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # per-host pairing secrets, stable device
 │   │   │                            # identity, and SSH credential storage
@@ -3883,7 +3894,15 @@ Reading order (the desktop triage layout, native to a phone):
    lane (`prs.linkToLane`), or Open in GitHub;
 3. the PR description (`PrThreadDescriptionCard`). GitHub's embedded HTML is
    normalized into safe Markdown, while `<details>/<summary>` regions become
-   native `DisclosureGroup` rows instead of visible raw tags;
+   native `DisclosureGroup` rows instead of visible raw tags. Media in the
+   text is drawn as media (`prDescriptionPieces` in
+   `PrGitHubDescriptionParser.swift`, the twin of the desktop's
+   `prBodyProof.ts`): a picture alone on its line, a GitHub attachment alone
+   on its line as a video that loads only on a tap, and a Before/After table
+   of pictures as a comparison (stacked on a phone, side by side at regular
+   width). Only media that GitHub serves is loaded (`prIsGitHubMediaURL`); a
+   picture on any other host stays words, because a PR text can be written by
+   anyone and a remote picture tells its author who read it;
 4. "Needs attention" (`PrNeedsAttentionHeader`): the unresolved review threads,
    with reply and resolve, pinned above the history;
 5. the history, built by `buildPullRequestTimeline` and folded by

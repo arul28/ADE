@@ -99,7 +99,7 @@ import {
   type DevServerRecord,
 } from "../shared/types/builtInBrowser";
 import type { SessionInputOrigin } from "../shared/sessionInputOrigin";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   DiagnosticReportPayload,
@@ -177,7 +177,13 @@ import type {
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
 } from "../shared/types";
-import { THREAD_COMMENT_ACTION_NAMES } from "../shared/threadComments";
+import { adeActionAccess } from "../shared/adeActionAccess";
+import type {
+  ClaudePluginUiActArgs,
+  ClaudePluginUiActResult,
+  ClaudePluginUiGetArgs,
+  ClaudePluginUiSnapshot,
+} from "../shared/claudePluginUi";
 import type {
   ChatThreadComment,
   ChatThreadCommentCreateArgs,
@@ -203,6 +209,12 @@ import type {
   ApplyConflictProposalArgs,
   AppInfo,
   LocalRuntimeStatus,
+  BackgroundServiceSummary,
+  QuitPromptAnswer,
+  QuitPromptRepairResult,
+  QuitPromptRequest,
+  StopBackgroundServiceRequest,
+  StopBackgroundServiceResult,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -1509,6 +1521,8 @@ let projectBindingGeneration = 0;
 let projectBindingVersion = 0;
 let projectBindingRefreshPromise: Promise<OpenProjectBinding | null> | null = null;
 let projectRuntimeTransitionDepth = 0;
+/** Released when the outermost project transition ends. */
+let projectRuntimeTransitionSettled: { promise: Promise<void>; release: () => void } | null = null;
 let activeRemoteProjectOpenPromise: Promise<OpenProjectBinding> | null = null;
 /**
  * Kind of the binding this window was attached to when the in-flight project
@@ -1528,6 +1542,34 @@ let lastProjectRuntimeBindingKind: OpenProjectBinding["kind"] | null = null;
 const projectBindingChangedCallbacks = new Set<
   (binding: OpenProjectBinding | null) => void
 >();
+
+/**
+ * How long a read that must reach its own machine waits out a project switch.
+ * A switch that takes longer than this is stuck, and the read says so.
+ */
+const PROJECT_SWITCH_READ_WAIT_MS = 60_000;
+
+/**
+ * Resolve once no project transition is in flight; immediately when none is.
+ * A second switch that starts as the first ends is waited out too, all within
+ * one deadline.
+ */
+async function waitForProjectRuntimeTransitionToSettle(): Promise<void> {
+  if (!projectRuntimeTransitionSettled) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(projectSwitchingError("reading project state"));
+    }, PROJECT_SWITCH_READ_WAIT_MS);
+  });
+  try {
+    while (projectRuntimeTransitionSettled) {
+      await Promise.race([projectRuntimeTransitionSettled.promise, deadline]);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * The binding the renderer has been told about, as `kind:key`.
@@ -1750,16 +1792,19 @@ async function callRemoteProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
-    return { handled: false };
-  }
+  assertWritesAllowedDuringProjectSwitch(domain, action);
+  const guardBinding = guardsProjectBinding(domain, action);
+  const checkBeforeBind = captureProjectBinding(guardBinding && Boolean(currentProjectBinding));
   const binding = await getRemoteProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
+  checkBeforeBind();
   if (!binding) return { handled: false };
+  const checkAfterInvoke = captureProjectBinding(guardBinding);
   const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
     id: binding.targetId,
     projectId: binding.projectId,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
+  checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
 
@@ -1888,15 +1933,18 @@ async function callLocalProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
-    return { handled: false };
-  }
+  assertWritesAllowedDuringProjectSwitch(domain, action);
+  const guardBinding = guardsProjectBinding(domain, action);
+  const checkBeforeBind = captureProjectBinding(guardBinding && Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
+  checkBeforeBind();
   if (!binding) return { handled: false };
+  const checkAfterInvoke = captureProjectBinding(guardBinding);
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
     rootPath: binding.rootPath,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
+  checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
 
@@ -1905,100 +1953,32 @@ async function callLocalProjectActionStrictIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
-    return { handled: false };
-  }
+  assertWritesAllowedDuringProjectSwitch(domain, action);
+  const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding();
+  checkBeforeBind();
   if (!binding) return { handled: false };
+  const checkAfterInvoke = captureProjectBinding();
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
     rootPath: binding.rootPath,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
+  checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
 
-// Chat actions that mutate runtime state. Only these are gated by the
-// project-transition guard. Most read-only chat queries (e.g. `listSessions`,
-// `getSessionSummary`, `getChatEventHistory`) fall through to IPC while a
-// project switch is in flight so the UI can keep rendering. Machine
-// inventories (`modelCatalog`, `getAvailableModels`) stay on the runtime —
-// Electron's in-process registry is not that machine's OpenCode list.
-const MUTATING_CHAT_ACTIONS = new Set<string>([
-  "sendMessage",
-  "startLaunch",
-  "cancelLaunch",
-  "retryLaunch",
-  "startLaunchNow",
-  "queueLaunchMessage",
-  "completeLaunchClient",
-  "respondToInput",
-  "dismissPendingInput",
-  "approveToolUse",
-  "interrupt",
-  "stopTask",
-  "restartSession",
-  "restoreCancelledQueue",
-  "recoverTurn",
-  "recoverCodexTurn",
-  "resolveUnprocessedMessage",
-  "recoverContinuity",
-  "steer",
-  "cancelSteer",
-  "editSteer",
-  "moveSteer",
-  "dispatchSteer",
-  "cancelDispatchedSteer",
-  "createSession",
-  "regenerateSessionMetadata",
-  "archiveSession",
-  "unarchiveSession",
-  "deleteSession",
-  "updateSession",
-  "handoffSession",
-  "prepareCrossMachineHandoff",
-  "validateCrossMachineSource",
-  "markCrossMachineHandoff",
-  "startCrossMachineHandoff",
-  "cancelCrossMachineHandoff",
-  "retryCrossMachineHandoff",
-  "resolveCrossMachineHandoffApproval",
-  "acknowledgeCrossMachineHandoff",
-  "launchCli",
-  "launchHeadless",
-  "setClaudeOutputStyle",
-  "reloadClaudePlugins",
-  "setParallelLaunchState",
-  "createScheduledWork",
-  "cancelScheduledWork",
-  "resumeUsageLimitNow",
-  "continueUsageLimitOnAlternate",
-  "switchAccount",
-  "setScheduledWorkPaused",
-  "ensureCtoSession",
-  "warmupModel",
-  "rewindFiles",
-  "saveTempAttachment",
-  "copyTempAttachment",
-  "setCodexGoal",
-  "setCodexGoalStatus",
-  "clearCodexGoal",
-  "startCodexRealtime",
-  "stopCodexRealtime",
-  "getCodexRealtimeState",
-  "resetCodexMemory",
-  "terminateCodexBackgroundTerminal",
-  // Private draft state must never fall through to the process-global IPC
-  // database while the owning project binding is changing.
+// Chat reads that must answer from the chat's own machine. Falling through to
+// this window's IPC during a project switch would read the process-global
+// database (private drafts, thread comments, a realtime session) of whatever
+// machine the window happens to be, so they wait for the switch instead.
+const CHAT_HOST_READS = new Set<string>([
   "listDrafts",
-  "createDraft",
-  "updateDraft",
-  "claimDraft",
-  "deleteDraft",
-  // Delivering a send writes the row's status; it is a draft write like the rest.
-  "sendDraftNow",
-  // Thread comments live on the chat's host; a write that fell through to this
-  // window's process during a project switch would land on the wrong machine.
-  ...THREAD_COMMENT_ACTION_NAMES,
+  "getDraft",
+  "listThreadComments",
+  "getCodexRealtimeState",
+  // Mod UI is live state of a Claude process on the chat's host; this window's
+  // own process has none.
+  "getClaudePluginUi",
 ]);
 
 // Live model inventories (OpenCode, ollama, LM Studio, cursor-agent) are facts
@@ -2010,30 +1990,14 @@ const MACHINE_INVENTORY_CHAT_ACTIONS = new Set<string>([
   "getLaunchDefaults",
 ]);
 
-const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
-  "diagnosticsGet",
-  "get",
-  "list",
-  "oauthGet",
-  "oauthList",
-  "portList",
-  "proxyGet",
-  "read",
-  "search",
-] as const;
-
-const READ_ONLY_RUNTIME_ACTIONS = new Set([
-  "chat.codexFuzzyFileSearch",
-  "chat.fileSearch",
-  "chat.listMentionSuggestions",
-  "chat.modelCatalog",
-  "chat.resolveSmartLinkPreview",
-  "chat.resolveSourceFavicons",
-  "file.quickOpen",
-  "ios_simulator.resolvePreviewMatch",
-  "terminal.activeForChat",
-  "terminal.preview",
-]);
+/**
+ * Whether a runtime action's result belongs to the project the window was
+ * bound to when it started. Machine inventories (the model catalog) belong to
+ * the machine, so a project switch does not make them stale.
+ */
+function guardsProjectBinding(domain: string, action: string): boolean {
+  return !(domain === "chat" && MACHINE_INVENTORY_CHAT_ACTIONS.has(action));
+}
 
 const MUTATING_SYNC_METHODS = new Set([
   "sync.connectToBrain",
@@ -2052,44 +2016,38 @@ const MUTATING_SYNC_METHODS = new Set([
   "modelPicker.pushRecent",
 ]);
 
-const PROJECT_SWITCHING_MESSAGE =
-  "Project is switching. Wait for the current project to finish loading before changing project state.";
+/** "Project is switching", finished with what the caller was doing. */
+function projectSwitchingError(doing: string): Error {
+  return new Error(`Project is switching. Wait for the current project to finish loading before ${doing}.`);
+}
+
+/** Captures the binding generation now; the returned check throws if the window switched projects since. */
+function captureProjectBinding(enabled = true): () => void {
+  const captured = enabled ? projectBindingGeneration : null;
+  return () => {
+    if (captured != null && captured !== projectBindingGeneration) throw projectSwitchingError("using this result");
+  };
+}
 
 let openRemoteProjectGeneration = 0;
 let activeRemoteProjectOpenGeneration: number | null = null;
 const MAX_REMOTE_PROJECT_OPEN_REBIND_ATTEMPTS = 5;
 
-function isReadOnlyRuntimeAction(domain: string, action: string): boolean {
-  const key = `${domain}.${action}`;
-  if (READ_ONLY_RUNTIME_ACTIONS.has(key)) return true;
-  return READ_ONLY_RUNTIME_ACTION_PREFIXES.some(
-    (prefix) =>
-      action === prefix ||
-      (action.startsWith(prefix) && /^[A-Z]/.test(action.slice(prefix.length))),
-  );
-}
-
+/**
+ * Whether a runtime action may change project state, from the table each action
+ * declares itself in. An action the table does not know is treated as a write:
+ * refusing a read during a switch is a visible error, while letting a write
+ * through can land it on the wrong project.
+ */
 function isMutatingRuntimeAction(domain: string, action: string): boolean {
-  if (domain === "chat") return MUTATING_CHAT_ACTIONS.has(action);
-  return !isReadOnlyRuntimeAction(domain, action);
+  return adeActionAccess(domain, action) !== "read";
 }
 
-function assertProjectRuntimeNotTransitioningForMutation(label: string): void {
-  if (projectRuntimeTransitionDepth > 0) {
-    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+/** Refuse a write to the active binding while a project switch is in flight. */
+function assertWritesAllowedDuringProjectSwitch(domain: string, action: string): void {
+  if (projectRuntimeTransitionDepth > 0 && isMutatingRuntimeAction(domain, action)) {
+    throw projectSwitchingError(domain === "chat" ? "sending chat messages" : "changing project state");
   }
-}
-
-function shouldBypassProjectRuntimeDuringTransition(domain: string, action: string): boolean {
-  if (projectRuntimeTransitionDepth <= 0) return false;
-  if (isMutatingRuntimeAction(domain, action)) {
-    const label =
-      domain === "chat" && MUTATING_CHAT_ACTIONS.has(action)
-        ? "sending chat messages"
-        : "changing project state";
-    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
-  }
-  return false;
 }
 
 async function waitForRemoteProjectOpenIfActive(): Promise<boolean> {
@@ -2109,15 +2067,14 @@ async function callProjectRuntimeActionIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  const checkBinding = captureProjectBinding(
+    Boolean(currentProjectBinding) && guardsProjectBinding(domain, action),
+  );
   const freshBinding = domain === "chat";
-  const isMutatingChatAction =
-    freshBinding && MUTATING_CHAT_ACTIONS.has(action);
-  if (isMutatingRuntimeAction(domain, action) && projectRuntimeTransitionDepth > 0) {
-    const label =
-      isMutatingChatAction
-        ? "sending chat messages"
-        : "changing project state";
-    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+  assertWritesAllowedDuringProjectSwitch(domain, action);
+  const mutating = isMutatingRuntimeAction(domain, action);
+  if (freshBinding && CHAT_HOST_READS.has(action)) {
+    await waitForProjectRuntimeTransitionToSettle();
   }
   // During a project transition, let read-only chat calls fall through to
   // their IPC fallback instead of binding to a possibly-stale runtime.
@@ -2125,7 +2082,7 @@ async function callProjectRuntimeActionIfBound<T>(
   // selected machine's OpenCode inventory.
   if (
     freshBinding
-    && !isMutatingChatAction
+    && !mutating
     && projectRuntimeTransitionDepth > 0
     && !MACHINE_INVENTORY_CHAT_ACTIONS.has(action)
   ) {
@@ -2134,22 +2091,22 @@ async function callProjectRuntimeActionIfBound<T>(
   let rebindAttempts = 0;
   while (
     activeRemoteProjectOpenGeneration !== null &&
-    !isMutatingRuntimeAction(domain, action) &&
+    !mutating &&
     await waitForRemoteProjectOpenIfActive()
   ) {
     rebindAttempts += 1;
     if (rebindAttempts >= MAX_REMOTE_PROJECT_OPEN_REBIND_ATTEMPTS) {
-      throw new Error(
-        PROJECT_SWITCHING_MESSAGE.replace("changing project state", "reading project state"),
-      );
+      throw projectSwitchingError("reading project state");
     }
   }
+  checkBinding();
   const remote = await callRemoteProjectActionIfBound<T>(
     domain,
     action,
     request,
     { freshBinding },
   );
+  checkBinding();
   if (remote.handled) return remote;
   return callLocalProjectActionIfBound<T>(domain, action, request, { freshBinding });
 }
@@ -2630,9 +2587,7 @@ async function callProjectFileRuntimeActionOr<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
   local: () => Promise<T>,
 ): Promise<T> {
-  if (shouldBypassProjectRuntimeDuringTransition("file", action)) {
-    return local();
-  }
+  assertWritesAllowedDuringProjectSwitch("file", action);
   const remote = await callRemoteProjectActionIfBound<T>(
     "file",
     action,
@@ -2702,14 +2657,18 @@ async function callRemoteProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getRemoteProjectBinding();
+  checkBeforeBind();
   if (!binding) return { handled: false };
+  const checkAfterInvoke = captureProjectBinding();
   const result = (await ipcRenderer.invoke(IPC.remoteRuntimeCallSync, {
     id: binding.targetId,
     projectId: binding.projectId,
     method,
     params,
   })) as T;
+  checkAfterInvoke();
   return { handled: true, result };
 }
 
@@ -2717,13 +2676,17 @@ async function callLocalProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding();
+  checkBeforeBind();
   if (!binding) return { handled: false };
+  const checkAfterInvoke = captureProjectBinding();
   const result = (await ipcRenderer.invoke(IPC.localRuntimeCallSync, {
     rootPath: binding.rootPath,
     method,
     params,
   })) as T;
+  checkAfterInvoke();
   return { handled: true, result };
 }
 
@@ -2733,9 +2696,11 @@ async function callProjectRuntimeSyncOr<T>(
   local: () => Promise<T>,
 ): Promise<T> {
   if (MUTATING_SYNC_METHODS.has(method) && projectRuntimeTransitionDepth > 0) {
-    assertProjectRuntimeNotTransitioningForMutation("changing sync state");
+    throw projectSwitchingError("changing sync state");
   }
+  const checkBinding = captureProjectBinding(Boolean(currentProjectBinding));
   const remote = await callRemoteProjectSyncIfBound<T>(method, params);
+  checkBinding();
   if (remote.handled) return remote.result;
   let localRuntime: Awaited<ReturnType<typeof callLocalProjectSyncIfBound<T>>>;
   try {
@@ -4354,11 +4319,23 @@ async function clearAround<T>(
 async function runProjectRuntimeTransition<T>(
   action: () => Promise<T>,
 ): Promise<T> {
+  if (projectRuntimeTransitionDepth === 0) {
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    projectRuntimeTransitionSettled = { promise, release };
+  }
   projectRuntimeTransitionDepth += 1;
   try {
     return await action();
   } finally {
     projectRuntimeTransitionDepth = Math.max(0, projectRuntimeTransitionDepth - 1);
+    if (projectRuntimeTransitionDepth === 0 && projectRuntimeTransitionSettled) {
+      const settled = projectRuntimeTransitionSettled;
+      projectRuntimeTransitionSettled = null;
+      settled.release();
+    }
   }
 }
 
@@ -4533,6 +4510,25 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appGetRuntimeHealth),
     restartBackgroundService: async (): Promise<void> =>
       ipcRenderer.invoke(IPC.appRestartBackgroundService),
+    onQuitPrompt: (cb: (request: QuitPromptRequest) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: QuitPromptRequest) => cb(payload);
+      ipcRenderer.on(IPC.appQuitPrompt, listener);
+      return () => ipcRenderer.removeListener(IPC.appQuitPrompt, listener);
+    },
+    onQuitPromptDismiss: (cb: (requestId: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, requestId: string) => cb(requestId);
+      ipcRenderer.on(IPC.appQuitPromptDismiss, listener);
+      return () => ipcRenderer.removeListener(IPC.appQuitPromptDismiss, listener);
+    },
+    quitPromptShown: (requestId: string): void => ipcRenderer.send(IPC.appQuitPromptShown, requestId),
+    answerQuitPrompt: async (answer: QuitPromptAnswer): Promise<QuitPromptRepairResult | null> =>
+      ipcRenderer.invoke(IPC.appAnswerQuitPrompt, answer),
+    getAskBeforeQuit: async (): Promise<boolean> => ipcRenderer.invoke(IPC.appGetAskBeforeQuit),
+    setAskBeforeQuit: async (ask: boolean): Promise<boolean> => ipcRenderer.invoke(IPC.appSetAskBeforeQuit, ask),
+    getBackgroundService: async (): Promise<BackgroundServiceSummary> =>
+      ipcRenderer.invoke(IPC.appGetBackgroundService),
+    stopBackgroundServiceAndQuit: async (request: StopBackgroundServiceRequest): Promise<StopBackgroundServiceResult> =>
+      ipcRenderer.invoke(IPC.appStopBackgroundServiceAndQuit, request),
     getLatestRelease: async (): Promise<LatestReleaseInfo | null> =>
       ipcRenderer.invoke(IPC.appGetLatestRelease),
     getProject: async (): Promise<ProjectInfo | null> =>
@@ -5009,6 +5005,17 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.recoveryRepair, { projectRoot }),
     openBackgroundSettings: (): Promise<{ opened: boolean }> =>
       ipcRenderer.invoke(IPC.recoveryOpenBackgroundSettings),
+    restoreProjectData: (projectRoot: string): Promise<ProjectDataRestoreResult> =>
+      ipcRenderer.invoke(IPC.recoveryRestoreProjectData, { projectRoot }),
+    startFresh: (projectRoot: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.recoveryStartFresh, { projectRoot }),
+    projectDataStatus: (projectRoot?: string): Promise<ProjectDataStatus | null> =>
+      ipcRenderer.invoke(IPC.recoveryProjectDataStatus, projectRoot ? { projectRoot } : {}),
+    onProjectDataMissing: (cb: (payload: { projectRoot: string; status: ProjectDataProblem }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { projectRoot: string; status: ProjectDataProblem }) => cb(payload);
+      ipcRenderer.on(IPC.recoveryProjectDataMissing, listener);
+      return () => ipcRenderer.removeListener(IPC.recoveryProjectDataMissing, listener);
+    },
     onRepairStep: (
       cb: (payload: { projectRoot: string; step: RepairStepResult }) => void,
     ): (() => void) => {
@@ -6317,12 +6324,14 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.usageGetAdeStats, normalizedArgs),
       );
     },
-    getSnapshot: async (): Promise<UsageSnapshot | null> =>
-      callProjectRuntimeActionOr("usage", "getUsageSnapshot", {}, () =>
+    // `pin` reads one machine's snapshot (a Settings page for that machine);
+    // without it, the tab's own binding answers.
+    getSnapshot: async (pin?: OpenProjectBinding | null): Promise<UsageSnapshot | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "usage", "getUsageSnapshot", {}, () =>
         ipcRenderer.invoke(IPC.usageGetSnapshot),
       ),
-    refresh: async (): Promise<UsageSnapshot | null> =>
-      callProjectRuntimeActionOr("usage", "forceRefresh", {}, () =>
+    refresh: async (pin?: OpenProjectBinding | null): Promise<UsageSnapshot | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "usage", "forceRefresh", {}, () =>
         ipcRenderer.invoke(IPC.usageRefresh),
       ),
     refreshHistory: async (): Promise<UsageSnapshot | null> =>
@@ -8492,6 +8501,22 @@ const adeBridge = {
           () => ipcRenderer.invoke(IPC.agentChatDraftsSendNow, args),
         ),
     },
+    claudePluginUi: {
+      get: async (
+        args: ClaudePluginUiGetArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<ClaudePluginUiSnapshot> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "chat", "getClaudePluginUi", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatClaudePluginUiGet, args),
+        ),
+      act: async (
+        args: ClaudePluginUiActArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<ClaudePluginUiActResult> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "chat", "actOnClaudePluginUi", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatClaudePluginUiAct, args),
+        ),
+    },
     threadComments: {
       list: async (
         args: ChatThreadCommentListArgs,
@@ -10614,6 +10639,17 @@ const adeBridge = {
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginCancel, args),
       ).then(normalizeProviderLoginStatus),
+    signOut: async (
+      args: ProviderInstanceDismissReplacedArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance | null> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance | null | { instance: ProviderInstance | null }>(
+        pin,
+        "provider_instances",
+        "signOut",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesSignOut, args),
+      ).then((result) => (result && "instance" in result ? result.instance : result)),
     dismissReplaced: async (
       args: ProviderInstanceDismissReplacedArgs,
       pin?: OpenProjectBinding | null,

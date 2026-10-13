@@ -22,7 +22,8 @@ import {
   type AppleDevicePreferences,
 } from "../../shared/appleDeviceSettings";
 import { GIT_UNTRUSTED_FOLDER_CODE, parseCodedErrorMessage } from "../lib/codedError";
-import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
+import { RECOVERY_COPY, toAdeRecoveryErrorCode, type AdeRecoveryErrorCode, type ProjectDataProblem } from "../../shared/types/recovery";
+import { defaultLaneId, pickRestoredLaneId } from "../lib/laneSelection";
 import { isWebClientMode } from "../lib/webClientMode";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
@@ -1580,6 +1581,8 @@ export type AppState = {
   setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
   clearProjectTransitionError: () => void;
+  /** Shows the full-screen recovery flow for a project whose ADE data went missing or was replaced. No-op while another transition error is up. */
+  reportProjectDataProblem: (rootPath: string, status: ProjectDataProblem) => void;
   setLanes: (lanes: LaneSummary[]) => void;
   setLaneDeleteProgressByLaneId: (
     next:
@@ -1844,6 +1847,8 @@ const RECOVERY_MESSAGE_BY_CODE: Partial<Record<AdeRecoveryErrorCode, string>> = 
   brain_not_running: "ADE's background service didn't start. Open the project to fix it.",
   socket_stale_no_owner: "ADE didn't close properly last time. Open the project to fix it.",
   socket_owned_by_other: "Another copy of ADE is open. Quit it, then try again.",
+  project_data_missing: "ADE's data for this project is missing. Open the project to restore it or start fresh.",
+  db_path_changed: "ADE's data for this project was swapped out. Open the project to choose what to use.",
 };
 
 const GENERIC_RECOVERY_MESSAGE = "ADE ran into a problem with this project.";
@@ -2189,12 +2194,21 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             [nextStateKey]: warmLaneCache,
           }
         : prev.laneCacheByProject;
-      const restoredSelection = shouldHydrateLanes
+      const cachedSelection = shouldHydrateLanes
         ? prev.laneSelectionByProject[nextStateKey] ?? {
             laneId: warmLaneCache?.lanes[0]?.id ?? null,
             sessionId: null,
           }
         : null;
+      const restoreLanes = warmLaneCache?.lanes ?? [];
+      // One survival check serves both the lane and its session: the session
+      // is kept only when the saved lane is still there.
+      const savedLaneSurvived = cachedSelection !== null
+        && restoreLanes.some((lane) => lane.id === cachedSelection.laneId);
+      const restoredSelection = cachedSelection && {
+        laneId: savedLaneSurvived ? cachedSelection.laneId : defaultLaneId(restoreLanes),
+        sessionId: savedLaneSurvived ? cachedSelection.sessionId : null,
+      };
       return {
         project,
         projectInfoByRoot: project && !matchingRemoteBinding && project !== knownProject
@@ -2330,8 +2344,25 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               )
             : [...prev.openRemoteProjectTabs, projectBinding]
           : prev.openRemoteProjectTabs;
+      const nextKey = projectBinding ? projectStateKeyForBinding(projectBinding) : "";
+      const bindingChanged = Boolean(projectBinding)
+        && nextKey !== selectActiveProjectStateKey(prev);
+      const laneCache = bindingChanged
+        ? prev.laneCacheByProject[nextKey] ?? readPersistedLaneCache(nextKey)
+        : null;
+      const savedLaneId = prev.laneSelectionByProject[nextKey]?.laneId;
+      const restoredLaneId = pickRestoredLaneId(laneCache?.lanes ?? [], savedLaneId);
       return {
         projectBinding,
+        ...(bindingChanged ? {
+          lanes: laneCache?.lanes ?? [],
+          laneSnapshots: laneCache?.laneSnapshots ?? [],
+          lanesLoading: !laneCache,
+          laneStatusStale: true,
+          ...(laneCache ? { laneCacheByProject: { ...prev.laneCacheByProject, [nextKey]: laneCache } } : {}),
+          selectedLaneId: restoredLaneId ?? null,
+          focusedSessionId: null,
+        } : {}),
         openRemoteProjectTabs,
         openProjectTabRoots: shouldDropStaleRemoteRoot
           ? prev.openProjectTabRoots.filter(
@@ -2343,6 +2374,18 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
+  reportProjectDataProblem: (rootPath, status) => {
+    // A recovery screen already up wins. A plain error with no recovery code
+    // (a slow switch, say) gives way, so missing data always gets its screen.
+    if (get().projectTransitionError?.code) return;
+    set({
+      projectTransitionError: {
+        message: RECOVERY_COPY[status === "replaced" ? "data_replaced" : "data_missing"].headline,
+        code: status === "replaced" ? "db_path_changed" : "project_data_missing",
+        rootPath,
+      },
+    });
+  },
   dismissWorktreeOpenPrompt: () => set({ worktreeOpenPrompt: null }),
   dismissGitFolderTrustPrompt: () => {
     const prompt = get().gitFolderTrustPrompt;

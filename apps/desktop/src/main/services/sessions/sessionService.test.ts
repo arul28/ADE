@@ -1590,6 +1590,53 @@ describe("sessionService resume metadata", () => {
     }));
   });
 
+  it("reports a settled chat one time, and not a shell, a subagent that follows its parent, or a second settle", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-chat-settled-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const reported: Array<{ sessionId: string; laneId: string; provider: string | null }> = [];
+    const service = createSessionService({
+      db,
+      listSubagentLinks: async (parentIds) =>
+        parentIds.includes("chat") ? [{ sessionId: "subagent", parentSessionId: "chat" }] : [],
+      onChatSettled: (chat) => {
+        reported.push(chat);
+        // A listener that fails must not undo or fail the settle.
+        throw new Error("listener failed");
+      },
+    });
+    const toolTypes = { chat: "claude-chat", subagent: "claude-chat", "cursor-chat": "cursor", shell: "shell", "shell-turned-legacy": "shell" } as const;
+    for (const [sessionId, toolType] of Object.entries(toolTypes)) {
+      service.create({
+        sessionId,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: sessionId,
+        startedAt: "2026-03-17T00:10:00.000Z",
+        transcriptPath: `/tmp/${sessionId}.log`,
+        toolType,
+      });
+    }
+
+    // An old chat row: tool type "other", provider named only by its resume command.
+    db.run(
+      "update terminal_sessions set tool_type = 'other', resume_command = 'chat:claude:legacy-1' where id = 'shell-turned-legacy'",
+    );
+    expect(await service.settleSessions(["chat", "cursor-chat", "shell"])).toEqual(["chat", "cursor-chat", "shell", "subagent"]);
+    expect(reported).toEqual([
+      { sessionId: "chat", laneId: "lane-1", provider: "claude" },
+      { sessionId: "cursor-chat", laneId: "lane-1", provider: "cursor" },
+    ]);
+    expect(await service.settleSessions(["shell-turned-legacy"])).toEqual(["shell-turned-legacy"]);
+    expect(reported.at(-1)).toEqual({ sessionId: "shell-turned-legacy", laneId: "lane-1", provider: "claude" });
+
+    // Already settled: nothing new landed, so nothing is reported again.
+    expect(await service.settleSessions(["chat"])).toEqual([]);
+    expect(reported).toHaveLength(3);
+  });
+
   it("settles a parent's subagents with it, reaches them through an already-settled parent, and brings them back on unsettle", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-subagent-cascade-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);

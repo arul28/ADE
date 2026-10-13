@@ -25384,6 +25384,28 @@ final class ADETests: XCTestCase {
     )
   }
 
+  /// The phone's copy of the desktop command parser
+  /// (`computerUseActionSummary.ts`): shell redirections belong to the shell,
+  /// not to the command's flags, and quoted text that only looks like one is
+  /// still an argument. Same rows as the desktop table.
+  func testComputerUseSummaryKeepsShellRedirectionsOutOfTheAction() {
+    let rows: [(command: String, output: String, text: String, outcome: WorkComputerUseOutcome)] = [
+      ("ade browser click --x 537 --y 411 --text 2>&1 | grep ok", "", "Clicked at 537, 411 using ADE browser", .notChecked),
+      ("ade browser click --text \"<Submit>\" 2>&1", "", "Clicked “<Submit>” using ADE browser", .notChecked),
+      ("ade screen type \">\" --app Notes", "", "Typed “>” in Notes", .notChecked),
+      ("ade screen type hello *>$null", "", "Typed “hello” on the lane screen", .notChecked),
+      ("ade proof capture --caption Login --text>proof.txt", "Attached", "Filed proof “Login”", .unconfirmed),
+    ]
+    for row in rows {
+      guard let action = workComputerUseSummary(command: row.command, output: row.output, status: "completed", exitCode: 0) else {
+        XCTFail("No computer-use summary for \(row.command)")
+        continue
+      }
+      XCTAssertEqual(workComputerUseText(action), row.text, row.command)
+      XCTAssertEqual(action.outcome, row.outcome, row.command)
+    }
+  }
+
   func testLegacyAskUserApprovalLeavesSourceForProviderFallback() {
     let detail = """
     {

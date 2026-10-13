@@ -1259,7 +1259,7 @@ function LocalhostServersStrip({
       let terminal: Awaited<ReturnType<NonNullable<NonNullable<typeof window.ade>["terminal"]>["activeForChat"]>> | undefined;
       if (sessionId && onRevealChatTerminal) {
         try {
-          terminal = await window.ade?.terminal?.activeForChat?.({ chatSessionId: sessionId });
+          terminal = await window.ade?.terminal?.activeForChat?.({ chatSessionId: sessionId }, runtimePin);
         } catch (error) {
           console.error("[ChatWorkLogBlock] activeForChat lookup failed", error);
           terminal = undefined;

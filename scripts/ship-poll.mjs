@@ -148,6 +148,8 @@ export function summarizePoll({ pr, checks, issueComments, reviews, threads, beh
   }
 
   const merged = pr.state === "MERGED";
+  // Only a conflict with the base needs a rebase. Being behind is normal while
+  // other PRs land; GitHub merges the branch onto the current base itself.
   const conflicting = pr.mergeStateStatus === "DIRTY";
   const behindBase = behindBy > 0 || pr.mergeStateStatus === "BEHIND" || conflicting;
   const unaddressedThreads = openThreads.filter((thread) => !thread.addressed);
@@ -158,7 +160,7 @@ export function summarizePoll({ pr, checks, issueComments, reviews, threads, beh
   let next;
   if (merged) next = "merged";
   else if (pr.state !== "OPEN") next = "closed";
-  else if (behindBase) next = "rebase";
+  else if (conflicting) next = "rebase";
   else if (waiting) next = "wait";
   else if (fixWork) next = "fix";
   else if (openThreads.length > 0) next = "resolve-threads";

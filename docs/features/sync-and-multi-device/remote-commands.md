@@ -237,7 +237,7 @@ over the wire. A controller only invokes an action the host advertises in
 **Provider accounts** (`providerAccounts.*`)
 - `list`, `getSettings`, `refresh` — viewer-allowed reads of the host's Claude
   and Codex logins.
-- `loginStatus`, `create`, `remove`, `rename`, `setDefault`, `dismissReplaced`,
+- `loginStatus`, `create`, `remove`, `signOut`, `rename`, `setDefault`, `dismissReplaced`,
   `setSettings`, `loginStart`, `loginSubmitCode`, `loginCancel` — controller-only
   (`viewerAllowed: false`, `controllerAllowed: true`). A viewer may read;
   anything that changes a login, or reads a running sign-in (its link and device

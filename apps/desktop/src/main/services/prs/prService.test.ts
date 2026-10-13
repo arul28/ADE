@@ -55,6 +55,7 @@ import {
   GITHUB_SNAPSHOT_TTL_MS as GITHUB_SNAPSHOT_TTL_MS_FOR_TEST,
 } from "./prService";
 import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/types/prs";
+import { parsePrBrief, prBriefHints } from "../../../shared/prBrief";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -6950,6 +6951,16 @@ describe("prService.land", () => {
   });
 });
 
+/**
+ * The parts of a draft nobody has written yet, as the PR view reads them. The
+ * author is told each one is still a placeholder, so an empty draft cannot be
+ * opened as a finished description without a note.
+ */
+function emptyDraftParts(body: string): string[] {
+  expect(prBriefHints(body).map((hint) => hint.code)).toEqual(["placeholder"]);
+  return (parsePrBrief(body)?.parts ?? []).map((part) => part.kind);
+}
+
 describe("prService.draftDescription", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -6998,7 +7009,7 @@ describe("prService.draftDescription", () => {
     const draft = await (service as any).draftDescription({ laneId: LANE_ID });
 
     expect(aiIntegrationService.draftPrDescription).not.toHaveBeenCalled();
-    expect(draft.body).toContain("## Summary");
+    expect(emptyDraftParts(draft.body)).toEqual(["why", "changed", "evidence", "not_checked"]);
   });
 
   it("treats an empty (non-throwing) model response as a failure when requireAi is set", async () => {
@@ -7043,7 +7054,7 @@ describe("prService.draftDescription", () => {
     const draft = await (service as any).draftDescription({ laneId: LANE_ID });
 
     expect(aiIntegrationService.draftPrDescription).not.toHaveBeenCalled();
-    expect(draft.body).toContain("## Summary");
+    expect(emptyDraftParts(draft.body)).toEqual(["why", "changed", "evidence", "not_checked"]);
   });
 
   it("uses the configured PR Descriptions model when the caller omits model", async () => {

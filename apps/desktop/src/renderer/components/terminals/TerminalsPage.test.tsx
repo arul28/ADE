@@ -1026,6 +1026,33 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("chat-spawned-child");
   });
 
+  it("selects the lane of a chat the list loads only after select-session asked for it", async () => {
+    // A chat created a moment ago is not in the list yet. The jump refreshes
+    // the list; once the chat renders, its lane is selected — not the lane the
+    // stale pre-refresh list implied (none).
+    mockBrowserEvents();
+    const view = render(<TerminalsPage />);
+    await screen.findByTestId("work-view-area");
+
+    window.dispatchEvent(
+      new CustomEvent("ade:work:select-session", {
+        detail: { sessionId: "chat-just-created" },
+      }),
+    );
+    expect(workMocks.fns.refresh).toHaveBeenCalled();
+    expect(workMocks.fns.selectLane).not.toHaveBeenCalled();
+
+    workMocks.currentWork.sessions = [
+      workMocks.makeTerminalSession("chat-just-created", "lane-new", "claude-chat"),
+    ];
+    await act(async () => {});
+    view.rerender(<TerminalsPage />);
+
+    expect(workMocks.fns.selectLane).toHaveBeenCalledWith("lane-new");
+    expect(workMocks.fns.focusSession).toHaveBeenLastCalledWith("chat-just-created");
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenLastCalledWith("chat-just-created");
+  });
+
   it("opens a bindingless foreign select-session target from the union without selecting a local lane", async () => {
     const binding = STUDIO_BINDING;
     const foreign = workMocks.makeTerminalSession("chat-foreign-child", "lane-foreign", "codex-chat");

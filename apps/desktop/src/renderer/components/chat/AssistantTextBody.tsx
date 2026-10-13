@@ -65,6 +65,8 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
       ref={hostRef}
       className="min-w-0"
       data-assistant-output="true"
+      // ⌘F searches and paints this element's text (ChatFindLayer).
+      data-chat-find-text=""
       data-thread-comment-key={commentKey}
       data-stream-text-len={isPerfActive() ? revealedLength : undefined}
     >

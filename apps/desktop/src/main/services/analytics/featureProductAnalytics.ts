@@ -1,3 +1,4 @@
+import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsPropertyValue,
@@ -26,10 +27,13 @@ export type FeatureAnalyticsName =
 export type FeatureAnalyticsAction =
   | "account_created"
   | "account_removed"
+  | "account_signed_out"
   | "default_selected"
   | "balance_changed"
   | "auto_start_changed"
   | "subagent_cache_changed"
+  | "main_cache_changed"
+  | "extra_usage_stop_changed"
   | "credential_stored"
   | "credential_removed"
   | "preset_created"
@@ -135,7 +139,15 @@ export function captureFeatureUsedAnalytics(args: {
 
 type ProviderAccountAnalyticsAction = Extract<
   FeatureAnalyticsAction,
-  "account_created" | "account_removed" | "default_selected" | "balance_changed" | "auto_start_changed" | "subagent_cache_changed"
+  | "account_created"
+  | "account_removed"
+  | "account_signed_out"
+  | "default_selected"
+  | "balance_changed"
+  | "auto_start_changed"
+  | "subagent_cache_changed"
+  | "extra_usage_stop_changed"
+  | "main_cache_changed"
 >;
 
 type ProviderAccountAnalyticsOutcome = Extract<
@@ -371,4 +383,33 @@ export function captureNotificationSentAnalytics(args: {
   outcome: Extract<FeatureAnalyticsOutcome, "completed" | "skipped_budget" | "failed">;
 }): void {
   captureFeatureUsedAnalytics({ ...args, feature: "attention", action: "notification_sent" });
+}
+
+/**
+ * Report which account settings one settings patch changed. Both boundaries
+ * that accept the patch (desktop IPC and the runtime action) call this, so
+ * they cannot report different things. The two Claude settings belong to an
+ * account, so they count only when the patch names one.
+ */
+export function captureProviderAccountSettingsChange(
+  capture: ReturnType<typeof providerAccountAnalyticsCapture>,
+  args: { settings: Readonly<Record<string, unknown>>; provider: unknown; instanceId: string | undefined },
+): void {
+  const { settings, provider, instanceId } = args;
+  if (typeof settings.smartBalance === "boolean") {
+    capture("balance_changed", settings.smartBalance ? "enabled" : "disabled", provider);
+  }
+  if (typeof settings.autoStartWindows === "boolean") {
+    capture("auto_start_changed", settings.autoStartWindows ? "enabled" : "disabled", provider);
+  }
+  if (!instanceId || provider !== "claude") return;
+  if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+    capture("subagent_cache_changed", settings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", provider);
+  }
+  if (Object.hasOwn(settings, "mainPromptCacheTtl")) {
+    capture("main_cache_changed", isClaudePromptCacheTtl(settings.mainPromptCacheTtl) ? "enabled" : "disabled", provider);
+  }
+  if (Object.hasOwn(settings, "onExtraUsage")) {
+    capture("extra_usage_stop_changed", settings.onExtraUsage === "stop" ? "enabled" : "disabled", provider);
+  }
 }

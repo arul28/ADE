@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { exitIfCachedHelper } from "./native-helper-cache.mjs";
 
 // `ade-media`, the macOS demo-video engine (analyze + render), built the way
 // the Mac Desktop driver is: a universal binary in resources/native,
@@ -15,6 +16,8 @@ const desktopRoot = path.resolve(scriptDir, "..");
 const packageRoot = path.join(desktopRoot, "native", "ADEMedia");
 const outputRoot = path.join(desktopRoot, "resources", "native");
 const outputPath = path.join(outputRoot, "ade-media");
+
+exitIfCachedHelper(outputPath);
 
 if (process.platform !== "darwin") {
   console.log("[ade-media] Skipping the demo engine build outside macOS.");

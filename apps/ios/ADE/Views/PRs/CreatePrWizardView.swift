@@ -1,3 +1,4 @@
+import AVKit
 import SwiftUI
 
 // MARK: - Create PR mode (single / integration)
@@ -1246,14 +1247,37 @@ struct CreateIntegrationRequest: Equatable {
 }
 
 struct PrMarkdownRenderer: View {
-  let markdown: String
+  /// Split once when the row is made, not on every draw: a PR thread holds
+  /// one of these for each comment, and they redraw while the list scrolls.
+  private let pieces: [PrDescriptionPiece]
 
-  private var normalizedMarkdown: String {
-    normalizePrMarkdownText(markdown)
+  init(markdown: String) {
+    pieces = prDescriptionPieces(normalizePrMarkdownText(markdown))
   }
 
   var body: some View {
-    WorkMarkdownRenderer(markdown: normalizedMarkdown)
+    // Text with no media is one renderer, exactly as before.
+    if pieces.count == 1, case .markdown(let text) = pieces[0] {
+      markdownText(text)
+    } else {
+      VStack(alignment: .leading, spacing: 10) {
+        ForEach(Array(pieces.enumerated()), id: \.offset) { _, piece in
+          switch piece {
+          case .markdown(let text):
+            markdownText(text)
+          case .media(let media):
+            PrDescriptionMediaView(media: media)
+          case .compare(let sides):
+            PrDescriptionCompareView(sides: sides)
+          }
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  private func markdownText(_ text: String) -> some View {
+    WorkMarkdownRenderer(markdown: text)
       .font(.system(.footnote))
       .foregroundStyle(ADEColor.textPrimary)
       .tint(ADEColor.accent)
@@ -1262,5 +1286,135 @@ struct PrMarkdownRenderer: View {
       // truncate to one line instead of wrapping.
       .fixedSize(horizontal: false, vertical: true)
       .textSelection(.enabled)
+  }
+}
+
+/// A picture or a video from a PR text. A picture loads when it scrolls into
+/// view. A video loads nothing until the reader taps it: a PR can hold several,
+/// and none may start to download on a phone before it is asked for.
+struct PrDescriptionMediaView: View {
+  let media: PrDescriptionMedia
+  @Environment(\.openURL) private var openURL
+  @State private var player: AVPlayer?
+  @State private var videoFailed = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      switch media.kind {
+      case .image:
+        AsyncImage(url: media.url) { phase in
+          switch phase {
+          case .success(let image):
+            image
+              .resizable()
+              .scaledToFit()
+              .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+              // No tap action: a tap happens by accident during a scroll, and
+              // it would leave the app. The menu is a deliberate long press.
+              .contextMenu {
+                Button {
+                  openURL(media.url)
+                } label: {
+                  Label("Open on GitHub", systemImage: "arrow.up.right.square")
+                }
+              }
+              .accessibilityLabel(media.label.isEmpty ? "Picture" : media.label)
+              .accessibilityAction(named: "Open on GitHub") { openURL(media.url) }
+          case .failure:
+            fallbackLink
+          default:
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .fill(ADEColor.textMuted.opacity(0.12))
+              .frame(height: 120)
+              .overlay(ProgressView())
+          }
+        }
+      case .video:
+        if videoFailed {
+          // A private repository or a lost connection: the file did not load.
+          fallbackLink
+        } else if let player {
+          VideoPlayer(player: player)
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .onReceive(player.publisher(for: \.currentItem?.status).receive(on: DispatchQueue.main)) { status in
+              if status == .failed { videoFailed = true }
+            }
+            // A file can load and then fail part way, with no change of status.
+            .onReceive(NotificationCenter.default.publisher(
+              for: .AVPlayerItemFailedToPlayToEndTime,
+              object: player.currentItem
+            ).receive(on: DispatchQueue.main)) { _ in
+              videoFailed = true
+            }
+        } else {
+          Button {
+            let next = AVPlayer(url: media.url)
+            player = next
+            next.play()
+          } label: {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .fill(Color.black.opacity(0.85))
+              .aspectRatio(16.0 / 9.0, contentMode: .fit)
+              .overlay(
+                Image(systemName: "play.circle.fill")
+                  .font(.system(size: 44))
+                  .foregroundStyle(.white.opacity(0.9))
+              )
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel(media.label.isEmpty ? "Play video" : "Play video: \(media.label)")
+        }
+      }
+      if !media.label.isEmpty {
+        Text(media.label)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .onDisappear {
+      player?.pause()
+    }
+  }
+
+  /// Media that did not load (a private repository, no connection).
+  private var fallbackLink: some View {
+    Button {
+      openURL(media.url)
+    } label: {
+      Label(
+        media.label.isEmpty ? (media.kind == .video ? "Open video on GitHub" : "Open picture on GitHub") : media.label,
+        systemImage: "arrow.up.right.square"
+      )
+        .font(.footnote)
+        .frame(minHeight: 44, alignment: .leading)
+    }
+    .tint(ADEColor.accent)
+  }
+}
+
+/// Before and after: side by side when there is room, one under the other on
+/// a phone held upright.
+struct PrDescriptionCompareView: View {
+  let sides: [PrDescriptionCompareSide]
+  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+  var body: some View {
+    let layout = horizontalSizeClass == .regular
+      ? AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+      : AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+    layout {
+      ForEach(Array(sides.enumerated()), id: \.offset) { _, side in
+        VStack(alignment: .leading, spacing: 4) {
+          Text(side.title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+          PrDescriptionMediaView(media: side.media)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
   }
 }

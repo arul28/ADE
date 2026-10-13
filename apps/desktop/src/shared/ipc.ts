@@ -11,6 +11,17 @@ export const IPC = {
   appGetResourceUsage: "ade.app.getResourceUsage",
   appGetRuntimeHealth: "ade.app.getRuntimeHealth",
   appRestartBackgroundService: "ade.app.restartBackgroundService",
+  /** main → window: ask the quit confirmation in ADE's own dialog. */
+  appQuitPrompt: "ade.app.quitPrompt",
+  /** window → main: the prompt is on screen, so main does not ask natively too. */
+  appQuitPromptShown: "ade.app.quitPromptShown",
+  /** main → window: drop the prompt; main is asking natively instead. */
+  appQuitPromptDismiss: "ade.app.quitPromptDismiss",
+  appAnswerQuitPrompt: "ade.app.answerQuitPrompt",
+  appGetAskBeforeQuit: "ade.app.getAskBeforeQuit",
+  appSetAskBeforeQuit: "ade.app.setAskBeforeQuit",
+  appGetBackgroundService: "ade.app.getBackgroundService",
+  appStopBackgroundServiceAndQuit: "ade.app.stopBackgroundServiceAndQuit",
   storageGetPressure: "ade.storage.getPressure",
   storageGetSnapshot: "ade.storage.getSnapshot",
   storageCompressNow: "ade.storage.compressNow",
@@ -112,6 +123,14 @@ export const IPC = {
   recoveryRepairStep: "ade.recovery.repairStep",
   /** Open System Settings at Login Items, where "Allow in the Background" lives (macOS). */
   recoveryOpenBackgroundSettings: "ade.recovery.openBackgroundSettings",
+  /** Put a project's trashed .ade folder back. */
+  recoveryRestoreProjectData: "ade.recovery.restoreProjectData",
+  /** Let a project whose ADE data is gone open with new data. */
+  recoveryStartFresh: "ade.recovery.startFresh",
+  /** Main → renderer: an open project's .ade folder or database was moved or deleted. */
+  recoveryProjectDataMissing: "ade.recovery.projectDataMissing",
+  /** Whether a project's ADE data is missing or swapped (no root: the project that failed to reopen at launch). */
+  recoveryProjectDataStatus: "ade.recovery.projectDataStatus",
   /** The hard reset's plan: every project, lane and machine item it would remove. */
   machineResetPlan: "ade.machineReset.plan",
   /** Hand the hard reset to a detached engine process, then quit. */
@@ -353,6 +372,8 @@ export const IPC = {
   agentChatDraftsUpdate: "ade.agentChat.drafts.update",
   agentChatDraftsClaim: "ade.agentChat.drafts.claim",
   agentChatDraftsSendNow: "ade.agentChat.drafts.sendNow",
+  agentChatClaudePluginUiGet: "ade.agentChat.claudePluginUi.get",
+  agentChatClaudePluginUiAct: "ade.agentChat.claudePluginUi.act",
   agentChatThreadCommentsList: "ade.agentChat.threadComments.list",
   agentChatThreadCommentsCreate: "ade.agentChat.threadComments.create",
   agentChatThreadCommentsUpdate: "ade.agentChat.threadComments.update",
@@ -696,6 +717,7 @@ export const IPC = {
   providerInstancesSetDefault: "ade.providerInstances.setDefault",
   providerInstancesSetAccent: "ade.providerInstances.setAccent",
   providerInstancesDismissReplaced: "ade.providerInstances.dismissReplaced",
+  providerInstancesSignOut: "ade.providerInstances.signOut",
   providerInstancesLoginStart: "ade.providerInstances.loginStart",
   providerInstancesLoginStatus: "ade.providerInstances.loginStatus",
   providerInstancesLoginSubmitCode: "ade.providerInstances.loginSubmitCode",

@@ -195,16 +195,25 @@ rendering nothing or a guess.
 
 ## Compaction divider and activity
 
-Every surface draws one quiet divider row per `compactionId`, the same height as other dividers:
+Every surface draws one line per `compactionId` across the thread: everything above it was replaced
+by a summary. On desktop (`ContextCompactDivider.tsx`) the line is one pill between two rules:
 
-| State | Copy |
+| State | Pill |
 |---|---|
-| Running | `Compacting context · 481k tokens`, plus `· 12 s` after five seconds. The rule lines pulse. |
-| Done | `Context compacted · 481k → 6k · 28 s`, then the trigger: `you asked`, `automatic`, or `ADE (near limit)`, and `· 2nd this chat` from the second compaction on. |
-| Failed | `Compaction failed` (or `Compaction timed out`), plus `· weekly limit on <account>` or `· usage limit on <account>` when the provider said so, and a **Retry** action that sends `/compact`. Hover shows the provider's text. |
+| Running | A spinner, `Compacting`, the token count (`481k`), and the seconds after five seconds. |
+| Done | `Compacted`, then `481k → 6k`. Hover gives who asked (`You asked`, `Automatic`, or ADE near the limit), how long it took, and `2nd time in this chat` from the second compaction on. |
+| Failed | Warning tone: `Compaction failed` (or `Compaction timed out`), plus `— weekly limit on <account>` or `— usage limit on <account>` when the provider said so, and a **Retry** action that sends `/compact`. Hover shows the provider's text. |
 
-A done row with a `summary` expands to show it. Desktop is `ContextCompactDivider.tsx`; iOS is
-`WorkContextCompactDivider.swift`. The copy matches.
+A done pill with a `summary` is a button. It opens a `.kit-card` under the line, "Summary the chat
+continues from", with the provider's wrapper tags removed and a fixed height that scrolls.
+
+A turn that only ran `/compact` is drawn as that line and nothing else (`AgentChatMessageList.tsx`):
+the command is a quiet right-aligned chip instead of a message bubble, the working indicator stays
+hidden while it runs, and the finished turn gets no turn-end line. Every provider goes through this
+one component (`context_compact`, and Codex's `codex_context_compaction` mapped onto it).
+
+iOS is `WorkContextCompactDivider.swift`. It still draws the earlier one-line text divider
+(`Context compacted · 481k → 6k · 28 s`, then the trigger).
 
 `sessionActivityDetector` sets the system activity `compacting` while a compaction runs ("Compacting… · 481k" on
 the Work row and sidebar), restores the prior activity when it completes, and sets `compaction_failed`
@@ -901,6 +910,17 @@ implements a two-layer transform:
    entries — a turn whose bursts were broken up by prose used to stack six
    near-identical panels through one reply. Assistant narration is unchanged.
 
+   **The live turn's tools.** The working status names the running tool and
+   its dropdown lists the open turn's tools (`deriveTranscriptToolActivity` in
+   `chatTranscriptPresentation.ts`). The open turn ends at `done`, or at a user
+   message that starts a new one. A message that carries the open turn's id
+   (Codex's `!` shell command sent mid-turn) never starts one. A steer the live
+   turn took in (`accepted`, `inline`, `processed`, `unprocessed`) or that went
+   nowhere (`failed`) never starts one either, so it does not cut the
+   activity. The rule is `userMessageStartsTurn` in `shared/chatTranscript.ts`,
+   which the `ade code` TUI uses too. A queued steer is still in the composer
+   and is ignored.
+
    **Desktop and hosted web** implement this in `AgentChatMessageList` through
    `ChatTurnWorkSummary` on the done divider: one expandable `N tools · M files`
    row sits immediately above the turn's existing time/usage cutout, left-aligned
@@ -940,7 +960,11 @@ implements a two-layer transform:
    errors, the `attached:` / `target:` lines from `shared/userBrowserLabels.ts`,
    `--json` results); the summary returns null
    whenever it is unsure (unknown verb, two acting commands in one call, shell
-   control flow), which keeps the plain shell row.
+   control flow), which keeps the plain shell row. The tokenizer splits shell
+   redirections (`2>&1`, `>out`, `> out`, `&>log`, `*>$null`, and `snapshot>out`
+   with no space) off the words, but only the unquoted ones, so a redirection
+   is never a flag's value or a click target (`click --text 2>&1` has none), and
+   a quoted `"<x>"` stays an argument.
 
    A row names the app it touched ("in TextEdit"). A surface names itself only
    when no app says where: a screen or simulator for a screen-level action
@@ -963,9 +987,11 @@ implements a two-layer transform:
    that enlarges in place. A later `proof publish` adds "· posted to PR #N" to
    the lines whose records it reports posted, instead of a row of its own.
 
-   The latest action of a run draws in full (action icon, the line, a status
-   icon and the failure reason); earlier ones are one muted line with a status
-   dot (amber when unconfirmed, red when it failed). A running action shimmers
+   The latest action of a run draws in full: its line in a stronger colour, a
+   status icon, and the failure reason under it. Earlier ones are one muted
+   line with a status dot (amber when unconfirmed, red when it failed). Every
+   line is the same size, so the newest stands out by colour and status icon,
+   not by size. A running action shimmers
    as one sweep across the line. App icons come from `app.getAppIcon` (macOS,
    cached per name in both processes); browsers use the installed-browser
    icons; everything else draws a glyph. In the tools list the same commands
@@ -1069,7 +1095,7 @@ implements a two-layer transform:
      the row's own prose, so replays reproduce it.
    - **Only history folds.** Thought rows, interim narration text, a Codex
      plan-mode proposal card, finished activity bundles, the Turn details row,
-     spawned/completed chips, compaction dividers, goal pills, the host-sleep
+     spawned chips, completion lines, compaction dividers, goal pills, the host-sleep
      chip, a finished stall card, and warning, info, hook, and config notices
      (including a usage notice marked `warning`/`info`) fold: they have nothing
      to act on. These stay visible below the fold row, in order, above the

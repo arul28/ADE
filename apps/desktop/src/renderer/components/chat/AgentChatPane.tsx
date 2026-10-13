@@ -165,6 +165,9 @@ import {
   setThreadComments,
   useThreadComments,
 } from "./threadCommentsStore";
+import { ClaudeModUi } from "./ClaudeModUi";
+import { useClaudeModsPrompt } from "./useClaudeModsPrompt";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { threadReviewCountLabel } from "../../../shared/threadComments";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
@@ -182,6 +185,7 @@ import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
+import { CompactFirstChip } from "./CompactFirstChip";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
@@ -2213,6 +2217,36 @@ function readLastUsedModelId(): string | null {
     // ignore
   }
   return migrateOldPrefs();
+}
+
+/**
+ * Backoff for re-reading a locked chat's summary after a read came back empty.
+ * The last delay repeats: a finished chat gets no events that would ask again,
+ * so giving up would leave it on "New chat" with no model while it stays open.
+ */
+const LOCKED_SUMMARY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000] as const;
+/**
+ * How long "not found" has to persist before the held summary is dropped. A
+ * chat can be briefly unknown while a project opens or a handoff lands, so one
+ * empty answer is not proof it was deleted.
+ */
+const LOCKED_SUMMARY_MISSING_CONFIRM_MS = 60_000;
+
+/**
+ * Last summary read for each locked chat, kept across pane mounts. The summary
+ * is the composer's only source of the chat's model, and a fresh mount (a chat
+ * switch, a Focus grid page) starts empty; on a busy brain the first read can
+ * fail for a while, which left a running chat on "Select model".
+ */
+const lastLockedSessionSummaryById = new Map<string, AgentChatSessionSummary>();
+const LAST_LOCKED_SESSION_SUMMARY_LIMIT = 200;
+function rememberLockedSessionSummary(summary: AgentChatSessionSummary): void {
+  lastLockedSessionSummaryById.delete(summary.sessionId);
+  lastLockedSessionSummaryById.set(summary.sessionId, summary);
+  if (lastLockedSessionSummaryById.size > LAST_LOCKED_SESSION_SUMMARY_LIMIT) {
+    const oldest = lastLockedSessionSummaryById.keys().next().value;
+    if (oldest != null) lastLockedSessionSummaryById.delete(oldest);
+  }
 }
 
 /** Last-used model, then the app-wide default, then whatever is listed first. */
@@ -4684,6 +4718,12 @@ export function AgentChatPane({
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
   const seededInitialSummaryRef = useRef(false);
+  /** Pending re-read of the locked chat's summary; `missingSince` is when "not found" began. */
+  const lockedSummaryRetryRef = useRef<{ attempt: number; missingSince: number | null; timer: number | null }>({
+    attempt: 0,
+    missingSince: null,
+    timer: null,
+  });
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
   const draftLaunchConfigHydratedRef = useRef<string | null>(null);
@@ -4776,6 +4816,15 @@ export function AgentChatPane({
   // thread comments are a project-runtime action the personal scope lacks.
   const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning && !personalScope ? composerSessionId : null;
   const threadComments = useThreadComments(threadCommentsSessionId, chatRuntimePin);
+  // Mod UI is for a readable Claude project chat (the thread-comments gate)
+  // in the desktop window: the hosted client draws none, and a subagent view
+  // is another agent's transcript.
+  const claudeModUiSessionId = selectedSession?.provider === "claude" && !subagentView && !isWebClientMode()
+    ? threadCommentsSessionId
+    : null;
+  // The offer reads the setting and the plugins of this tab's own project, so a
+  // chat pinned to another runtime (another machine, another open project) gets none.
+  useClaudeModsPrompt(chatRuntimePin ? null : claudeModUiSessionId);
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;
@@ -5086,7 +5135,7 @@ export function AgentChatPane({
     : EMPTY_CHAT_EVENTS;
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
-  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId);
+  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCache);
   const latestCompactionKey = useMemo(() => latestCompactionKeyOf(selectedEvents), [selectedEvents]);
 
   const selectedSyncPending = renderedSessionId ? syncPendingBySession[renderedSessionId] === true : false;
@@ -7110,6 +7159,7 @@ export function AgentChatPane({
     provider: selectedSession?.provider ?? null,
     status: selectedSession?.status ?? null,
     idleSinceAt: selectedSession?.idleSinceAt,
+    cache: selectedSession?.promptCache,
     awaitingInput: selectedSessionAwaitingInput,
   });
 
@@ -7344,6 +7394,39 @@ export function AgentChatPane({
     invalidateAgentChatSessionListCache(laneId ? { laneId } : undefined);
   }, [laneId]);
 
+  /** Which chat a summary read may still write for; null once the pane let go of it. */
+  const lockedSummarySessionRef = useRef<string | null>(lockSessionId ?? null);
+  const resetLockedSummaryRetry = useCallback(() => {
+    const retry = lockedSummaryRetryRef.current;
+    if (retry.timer != null) window.clearTimeout(retry.timer);
+    lockedSummaryRetryRef.current = { attempt: 0, missingSince: null, timer: null };
+  }, []);
+  /**
+   * Arm the next summary read after one that came back empty. Returns whether
+   * the summary already held should be kept meanwhile: always for a failure,
+   * and for "not found" until it has persisted past the confirm window.
+   */
+  const scheduleLockedSummaryRetry = useCallback((outcome: "failed" | "missing"): boolean => {
+    const retry = lockedSummaryRetryRef.current;
+    if (retry.timer != null) window.clearTimeout(retry.timer);
+    retry.timer = null;
+    if (outcome === "missing") {
+      const now = Date.now();
+      retry.missingSince ??= now;
+      if (now - retry.missingSince >= LOCKED_SUMMARY_MISSING_CONFIRM_MS) return false;
+    } else {
+      // An unreachable brain says nothing about whether the chat exists.
+      retry.missingSince = null;
+    }
+    const delay = LOCKED_SUMMARY_RETRY_DELAYS_MS[Math.min(retry.attempt, LOCKED_SUMMARY_RETRY_DELAYS_MS.length - 1)]!;
+    retry.attempt += 1;
+    retry.timer = window.setTimeout(() => {
+      retry.timer = null;
+      void refreshLockedSessionSummaryRef.current().catch(() => undefined);
+    }, delay);
+    return true;
+  }, []);
+
   const refreshLockedSessionSummary = useCallback(async () => {
     if (!lockSessionId) {
       setSessions([]);
@@ -7361,14 +7444,48 @@ export function AgentChatPane({
     }
 
     let summary: AgentChatSessionSummary | null;
+    let readFailed = false;
     if (!seededInitialSummaryRef.current && initialSessionSummary?.sessionId === lockSessionId) {
       summary = initialSessionSummary;
       seededInitialSummaryRef.current = true;
     } else {
-      summary = await agentChatApiRef.current.getSummary({ sessionId: lockSessionId }, chatRuntimePinRef.current);
+      try {
+        summary = await agentChatApiRef.current.getSummary({ sessionId: lockSessionId }, chatRuntimePinRef.current);
+      } catch {
+        summary = null;
+        readFailed = true;
+      }
     }
+    // The pane moved to another chat (or unmounted) while this read was in
+    // flight; its answer belongs to nobody on screen now.
+    if (lockedSummarySessionRef.current !== lockSessionId) return summary;
 
-    setSessions(summary ? [summary] : []);
+    // The summary is the only source of this chat's title and model. A failed
+    // read (the brain restarting, a slow warm-up) keeps the summary already
+    // held and asks again; clearing it left a finished chat on "New chat" with
+    // "Select model", because nothing else would ask. A "not found" is
+    // believed once it has lasted the confirm window, so a deleted chat clears.
+    const keepHeld = summary == null && scheduleLockedSummaryRetry(readFailed ? "failed" : "missing");
+    if (summary) {
+      resetLockedSummaryRetry();
+      rememberLockedSessionSummary(summary);
+    } else if (!keepHeld) {
+      lastLockedSessionSummaryById.delete(lockSessionId);
+    }
+    const remembered = keepHeld ? lastLockedSessionSummaryById.get(lockSessionId) ?? null : null;
+    setSessions((prev) => {
+      if (summary) return [summary];
+      if (!keepHeld) return [];
+      if (prev[0]?.sessionId === lockSessionId) return prev;
+      return remembered ? [remembered] : [];
+    });
+    if (keepHeld) {
+      // The held summary still describes the turn; an empty read must not
+      // flip a running chat's controls to idle.
+      draftSelectionLockedRef.current = false;
+      setSelectedSessionId(lockSessionId);
+      return null;
+    }
     setTurnActiveBySession((prev) => {
       const residentEvents = eventsBySessionRef.current[lockSessionId] ?? [];
       const nextRunning = residentEvents.length > 0
@@ -7381,7 +7498,20 @@ export function AgentChatPane({
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
     return summary;
-  }, [initialSessionSummary, lockSessionId, setSelectedSessionId]);
+  }, [initialSessionSummary, lockSessionId, resetLockedSummaryRetry, scheduleLockedSummaryRetry, setSelectedSessionId]);
+  const refreshLockedSessionSummaryRef = useRef(refreshLockedSessionSummary);
+  refreshLockedSessionSummaryRef.current = refreshLockedSessionSummary;
+  // Set during render, so a read in flight across a chat switch is already
+  // stale by the time it resolves, even before the effects below run.
+  lockedSummarySessionRef.current = lockSessionId ?? null;
+  // A chat switch or unmount drops the retry: the next chat starts its own.
+  useEffect(() => {
+    lockedSummarySessionRef.current = lockSessionId ?? null;
+    return () => {
+      lockedSummarySessionRef.current = null;
+      resetLockedSummaryRetry();
+    };
+  }, [lockSessionId, resetLockedSummaryRetry]);
 
   const refreshSessions = useCallback(async (options?: { force?: boolean }) => {
     if (lockedSingleSessionMode && lockSessionId) {
@@ -8062,7 +8192,16 @@ export function AgentChatPane({
   }, [lockSessionId, setSelectedSessionId]);
 
   useLayoutEffect(() => {
-    if (!lockedSingleSessionMode || !lockSessionId || initialSessionSummary?.sessionId !== lockSessionId) return;
+    if (!lockedSingleSessionMode || !lockSessionId) return;
+    if (initialSessionSummary?.sessionId !== lockSessionId) {
+      // No summary handed in: show the one this chat had last time it was
+      // open until the fresh read lands, so its model is known meanwhile.
+      const remembered = lastLockedSessionSummaryById.get(lockSessionId);
+      if (remembered) {
+        setSessions((prev) => (prev[0]?.sessionId === lockSessionId ? prev : [remembered]));
+      }
+      return;
+    }
     setSessions([initialSessionSummary]);
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
@@ -8301,10 +8440,13 @@ export function AgentChatPane({
     if (!sessionsApi?.onChanged || !sessionsApi.get || !chatTerminalVisible) return undefined;
 
     let disposed = false;
+    // The chat's agent opens its terminals on the chat's machine, so that is
+    // the machine to hear them from and read them on.
+    const pin = chatRuntimePinRef.current;
     const revealCreatedTerminal = async (sessionId: string) => {
       let session: TerminalSessionDetail | null = null;
       try {
-        session = await sessionsApi.get(sessionId);
+        session = await sessionsApi.get(sessionId, pin);
       } catch {
         return;
       }
@@ -8329,12 +8471,12 @@ export function AgentChatPane({
     const unsubscribe = sessionsApi.onChanged((event) => {
       if (event.reason !== "created") return;
       void revealCreatedTerminal(event.sessionId);
-    });
+    }, pin);
     return () => {
       disposed = true;
       unsubscribe();
     };
-  }, [chatTerminalVisible, hasExternalTerminalPane, laneId, openTerminalPanel]);
+  }, [chatRuntimePinKey, chatTerminalVisible, hasExternalTerminalPane, laneId, openTerminalPanel]);
 
   // Is this simulator session about the chat this pane is showing? Unscoped
   // events only apply to the active tile. Hoisted out of the subscription below
@@ -13210,7 +13352,11 @@ export function AgentChatPane({
       setError(constrainedModelSelectionError);
       return;
     }
-    if (!modelId) {
+    // A message into a running turn is a steer, which the session's own model
+    // handles; the picker is locked mid-turn, so requiring a pick here would
+    // leave no way to steer while the chat's summary is still loading.
+    const steeringActiveTurn = Boolean(selectedSessionId && turnActiveBySession[selectedSessionId]);
+    if (!modelId && !steeringActiveTurn) {
       setError("Select a model first");
       return;
     }
@@ -15662,6 +15808,7 @@ export function AgentChatPane({
         </>}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
+        promptCache={selectedSession?.promptCache ?? null}
         lifecycleSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
@@ -15906,11 +16053,23 @@ export function AgentChatPane({
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
   // it only runs once a chat has sat an hour, when no deltas stream.
   const idleCompactOffer = compactionIdleMode != null && compactFirst.idleWindowOpen && !turnActive && !pendingInput && measuredContextTokens != null
-    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, mode: compactionIdleMode, now: compactFirst.now })
+    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, cache: selectedSession?.promptCache, minTokens: selectedSession?.compactFirstMinTokens, mode: compactionIdleMode, now: compactFirst.now })
     : null;
-  const compactFirstEnabled = compactFirst.choice?.sessionId === selectedSessionId
-    ? compactFirst.choice.value : selectedSession?.compactionIdleMode === "always";
+  const compactFirstChoice = compactFirst.choice?.sessionId === selectedSessionId ? compactFirst.choice : null;
+  const compactFirstEnabled = compactFirstChoice ? compactFirstChoice.value : selectedSession?.compactionIdleMode === "always";
   compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
+  const compactFirstChip = idleCompactOffer && selectedSessionId && !compactFirstChoice?.dismissed && !parallelChatMode ? (
+    <CompactFirstChip
+      offer={idleCompactOffer}
+      enabled={compactFirstEnabled}
+      onToggle={() => compactFirst.setChoice({ sessionId: selectedSessionId, value: !compactFirstEnabled })}
+      onDismiss={() => compactFirst.setChoice({ sessionId: selectedSessionId, value: false, dismissed: true })}
+    />
+  ) : null;
+  // What Claude mods draw for the open chat, on top of the prompt box.
+  const claudeModUi = claudeModUiSessionId
+    ? <ClaudeModUi sessionId={claudeModUiSessionId} pin={chatRuntimePin} />
+    : null;
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
@@ -15957,9 +16116,6 @@ export function AgentChatPane({
             cursorCloudServiceTier={cursorCloudServiceTier}
             onCursorCloudServiceTierChange={handleCursorCloudServiceTierChange}
             usageViewModel={selectedUsageViewModel}
-            compactFirstOffer={idleCompactOffer}
-            compactFirstEnabled={compactFirstEnabled}
-            onCompactFirstChange={(value) => { if (selectedSessionId) compactFirst.setChoice({ sessionId: selectedSessionId, value }); }}
             compactionPulse={contextCompactionPulse}
             onCompactContext={compactContext}
             compactSessionProvider={selectedSession?.provider ?? null}
@@ -16400,6 +16556,7 @@ export function AgentChatPane({
       <StatusStrip className="min-w-0 flex-1">
         {lifecyclePill}
         <LaneBranchComposerChip laneId={laneId} />
+        {compactFirstChip}
         {sessionDelta ? (
           <StatusChip
             tone="neutral"
@@ -16641,6 +16798,7 @@ export function AgentChatPane({
         </div>
       ) : null}
       {usageLimitPill}
+      {claudeModUi}
       {composerElement}
     </div>
   );
@@ -17069,6 +17227,7 @@ export function AgentChatPane({
                         {crossMachineMoveBanner}
                         {crossMachineArrivalBanner}
                         {usageLimitPill}
+                        {claudeModUi}
                         {composerElement}
                       </div>
                     ) : null}

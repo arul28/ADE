@@ -1216,6 +1216,41 @@ describe("preload Apple device input routing", () => {
     });
   });
 
+  it.each([["local", "git"], ["remote", "git"], ["local", "file"], ["remote", "file"]])("drops a late %s %s read after switching projects", async (kind, domain) => {
+    const binding = kind === "local"
+      ? { kind: "local", key: "local:/a", rootPath: "/a", displayName: "A" }
+      : { kind: "remote", key: "remote:target:project-a", rootPath: "/a", displayName: "A", targetId: "target", projectId: "project-a", runtimeName: "Remote" };
+    const actionChannel = kind === "local" ? IPC.localRuntimeCallAction : IPC.remoteRuntimeCallAction;
+    let resolveRead!: (value: unknown) => void;
+    let readStarted!: () => void;
+    const started = new Promise<void>((resolve) => { readStarted = resolve; });
+    const response = new Promise((resolve) => { resolveRead = resolve; });
+    const invoke = vi.fn(async (channel: string, _args?: unknown) => {
+      if (channel === IPC.appGetWindowSession) return { binding };
+      if (channel === actionChannel) { readStarted(); return response; }
+      return undefined;
+    });
+    const on = vi.fn();
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld: (_name: string, value: unknown) => { (globalThis as any).__adeBridge = value; } },
+      ipcRenderer: { invoke, on, removeListener: vi.fn() },
+      webFrame: { getZoomLevel: () => 0, setZoomLevel: vi.fn(), getZoomFactor: () => 1 },
+    }));
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    bridge.app.onProjectBindingChanged(vi.fn());
+    const read = domain === "file"
+      ? bridge.files.quickOpen({ query: "src" })
+      : bridge.git.getSyncStatus({ laneId: "lane-a" });
+    const rejected = expect(read).rejects.toThrow(/Project is switching/);
+    await started;
+    const bindingListener = on.mock.calls.find(([channel]) => channel === IPC.appProjectBindingChanged)?.[1];
+    bindingListener({}, { kind: "local", key: "local:/b", rootPath: "/b", displayName: "B" });
+    resolveRead({ result: { laneId: "lane-a" } });
+    await rejected;
+    expect(invoke.mock.calls.filter(([channel]) => channel === actionChannel).map(([, args]) => kind === "local" ? (args as any).rootPath : (args as any).projectId)).toEqual([kind === "local" ? "/a" : "project-a"]);
+  });
+
   it("does not let stale window-session refreshes overwrite a newer project binding", async () => {
     const oldLocalBinding = {
       kind: "local",
@@ -6416,13 +6451,26 @@ describe("preload Apple device input routing", () => {
     await pendingSwitch;
   });
 
-  it("blocks private drafts reads and mutations while a project switch is in flight", async () => {
+  it("holds a private drafts read until a project switch ends, and refuses draft writes during it", async () => {
     let resolveSwitch!: (project: unknown) => void;
     const switchPromise = new Promise((resolve) => {
       resolveSwitch = resolve;
     });
-    const invoke = vi.fn(async (channel: string) => {
+    const runtimeCalls: Array<{ rootPath?: string; action?: string }> = [];
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
       if (channel === IPC.projectSwitchToPath) return switchPromise;
+      if (channel === IPC.localRuntimeCallAction) {
+        const request = arg as { rootPath?: string; request?: { action?: string } };
+        runtimeCalls.push({ rootPath: request.rootPath, action: request.request?.action });
+        return { result: [] };
+      }
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/next", displayName: "Next", baseRef: "main" },
+          binding: { kind: "local", key: "local:/next", rootPath: "/next", displayName: "Next" },
+        };
+      }
       throw new Error(`unexpected IPC: ${channel}`);
     });
     const on = vi.fn();
@@ -6447,15 +6495,65 @@ describe("preload Apple device input routing", () => {
     const bridge = (globalThis as any).__adeBridge;
     const pendingSwitch = bridge.project.switchToPath("/next");
 
-    await expect(bridge.agentChat.drafts.list()).rejects.toThrow(/Project is switching/i);
+    let listSettled = false;
+    const pendingList = bridge.agentChat.drafts.list().finally(() => {
+      listSettled = true;
+    });
     await expect(bridge.agentChat.drafts.create({ text: "Keep this private" })).rejects.toThrow(/Project is switching/i);
     await expect(bridge.agentChat.drafts.delete({ id: "stash-1" })).rejects.toThrow(/Project is switching/i);
+    expect(listSettled).toBe(false);
+    expect(runtimeCalls).toEqual([]);
+    // Never the window's own process database: drafts belong to the chat's host.
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsCreate, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsDelete, expect.anything());
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;
+    await expect(pendingList).resolves.toEqual([]);
+    expect(runtimeCalls).toEqual([{ rootPath: "/next", action: "listDrafts" }]);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+  });
+
+  it("fails a private drafts read with the switching error when a project switch never ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const invoke = vi.fn(async (channel: string) => {
+        // A switch that hangs: the read must not wait on it forever.
+        if (channel === IPC.projectSwitchToPath) return new Promise(() => {});
+        throw new Error(`unexpected IPC: ${channel}`);
+      });
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+      const bridge = (globalThis as any).__adeBridge;
+      void bridge.project.switchToPath("/next");
+
+      const pendingList = bridge.agentChat.drafts.list();
+      const outcome = expect(pendingList).rejects.toThrow(/Project is switching.*reading project state/i);
+      await vi.advanceTimersByTimeAsync(59_000);
+      let settled = false;
+      void pendingList.then(() => { settled = true; }, () => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await outcome;
+      expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatDraftsList);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("routes local runtime reads to the target project while a project switch is in flight", async () => {
@@ -6519,18 +6617,21 @@ describe("preload Apple device input routing", () => {
 
     await expect(bridge.lanes.list()).resolves.toEqual([]);
     await expect(bridge.iosSimulator.resolvePreviewMatch({ projectRoot: "/next" })).resolves.toEqual([]);
+    // A read whose name says nothing about reading: the simulator picker's list.
+    await expect(bridge.iosSimulator.deviceList({ installed: true })).resolves.toEqual([]);
     expect(invoke).not.toHaveBeenCalledWith(IPC.lanesList, expect.anything());
-    expect(localRuntimeRoots).toEqual(["/next", "/next"]);
+    expect(localRuntimeRoots).toEqual(["/next", "/next", "/next"]);
     expect(localRuntimeRequests).toEqual([
       { domain: "lane", action: "list" },
       { domain: "ios_simulator", action: "resolvePreviewMatch" },
+      { domain: "ios_simulator", action: "deviceList" },
     ]);
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;
 
     await expect(bridge.lanes.list()).resolves.toEqual([]);
-    expect(localRuntimeRoots).toEqual(["/next", "/next", "/next"]);
+    expect(localRuntimeRoots).toEqual(["/next", "/next", "/next", "/next"]);
   });
 
   it("rejects empty project switch paths before updating local runtime binding", async () => {

@@ -89,6 +89,10 @@ function makeEnv(
     CLERK_ISSUER: ISSUER,
     CLERK_OAUTH_CLIENT_ID: OAUTH_CLIENT_ID,
     DIAGNOSTICS: new FakeR2Bucket(),
+    // The cron handler also refreshes the model registry, which fetches public
+    // sites. Off here so these tests never touch the network; the registry has
+    // its own tests with a faked fetch.
+    MODEL_REGISTRY_REFRESH: "0",
     ...overrides,
   } as unknown as DiagnosticsEnv & { DIAGNOSTICS: FakeR2Bucket; DB: FakeD1Database };
 }

@@ -3184,6 +3184,69 @@ describe("AgentChatComposer", () => {
     }
   });
 
+  it.each([
+    {
+      name: "fits a photo pasted from another app through the clipboard reader",
+      droppedPath: "",
+      clipboardImage: { data: "fitted-jpeg", filename: "clipboard.jpg", mimeType: "image/jpeg" },
+      expectReader: true,
+      expected: { attachedPath: "/tmp/ade-clipboard.jpg", error: null },
+    },
+    {
+      name: "falls back to the pasted file when the clipboard holds no picture",
+      droppedPath: "",
+      clipboardImage: null,
+      expectReader: true,
+      expected: { attachedPath: null, error: /too large/i },
+    },
+    {
+      name: "streams a big image file copied in Finder from its path",
+      droppedPath: "/Users/me/Pictures/huge.png",
+      clipboardImage: null,
+      expectReader: false,
+      expected: { attachedPath: "/staged/huge.png", error: null },
+    },
+  ])("oversized image paste: $name", async ({ droppedPath, clipboardImage, expectReader, expected }) => {
+    // A photo copied out of Messages reaches the paste event as a PNG the
+    // browser re-encoded, often several times the 10 MB pasted-bytes ceiling.
+    const readClipboardImage = vi.fn().mockResolvedValue(clipboardImage);
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/ade-clipboard.jpg" });
+    const stageFileAttachment = vi.fn().mockResolvedValue({ path: "/staged/huge.png" });
+    (window as any).ade = {
+      app: { readClipboardImage },
+      project: { getDroppedPath: vi.fn(() => droppedPath) },
+      agentChat: {
+        saveTempAttachment,
+        stageFileAttachment,
+        getAttachmentStagingMode: vi.fn().mockResolvedValue({ mode: "copy", maxBytes: 50 * 1024 * 1024 }),
+      },
+    };
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const file = new File([new Uint8Array([1, 2, 3])], "image.png", { type: "image/png" });
+    Object.defineProperty(file, "size", { configurable: true, value: 18 * 1024 * 1024 });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    });
+
+    fireEvent.paste(screen.getByPlaceholderText("Type to vibecode..."), {
+      clipboardData: { files: [file], items: [], getData: vi.fn(() => "") },
+    });
+
+    if (expected.attachedPath) {
+      await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ path: expected.attachedPath, type: "image" }),
+      ));
+    } else {
+      expect(await screen.findByText(expected.error!)).toBeTruthy();
+      expect(props.onAddAttachment).not.toHaveBeenCalled();
+    }
+    expect(readClipboardImage).toHaveBeenCalledTimes(expectReader ? 1 : 0);
+    if (clipboardImage) {
+      expect(saveTempAttachment).toHaveBeenCalledWith({ data: "fitted-jpeg", filename: "clipboard.jpg" }, null);
+    }
+  });
+
   it("shows a pasted image preview while the temp attachment is still saving", async () => {
     const createObjectURL = vi.fn().mockReturnValue("blob:ade-paste-preview");
     const revokeObjectURL = vi.fn();

@@ -260,6 +260,26 @@ describe("buildDigestTimelineModel", () => {
     expect(model.items.map((item) => item.kind)).toEqual(["push", "bot-group", "push", "push"]);
   });
 
+  it("puts what needs the reader above the description: failing checks and open threads, and nothing when neither waits", () => {
+    const description: PrTimelineEvent = { id: "desc", type: "description", timestamp: "2026-01-01T00:00:00Z", author: "dev", avatarUrl: null, body: "The text." };
+    const thread: PrTimelineEvent = {
+      id: "t1", type: "review_thread", timestamp: "2026-01-01T02:00:00Z", author: "octocat", avatarUrl: null,
+      threadId: "t1", path: "a.ts", line: 3, startLine: null, originalLine: null, originalStartLine: null, diffSide: null,
+      isResolved: false, isOutdated: false, commentCount: 1, firstCommentBody: "why?", comments: [],
+    };
+    const events = [description, push("c1", "aaaaaaa1", "2026-01-01T01:00:00Z"), thread];
+    const order = (model: ReturnType<typeof buildDigestTimelineModel>) => model.items.map((item) => (item.kind === "event" ? item.event.id : item.kind));
+
+    const both = buildDigestTimelineModel(events, { failingChecks: ["test-desktop (1)", "lint"] });
+    expect(order(both)).toEqual(["attention", "desc", "push", "t1"]);
+    const attention = both.items[0]!;
+    expect(attention.kind === "attention" && [attention.failingChecks, attention.items.map((entry) => entry.entry.id)]).toEqual([["test-desktop (1)", "lint"], ["t1"]]);
+
+    // Failing checks alone are enough; a resolved thread and green checks are not.
+    expect(order(buildDigestTimelineModel([description], { failingChecks: ["lint"] }))).toEqual(["attention", "desc"]);
+    expect(order(buildDigestTimelineModel([description, { ...thread, isResolved: true } as PrTimelineEvent]))).toEqual(["desc", "t1"]);
+  });
+
   it("keeps people as full rows and lifecycle events in their section", () => {
     const model = buildDigestTimelineModel([
       push("c1", "aaaaaaa1", "2026-01-01T00:00:00Z"),

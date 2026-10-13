@@ -1,6 +1,7 @@
 import {
   forwardRef,
   useCallback,
+  useContext,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -40,6 +41,9 @@ import { PrUserAvatar } from "./PrUserAvatar";
 import { BotGroupRow, DigestRowShell, NeedsAttentionBlock, PushDivider, reviewStateIcon } from "./PrTimelineDigestRows";
 import type { PrNeedsAttentionItem } from "../../../../shared/prConversationDigest";
 import type { DigestTimelineModel } from "./prDigestTimelineModel";
+import { PrMarkdownEnvContext, PrQuoteSourceContext, type PrChatQuote } from "./prMarkdownContext";
+import { PrAddToChatButton } from "./PrProofMedia";
+import { PR_QUOTE_FROM_ATTRIBUTE, PrSelectionToolbar } from "./PrSelectionToolbar";
 
 /* ══════════════════ Types ══════════════════ */
 
@@ -60,6 +64,10 @@ export type PrTimelineProps = {
   digest: DigestTimelineModel;
   /** "Fix in chat" on a Needs-attention row. Omitted hides the button. */
   onFixInChat?: (item: PrNeedsAttentionItem) => void;
+  /** "Fix in chat" on the failing-checks row. Omitted hides the button. */
+  onFixChecksInChat?: () => void;
+  /** A click on the failing-checks row. */
+  onOpenChecks?: () => void;
   /** Bottom padding so floating controls never cover the last row. */
   bottomInset?: number;
 };
@@ -146,11 +154,14 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
     onVisibleEventChange,
     digest,
     onFixInChat,
+    onFixChecksInChat,
+    onOpenChecks,
     bottomInset = 0,
   },
   ref,
 ) {
   const mutationViewerLogin = writeViewerLogin !== undefined ? writeViewerLogin : viewerLogin;
+  const addToChat = useContext(PrMarkdownEnvContext)?.onAddToChat;
 
   const renderItems = digest.items;
 
@@ -323,7 +334,13 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
               if (item.kind === "attention") {
                 return (
                   <DigestRowShell key={item.id} index={virtualRow.index} start={virtualRow.start} measure={virtualizer.measureElement}>
-                    <NeedsAttentionBlock item={item} onOpen={focusEvent} onFixInChat={onFixInChat} />
+                    <NeedsAttentionBlock
+                      item={item}
+                      onOpen={focusEvent}
+                      onFixInChat={onFixInChat}
+                      onFixChecksInChat={onFixChecksInChat}
+                      onOpenChecks={onOpenChecks}
+                    />
                   </DigestRowShell>
                 );
               }
@@ -380,6 +397,7 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
         )}
         {bottomInset > 0 ? <div aria-hidden style={{ height: bottomInset }} /> : null}
       </div>
+      {addToChat ? <PrSelectionToolbar rootRef={parentRef} onAddToChat={addToChat} /> : null}
     </div>
   );
 });
@@ -491,7 +509,52 @@ type TimelineRowContentProps = {
   onFocus: (id: string) => void;
 };
 
-function TimelineRowContent({
+/** What "Add to chat" quotes for a row, or null for a row with nothing to quote. */
+function rowQuote(event: PrTimelineEvent): PrChatQuote | null {
+  if (event.type === "issue_comment") {
+    return event.body?.trim() ? { text: event.body, from: `a comment by ${event.author ?? "someone"}` } : null;
+  }
+  if (event.type === "review") {
+    return event.body?.trim() ? { text: event.body, from: `a review by ${event.author ?? "a reviewer"}` } : null;
+  }
+  if (event.type === "review_thread") {
+    const comments = (event.comments ?? []).filter((comment) => comment.body?.trim());
+    const text = comments.length
+      ? comments.map((comment) => `${comment.author ?? "someone"}: ${comment.body}`).join("\n\n")
+      : event.firstCommentBody?.trim() ?? "";
+    if (!text) return null;
+    const line = event.line ?? event.originalLine;
+    const where = event.path ? ` on ${event.path}${line ? `:${line}` : ""}` : "";
+    return { text, from: `a review thread${where}${event.isResolved ? " (resolved)" : ""}` };
+  }
+  return null;
+}
+
+/**
+ * A row, with the place it has in the PR: selected text inside it is quoted
+ * with that place, and a comment, review or thread shows "Add to chat" on hover.
+ */
+function TimelineRowContent(props: TimelineRowContentProps) {
+  const { event, near } = props;
+  const addToChat = useContext(PrMarkdownEnvContext)?.onAddToChat;
+  const quote = useMemo(() => rowQuote(event), [event]);
+  const from = event.type === "description" ? "the description" : quote?.from ?? null;
+  const body = <TimelineRowBody {...props} />;
+  if (!from) return body;
+  return (
+    <div className="group/quote relative" {...{ [PR_QUOTE_FROM_ATTRIBUTE]: from }}>
+      <PrQuoteSourceContext.Provider value={from}>{body}</PrQuoteSourceContext.Provider>
+      {addToChat && quote && near ? (
+        <PrAddToChatButton
+          onClick={() => addToChat(quote)}
+          className="absolute right-2 top-[-9px] opacity-0 group-hover/quote:opacity-100 focus-visible:opacity-100"
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function TimelineRowBody({
   event,
   near,
   focused,

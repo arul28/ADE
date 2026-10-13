@@ -37,6 +37,7 @@ export function triggerClause(trigger: AutomationTrigger): string {
   if (type === "session.limit_reached") return `${sessionSubject(trigger)} hits its usage limit`;
   if (type === "session.failed") return `${sessionSubject(trigger)} fails`;
   if (type === "session.ended_without_pr") return `${sessionSubject(trigger)} ends with no PR`;
+  if (type === "session.settled") return `${sessionSubject(trigger)} is settled`;
   if (type === "file.change") {
     const paths = (trigger.paths ?? []).filter(Boolean);
     return paths.length ? `A file changes in ${paths.join(", ")}` : "A file changes";

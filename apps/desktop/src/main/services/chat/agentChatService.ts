@@ -1,4 +1,5 @@
-import { compactFirstOffer } from "../../../shared/compactFirst";
+import { compactFirstMinTokensFromEnv, compactFirstOffer } from "../../../shared/compactFirst";
+import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
@@ -144,6 +145,8 @@ import {
 import { buildDroidSkillListing } from "./droidSkillListing";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import { forkCodexThreadInEphemeralAppServer } from "./codexEphemeralFork";
+import { createClaudePluginUiService } from "./claudePluginUiService";
+import type { ClaudePluginUiGetArgs, ClaudePluginUiSnapshot } from "../../../shared/claudePluginUi";
 import {
   CODEX_COMPACTION_STALL_MS,
   type CodexCompactionFailReason,
@@ -339,6 +342,7 @@ import {
 import {
   getMachineProviderInstanceStore,
   claudeAccountPromptCacheEnv,
+  claudeAccountStopsOnExtraUsage,
   providerInstanceEnvPatch,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -939,6 +943,9 @@ import {
 import {
   buildClaudeSessionQuotaCard,
   classifyClaudeRateLimitInfo,
+  CLAUDE_EXTRA_USAGE_STOP_NOTICE,
+  claudeExtraUsageQuotaSnapshot,
+  claudeRateLimitInfoUsesExtraUsage,
   claudeSessionQuotaCardId,
   formatClaudeSessionQuotaResetLabel,
   isClaudeSessionQuotaText,
@@ -2074,6 +2081,7 @@ type PersistedChatState = {
   requestedCwd?: string | null;
   attachmentRoots?: string[];
   idleSinceAt?: string | null;
+  promptCache?: ClaudePromptCache;
   /** Non-interactive runtime mode (e.g. "print" for one-shot CLI output). Drives initialize handshake opt-outs. */
   runtimeMode?: AgentChatRuntimeMode;
   /** Recent terminal Codex turn ids, used to suppress late replayed lifecycle events. */
@@ -17856,6 +17864,7 @@ export function createAgentChatService(args: {
         : {}),
       ...attachmentRootsField(managed.session.attachmentRoots),
       ...(managed.session.idleSinceAt !== undefined ? { idleSinceAt: managed.session.idleSinceAt ?? null } : {}),
+      ...(managed.session.promptCache ? { promptCache: managed.session.promptCache } : {}),
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
         : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
@@ -18438,6 +18447,7 @@ export function createAgentChatService(args: {
           : record.idleSinceAt === null
             ? { idleSinceAt: null }
             : {}),
+        ...(() => { const promptCache = normalizeClaudePromptCache(record.promptCache); return promptCache ? { promptCache } : {}; })(),
         ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
         ...(answeredPlanApprovalItemIds?.length ? { answeredPlanApprovalItemIds } : {}),
         ...(record.codexAutomaticRecoveryAttempted === true
@@ -19597,6 +19607,8 @@ export function createAgentChatService(args: {
       if (!moves.some((moved) => moved.ok) && failed && !failed.ok) return { ok: false, message: failed.message };
     }
     managed.session.instanceId = to.id;
+    // The prompt cache belongs to the login that wrote it; the new one starts cold.
+    managed.session.promptCache = null;
     persistChatState(managed);
     emitTransientChatEnvelope(managed.session.id, { type: "session_meta_updated", instanceId: to.id });
     return { ok: true, from, to };
@@ -20554,6 +20566,15 @@ export function createAgentChatService(args: {
     }
   };
 
+  // Mod UI is live state of one Claude process: pushed whole, never stored.
+  const claudePluginUi = createClaudePluginUiService({
+    isEnabled: () => projectConfigService.get().effective.ai?.chat?.claudePluginUiEnabled === true,
+    publish: (sessionId, snapshot) => {
+      emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", claudePluginUi: snapshot });
+    },
+    logger,
+  });
+
   const threadComments = createThreadCommentService({
     chatSessionsDir,
     logger,
@@ -20570,6 +20591,9 @@ export function createAgentChatService(args: {
     }
     return id;
   };
+
+  const getClaudePluginUi = (args: ClaudePluginUiGetArgs): ClaudePluginUiSnapshot =>
+    claudePluginUi.get(args?.sessionId);
 
   const listThreadComments = (args: ChatThreadCommentListArgs): ChatThreadComment[] =>
     threadComments.list({ sessionId: assertThreadCommentSession(args?.sessionId) });
@@ -20812,6 +20836,7 @@ export function createAgentChatService(args: {
 
   const openNativeCompactions = new Map<string, Map<string, Extract<AgentChatEvent, { type: "context_compact" }>>>();
   const compactOnlyTurns = new Set<string>();
+  const compactFirstMinTokens = compactFirstMinTokensFromEnv(process.env);
 
   const emitChatEvent = (
     managed: ManagedChatSession,
@@ -20872,6 +20897,15 @@ export function createAgentChatService(args: {
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") settleClaudeGoalOnTurnEnd(managed, event.status);
+    if (event.type === "done" && managed.session.provider === "claude") {
+      // A turn that wrote no cache but read it restarted the same lifetime:
+      // keep the lifetime and move its start to this turn's last request. A
+      // turn that touched no cache (it failed before a request) changes nothing.
+      const ttl = claudePromptCacheTtlOfWrites(event.usage?.cacheCreationTokens, event.usage?.cacheWrite1hTokens)
+        ?? ((event.usage?.cacheReadTokens ?? 0) > 0 ? managed.session.promptCache?.ttl : undefined);
+      const since = event.usage?.lastRequestStartedAt;
+      if (ttl) managed.session.promptCache = { ttl, ...(since ? { since } : {}) };
+    }
     const normalizedEvent = (() => {
       switch (event.type) {
         case "text":
@@ -24596,6 +24630,7 @@ export function createAgentChatService(args: {
       runtime.inputPump = null;
       runtime.warmQuery = null;
       runtime.warmupDone = null;
+      claudePluginUi.detach(managed.session.id);
       // Query is already null, so settle every visible background/native task
       // without trying provider stopTask on the dead control channel.
       void clearClaudeSubagentStartIdsAfterSettlement(
@@ -24866,6 +24901,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
+    claudePluginUi.end(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
     laneBranchAtTurnStart.delete(managed.session.id);
@@ -24998,6 +25034,7 @@ export function createAgentChatService(args: {
         ...(persisted?.importedFrom ? { importedFrom: persisted.importedFrom } : {}),
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
+        ...(persisted?.promptCache ? { promptCache: persisted.promptCache } : {}),
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
         ...(persisted?.continuityRecovery ? { continuityRecovery: persisted.continuityRecovery } : {}),
         ...(persisted?.recoveredFromSessionId ? { recoveredFromSessionId: persisted.recoveredFromSessionId } : {}),
@@ -27049,6 +27086,7 @@ export function createAgentChatService(args: {
     state: ClaudeIdleTurnState,
   ): Promise<void> => {
     const record = msg as unknown as Record<string, unknown>;
+    if (claudePluginUi.ingest(managed.session.id, runtime.query, msg)) return;
     const messageSessionId = compactString(record.session_id);
     if (messageSessionId && runtime.sdkSessionId !== messageSessionId) {
       adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
@@ -27208,12 +27246,18 @@ export function createAgentChatService(args: {
     if (msg.type === "rate_limit_event") {
       const info = asRecord(record.rate_limit_info) ?? {};
       const classified = classifyClaudeRateLimitInfo(info);
-      if (classified.kind === "ignore") return;
       if (classified.kind === "rejected") {
         noteClaudeSessionQuota(managed, classified.snapshot, state.turnId);
         await settleClaudeQuotaRejectedIdleTurn(managed, runtime, state);
         return;
       }
+      if (claudeExtraUsageStops(managed, info)) {
+        // Same ending as a rejected quota: arm the resume, then finish the idle turn.
+        noteClaudeExtraUsageStop(managed, info, state.turnId);
+        await settleClaudeQuotaRejectedIdleTurn(managed, runtime, state);
+        return;
+      }
+      if (classified.kind === "ignore") return;
       if (managed.claudeRateLimitWarningEmitted) return;
       managed.claudeRateLimitWarningEmitted = true;
       runtime.rateLimitWarningEmitted = true;
@@ -27739,6 +27783,7 @@ export function createAgentChatService(args: {
       runtime.query = null;
       runtime.inputPump = null;
       runtime.warmupDone = null;
+      claudePluginUi.detach(managed.session.id);
       resetClaudeProcessBackgroundLevel(runtime);
       claudeSubprocessReaper.reapForSession(managed.session.id, reaperReason);
 
@@ -27965,6 +28010,13 @@ export function createAgentChatService(args: {
     const claudeRequestTally = createClaudeTurnRequestTally();
     let resultTerminalStatus: ClaudeTerminalStatus = "completed";
     let quotaTrippedThisTurn = false;
+    /** The account stops on extra usage and this turn drew on it; set once per turn. */
+    let extraUsageStopRequested = false;
+    /**
+     * Set when the polite stop failed and its fallback reaps the query:
+     * resolves true once the query is reaped, false when that failed too.
+     */
+    let extraUsageReap: Promise<boolean> | null = null;
     let resultTerminalReason: string | undefined;
     let resultCanonicalModel: string | undefined;
     let resultModelProvider: string | undefined;
@@ -28359,6 +28411,7 @@ export function createAgentChatService(args: {
         throw new Error(CLAUDE_RUNTIME_AUTH_ERROR);
       };
 
+      let modUiDrainStartedAt: number | null = null;
       while (true) {
         const nextMessage = await readNextClaudeTurnMessage();
         if (!nextMessage) {
@@ -28371,6 +28424,22 @@ export function createAgentChatService(args: {
         }
         if (nextMessage.done) break;
         const msg = nextMessage.value;
+        // What a mod draws is no part of the turn. After the result, each read
+        // waits one drain window for a tail message; a mod that redraws on a
+        // timer would restart that window for ever and the turn would never
+        // end. So mod messages share one window, counted from the first.
+        // A query this loop still reads after its teardown is no longer the chat's own.
+        if (claudePluginUi.ingest(managed.session.id, runtime.query === sessionQuery ? sessionQuery : null, msg)) {
+          if (runtime.interrupted) break;
+          if (timeoutError) throw timeoutError;
+          if (resultSeen) {
+            // A monotonic clock: a wall-clock step must not stretch the window.
+            modUiDrainStartedAt ??= performance.now();
+            if (performance.now() - modUiDrainStartedAt >= CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS) break;
+          }
+          continue;
+        }
+        modUiDrainStartedAt = null;
         const msgSubtype = typeof (msg as any).subtype === "string" ? (msg as any).subtype : null;
         if (pendingWorkerShutdownReason && !(msg.type === "system" && msgSubtype === "worker_shutting_down")) {
           pendingWorkerShutdownReason = null;
@@ -28617,12 +28686,47 @@ export function createAgentChatService(args: {
           const rateMsg = msg as any;
           const info = rateMsg.rate_limit_info ?? {};
           const classified = classifyClaudeRateLimitInfo(info);
-          if (classified.kind === "ignore") continue;
           if (classified.kind === "rejected") {
             quotaTrippedThisTurn = true;
             noteClaudeSessionQuota(managed, classified.snapshot, turnId);
             continue;
           }
+          if (claudeExtraUsageStops(managed, info)) {
+            if (!extraUsageStopRequested) {
+              // Claude reports extra usage after the response, so this request
+              // is already billed; the stop prevents the next ones. The turn
+              // then ends on the same path as a rejected quota: card, armed
+              // resume, reset.
+              extraUsageStopRequested = true;
+              quotaTrippedThisTurn = true;
+              noteClaudeExtraUsageStop(managed, info, turnId);
+              const stopControl = getClaudeQueryControl(runtime.query);
+              void (stopControl.interrupt ? stopControl.interrupt() : Promise.reject(new Error("Claude interrupt is unavailable.")))
+                .catch((error: unknown) => {
+                  logger.warn("agent_chat.claude_extra_usage_stop_failed", {
+                    sessionId: managed.session.id,
+                    turnId,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                  // The polite stop did not land. Reap the query so no further
+                  // request of this turn is billed. Marked as an interrupt, so
+                  // the loop ends on the same path as a Stop that kills
+                  // background work, whether the stream ends or throws. The
+                  // turn tail waits for this reap and does its own when this
+                  // one fails.
+                  if (managed.runtime !== runtime || runtime.activeTurnId !== turnId) return;
+                  runtime.interrupted = true;
+                  extraUsageReap = (async () => {
+                    // Arm, then reap: the same order as every other quota reset.
+                    await waitForArmedResumeBounded(managed.session.id);
+                    await resetClaudeQuerySession(managed, runtime, "interrupt");
+                    return true;
+                  })().catch(() => false);
+                });
+            }
+            continue;
+          }
+          if (classified.kind === "ignore") continue;
           if (managed.claudeRateLimitWarningEmitted) continue;
           managed.claudeRateLimitWarningEmitted = true;
           runtime.rateLimitWarningEmitted = true;
@@ -29916,6 +30020,11 @@ export function createAgentChatService(args: {
           if (typeof resultMsg.total_cost_usd === "number") {
             costUsd = claudeResultCostUsd(runtime, resultMsg.total_cost_usd);
           }
+          // The result of ADE's own extra-usage stop is an interrupt; its error
+          // text adds nothing to the stop notice. Only a result Claude marks as
+          // aborted is treated that way: hiding a different, real failure
+          // costs more than one extra error row beside the notice.
+          const stoppedForExtraUsage = extraUsageStopRequested && resultTerminalStatus === "interrupted";
           if (resultIsError && resultErrors.userFacing.length > 0) {
             // A logged-out result surfaces here as 401 / "invalid authentication
             // credentials" errors — route them into the re-login card rather than
@@ -29933,8 +30042,9 @@ export function createAgentChatService(args: {
               );
             }
             for (const err of resultErrors.userFacing) {
-              // An image_error turn is explained by its failure notice alone.
-              if (isClaudeUsageLimitResultError(err) || isClaudeImageErrorResult(resultMsg)) continue;
+              // An image_error turn is explained by its failure notice alone,
+              // and a turn ADE stopped for extra usage by its own notice.
+              if (stoppedForExtraUsage || isClaudeUsageLimitResultError(err) || isClaudeImageErrorResult(resultMsg)) continue;
               emitChatEvent(managed, {
                 type: "error",
                 message: err,
@@ -29950,7 +30060,7 @@ export function createAgentChatService(args: {
             contextOverflow: recoverFromContextOverflow,
             assistantText,
           });
-          if (failureNotice) emitChatEvent(managed, { type: "error", ...failureNotice, turnId });
+          if (failureNotice && !stoppedForExtraUsage) emitChatEvent(managed, { type: "error", ...failureNotice, turnId });
           // A result frame is the provider's definitive acknowledgement of the
           // submitted prompt even when it reports a terminal failure. Keep the
           // turn on the normal result path so terminal_reason and overflow
@@ -30069,10 +30179,18 @@ export function createAgentChatService(args: {
       runtime.pauseIdleWatchdog = null;
       runtime.resumeIdleWatchdog = null;
       if (runtime.interrupted && !runtime.spareBackgroundOnInterrupt) {
-        await stopActiveClaudeSubagents(managed, runtime, turnId, "Interrupted");
+        await stopActiveClaudeSubagents(
+          managed,
+          runtime,
+          turnId,
+          "Interrupted",
+          extraUsageReap ? { stopSource: "system", stopReason: CHAT_STOP_REASON_RUNTIME_EXITED } : undefined,
+        );
       }
       dropFinishedForegroundClaudeTasks(managed, runtime, turnId);
-      const finalStatus: ClaudeTerminalStatus = runtime.interrupted
+      // ADE's extra-usage stop ends "failed", like a rejected quota, also when
+      // its fallback had to mark the turn interrupted to reap the query.
+      const finalStatus: ClaudeTerminalStatus = runtime.interrupted && !extraUsageReap
         ? "interrupted"
         : quotaTrippedThisTurn
           ? "failed"
@@ -30104,7 +30222,8 @@ export function createAgentChatService(args: {
         // the same ceiling, so a scheduler that never finishes loading cannot
         // hold the finished turn open.
         await waitForArmedResumeBounded(managed.session.id);
-        await resetClaudeQuerySession(managed, runtime, "session_reset");
+        const alreadyReaped = extraUsageReap ? await extraUsageReap : false;
+        if (!alreadyReaped) await resetClaudeQuerySession(managed, runtime, "session_reset");
       } else if (runtimeStillCurrent && finalStatus === "completed") {
         dismissClaudeSessionQuota(managed);
       }
@@ -30187,7 +30306,9 @@ export function createAgentChatService(args: {
           });
         }
       }
-      const compactionIssued = runtimeStillCurrent && !replayRecovery
+      // A compaction is one more billed request, so a turn ADE stopped for
+      // extra usage issues none.
+      const compactionIssued = runtimeStillCurrent && !replayRecovery && !extraUsageStopRequested
         ? await maybeIssueClaudeBoundaryCompaction(managed, runtime, {
             recoverFromOverflow: recoverFromContextOverflow,
             turnId,
@@ -30196,7 +30317,13 @@ export function createAgentChatService(args: {
 
       // Process queued steers (skip if session was disposed during execution)
       if (managed.runtime === runtime) {
-        if (replayRecovery === "retry") {
+        if (extraUsageStopRequested) {
+          // A retry or a queued message would start the next billed request at
+          // once. A replay that was promised and is now not sent says so.
+          if (replayRecovery === "retry") claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
+          cancelQueuedSteers(managed, runtime, "interrupted");
+          startClaudeIdleReader(managed, runtime, "turn_completed");
+        } else if (replayRecovery === "retry") {
           void runClaudeTurn(managed, {
             ...args,
             replayOverflowRetry: true,
@@ -30260,6 +30387,7 @@ export function createAgentChatService(args: {
         runtime.query = null;
         runtime.inputPump = null;
         runtime.warmupDone = null;
+        claudePluginUi.detach(managed.session.id);
         claudeSubprocessReaper.reapForSession(managed.session.id, "claude_turn_failed");
       }
       if (!(runtime.interrupted && runtime.spareBackgroundOnInterrupt)) {
@@ -39871,6 +39999,7 @@ export function createAgentChatService(args: {
     runtime.query = null;
     runtime.inputPump = null;
     runtime.queryGeneration += 1;
+    claudePluginUi.detach(managed.session.id);
     runtime.queryStartPromise = null;
     runtime.pendingPostResultNext = null;
     runtime.pendingPostResultNextSettledAt = null;
@@ -40357,6 +40486,7 @@ export function createAgentChatService(args: {
     runtime.query = sessionQuery;
     runtime.inputPump = pump;
     runtime.warmQuery = null;
+    claudePluginUi.attach(managed.session.id, sessionQuery);
     observeClaudeInitializationResult(managed, sessionQuery);
     if (runtime.forkFromSdkSessionId) {
       runtime.forkFromSdkSessionId = null;
@@ -45539,6 +45669,34 @@ export function createAgentChatService(args: {
     }, 5_000);
     crossMachineHandoffSweepTimer.unref?.();
   }
+
+  /**
+   * True when this event says the turn draws on extra usage and the chat's own
+   * account is set to stop on it. A chat that runs on a preset or a stored
+   * credential bills another endpoint, so the account's choice does not apply
+   * to it. A preset that cannot be resolved has no plan, and the chat then runs
+   * on the account's own login, where the choice does apply.
+   */
+  const claudeExtraUsageStops = (managed: ManagedChatSession, info: Record<string, unknown>): boolean =>
+    claudeRateLimitInfoUsesExtraUsage(info)
+    && !resolveSessionLaunchPlan(managed)
+    && claudeAccountStopsOnExtraUsage(managed.session.instanceId);
+
+  /** The notice and the quota card for a turn ADE stops for extra usage. */
+  const noteClaudeExtraUsageStop = (
+    managed: ManagedChatSession,
+    info: Record<string, unknown>,
+    turnId?: string | null,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "rate_limit",
+      severity: "warning",
+      message: CLAUDE_EXTRA_USAGE_STOP_NOTICE,
+      ...(turnId ? { turnId } : {}),
+    });
+    noteClaudeSessionQuota(managed, claudeExtraUsageQuotaSnapshot(info), turnId);
+  };
 
   const noteClaudeSessionQuota = (
     managed: ManagedChatSession,
@@ -52652,7 +52810,7 @@ export function createAgentChatService(args: {
       // Native resume_return owns its send; never combine it with ADE's pill.
       if (!collectPendingInputRequests(managed).length) {
         const history = (await getChatEventHistory(args.sessionId, { maxEvents: 512 })).events;
-        const offer = compactFirstOffer({ provider: "claude", events: history, mode: compactionSettingsFor(managed).idleMode ?? "ask" });
+        const offer = compactFirstOffer({ provider: "claude", events: history, cache: managed.session.promptCache, minTokens: compactFirstMinTokens, mode: compactionSettingsFor(managed).idleMode ?? "ask" });
         if (offer) {
           const before = managed.compactionEmitterState.sessionCompactionCount;
           const result = await runSessionTurn({ sessionId: args.sessionId, text: "/compact", timeoutMs: 90_000 });
@@ -56693,6 +56851,7 @@ export function createAgentChatService(args: {
       model,
       ...(provider === "opencode" ? { manualCompactAvailable: getSlashCommands({ sessionId: row.id, provider }).some((command) => command.name.replace(/^\//, "") === "compact") } : {}),
       ...(provider === "claude" ? { compactionIdleMode: compactionSettingsForSession({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }).idleMode ?? "ask" } : {}),
+      ...(provider === "claude" && compactFirstMinTokens != null ? { compactFirstMinTokens } : {}),
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
       ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
       ...(crossMachineMove ? { crossMachineHandoff: crossMachineMove } : {}),
@@ -56822,6 +56981,7 @@ export function createAgentChatService(args: {
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
         ? liveSession?.idleSinceAt ?? persisted?.idleSinceAt ?? null
         : null,
+      promptCache: liveSession?.promptCache ?? persisted?.promptCache ?? null,
       startedAt: row.startedAt,
       endedAt: row.endedAt,
       archivedAt: row.archivedAt ?? null,
@@ -57812,6 +57972,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
+    claudePluginUi.end(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
     releaseChatBrowser(sessionId);
@@ -60211,6 +60372,7 @@ export function createAgentChatService(args: {
       ]);
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
+      claudePluginUi.end(trimmedSessionId);
       forgetCursorCloudHydrationState(trimmedSessionId);
       forgetDevinCloudAttentionState(trimmedSessionId);
     } else {
@@ -64768,6 +64930,8 @@ export function createAgentChatService(args: {
       requireCrossMachineHandoff().acknowledge(ackArgs.sourceSessionId, ackArgs.handoffId),
     emitAdeCard,
     sendMessage,
+    getClaudePluginUi,
+    actOnClaudePluginUi: claudePluginUi.act,
     listThreadComments,
     createThreadComment,
     updateThreadComment,

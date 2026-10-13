@@ -62,6 +62,7 @@ final class DeepLinkRouter {
 
   private func route(_ url: URL, attentionItemId: String?) {
     if routePairingURL(url) { return }
+    if routeDeviceSignInURL(url) { return }
     if routeHttpsOpenURL(url, attentionItemId: attentionItemId) { return }
     guard url.scheme?.lowercased() == "ade" else { return }
     let host = url.host?.lowercased()
@@ -236,6 +237,20 @@ final class DeepLinkRouter {
       name: .adeDeepLinkRequested,
       object: nil,
       userInfo: ["kind": "pairing", "identifier": url.absoluteString]
+    )
+    return true
+  }
+
+  /// The sign-in link of another computer (`https://ade-app.dev/device?user_code=…`,
+  /// the QR code that `ade connect` shows). The presentation layer asks before
+  /// anything is approved.
+  private func routeDeviceSignInURL(_ url: URL) -> Bool {
+    guard DeviceSignInRequest(url: url) != nil else { return false }
+    routedCount += 1
+    NotificationCenter.default.post(
+      name: .adeDeviceSignInRequested,
+      object: nil,
+      userInfo: ["url": url.absoluteString]
     )
     return true
   }
@@ -766,4 +781,7 @@ extension Notification.Name {
   /// branch / linear-issue) that the mobile client can't open directly.
   /// `userInfo["url"]` carries the original `ade://...` URL string.
   static let adeSendToMacRequested = Notification.Name("ade.sendToMacRequested")
+  /// Posted when the phone opens the sign-in link of another computer.
+  /// `userInfo["url"]` is the link; `DeviceSignInRequest(url:)` reads its code.
+  static let adeDeviceSignInRequested = Notification.Name("ade.deviceSignInRequested")
 }

@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderInstance, ProviderLoginStatus } from "../../../../../shared/types/providerInstances";
 import type { UsageSnapshot } from "../../../../../shared/types";
 import { ProviderAccountsPanel } from "./ProviderAccountsPanel";
+import { SettingsMachineScopeProvider, settingsMachineScope } from "../../SettingsMachineScope";
 
 function instance(overrides: Partial<ProviderInstance> & { id: string }): ProviderInstance {
   return {
@@ -135,6 +136,7 @@ function installBridge(options?: {
     setDefault: vi.fn().mockResolvedValue(WORK_INSTANCE),
     setAccent: vi.fn().mockResolvedValue(WORK_INSTANCE),
     dismissReplaced: vi.fn().mockResolvedValue(WORK_INSTANCE),
+    signOut: vi.fn().mockResolvedValue({ ...WORK_INSTANCE, signedIn: false }),
     getSettings: vi.fn().mockResolvedValue({
       smartBalance: options?.smartBalance ?? false,
       autoStartWindows: false,
@@ -205,6 +207,52 @@ describe("ProviderAccountsPanel", () => {
 
     expect(within(work).getByText("Next chat")).toBeTruthy();
     expect(within(personal).queryByText("Next chat")).toBeNull();
+  });
+
+  it("shows the picked machine's usage, not the tab's, when Settings names another machine", async () => {
+    // The accounts come from the picked machine; numbers from the tab's own
+    // machine put one computer's login under another's account card.
+    const studio = {
+      kind: "remote" as const,
+      key: "studio",
+      targetId: "studio",
+      runtimeName: "Studio",
+      projectId: "p1",
+      rootPath: "/repo",
+      displayName: "repo",
+    };
+    const studioUsage = snapshot();
+    studioUsage.accounts = studioUsage.accounts!.map((account) => (
+      account.id === "claude:claude" ? { ...account, email: "studio@example.com" } : account
+    ));
+    const laptopUsage = snapshot();
+    laptopUsage.accounts = laptopUsage.accounts!.map((account) => (
+      account.id === "claude:claude" ? { ...account, email: "laptop@example.com" } : account
+    ));
+    installBridge();
+    const ade = (globalThis.window as unknown as {
+      ade: { usage: { getSnapshot: ReturnType<typeof vi.fn> } };
+    }).ade;
+    ade.usage.getSnapshot.mockImplementation(async (pin?: unknown) => (pin === studio ? studioUsage : laptopUsage));
+
+    render(
+      <SettingsMachineScopeProvider
+        scope={settingsMachineScope({
+          machineId: "studio",
+          machineName: "Studio",
+          target: { kind: "pinned", binding: studio },
+          isThisMachine: false,
+          isActiveBinding: false,
+          online: true,
+        })}
+      >
+        <ProviderAccountsPanel provider="claude" providerLabel="Claude Code" />
+      </SettingsMachineScopeProvider>,
+    );
+
+    const personal = await screen.findByRole("group", { name: "Personal account" });
+    expect(await within(personal).findByText("studio@example.com")).toBeTruthy();
+    expect(within(personal).queryByText("laptop@example.com")).toBeNull();
   });
 
   it("says a signed-in account has no usage yet when it has no windows", async () => {
@@ -439,6 +487,40 @@ describe("ProviderAccountsPanel", () => {
     });
   });
 
+  it.each([
+    { name: "shows the new choice once the computer saved it", saved: true },
+    // An older ADE on the target computer accepts a setting it does not know and saves nothing.
+    { name: "says so when the computer did not save it", saved: false },
+  ])("sets one account's main chat cache and $name", async ({ saved }) => {
+    const harness = installBridge();
+    if (saved) {
+      harness.providerInstances.setSettings.mockImplementation(async (args: { settings: Record<string, unknown> }) => {
+        harness.providerInstances.list.mockResolvedValue([DEFAULT_INSTANCE, { ...WORK_INSTANCE, ...args.settings }]);
+        return { smartBalance: false, autoStartWindows: false };
+      });
+    }
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Main chat cache/ }));
+    // Automatic is the default: ADE states no lifetime and Claude decides.
+    expect(screen.getByRole("menuitemradio", { name: /^Automatic/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^1 hour/ }));
+
+    await waitFor(() => {
+      expect(harness.providerInstances.setSettings).toHaveBeenCalledWith(
+        { provider: "claude", instanceId: "claude-work", settings: { mainPromptCacheTtl: "1h" } },
+      );
+    });
+    if (saved) {
+      fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));
+      expect((await screen.findByRole("menuitem", { name: /Main chat cache/ })).textContent).toContain("1 hour");
+      expect(screen.queryByText(/not saved/i)).toBeNull();
+    } else {
+      expect(await screen.findByText(/not saved/i)).toBeTruthy();
+    }
+  });
+
   it("sets one account's subagent cache and Auto-compact from its row menu", async () => {
     const harness = installBridge();
     const sentSettings = () => harness.providerInstances.setSettings.mock.calls.map((call) => call[0]);
@@ -468,7 +550,7 @@ describe("ProviderAccountsPanel", () => {
     });
   });
 
-  it("confirms before removing, and removes nothing when the confirm is cancelled", async () => {
+  it("confirms before removing, removes nothing when cancelled, and says when the sign-out was left undone", async () => {
     const harness = installBridge();
     renderPanel();
 
@@ -478,6 +560,12 @@ describe("ProviderAccountsPanel", () => {
     expect(await screen.findByText("Remove account")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(harness.providerInstances.remove).not.toHaveBeenCalled();
+    // The host signs a removed account out; it can fail without blocking the removal.
+    harness.providerInstances.remove.mockResolvedValue({
+      removed: true,
+      configHome: "/home/claude-work",
+      signOutError: "Sign-out failed: the provider CLI could not run.",
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
@@ -486,6 +574,40 @@ describe("ProviderAccountsPanel", () => {
     await waitFor(() => {
       expect(harness.providerInstances.remove).toHaveBeenCalledWith({ id: "claude-work" });
     });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Work was removed");
+    expect(alert.textContent).toContain("could not run");
+  });
+
+  it.each([
+    { name: "a second account", id: "claude-work", label: "Work", isDefault: false, signOut: true, remove: true },
+    // Its login is the terminal's own; the card stays, but it can be signed out.
+    { name: "this computer's own login", id: "claude", label: "Personal", isDefault: false, signOut: true, remove: false },
+    // New chats go to it, so it keeps its login until another account is the default.
+    { name: "the default account", id: "claude-work", label: "Work", isDefault: true, signOut: false, remove: false },
+  ])("offers cleanup actions on $name's card", async ({ id, label, isDefault, signOut, remove }) => {
+    const card = instance({ id, label, isDefault, account: { email: `${id}@example.com` } });
+    const other = instance({
+      id: id === "claude" ? "claude-work" : "claude",
+      label: id === "claude" ? "Work" : "Personal",
+      isDefault: !isDefault,
+      account: { email: "other@example.com" },
+    });
+    const harness = installBridge({ instances: [card, other] });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: `${label} account actions` }));
+    expect(screen.queryByRole("menuitem", { name: "Remove" }) !== null).toBe(remove);
+    const signOutItem = screen.queryByRole("menuitem", { name: "Sign out" });
+    expect(signOutItem !== null).toBe(signOut);
+    if (!signOutItem) return;
+
+    fireEvent.click(signOutItem);
+    fireEvent.click(await screen.findByRole("button", { name: "SIGN OUT" }));
+    await waitFor(() => {
+      expect(harness.providerInstances.signOut).toHaveBeenCalledWith({ id });
+    });
+    expect(harness.providerInstances.remove).not.toHaveBeenCalled();
   });
 
   it("shows the store's sentence without the Electron IPC wrapper around it", async () => {
@@ -587,6 +709,43 @@ describe("ProviderAccountsPanel", () => {
     });
     expect(harness.providerInstances.loginStart).toHaveBeenLastCalledWith({ id: "claude-new" });
     expect(harness.providerInstances.create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { name: "into a copy of it", copyId: "claude-spare", base: false },
+    // Re-signing the machine's own login would move the terminal's `claude` too.
+    { name: "as a new account when the copy is the machine's own login", copyId: "claude", base: true },
+  ])("signs a replaced login back in $name", async ({ copyId, base }) => {
+    const owner = instance({
+      id: "claude-work",
+      label: "Work",
+      isDefault: true,
+      account: { email: "now@example.com" },
+      replacedAccount: { email: "old@example.com", replacedAt: "2026-09-01T00:00:00.000Z" },
+    });
+    const copy = instance({
+      id: copyId,
+      label: base ? "Personal" : "Spare",
+      account: { email: "now@example.com" },
+      sameLoginAs: "claude-work",
+    });
+    const harness = installBridge({ instances: [copy, owner] });
+    renderPanel();
+
+    const row = await screen.findByRole("group", { name: "Work account" });
+    fireEvent.click(within(row).getByRole("button", { name: "Sign it back in" }));
+
+    if (base) {
+      const sheet = await screen.findByRole("dialog", { name: "Add a Claude Code account" });
+      expect((within(sheet).getByRole("textbox", { name: "Account label" }) as HTMLInputElement).value).toBe("old");
+      expect(harness.providerInstances.loginStart).not.toHaveBeenCalled();
+    } else {
+      expect(await screen.findByRole("dialog", { name: "Sign in to Spare" })).toBeTruthy();
+      await waitFor(() => {
+        expect(harness.providerInstances.loginStart).toHaveBeenCalledWith({ id: "claude-spare" });
+      });
+    }
+    expect(harness.providerInstances.create).not.toHaveBeenCalled();
   });
 
   it("reopens sign-in for an existing account without creating a new one", async () => {

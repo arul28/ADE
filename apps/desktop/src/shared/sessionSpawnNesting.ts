@@ -102,6 +102,13 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
   return normalized === "cursor" || normalized.endsWith("-chat");
 }
 
+/** The provider of an ADE chat's tool type (`claude-chat` → `claude`); null for a session that is not a chat. */
+export function chatToolProvider(toolType: string | null | undefined): string | null {
+  if (!toolType || !isChatToolType(toolType)) return null;
+  const normalized = toolType.trim().toLowerCase();
+  return normalized === "cursor" ? "cursor" : normalized.slice(0, -"-chat".length);
+}
+
 function phaseOf(session: SpawnNestingSession, nowMs: number): CanonicalSessionPhase {
   return canonicalSessionState({
     status: session.status,

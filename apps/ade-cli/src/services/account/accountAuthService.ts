@@ -1618,6 +1618,26 @@ export function createAccountAuthService(args: {
     closeServer(session.server);
   };
 
+  /**
+   * One sign-in wins. When one completes, every other sign-in that is still
+   * open on this machine ends (`ade login` runs a browser and a device sign-in
+   * at once, and the desktop app can have its own open), so none of them can
+   * complete a moment later and replace the session, possibly with another
+   * account. A browser sign-in that was open reads as done to whoever polls
+   * it, because the machine is signed in; a device sign-in is forgotten.
+   */
+  const endOtherSignIns = (completed: PendingLoginSession | string): void => {
+    for (const pending of pendingSessions.values()) {
+      if (pending === completed) continue;
+      if (pending.phase === "pending" || pending.phase === "exchanging") {
+        finishPendingSession(pending, "signed_in", null);
+      }
+    }
+    for (const deviceSessionId of pendingDeviceSessions.keys()) {
+      if (deviceSessionId !== completed) pendingDeviceSessions.delete(deviceSessionId);
+    }
+  };
+
   const expirePendingSession = (session: PendingLoginSession): void => {
     if (session.phase !== "pending" && session.phase !== "exchanging") return;
     finishPendingSession(session, "expired", "ADE account sign-in expired.");
@@ -1823,12 +1843,21 @@ export function createAccountAuthService(args: {
         || session.phase !== "exchanging"
         || session.expiresAtMs <= now()
       ) {
-        finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
-        respondHtml(response, 409, FAILURE_HTML);
+        // `signed_in` here means another sign-in completed during the
+        // exchange and closed this one as done. That answer stands, and the
+        // tab says so: the machine is signed in, so "failed, try again" would
+        // send the person to a sign-in nobody needs. (The cast widens the
+        // type: the compiler still believes "exchanging".)
+        const closedAsDone = (session.phase as PendingLoginSession["phase"]) === "signed_in";
+        if (!closedAsDone) {
+          finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
+        }
+        respondHtml(response, 409, closedAsDone ? SUCCESS_HTML : FAILURE_HTML);
         return;
       }
       persistSession(record, "loopback_login_completed");
       authEpoch += 1;
+      endOtherSignIns(session);
       notifySignedIn();
       finishPendingSession(session, "signed_in", null);
       logger.info("account.login_completed");
@@ -2198,11 +2227,17 @@ export function createAccountAuthService(args: {
         authStatus: currentStatus(readSession()),
       };
     }
-    if (
-      authEpoch !== epochAtPoll
-      || pendingDeviceSessions.get(normalizedSessionId) !== session
-      || session.expiresAtMs <= now()
-    ) {
+    // Checked twice: after the directory answered, and again after the profile
+    // lookup below. Both are awaits, and a sign-in the person cancelled during
+    // either one must not be saved.
+    const cancelled = (): AccountDeviceLoginPollResult | null => {
+      if (
+        authEpoch === epochAtPoll
+        && pendingDeviceSessions.get(normalizedSessionId) === session
+        && session.expiresAtMs > now()
+      ) {
+        return null;
+      }
       pendingDeviceSessions.delete(normalizedSessionId);
       return {
         status: "error",
@@ -2210,7 +2245,9 @@ export function createAccountAuthService(args: {
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
-    }
+    };
+    const cancelledBeforeProfile = cancelled();
+    if (cancelledBeforeProfile) return cancelledBeforeProfile;
     let baseRecord: AccountSessionRecord;
     try {
       baseRecord = await buildSessionRecord({
@@ -2228,6 +2265,8 @@ export function createAccountAuthService(args: {
         authStatus: currentStatus(readSession()),
       };
     }
+    const cancelledBeforeSave = cancelled();
+    if (cancelledBeforeSave) return cancelledBeforeSave;
     // The directory's proof that a human just signed in on THIS machine, for
     // the case where the access token carries no authentication-time claim the
     // directory could check instead. Kept in memory only: it is a bearer secret
@@ -2241,6 +2280,7 @@ export function createAccountAuthService(args: {
       : baseRecord;
     persistSession(record, "device_login_completed");
     authEpoch += 1;
+    endOtherSignIns(normalizedSessionId);
     notifySignedIn();
     pendingDeviceSessions.delete(normalizedSessionId);
     logger.info("account.device_login_completed");

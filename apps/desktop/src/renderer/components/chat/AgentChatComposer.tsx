@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { formatContextTokens } from "./usage/contextUsageModel";
 import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { linearIssueRef } from "../../../shared/issueRefs";
-import type { CompactFirstOffer } from "../../../shared/compactFirst";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
@@ -1972,9 +1973,6 @@ export function AgentChatComposer({
   cursorCloudServiceTier = null,
   usageViewModel = null,
   compactionPulse = false,
-  compactFirstOffer = null,
-  compactFirstEnabled = false,
-  onCompactFirstChange,
   onCompactContext,
   compactSessionProvider,
   draft,
@@ -2169,9 +2167,6 @@ export function AgentChatComposer({
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
-  compactFirstOffer?: CompactFirstOffer | null;
-  compactFirstEnabled?: boolean;
-  onCompactFirstChange?: (value: boolean) => void;
   /** Sends `/compact` without replacing the unsent draft. Claude/Codex/Pi only. */
   onCompactContext?: () => void;
   /**
@@ -2955,7 +2950,14 @@ export function AgentChatComposer({
   // the full composer only, not grid tiles or parallel launches. Desktop only
   // for now: the web client has no path to the brain's voice host.
   const codexVoicePreferences = useAppStore((s) => s.codexVoice);
-  const codexAuth = useProviderAuthStatus().status.openai;
+  // Voice runs on the chat machine's brain and Codex sign-in, not this window's.
+  // The chat-scope pin is null when the chat is on the tab's machine, which
+  // keeps the unpinned route (transition guard + local fallback) there.
+  const chatRuntimePin = useChatRuntimeScope().pin;
+  const chatRuntimePinRef = useRef(chatRuntimePin);
+  chatRuntimePinRef.current = chatRuntimePin;
+  const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  const codexAuth = useProviderAuthStatus({ runtimePin: chatRuntimePin }).status.openai;
   const codexVoiceOffered = Boolean(
     sessionId
     && projectChatPane
@@ -2967,6 +2969,7 @@ export function AgentChatComposer({
   );
   const codexVoice = useCodexVoice({
     sessionId: codexVoiceOffered ? sessionId ?? null : null,
+    runtimePin: chatRuntimePin,
     preferences: codexVoicePreferences,
     onError: setVoiceError,
   });
@@ -3146,11 +3149,11 @@ export function AgentChatComposer({
   useEffect(() => {
     if (!sessionId) return;
     try {
-      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" })?.catch?.(() => {});
+      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, chatRuntimePinRef.current)?.catch?.(() => {});
     } catch {
       // warming is best-effort
     }
-  }, [sessionId]);
+  }, [chatRuntimePinKey, sessionId]);
 
   const revokePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url || !objectPreviewUrlsRef.current.has(url)) return;
@@ -3468,22 +3471,34 @@ export function AgentChatComposer({
   };
   addFileAttachmentsRef.current = addFileAttachments;
 
-  const addNativeClipboardImageAttachment = async () => {
+  /**
+   * Attach the clipboard's image through the host, which fits an oversized one
+   * under the ceiling. `fallbackFiles` are what the paste event carried: when
+   * the clipboard holds no bitmap after all (a file copied in Finder, say),
+   * they go through the normal path, which says why it refuses one.
+   */
+  const addNativeClipboardImageAttachment = async (fallbackFiles?: File[]) => {
     if (attachmentPersistenceUnavailableReason) {
       setAttachError(attachmentPersistenceUnavailableReason);
       return;
     }
-    if (!canAttach) return;
+    if (!canAttach) {
+      // The normal path is the one that says why attaching is blocked.
+      if (fallbackFiles?.length) void addFileAttachments(fallbackFiles);
+      return;
+    }
     if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     const attachmentOwnerBinding = composerMachineBinding;
+    let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
       if (!image) {
         dropPendingImageAttachment(pendingImage.id);
+        clipboardWasEmpty = true;
         return;
       }
       const { path: tempPath } = await agentChatApiRef.current.saveTempAttachment({
@@ -3502,11 +3517,15 @@ export function AgentChatComposer({
       rememberPreviewUrl(tempPath, `data:${image.mimeType};base64,${image.data}`);
       onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, image.mimeType) });
       dropPendingImageAttachment(pendingImage.id);
-    } catch {
+    } catch (error) {
       dropPendingImageAttachment(pendingImage.id);
-      setAttachError("Unable to attach clipboard image.");
+      // The host's reason (a clipboard image it could not fit under the
+      // ceiling, say) is the useful part; a bare "Unable to attach" hid it.
+      const reason = error instanceof Error ? stripElectronErrorWrapper(error.message) : "";
+      setAttachError(reason || "Unable to attach clipboard image.");
     } finally {
       fileAddInProgressRef.current = false;
+      if (clipboardWasEmpty && fallbackFiles?.length) void addFileAttachments(fallbackFiles);
     }
   };
 
@@ -5758,6 +5777,25 @@ export function AgentChatComposer({
     event.preventDefault();
     if (fallbackAlreadyAttached) return;
     clipboardImagePasteHandledRef.current += 1;
+    // A photo copied out of Messages or Photos arrives as a PNG the browser
+    // re-encoded from the bitmap, often 3–10x the file that was sent, and over
+    // the pasted-bytes ceiling. The desktop clipboard reader fits it under the
+    // ceiling instead of refusing it, so an oversized pasted image goes there.
+    // The web adapter's reader does no fitting, so the web keeps the old path.
+    const [onlyFile] = collected;
+    // A file copied in Finder has a path on disk, which the normal path
+    // streams at the full ceiling; only an in-memory bitmap needs fitting.
+    const oversizedClipboardImage = collected.length === 1
+      && onlyFile != null
+      && onlyFile.type.startsWith("image/")
+      && onlyFile.size > LEGACY_MAX_CHAT_ATTACHMENT_BYTES
+      && !window.ade?.project?.getDroppedPath?.(onlyFile)
+      && !isWebClientMode()
+      && typeof window.ade?.app?.readClipboardImage === "function";
+    if (oversizedClipboardImage) {
+      void addNativeClipboardImageAttachment(collected);
+      return;
+    }
     void addFileAttachments(collected);
   };
 
@@ -5986,7 +6024,9 @@ export function AgentChatComposer({
   }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
-  const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
+  // A running turn already has its model, and the picker is locked mid-turn:
+  // steering it must not wait on a model the composer has not loaded yet.
+  const singleModelReady = (Boolean(modelId) || turnActive) && !singleModelBlockedMessage;
 
   const hasIosElementContext = iosElementContextItems.length > 0;
   const hasAppControlContext = appControlContextItems.length > 0;
@@ -6297,7 +6337,7 @@ export function AgentChatComposer({
       if (cloudSendBlock) return cloudSendBlock.reason;
       return `Send to ${cloudTargetLabel}`;
     }
-    if (!modelId) return singleModelBlockedMessage ?? "Select a model first";
+    if (!modelId && !turnActive) return singleModelBlockedMessage ?? "Select a model first";
     if (singleModelBlockedMessage) return singleModelBlockedMessage;
     if (!draft.trim().length && allowAttachmentOnlySubmit && attachments.length > 0) return "Send attached files";
     if (!draft.trim().length && contextAttachmentCount > 0) return "Send attached issue context";
@@ -7257,11 +7297,6 @@ export function AgentChatComposer({
             );
           })() : null}
 
-          {!parallelChatMode && compactFirstOffer ? <SmartTooltip forceEnabled side="top" content={{ label: "Compact first", description: `The cache expired after an hour. Compacting first re-sends about ${formatContextTokens(compactFirstOffer.estimatedPostTokens)} tokens instead of ${formatContextTokens(compactFirstOffer.contextTokens)}.` }}>
-            <button type="button" aria-pressed={compactFirstEnabled} onClick={() => onCompactFirstChange?.(!compactFirstEnabled)} className={cn("rounded-full px-2 py-1 text-[10px] transition-colors", compactFirstEnabled ? "bg-accent/10 text-accent" : "bg-fg/5 text-fg/50 hover:bg-fg/10")}>
-              Compact first · {formatContextTokens(compactFirstOffer.contextTokens)}
-            </button>
-          </SmartTooltip> : null}
           {!parallelChatMode && usageViewModel ? (
             <ContextUsageDial
               usage={usageViewModel}

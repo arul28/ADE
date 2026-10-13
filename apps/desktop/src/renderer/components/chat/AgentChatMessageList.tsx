@@ -47,7 +47,6 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatNoticeDetail,
-  AgentChatSpawnCompletion,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
   AgentChatRecoverContinuityArgs,
@@ -85,12 +84,14 @@ import {
   ChatContextSegments,
   ThreadReviewSentCard,
   UserTypedText,
-  userTextLooksLikeMarkdown,
 } from "./chatUserMessageCards";
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
 import { issueCreateRequestFromSelection, requestIssueCreate } from "../../lib/issueCreateRequests";
 import { ThreadCommentLayer } from "./ThreadCommentLayer";
-import { parseThreadReviewBlock, type ChatThreadComment } from "../../../shared/threadComments";
+import { resolveUserMessageBody, userMessageHasPastedPrompt } from "./userMessageBody";
+import { ChatFindLayer } from "./ChatFindLayer";
+import type { ChatFindSource, ChatFindSourceSnapshot } from "./useChatFindIndex";
+import type { ChatThreadComment } from "../../../shared/threadComments";
 import {
   ChatWorkspacePathProvider,
   useWorkspacePathOpener,
@@ -193,6 +194,7 @@ import { renderSubagentTimelineRow, type SpawnedChatProviderProps } from "./chat
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
@@ -226,7 +228,7 @@ import { ChatTaskListCard } from "./ChatTaskListCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { ContextCompactDivider } from "./ContextCompactDivider";
-import { contextCompactMergeKey } from "../../../shared/contextCompaction";
+import { contextCompactMergeKey, isManualCompactCommand, providerSupportsManualCompact } from "../../../shared/contextCompaction";
 import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from "./chatEventDisplay";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
@@ -316,14 +318,6 @@ const EMPTY_WORK_LOG_ENTRIES: ChatWorkLogEntry[] = [];
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 
-/**
- * Recovers the child chat's title from a `spawn_completed` notice whose detail
- * lost its `spawnCompletion`. Matches both the current
- * `spawnCompletedNoticeMessage` sentence and the pre-rename `Peer "<title>"
- * turn finished`, which persisted transcripts still hold. Not global, so `exec`
- * has no `lastIndex` to carry between calls.
- */
-const SPAWN_COMPLETED_TITLE_PATTERN = /^(?:Peer|Chat)\s+"?(.*?)"?\s+(?:turn finished|finished its turn)$/;
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
 type CodexTurnStalledEvent = Extract<AgentChatEvent, { type: "codex_turn_stalled" }>;
 type CodexTurnRecoveryEvent = Extract<
@@ -1034,47 +1028,6 @@ function UserMessageStatusRow({
 const IOS_SIMULATOR_CONTEXT_PREFIX = "Selected iOS simulator context:";
 
 /**
- * Mirror the cyan chip pill the composer renders when an iOS-inspect packet is
- * staged. Sent user messages keep the same backtick-wrapped label tokens at the
- * front of `event.text`, so we can re-promote them to the same chip treatment
- * here. Without this they render as inline-code-styled text and reviewers can't
- * tell the message actually carried packet context (vs. the user just typing
- * the label by hand).
- */
-function parseLeadingIosContextChips(text: string): { chips: string[]; rest: string } {
-  const chips: string[] = [];
-  let i = 0;
-  while (i < text.length && text[i] === "`") {
-    const close = text.indexOf("`", i + 1);
-    if (close === -1) break;
-    const inner = text.slice(i + 1, close);
-    if (!inner.length || inner.includes("`") || inner.includes("\n")) break;
-    // Promote only when the closing backtick is followed by a valid token
-    // boundary — whitespace, end-of-string, or an accepted punctuation char.
-    // Adjacent non-space text (e.g. `ctx`message) is plain code, not a chip.
-    const next = text[close + 1];
-    const atValidBoundary =
-      next === undefined
-      || next === " "
-      || next === "\t"
-      || next === "\n"
-      || next === ","
-      || next === "."
-      || next === ":"
-      || next === ";";
-    if (!atValidBoundary) break;
-    chips.push(inner);
-    i = close + 1;
-    if (next === " ") {
-      i += 1;
-      continue;
-    }
-    break;
-  }
-  return { chips, rest: text.slice(i) };
-}
-
-/**
  * Whether a user message's attachments reached the agent. Only a state that
  * proves delivery counts: `processed`, `delivered` or `inline`. A message with
  * no delivery state predates the field and was delivered. `accepted` ("Steering…",
@@ -1247,6 +1200,8 @@ type RenderEnvelope = {
   repeatCount?: number;
   /** Image views folded into this row by adjacency; see ChatTranscriptRenderEnvelope. */
   imageViewSiblings?: Array<Extract<AgentChatEvent, { type: "codex_image_view" }>>;
+  /** Other children's finished-turn notices on this line; see ChatTranscriptRenderEnvelope. */
+  spawnCompletionSiblings?: SpawnCompletionSibling[];
   /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
   timestampSynthetic?: boolean;
   /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
@@ -2505,6 +2460,25 @@ function textHasSceneFence(event: { text: string }): boolean {
   return has;
 }
 
+/**
+ * A `/compact` the user sent as its own turn, on a provider where that is a
+ * real compact action. A `/compact` steered into a running turn, or still
+ * queued, belongs to that turn and stays an ordinary message; so does one that
+ * carries attachments, which the chip could not show.
+ */
+function isCompactCommandMessage(
+  event: TranscriptGroupedEnvelope["event"] | AgentChatEvent,
+  provider: string | null | undefined,
+): boolean {
+  return event.type === "user_message"
+    && !event.steerId
+    && (event.deliveryState == null || event.deliveryState === "delivered")
+    && !event.attachments?.length
+    && !event.contextAttachments?.length
+    && providerSupportsManualCompact(provider)
+    && isManualCompactCommand(event.text);
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: SpawnedChatProviderProps & {
@@ -2573,6 +2547,19 @@ function renderEvent(
   // One rule for "this row draws nothing", shared with Thought-run merging.
   if (transcriptEventDrawsNothing(event, options)) return null;
 
+  // A jump to a spawned chat. A child that ran on this chat's machine lives
+  // there too, so the jump carries this chat's pin; without it a chat on
+  // another machine is focused against the tab's machine and resolves to
+  // nothing. A child that ran elsewhere (`childMachineName`) is left to the
+  // Work list, which knows every machine's sessions. Its lane is passed only
+  // when known: the listener otherwise resolves the child's own lane, where
+  // this chat's lane would open the wrong one.
+  const openSpawnedChat = (
+    childSessionId: string | null | undefined,
+    childLaneId: string | null,
+    childMachineName?: string | null,
+  ) => navigateToSpawnedChat(childSessionId, childLaneId, childMachineName ? null : options?.runtimePin ?? null);
+
   if (event.type === "model_handoff") {
     // Same-provider handoffs never reach here: they are dropped upstream by
     // `isSameProviderModelHandoffEvent` so they do not mount an empty row.
@@ -2640,7 +2627,7 @@ function renderEvent(
         </div>
         <button
           type="button"
-          onClick={() => navigateToSpawnedChat(event.childSessionId, options?.laneId ?? null)}
+          onClick={() => openSpawnedChat(event.childSessionId, null, event.childMachineName)}
           className="mx-auto inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-1.5 rounded-full border border-violet-300/18 bg-violet-400/[0.06] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/70 transition-colors hover:border-violet-300/30 hover:text-fg/90"
           title="Open the spawned chat"
         >
@@ -2659,8 +2646,11 @@ function renderEvent(
      with the exact text the agent received folded underneath it, quiet and
      centred. Rendering it as a user bubble would put words in the user's mouth
      that they never wrote. */
-  if (event.type === "user_message" && event.metadata?.boardMove) {
-    const boardMove = event.metadata.boardMove;
+  // One decision for what a user-message row shows (`userMessageBody.ts`);
+  // find (⌘F) searches the same text.
+  const userBody = event.type === "user_message" ? resolveUserMessageBody(event) : null;
+  if (userBody?.kind === "board-move") {
+    const boardMove = userBody.move;
     return (
       <div className="my-3 flex flex-col gap-1" data-board-move-to={boardMove.to}>
         <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45">
@@ -2670,8 +2660,8 @@ function renderEvent(
           </span>
           <span className="h-px flex-1 bg-fg/[0.08]" />
         </div>
-        <p className="mx-auto max-w-[var(--chat-content-width,52rem)] text-center font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-fg/55">
-          {event.displayText?.trim() || event.text}
+        <p data-chat-find-text="" className="mx-auto max-w-[var(--chat-content-width,52rem)] text-center font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-fg/55">
+          {userBody.line}
         </p>
       </div>
     );
@@ -2682,8 +2672,8 @@ function renderEvent(
      write this message, so it is never a user bubble: the card says what
      changed and that the agent was told, and the exact text sits folded
      underneath for anyone who wants to see what the agent read. */
-  const prWatchWake = event.type === "user_message" ? event.metadata?.prWatchWake : undefined;
-  if (event.type === "user_message" && prWatchWake?.card) {
+  if (event.type === "user_message" && userBody?.kind === "wake-card") {
+    const prWatchWake = userBody.wake;
     const card: Extract<AgentChatEvent, { type: "ade_card" }> = { ...prWatchWake.card, type: "ade_card" };
     return (
       <div className="my-2 flex flex-col gap-1" data-pr-watch-wake={prWatchWake.watchId}>
@@ -2704,13 +2694,28 @@ function renderEvent(
     );
   }
 
+  /* ── Compact command ──
+     `/compact` is an action, not something the user said: the compaction line
+     under it carries the result. A quiet chip keeps the record of who asked
+     without a full message bubble. */
+  if (event.type === "user_message" && isCompactCommandMessage(event, options?.sessionProvider)) {
+    return (
+      <div className="flex w-full justify-end" data-chat-compact-command="">
+        <span
+          title={event.displayText?.trim() || event.text.trim()}
+          className="inline-flex max-w-[82%] items-center rounded-full border border-fg/[0.08] bg-fg/[0.03] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*11.5/14)] text-fg/55"
+        >
+          <span className="min-w-0 truncate">{event.displayText?.trim() || event.text.trim()}</span>
+        </span>
+      </div>
+    );
+  }
+
   /* ── User message ── */
-  if (event.type === "user_message") {
+  if (event.type === "user_message" && userBody) {
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
     if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
-    const hasPastedTextPromptAttachment = event.attachments?.some(
-      (attachment) => attachment.type === "file" && attachment.intent === "user_prompt",
-    ) === true;
+    const hasPastedTextPromptAttachment = userMessageHasPastedPrompt(event);
     const copyText = event.displayText?.trim() || (
       event.metadata?.hideFullPrompt === true
       || hasPastedTextPromptAttachment
@@ -2752,10 +2757,13 @@ function renderEvent(
           )}
           style={MESSAGE_CARD_STYLE}
           data-chat-user-message-card=""
+          // ⌘F searches the bubble's text; its hover actions, review card and
+          // attachments are marked to skip.
+          data-chat-find-text=""
         >
           {/* Frosted so the actions stay legible over a long first line or a
               brief's heading, instead of printing on top of the words. */}
-          <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+          <div data-ade-find-skip="" className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             {envelope.timestampSynthetic === true
               ? null
               : <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />}
@@ -2779,82 +2787,74 @@ function renderEvent(
               : null}
           </div>
           {(() => {
-            const displayText = event.displayText?.trim();
-            if (event.metadata?.hideFullPrompt === true) {
-              return displayText ? (
-                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
-              ) : null;
-            }
-            // A send that carried thread comments: the review card, then what
-            // the user typed (if anything) under it.
-            const review = parseThreadReviewBlock(event.text);
-            if (review) {
-              const typed = hasPastedTextPromptAttachment
-                ? displayText
-                : displayText || review.rest.trim();
-              return (
-                <div className="flex min-w-0 flex-col gap-2">
-                  <ThreadReviewSentCard comments={review.comments} />
-                  {typed ? <UserTypedText text={typed} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null}
-                </div>
-              );
-            }
-            // `text` is what the provider received (mention blocks expanded);
-            // `displayText` is what the user typed. Show only what they typed.
-            if (hasPastedTextPromptAttachment) {
-              return displayText ? (
-                <UserTypedText text={displayText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
-              ) : null;
-            }
-            if (displayText && displayText !== event.text.trim()) {
-              return userTextLooksLikeMarkdown(displayText) ? (
-                <MarkdownBlock markdown={displayText} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
-              ) : (
-                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={displayText} />
-              );
-            }
-            const parsed = parseLeadingIosContextChips(event.text);
-            const contextSegments = splitChatOutputContextSegments(parsed.rest);
-            const hasOutputContext = contextSegments.some((segment) => segment.kind === "context");
-            const body = !parsed.chips.length && !hasOutputContext ? (
-              userTextLooksLikeMarkdown(event.text) ? (
-                <MarkdownBlock markdown={event.text} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
-              ) : (
-                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={event.text} />
-              )
-            ) : (
-              <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
-                {parsed.chips.length ? (
-                  <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
-                    {parsed.chips.map((label, idx) => (
-                      <span
-                        key={`ios-chip-${idx}`}
-                        className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-[#ecfeff]/85 align-baseline"
-                        title={label}
-                        data-testid="user-message-ios-context-chip"
-                      >
-                        <span className="max-w-[200px] truncate">{label}</span>
+            const body = userBody;
+            switch (body.kind) {
+              case "brief":
+                return body.text ? (
+                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={body.text} />
+                ) : null;
+              case "review":
+                return (
+                  <div className="flex min-w-0 flex-col gap-2">
+                    <div data-ade-find-skip="" className="contents">
+                      <ThreadReviewSentCard comments={body.comments} />
+                    </div>
+                    {body.typed ? <UserTypedText text={body.typed} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null}
+                  </div>
+                );
+              case "typed":
+                return body.text ? <UserTypedText text={body.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null;
+              case "text":
+                return body.markdown ? (
+                  <MarkdownBlock markdown={body.text} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+                ) : (
+                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={body.text} />
+                );
+              case "chips":
+                // Prompts render in full, however long.
+                return (
+                  <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
+                    {body.chips.length ? (
+                      <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
+                        {body.chips.map((label, idx) => (
+                          <span
+                            key={`ios-chip-${idx}`}
+                            className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-[#ecfeff]/85 align-baseline"
+                            title={label}
+                            data-testid="user-message-ios-context-chip"
+                          >
+                            <span className="max-w-[200px] truncate">{label}</span>
+                          </span>
+                        ))}
                       </span>
-                    ))}
-                  </span>
-                ) : null}
-                {hasOutputContext ? <ChatContextSegments segments={contextSegments} /> : parsed.rest}
-              </div>
-            );
-            // Prompts render in full, however long. The hidden-prompt brief
-            // keeps its own chip.
-            return body;
+                    ) : null}
+                    {body.segments ? <ChatContextSegments segments={body.segments} /> : body.rest}
+                  </div>
+                );
+              case "wake-card":
+                // Returned above (as is `board-move`), never as a bubble.
+                return null;
+              default: {
+                // Exhaustive: a new kind is a compile error here.
+                const unhandled: never = body;
+                return unhandled;
+              }
+            }
           })()}
           {event.attachments?.length || event.contextAttachments?.length ? (
-            <UserMessageIssueContext
-              attachments={event.attachments ?? []}
-              contextAttachments={event.contextAttachments ?? []}
-              mode={options?.surfaceMode ?? "standard"}
-              sessionId={options?.sessionId}
-              accepted={userMessageAttachmentsAccepted(event)}
-            />
+            <div data-ade-find-skip="" className="contents">
+              <UserMessageIssueContext
+                attachments={event.attachments ?? []}
+                contextAttachments={event.contextAttachments ?? []}
+                mode={options?.surfaceMode ?? "standard"}
+                sessionId={options?.sessionId}
+                accepted={userMessageAttachmentsAccepted(event)}
+              />
+            </div>
           ) : null}
-          <UserMessageSendConfirmations event={event} />
+          <div data-ade-find-skip="" className="contents">
+            <UserMessageSendConfirmations event={event} />
+          </div>
         </div>
         <UserMessageStatusRow
           event={event}
@@ -3163,7 +3163,7 @@ function renderEvent(
         };
     // Only the chat's latest compaction offers Retry; an older failure was
     // already superseded. The pane's action refuses while a turn is live.
-    const retry = options?.onRetryCompaction && options.latestCompactionKey === contextCompactMergeKey(compactEvent)
+    const retry = options?.onRetryCompaction && !options.sessionTurnActive && options.latestCompactionKey === contextCompactMergeKey(compactEvent)
       ? options.onRetryCompaction
       : undefined;
     return <ContextCompactDivider event={compactEvent} startedAt={envelope.timestamp} onRetry={retry} />;
@@ -3395,8 +3395,8 @@ function renderEvent(
     }
     // Spawn notices. The "spawned" announcement is now carried by the unified,
     // navigable spawn-anchor card (SubagentSpawnCard) — do NOT render a second
-    // quiet pill here. A `peer` child that finishes emits a `spawn_completed`
-    // notice; render a single quiet steel chip that navigates to the child.
+    // quiet pill here. A child that finishes a turn emits a `spawn_completed`
+    // notice, drawn below as one quiet line that navigates to the child.
     if (event.noticeKind === "info" && event.status === "subagent_spawned") {
       const detail = (event.detail && typeof event.detail === "object" ? event.detail : {}) as {
         spawnKind?: "subagent" | "peer";
@@ -3410,7 +3410,7 @@ function renderEvent(
         <button
           type="button"
           disabled={!childSessionId}
-          onClick={() => navigateToSpawnedChat(childSessionId, spawned?.laneId ?? options?.laneId ?? null)}
+          onClick={() => openSpawnedChat(childSessionId, spawned?.laneId ?? null)}
           className={cn(
             "inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] transition-colors",
             isPeer
@@ -3438,7 +3438,7 @@ function renderEvent(
         <button
           type="button"
           disabled={!childSessionId}
-          onClick={() => navigateToSpawnedChat(childSessionId, options?.laneId ?? null)}
+          onClick={() => openSpawnedChat(childSessionId, null)}
           className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70 transition-colors enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
           title={childSessionId ? "Open the chat the user took over" : undefined}
         >
@@ -3458,46 +3458,54 @@ function renderEvent(
         </div>
       );
     }
-    if (event.noticeKind === "info" && event.status === "spawn_completed") {
-      const completion: AgentChatSpawnCompletion | undefined =
-        event.detail && typeof event.detail === "object" ? event.detail.spawnCompletion : undefined;
-      // Fallback title parse for a notice whose detail lost its completion —
-      // which happens to notices in EITHER wording, so both are handled here:
-      // the current `spawnCompletedNoticeMessage` sentence, and the pre-rename
-      // `Peer "<title>" turn finished` that persisted transcripts still hold
-      // and are never re-emitted.
-      //
-      // One anchored match with a capture group rather than subtracting the
-      // two ends with a /g replace: a message that is not a completion notice
-      // at all now fails to match and falls through to "Chat", instead of
-      // being handed back mangled.
-      const parsedChildTitle = SPAWN_COMPLETED_TITLE_PATTERN.exec(event.message)?.[1]?.trim();
-      const childTitle = completion?.childTitle?.trim() || parsedChildTitle || "Chat";
-      const childSessionId = typeof completion?.childSessionId === "string" && completion.childSessionId.length
-        ? completion.childSessionId
-        : null;
-      const repeatCountRaw = envelope.repeatCount;
-      const repeatCount = typeof repeatCountRaw === "number" && Number.isFinite(repeatCountRaw) && repeatCountRaw > 1
-        ? Math.floor(repeatCountRaw)
-        : null;
-      return (
+    const spawnCompletion = spawnCompletionNoticeOf(event);
+    if (spawnCompletion) {
+      // One quiet line, not a pill: background news about other chats. The
+      // row pipeline keeps only each child's newest notice (with the count of
+      // turns it stands for) and puts neighbours on the same line.
+      const entries = [
+        { key: envelope.key, notice: spawnCompletion, repeatCount: envelope.repeatCount ?? 1 },
+        ...(envelope.spawnCompletionSiblings ?? []),
+      ];
+      const single = entries.length === 1 ? entries[0] : null;
+      const chip = (entry: (typeof entries)[number], label: string) => (
         <button
           type="button"
-          disabled={!childSessionId}
-          onClick={() => navigateToSpawnedChat(childSessionId, options?.laneId ?? null)}
-          className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70 transition-colors enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
-          title={childSessionId ? "Open the chat" : undefined}
+          disabled={!entry.notice.childSessionId}
+          onClick={() => openSpawnedChat(entry.notice.childSessionId, null, entry.notice.childMachineName)}
+          className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-sm text-left transition-colors enabled:hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20"
+          title={entry.notice.childSessionId ? "Open the chat" : undefined}
         >
-          <span aria-hidden className="shrink-0 text-slate-300/60">◦</span>
-          <span className="min-w-0 truncate">{spawnCompletedNoticeMessage(childTitle)}</span>
-          {completion?.childMachineName ? (
-            <span className="shrink-0 text-slate-300/50">· on {completion.childMachineName}</span>
+          <span className="min-w-0 truncate">{label}</span>
+          {entry.notice.childMachineName ? (
+            <span className="shrink-0 text-fg/30">· on {entry.notice.childMachineName}</span>
           ) : null}
-          {repeatCount ? (
-            <span className="shrink-0 tabular-nums text-slate-300/45">×{repeatCount}</span>
+          {entry.repeatCount > 1 ? (
+            <span className="shrink-0 tabular-nums text-fg/30" title={`${entry.repeatCount} turns`}>×{entry.repeatCount}</span>
           ) : null}
-          {childSessionId ? <CaretRight size={10} className="shrink-0 text-slate-300/55" /> : null}
+          {entry.notice.childSessionId ? <CaretRight size={9} className="shrink-0 text-fg/30" aria-hidden /> : null}
         </button>
+      );
+      return (
+        <div
+          className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-start gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-[1.6] text-fg/45"
+          data-testid="spawn-completed-line"
+        >
+          <CheckCircle size={11} className="mt-[0.3em] shrink-0 text-fg/30" aria-hidden />
+          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+            {single ? chip(single, spawnCompletedNoticeMessage(single.notice.childTitle)) : (
+              <>
+                <span className="shrink-0">{entries.length} chats finished their turns:</span>
+                {entries.map((entry, index) => (
+                  <React.Fragment key={entry.key}>
+                    {index > 0 ? <span aria-hidden className="text-fg/25">·</span> : null}
+                    {chip(entry, entry.notice.childTitle)}
+                  </React.Fragment>
+                ))}
+              </>
+            )}
+          </span>
+        </div>
       );
     }
     // ── Host sleep ──
@@ -4803,6 +4811,8 @@ type EventRowProps = SpawnedChatProviderProps & {
   pacedTextReveal?: boolean;
   /** This reasoning row is the live turn's newest, still-streaming row. */
   liveThinking?: boolean;
+  /** A finished `/compact` turn: the compaction line stands in for the turn-end line. */
+  compactOnlyTurn?: boolean;
   /** `turn_fold` rows: whether the fold is open. */
   turnFoldOpen?: boolean;
   onToggleTurnFold?: (foldId: string) => void;
@@ -4876,6 +4886,7 @@ const EventRow = React.memo(function EventRow({
   onOpenProofDrawer,
   pacedTextReveal,
   liveThinking = false,
+  compactOnlyTurn = false,
   turnFoldOpen = false,
   onToggleTurnFold,
   turnWorkInFold = false,
@@ -4988,7 +4999,7 @@ const EventRow = React.memo(function EventRow({
             pacedTextReveal,
             liveThinking,
           })}
-      {envelope.event.type === "done" ? (
+      {envelope.event.type === "done" && !(compactOnlyTurn && envelope.event.status === "completed") ? (
         <DoneTurnDivider
           event={envelope.event}
           timestamp={envelope.timestamp}
@@ -5083,6 +5094,9 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
     </div>
   );
 });
+
+/** Shared empty set: a chat with no duplicate answers keeps one identity. */
+const EMPTY_FIND_EXCLUDED_KEYS: ReadonlySet<string> = new Set();
 
 /* ── Virtualization constants ── */
 
@@ -6109,6 +6123,24 @@ function AgentChatMessageListMain({
     }
     return ids;
   }, [allGroupedRows]);
+  // Turns that `/compact` opened and that did nothing else. The compaction
+  // line is their whole story, so they get no working indicator and no
+  // turn-end line of their own. A turn that also drew anything (text, tools,
+  // an error) keeps both: its turn-end line carries that work.
+  const compactOnlyTurnIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of allGroupedRows) {
+      if (row.event.type === "user_message" && row.event.turnId && isCompactCommandMessage(row.event, sessionProvider)) ids.add(row.event.turnId);
+    }
+    if (ids.size === 0) return ids;
+    for (const row of allGroupedRows) {
+      const type = row.event.type;
+      if (type === "user_message" || type === "done" || type === "context_compact" || type === "codex_context_compaction") continue;
+      const turnId = getGroupedTurnId(row);
+      if (turnId && ids.has(turnId) && !transcriptEventDrawsNothing(row.event)) ids.delete(turnId);
+    }
+    return ids;
+  }, [allGroupedRows, sessionProvider]);
   // Row keys that were live when their turn ended. Consecutive background jobs
   // group only with jobs that share that fate, so the fold can hide the ones
   // that finished and keep the ones still running (`groupBackgroundJobRuns`).
@@ -7115,11 +7147,10 @@ function AgentChatMessageListMain({
     [groupedRowKeys, heightForKey, estimateWidthStep],
   );
 
-  const scrollToRowIndexNearTop = useCallback((rowIndex: number) => {
+  /** Scroll to `targetTop` as a reader's own scroll would: bottom-follow lets go. */
+  const scrollContainerTo = useCallback((targetTop: number) => {
     const el = scrollRef.current;
-    if (!el || rowIndex < 0 || rowIndex >= groupedRows.length) return false;
-    const offsets = computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
-    const targetTop = computeScrollTopForRow(rowIndex, offsets);
+    if (!el) return false;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
     const clamped = Math.max(0, Math.min(maxScroll, targetTop));
     stickToBottomRef.current = false;
@@ -7136,7 +7167,13 @@ function AgentChatMessageListMain({
     }
     setScrollTop(el.scrollTop);
     return true;
-  }, [groupedRows.length, rowHeight, timelineRowGapPx]);
+  }, []);
+
+  const scrollToRowIndexNearTop = useCallback((rowIndex: number) => {
+    if (!scrollRef.current || rowIndex < 0 || rowIndex >= groupedRows.length) return false;
+    const offsets = computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
+    return scrollContainerTo(computeScrollTopForRow(rowIndex, offsets));
+  }, [groupedRows.length, rowHeight, scrollContainerTo, timelineRowGapPx]);
 
   // Scroll a grouped row into view by its stable render key — used by the
   // subagent spawn/result "jump to result ↓" / "↑ jump to start" affordances.
@@ -7156,6 +7193,32 @@ function AgentChatMessageListMain({
     const rowIndex = drawnRowKeyIndexRef.current.get(rowKey);
     if (rowIndex !== undefined && rowIndex >= 0) scrollToRowIndexNearTop(rowIndex);
   }, [revealTurnFoldRow, scrollToRowIndexNearTop]);
+
+  // Find (⌘F): a stable way in for the layer, and the rows it searches. The
+  // layer subscribes only while its bar is open, so a closed find costs the
+  // streaming path one ref write and an empty listener loop.
+  const scrollToRowKeyRef = useRef(scrollToRowKey);
+  scrollToRowKeyRef.current = scrollToRowKey;
+  const revealRowForFind = useCallback((rowKey: string) => scrollToRowKeyRef.current(rowKey), []);
+  const findSnapshotRef = useRef<ChatFindSourceSnapshot>({ rows: [], excludedKeys: new Set(), hasOlderHistory: false });
+  const findListenersRef = useRef(new Set<() => void>());
+  const findSource = useMemo<ChatFindSource>(() => ({
+    get: () => findSnapshotRef.current,
+    subscribe: (listener) => {
+      findListenersRef.current.add(listener);
+      return () => findListenersRef.current.delete(listener);
+    },
+  }), []);
+  useEffect(() => {
+    findSnapshotRef.current = {
+      rows: presentedRows,
+      excludedKeys: answerKeyByDuplicateKeyRef.current.size
+        ? new Set(answerKeyByDuplicateKeyRef.current.keys())
+        : EMPTY_FIND_EXCLUDED_KEYS,
+      hasOlderHistory,
+    };
+    for (const listener of findListenersRef.current) listener();
+  }, [presentedRows, turnFolds, hasOlderHistory]);
 
   useEffect(() => {
     if (!scrollToRowKeyRequest?.key) return;
@@ -8000,6 +8063,7 @@ function AgentChatMessageListMain({
     // A fold row reads the same per-turn facts as its turn's `done` row.
     const foldEvent = envelope.event.type === "turn_fold" ? envelope.event : null;
     const turnEndKey = envelope.event.type === "done" ? envelope.key : (foldEvent?.turnEndKey ?? null);
+    const compactOnlyTurn = envelope.event.type === "done" && envelope.event.turnId != null && compactOnlyTurnIds.has(envelope.event.turnId);
     const turnEndDurationMs = turnEndKey
       ? (turnEndDurationByRowKey.get(turnEndKey) ?? null)
       : undefined;
@@ -8114,6 +8178,7 @@ function AgentChatMessageListMain({
           onStopSubagent={onStopSubagent}
           pacedTextReveal={envelope.key === pacedTextRowKey}
           liveThinking={envelope.key === liveThinkingDrawnKey}
+          compactOnlyTurn={compactOnlyTurn}
           turnFoldOpen={turnFoldOpen}
           onToggleTurnFold={toggleTurnFold}
           turnWorkInFold={turnWorkInFold}
@@ -8188,12 +8253,13 @@ function AgentChatMessageListMain({
         onStopSubagent={onStopSubagent}
         pacedTextReveal={envelope.key === pacedTextRowKey}
         liveThinking={envelope.key === liveThinkingDrawnKey}
+        compactOnlyTurn={compactOnlyTurn}
         turnFoldOpen={turnFoldOpen}
         onToggleTurnFold={toggleTurnFold}
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -8209,7 +8275,7 @@ function AgentChatMessageListMain({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
-  const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
+  const streamingIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId)) ? (
     <motion.div
       className="w-fit max-w-[var(--chat-content-width,52rem)] pt-3 pb-2"
       initial={{ opacity: 0 }}
@@ -8262,6 +8328,7 @@ function AgentChatMessageListMain({
     <div
       ref={listRootRef}
       data-chat-message-list-root=""
+      data-ade-find-scope="chat-transcript"
       className={cn("relative h-full min-h-0 min-w-0 max-w-full overflow-hidden", className)}
     >
       {/* Direct child of the list root on purpose: the rail's `left-0` and all of
@@ -8354,6 +8421,15 @@ function AgentChatMessageListMain({
         </div>
       </div>
       {showJumpToLatest ? <ChatJumpToLatestPill newRows={newRowsSinceDetach} onJump={jumpToLatest} /> : null}
+      <ChatFindLayer
+        rootRef={listRootRef}
+        contentRef={contentWrapperRef}
+        scrollRef={scrollRef}
+        source={findSource}
+        sessionId={sessionId ?? null}
+        revealRow={revealRowForFind}
+        scrollContainerTo={scrollContainerTo}
+      />
       {/* With comments on, the layer owns the selection toolbar (it adds "Comment"). */}
       {threadComments ? (
         <ThreadCommentLayer

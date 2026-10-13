@@ -180,6 +180,11 @@ export function AgentCliAuthCard({
   onRevealTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
 }) {
   const missing = agentCli.category === "missing";
+  // The agent runs on the chat's machine, so its sign-in and shell commands
+  // run there, in the chat's lane on that machine.
+  const chatScope = useChatRuntimeScope();
+  const runtimePin = chatScope.pin;
+  const chatLaneId = chatScope.laneId ?? laneId ?? null;
   const accent = agentCli.agent === "claude" ? CLAUDE_ACCENT : AMBER_ACCENT;
   // Retry only makes sense for the logged-out variant (not the "missing CLI"
   // variant) and only when there's a session to resend the last message into.
@@ -299,7 +304,7 @@ export function AgentCliAuthCard({
                   <ShellRunButton
                     command={agentCli.installCommand}
                     label="Run install"
-                    laneId={laneId}
+                    laneId={chatLaneId}
                     chatSessionId={chatSessionId}
                     accent={accent}
                     onRevealTerminal={onRevealTerminal}
@@ -333,7 +338,7 @@ export function AgentCliAuthCard({
                     command={agentCli.authCommand}
                     {...(agentCli.agent === "pi" ? { initialInput: "/login\n" } : {})}
                     label={agentCli.agent === "claude" ? "Log in to Claude" : agentCli.agent === "pi" ? "Log in to Pi" : "Run auth"}
-                    laneId={laneId}
+                    laneId={chatLaneId}
                     chatSessionId={chatSessionId}
                     accent={accent}
                     onRevealTerminal={onRevealTerminal}
@@ -375,14 +380,15 @@ export function AgentCliAuthCard({
           providerId={agentCli.agent}
           providerLabel={agentCli.displayName}
           command={embeddedSignInCommand}
-          laneId={laneId ?? null}
+          laneId={chatLaneId}
+          runtimePin={runtimePin}
           onClose={() => setSignInOpen(false)}
           // Signing in does not resend anything on its own: the retry button
           // above is the one place a turn is re-dispatched, and it now reads as
           // the obvious next step.
           onSignedIn={() => setLoginStarted(true)}
           checkSignedIn={async () => {
-            const status = await window.ade?.ai?.getStatus?.({ force: true });
+            const status = await window.ade?.ai?.getStatus?.({ force: true }, runtimePin);
             const connection = (status?.providerConnections as Record<string, { authAvailable?: boolean }> | undefined)
               ?.[agentCli.agent];
             return connection?.authAvailable === true;

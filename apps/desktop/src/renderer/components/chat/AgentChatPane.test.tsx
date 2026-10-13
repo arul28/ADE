@@ -3980,6 +3980,49 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("recovers a locked chat's model once its summary can be read again", async () => {
+    // A Work chat is locked to one session and learns its title and model from
+    // its summary. While the brain cannot answer, the chat shows no model; a
+    // finished chat gets no events that would ask again, so only the pane's
+    // own retry brings the model back once the brain answers.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // Its own id: the pane remembers summaries across mounts, and a chat it
+      // has read before would show its model from the start.
+      const session = buildSession("session-summary-recovery", { status: "idle", title: "Finished chat" });
+      installAdeMocks({ sessions: [session] });
+      let brainUp = false;
+      const getSummary = vi.mocked(window.ade.agentChat.getSummary);
+      getSummary.mockImplementation(async () => {
+        if (!brainUp) throw new Error("brain restarting");
+        return session;
+      });
+      const modelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
+      const currentModel = new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i");
+
+      render(
+        <MemoryRouter>
+          <AgentChatPane laneId={session.laneId} lockSessionId={session.sessionId} hideSessionTabs onSessionCreated={vi.fn()} />
+        </MemoryRouter>,
+      );
+      await waitFor(() => expect(getSummary).toHaveBeenCalled());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(screen.queryByRole("button", { name: currentModel })).toBeNull();
+
+      brainUp = true;
+      const readsBeforeRecovery = getSummary.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(getSummary.mock.calls.length).toBeGreaterThan(readsBeforeRecovery);
+      expect(await screen.findByRole("button", { name: currentModel })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("restores the idle summary and composer after send dispatch fails", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { send } = installAdeMocks({

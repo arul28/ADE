@@ -6,7 +6,9 @@
  * renderer (which shows the sent card) and the tests share one format.
  */
 
-/** The comment actions, in every list that must name them (policy, preload, RPC guard, mobile). */
+import { isSessionMetaOnly } from "./sessionMetaEvents";
+
+/** The comment actions, in every list that must name them (policy, access table, RPC guard, mobile). */
 export const THREAD_COMMENT_ACTION_NAMES = [
   "listThreadComments",
   "createThreadComment",
@@ -249,6 +251,5 @@ export function normalizeThreadCommentAnchor(anchor: unknown): ChatThreadComment
  * It is not chat activity: no recency bump, no session-list or roster refresh.
  */
 export function isThreadCommentsOnlyMetaEvent(event: { type: string }): boolean {
-  if (event.type !== "session_meta_updated" || (event as { threadComments?: unknown }).threadComments === undefined) return false;
-  return Object.keys(event).every((key) => key === "type" || key === "threadComments" || key === "turnId");
+  return isSessionMetaOnly(event, "threadComments", ["turnId"]);
 }

@@ -579,6 +579,8 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "session.limit_reached",
   "session.failed",
   "session.ended_without_pr",
+  // A chat was settled (filed as done). The session service reports it.
+  "session.settled",
   "lane.created",
   "lane.archived",
   "lane.merged",
@@ -1966,6 +1968,13 @@ export type AiChatConfig = {
    * either way.
    */
   piExtensionsEnabled?: boolean;
+  /**
+   * Draw what Claude Code mods show (status lines, toasts, a band above the
+   * prompt, panes) in ADE chat. Off unless set to true: the channel is
+   * private to Claude Code. The mods' hooks run either way; this only
+   * controls the drawing.
+   */
+  claudePluginUiEnabled?: boolean;
   /** Global kill switch for durable Claude wakeups, cron tasks, and loops. */
   scheduledWorkPaused?: boolean;
   /**

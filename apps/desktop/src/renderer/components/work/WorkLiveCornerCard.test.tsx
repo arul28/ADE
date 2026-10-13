@@ -684,6 +684,32 @@ describe("WorkLiveCornerCard dismissal", () => {
     expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toEqual([]);
   });
 
+  it("steps aside while the floated tab's page has failed to load, and comes back when it loads", async () => {
+    // A failed load is a plain white page; floating it is a white box. Even a
+    // tool the chat floated by hand steps aside, and nothing is lost: the
+    // float comes back the moment the tab loads again.
+    seedProject();
+    renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    act(() => { floatWorkLiveCardForChat("chat-1", "browser"); });
+    await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
+
+    const failed = makeBuiltInBrowserStatus({
+      ...BROWSER_STATUS,
+      tabs: [{
+        ...BROWSER_STATUS.tabs[0]!,
+        loadError: { code: -102, description: "ERR_CONNECTION_REFUSED", url: "https://example.test/login" },
+      }],
+    });
+    emitBrowserEvent({ type: "status", status: failed });
+    await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+    expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toEqual(["browser"]);
+
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
   it("a disabled preview never shows even when the tool is live", async () => {
     seedProject();
     const { card } = await showCard();

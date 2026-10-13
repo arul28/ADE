@@ -12,6 +12,12 @@ import type {
   ChatThreadCommentUpdateArgs,
 } from "../shared/threadComments";
 import type {
+  ClaudePluginUiActArgs,
+  ClaudePluginUiActResult,
+  ClaudePluginUiGetArgs,
+  ClaudePluginUiSnapshot,
+} from "../shared/claudePluginUi";
+import type {
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
   AppleDeviceStopArgs,
@@ -137,6 +143,12 @@ import type {
   ApplyConflictProposalArgs,
   AppInfo,
   LocalRuntimeStatus,
+  BackgroundServiceSummary,
+  QuitPromptAnswer,
+  QuitPromptRepairResult,
+  QuitPromptRequest,
+  StopBackgroundServiceRequest,
+  StopBackgroundServiceResult,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -1057,7 +1069,7 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   WorkToolId,
@@ -1141,6 +1153,24 @@ declare global {
          * touch a launch agent, so callers must feature-detect before offering it.
          */
         restartBackgroundService?: () => Promise<void>;
+        /**
+         * The quit confirmation main asks this window to show. Call
+         * `quitPromptShown` once it is on screen, then answer. Native desktop
+         * only; absent on the hosted-web client and browser mock.
+         */
+        onQuitPrompt?: (cb: (request: QuitPromptRequest) => void) => () => void;
+        /** Main is asking natively instead; drop the prompt with this id. */
+        onQuitPromptDismiss?: (cb: (requestId: string) => void) => () => void;
+        quitPromptShown?: (requestId: string) => void;
+        /** Resolves with the repair outcome for a "repair" choice, else null. */
+        answerQuitPrompt?: (answer: QuitPromptAnswer) => Promise<QuitPromptRepairResult | null>;
+        /** Whether ADE confirms before quitting; "Don't ask again" turns it off. */
+        getAskBeforeQuit?: () => Promise<boolean>;
+        setAskBeforeQuit?: (ask: boolean) => Promise<boolean>;
+        /** What runs agents on this computer, and what stopping would end. */
+        getBackgroundService?: () => Promise<BackgroundServiceSummary>;
+        /** Stops the background service and every agent in it, then quits ADE. */
+        stopBackgroundServiceAndQuit?: (request: StopBackgroundServiceRequest) => Promise<StopBackgroundServiceResult>;
         getLatestRelease: () => Promise<LatestReleaseInfo | null>;
         getProject: () => Promise<ProjectInfo | null>;
         getWindowSession: () => Promise<{
@@ -1347,6 +1377,13 @@ declare global {
         repair: (projectRoot: string) => Promise<ProjectRepairReport>;
         /** Opens System Settings at Login Items (macOS). Optional: older preloads lack it. */
         openBackgroundSettings?: () => Promise<{ opened: boolean }>;
+        /** Optional: older preloads lack the missing-data recovery calls. */
+        restoreProjectData?: (projectRoot: string) => Promise<ProjectDataRestoreResult>;
+        startFresh?: (projectRoot: string) => Promise<void>;
+        /** Whether a project's ADE data is missing or swapped; no root asks about the project that failed to reopen at launch. */
+        projectDataStatus?: (projectRoot?: string) => Promise<ProjectDataStatus | null>;
+        /** An open project's .ade folder or database was moved or deleted. */
+        onProjectDataMissing?: (cb: (payload: { projectRoot: string; status: ProjectDataProblem }) => void) => () => void;
         /**
          * Live repair steps for the window that started the repair. Optional
          * for the same reason `diagnostics` is: an older preload does not have
@@ -1905,8 +1942,8 @@ declare global {
       };
       usage: {
         getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;
-        getSnapshot: () => Promise<UsageSnapshot | null>;
-        refresh: () => Promise<UsageSnapshot | null>;
+        getSnapshot: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null>;
+        refresh: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null>;
         refreshHistory: () => Promise<UsageSnapshot | null>;
         noteDemand: () => Promise<UsageSnapshot | null>;
         /**
@@ -2527,6 +2564,11 @@ declare global {
             args: DraftDeleteArgs,
             pin?: OpenProjectBinding | null,
           ) => Promise<{ ok: boolean; error?: string }>;
+        };
+        /** Claude mod UI. Absent in a client that draws none (the hosted web client). */
+        claudePluginUi?: {
+          get: (args: ClaudePluginUiGetArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiSnapshot>;
+          act: (args: ClaudePluginUiActArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiActResult>;
         };
         threadComments: {
           list: (args: ChatThreadCommentListArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment[]>;
@@ -3670,6 +3712,11 @@ declare global {
           args: ProviderInstanceDismissReplacedArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ProviderInstance>;
+        /** Signs the account out with the provider CLI; refused for the default. */
+        signOut: (
+          args: ProviderInstanceDismissReplacedArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance | null>;
         loginStart: (args: ProviderLoginStartArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         loginStatus: (args: ProviderLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         loginSubmitCode: (args: ProviderLoginSubmitCodeArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;

@@ -321,6 +321,9 @@
 		F10000000000000000000003 /* SettingsPairingSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* SettingsPairingSection.swift */; };
 		AD0000000000000000000B01 /* AccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A01 /* AccountService.swift */; };
 		AD0000000000000000000B02 /* AccountDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A02 /* AccountDirectory.swift */; };
+		E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE01 /* DeviceSignInApproval.swift */; };
+		E2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */; };
+		E2000000000000000000DE03 /* WebAuthPresentationAnchor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */; };
 		AD0000000000000000000B03 /* AccountSignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A03 /* AccountSignInView.swift */; };
 		AD0000000000000000000B04 /* AccountConnectionsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A04 /* AccountConnectionsSection.swift */; };
 		AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */; };
@@ -786,6 +789,9 @@
 		F20000000000000000000003 /* SettingsPairingSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPairingSection.swift; path = ADE/Views/Settings/SettingsPairingSection.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A01 /* AccountService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountService.swift; path = ADE/Services/AccountService.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A02 /* AccountDirectory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountDirectory.swift; path = ADE/Services/AccountDirectory.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE01 /* DeviceSignInApproval.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceSignInApproval.swift; path = ADE/Services/DeviceSignInApproval.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceSignInApprovalSheet.swift; path = ADE/Views/Account/DeviceSignInApprovalSheet.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WebAuthPresentationAnchor.swift; path = ADE/Views/Components/WebAuthPresentationAnchor.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A03 /* AccountSignInView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountSignInView.swift; path = ADE/Views/Account/AccountSignInView.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A04 /* AccountConnectionsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountConnectionsSection.swift; path = ADE/Views/Account/AccountConnectionsSection.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountEmailAuthFlow.swift; path = ADE/Services/AccountEmailAuthFlow.swift; sourceTree = "<group>"; };
@@ -967,6 +973,7 @@
 				A1000000000000000000001A /* ADEHaptics.swift */,
 				D20000000000000000000F30 /* ADEFlat.swift */,
 				D20000000000000000000F3A /* ADEKit.swift */,
+				D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */,
 				C10000000000000000000011 /* ADEMobilePrimitives.swift */,
 				C1000000000000000000A001 /* MachineRowView.swift */,
 				50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */,
@@ -1270,6 +1277,7 @@
 				AD0000000000000000000A04 /* AccountConnectionsSection.swift */,
 				C5A000000000000000000009 /* MobileAccessGateView.swift */,
 				C5A00000000000000000000A /* MobileAccessGateSheet.swift */,
+				D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */,
 			);
 			name = Account;
 			sourceTree = "<group>";
@@ -1340,6 +1348,7 @@
 				AD0000000000000000000A01 /* AccountService.swift */,
 				AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */,
 				AD0000000000000000000A02 /* AccountDirectory.swift */,
+				D2000000000000000000DE01 /* DeviceSignInApproval.swift */,
 				C5A000000000000000000001 /* MobileTrustResetPolicy.swift */,
 				C5A00000000000000000001F /* PairedHostCredentialState.swift */,
 				C5A000000000000000000002 /* SSHBootstrapModels.swift */,
@@ -2019,6 +2028,9 @@
 				AD0000000000000000000B01 /* AccountService.swift in Sources */,
 				AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */,
 				AD0000000000000000000B02 /* AccountDirectory.swift in Sources */,
+				E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */,
+				E2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift in Sources */,
+				E2000000000000000000DE03 /* WebAuthPresentationAnchor.swift in Sources */,
 				AD0000000000000000000B03 /* AccountSignInView.swift in Sources */,
 				AD0000000000000000000B04 /* AccountConnectionsSection.swift in Sources */,
 				F10000000000000000000004 /* SettingsPinSheet.swift in Sources */,

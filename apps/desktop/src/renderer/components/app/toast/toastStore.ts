@@ -55,6 +55,8 @@ export type Toast = Omit<ToastInput, "id" | "tone" | "durationMs"> & {
 export type ToastPatch = Partial<Omit<ToastInput, "id">>;
 
 const DEFAULT_DURATION_MS = 6000;
+/** A toast worth reading: a failure to act on, or a message of more than one line. */
+export const READABLE_TOAST_DURATION_MS = 18_000;
 const MAX_TOASTS = 5;
 
 type TimerEntry = {

@@ -1,4 +1,5 @@
 import type { AgentChatSessionSummary, OpenProjectBinding, PrReviewThread, PrWithConflicts } from "../../../../shared/types";
+import { PR_THREAD_CLOSEOUT_RULE } from "../../../../shared/prWatch";
 import { digestPreview } from "../../../../shared/prConversationDigest";
 import { pipelineStateOf, type PrPipelineStateInput } from "../../../../shared/prPipelineState";
 import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
@@ -92,6 +93,7 @@ export function buildPrChatPrompt(
           ? `Open threads:\n${lines.join("\n")}${findings.length > shown.length ? `\n…and ${findings.length - shown.length} more.` : ""}`
           : "No unresolved threads were loaded; read the PR conversation first.",
         "For each one, decide whether it is valid. Fix the valid ones with the smallest correct change, and say which ones you reject and why. Run the relevant tests, then summarize what changed.",
+        PR_THREAD_CLOSEOUT_RULE,
       ].join("\n\n");
     }
     case "fix_checks": {

@@ -7,6 +7,7 @@ import {
   resolveMachineAdeLayout,
   type MachineAdeLayout,
 } from "./machineLayout";
+import { codedError } from "../../../../desktop/src/shared/codedError";
 import { statIdentity } from "./fileIdentity";
 import { normalizeProjectRootPath } from "./projectRoots";
 
@@ -41,6 +42,9 @@ export type ProjectRecord = {
   catalogVisibility: ProjectCatalogVisibility;
   registrationSource: ProjectRegistrationSource;
 };
+
+/** A database file's device and inode, as decimal strings. A move keeps both. */
+export type ProjectDatabaseIdentity = { dev: string; ino: string };
 
 type ProjectRegistryFile = {
   version: 2;
@@ -232,8 +236,6 @@ export class ProjectRegistry {
       throw new Error(`Project root is not a directory: ${normalized}`);
     }
 
-    ensureProjectAdeDir(normalized);
-
     const file = this.read();
     const now = Date.now();
     const projectId = deriveProjectId(normalized);
@@ -242,6 +244,9 @@ export class ProjectRegistry {
         record.projectId === projectId || record.rootPath === normalized,
     );
     const existing = existingIndex >= 0 ? file.projects[existingIndex] : null;
+    this.assertProjectDataAvailable(existing);
+    ensureProjectAdeDir(normalized);
+    this.recordDatabaseIfPresent(projectId, normalized);
     const next: ProjectRecord = {
       projectId,
       rootPath: normalized,
@@ -300,6 +305,7 @@ export class ProjectRegistry {
     );
     if (nextProjects.length === file.projects.length) return false;
     this.write({ ...file, projects: nextProjects });
+    this.forgetDatabaseIdentity(projectId);
     return true;
   }
 
@@ -313,9 +319,91 @@ export class ProjectRegistry {
       ...file.projects[index]!,
       lastOpenedAt: Date.now(),
     };
+    this.recordDatabaseIfPresent(projectId, next.rootPath);
     file.projects[index] = next;
     this.write(file);
     return next;
+  }
+
+  /**
+   * The identity (device and inode) of the database this machine opened for
+   * the project; its presence means the project had data here. One file per
+   * project beside the registry, not a field in projects.json: an older ADE
+   * that rewrites projects.json drops fields it doesn't know, and with it the
+   * protection against silently creating a replacement.
+   */
+  private databaseIdentityPath(projectId: ProjectId): string {
+    return path.join(this.layout.adeDir, "project-data", `${projectId}.json`);
+  }
+
+  /**
+   * Records the database file's identity. Moving a folder to the Trash keeps
+   * it, so recovery can tell this project's trashed `.ade` from any other —
+   * even before the database has a project row.
+   */
+  private recordDatabaseIfPresent(projectId: ProjectId, rootPath: string): void {
+    let stat: fs.BigIntStats;
+    try {
+      stat = fs.statSync(path.join(rootPath, ".ade", "ade.db"), { bigint: true });
+    } catch {
+      return;
+    }
+    const identity: ProjectDatabaseIdentity = { dev: stat.dev.toString(), ino: stat.ino.toString() };
+    const known = this.readDatabaseIdentity(projectId);
+    if (known?.dev === identity.dev && known.ino === identity.ino) return;
+    const identityPath = this.databaseIdentityPath(projectId);
+    fs.mkdirSync(path.dirname(identityPath), { recursive: true });
+    fs.writeFileSync(identityPath, JSON.stringify(identity));
+  }
+
+  /** The device and inode of the database this machine last opened for the project. */
+  readDatabaseIdentity(projectId: ProjectId): ProjectDatabaseIdentity | null {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.databaseIdentityPath(projectId), "utf8")) as { dev?: unknown; ino?: unknown };
+      return typeof parsed.dev === "string" && typeof parsed.ino === "string" ? { dev: parsed.dev, ino: parsed.ino } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Forget that the database existed, so the next open creates a new one.
+   * Only for an explicit "start fresh" or removing the project from ADE.
+   */
+  forgetDatabaseIdentity(projectId: ProjectId): void {
+    fs.rmSync(this.databaseIdentityPath(projectId), { force: true });
+  }
+
+  /** Called after a successful open; a no-op until the database file exists. */
+  recordDatabaseIdentity(projectId: ProjectId): void {
+    const record = this.get(projectId);
+    if (record) this.recordDatabaseIfPresent(projectId, record.rootPath);
+  }
+
+  /**
+   * Whether a registered project's ADE data is gone: its whole `.ade` folder
+   * (registering a project creates one, so even a record from before identity
+   * files existed had it), or a database this machine recorded opening. A
+   * project folder that is itself gone counts too: opening it would recreate
+   * the folder with empty data.
+   */
+  isProjectDataMissing(record: ProjectRecord | null): boolean {
+    if (!record) return false;
+    const adeDir = path.join(record.rootPath, ".ade");
+    return !fs.existsSync(adeDir)
+      || (fs.existsSync(this.databaseIdentityPath(record.projectId)) && !fs.existsSync(path.join(adeDir, "ade.db")));
+  }
+
+  /** Check before creating directories or opening SQLite on any local entry point. */
+  assertProjectDataAvailable(record: ProjectRecord | null): void {
+    if (!record || !this.isProjectDataMissing(record)) return;
+    const adeDir = path.join(record.rootPath, ".ade");
+    throw codedError(
+      fs.existsSync(record.rootPath)
+        ? `ADE's data for this project is missing from ${adeDir}. Open the project in the ADE app to restore it or start fresh, or put the .ade folder back from the Trash. To start fresh from the command line instead, run \`ade projects remove ${record.projectId}\` and then \`ade projects add ${record.rootPath}\`. ADE has not created a replacement.`
+        : `The project folder ${record.rootPath} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`,
+      "project_data_missing",
+    );
   }
 
   private read(): ProjectRegistryFile {
@@ -422,5 +510,45 @@ export class ProjectRegistry {
     const payload = `${JSON.stringify({ version: 2, projects: file.projects }, null, 2)}\n`;
     fs.writeFileSync(tempPath, payload, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tempPath, this.layout.projectsPath);
+  }
+}
+
+export function assertLocalProjectDataAvailable(projectRoot: string): void {
+  const registry = new ProjectRegistry();
+  registry.assertProjectDataAvailable(registry.findByRootPath(projectRoot));
+}
+
+export function isLocalProjectDataMissing(projectRoot: string): boolean {
+  const registry = new ProjectRegistry();
+  return registry.isProjectDataMissing(registry.findByRootPath(projectRoot));
+}
+
+export function readLocalProjectDatabaseIdentity(projectRoot: string): ProjectDatabaseIdentity | null {
+  return new ProjectRegistry().readDatabaseIdentity(deriveProjectId(normalizeRoot(projectRoot)));
+}
+
+/** Let the next open of this project create new ADE data. */
+export function forgetLocalProjectDatabaseIdentity(projectRoot: string): void {
+  new ProjectRegistry().forgetDatabaseIdentity(deriveProjectId(normalizeRoot(projectRoot)));
+}
+
+/**
+ * Remember that this machine opened the project's database, so a later open
+ * that finds it missing asks for restoration. Desktop opens it in-process and
+ * its brain mirror is best-effort, so it records this itself.
+ */
+export function recordLocalProjectDatabaseIdentity(
+  projectRoot: string,
+  logger?: { warn: (event: string, data: Record<string, unknown>) => void },
+): void {
+  try {
+    const registry = new ProjectRegistry();
+    const record = registry.findByRootPath(projectRoot);
+    if (record) registry.recordDatabaseIdentity(record.projectId);
+  } catch (error) {
+    logger?.warn("project.database_identity_record_failed", {
+      projectRoot,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }

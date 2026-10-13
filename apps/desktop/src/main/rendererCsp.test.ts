@@ -32,6 +32,27 @@ describe("buildRendererCspPolicy", () => {
     }
   });
 
+  it("plays a video attached to a pull request from GitHub's hosts, and from no other remote host", () => {
+    for (const isDevMode of [false, true]) {
+      const sources = buildRendererCspPolicy(isDevMode)
+        .split("; ")
+        .find((directive) => directive.startsWith("media-src "))!
+        .split(" ");
+      // An attachment redirects from github.com to the file; each hop is named.
+      expect(sources).toEqual(expect.arrayContaining([
+        "https://github.com/user-attachments/",
+        "https://private-user-images.githubusercontent.com",
+      ]));
+      expect(sources.filter((source) => source.endsWith(".s3.amazonaws.com"))).toHaveLength(1);
+      // Never every bucket, every GitHub page, or every site.
+      const remote = sources.filter((source) => source.startsWith("https:"));
+      expect(remote).not.toContain("https://*.s3.amazonaws.com");
+      expect(remote).not.toContain("https://github.com");
+      expect(remote).not.toContain("https:");
+      expect(remote.every((source) => !source.includes("*"))).toBe(true);
+    }
+  });
+
   it("drops inline script permission from packaged renderer policy", () => {
     const policy = buildRendererCspPolicy(false);
 

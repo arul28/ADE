@@ -5,7 +5,11 @@ param(
   [ValidateSet("stable", "beta", "alpha")]
   [string]$PackageChannel = "stable",
   [string]$ProductName = $(if ($PackageChannel -eq "stable") { "ADE" } else { "ADE " + (Get-Culture).TextInfo.ToTitleCase($PackageChannel) }),
-  [string]$CompanionInstallerPath = ""
+  [string]$CompanionInstallerPath = "",
+  # Proof runs only: install and uninstall this many times first, counting
+  # installer crashes without retrying, to measure the installer's crash rate.
+  [ValidateRange(0, 50)]
+  [int]$FreshInstallRepeat = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,9 +33,41 @@ $cliPathDir = Split-Path $cliShim -Parent
 $runKey = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run"
 $uninstallRoot = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall"
 
+# 0xC0000005 (access violation). On GitHub's Windows runners the very first
+# silent install crashes with it within seconds in roughly a third of releases,
+# before it writes anything, and a rerun of the same job passes. It predates the
+# custom NSIS hooks, so the cause is not known yet. Retry that one code once,
+# and print the Windows Error Reporting record so the faulting module is in the
+# log the next time it happens.
+$installerAccessViolation = -1073741819
+
+function Write-InstallerCrashReport([datetime]$Since) {
+  try {
+    $events = @(Get-WinEvent -FilterHashtable @{ LogName = "Application"; Id = @(1000, 1001, 1026); StartTime = $Since } -ErrorAction Stop)
+    if ($events.Count -eq 0) {
+      Write-Warning "No Application crash events were recorded for the installer."
+      return
+    }
+    foreach ($crashEvent in $events) {
+      Write-Warning "Crash event $($crashEvent.Id) from $($crashEvent.ProviderName):`n$($crashEvent.Message)"
+    }
+  } catch {
+    Write-Warning "Could not read Application crash events: $($_.Exception.Message)"
+  }
+}
+
 function Invoke-Installer {
-  $process = Start-Process -FilePath $installer -ArgumentList @("/S") -Wait -PassThru -WindowStyle Hidden
-  if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode)." }
+  for ($attempt = 1; ; $attempt++) {
+    $startedAt = Get-Date
+    $process = Start-Process -FilePath $installer -ArgumentList @("/S") -Wait -PassThru -WindowStyle Hidden
+    if ($process.ExitCode -eq 0) { return }
+    if ($process.ExitCode -eq $installerAccessViolation) { Write-InstallerCrashReport $startedAt }
+    if ($process.ExitCode -ne $installerAccessViolation -or $attempt -ge 2) {
+      throw "Installer exited with code $($process.ExitCode)."
+    }
+    Write-Warning "Installer crashed with an access violation; retrying once."
+    Start-Sleep -Seconds 5
+  }
 }
 
 function Invoke-Uninstaller([bool]$BestEffort = $false) {
@@ -235,6 +271,35 @@ $fileClass = if ($PackageChannel -eq "stable") { "com.ade.desktop.files" } else 
 $launchedApp = $null
 $uninstallVerified = $false
 try {
+  if ($FreshInstallRepeat -gt 0) {
+    $crashes = 0
+    for ($cycle = 1; $cycle -le $FreshInstallRepeat; $cycle++) {
+      $startedAt = Get-Date
+      $process = Start-Process -FilePath $installer -ArgumentList @("/S") -Wait -PassThru -WindowStyle Hidden
+      if ($process.ExitCode -ne 0) {
+        $crashes++
+        Write-Warning "Fresh install $cycle/$FreshInstallRepeat exited with code $($process.ExitCode)."
+        if ($process.ExitCode -eq $installerAccessViolation) { Write-InstallerCrashReport $startedAt }
+        # A failed install may still have left files or registration behind.
+        # Clear them so the next cycle is a fresh install, not a repair, and
+        # stop counting if that clean state cannot be restored.
+        Stop-InstalledProductProcesses
+        Invoke-Uninstaller -BestEffort $true
+        if ((Test-Path -LiteralPath $appExe) -or (Test-Path -LiteralPath $uninstaller)) {
+          throw "Fresh install $cycle/$FreshInstallRepeat failed and left a partial install that could not be removed."
+        }
+        continue
+      }
+      Assert-InstalledProduct "fresh install $cycle/$FreshInstallRepeat"
+      Stop-InstalledProductProcesses
+      Invoke-Uninstaller
+      Assert-UninstalledProduct
+      Write-Output "Fresh install $cycle/$FreshInstallRepeat installed and uninstalled cleanly."
+    }
+    Write-Output "Fresh install repeat: $FreshInstallRepeat cycles, $crashes installer failure(s)."
+    if ($crashes -gt 0) { throw "$crashes of $FreshInstallRepeat fresh installs failed." }
+  }
+
   Invoke-Installer
   Assert-InstalledProduct "fresh install"
 

@@ -173,7 +173,7 @@ import {
   runGit,
   trustGitSafeDirectory,
 } from "./services/git/git";
-import { codedError, GIT_UNTRUSTED_FOLDER_CODE } from "../shared/codedError";
+import { codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError } from "../shared/codedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -219,7 +219,7 @@ import {
   remoteBindingMatchesProject,
 } from "./services/attention/attentionItemRouting";
 import { pathsEqual } from "./services/shared/pathCompare";
-import { deriveProjectId } from "../../../ade-cli/src/services/projects/projectRegistry";
+import { assertLocalProjectDataAvailable, deriveProjectId, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
 import {
   detectDefaultBaseRef,
@@ -429,7 +429,10 @@ import {
   checkRuntimeIdentity,
   runVerifiedRuntimeRestart,
 } from "./services/updates/runtimeRestartVerification";
-import { createProjectRecoveryService } from "./services/runtime/projectRecoveryService";
+import { createProjectRecoveryService, restartBrainForRepair } from "./services/runtime/projectRecoveryService";
+import { createQuitPrompt } from "./services/runtime/quitPrompt";
+import { registerBackgroundServiceControls } from "./services/runtime/backgroundServiceControls";
+import { createOpenProjectDataWatch } from "./services/runtime/openProjectDataWatch";
 import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnosticsService";
 import { resolveAutoDiagnosticsStateFile } from "./services/diagnostics/autoDiagnosticsStore";
 import { collectDiagnosticReport } from "./services/diagnostics/diagnosticReportService";
@@ -3178,6 +3181,25 @@ app.whenReady().then(async () => {
     },
   });
 
+  // A project whose database disappears or is swapped while open gets the
+  // recovery screen instead of every panel failing.
+  const openProjectDataWatch = createOpenProjectDataWatch({
+    openRoots: function* () {
+      for (const [root, ctx] of projectContexts) if (ctx.project) yield root;
+    },
+    onChange: (projectRoot, status) => {
+      localRuntimeLogger.warn("project.data_moved_while_open", { projectRoot, status });
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        try {
+          win.webContents.send(IPC.recoveryProjectDataMissing, { projectRoot, status });
+        } catch {
+          // A closing window has nothing to show it in.
+        }
+      }
+    },
+  });
+  app.on("will-quit", () => openProjectDataWatch.dispose());
   // The one recovery service for this machine. It owns `restartServiceAndWait`,
   // the verified restart sequence behind the Repair button, and the post-update
   // transaction below reuses it rather than growing a second restart path.
@@ -3186,6 +3208,13 @@ app.whenReady().then(async () => {
     adeHome: machineAdeLayout.adeDir,
     logger: localRuntimeLogger,
     connectionPool: localRuntimePool,
+    openProjectDataProblem: (projectRoot) => openProjectDataWatch.problem(normalizeProjectRoot(projectRoot)),
+    closeProject: async (projectRoot) => {
+      await closeProjectByPath(projectRoot);
+      // After the close, so a tick that was already running cannot put the
+      // closed project's identity back.
+      openProjectDataWatch.forget(normalizeProjectRoot(projectRoot));
+    },
     // One call at the point the diagnosis is final. The service's own budget
     // makes a re-diagnosed screen cost nothing.
     onTerminalDiagnosis: ({ code, projectRoot }) => {
@@ -3343,6 +3372,7 @@ app.whenReady().then(async () => {
     // The .ade directory may exist from git (shared scaffold files like ade.yaml),
     // but the db is gitignored and machine-local. A missing db, or a scaffold
     // first-open marker, means this machine has not finished a real bind yet.
+    assertLocalProjectDataAvailable(projectRoot);
     const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
     const scaffoldedFirstOpen = consumeFirstOpenStabilityMarker(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
@@ -3418,6 +3448,7 @@ app.whenReady().then(async () => {
         hasSyncPeers,
       }),
     );
+    recordLocalProjectDatabaseIdentity(projectRoot, logger);
     const keybindingsService = createKeybindingsService({ db });
     const agentToolsService = createAgentToolsService({ logger });
     const adeCliService = createAdeCliService({
@@ -3655,6 +3686,8 @@ app.whenReady().then(async () => {
       db,
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
       onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      // Read at call time: the automation service is built later.
+      onChatSettled: (chat) => automationService?.onSessionSettled(chat),
       listSubagentLinks: async (parentSessionIds) =>
         settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
       runSettleTeardown: async (sessionId, ctx) =>
@@ -6136,6 +6169,7 @@ app.whenReady().then(async () => {
     baseRef: string;
     userSelectedProject: boolean;
   }): Promise<AppContext> => {
+    assertLocalProjectDataAvailable(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const project = toProjectInfo(projectRoot, baseRef);
@@ -6145,6 +6179,7 @@ app.whenReady().then(async () => {
       // this dormant fallback has no authoritative local peer signal.
       hasSyncPeers: () => true,
     });
+    recordLocalProjectDatabaseIdentity(projectRoot, logger);
     const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
     const storageInsightsService = createStorageInsightsService({
       projectRoot,
@@ -7852,44 +7887,6 @@ app.whenReady().then(async () => {
     });
   };
 
-  const showWindowCloseWarning = (
-    ownerWindow: BrowserWindow | null | undefined,
-    options: {
-      buttons: string[];
-      title: string;
-      message: string;
-      detail: string;
-      rememberQuitAcknowledgement?: boolean;
-    },
-  ): boolean => {
-    if (shutdownRequested) return true;
-    if (options.rememberQuitAcknowledgement && quitWarningAcknowledged) return true;
-    const dialogOptions = {
-      type: "warning" as const,
-      buttons: options.buttons,
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-      title: options.title,
-      message: options.message,
-      detail: options.detail,
-    };
-    const parentWindow =
-      ownerWindow && !ownerWindow.isDestroyed()
-        ? ownerWindow
-        : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-    const response = parentWindow
-      ? dialog.showMessageBoxSync(parentWindow, dialogOptions)
-      : dialog.showMessageBoxSync(dialogOptions);
-    if (response !== 1) {
-      return false;
-    }
-    if (options.rememberQuitAcknowledgement) {
-      quitWarningAcknowledged = true;
-    }
-    return true;
-  };
-
   const isRunningLaneDeleteProgress = (value: unknown): value is LaneDeleteProgress => {
     return Boolean(
       value
@@ -7997,7 +7994,7 @@ app.whenReady().then(async () => {
 
   // Chats with a live turn on this machine right now. An ADE restart stops
   // them mid-flight, so the install dialog names them and offers to resume.
-  const collectInterruptedChats = async (): Promise<UpdateInterruptedChat[]> => {
+  const collectInterruptedChats = async (options: { strict?: boolean } = {}): Promise<UpdateInterruptedChat[]> => {
     const chats: UpdateInterruptedChat[] = [];
     await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
@@ -8010,17 +8007,32 @@ app.whenReady().then(async () => {
         for (const chat of refs) {
           chats.push({ sessionId: chat.sessionId, title: chat.title, projectName });
         }
-      } catch {
-        // Best-effort probe.
+      } catch (error) {
+        // Best-effort for the dialogs; a decision that stops agents needs every project.
+        if (options.strict) throw error;
       }
     });
     return chats;
   };
 
-  // Arms one durable continue row per chat the update interrupted. Called on
-  // the launch that lands an install, with the ids the previous process
-  // persisted — a freshly started brain has no live turns to discover.
-  const armUpdateResumeForSessions = async (
+  /**
+   * Live chats for a decision that stops or resumes agents. Null when any
+   * project could not answer in time, so "unknown" is never read as "none".
+   */
+  const collectLiveChatsOrNull = async (timeoutMs = 3_000): Promise<UpdateInterruptedChat[] | null> =>
+    await Promise.race([
+      collectInterruptedChats({ strict: true }).catch((): null => null),
+      new Promise<null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+
+  // Arms one durable continue row per chat a restart interrupted: on the
+  // launch that lands an install, with the ids the previous process persisted
+  // (a freshly started brain has no live turns to discover), and after a
+  // quit-prompt Repair.
+  const armResumeForSessions = async (
     sessionIds: readonly string[],
   ): Promise<UpdateInterruptedChat[]> => {
     if (sessionIds.length === 0) return [];
@@ -8172,58 +8184,66 @@ app.whenReady().then(async () => {
     return choice === 1;
   };
 
-  const describeConnectedPhones = (impact: UpdateInstallImpact | null): string | null => {
-    const phones = impact?.connectedPhones ?? [];
-    if (phones.length === 0) return null;
-    const names = phones.map((phone) => phone.deviceName).join(", ");
-    return phones.length === 1
-      ? `${names} is connected through ADE phone sync and will disconnect; it reconnects automatically once ADE is running again.`
-      : `These phones are connected through ADE phone sync and will disconnect: ${names}. They reconnect automatically once ADE is running again.`;
+  const quitPrompt = createQuitPrompt({
+    logger: localRuntimeLogger,
+    globalStatePath,
+    getRuntimeStatus: () => localRuntimePool.getStatus(),
+    collectImpact: () => collectUpdateInstallImpactBounded(),
+    collectLiveChats: () => collectLiveChatsOrNull(),
+    restartService: () => restartBrainForRepair(machineRecoveryService, productAnalyticsService),
+    armResume: (sessionIds) => armResumeForSessions(sessionIds),
+  });
+  registerBackgroundServiceControls({
+    logger: localRuntimeLogger,
+    analytics: productAnalyticsService,
+    manageService: shouldRepairRuntimeServiceOnFallback,
+    pool: localRuntimePool,
+    collectLiveChats: () => collectLiveChatsOrNull(),
+    getRunningLaneDeleteLabels,
+    isRepairing: () => quitPrompt.isRepairing() || machineRecoveryService.isRecovering(),
+    isShuttingDown: () => shutdownRequested,
+    shutdown: (reason) => requestAppShutdown({ reason, exitCode: 0 }),
+  });
+
+  const confirmQuitWarning = async (
+    ownerWindow: BrowserWindow | null | undefined,
+    relaunch: boolean,
+  ): Promise<boolean> => {
+    if (shutdownRequested || quitWarningAcknowledged) return true;
+    if (!(await quitPrompt.confirm(ownerWindow, relaunch))) return false;
+    quitWarningAcknowledged = true;
+    return true;
   };
 
-  const confirmQuitWarning = (
-    ownerWindow?: BrowserWindow | null,
-    impact: UpdateInstallImpact | null = null,
-    relaunch = false,
-  ): boolean => {
-    const phoneDetail = describeConnectedPhones(impact);
-    return showWindowCloseWarning(ownerWindow, {
-      buttons: ["Keep ADE open", relaunch ? "Restart ADE" : "Quit ADE"],
-      title: relaunch ? "Restart ADE?" : "Quit ADE?",
-      message: "Save your work before closing ADE.",
-      detail: [
-        "Quitting ADE will end agents and background processes owned by this desktop session, including OpenCode servers, terminal sessions, and test runs.",
-        phoneDetail,
-        "Open ADE Code terminals attached to this machine's ADE service will disconnect too — you can reopen them afterwards.",
-        "The ADE service login item keeps running separately when it is installed.",
-      ].filter(Boolean).join(" "),
-      rememberQuitAcknowledgement: true,
-    });
-  };
-
-  const confirmCloseWindowWarning = (ownerWindow: BrowserWindow): boolean =>
-    showWindowCloseWarning(ownerWindow, {
+  const confirmCloseWindowWarning = (ownerWindow: BrowserWindow): boolean => {
+    if (shutdownRequested) return true;
+    const response = dialog.showMessageBoxSync(ownerWindow, {
+      type: "question",
       buttons: ["Keep window open", "Close window"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
       title: "Close ADE window?",
       message: "Close this ADE window?",
-      detail:
-        "ADE will keep running in other windows. Active agents and background processes continue unless you quit ADE.",
-      rememberQuitAcknowledgement: false,
+      detail: "ADE keeps running in your other windows.",
     });
+    return response === 1;
+  };
 
   const requestQuitAfterWarnings = (
     ownerWindow: BrowserWindow | null | undefined,
     reason: "before_quit" | "window_close" | "relaunch",
   ): Promise<boolean> => {
-    if (shutdownRequested || quitConfirmationInFlight) return Promise.resolve(false);
+    // A repair started from the prompt holds the quit: quitting mid-repair
+    // would stop the agents it is handing over.
+    if (shutdownRequested || quitConfirmationInFlight || quitPrompt.isRepairing()) return Promise.resolve(false);
     quitConfirmationInFlight = true;
     // Resolves whether the person agreed, so "Restart ADE" can tell a restart
     // that is happening from one they cancelled.
     return (async () => {
       try {
         if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return false;
-        const impact = await collectUpdateInstallImpactBounded();
-        if (!confirmQuitWarning(ownerWindow, impact, reason === "relaunch")) return false;
+        if (!(await confirmQuitWarning(ownerWindow, reason === "relaunch"))) return false;
         // Registered only once the user has agreed, so a cancelled restart
         // cannot turn a later plain quit into a relaunch. app.exit honors it.
         if (reason === "relaunch") app.relaunch();
@@ -9336,7 +9356,12 @@ app.whenReady().then(async () => {
   if (shouldOpenStartupProject && startupProject.rootPath) {
     try {
       await switchProjectFromDialog(startupProject.rootPath);
-    } catch {
+    } catch (error) {
+      // The window asks for this once it loads and shows the recovery
+      // screen, instead of a bare welcome screen with no word of why.
+      if (isCodedError(error, "project_data_missing")) {
+        machineRecoveryService.noteStartupProjectDataMissing(normalizeProjectRoot(startupProject.rootPath));
+      }
       setForegroundProject(null);
       replaceDormantContext();
     }
@@ -9377,7 +9402,7 @@ app.whenReady().then(async () => {
   // no landed install, no resumed chats, no rows.
   const resumedAfterUpdate = savedUpdateState.recentlyInstalledUpdate?.resumedChats ?? [];
   if (resumedAfterUpdate.length > 0) {
-    void armUpdateResumeForSessions(resumedAfterUpdate.map((chat) => chat.sessionId))
+    void armResumeForSessions(resumedAfterUpdate.map((chat) => chat.sessionId))
       .then((armed) => consumeArmedResumeChats(armed.map((chat) => chat.sessionId)))
       .catch(() => undefined);
   }
