@@ -2666,7 +2666,7 @@ function renderEvent(
     return (
       <div className="flex w-full justify-end" data-chat-compact-command="">
         <span
-          title={envelope.timestampSynthetic === true ? undefined : new Date(envelope.timestamp).toLocaleString()}
+          title={event.displayText?.trim() || event.text.trim()}
           className="inline-flex max-w-[82%] items-center rounded-full border border-fg/[0.08] bg-fg/[0.03] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*11.5/14)] text-fg/55"
         >
           <span className="min-w-0 truncate">{event.displayText?.trim() || event.text.trim()}</span>
@@ -6089,12 +6089,21 @@ function AgentChatMessageListMain({
     }
     return ids;
   }, [allGroupedRows]);
-  // Turns that `/compact` opened. The compaction line is their whole story, so
-  // they get no working indicator and no turn-end line of their own.
+  // Turns that `/compact` opened and that did nothing else. The compaction
+  // line is their whole story, so they get no working indicator and no
+  // turn-end line of their own. A turn that also drew anything (text, tools,
+  // an error) keeps both: its turn-end line carries that work.
   const compactOnlyTurnIds = useMemo(() => {
     const ids = new Set<string>();
     for (const row of allGroupedRows) {
       if (row.event.type === "user_message" && row.event.turnId && isCompactCommandMessage(row.event, sessionProvider)) ids.add(row.event.turnId);
+    }
+    if (ids.size === 0) return ids;
+    for (const row of allGroupedRows) {
+      const type = row.event.type;
+      if (type === "user_message" || type === "done" || type === "context_compact" || type === "codex_context_compaction") continue;
+      const turnId = getGroupedTurnId(row);
+      if (turnId && ids.has(turnId) && !transcriptEventDrawsNothing(row.event)) ids.delete(turnId);
     }
     return ids;
   }, [allGroupedRows, sessionProvider]);
