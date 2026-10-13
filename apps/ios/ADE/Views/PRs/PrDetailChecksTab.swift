@@ -135,6 +135,22 @@ struct PrChecksSections: View {
     checks.filter { [.success, .neutral].contains(prCheckConclusionKind($0)) }
   }
 
+  private var skippedCount: Int {
+    finished.filter { prCheckConclusionKind($0) == .neutral }.count
+  }
+
+  /// Passes and skips fold together; the header counts them apart so it
+  /// agrees with the summary line ("3 of 4 passed · 1 skipped").
+  private var finishedTitle: String {
+    skippedCount > 0 ? "Passed · skipped" : "Passed"
+  }
+
+  private var finishedDetail: String {
+    let skipped = skippedCount
+    let passed = finished.count - skipped
+    return skipped > 0 ? "\(passed) · \(skipped)" : "\(passed)"
+  }
+
   var body: some View {
     Group {
       Section {
@@ -144,11 +160,14 @@ struct PrChecksSections: View {
             .adeFlatRow(separator: .hidden)
         } else {
           let headline = prChecksHeadline(checks: checks, overallChecksStatus: overallChecksStatus)
+          // A required check that never reported blocks the merge: the
+          // summary must not read green while one is missing.
+          let missing = missingRequired.count
           HStack(spacing: 8) {
-            Image(systemName: headline.failing > 0 ? "xmark.circle.fill" : headline.running > 0 ? "clock.fill" : "checkmark.circle.fill")
-              .foregroundStyle(headline.failing > 0 ? ADEColor.danger : headline.running > 0 ? ADEColor.warning : (isNotRun ? ADEColor.textMuted : ADEColor.success))
+            Image(systemName: headline.failing > 0 ? "xmark.circle.fill" : headline.running > 0 ? "clock.fill" : missing > 0 ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+              .foregroundStyle(headline.failing > 0 ? ADEColor.danger : (headline.running > 0 || missing > 0) ? ADEColor.warning : (isNotRun ? ADEColor.textMuted : ADEColor.success))
               .font(.system(size: 13, weight: .semibold))
-            Text(headline.text)
+            Text(missing > 0 ? "\(headline.text) · \(missing) required missing" : headline.text)
               .font(.subheadline.weight(.medium))
               .foregroundStyle(ADEColor.textPrimary)
             Spacer(minLength: 8)
@@ -186,7 +205,7 @@ struct PrChecksSections: View {
           Button {
             withAnimation(.snappy(duration: 0.2)) { passedExpanded.toggle() }
           } label: {
-            ADEFlatSectionHeader(isNotRun ? "Reported" : "Passed", detail: "\(finished.count)") {
+            ADEFlatSectionHeader(isNotRun ? "Reported" : finishedTitle, detail: isNotRun ? "\(finished.count)" : finishedDetail) {
               Image(systemName: "chevron.right")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(ADEColor.textMuted)

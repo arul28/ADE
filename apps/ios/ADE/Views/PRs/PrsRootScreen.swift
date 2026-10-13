@@ -1,13 +1,81 @@
 import SwiftUI
 import UIKit
 
-struct PRsTabView: View {
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+/// What the PRs screen draws from `SyncService` and the fleet, narrowed so an
+/// unrelated publish does not re-render it. While the tab is hidden only
+/// navigation requests and the project are tracked.
+struct PrsRootInputs: Equatable {
+  var isActive = false
+  var activeProjectId: String?
+  var requestedPrNavigationId: String?
+  // Tracked only while the tab is visible.
+  var connectionState: RemoteConnectionState = .disconnected
+  var prsStatus = SyncDomainStatus.disconnected
+  var projectHostIsLive = false
+  var suppressHydrationNotices = false
+  var rootActionLabel: String?
+  var supportsLink = false
+  var supportsAutoMap = false
+  var prsProjectionRevision = 0
+  var prsRemoteRevision = 0
+  var focusedMachineKey: String?
+  var focusedMachineName = ""
+  var focusedRunningCount = 0
+  var liveMachineKeys: [String] = []
+
+  @MainActor
+  init(_ sync: SyncService, fleet: MachineFleet, isActive: Bool, rootActionKey: String) {
+    self.isActive = isActive
+    activeProjectId = sync.activeProjectId
+    requestedPrNavigationId = sync.requestedPrNavigation?.id
+    guard isActive else { return }
+    connectionState = sync.connectionState
+    prsStatus = sync.status(for: .prs)
+    projectHostIsLive = sync.projectHostIsLive
+    suppressHydrationNotices = sync.shouldSuppressDomainHydrationNotices
+    rootActionLabel = sync.prActionLabel(forKey: rootActionKey)
+    supportsLink = sync.supportsRemoteAction("prs.linkToLane")
+    supportsAutoMap = sync.supportsRemoteAction("prs.createLaneFromPrBranch")
+    prsProjectionRevision = sync.prsProjectionRevision
+    prsRemoteRevision = sync.prsRemoteRevision
+    focusedMachineKey = sync.focusedMachineKey
+    focusedMachineName = sync.focusedMachineDisplayName
+    focusedRunningCount = sync.activeProject.flatMap { sync.rosterProject(for: $0) }?.runningCount ?? 0
+    liveMachineKeys = fleet.machines.filter { $0.state == .live }.map(\.machineKey).sorted()
+  }
+}
+
+/// The PRs tab: a thin shell over `PrsRootInputs`; the screen behind it is
+/// `.equatable()` on them (the Work tab's pattern).
+struct PRsTabShell: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var machineFleet: MachineFleet
+  var isActive = true
+
+  var body: some View {
+    PRsTabView(
+      syncService: syncService,
+      machineFleet: machineFleet,
+      isActive: isActive,
+      inputs: PrsRootInputs(syncService, fleet: machineFleet, isActive: isActive, rootActionKey: PRsTabView.rootActionKey)
+    )
+    .equatable()
+  }
+}
+
+struct PRsTabView: View, Equatable {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// Deliberately not observed: what the body draws arrives in `inputs`.
+  let syncService: SyncService
+  let machineFleet: MachineFleet
   /// PR ↔ lane links and lanes of the other machines holding this repository.
   @StateObject private var remotePrs = PrRemoteMachinesModel()
-  var isActive = true
+  let isActive: Bool
+  let inputs: PrsRootInputs
+
+  nonisolated static func == (lhs: PRsTabView, rhs: PRsTabView) -> Bool {
+    lhs.isActive == rhs.isActive && lhs.inputs == rhs.inputs
+  }
 
   @State private var path = NavigationPath()
   @State private var prs: [PullRequestListItem] = []
@@ -67,8 +135,11 @@ struct PRsTabView: View {
     prsStatus.phase == .ready && syncService.connectionState == .connected && syncService.projectHostIsLive
   }
 
+  /// Skeletons only stand in for rows the phone has never had: cached rows
+  /// show (and refresh in place) while a sync runs.
   private var isLoadingSkeleton: Bool {
-    prsStatus.phase == .hydrating || prsStatus.phase == .syncingInitialData
+    (prsStatus.phase == .hydrating || prsStatus.phase == .syncingInitialData)
+      && prs.isEmpty && githubSnapshot == nil
   }
 
   private var selectedRootSurface: Binding<PrRootSurface> {
@@ -159,7 +230,7 @@ struct PRsTabView: View {
 
   /// Stable registry key for root-level workflow actions (integration /
   /// create / link). These share one in-flight banner, so one key is correct.
-  private static let rootActionKey = "prs.root"
+  static let rootActionKey = "prs.root"
 
   /// Label of the in-flight root action, if any. Read from the durable service
   /// registry so the banner survives a tab switch + remount.
@@ -293,9 +364,8 @@ struct PRsTabView: View {
   /// Re-read the other machines while the tab is visible, for the focused
   /// project, and again when a machine's live link comes or goes.
   private var remotePrsPollKey: String? {
-    guard isActive, let projectId = syncService.activeProjectId else { return nil }
-    let live = machineFleet.machines.filter { $0.state == .live }.map(\.machineKey).sorted()
-    return "\(projectId)|\(live.joined(separator: ","))"
+    guard isActive, let projectId = inputs.activeProjectId else { return nil }
+    return "\(projectId)|\(inputs.liveMachineKeys.joined(separator: ","))"
   }
 
   private var focusedMachineName: String {
@@ -355,6 +425,7 @@ struct PRsTabView: View {
   }
 
   var body: some View {
+    let _ = ScrollDiagnostics.shared.count(.prListBody)
     NavigationStack(path: $path) {
       List {
         noticeRows
@@ -375,6 +446,18 @@ struct PRsTabView: View {
       }
       .adeFlatList()
       .contentMargins(.bottom, 24, for: .scrollContent)
+      .onScrollPhaseChange { _, phase in
+        if phase.isScrolling {
+          ScrollDiagnostics.shared.scrollBegan("pr-list")
+        } else {
+          ScrollDiagnostics.shared.scrollEnded("pr-list")
+        }
+      }
+      .onAppear { ScrollDiagnostics.shared.enter(.prList) }
+      .onDisappear {
+        ScrollDiagnostics.shared.scrollEnded("pr-list")
+        ScrollDiagnostics.shared.leave(.prList)
+      }
       .searchable(
         text: $searchText,
         isPresented: $searchPresented,

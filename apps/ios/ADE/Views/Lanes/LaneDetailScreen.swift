@@ -33,6 +33,11 @@ struct LaneDetailScreen: View {
   @State var cachedCommitDiffFilesBySha: [String: [String]] = [:]
   @State var pendingGitConfirmation: LaneGitConfirmation?
   @State private var lastLaneDetailLocalReload = Date.distantPast
+  /// Field diagnostics: when this screen appeared, for its ready timings.
+  @State private var diagnosticsOpenedAt: CFTimeInterval = 0
+  /// Set in `onAppear` (which runs before either task starts) and cleared when
+  /// the opening load finishes.
+  @State private var openingLoadInFlight = false
 
   var laneDetailProjectionReloadKey: String {
     // Per-lane revision keeps this screen from reloading when an unrelated lane's
@@ -85,7 +90,6 @@ struct LaneDetailScreen: View {
           gitActionsPane(detail: detail)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .padding(.bottom, 8)
       } else {
         ScrollView {
           VStack(spacing: 12) {
@@ -110,12 +114,26 @@ struct LaneDetailScreen: View {
       laneDetailTopBar
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
+    .onAppear {
+      if detail == nil { openingLoadInFlight = true }
+      ScrollDiagnostics.shared.enter(.laneDetail)
+      if ScrollDiagnostics.shared.isRunning, diagnosticsOpenedAt == 0 {
+        diagnosticsOpenedAt = CACurrentMediaTime()
+      }
+    }
+    .onChange(of: detail != nil) { _, loaded in
+      guard loaded, diagnosticsOpenedAt > 0 else { return }
+      ScrollDiagnostics.shared.event("laneDetail.content", ["ms": Int((CACurrentMediaTime() - diagnosticsOpenedAt) * 1000)])
+    }
     .task {
       syncService.announceLaneOpen(laneId: laneId)
       await loadDetail(refreshRemote: canRunLiveActions)
+      openingLoadInFlight = false
     }
     .task(id: laneDetailProjectionReloadKey) {
-      guard busyAction == nil else { return }
+      // The opening load above already reads the host once; starting another
+      // read here at the same time doubled every lane open.
+      guard busyAction == nil, !openingLoadInFlight else { return }
       if detail == nil, canRunLiveActions {
         await loadDetail(refreshRemote: true)
         return
@@ -194,6 +212,7 @@ struct LaneDetailScreen: View {
       rescueLaneSheet
     }
     .onDisappear {
+      ScrollDiagnostics.shared.leave(.laneDetail)
       syncService.releaseLaneOpen(laneId: laneId)
     }
   }
@@ -229,9 +248,43 @@ struct LaneDetailScreen: View {
       .buttonStyle(.plain)
       .accessibilityLabel("Back to lanes")
 
-      Spacer(minLength: 0)
+      // The lane's name sits in the bar row (it was a separate large-title
+      // row under an otherwise empty bar).
+      HStack(spacing: 7) {
+        WorkLaneLogoMark(
+          color: laneSurfaceTint(forHex: currentSnapshot.lane.color).text ?? ADEColor.accent,
+          laneIcon: currentSnapshot.lane.icon,
+          size: 14
+        )
+        Text(currentSnapshot.lane.name)
+          .font(.system(size: 17, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      .padding(.leading, 2)
+      .accessibilityElement(children: .combine)
+      .accessibilityAddTraits(.isHeader)
+
+      Spacer(minLength: 8)
 
       Menu {
+        // The lane's pull request, or making one: the step after the work.
+        if let pr = lanePullRequests.first(where: { $0.state == "open" || $0.state == "draft" }) ?? lanePullRequests.first {
+          Button {
+            openPullRequest(pr)
+          } label: {
+            Label("Open PR #\(pr.githubPrNumber)", systemImage: "arrow.triangle.pull")
+          }
+        } else if currentSnapshot.lane.laneType != "primary", currentSnapshot.lane.archivedAt == nil {
+          Button {
+            syncService.requestedPrNavigation = PrNavigationRequest(createLaneId: laneId)
+          } label: {
+            Label("Create pull request", systemImage: "plus.square.on.square")
+          }
+          .disabled(!canRunLiveActions)
+        }
+        Divider()
         Button {
           copyLaneLink()
         } label: {
@@ -585,6 +638,9 @@ struct LaneDetailScreen: View {
         let refreshedDetail = try await syncService.refreshLaneDetail(laneId: laneId)
         if detail != refreshedDetail {
           detail = refreshedDetail
+        }
+        if diagnosticsOpenedAt > 0 {
+          ScrollDiagnostics.shared.event("laneDetail.fresh", ["ms": Int((CACurrentMediaTime() - diagnosticsOpenedAt) * 1000)])
         }
         let refreshedPullRequests = try await syncService.fetchPullRequestListItems(laneId: laneId)
         if lanePullRequests != refreshedPullRequests {

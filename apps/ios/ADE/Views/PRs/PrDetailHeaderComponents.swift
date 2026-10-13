@@ -4,14 +4,16 @@ import SwiftUI
 // (number, author, age, state, title, branches, lane) and the slim glass bar
 // with the next step and its one action.
 
-/// "3d ago", plus "· updated 2h ago" only when that says something new.
+/// "3d ago", or "3d · updated 2h" when it moved since: short enough to sit
+/// beside the author and the state pill without truncating.
 func prFlatHeaderAge(createdAt: String?, updatedAt: String?) -> String? {
   let created = prCompactRelativeTime(createdAt)
   guard !created.isEmpty else { return nil }
-  let opened = created == "now" ? "just now" : "\(created) ago"
   let updated = prCompactRelativeTime(updatedAt)
-  guard !updated.isEmpty, updated != created else { return opened }
-  return "\(opened) · updated \(updated == "now" ? "just now" : "\(updated) ago")"
+  guard !updated.isEmpty, updated != created else {
+    return created == "now" ? "just now" : "\(created) ago"
+  }
+  return "\(created) · updated \(updated)"
 }
 
 struct PrFlatDetailHeader: View {
@@ -35,9 +37,13 @@ struct PrFlatDetailHeader: View {
   let canLinkLane: Bool
   let onCreateLane: () -> Void
   let onLinkLane: () -> Void
+  /// Off when the number, author and state ride in the navigation bar
+  /// (`PrFlatDetailNavTitle`); the age then joins the branch line.
+  var showsMetaRow = true
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
+      if showsMetaRow {
       HStack(alignment: .center, spacing: 6) {
         Text(verbatim: "#\(number)")
           .font(.adeMono(13, weight: .semibold))
@@ -59,17 +65,28 @@ struct PrFlatDetailHeader: View {
         Spacer(minLength: 6)
         PrStatePill(state: state)
       }
+      }
       Text(title)
         .font(.title3.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
         .fixedSize(horizontal: false, vertical: true)
         .textSelection(.enabled)
-      if !baseBranch.isEmpty || !headBranch.isEmpty {
-        Text(verbatim: "\(baseBranch) ← \(headBranch)")
-          .font(.adeMono(11.5))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-          .truncationMode(.middle)
+      if !baseBranch.isEmpty || !headBranch.isEmpty || !showsMetaRow {
+        HStack(spacing: 6) {
+          Text(verbatim: "\(baseBranch) ← \(headBranch)")
+            .font(.adeMono(11.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          if !showsMetaRow, let age = prFlatHeaderAge(createdAt: createdAt, updatedAt: updatedAt) {
+            Spacer(minLength: 4)
+            Text(age)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .fixedSize()
+          }
+        }
       }
       HStack(spacing: 6) {
         if let laneName, !laneName.isEmpty {
@@ -114,6 +131,34 @@ struct PrFlatDetailHeader: View {
   }
 }
 
+/// The PR's number, author and state in the navigation bar, between the back
+/// and actions buttons: the bar row was otherwise empty, and the header below
+/// spent a line repeating it.
+struct PrFlatDetailNavTitle: View {
+  let number: Int
+  let author: String?
+  let authorIsBot: Bool?
+  let state: String
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Text(verbatim: "#\(number)")
+        .font(.adeMono(13, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      if let author, !author.isEmpty {
+        PrAvatar(login: author, isBot: authorIsBot, size: 16)
+        Text(author)
+          .font(.footnote.weight(.medium))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      PrStatePill(state: state)
+    }
+    .accessibilityElement(children: .combine)
+  }
+}
+
 struct PrFlatDetailHeaderSkeleton: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -136,6 +181,10 @@ struct PrNextStepFlatBar<Primary: View>: View {
   let isBusy: Bool
   let busyLabel: String?
   let onTapText: () -> Void
+  /// The PR's merge state has not loaded yet: say so instead of guessing (a
+  /// cold open used to show "Ready to merge" and a live Merge button before
+  /// GitHub's answer arrived).
+  var isResolving = false
   @ViewBuilder let primary: () -> Primary
 
   /// The next thing in the way after the headline, never the headline again.
@@ -162,17 +211,17 @@ struct PrNextStepFlatBar<Primary: View>: View {
     HStack(spacing: 10) {
       Button(action: onTapText) {
         HStack(spacing: 9) {
-          if isBusy {
+          if isBusy || isResolving {
             ProgressView().controlSize(.small)
           } else {
             Circle().fill(prNextStepColor(step.tone)).frame(width: 8, height: 8)
           }
           VStack(alignment: .leading, spacing: 1) {
-            Text(step.headline)
+            Text(isResolving ? "Checking merge status…" : step.headline)
               .font(.subheadline.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
-            if let subline {
+            if !isResolving, let subline {
               Text(subline)
                 .font(.caption)
                 .foregroundStyle(ADEColor.textSecondary)
@@ -184,13 +233,21 @@ struct PrNextStepFlatBar<Primary: View>: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("Next step: \(step.headline)")
-      primary()
+      .accessibilityLabel(isResolving ? "Checking merge status" : "Next step: \(step.headline)")
+      if !isResolving {
+        primary()
+      }
     }
     .padding(.leading, 16)
     .padding(.trailing, 8)
     .padding(.vertical, 8)
-    .glassEffect(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    .frame(minHeight: 52)
+    // Opaque: the glass let the description read through the bar.
+    .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75)
+    }
+    .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
     .padding(.horizontal, 12)
     .padding(.bottom, 6)
   }

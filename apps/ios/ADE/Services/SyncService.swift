@@ -5533,10 +5533,15 @@ final class SyncService: ObservableObject {
         return normalizedProjectRoot(left) == normalizedProjectRoot(right)
       }) {
         var existing = match.value
-        let keepRemoteIdentity = preferRemoteSelection
+        // Once the selection has adopted the machine's id for this root, keep
+        // it: mapping the row back to the cached id here re-keyed the active
+        // project to and fro on every connect, and each flip cancelled the
+        // hydration in flight.
+        let keepRemoteIdentity = (preferRemoteSelection
           && activeProjectId != nil
           && activeProjectRootPath != nil
-          && normalizedProjectRoot(existing.rootPath) == activeProjectRootPath
+          && normalizedProjectRoot(existing.rootPath) == activeProjectRootPath)
+          || (activeProjectId != nil && activeProjectId == match.key)
         if !keepRemoteIdentity {
           mergedById.removeValue(forKey: match.key)
           existing.id = cachedProject.id
@@ -6154,6 +6159,17 @@ final class SyncService: ObservableObject {
     database.setActiveProjectId(projectId)
     if scopeChanged {
       bumpProjectionRevisions(for: Set())
+    }
+    // The same checkout re-keyed to the machine's own project id (the catalog
+    // reconcile adopting the remote identity for a cached root). Refreshes
+    // already in flight were scoped to the old id and cancel themselves on
+    // return, which left every domain parked in "syncing initial data" with
+    // nothing to retry it. Hydrate again under the new id.
+    if let previousProjectId, let nextProjectId, previousProjectId != nextProjectId,
+       previousRootPath != nil, previousRootPath == nextRootPath,
+       connectionState == .connected {
+      ScrollDiagnostics.shared.event("project.rekeyed", ["from": previousProjectId, "to": nextProjectId])
+      startInitialHydrationTask(for: connectionGeneration)
     }
     if let projectId {
       UserDefaults.standard.set(projectId, forKey: activeProjectIdKey)
@@ -10182,7 +10198,18 @@ final class SyncService: ObservableObject {
           connectionGeneration == scope.connectionGeneration,
           normalizedProjectId(activeProjectId) == scope.projectId,
           normalizedProjectRoot(activeProjectRootPath) == scope.rootPath
-    else { throw CancellationError() }
+    else {
+      if ScrollDiagnostics.shared.isRunning {
+      ScrollDiagnostics.shared.event("hydration.scopeCancelled", [
+        "taskCancelled": Task.isCancelled,
+        "selectionGen": "\(scope.projectSelectionGeneration)->\(projectSelectionGeneration)",
+        "connectionGen": "\(scope.connectionGeneration)->\(connectionGeneration)",
+        "project": normalizedProjectId(activeProjectId) == scope.projectId,
+        "root": "\(scope.rootPath ?? "nil")->\(normalizedProjectRoot(activeProjectRootPath) ?? "nil")",
+      ])
+      }
+      throw CancellationError()
+    }
   }
 
   func ensureCtoSession() async throws -> AgentChatSessionSummary {
@@ -18934,14 +18961,23 @@ final class SyncService: ObservableObject {
     matching: [DiscoveredSyncHost]
   ) -> HostConnectionProfile {
     var next = profile
-    let liveLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
+    var liveLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
+    // Bonjour resolves the same machine with and without its IPv6 addresses
+    // from one browse to the next. A resolution that only drops addresses we
+    // already hold is that noise, not a move: keep the fuller list. Otherwise
+    // the profile flipped on every browse and each flip re-saved it (~46 ms on
+    // the main thread) and republished it to every screen.
+    if !liveLanAddresses.isEmpty,
+       Set(liveLanAddresses).isSubset(of: Set(profile.discoveredLanAddresses)) {
+      liveLanAddresses = profile.discoveredLanAddresses
+    }
     let liveTailscaleAddress = matching.compactMap(\.tailscaleAddress).first ?? profile.tailscaleAddress
     next.discoveredLanAddresses = liveLanAddresses
     next.tailscaleAddress = liveTailscaleAddress
     if let livePort = matching.map(\.port).first(where: { $0 > 0 }) {
       next.port = livePort
     }
-    next.savedAddressCandidates = Array(
+    let candidates = Array(
       deduplicatedAddresses(
         (profile.lastSuccessfulAddress.map { [$0] } ?? [])
         + liveLanAddresses
@@ -18949,6 +18985,12 @@ final class SyncService: ObservableObject {
         + profile.savedAddressCandidates
       ).prefix(6)
     )
+    // The same routes reshuffled behind the same preferred (first) route are
+    // not a change worth saving.
+    next.savedAddressCandidates = Set(candidates) == Set(profile.savedAddressCandidates)
+      && candidates.first == profile.savedAddressCandidates.first
+      ? profile.savedAddressCandidates
+      : candidates
     if next.hostIdentity == nil {
       next.hostIdentity = matching.compactMap(\.hostIdentity).first
     }
@@ -22527,6 +22569,14 @@ final class SyncService: ObservableObject {
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
+    // Field diagnostics: one line per host command (name and round trip), so
+    // a screen's request fan-out can be counted. No-op unless enabled.
+    let diagnosticsStart = ScrollDiagnostics.shared.isRunning ? CACurrentMediaTime() : 0
+    defer {
+      if diagnosticsStart > 0 {
+        ScrollDiagnostics.shared.event("cmd", ["action": action, "ms": Int((CACurrentMediaTime() - diagnosticsStart) * 1000)])
+      }
+    }
     let targetProjectId: String?
     let args: [String: Any]
     switch try await routeOrStripFleetTarget(
@@ -22878,7 +22928,16 @@ final class SyncService: ObservableObject {
   private func performInitialHydration(for connectionGeneration: UInt64) async {
     guard isCurrentConnectionGeneration(connectionGeneration),
           connectionState == .connected
-    else { return }
+    else {
+      ScrollDiagnostics.shared.event("hydration.exit", ["reason": "notConnected"])
+      return
+    }
+    if ScrollDiagnostics.shared.isRunning {
+      ScrollDiagnostics.shared.event("hydration.begin", [
+        "hostPhase": String(describing: projectHostPhase),
+        "hasProject": activeProjectId != nil,
+      ])
+    }
 
     // Reconnect makes `canSendLiveRequests()` true immediately, so reads stop
     // holding a queued settle's deadline — and hydration below performs reads
@@ -22895,6 +22954,9 @@ final class SyncService: ObservableObject {
     }
 
     if projectHostPhase == .takeover || projectHostPhase == .recovering {
+      if ScrollDiagnostics.shared.isRunning {
+        ScrollDiagnostics.shared.event("hydration.exit", ["reason": "hostPhase \(projectHostPhase)"])
+      }
       return
     }
     if projectHostPhase == .ready {
@@ -22931,8 +22993,12 @@ final class SyncService: ObservableObject {
         shouldContinue: { self.isCurrentConnectionGeneration(connectionGeneration) }
       )
     } catch is CancellationError {
+      ScrollDiagnostics.shared.event("hydration.exit", ["reason": "gateCancelled"])
       return
     } catch {
+      if ScrollDiagnostics.shared.isRunning {
+        ScrollDiagnostics.shared.event("hydration.exit", ["reason": "gateError", "error": error.localizedDescription])
+      }
       guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       if isSyncHostUnavailableError(error) {
         applyIncomingProjectHostFailure(error)
@@ -22958,15 +23024,18 @@ final class SyncService: ObservableObject {
           guard remoteProjectCatalog.count == 1,
                 remoteProjectCatalog.first?.id == onlyProject.id else {
             refreshProjectCatalog(cachedRows: projectRows)
+            ScrollDiagnostics.shared.event("hydration.exit", ["reason": "catalogMismatch"])
             return
           }
         }
         setActiveProjectId(onlyProject.id, rootPath: onlyProject.rootPath)
       } else {
         refreshProjectCatalog(cachedRows: projectRows)
+        ScrollDiagnostics.shared.event("hydration.exit", ["reason": "noActiveProject", "cached": cachedProjects.count])
         return
       }
     }
+    ScrollDiagnostics.shared.event("hydration.refreshing")
     refreshProjectCatalog(cachedRows: projectRows)
     // Lanes, work sessions and PRs are three independent host round trips.
     // Awaiting them in series cost the sum of three latencies on every project
@@ -23029,6 +23098,9 @@ final class SyncService: ObservableObject {
   /// overlapping hydration attempts re-assert `.hydrating` constantly.
   private func setDomainStatusIfChanged(_ domain: SyncDomain, _ status: SyncDomainStatus) {
     guard domainStatuses[domain] != status else { return }
+    if ScrollDiagnostics.shared.isRunning {
+      ScrollDiagnostics.shared.event("domain", ["domain": String(describing: domain), "phase": String(describing: status.phase)])
+    }
     domainStatuses[domain] = status
   }
 

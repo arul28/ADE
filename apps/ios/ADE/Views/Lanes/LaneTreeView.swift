@@ -82,8 +82,21 @@ struct LaneTreeRow: View {
   let onSelectLane: (String) -> Void
   var machine: LaneMachineChip? = nil
   var showsMachineChip = true
+  /// Set by the Lanes `List`: the row pushes through the list's navigation
+  /// path (no list chevron) and the list owns the swipe actions.
+  var onOpen: (() -> Void)? = nil
 
   private var isChild: Bool { snapshot.lane.laneType != "primary" && depth > 0 }
+
+  private var destination: some View {
+    LaneDetailScreen(
+      laneId: snapshot.lane.id,
+      initialSnapshot: snapshot,
+      allLaneSnapshots: allLaneSnapshots,
+      transitionNamespace: transitionNamespace,
+      onRefreshRoot: onRefreshRoot
+    )
+  }
 
   var body: some View {
     HStack(alignment: .top, spacing: 0) {
@@ -103,15 +116,22 @@ struct LaneTreeRow: View {
         // The last roster of a machine the phone has no live link to: shown,
         // dimmed, no actions (the desktop's offline rule).
         card
+      } else if let onOpen {
+        Button {
+          onSelectLane(snapshot.lane.id)
+          onOpen()
+        } label: {
+          card
+        }
+        .buttonStyle(ADEKitRowButtonStyle())
+          .contextMenu {
+            onContextMenu(snapshot)
+          } preview: {
+            LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest)
+          }
       } else {
         NavigationLink {
-          LaneDetailScreen(
-            laneId: snapshot.lane.id,
-            initialSnapshot: snapshot,
-            allLaneSnapshots: allLaneSnapshots,
-            transitionNamespace: transitionNamespace,
-            onRefreshRoot: onRefreshRoot
-          )
+          destination
         } label: {
           card
         }

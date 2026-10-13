@@ -26,6 +26,10 @@ final class ScrollDiagnostics {
   enum Surface: String {
     case thread
     case workList
+    case lanes
+    case laneDetail
+    case prList
+    case prDetail
     case other
   }
 
@@ -57,6 +61,16 @@ final class ScrollDiagnostics {
     case destinationInit
     /// One evaluation of the chat destination's root body.
     case destinationBody
+    /// One evaluation of the Lanes tab root body.
+    case lanesBody
+    /// One lane row body (the list's per-row cost).
+    case laneRowBody
+    /// One Lanes tab reload (local read plus any host refresh).
+    case lanesReload
+    /// One evaluation of the PRs tab root body.
+    case prListBody
+    /// One PR detail screen body.
+    case prDetailBody
   }
 
   private struct ProbeStat {

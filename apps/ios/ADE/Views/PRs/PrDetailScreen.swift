@@ -87,6 +87,8 @@ struct PrDetailView: View {
   @State private var isRefreshingSnapshot = false
   @State private var mergeAnywayConfirmationPresented = false
   @State private var stackMergeConfirmationPresented = false
+  /// Field diagnostics: when this screen appeared, for its ready timings.
+  @State private var diagnosticsOpenedAt: CFTimeInterval = 0
 
   /// How long a warm detail cache entry is considered fresh. Within this window
   /// a PR projection bump renders from cache without re-firing the cold sidecar
@@ -402,6 +404,7 @@ struct PrDetailView: View {
   }
 
   var body: some View {
+    let _ = ScrollDiagnostics.shared.count(.prDetailBody)
     List {
       if isAwaitingInitialPrDetail {
         Section {
@@ -421,7 +424,7 @@ struct PrDetailView: View {
       } else {
         Section {
           detailHeader
-            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16), separator: .hidden)
+            .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
           if let errorMessage, !syncService.connectionState.isHostUnreachable {
             ADEFlatInlineNotice(message: errorMessage, tint: ADEColor.danger, retry: { Task { await retryPrDetailLoad() } })
               .adeFlatRow(separator: .hidden)
@@ -450,7 +453,8 @@ struct PrDetailView: View {
             threadsById: threadsById,
             canAct: canRunPrActions,
             onReply: { threadId, body in replyToThread(threadId: threadId, body: body) },
-            onResolve: { threadId, resolved in setThreadResolved(threadId: threadId, resolved: resolved) }
+            onResolve: { threadId, resolved in setThreadResolved(threadId: threadId, resolved: resolved) },
+            isLoading: snapshot == nil && !hasLoadedLiveSidecars
           )
         case .files:
           PrFilesSections(
@@ -479,11 +483,50 @@ struct PrDetailView: View {
     .adeFlatList()
     .listSectionSpacing(.compact)
     .contentMargins(.bottom, 16, for: .scrollContent)
+    // Rows scrolled under the clock and the floating back/actions buttons
+    // with nothing between them.
+    .scrollEdgeEffectStyle(.hard, for: .top)
+    .onScrollPhaseChange { _, phase in
+      if phase.isScrolling {
+        ScrollDiagnostics.shared.scrollBegan("pr-detail")
+      } else {
+        ScrollDiagnostics.shared.scrollEnded("pr-detail")
+      }
+    }
+    .onAppear {
+      ScrollDiagnostics.shared.enter(.prDetail)
+      if ScrollDiagnostics.shared.isRunning, diagnosticsOpenedAt == 0 {
+        diagnosticsOpenedAt = CACurrentMediaTime()
+      }
+    }
+    .onDisappear {
+      ScrollDiagnostics.shared.scrollEnded("pr-detail")
+      ScrollDiagnostics.shared.leave(.prDetail)
+    }
+    .onChange(of: snapshot != nil) { _, loaded in
+      guard loaded, diagnosticsOpenedAt > 0 else { return }
+      ScrollDiagnostics.shared.event("prDetail.snapshot", ["ms": Int((CACurrentMediaTime() - diagnosticsOpenedAt) * 1000)])
+    }
+    .onChange(of: hasLoadedLiveSidecars) { _, loaded in
+      guard loaded, diagnosticsOpenedAt > 0 else { return }
+      ScrollDiagnostics.shared.event("prDetail.ready", ["ms": Int((CACurrentMediaTime() - diagnosticsOpenedAt) * 1000)])
+    }
     .adeAnalyticsScreen(.pullRequestDetail)
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar(.visible, for: .navigationBar)
     .toolbar {
+      if !isAwaitingInitialPrDetail && !isPrDetailUnavailable {
+        ToolbarItem(placement: .principal) {
+          PrFlatDetailNavTitle(
+            number: displayedPrNumber ?? currentPr.githubPrNumber,
+            author: snapshot?.detail?.author.login ?? githubItem?.author,
+            authorIsBot: snapshot?.detail?.author.isBot ?? githubItem?.isBot,
+            state: displayedState
+          )
+        }
+        .sharedBackgroundVisibility(.hidden)
+      }
       ToolbarItem(placement: .topBarTrailing) {
         moreMenu
       }
@@ -679,7 +722,8 @@ struct PrDetailView: View {
       canCreateLane: canAutoMapCurrentPr && githubItem != nil,
       canLinkLane: canMapCurrentPr,
       onCreateLane: presentCreateLane,
-      onLinkLane: { if let githubItem { laneLinkItem = githubItem } }
+      onLinkLane: { if let githubItem { laneLinkItem = githubItem } },
+      showsMetaRow: false
     )
   }
 
@@ -834,7 +878,10 @@ struct PrDetailView: View {
         case .checksFailing, .checksPending: selectedTab = .checks
         default: selectedTab = .overview
         }
-      }
+      },
+      // A merged or closed PR's state is in the list row already; an open
+      // one's merge gate is only known once its snapshot arrives.
+      isResolving: snapshot == nil && step.kind != .merged && step.kind != .closed
     ) {
       nextStepPrimary(step)
     }

@@ -45,6 +45,51 @@ enum LaneRuntimeFilter: String, CaseIterable, Identifiable {
   }
 }
 
+/// The Lanes tab's one-tap filters (the chip row under the search field).
+/// Each is a scope plus an optional narrowing: Running and Needs you read the
+/// lane's live chats, Dirty its working tree.
+enum LaneQuickFilter: String, CaseIterable, Identifiable {
+  case active
+  case running
+  case attention
+  case dirty
+  case archived
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .active: return "Active"
+    case .running: return "Running"
+    case .attention: return "Needs you"
+    case .dirty: return "Changes"
+    case .archived: return "Archived"
+    }
+  }
+
+  var scope: LaneListScope {
+    self == .archived ? .archived : .active
+  }
+
+  var runtimeFilter: LaneRuntimeFilter {
+    switch self {
+    case .running: return .running
+    case .attention: return .awaitingInput
+    default: return .all
+    }
+  }
+
+  func matches(_ snapshot: LaneListSnapshot) -> Bool {
+    switch self {
+    case .active: return snapshot.lane.archivedAt == nil
+    case .archived: return snapshot.lane.archivedAt != nil
+    case .running: return snapshot.lane.archivedAt == nil && snapshot.runtime.runningCount > 0
+    case .attention: return snapshot.lane.archivedAt == nil && snapshot.runtime.awaitingInputCount > 0
+    case .dirty: return snapshot.lane.archivedAt == nil && snapshot.lane.status.dirty
+    }
+  }
+}
+
 enum LaneDetailSection: String, CaseIterable, Identifiable {
   case git
 

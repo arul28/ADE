@@ -1,6 +1,11 @@
 import SwiftUI
 import UIKit
 
+/// A lane pushed on the Lanes stack.
+struct LaneRoute: Hashable {
+  let laneId: String
+}
+
 /// Which machines' lanes the Lanes tab shows.
 enum LaneMachineFilter: Equatable {
   case all
@@ -12,6 +17,8 @@ struct LaneListPresentation: Equatable {
   var filteredSnapshots: [LaneListSnapshot]
   var stackOrderedSnapshots: [LaneListSnapshot]
   var lanePrTagsByLaneId: [String: LanePrTag]
+  /// Rows each quick filter would show (before search), for its chip.
+  var quickFilterCounts: [LaneQuickFilter: Int] = [:]
 
   static let empty = LaneListPresentation(
     filteredSnapshots: [],
@@ -25,9 +32,6 @@ extension LanesTabView {
     laneListPresentation.filteredSnapshots
   }
 
-  var normalVisibleSnapshots: [LaneListSnapshot] {
-    filteredSnapshots
-  }
 
   var primaryLane: LaneSummary? {
     visibleLaneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane
@@ -73,14 +77,8 @@ extension LanesTabView {
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 8) {
           ForEach(openLaneSnapshots) { snapshot in
-            NavigationLink {
-              LaneDetailScreen(
-                laneId: snapshot.lane.id,
-                initialSnapshot: snapshot,
-                allLaneSnapshots: laneSnapshots,
-                transitionNamespace: nil,
-                onRefreshRoot: { await reload(refreshRemote: true) }
-              )
+            Button {
+              openLane(snapshot.lane.id)
             } label: {
               LaneOpenChip(snapshot: snapshot, isPinned: pinnedLaneIds.contains(snapshot.lane.id))
             }
@@ -123,21 +121,9 @@ extension LanesTabView {
     laneListPresentation.stackOrderedSnapshots
   }
 
-  var stickyPrimarySnapshot: LaneListSnapshot? {
-    stackOrderedSnapshots.first(where: { $0.lane.laneType == "primary" })
-  }
 
-  var treeSnapshots: [LaneListSnapshot] {
-    stackOrderedSnapshots.filter { $0.lane.laneType != "primary" }
-  }
 
-  var normalStickyPrimarySnapshot: LaneListSnapshot? {
-    stickyPrimarySnapshot
-  }
 
-  var normalTreeSnapshots: [LaneListSnapshot] {
-    treeSnapshots
-  }
 
   var lanePrTagsByLaneId: [String: LanePrTag] {
     laneListPresentation.lanePrTagsByLaneId
@@ -145,13 +131,18 @@ extension LanesTabView {
 
   @MainActor
   func refreshLaneListPresentation() {
+    let visible = visibleLaneSnapshots
     let filtered = laneListFilteredSnapshots(
-      visibleLaneSnapshots,
-      scope: scope,
-      runtimeFilter: runtimeFilter,
+      visible.filter(quickFilter.matches),
+      scope: quickFilter.scope,
+      runtimeFilter: .all,
       searchText: searchText,
       pinnedLaneIds: pinnedLaneIds
     )
+    var counts: [LaneQuickFilter: Int] = [:]
+    for filter in LaneQuickFilter.allCases {
+      counts[filter] = visible.reduce(0) { $0 + (filter.matches($1) ? 1 : 0) }
+    }
     let next = LaneListPresentation(
       filteredSnapshots: filtered,
       stackOrderedSnapshots: laneStackGraphOrder(filtered),
@@ -159,7 +150,8 @@ extension LanesTabView {
         snapshots: laneSnapshots,
         pullRequests: pullRequests,
         githubPrs: syncService.laneGithubPrItems
-      )
+      ),
+      quickFilterCounts: counts
     )
     guard next != laneListPresentation else { return }
     laneListPresentation = next
@@ -204,9 +196,9 @@ extension LanesTabView {
       default: break
       }
       let filtered = laneListFilteredSnapshots(
-        machine.snapshots,
-        scope: scope,
-        runtimeFilter: runtimeFilter,
+        machine.snapshots.filter(quickFilter.matches),
+        scope: quickFilter.scope,
+        runtimeFilter: .all,
         searchText: searchText,
         pinnedLaneIds: pinnedLaneIds
       )
@@ -263,150 +255,312 @@ extension LanesTabView {
     }
   }
 
+  /// Pushes a lane's detail through the stack's path.
+  func openLane(_ laneId: String) {
+    lanePath.append(LaneRoute(laneId: laneId))
+  }
+
+  /// The detail screen for a pushed lane: this machine's row, or the row
+  /// another machine holds for a namespaced id.
   @ViewBuilder
-  var remoteMachineLaneSections: some View {
-    ForEach(visibleRemoteMachineLanes, id: \.machine.machineKey) { entry in
-      LaneTreeView(
-        snapshots: entry.snapshots,
-        pinnedLaneIds: pinnedLaneIds,
-        openLaneIds: openLaneIds,
-        allLaneSnapshots: entry.machine.snapshots,
-        lanePrTagsByLaneId: [:],
+  func laneDestination(_ route: LaneRoute) -> some View {
+    if let snapshot = laneSnapshots.first(where: { $0.lane.id == route.laneId }) {
+      LaneDetailScreen(
+        laneId: route.laneId,
+        initialSnapshot: snapshot,
+        allLaneSnapshots: laneSnapshots,
         transitionNamespace: transitionNamespace,
-        selectedLaneId: selectedLaneTransitionId,
-        onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) },
-        onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
-        onTogglePin: { laneId in togglePin(laneId) },
-        onSelectLane: { laneId in selectedLaneTransitionId = laneId },
-        machineChips: laneMachineChips
+        onRefreshRoot: { await reload(refreshRemote: true) }
       )
-      .adeKitCard(padding: nil)
+    } else if let machine = remoteLanes.machines.first(where: { $0.snapshots.contains { $0.lane.id == route.laneId } }),
+      let snapshot = machine.snapshots.first(where: { $0.lane.id == route.laneId })
+    {
+      LaneDetailScreen(
+        laneId: route.laneId,
+        initialSnapshot: snapshot,
+        allLaneSnapshots: machine.snapshots,
+        transitionNamespace: transitionNamespace,
+        onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
+      )
+    } else {
+      ADEEmptyStateView(
+        symbol: "square.stack.3d.up.slash",
+        title: "Lane unavailable",
+        message: "This lane is no longer on this phone. Refresh Lanes and try again."
+      )
     }
   }
 
+  var laneRowInsets: EdgeInsets {
+    EdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 6)
+  }
+
+  /// One lane as a list row: the tree row, plus pin (leading) and archive or
+  /// restore (trailing) on swipe.
   @ViewBuilder
-  var laneList: some View {
-    if !showsFocusedMachineLanes {
-      if visibleRemoteMachineLanes.isEmpty {
-        ADEEmptyStateView(
-          symbol: "square.stack.3d.up.slash",
-          title: laneListEmptyStateTitle(scope: scope),
-          message: laneListEmptyStateMessage(scope: scope, searchText: searchText, hasFilters: scope != .active || runtimeFilter != .all)
-        )
-        .padding(.top, 40)
-      } else {
-        VStack(spacing: 10) {
-          laneListHeader
-          remoteMachineLaneSections
+  func laneListRow(
+    _ snapshot: LaneListSnapshot,
+    depth: Int,
+    allLaneSnapshots: [LaneListSnapshot],
+    pullRequest: LanePrTag?,
+    showsMachineChip: Bool,
+    onRefreshRoot: @escaping () async -> Void
+  ) -> some View {
+    let laneId = snapshot.lane.id
+    let pinned = pinnedLaneIds.contains(laneId)
+    LaneTreeRow(
+      snapshot: snapshot,
+      depth: depth,
+      allLaneSnapshots: allLaneSnapshots,
+      pullRequest: pullRequest,
+      isPinned: pinned,
+      isOpen: openLaneIds.contains(laneId),
+      transitionNamespace: transitionNamespace,
+      isSelectedTransitionSource: selectedLaneTransitionId == laneId,
+      onRefreshRoot: onRefreshRoot,
+      onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
+      onTogglePin: { togglePin($0) },
+      onSelectLane: { selectedLaneTransitionId = $0 },
+      machine: laneMachineChips.chip(forLaneId: laneId),
+      showsMachineChip: showsMachineChip,
+      onOpen: { openLane(laneId) }
+    )
+    .adeFlatRow(insets: laneRowInsets)
+    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+      Button {
+        togglePin(laneId)
+      } label: {
+        Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
+      }
+      .tint(ADEColor.accent)
+    }
+    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+      if snapshot.lane.laneType != "primary" {
+        if snapshot.lane.archivedAt == nil {
+          Button {
+            Task { await archiveLane(snapshot) }
+          } label: {
+            Label("Archive", systemImage: "archivebox")
+          }
+          .tint(ADEColor.warning)
+          .disabled(!canRunLiveActions)
+        } else {
+          Button {
+            Task { await restoreLane(snapshot) }
+          } label: {
+            Label("Restore", systemImage: "tray.and.arrow.up")
+          }
+          .tint(ADEColor.success)
+          .disabled(!canRunLiveActions)
         }
       }
-    } else if laneSnapshots.isEmpty && remoteLanes.machines.isEmpty {
+    }
+  }
+
+  /// The lane rows: the focused machine's lanes (primary first, then the
+  /// stack tree), then each other machine's lanes under its name.
+  @ViewBuilder
+  var laneListSections: some View {
+    if showsFocusedMachineLanes, laneSnapshots.isEmpty, remoteLanes.machines.isEmpty {
       if let emptyStatePresentation {
         emptyStateCard(emptyStatePresentation)
-          .padding(.top, 24)
+          .padding(.top, 16)
+          .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16), separator: .hidden)
       } else if !showsLaneLoadingSkeletons {
         ADEEmptyStateView(
           symbol: "plus.circle.dashed",
           title: "No lanes yet",
           message: "Tap + to create your first lane."
         )
-        .padding(.top, 40)
+        .padding(.top, 32)
+        .adeFlatRow(separator: .hidden)
       }
-    } else if filteredSnapshots.isEmpty && visibleRemoteMachineLanes.isEmpty {
-      // Empty only when no machine has a row: an empty focused list must not
-      // hide the other machines' lanes.
+    } else if (!showsFocusedMachineLanes || filteredSnapshots.isEmpty) && visibleRemoteMachineLanes.isEmpty {
       ADEEmptyStateView(
         symbol: "square.stack.3d.up.slash",
         title: laneListEmptyStateTitle(scope: scope),
-        message: laneListEmptyStateMessage(scope: scope, searchText: searchText, hasFilters: scope != .active || runtimeFilter != .all)
+        message: laneQuickFilterEmptyMessage
       )
-      .padding(.top, 40)
+      .padding(.top, 32)
+      .adeFlatRow(separator: .hidden)
     } else {
-      if normalVisibleSnapshots.isEmpty && visibleRemoteMachineLanes.isEmpty {
-        EmptyView()
-      } else {
-        VStack(spacing: 10) {
-          laneListHeader
-
-          // The focused machine's lanes: one kit panel, primary first.
-          VStack(spacing: 0) {
-          if let primarySnapshot = normalStickyPrimarySnapshot {
-            NavigationLink {
-              LaneDetailScreen(
-                laneId: primarySnapshot.lane.id,
-                initialSnapshot: primarySnapshot,
-                allLaneSnapshots: laneSnapshots,
-                transitionNamespace: transitionNamespace,
-                onRefreshRoot: { await reload(refreshRemote: true) }
-              )
-            } label: {
-              LaneStackCard(
-                snapshot: primarySnapshot,
-                isPinned: pinnedLaneIds.contains(primarySnapshot.lane.id),
-                isOpen: openLaneIds.contains(primarySnapshot.lane.id),
-                depth: 0,
-                pullRequest: lanePrTagsByLaneId[primarySnapshot.lane.id],
-                transitionNamespace: transitionNamespace,
-                isSelectedTransitionSource: selectedLaneTransitionId == primarySnapshot.lane.id,
-                machine: laneMachineChips.chip(forLaneId: primarySnapshot.lane.id)
-              )
-              .equatable()
-            }
-            .simultaneousGesture(TapGesture().onEnded {
-              selectedLaneTransitionId = primarySnapshot.lane.id
-            })
-            .buttonStyle(ADEKitRowButtonStyle())
-            .contextMenu { laneContextMenu(snapshot: primarySnapshot) } preview: {
-              LanePeekPreview(
-                snapshot: primarySnapshot,
-                pullRequest: lanePrTagsByLaneId[primarySnapshot.lane.id]
-              )
-            }
-            .swipeActions(edge: .leading, allowsFullSwipe: false) {
-              Button {
-                togglePin(primarySnapshot.lane.id)
-              } label: {
-                Label(pinnedLaneIds.contains(primarySnapshot.lane.id) ? "Unpin" : "Pin",
-                      systemImage: pinnedLaneIds.contains(primarySnapshot.lane.id) ? "pin.slash.fill" : "pin.fill")
-              }
-              .tint(ADEColor.accent)
-            }
-          }
-
-          if !normalTreeSnapshots.isEmpty {
-            if normalStickyPrimarySnapshot != nil {
-              Rectangle()
-                .fill(ADEKit.rule)
-                .frame(height: 0.75)
-                .padding(.leading, ADEKit.inset)
-            }
-            LaneTreeView(
-              snapshots: normalTreeSnapshots,
-              pinnedLaneIds: pinnedLaneIds,
-              openLaneIds: openLaneIds,
+      if showsFocusedMachineLanes, !stackOrderedSnapshots.isEmpty {
+        Section {
+          ForEach(stackOrderedSnapshots) { snapshot in
+            let depth = snapshot.lane.laneType == "primary" ? 0 : laneTreeDisplayDepth(for: snapshot.lane)
+            laneListRow(
+              snapshot,
+              depth: depth,
               allLaneSnapshots: laneSnapshots,
-              lanePrTagsByLaneId: lanePrTagsByLaneId,
-              transitionNamespace: transitionNamespace,
-              selectedLaneId: selectedLaneTransitionId,
-              onRefreshRoot: { await reload(refreshRemote: true) },
-              onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
-              onTogglePin: { laneId in togglePin(laneId) },
-              onSelectLane: { laneId in selectedLaneTransitionId = laneId },
-              machineChips: laneMachineChips
+              pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
+              showsMachineChip: depth == 0,
+              onRefreshRoot: { await reload(refreshRemote: true) }
             )
           }
+        } header: {
+          if !remoteLanes.machines.isEmpty {
+            ADEFlatSectionHeader(focusedMachineName, detail: "\(stackOrderedSnapshots.count)")
           }
-          .adeKitCard(padding: nil)
-          remoteMachineLaneSections
+        }
+      }
+      ForEach(visibleRemoteMachineLanes, id: \.machine.machineKey) { entry in
+        Section {
+          ForEach(entry.snapshots) { snapshot in
+            let depth = laneTreeDisplayDepth(for: snapshot.lane)
+            laneListRow(
+              snapshot,
+              depth: depth,
+              allLaneSnapshots: entry.machine.snapshots,
+              pullRequest: nil,
+              showsMachineChip: false,
+              onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
+            )
+          }
+        } header: {
+          ADEFlatSectionHeader(
+            entry.machine.isLive ? entry.machine.name : "\(entry.machine.name) · not live",
+            detail: "\(entry.snapshots.count)"
+          )
         }
       }
     }
   }
 
-  var laneListHeader: some View {
-    ADEEyebrow("Lanes")
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 4)
+  private var laneQuickFilterEmptyMessage: String {
+    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !query.isEmpty { return "No lanes match “\(query)”." }
+    switch quickFilter {
+    case .active: return "Tap + to create a lane."
+    case .running: return "No lane has a chat running right now."
+    case .attention: return "Nothing is waiting on you."
+    case .dirty: return "Every lane's working tree is clean."
+    case .archived: return "Archived lanes show here."
+    }
+  }
+
+  /// Search, always on screen (the old `.searchable` drawer never rendered:
+  /// this screen hides its navigation bar).
+  var laneSearchField: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "magnifyingglass")
+        .font(.system(size: 14, weight: .medium))
+        .foregroundStyle(ADEColor.textMuted)
+      TextField("Search lanes, branches, is:dirty", text: $searchText)
+        .font(.system(size: 15))
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .submitLabel(.search)
+      if !searchText.isEmpty {
+        Button {
+          searchText = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .font(.system(size: 15))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Clear search")
+      }
+    }
+    .padding(.horizontal, 12)
+    .frame(height: 38)
+    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+  }
+
+  /// Active / Running / Needs you / Changes / Archived, each with its count.
+  /// A filter with no lanes stays tappable so its empty state can say so, but
+  /// reads muted.
+  var laneQuickFilterChips: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 7) {
+        ForEach(LaneQuickFilter.allCases) { filter in
+          let count = laneListPresentation.quickFilterCounts[filter] ?? 0
+          LaneQuickFilterChip(
+            title: filter.title,
+            count: count,
+            tone: filter == .attention && count > 0 ? ADEColor.warning : nil,
+            selected: quickFilter == filter
+          ) {
+            withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+              quickFilter = quickFilter == filter && filter != .active ? .active : filter
+            }
+          }
+        }
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 1)
+    }
+    .scrollClipDisabled()
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Lane filters")
+  }
+
+  @ViewBuilder
+  var laneNoticeRows: some View {
+    let hostReachable = !syncService.connectionState.isHostUnreachable
+    if hostReachable,
+      !syncService.shouldSuppressDomainHydrationNotices,
+      let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes)
+    {
+      ADEFlatInlineNotice(message: hydrationNotice.title, retry: { Task { await reload(refreshRemote: true) } })
+        .adeFlatRow(separator: .hidden)
+    }
+    if let errorMessage, laneStatus.phase == .ready, hostReachable {
+      ADEFlatInlineNotice(message: errorMessage, tint: ADEColor.danger, retry: { Task { await reload(refreshRemote: true) } })
+        .adeFlatRow(separator: .hidden)
+    }
+    if let laneDeletionError = syncService.activeLaneDeletionError {
+      ADENoticeCard(
+        title: "Lane deletion failed",
+        message: laneDeletionError,
+        icon: "exclamationmark.triangle.fill",
+        tint: ADEColor.danger,
+        actionTitle: "Dismiss",
+        action: { syncService.clearLaneDeletionFailure() }
+      )
+      .adeFlatRow(separator: .hidden)
+    }
+    if let primaryBranchError, laneStatus.phase == .ready, hostReachable {
+      ADEFlatInlineNotice(message: primaryBranchError, tint: ADEColor.danger, retry: { Task { await refreshPrimaryBranches(force: true) } })
+        .adeFlatRow(separator: .hidden)
+    }
+    if hostReachable, let liveActionNoticePresentation {
+      ADENoticeCard(
+        title: liveActionNoticePresentation.title,
+        message: liveActionNoticePresentation.message,
+        icon: liveActionNoticePresentation.symbol,
+        tint: ADEColor.warning,
+        actionTitle: liveActionNoticePresentation.actionTitle,
+        action: liveActionNoticePresentation.action.map { action in
+          { handleNoticeAction(action) }
+        }
+      )
+      .adeFlatRow(separator: .hidden)
+    }
+  }
+
+  @MainActor
+  func archiveLane(_ snapshot: LaneListSnapshot) async {
+    do {
+      try await syncService.archiveLane(snapshot.lane.id)
+      ADEHaptics.success()
+      await reload(refreshRemote: true)
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func restoreLane(_ snapshot: LaneListSnapshot) async {
+    do {
+      try await syncService.unarchiveLane(snapshot.lane.id)
+      ADEHaptics.success()
+      await reload(refreshRemote: true)
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
   }
 
   @ViewBuilder
@@ -519,30 +673,14 @@ extension LanesTabView {
     }
     if snapshot.lane.archivedAt == nil && snapshot.lane.laneType != "primary" {
       Button(role: .destructive) {
-        Task {
-          do {
-            try await syncService.archiveLane(snapshot.lane.id)
-            await reload(refreshRemote: true)
-          } catch {
-            ADEHaptics.error()
-            errorMessage = error.localizedDescription
-          }
-        }
+        Task { await archiveLane(snapshot) }
       } label: {
         Label("Archive", systemImage: "archivebox")
       }
       .disabled(!canRunLiveActions)
     } else if snapshot.lane.archivedAt != nil {
       Button {
-        Task {
-          do {
-            try await syncService.unarchiveLane(snapshot.lane.id)
-            await reload(refreshRemote: true)
-          } catch {
-            ADEHaptics.error()
-            errorMessage = error.localizedDescription
-          }
-        }
+        Task { await restoreLane(snapshot) }
       } label: {
         Label("Restore", systemImage: "tray.and.arrow.up")
       }
@@ -568,6 +706,8 @@ extension LanesTabView {
 
   @MainActor
   func reload(refreshRemote: Bool = false, includeDecorations: Bool = true) async {
+    let diagnosticsStart = CACurrentMediaTime()
+    defer { ScrollDiagnostics.shared.record(.lanesReload, since: diagnosticsStart) }
     do {
       if refreshRemote {
         try await syncService.refreshLaneSnapshots(includeDecorations: includeDecorations)
@@ -743,5 +883,57 @@ struct LaneMachineFilterChip: View {
     .buttonStyle(.plain)
     .accessibilityLabel(liveDot == false ? "\(title), not live" : title)
     .accessibilityAddTraits(selected ? .isSelected : [])
+  }
+}
+
+/// One quick filter on the Lanes tab: its name and how many lanes it holds.
+struct LaneQuickFilterChip: View {
+  let title: String
+  let count: Int
+  /// A colour for the count when the filter needs attention (Needs you).
+  var tone: Color? = nil
+  let selected: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 5) {
+        Text(title)
+          .font(.system(size: 13, weight: selected ? .semibold : .medium))
+        Text("\(count)")
+          .font(.system(size: 12, weight: .semibold).monospacedDigit())
+          .foregroundStyle(selected ? ADEColor.textSecondary : (tone ?? ADEColor.textMuted))
+      }
+      .foregroundStyle(selected ? ADEColor.textPrimary : (count == 0 ? ADEColor.textMuted : ADEColor.textSecondary))
+      .padding(.horizontal, 12)
+      .frame(height: 30)
+      .background(selected ? ADEKit.surface : ADEKit.track, in: Capsule(style: .continuous))
+      .overlay {
+        if selected {
+          Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75)
+        }
+      }
+      .contentShape(Capsule(style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(title), \(count)")
+    .accessibilityAddTraits(selected ? .isSelected : [])
+  }
+}
+
+/// A lane row's shape while the first lanes load.
+struct LaneRowSkeleton: View {
+  var body: some View {
+    HStack(spacing: 11) {
+      RoundedRectangle(cornerRadius: 5).fill(ADEKit.track).frame(width: 18, height: 18)
+      VStack(alignment: .leading, spacing: 7) {
+        RoundedRectangle(cornerRadius: 4).fill(ADEKit.track).frame(width: 170, height: 12)
+        RoundedRectangle(cornerRadius: 4).fill(ADEKit.track.opacity(0.7)).frame(width: 230, height: 9)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.leading, ADEKit.inset)
+    .padding(.vertical, 14)
+    .accessibilityHidden(true)
   }
 }

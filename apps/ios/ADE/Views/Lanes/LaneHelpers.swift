@@ -791,6 +791,7 @@ func conflictSummary(_ status: ConflictStatus) -> String {
   case "merge-ready":
     return "Conflict prediction clear. Merge-ready."
   default:
-    return "Conflict status available from machine."
+    // Nothing to report: say nothing rather than a status-less placeholder.
+    return ""
   }
 }

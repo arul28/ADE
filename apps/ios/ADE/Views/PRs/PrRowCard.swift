@@ -281,6 +281,18 @@ struct PrRowCard: View {
             PrRowCiGlyph(indicator: ci)
               .font(.system(size: 11))
           }
+          if !data.isTerminal, let review = PrRowReviewGlyph(status: data.reviewStatus) {
+            review
+          }
+          // When it last moved (merged/closed: when it landed), so a stale PR
+          // reads as stale without opening it.
+          let age = prCompactRelativeTime(data.isTerminal ? (data.mergedAt ?? data.updatedAt) : data.updatedAt)
+          if !age.isEmpty {
+            Text(verbatim: age)
+              .font(.adeMono(10.5))
+              .foregroundStyle(ADEColor.textMuted)
+              .fixedSize()
+          }
         }
       }
       PrAvatar(login: data.authorLogin, isBot: data.isBot ? true : nil, size: 20)
@@ -313,8 +325,33 @@ struct PrRowCard: View {
       parts.append("was lane \(ghost)")
     }
     if let additions = data.additions, let deletions = data.deletions { parts.append("\(additions) added, \(deletions) removed") }
+    if data.reviewStatus == "approved" { parts.append("approved") }
+    if data.reviewStatus == "changes_requested" { parts.append("changes requested") }
+    let age = prCompactRelativeTime(data.isTerminal ? (data.mergedAt ?? data.updatedAt) : data.updatedAt)
+    if !age.isEmpty { parts.append(age == "now" ? "updated just now" : "updated \(age) ago") }
     if !data.isTerminal, let ci = data.ciIndicator { parts.append(ci.title) }
     return parts.joined(separator: ", ")
+  }
+}
+
+/// The row's review state: approved (green seal) or changes requested
+/// (amber). "Requested" is the default state of an open PR and draws nothing.
+struct PrRowReviewGlyph: View {
+  let approved: Bool
+
+  init?(status: String?) {
+    switch status {
+    case "approved": approved = true
+    case "changes_requested": approved = false
+    default: return nil
+    }
+  }
+
+  var body: some View {
+    Image(systemName: approved ? "checkmark.seal.fill" : "exclamationmark.bubble.fill")
+      .font(.system(size: 10.5, weight: .semibold))
+      .foregroundStyle(approved ? ADEColor.success : ADEColor.warning)
+      .accessibilityLabel(approved ? "Approved" : "Changes requested")
   }
 }
 
