@@ -86,23 +86,23 @@
   background: color-mix(in srgb, var(--color-fg) 8%, transparent);
   pointer-events: none;
 }
+/* Steps once a second with no transition: a three-minute song moves this line
+   under a pixel per tick, and a 1 s linear transition restarted every tick kept
+   the compositor drawing the whole window at display rate for the whole song. */
 .ade-music-tab-progress > span {
   display: block;
   height: 100%;
   background: var(--color-accent);
   transform-origin: 0 50%;
-  transition: transform 1s linear;
 }
 
 /* ---------- Reduce motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .ade-music *,
-  .ade-music-tab-progress > span { transition-duration: 0s !important; }
+  .ade-music * { transition-duration: 0s !important; }
   .ade-music-bars.is-playing > i { animation: none; }
   .ade-music-tile-art:hover { transform: none; }
 }
-html[data-motion="reduced"] .ade-music *,
-html[data-motion="reduced"] .ade-music-tab-progress > span { transition-duration: 0s !important; }
+html[data-motion="reduced"] .ade-music * { transition-duration: 0s !important; }
 html[data-motion="reduced"] .ade-music-bars.is-playing > i { animation: none; }
 html[data-motion="reduced"] .ade-music-tile-art:hover { transform: none; }
