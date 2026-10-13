@@ -1,4 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -295,10 +296,21 @@ const WINDOWS_PERSISTED_PATH_KEYS = [
 let windowsPersistedPath: { at: number; dirs: string[] } | null = null;
 let windowsPersistedPathRead: Promise<string[]> | null = null;
 
-/** Parse `reg query <key> /v Path` output into the raw (unexpanded) value. */
-function parseRegQueryPathValue(stdout: string): string | null {
-  const match = stdout.match(/^\s*Path\s+REG_(?:EXPAND_)?SZ\s+(.*?)\s*$/im);
-  return match ? match[1]! : null;
+/**
+ * The raw (unexpanded) `Path` value from a `reg export` file: UTF-16, values
+ * wrapped with `\` continuations, `REG_SZ` as a quoted string and
+ * `REG_EXPAND_SZ` as `hex(2):` UTF-16 bytes.
+ */
+function parseRegExportPathValue(text: string): string | null {
+  const joined = text.replace(/^\uFEFF/, "").replace(/\\\r?\n\s*/g, "");
+  const line = joined.split(/\r?\n/).find((entry) => /^"path"=/i.test(entry));
+  if (!line) return null;
+  const raw = line.slice(line.indexOf("=") + 1).trim();
+  if (raw.startsWith('"') && raw.endsWith('"')) return raw.slice(1, -1).replace(/\\(["\\])/g, "$1");
+  const hex = /^hex\(2\):(.*)$/i.exec(raw);
+  if (!hex) return null;
+  const bytes = Buffer.from(hex[1]!.split(",").filter(Boolean).map((byte) => Number.parseInt(byte, 16)));
+  return bytes.toString("utf16le").replace(/\0+$/, "");
 }
 
 /** Expand `%VAR%` references the way Explorer does, case-insensitively; unknown ones stay literal. */
@@ -311,38 +323,40 @@ function expandWindowsEnvReferences(value: string, env: NodeJS.ProcessEnv): stri
 }
 
 /**
- * `reg.exe` writes to a pipe in the console's OEM code page, which mangles a
- * folder name such as `C:\Users\José` or one in Japanese, so it runs under
- * `cmd` switched to UTF-8 first. The key goes through an environment variable
- * (quoted, since the machine key has a space) so no argument needs quoting.
+ * Reads `Path` under `key` through `reg export`, which writes UTF-16 to a
+ * file. `reg query` writes to a pipe in the console's OEM code page and
+ * mangles a folder such as `C:\\Users\\José` or one in Japanese; changing the
+ * code page first would change it for the console of a terminal the brain
+ * was started from, too.
  */
 async function queryRegistryPathValue(key: string): Promise<string | null> {
   let regExe = "reg.exe";
-  let cmdExe = "cmd.exe";
   try {
     regExe = resolveTrustedWindowsTool("reg");
-    cmdExe = resolveTrustedWindowsTool("cmd");
   } catch {
-    // Non-standard install: fall back to the PATH spellings.
+    // Non-standard install: fall back to the PATH spelling.
   }
-  const args = ["/d", "/s", "/c", `chcp 65001>nul & ${regExe} query %ADE_REG_PATH_KEY% /v Path`];
-  const envPatch = { ADE_REG_PATH_KEY: `"${key}"` };
-  if (offThreadSpawnEnabled()) {
-    const result = await execFileOffThread(cmdExe, args, { timeoutMs: WINDOWS_PERSISTED_PATH_TIMEOUT_MS, envPatch });
-    return result.exitCode === 0 ? parseRegQueryPathValue(result.stdout) : null;
+  const file = path.join(os.tmpdir(), `ade-path-${process.pid}-${randomUUID()}.reg`);
+  const args = ["export", key, file, "/y"];
+  try {
+    const exitCode = offThreadSpawnEnabled()
+      ? (await execFileOffThread(regExe, args, { timeoutMs: WINDOWS_PERSISTED_PATH_TIMEOUT_MS })).exitCode
+      : await new Promise<number | null>((resolve) => {
+        try {
+          execFile(regExe, args, { timeout: WINDOWS_PERSISTED_PATH_TIMEOUT_MS, windowsHide: true }, (error) => {
+            resolve(error ? null : 0);
+          });
+        } catch {
+          resolve(null);
+        }
+      });
+    if (exitCode !== 0) return null;
+    return parseRegExportPathValue((await fs.promises.readFile(file)).toString("utf16le"));
+  } catch {
+    return null;
+  } finally {
+    await fs.promises.rm(file, { force: true }).catch(() => undefined);
   }
-  return new Promise((resolve) => {
-    try {
-      execFile(
-        cmdExe,
-        args,
-        { encoding: "utf8", timeout: WINDOWS_PERSISTED_PATH_TIMEOUT_MS, windowsHide: true, env: { ...process.env, ...envPatch } },
-        (error, stdout) => resolve(error ? null : parseRegQueryPathValue(String(stdout ?? ""))),
-      );
-    } catch {
-      resolve(null);
-    }
-  });
 }
 
 /**

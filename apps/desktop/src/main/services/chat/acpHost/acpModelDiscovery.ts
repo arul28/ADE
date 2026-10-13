@@ -62,7 +62,6 @@ const CACHE_FILE_VERSION = 1;
 /** A chat re-reporting the same list rewrites the file at most this often. */
 const SESSION_REWRITE_MIN_MS = 30 * 60_000;
 
-
 /** ADE's effort ladder, filtered to what an agent listed. */
 export function acpAdvertisedReasoningTiers(values: readonly string[]): string[] {
   const offered = new Set(values.map((value) => value.trim().toLowerCase()));
@@ -225,8 +224,22 @@ export function recordAcpSessionModelCatalog(provider: AcpModelProviderGroup, de
   if (partial) mergeDynamicAcpModelDescriptors(provider, descriptors);
   else replaceDynamicAcpModelDescriptors(provider, descriptors);
   const live = getLiveAcpModelDescriptors(provider);
-  if (saved && signature(saved.models) === signature(live) && Date.now() - saved.savedAt < SESSION_REWRITE_MIN_MS) return;
+  // An unchanged list is not written again: within 30 minutes of the last
+  // complete list, and never for a partial update, whose age does not move.
+  if (saved && signature(saved.models) === signature(live) && (partial || Date.now() - saved.savedAt < SESSION_REWRITE_MIN_MS)) return;
   persist(provider, live, partial ? saved?.savedAt ?? 0 : Date.now());
+}
+
+/**
+ * The provider's sign-in changed (signed out, or signed in again, possibly as
+ * another account), so its saved list may belong to someone else. It stays
+ * shown, but counts as old: the next catalog read probes for the real one.
+ */
+export function markAcpModelCatalogStale(provider: AcpModelProviderGroup): void {
+  const saved = readFile().providers[provider];
+  lastEmptyAt.delete(provider);
+  lastFailureAt.delete(provider);
+  if (saved && saved.savedAt !== 0) persist(provider, saved.models, 0);
 }
 
 /** Replace a provider's list with a complete answer from the provider, and persist it. */

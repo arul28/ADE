@@ -1,7 +1,6 @@
 import { resolveAdeCacheFile } from "../shared/adeCacheFile";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { OpenCodeClient } from "@opencode/client";
 import type { Logger } from "../logging/logger";

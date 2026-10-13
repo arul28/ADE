@@ -10,6 +10,7 @@
 // passes its own SDK's event types.
 
 const REDACTED = "[redacted]";
+const MESSAGE_LIMIT = 200;
 
 // Secret shapes, matched anywhere in a string.
 const SECRET_PATTERNS: readonly RegExp[] = [
@@ -22,7 +23,8 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bAIza[0-9A-Za-z_-]{35}\b/g,
   /\blin_(?:api|oauth)_[A-Za-z0-9]{20,}/g,
   /\bsntrys_[A-Za-z0-9_=-]{20,}/g,
-  /\b(?:xai-|gsk_|hf_|npm_|sk_live_|sk_test_|rk_live_)[A-Za-z0-9_-]{16,}/g,
+  /\b(?:xai-|gsk_|sk_live_|sk_test_|rk_live_)[A-Za-z0-9_-]{16,}/g,
+  /\b(?:npm|hf)_[A-Za-z0-9]{30,}\b/g,
   /\bya29\.[A-Za-z0-9._-]{20,}/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
   /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi,
@@ -62,7 +64,8 @@ export function scrubValue<T>(value: T, depth = 0): T {
   if (prototype !== Object.prototype && prototype !== null) return value;
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    out[key] = SENSITIVE_KEY.test(key) ? REDACTED : scrubValue(item, depth + 1);
+    // Sizes and counts stay: `http.response.body.size` holds no body.
+    out[key] = SENSITIVE_KEY.test(key) && typeof item !== "number" ? REDACTED : scrubValue(item, depth + 1);
   }
   return out as T;
 }
@@ -84,9 +87,13 @@ export function scrubEvent<T extends WorkerEvent>(event: T): T {
   }
   delete event.user;
   // JSON.parse errors quote the input around the failure, which can be a token or a body.
+  // Any other message can quote what it failed on (a delivery, a frame): only a
+  // short prefix is kept, enough to recognise the failure.
   for (const exception of event.exception?.values ?? []) {
     if (exception.type === "SyntaxError") exception.value = REDACTED;
+    else if (exception.value && exception.value.length > MESSAGE_LIMIT) exception.value = `${exception.value.slice(0, MESSAGE_LIMIT)}…`;
   }
+  if (event.message && event.message.length > MESSAGE_LIMIT) event.message = `${event.message.slice(0, MESSAGE_LIMIT)}…`;
   return scrubValue(event);
 }
 

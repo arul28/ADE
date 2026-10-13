@@ -68,12 +68,10 @@ const IGNORED_ERROR_PATTERNS: readonly RegExp[] = [
   /^AbortError\b|The operation was aborted|This operation was aborted|Request aborted/i,
   /\bEPIPE\b|ERR_STREAM_DESTROYED|write after end/i,
   /Non-Error promise rejection captured with value: undefined/,
-  // Too many open files: main keeps running through these on purpose
-  // (`FILE_LIMIT_CODES` in main.ts), and one burst is thousands of them.
-  /\b(?:EMFILE|ENFILE)\b/,
   // The renderer's copy of a failed IPC call. Main already reported it, with
   // the channel and the real stack (`main/sentry/ipcCapture.ts`).
-  /^(?:Error: )?Error invoking remote method /,
+  // A call to a channel with no handler never reached main, so it stays.
+  /^(?:Error: )?Error invoking remote method '[^']+': (?!(?:Error: )?No handler registered)/,
   // Sync turned off (or no project registered yet) is a state, not a failure;
   // presence and other sync calls answer with this on every lane change.
   /Sync service is not available/,

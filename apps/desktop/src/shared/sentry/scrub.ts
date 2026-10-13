@@ -30,7 +30,10 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bAIza[0-9A-Za-z_-]{35}\b/g,
   /\blin_(?:api|oauth)_[A-Za-z0-9]{20,}/g,
   /\bsntrys_[A-Za-z0-9_=-]{20,}/g,
-  /\b(?:xai-|gsk_|hf_|npm_|sk_live_|sk_test_|rk_live_)[A-Za-z0-9_-]{16,}/g,
+  /\b(?:xai-|gsk_|sk_live_|sk_test_|rk_live_)[A-Za-z0-9_-]{16,}/g,
+  // npm and Hugging Face tokens have no underscore after the prefix, unlike
+  // the many `npm_config_*` variable names.
+  /\b(?:npm|hf)_[A-Za-z0-9]{30,}\b/g,
   /\bya29\.[A-Za-z0-9._-]{20,}/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
   /\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{12,}/gi,
@@ -201,7 +204,8 @@ export function scrubBreadcrumb<T extends ScrubbableBreadcrumb>(crumb: T): T {
 /** Structural view of a streamed span (`beforeSendSpan`). */
 export type ScrubbableSpan = { name?: string; attributes?: Record<string, unknown> };
 
-const URLISH_ATTRIBUTE = /url|path|target|route|href/i;
+/** Attributes that hold a URL or a request path; `code.filepath` and the like are files. */
+const URLISH_ATTRIBUTE = /^(?:url\.|http\.(?:route|target|url)$|server\.address$)|href$/i;
 
 /**
  * Spans carry the URLs of outgoing requests in their name and attributes, and

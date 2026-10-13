@@ -181,9 +181,11 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: archived });
     // A reply for the other view (the toggle moved mid-flight) is dropped too.
     if (generation !== targetGenerationRef.current || archived !== showArchivedRef.current) return null;
-    const listed = Array.isArray(rows) ? rows : [];
+    // Not a list (a peer on another version, a malformed reply) is not "no
+    // chats": keep what is shown, and keep the remembered chat.
+    if (!Array.isArray(rows)) throw new Error("The chat list could not be read. Try again.");
     // `includeArchived` returns live chats as well; the archived view shows only the archived ones.
-    const inView = listed.filter((session) => Boolean(session.archivedAt) === archived);
+    const inView = rows.filter((session) => Boolean(session.archivedAt) === archived);
     const ordered = [...inView].sort(
       (left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt),
     );

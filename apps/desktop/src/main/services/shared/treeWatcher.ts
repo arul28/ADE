@@ -515,7 +515,10 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     const rootStat = await statOrNull(root);
     if (closed) return;
     if (!rootStat?.isDirectory()) {
-      // chokidar accepts a path that is not there yet and stays silent; so does this.
+      // A root that is not there yet: ready at once, as chokidar is. On
+      // Windows its parent's watch is what notices it being created, after
+      // which `inspect` opens the root's watch and walks the new tree.
+      watchRootParent();
       ready = true;
       emit("ready");
       return;

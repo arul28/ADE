@@ -134,20 +134,23 @@ function oldestEvictableIndex(stack: readonly Toast[], arrivingId: string): numb
   return stack.findIndex((t) => t.id !== arrivingId);
 }
 
+const TOAST_TEXT_LIMIT = 300;
+
+/**
+ * What an error toast is grouped and titled by in Sentry: the fixed start of
+ * its title. Titles end in a lane, file or branch name ("Push failed:
+ * my-lane", "Could not open \"notes.md\""); grouping on the whole title would
+ * open one issue per name and put the name in the issue's title.
+ */
+function toastGroupKey(title: string): string {
+  // A quote opens a name only after a space: "Couldn't …" is one word.
+  return title.split(/:|"|`|\s'/, 1)[0].trim().split(/\s+/).slice(0, 4).join(" ");
+}
+
 /**
  * Show a toast, or replace an in-place one when `id` matches an existing toast
  * (keeping its stack position). Returns the toast id.
  */
-/**
- * What an error toast is grouped and titled by in Sentry: the fixed start of
- * its title. Titles end in a lane, file or branch name ("Could not delete
- * my-lane", "Push failed: my-lane"); grouping on the whole title would open
- * one issue per name and put the name in the issue's title.
- */
-function toastGroupKey(title: string): string {
-  return title.split(/[:"'`]/, 1)[0].trim().split(/\s+/).slice(0, 4).join(" ");
-}
-
 export function showToast(input: ToastInput): string {
   const id = input.id ?? generateId();
   // An error the user is shown is an error ADE should hear about. The message
@@ -156,7 +159,12 @@ export function showToast(input: ToastInput): string {
     const group = toastGroupKey(input.title);
     captureProblem(`Toast: ${group}`, {
       tags: { surface: "toast" },
-      extra: { title: input.title, ...(typeof input.message === "string" ? { message: input.message } : {}) },
+      // Toast text is UI copy plus an error message, but an error message can
+      // quote what it failed on; a short prefix is enough to recognise it.
+      extra: {
+        title: input.title.slice(0, TOAST_TEXT_LIMIT),
+        ...(typeof input.message === "string" ? { message: input.message.slice(0, TOAST_TEXT_LIMIT) } : {}),
+      },
       fingerprint: ["toast", group],
       level: "warning",
     });
