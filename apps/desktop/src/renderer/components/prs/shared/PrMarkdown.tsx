@@ -38,13 +38,14 @@ import {
 import { getFileIcon } from "../../files/filePresentation";
 import {
   PR_COMPARE_FENCE_LANGUAGE,
+  PR_ATTACHMENT_TITLE,
   PR_PROOF_PLACEHOLDER_HOST,
   parsePrCompareFence,
   prProofIdFromTitle,
   preparePrBodyProofForAde,
   type PrCompareFigure,
 } from "../../../../shared/prBodyProof";
-import { PrAddToChatButton, PrCompare, PrProofMedia } from "./PrProofMedia";
+import { PrAddToChatButton, PrCompare, PrProofMedia, PrRemoteMedia } from "./PrProofMedia";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 
 type PrMarkdownTone = "neutral" | "sky" | "amber";
@@ -384,6 +385,14 @@ function PrImage({
   const quote = addToChat && !src.includes(PR_PROOF_PLACEHOLDER_HOST)
     ? () => addToChat({ text: `![${altText}](${src})`, from: `a picture in ${from}` })
     : null;
+  if (title === PR_ATTACHMENT_TITLE) {
+    return (
+      <span className="group/media relative block w-fit max-w-full">
+        <PrRemoteMedia url={src} alt={altText} likely="video" />
+        {quote ? <PrAddToChatButton onClick={() => addToChat?.({ text: src, from: `a video in ${from}` })} className="absolute right-2 top-4 opacity-0 group-hover/media:opacity-100 focus-visible:opacity-100" /> : null}
+      </span>
+    );
+  }
   if (proofId) {
     return (
       <span className="group/media relative block">

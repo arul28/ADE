@@ -2255,8 +2255,15 @@ keeps its proof id in an HTML comment that GitHub does not show.
 `PrMarkdown` reads the same text back (`preparePrBodyProofForAde`). A picture
 with a proof id shows this machine's copy when it holds one (`PrProofMedia`,
 the chat's proof figure, so a video has its chapters), else GitHub's copy.
-ADE's content policy loads pictures from GitHub and no video, so a GitHub copy
-that does not load as a picture becomes an "open on GitHub" link. A
+GitHub's copy is drawn by `PrRemoteMedia`. An attachment's URL does not say
+what it is, so it tries a picture and then a video, and a copy that loads as
+neither (a private repository, a host the content policy does not name)
+becomes an "open on GitHub" link. GitHub stores an uploaded video as its
+attachment URL alone on a line and draws that line as a player; ADE does the
+same, video first. The content policy names the three hosts an attachment
+video passes through (`GITHUB_ATTACHMENT_MEDIA_SOURCES` in `rendererCsp.ts`):
+`github.com/user-attachments/`, GitHub's asset bucket, and
+`private-user-images.githubusercontent.com`. No other host may serve video. A
 Before/After table whose one row holds one picture per cell becomes a
 side-by-side figure (`PrCompare`), whoever wrote the table. A citation that
 was never uploaded still shows on the machine that holds the proof. Anyone who

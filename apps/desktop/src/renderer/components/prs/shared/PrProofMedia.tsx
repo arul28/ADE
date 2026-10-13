@@ -22,22 +22,28 @@ function openExternal(url: string | null | undefined) {
 }
 
 /**
- * GitHub's copy. ADE's content policy loads pictures from GitHub and no video,
- * and an uploaded video's URL does not say that it is one. So a copy that does
- * not load as a picture becomes a link that opens it on GitHub.
+ * GitHub's copy. An attachment's URL does not say what it is, so one kind is
+ * tried and then the other: a picture first, or a video first for an
+ * attachment GitHub stores as a bare link (`likely="video"`). A copy that loads
+ * as neither (a private repository this window is not signed in to, a host the
+ * content policy does not name) becomes a link that opens it on GitHub.
  */
 export function PrRemoteMedia({
   url,
   alt,
   maxHeight = 520,
+  likely = "image",
 }: {
   url: string;
   alt: string;
   maxHeight?: number;
+  likely?: "image" | "video";
 }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [url]);
-  if (failed) {
+  const [failed, setFailed] = useState<{ image: boolean; video: boolean }>({ image: false, video: false });
+  useEffect(() => setFailed({ image: false, video: false }), [url]);
+  const order = likely === "video" ? (["video", "image"] as const) : (["image", "video"] as const);
+  const kind = order.find((entry) => !failed[entry]) ?? null;
+  if (kind === null) {
     return (
       <button
         type="button"
@@ -52,6 +58,23 @@ export function PrRemoteMedia({
       </button>
     );
   }
+  if (kind === "video") {
+    return (
+      <video
+        data-testid="pr-remote-video"
+        src={url}
+        controls
+        playsInline
+        // Metadata only: a thread can hold several videos, and none may start
+        // to download in full before the reader presses play.
+        preload="metadata"
+        aria-label={alt || "Video"}
+        onError={() => setFailed((current) => ({ ...current, video: true }))}
+        className="my-2 block max-w-full rounded-[8px] border"
+        style={{ borderColor: COLORS.border, maxHeight, background: "#000" }}
+      />
+    );
+  }
   return (
     <img
       src={url}
@@ -60,7 +83,7 @@ export function PrRemoteMedia({
       // GitHub's image hosts refuse a request that carries a referrer from
       // another origin; see PrImage.
       referrerPolicy="no-referrer"
-      onError={() => setFailed(true)}
+      onError={() => setFailed((current) => ({ ...current, image: true }))}
       onClick={(event) => {
         event.preventDefault();
         openExternal(url);

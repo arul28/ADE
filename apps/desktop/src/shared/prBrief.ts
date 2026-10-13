@@ -87,7 +87,7 @@ function splitFooter(text: string): { body: string; footer: string } {
 }
 
 /** A link or footnote defined on its own line; a part cut off from it loses the link. */
-const REFERENCE_DEFINITION = /^ {0,3}\[[^\]\n]+\]:\s+\S/m;
+const REFERENCE_DEFINITION = /^ {0,3}\[[^\]\n]+\]:\s*\S/m;
 
 function tagBalance(text: string, tag: string): number {
   return (text.match(new RegExp(`<${tag}\\b`, "gi"))?.length ?? 0) - (text.match(new RegExp(`</${tag}>`, "gi"))?.length ?? 0);

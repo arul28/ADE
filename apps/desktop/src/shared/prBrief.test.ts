@@ -52,6 +52,7 @@ describe("parsePrBrief", () => {
     ["one known part only", "## Summary\nA fix.\n\n## Notes\nNone."],
     ["no part that says what changed or how it was checked", "## Why\na\n\n## Choices I made\nb"],
     ["a link defined in one part and used in another", "## Why\nSee [the issue][1].\n\n## Evidence\nRan it.\n\n[1]: https://example.com/1"],
+    ["a link defined with no space after the colon", "## Why\nSee [the issue][1].\n\n## Evidence\nRan it.\n\n[1]:https://example.com/1"],
     ["a details block that spans two parts", "## Why\n<details>\n\n## Evidence\nRan it.\n</details>"],
   ])("leaves %s as a plain document", (_name, text) => {
     expect(parsePrBrief(text)).toBeNull();

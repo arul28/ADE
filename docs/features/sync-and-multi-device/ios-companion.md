@@ -3887,7 +3887,15 @@ Reading order (the desktop triage layout, native to a phone):
    lane (`prs.linkToLane`), or Open in GitHub;
 3. the PR description (`PrThreadDescriptionCard`). GitHub's embedded HTML is
    normalized into safe Markdown, while `<details>/<summary>` regions become
-   native `DisclosureGroup` rows instead of visible raw tags;
+   native `DisclosureGroup` rows instead of visible raw tags. Media in the
+   text is drawn as media (`prDescriptionPieces` in
+   `PrGitHubDescriptionParser.swift`, the twin of the desktop's
+   `prBodyProof.ts`): a picture alone on its line, a GitHub attachment alone
+   on its line as a video that loads only on a tap, and a Before/After table
+   of pictures as a comparison (stacked on a phone, side by side at regular
+   width). Only media that GitHub serves is loaded (`prIsGitHubMediaURL`); a
+   picture on any other host stays words, because a PR text can be written by
+   anyone and a remote picture tells its author who read it;
 4. "Needs attention" (`PrNeedsAttentionHeader`): the unresolved review threads,
    with reply and resolve, pinned above the history;
 5. the history, built by `buildPullRequestTimeline` and folded by
