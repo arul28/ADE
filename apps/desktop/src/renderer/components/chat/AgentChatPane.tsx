@@ -12,7 +12,7 @@ import {
   useStateSkippingSameValue,
 } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowsInLineVertical, CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import type { ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
@@ -181,7 +181,8 @@ import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecycl
 import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
-import { formatContextTokens, latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
+import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
+import { CompactFirstChip } from "./CompactFirstChip";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
@@ -15934,32 +15935,14 @@ export function AgentChatPane({
   const compactFirstChoice = compactFirst.choice?.sessionId === selectedSessionId ? compactFirst.choice : null;
   const compactFirstEnabled = compactFirstChoice ? compactFirstChoice.value : selectedSession?.compactionIdleMode === "always";
   compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
-  const compactFirstChip = idleCompactOffer && selectedSessionId && !compactFirstChoice?.dismissed && !parallelChatMode
-    ? (() => {
-        const full = formatContextTokens(idleCompactOffer.contextTokens);
-        const compacted = formatContextTokens(idleCompactOffer.estimatedPostTokens);
-        const idle = idleCompactOffer.idleMs < 3_600_000 ? "5 minutes" : "an hour";
-        return (
-          <StatusChip
-            tone={compactFirstEnabled ? "accent" : "warning"}
-            icon={<ArrowsInLineVertical size={10} weight="bold" />}
-            label={compactFirstEnabled ? "Compacts on next send" : "Cache expired"}
-            detail={full}
-            tooltip={compactFirstEnabled
-              ? `Your next message compacts this chat first — about ${compacted} tokens instead of ${full}.`
-              : `The cache expired after ${idle} — your next message re-sends all ${full} tokens. Compact first to send about ${compacted}.`}
-            actions={[{
-              label: compactFirstEnabled ? "Cancel" : "Compact first",
-              title: compactFirstEnabled ? "Send the full chat instead" : undefined,
-              onClick: () => compactFirst.setChoice({ sessionId: selectedSessionId, value: !compactFirstEnabled }),
-              testId: "chat-compact-first-toggle",
-            }]}
-            onDismiss={() => compactFirst.setChoice({ sessionId: selectedSessionId, value: false, dismissed: true })}
-            testId="chat-compact-first-chip"
-          />
-        );
-      })()
-    : null;
+  const compactFirstChip = idleCompactOffer && selectedSessionId && !compactFirstChoice?.dismissed && !parallelChatMode ? (
+    <CompactFirstChip
+      offer={idleCompactOffer}
+      enabled={compactFirstEnabled}
+      onToggle={() => compactFirst.setChoice({ sessionId: selectedSessionId, value: !compactFirstEnabled })}
+      onDismiss={() => compactFirst.setChoice({ sessionId: selectedSessionId, value: false, dismissed: true })}
+    />
+  ) : null;
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}

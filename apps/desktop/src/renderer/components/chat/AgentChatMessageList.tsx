@@ -7974,6 +7974,7 @@ function AgentChatMessageListMain({
     // A fold row reads the same per-turn facts as its turn's `done` row.
     const foldEvent = envelope.event.type === "turn_fold" ? envelope.event : null;
     const turnEndKey = envelope.event.type === "done" ? envelope.key : (foldEvent?.turnEndKey ?? null);
+    const compactOnlyTurn = envelope.event.type === "done" && envelope.event.turnId != null && compactOnlyTurnIds.has(envelope.event.turnId);
     const turnEndDurationMs = turnEndKey
       ? (turnEndDurationByRowKey.get(turnEndKey) ?? null)
       : undefined;
@@ -8089,7 +8090,7 @@ function AgentChatMessageListMain({
           onStopSubagent={onStopSubagent}
           pacedTextReveal={envelope.key === pacedTextRowKey}
           liveThinking={envelope.key === liveThinkingDrawnKey}
-          compactOnlyTurn={envelope.event.type === "done" && envelope.event.turnId != null && compactOnlyTurnIds.has(envelope.event.turnId)}
+          compactOnlyTurn={compactOnlyTurn}
           turnFoldOpen={turnFoldOpen}
           onToggleTurnFold={toggleTurnFold}
           turnWorkInFold={turnWorkInFold}
@@ -8165,7 +8166,7 @@ function AgentChatMessageListMain({
         onStopSubagent={onStopSubagent}
         pacedTextReveal={envelope.key === pacedTextRowKey}
         liveThinking={envelope.key === liveThinkingDrawnKey}
-        compactOnlyTurn={envelope.event.type === "done" && envelope.event.turnId != null && compactOnlyTurnIds.has(envelope.event.turnId)}
+        compactOnlyTurn={compactOnlyTurn}
         turnFoldOpen={turnFoldOpen}
         onToggleTurnFold={toggleTurnFold}
         turnWorkInFold={turnWorkInFold}

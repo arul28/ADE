@@ -22,31 +22,21 @@ function countdownWindowMs(cacheTtl: ClaudePromptCacheTtl): { showAfterMs: numbe
   return { showAfterMs: endMs - LONG_CACHE_WARNING_MS, endMs };
 }
 
-function idleElapsedMs(idleSinceAt: string | null | undefined, nowMs: number): number | null {
+/**
+ * Where the chat's countdown stands. `remainingMs` is 0 once it is over or when
+ * the cache lifetime is unknown; `showInMs` is how long the badge stays hidden
+ * before its window opens (0 while it shows).
+ */
+export function claudeCacheCountdown(
+  idleSinceAt: string | null | undefined,
+  cacheTtl: ClaudePromptCacheTtl | null | undefined,
+  nowMs = Date.now(),
+): { remainingMs: number; showInMs: number } {
   const idleSinceMs = parseTimestampMs(idleSinceAt);
-  return idleSinceMs == null ? null : Math.max(0, nowMs - idleSinceMs);
-}
-
-/** Time left on the countdown; 0 once it is over or when the chat's cache lifetime is unknown. */
-export function getClaudeCacheTtlRemainingMs(
-  idleSinceAt: string | null | undefined,
-  cacheTtl: ClaudePromptCacheTtl | null | undefined,
-  nowMs = Date.now(),
-): number {
-  const elapsedMs = idleElapsedMs(idleSinceAt, nowMs);
-  if (elapsedMs == null || !cacheTtl) return 0;
-  return Math.max(0, countdownWindowMs(cacheTtl).endMs - elapsedMs);
-}
-
-/** Time until the countdown appears; 0 when it is showing, over, or unknown. */
-export function getClaudeCacheTtlShowDelayMs(
-  idleSinceAt: string | null | undefined,
-  cacheTtl: ClaudePromptCacheTtl | null | undefined,
-  nowMs = Date.now(),
-): number {
-  const elapsedMs = idleElapsedMs(idleSinceAt, nowMs);
-  if (elapsedMs == null || !cacheTtl) return 0;
-  return Math.max(0, countdownWindowMs(cacheTtl).showAfterMs - elapsedMs);
+  if (idleSinceMs == null || !cacheTtl) return { remainingMs: 0, showInMs: 0 };
+  const elapsedMs = Math.max(0, nowMs - idleSinceMs);
+  const { showAfterMs, endMs } = countdownWindowMs(cacheTtl);
+  return { remainingMs: Math.max(0, endMs - elapsedMs), showInMs: Math.max(0, showAfterMs - elapsedMs) };
 }
 
 export function formatClaudeCacheTtl(remainingMs: number): string {
@@ -59,7 +49,7 @@ export function formatClaudeCacheTtl(remainingMs: number): string {
 /**
  * Whether to mount the badge: an idle Claude chat with a known cache lifetime
  * whose countdown is not over. The badge itself stays hidden until its window
- * opens (`getClaudeCacheTtlShowDelayMs`).
+ * opens (`claudeCacheCountdown().showInMs`).
  */
 export function shouldShowClaudeCacheTtl(args: {
   provider: string | null | undefined;
@@ -72,8 +62,5 @@ export function shouldShowClaudeCacheTtl(args: {
   if (args.provider !== "claude") return false;
   if (args.status !== "idle") return false;
   if (args.awaitingInput) return false;
-  return getClaudeCacheTtlRemainingMs(args.idleSinceAt, args.cacheTtl, args.nowMs) > 0;
+  return claudeCacheCountdown(args.idleSinceAt, args.cacheTtl, args.nowMs).remainingMs > 0;
 }
-
-/** Hover text of the badge; the countdown itself is the detail. */
-export const CLAUDE_CACHE_TTL_TITLE = "Time until Claude's cache expires";

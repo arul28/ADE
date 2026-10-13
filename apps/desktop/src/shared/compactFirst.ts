@@ -1,11 +1,9 @@
 import { CLAUDE_PROMPT_CACHE_TTL_MS, type ClaudePromptCacheTtl } from "./claudePromptCache";
 import type { AgentChatEventEnvelope } from "./types/chat";
 
-/** Idle time before the offer when the chat's cache lifetime is not known. */
-export const COMPACT_FIRST_IDLE_MS = CLAUDE_PROMPT_CACHE_TTL_MS["1h"];
-/** How long the chat must sit idle before its prompt cache is gone. */
+/** How long the chat must sit idle before its prompt cache is gone; an hour when the lifetime is not known. */
 export function compactFirstIdleMs(cacheTtl: ClaudePromptCacheTtl | null | undefined): number {
-  return cacheTtl ? CLAUDE_PROMPT_CACHE_TTL_MS[cacheTtl] : COMPACT_FIRST_IDLE_MS;
+  return CLAUDE_PROMPT_CACHE_TTL_MS[cacheTtl ?? "1h"];
 }
 /**
  * A compacted chat never gets smaller than its fixed part (system prompt,
