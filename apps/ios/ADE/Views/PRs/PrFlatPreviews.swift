@@ -249,8 +249,7 @@ struct PrDetailPreviewHost: View {
       List {
         Section {
           PrFlatDetailHeader(
-            number: 1367, author: "arul28", authorIsBot: false, createdAt: pr.createdAt, updatedAt: pr.updatedAt,
-            state: state, title: pr.title, baseBranch: pr.baseBranch, headBranch: pr.headBranch,
+            createdAt: pr.createdAt, updatedAt: pr.updatedAt, title: pr.title, baseBranch: pr.baseBranch, headBranch: pr.headBranch,
             laneName: "cross-machine", ghostLaneName: nil, machineName: "MacBook Pro", stackLabel: nil,
             onOpenLane: {}, onOpenStack: nil, canCreateLane: true, canLinkLane: true, onCreateLane: {}, onLinkLane: {}
           )

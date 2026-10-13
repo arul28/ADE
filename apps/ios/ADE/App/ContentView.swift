@@ -350,7 +350,7 @@ struct ContentView: View {
   }
 
   private var lanesTab: some View {
-    LanesTabView(isActive: selectedTab == .lanes)
+    LanesTabShell(isActive: selectedTab == .lanes)
       .tag(RootTab.lanes)
       .tabItem {
         Label("Lanes", systemImage: "square.stack.3d.up")
@@ -358,7 +358,7 @@ struct ContentView: View {
   }
 
   private var prsTab: some View {
-    PRsTabView(isActive: selectedTab == .prs)
+    PRsTabShell(isActive: selectedTab == .prs)
       .tag(RootTab.prs)
       .tabItem {
         Label("PRs", systemImage: "arrow.triangle.pull")

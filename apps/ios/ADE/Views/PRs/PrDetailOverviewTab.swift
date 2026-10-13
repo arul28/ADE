@@ -11,21 +11,63 @@ struct PrOverviewSections: View {
   let canAct: Bool
   let onReply: (_ threadId: String, _ body: String) -> Void
   let onResolve: (_ threadId: String, _ resolved: Bool) -> Void
+  /// The PR body has not arrived yet: placeholder lines, not "No description."
+  var isLoading = false
 
   @State private var expandedBots: Set<String> = []
   @State private var expandedEntries: Set<String> = []
+  @State private var descriptionExpanded = false
+
+  /// Long bodies open folded so the activity below is one scroll away.
+  private static let foldedDescriptionHeight: CGFloat = 300
+  private var descriptionIsLong: Bool { description.count > 700 }
 
   var body: some View {
     Group {
       Section {
-        if description.isEmpty {
+        if description.isEmpty, isLoading {
+          PrDescriptionSkeleton()
+            .adeFlatRow(insets: EdgeInsets(top: 6, leading: 16, bottom: 14, trailing: 16), separator: .hidden)
+        } else if description.isEmpty {
           Text("No description.")
             .font(.footnote)
             .foregroundStyle(ADEColor.textMuted)
             .adeFlatRow(separator: .hidden)
         } else {
-          PrFlatDescription(text: description)
-            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 14, trailing: 16), separator: .hidden)
+          let folded = descriptionIsLong && !descriptionExpanded
+          VStack(alignment: .leading, spacing: 6) {
+            PrFlatDescription(text: description)
+              .frame(maxHeight: folded ? Self.foldedDescriptionHeight : nil, alignment: .top)
+              .clipped()
+              .overlay(alignment: .bottom) {
+                if folded {
+                  LinearGradient(
+                    colors: [ADEColor.pageBackground.opacity(0), ADEColor.pageBackground],
+                    startPoint: .top,
+                    endPoint: .bottom
+                  )
+                  .frame(height: 72)
+                  .allowsHitTesting(false)
+                }
+              }
+            if descriptionIsLong {
+              Button {
+                withAnimation(.snappy(duration: 0.25)) { descriptionExpanded.toggle() }
+              } label: {
+                HStack(spacing: 4) {
+                  Text(folded ? "Show more" : "Show less")
+                  Image(systemName: folded ? "chevron.down" : "chevron.up").font(.system(size: 10, weight: .bold))
+                }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(ADEColor.accent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+                .background(folded ? ADEKit.track : .clear, in: Capsule(style: .continuous))
+              }
+              .buttonStyle(.plain)
+            }
+          }
+          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 14, trailing: 16), separator: .hidden)
         }
       }
 
@@ -460,5 +502,22 @@ struct PrThreadPage: View {
       .padding(.bottom, 6)
     }
     .sensoryFeedback(.success, trigger: sentCount)
+  }
+}
+
+/// Placeholder lines for a PR body that is still loading.
+struct PrDescriptionSkeleton: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 9) {
+      ForEach([0.92, 0.98, 0.7, 0.85, 0.5], id: \.self) { width in
+        GeometryReader { proxy in
+          RoundedRectangle(cornerRadius: 4)
+            .fill(ADEKit.track)
+            .frame(width: proxy.size.width * width, height: 11)
+        }
+        .frame(height: 11)
+      }
+    }
+    .accessibilityLabel("Loading description")
   }
 }

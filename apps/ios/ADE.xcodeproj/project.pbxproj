@@ -337,6 +337,7 @@
 		G10000000000000000000032 /* PrGitHubDescriptionParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000032 /* PrGitHubDescriptionParser.swift */; };
 		G10000000000000000000005 /* PrRowCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000005 /* PrRowCard.swift */; };
 		G10000000000000000000006 /* PrsRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000006 /* PrsRootScreen.swift */; };
+		G10000000000000000000A06 /* PrsRootInputs.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000A06 /* PrsRootInputs.swift */; };
 		G10000000000000000000007 /* PrDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000007 /* PrDetailScreen.swift */; };
 		G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000008 /* PrDetailOverviewTab.swift */; };
 		G10000000000000000000033 /* PrDetailHeaderComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000033 /* PrDetailHeaderComponents.swift */; };
@@ -349,7 +350,7 @@
 		G10000000000000000000023 /* PrStackDiagramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000023 /* PrStackDiagramView.swift */; };
 		G10000000000000000000024 /* PrRebaseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000024 /* PrRebaseScreen.swift */; };
 		E20000000000000000000F20 /* PrRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F20 /* PrRemoteMachines.swift */; };
-		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
+		B10000000000000000000017 /* LaneTreeRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeRow.swift */; };
 		E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F11 /* LaneRemoteMachines.swift */; };
 		E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F12 /* LaneMachinePreviews.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
@@ -798,6 +799,7 @@
 		G20000000000000000000032 /* PrGitHubDescriptionParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGitHubDescriptionParser.swift; path = ADE/Views/PRs/PrGitHubDescriptionParser.swift; sourceTree = "<group>"; };
 		G20000000000000000000005 /* PrRowCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRowCard.swift; path = ADE/Views/PRs/PrRowCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000006 /* PrsRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreen.swift; path = ADE/Views/PRs/PrsRootScreen.swift; sourceTree = "<group>"; };
+		G20000000000000000000A06 /* PrsRootInputs.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootInputs.swift; path = ADE/Views/PRs/PrsRootInputs.swift; sourceTree = "<group>"; };
 		G20000000000000000000007 /* PrDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailScreen.swift; path = ADE/Views/PRs/PrDetailScreen.swift; sourceTree = "<group>"; };
 		G20000000000000000000008 /* PrDetailOverviewTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailOverviewTab.swift; path = ADE/Views/PRs/PrDetailOverviewTab.swift; sourceTree = "<group>"; };
 		G20000000000000000000033 /* PrDetailHeaderComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailHeaderComponents.swift; path = ADE/Views/PRs/PrDetailHeaderComponents.swift; sourceTree = "<group>"; };
@@ -810,7 +812,7 @@
 		G20000000000000000000023 /* PrStackDiagramView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackDiagramView.swift; path = ADE/Views/PRs/PrStackDiagramView.swift; sourceTree = "<group>"; };
 		G20000000000000000000024 /* PrRebaseScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRebaseScreen.swift; path = ADE/Views/PRs/PrRebaseScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000F20 /* PrRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRemoteMachines.swift; path = ADE/Views/PRs/PrRemoteMachines.swift; sourceTree = "<group>"; };
-		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
+		A10000000000000000000017 /* LaneTreeRow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeRow.swift; path = ADE/Views/Lanes/LaneTreeRow.swift; sourceTree = "<group>"; };
 		D20000000000000000000F11 /* LaneRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRemoteMachines.swift; path = ADE/Views/Lanes/LaneRemoteMachines.swift; sourceTree = "<group>"; };
 		D20000000000000000000F12 /* LaneMachinePreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMachinePreviews.swift; path = ADE/Views/Lanes/LaneMachinePreviews.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
@@ -992,7 +994,7 @@
 				A1000000000000000000000F /* LaneManageSheet.swift */,
 				A1000000000000000000001C /* LaneRootStateViews.swift */,
 				A10000000000000000000011 /* LaneStackGraphSheet.swift */,
-				A10000000000000000000017 /* LaneTreeView.swift */,
+				A10000000000000000000017 /* LaneTreeRow.swift */,
 				D20000000000000000000F11 /* LaneRemoteMachines.swift */,
 				D20000000000000000000F12 /* LaneMachinePreviews.swift */,
 				A10000000000000000000012 /* LaneTypes.swift */,
@@ -1082,6 +1084,7 @@
 				D20000000000000000000F41 /* PrFlatPreviews.swift */,
 				D20000000000000000000F40 /* PrConversationDigest.swift */,
 				G20000000000000000000006 /* PrsRootScreen.swift */,
+				G20000000000000000000A06 /* PrsRootInputs.swift */,
 				D20000000000000000000F34 /* PrLaneSheets.swift */,
 				G20000000000000000000007 /* PrDetailScreen.swift */,
 				G20000000000000000000008 /* PrDetailOverviewTab.swift */,
@@ -2029,6 +2032,7 @@
 				E20000000000000000000F41 /* PrFlatPreviews.swift in Sources */,
 				E20000000000000000000F40 /* PrConversationDigest.swift in Sources */,
 				G10000000000000000000006 /* PrsRootScreen.swift in Sources */,
+				G10000000000000000000A06 /* PrsRootInputs.swift in Sources */,
 				E20000000000000000000F34 /* PrLaneSheets.swift in Sources */,
 				G10000000000000000000007 /* PrDetailScreen.swift in Sources */,
 				G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */,
@@ -2042,7 +2046,7 @@
 				E20000000000000000000F20 /* PrRemoteMachines.swift in Sources */,
 				G10000000000000000000023 /* PrStackDiagramView.swift in Sources */,
 				G10000000000000000000024 /* PrRebaseScreen.swift in Sources */,
-				B10000000000000000000017 /* LaneTreeView.swift in Sources */,
+				B10000000000000000000017 /* LaneTreeRow.swift in Sources */,
 				E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */,
 				E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,

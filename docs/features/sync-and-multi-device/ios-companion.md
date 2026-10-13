@@ -3747,6 +3747,35 @@ Top-level tabs and detail screens observe only the revision that maps
 to their data, so a chat transcript changeset no longer causes Files,
 Lanes, and PRs to all re-query together.
 
+The Lanes and PRs tabs go one step further, like the Work tab: a thin shell
+(`LanesTabShell`, `PRsTabShell`) narrows `SyncService` into an `Equatable`
+input struct (`LanesRootInputs`, `PrsRootInputs`) and the screen behind it is
+`.equatable()` on that struct. While a tab is hidden, only its navigation
+request and the active project are tracked, so a hidden tab does not re-render
+on every sync publish. A field the body draws from `SyncService` must be in the
+struct, or the screen goes stale when only that field changes. Both tabs stay
+mounted across a project switch, so each clears its previous project's rows on
+`activeProjectId` changes.
+
+The active project id itself must stay stable through the first hydration.
+When the phone has the checkout cached under its own id and the machine reports
+another id for the same root, the catalog reconcile adopts the machine's id
+once and keeps it (`refreshProjectCatalog` keeps the remote identity when the
+active id already matches it). If the id still changes for the same root while
+connected, `setActiveProjectId` restarts the initial hydration: the refreshes
+already in flight were scoped to the old id and cancel themselves, which once
+left every domain on "syncing initial data" with nothing to retry it.
+
+The Lanes tab is a `List`: a search field (the screen hides its navigation
+bar, so `.searchable` never rendered), quick-filter chips with counts
+(`LaneQuickFilter`: Active, Running, Needs you, Changes, Archived), then the
+focused machine's lanes in stack order and each other machine's lanes under its
+name. Rows swipe to pin and to archive or restore; a machine without a live
+link shows its last roster dimmed, with no swipe actions. Opening a lane pushes
+`LaneRoute` on the tab's navigation path. Lane detail reads the cache and the
+host once on open, and reads the cache again if a local revision landed during
+that host read.
+
 ## PR data projection
 
 The iOS PR wizard (`CreatePrWizardView`) supports three create modes —
@@ -3909,7 +3938,14 @@ Reading order (the desktop triage layout, native to a phone):
 
 The next step is a bar above the tab bar on every tab (`PrNextStepBar`). It
 shows the headline from `PrNextStep.resolve` (the Swift port of the desktop
-`resolvePrNextStep`, same priority order) and its one action. A tap on the
+`resolvePrNextStep`, same priority order) and its one action. The merge state
+comes only from the PR's snapshot: until one loads the bar reads "Checking
+merge status…" with no action, and once the loads settle without one (offline,
+or the read failed) it reads "Merge status unavailable". It never falls back to
+the list row's data, which would read as "Ready to merge". The bar is opaque.
+The number, author, and state sit in the navigation bar
+(`PrFlatDetailNavTitle`); the description shows placeholder lines while it
+loads and folds behind "Show more" when long. A tap on the
 headline opens `PrNextStepSheet` with the detail, the requirement chips, the
 secondary action, and "Merge anyway" (the admin bypass when rules block), which
 opens the existing merge-method sheet. The inline merge rail and the checks,

@@ -539,3 +539,49 @@ then the mean of 2,000) on the same machine, commit `9ee2c4ae0`:
 | Metric | Before | After | Budget |
 |---|---|---|---|
 | Open-project data watch, per open project per 5 s tick | — | 10 μs | 100 μs |
+
+## iOS app: Lanes and PRs (simulator)
+
+The iOS app is measured on its own columns: a simulator on the Mac Studio
+(Mac16,9, M4 Max, 36 GB, macOS 27.0), iPhone 17 Pro on iOS 26.3, Debug
+build, paired to that Mac's brain with the ADE repository open (8 lanes,
+7 open / 1,247 merged / 186 closed PRs). Measured 2026-10-13 against main
+`3137fc9b9`, other agents and builds running on the Mac.
+
+How: launch with field diagnostics on
+(`xcrun simctl spawn <udid> defaults write com.ade.ios adeScrollDiagnostics -bool YES`),
+open the project, then run
+`apps/ios/Scripts/bench-lanes-prs.sh <udid> "<lane name>" <pr number>`. It
+drives a fixed ~70 s path (Lanes tab, scroll, open two lanes, PRs tab,
+scroll, Merged, open a PR, its Checks and Files tabs, back) and summarizes
+`Documents/scroll-diagnostics.jsonl` per step: host commands, main-thread
+stalls (frames of 100 ms or more), scroll hitches, body evaluations and ready
+times. "Before" is one run; "after" is the mean of two. Host latency
+(GitHub through the brain) swings run to run, so ready times that wait on a
+host call are context, not ceilings.
+
+| Scenario / metric | Before | After | Ceiling |
+| --- | ---: | ---: | ---: |
+| Relaunch to Lanes/PRs rows (cached project) | never (stuck on skeletons) | ~1 s | 3 s |
+| Main-thread stalls ≥100 ms, whole path (count) | 41 | 33 | 40 |
+| Main-thread stall time, whole path (ms) | 6,432 | 5,290 | 6,600 |
+| Lanes root body evaluations, whole path | 191 | 39 | 60 |
+| PR list body evaluations, whole path | 106 | 30 | 45 |
+| Network-discovery main-thread time per browse (ms) | 63–74 (×2 per ~30 s) | <50 (not logged) | 50 |
+| Lane detail: cached content after open (ms) | 92 / 318 | 94 / 53 | 150 |
+| Lane detail: fresh host detail after open (ms) | 466 / 299 | 459–574 | — (host) |
+| PR detail: snapshot ready (ms) | 1,616 | 2,395–2,532 | — (host: `prs.getMobileGithubDetail` 1.3–2.2 s) |
+| Host commands, whole path | 28 | 31–34 | 40 |
+
+- Relaunch: the cached project id and the machine's id for the same checkout
+  flipped back and forth during the first hydration; each flip cancelled the
+  refreshes in flight and left every domain on "syncing initial data".
+- Body evaluations: Lanes and PRs now take a narrowed `Equatable` input
+  struct (the Work tab's pattern), so a hidden tab no longer re-renders on
+  every sync publish.
+- Discovery: Bonjour alternately resolving the Mac with and without its IPv6
+  addresses re-saved the paired profile on every browse (46 ms) and
+  republished it to every screen.
+- Host commands rose by a few `prs.getGitHubSnapshot` reads that follow the
+  host's own revision bumps; switching to Merged still reads it three times,
+  which is the next thing to trim.
