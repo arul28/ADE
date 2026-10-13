@@ -280,6 +280,14 @@ try {
         $crashes++
         Write-Warning "Fresh install $cycle/$FreshInstallRepeat exited with code $($process.ExitCode)."
         if ($process.ExitCode -eq $installerAccessViolation) { Write-InstallerCrashReport $startedAt }
+        # A failed install may still have left files or registration behind.
+        # Clear them so the next cycle is a fresh install, not a repair, and
+        # stop counting if that clean state cannot be restored.
+        Stop-InstalledProductProcesses
+        Invoke-Uninstaller -BestEffort $true
+        if ((Test-Path -LiteralPath $appExe) -or (Test-Path -LiteralPath $uninstaller)) {
+          throw "Fresh install $cycle/$FreshInstallRepeat failed and left a partial install that could not be removed."
+        }
         continue
       }
       Assert-InstalledProduct "fresh install $cycle/$FreshInstallRepeat"
