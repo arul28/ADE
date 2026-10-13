@@ -5494,6 +5494,38 @@ export function AgentChatComposer({
   }, [writeAnswerDraft]);
 
   /**
+   * What the user had typed before a question card took the editor over.
+   *
+   * The card re-homes this composer's editor as its answer field, and the
+   * answer is cleared once it is sent or declined. A message the user was in
+   * the middle of writing would become the "answer" and then be thrown away,
+   * so it is set aside when the card opens and put back when it closes.
+   * Remembered with its chat: a card that closes after the user moved to
+   * another chat must not write this chat's text into that one.
+   */
+  const draftBeforeQuestionRef = useRef<{ sessionId: string | null; text: string } | null>(null);
+  const latestDraftRef = useRef(draft);
+  latestDraftRef.current = draft;
+  const questionOwnerId = sessionId ?? null;
+  useEffect(() => {
+    if (askQuestionActive) {
+      // Several questions in a row keep the first set-aside text.
+      if (draftBeforeQuestionRef.current === null) {
+        draftBeforeQuestionRef.current = { sessionId: questionOwnerId, text: latestDraftRef.current };
+        if (latestDraftRef.current.length) writeAnswerDraft("");
+      }
+      return;
+    }
+    const saved = draftBeforeQuestionRef.current;
+    draftBeforeQuestionRef.current = null;
+    // Put it back only into the chat it came from, and never over text that
+    // is there now (an answer whose delivery failed, or something new).
+    if (saved && saved.text.length && saved.sessionId === questionOwnerId && !latestDraftRef.current.length) {
+      writeAnswerDraft(saved.text);
+    }
+  }, [askQuestionActive, questionOwnerId, writeAnswerDraft]);
+
+  /**
    * Keyboard for the editor in its question-card home.
    *
    * Enter sends the ANSWER. It cannot fall through to `handleKeyDown`'s send:
