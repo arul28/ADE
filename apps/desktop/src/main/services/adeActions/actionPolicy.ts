@@ -1,5 +1,6 @@
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
   USER_BROWSER_RUNTIME_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
@@ -281,8 +282,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
-  // An agent asking to move a chat must not approve its own request.
-  chat: ["resolveCrossMachineHandoffApproval"],
+  // An agent asking to move a chat must not approve its own request. And only
+  // a person's client hosts an MCP App, so only it may pass an app's call on.
+  chat: ["resolveCrossMachineHandoffApproval", "mcpAppRequest", "revokeMcpAppGrant"],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -746,6 +748,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "acknowledgeCrossMachineHandoff",
     "respondToInput",
     "dismissPendingInput",
+    // MCP Apps. `getMcpApp` reads a stored page. `mcpAppRequest` is the user's
+    // alone (ADE_ACTION_USER_ONLY): it runs a tool for an app in a frame, and
+    // an agent has its own, permissioned way to call its MCP tools.
+    "getMcpApp",
+    "mcpAppRequest",
+    "listMcpAppGrants",
+    "revokeMcpAppGrant",
     "resolveSmartLinkPreview",
     // Sources favicons: a first-party fetch of the icon of a site the chat
     // already visited, bounded and SSRF-guarded (chat/sourceFaviconService.ts).
@@ -1161,6 +1170,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   built_in_browser: [
     ...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
     BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+    // The answer to a command this machine sent to the desktop its user sits
+    // at (`built_in_browser_remote_call`). Runtime-served, like the ack above.
+    BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
     // `ade browser attach` / `detach`: also runtime-served, so a desktop's own
     // service object lacks them too.
     ...USER_BROWSER_RUNTIME_METHODS,

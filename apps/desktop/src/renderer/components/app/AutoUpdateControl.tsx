@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowSquareOut, ArrowsClockwise, CheckCircle, GithubLogo, WarningCircle } from "@phosphor-icons/react";
 import { bundledReleaseNotes } from "../../../shared/bundledReleaseNotes";
+import { updateVersionLabel } from "../../../shared/updateVersions";
 import { parseReleaseNotesMdx, type ReleaseNotesDocument } from "../../../shared/releaseNotesMdx";
 import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
 import { cn } from "../ui/cn";
@@ -22,7 +23,7 @@ const MIN_RETRY_FEEDBACK_MS = 800;
 type RuntimeVersionSkew = NonNullable<AppInfo["localRuntime"]>["versionSkew"];
 
 function versionLabel(version: string | null): string {
-  return version ? `v${version}` : "the latest update";
+  return updateVersionLabel(version, "the latest update");
 }
 
 function progressLabel(progressPercent: number | null): string | null {

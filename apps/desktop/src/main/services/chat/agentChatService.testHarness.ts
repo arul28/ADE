@@ -1065,6 +1065,7 @@ import {
   writeSessionLinearIssueContextFile,
   createAgentChatService,
   restartRecoveryStopAttribution,
+  flushAllQueuedTranscriptWrites,
   CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
   CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
 } from "./agentChatService";
@@ -2356,6 +2357,7 @@ export {
   detectAllAuth,
   detectCliAuthStatuses,
   enforceCrossMachineForkEncodedBudget,
+  flushAllQueuedTranscriptWrites,
   flushCursorSdkSilenceRecycle,
   fs,
   getDefaultModelDescriptor,

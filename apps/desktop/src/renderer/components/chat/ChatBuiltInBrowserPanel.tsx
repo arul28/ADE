@@ -1087,6 +1087,11 @@ export function ChatBuiltInBrowserPanel({
               ...(request.openPanel ? { openPanel: true } : {}),
               ...(request.laneId ? { laneId: request.laneId } : {}),
               ...(request.chatSessionId ? { chatSessionId: request.chatSessionId } : {}),
+              // Which tab, as the agent asked: its named tab, a new one, or
+              // the one this chat already owns. An older daemon sends none.
+              ...(request.tabId ? { tabId: request.tabId } : {}),
+              ...(request.newTab ? { newTab: true } : {}),
+              ...(request.reuseOwnedTab ? { reuseOwnedTab: true } : {}),
             }),
             pin,
           );
@@ -1346,6 +1351,8 @@ export function ChatBuiltInBrowserPanel({
         tabId: tab.id,
         title: tab.title?.trim() || null,
         url: tunnelAwareUrl(tab.url ?? "", tabTunnelsRef.current[tab.id] ?? null) || null,
+        // The chat's agent is on the pinned machine; the tab is on this one.
+        ...(remotePinRef.current ? { onUserMachine: true } : {}),
       });
     } catch (error) {
       setMessage({ tone: "error", text: errorMessage(error) });
@@ -2599,7 +2606,7 @@ export function ChatBuiltInBrowserPanel({
     urlDisplay,
     urlInput,
   ]);
-  // An agent-owned or recording tab is laid out at a fixed desktop size by
+  // A recording tab is laid out at a fixed desktop size by
   // main (`agentViewport`); it letterboxes exactly like a device preset, so a
   // narrow pane shows the whole page shrunk rather than a page reflowed into a
   // strip. An explicit preset wins.

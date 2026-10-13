@@ -13,6 +13,7 @@ import {
   createAgentChatService,
   createChatRuntimeBudget,
   createService,
+  flushAllQueuedTranscriptWrites,
   fs,
   getSessionInfo,
   getSessionMessages,
@@ -1333,12 +1334,13 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(events.some((event) => event.sessionId === parent.id && event.event.type === "done")).toBe(true);
       });
-      // Transcript appends are async; the restart below reads the child's done
-      // event from disk, so wait for it to land before disposing.
+      // Transcript appends are debounced and asynchronous; the restart below
+      // reads the child's done event from disk. Wait on the transcript write
+      // queue (its real completion signal) instead of polling the file, so a
+      // slow append under load cannot fail on a timing guess.
       const childTranscriptPath = String(sessionService.get(child.id)?.transcriptPath);
-      await vi.waitFor(() => {
-        expect(fs.existsSync(childTranscriptPath) ? fs.readFileSync(childTranscriptPath, "utf8") : "").toContain('"type":"done"');
-      });
+      await flushAllQueuedTranscriptWrites();
+      expect(fs.existsSync(childTranscriptPath) ? fs.readFileSync(childTranscriptPath, "utf8") : "").toContain('"type":"done"');
 
       // Restart, with the parent's copy of that report gone (compaction or the
       // transcript cap): the parent's history can no longer dedupe it.

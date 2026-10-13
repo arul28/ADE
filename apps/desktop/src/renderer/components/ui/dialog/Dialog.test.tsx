@@ -10,6 +10,7 @@ import { Dialog } from "./Dialog";
 import {
   DialogHost,
   __resetDialogRequestsForTests,
+  checkboxConfirmDialog,
   confirmDialog,
   promptDialog,
 } from "./confirm";
@@ -197,6 +198,26 @@ describe("confirmDialog", () => {
     const { result: declined } = await open(() => confirmDialog({ title: "Continue?" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await expect(declined).resolves.toBe(false);
+  });
+
+  it("answers each checkbox by its key, alongside the yes or no", async () => {
+    const user = userEvent.setup();
+    render(<DialogHost />);
+    const checkboxes = [
+      { key: "resume", label: "Resume these chats" },
+      { key: "others", label: "Update the other machines too", defaultChecked: false },
+    ];
+
+    const { result: accepted } = await open(() => checkboxConfirmDialog({ title: "Install?", checkboxes }));
+    await user.click(screen.getByRole("checkbox", { name: "Resume these chats" }));
+    await user.click(screen.getByRole("checkbox", { name: "Update the other machines too" }));
+    await user.click(screen.getByRole("button", { name: "OK" }));
+    await expect(accepted).resolves.toEqual({ confirmed: true, checked: { resume: false, others: true } });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+
+    const { result: declined } = await open(() => checkboxConfirmDialog({ title: "Install?", checkboxes }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await expect(declined).resolves.toEqual({ confirmed: false, checked: { resume: true, others: false } });
   });
 
   it("cancels on Escape and confirms on Enter", async () => {

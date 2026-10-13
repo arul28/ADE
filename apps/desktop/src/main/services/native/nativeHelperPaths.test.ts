@@ -53,7 +53,7 @@ describe("native helper paths", () => {
   });
 
 
-  it("finds the Windows music helpers only on Windows, and the Now Playing helper only when it is on disk", () => {
+  it("finds the music host on Windows and macOS only, and the Now Playing helper only on Windows once it is on disk", () => {
     const resources = fs.mkdtempSync(path.join(os.tmpdir(), "ade-native-helpers-"));
     try {
       const packaged = { isPackaged: true, resourcesPath: resources, appPath: "/unused" };
@@ -65,10 +65,14 @@ describe("native helper paths", () => {
       expect(resolveMusicHostExecutable({ ...packaged, platform: "win32", env: {} }))
         .toBe(path.join(resources, "native", "ade-music-host", "ade-music-host.exe"));
 
+      expect(resolveMusicHostExecutable({ ...packaged, platform: "darwin", env: {} }))
+        .toBe(path.join(resources, "native", "ade-music-host", "ade-music-host"));
+
       for (const platform of ["darwin", "linux"] as const) {
         expect(resolveNowPlayingHelperBinary({ ...packaged, platform })).toBeNull();
-        expect(resolveMusicHostExecutable({ ...packaged, platform, env: { ADE_MUSIC_HOST_PATH: path.join(resources, "native", "ade-now-playing.exe") } })).toBeNull();
       }
+      // No host at all on Linux, even when an override names a real file.
+      expect(resolveMusicHostExecutable({ ...packaged, platform: "linux", env: { ADE_MUSIC_HOST_PATH: path.join(resources, "native", "ade-now-playing.exe") } })).toBeNull();
     } finally {
       fs.rmSync(resources, { recursive: true, force: true });
     }

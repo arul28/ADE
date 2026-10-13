@@ -1,26 +1,24 @@
 import SwiftUI
 
-// The top and bottom of the PR detail screen on the flat base: the header
-// (number, author, age, state, title, branches, lane) and the slim glass bar
-// with the next step and its one action.
+// The top and bottom of the PR detail screen on the flat base: the nav-bar
+// title (number, author, state), the header (title, branches, age, lane) and
+// the bar with the next step and its one action.
 
-/// "3d ago", plus "· updated 2h ago" only when that says something new.
+/// "3d ago", or "3d · updated 2h" when it moved since: short enough to sit
+/// beside the author and the state pill without truncating.
 func prFlatHeaderAge(createdAt: String?, updatedAt: String?) -> String? {
   let created = prCompactRelativeTime(createdAt)
   guard !created.isEmpty else { return nil }
-  let opened = created == "now" ? "just now" : "\(created) ago"
   let updated = prCompactRelativeTime(updatedAt)
-  guard !updated.isEmpty, updated != created else { return opened }
-  return "\(opened) · updated \(updated == "now" ? "just now" : "\(updated) ago")"
+  guard !updated.isEmpty, updated != created else {
+    return created == "now" ? "just now" : "\(created) ago"
+  }
+  return "\(created) · updated \(updated)"
 }
 
 struct PrFlatDetailHeader: View {
-  let number: Int
-  let author: String?
-  let authorIsBot: Bool?
   let createdAt: String?
   let updatedAt: String?
-  let state: String
   let title: String
   let baseBranch: String
   let headBranch: String
@@ -38,38 +36,29 @@ struct PrFlatDetailHeader: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .center, spacing: 6) {
-        Text(verbatim: "#\(number)")
-          .font(.adeMono(13, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-        if let author, !author.isEmpty {
-          Text("·").foregroundStyle(ADEColor.textMuted)
-          PrAvatar(login: author, isBot: authorIsBot, size: 16)
-          Text(author)
-            .font(.footnote.weight(.medium))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-        }
-        if let age = prFlatHeaderAge(createdAt: createdAt, updatedAt: updatedAt) {
-          Text("· \(age)")
-            .font(.footnote)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
-        Spacer(minLength: 6)
-        PrStatePill(state: state)
-      }
       Text(title)
         .font(.title3.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
         .fixedSize(horizontal: false, vertical: true)
         .textSelection(.enabled)
+      // The number, author and state ride in the navigation bar
+      // (`PrFlatDetailNavTitle`); the age joins the branch line.
       if !baseBranch.isEmpty || !headBranch.isEmpty {
-        Text(verbatim: "\(baseBranch) ← \(headBranch)")
-          .font(.adeMono(11.5))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-          .truncationMode(.middle)
+        HStack(spacing: 6) {
+          Text(verbatim: "\(baseBranch) ← \(headBranch)")
+            .font(.adeMono(11.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          if let age = prFlatHeaderAge(createdAt: createdAt, updatedAt: updatedAt) {
+            Spacer(minLength: 4)
+            Text(age)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .fixedSize()
+          }
+        }
       }
       HStack(spacing: 6) {
         if let laneName, !laneName.isEmpty {
@@ -114,6 +103,34 @@ struct PrFlatDetailHeader: View {
   }
 }
 
+/// The PR's number, author and state in the navigation bar, between the back
+/// and actions buttons: the bar row was otherwise empty, and the header below
+/// spent a line repeating it.
+struct PrFlatDetailNavTitle: View {
+  let number: Int
+  let author: String?
+  let authorIsBot: Bool?
+  let state: String
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Text(verbatim: "#\(number)")
+        .font(.adeMono(13, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      if let author, !author.isEmpty {
+        PrAvatar(login: author, isBot: authorIsBot, size: 16)
+        Text(author)
+          .font(.footnote.weight(.medium))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      PrStatePill(state: state)
+    }
+    .accessibilityElement(children: .combine)
+  }
+}
+
 struct PrFlatDetailHeaderSkeleton: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -136,7 +153,19 @@ struct PrNextStepFlatBar<Primary: View>: View {
   let isBusy: Bool
   let busyLabel: String?
   let onTapText: () -> Void
+  /// Whether the PR's merge state is known. Until it is, the bar says so and
+  /// offers no action: a cold open used to show "Ready to merge" and a live
+  /// Merge button before GitHub's answer arrived.
+  var mergeStatus: PrMergeStatusPresence = .known
   @ViewBuilder let primary: () -> Primary
+
+  private var headline: String {
+    switch mergeStatus {
+    case .known: return step.headline
+    case .checking: return "Checking merge status…"
+    case .unavailable: return "Merge status unavailable"
+    }
+  }
 
   /// The next thing in the way after the headline, never the headline again.
   private var subline: String? {
@@ -162,17 +191,24 @@ struct PrNextStepFlatBar<Primary: View>: View {
     HStack(spacing: 10) {
       Button(action: onTapText) {
         HStack(spacing: 9) {
-          if isBusy {
+          if isBusy || mergeStatus == .checking {
             ProgressView().controlSize(.small)
           } else {
-            Circle().fill(prNextStepColor(step.tone)).frame(width: 8, height: 8)
+            Circle()
+              .fill(mergeStatus == .unavailable ? ADEColor.textMuted : prNextStepColor(step.tone))
+              .frame(width: 8, height: 8)
           }
           VStack(alignment: .leading, spacing: 1) {
-            Text(step.headline)
+            Text(headline)
               .font(.subheadline.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
-            if let subline {
+            if mergeStatus == .unavailable {
+              Text("Pull down to check again")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+                .lineLimit(1)
+            } else if mergeStatus == .known, let subline {
               Text(subline)
                 .font(.caption)
                 .foregroundStyle(ADEColor.textSecondary)
@@ -184,13 +220,21 @@ struct PrNextStepFlatBar<Primary: View>: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("Next step: \(step.headline)")
-      primary()
+      .accessibilityLabel(mergeStatus == .known ? "Next step: \(step.headline)" : headline)
+      if mergeStatus == .known {
+        primary()
+      }
     }
     .padding(.leading, 16)
     .padding(.trailing, 8)
     .padding(.vertical, 8)
-    .glassEffect(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    .frame(minHeight: 52)
+    // Opaque: the glass let the description read through the bar.
+    .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75)
+    }
+    .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
     .padding(.horizontal, 12)
     .padding(.bottom, 6)
   }
@@ -242,4 +286,12 @@ struct PrFlatDescription: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
+}
+
+/// Whether a PR detail knows its merge state: from its snapshot, still loading
+/// it, or done loading without one (offline, or the read failed).
+enum PrMergeStatusPresence: Equatable {
+  case known
+  case checking
+  case unavailable
 }

@@ -134,7 +134,10 @@ import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcReques
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
-import { BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD } from "./services/builtInBrowser/desktopBridgeMethods";
+import {
+  BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
+} from "./services/builtInBrowser/desktopBridgeMethods";
 import { USER_BROWSER_ROUTE_PARAM, isUserBrowserRuntimeMethod } from "./services/builtInBrowser/userBrowserRouting";
 import {
   ctoCallerInitializeParams,
@@ -153,6 +156,7 @@ import {
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
+import { trackBrainLoopWatchdogCommand } from "./services/runtime/brainLoopWatchdog";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
@@ -5924,7 +5928,13 @@ async function runTool(args: {
       );
     } else if (
       domain === "built_in_browser"
-      && action === BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD
+      && (
+        action === BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD
+        // The same gate for a desktop's answer to a browser command this
+        // machine sent it: an agent must not be able to write the result its
+        // own `ade browser` call is about to read.
+        || action === BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD
+      )
     ) {
       // Not a browser action. This machine has no desktop attached, so a
       // `browser open` here was published to whichever desktop holds a remote
@@ -8551,6 +8561,14 @@ export function createAdeRpcRequestHandler(args: {
     if (method === "ade/actions/call") {
       const actionName = assertNonEmptyString(params.name, "name");
       const actionArgs = safeObject(params.arguments);
+      // Name the call for the loop watchdog, so a wedge a local `ade` command
+      // causes is reported as that command instead of "idle". Only remote sync
+      // commands were tracked before.
+      const domain = typeof actionArgs.domain === "string" ? actionArgs.domain : null;
+      const domainAction = typeof actionArgs.action === "string" ? actionArgs.action : null;
+      const stopTrackingCommand = trackBrainLoopWatchdogCommand(
+        domain && domainAction ? `${domain}.${domainAction}` : actionName,
+      );
       try {
         const result = await callAction(actionName, actionArgs);
         noteFileWatchAction(actionName, actionArgs, result);
@@ -8567,6 +8585,8 @@ export function createAdeRpcRequestHandler(args: {
               : {}),
           },
         };
+      } finally {
+        stopTrackingCommand();
       }
     }
 

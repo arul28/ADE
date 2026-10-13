@@ -642,6 +642,21 @@ function PendingApprovalDetail({
   );
 }
 
+/**
+ * Drafts set aside while a question card holds the editor, by chat. Module
+ * state on purpose: it has to outlive a switch to another chat, and it is only
+ * ever a handful of short strings.
+ */
+const draftsSetAsideForQuestion = new Map<string, string>();
+function rememberDraftSetAside(sessionId: string, text: string): void {
+  // Bounded: a chat deleted with a card still open would otherwise stay here.
+  if (draftsSetAsideForQuestion.size >= 32) {
+    const oldest = draftsSetAsideForQuestion.keys().next().value;
+    if (oldest !== undefined) draftsSetAsideForQuestion.delete(oldest);
+  }
+  draftsSetAsideForQuestion.set(sessionId, text);
+}
+
 function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | undefined): string | null {
   if (!pendingInput) return null;
   // B13: the card IS the composer now, so there is nothing "above" to answer.
@@ -5559,6 +5574,49 @@ export function AgentChatComposer({
   const clearAnswerDraft = useCallback(() => {
     writeAnswerDraft("");
   }, [writeAnswerDraft]);
+
+  /**
+   * What the user had typed before a question card took the editor over.
+   *
+   * The card re-homes this composer's editor as its answer field, and the
+   * answer is cleared once it is sent or declined. A message the user was in
+   * the middle of writing would become the "answer" and then be thrown away,
+   * so it is set aside when the card opens and put back when it closes.
+   *
+   * Kept per chat and outside the component (`draftsSetAsideForQuestion`): one
+   * composer serves every chat in the pane, so a switch away while the card is
+   * up must leave the text waiting for that chat, not drop it.
+   */
+  const latestDraftRef = useRef(draft);
+  latestDraftRef.current = draft;
+  const questionOwnerId = sessionId ?? null;
+  const questionOwnerSeenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!questionOwnerId) return;
+    // The first pass for a chat that just came into this composer: the pane
+    // may still be showing the previous chat's draft, so nothing is captured
+    // from it. A card that was already up when the chat was opened keeps the
+    // old behaviour for that one visit.
+    const cameIntoView = questionOwnerSeenRef.current !== questionOwnerId;
+    questionOwnerSeenRef.current = questionOwnerId;
+    if (askQuestionActive) {
+      // Several questions in a row keep the first set-aside text.
+      if (draftsSetAsideForQuestion.has(questionOwnerId)) return;
+      if (cameIntoView) {
+        draftsSetAsideForQuestion.set(questionOwnerId, "");
+        return;
+      }
+      rememberDraftSetAside(questionOwnerId, latestDraftRef.current);
+      if (latestDraftRef.current.length) writeAnswerDraft("");
+      return;
+    }
+    const saved = draftsSetAsideForQuestion.get(questionOwnerId);
+    if (saved === undefined) return;
+    draftsSetAsideForQuestion.delete(questionOwnerId);
+    // Never over text that is there now (an answer whose delivery failed, or
+    // something new).
+    if (saved.length && !latestDraftRef.current.length) writeAnswerDraft(saved);
+  }, [askQuestionActive, questionOwnerId, writeAnswerDraft]);
 
   /**
    * Keyboard for the editor in its question-card home.

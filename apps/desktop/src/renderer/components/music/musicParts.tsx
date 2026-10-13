@@ -6,9 +6,10 @@ import { formatMusicTime } from "./musicStore";
 import appleMusicBadgeUrl from "./assets/listen-on-apple-music-badge.svg";
 
 /**
- * Artwork sizes are snapped to a few steps so the same picture is requested at
- * the same URL everywhere it appears; Chromium's HTTP cache then serves repeat
- * views (mzstatic sends long-lived cache headers).
+ * `MusicArt` snaps its sizes to a few steps so the same picture is requested at
+ * the same URL wherever `MusicArt` shows it; Chromium's HTTP cache then serves
+ * repeat views (mzstatic sends long-lived cache headers). Cover grids size
+ * their cells with `coverPixels` instead.
  */
 const ART_STEPS = [64, 128, 256, 400, 600];
 function snapArt(px: number): number {
@@ -30,8 +31,10 @@ export function MusicArt({
   eager?: boolean;
 }) {
   const url = musicArtworkUrl(artwork, snapArt(size * 2));
-  const [failed, setFailed] = React.useState(false);
-  React.useEffect(() => setFailed(false), [url]);
+  // Keyed to the URL rather than reset in an effect: a blocked image fails
+  // before an effect runs, and the reset then showed a broken-image icon.
+  const [failedUrl, setFailedUrl] = React.useState<string | null>(null);
+  const failed = failedUrl !== null && failedUrl === url;
   const bg = artwork?.bgColor ? `#${artwork.bgColor}` : undefined;
   return (
     <span
@@ -48,7 +51,7 @@ export function MusicArt({
           loading={eager ? "eager" : "lazy"}
           decoding="async"
           draggable={false}
-          onError={() => setFailed(true)}
+          onError={() => setFailedUrl(url)}
         />
       ) : (
         <MusicNotesSimple size={Math.max(12, Math.round(size * 0.38))} weight="fill" />
@@ -192,6 +195,177 @@ export function SongRow({
   );
 }
 
+/* ---------- Covers for playlists Apple sends without artwork ----------
+ * Like the Music app, such a playlist shows its first four songs' covers in a
+ * 2x2 grid: four Apple artwork URLs at the cell's pixel size, laid out by CSS.
+ * The four songs come from one `tracks` read with limit 4, made only once the
+ * tile is on screen (and the window is visible), at most four at a time, and
+ * kept here in a bounded LRU for ten minutes, so an edited playlist gets its
+ * new cover (the main process also caches the read for 60 s).
+ */
+/**
+ * Artwork the renderer can show. Art the user uploaded (a playlist cover, an
+ * uploaded song) is served from `*.blobstore.apple.com`, which the renderer's
+ * CSP blocks; a playlist with such a cover gets the four-song cover instead.
+ */
+export function loadableArtwork(artwork: MusicArtwork | null | undefined): artwork is MusicArtwork {
+  return Boolean(artwork?.url) && !/^https:\/\/[^/]+\.blobstore\.apple\.com\//i.test(artwork!.url);
+}
+
+const COVER_CACHE_MAX = 300;
+const COVER_CACHE_MS = 10 * 60_000;
+const COVER_CONCURRENCY = 4;
+/** How many times one mounted tile reads its cover before it keeps the glyph. */
+const COVER_ATTEMPTS = 2;
+const coverCache = new Map<string, { arts: MusicArtwork[]; at: number }>();
+let coverRunning = 0;
+const coverQueue: Array<() => void> = [];
+
+function rememberCover(key: string, entry: { arts: MusicArtwork[]; at: number }): void {
+  coverCache.delete(key);
+  coverCache.set(key, entry);
+  if (coverCache.size > COVER_CACHE_MAX) {
+    for (const oldest of coverCache.keys()) {
+      coverCache.delete(oldest);
+      break;
+    }
+  }
+}
+
+function whenVisible(): Promise<void> {
+  if (typeof document === "undefined" || document.visibilityState !== "hidden") return Promise.resolve();
+  return new Promise((resolve) => {
+    const onChange = () => {
+      if (document.visibilityState === "hidden") return;
+      document.removeEventListener("visibilitychange", onChange);
+      resolve();
+    };
+    document.addEventListener("visibilitychange", onChange);
+  });
+}
+
+/**
+ * The distinct covers of a playlist's first four songs. `"unwanted"` when the
+ * tile left before its turn, `"failed"` when the read failed.
+ */
+function loadCover(id: string, library: boolean, wanted: () => boolean): Promise<MusicArtwork[] | "unwanted" | "failed"> {
+  const key = `${library ? "l" : "c"}:${id}`;
+  const hit = coverCache.get(key);
+  if (hit && Date.now() - hit.at < COVER_CACHE_MS) {
+    rememberCover(key, hit);
+    return Promise.resolve(hit.arts);
+  }
+  return new Promise((resolve) => {
+    // One exit: every run, wanted or not, hands its slot to the next in line.
+    const run = async () => {
+      coverRunning += 1;
+      try {
+        if (wanted()) await whenVisible();
+        if (!wanted()) {
+          resolve("unwanted");
+          return;
+        }
+        const page = await window.ade!.music!.tracks({ kind: "playlist", id, library, offset: 0, limit: 4 });
+        const arts = coverArts(page.items);
+        rememberCover(key, { arts, at: Date.now() });
+        resolve(arts);
+      } catch {
+        resolve("failed");
+      } finally {
+        coverRunning -= 1;
+        coverQueue.shift()?.();
+      }
+    };
+    if (coverRunning < COVER_CONCURRENCY) void run();
+    else coverQueue.push(() => void run());
+  });
+}
+
+/** The distinct, loadable covers of a collection's first four songs. */
+export function coverArts(tracks: readonly MusicItem[]): MusicArtwork[] {
+  const seen = new Set<string>();
+  const arts: MusicArtwork[] = [];
+  for (const track of tracks.slice(0, 4)) {
+    if (loadableArtwork(track.artwork) && !seen.has(track.artwork.url)) {
+      seen.add(track.artwork.url);
+      arts.push(track.artwork);
+    }
+  }
+  return arts;
+}
+
+/** Device pixels for a square of `cssPx`, rounded up to 32 so nearby sizes share a URL. */
+function coverPixels(cssPx: number): number {
+  const dpr = typeof window === "undefined" ? 2 : window.devicePixelRatio || 1;
+  return Math.max(64, Math.ceil((cssPx * dpr) / 32) * 32);
+}
+
+function PlaylistCoverArt({ item }: { item: MusicItem }) {
+  const ref = React.useRef<HTMLSpanElement>(null);
+  const { id, library } = item;
+  const [cover, setCover] = React.useState<{ arts: MusicArtwork[]; tilePx: number } | null>(null);
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") return undefined;
+    let wanted = true;
+    let attempts = 0;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const entry = entries.find((e) => e.isIntersecting);
+        if (!entry) return;
+        io.disconnect();
+        attempts += 1;
+        const tilePx = entry.boundingClientRect.width || 168;
+        void loadCover(id, library, () => wanted).then((arts) => {
+          if (!wanted) return;
+          // A failed read is tried once more the next time the tile is seen.
+          if (arts === "failed" && attempts < COVER_ATTEMPTS) io.observe(el);
+          else if (Array.isArray(arts) && arts.length) setCover({ arts, tilePx });
+        });
+      },
+      { rootMargin: "200px" },
+    );
+    io.observe(el);
+    return () => {
+      wanted = false;
+      io.disconnect();
+    };
+  }, [id, library]);
+  return <MusicCoverArt ref={ref} arts={cover?.arts ?? []} size={168} displayPx={cover?.tilePx ?? 168} className="ade-music-tile-img" />;
+}
+
+/** Up to four covers: a 2x2 grid of four, one cover, or the note glyph. */
+export const MusicCoverArt = React.forwardRef<
+  HTMLSpanElement,
+  { arts: MusicArtwork[]; size: number; displayPx?: number; className?: string; eager?: boolean }
+>(function MusicCoverArt({ arts: given, size, displayPx = size, className, eager = false }, ref) {
+  // Keyed to the covers, like `MusicArt`: new covers get a new chance to load.
+  const artsKey = given.map((art) => art.url).join("|");
+  const [failedKey, setFailedKey] = React.useState<string | null>(null);
+  const arts = failedKey === artsKey ? [] : given;
+  const setFailed = () => setFailedKey(artsKey);
+  const mosaic = arts.length >= 4;
+  const loading = eager ? "eager" : "lazy";
+  return (
+    <span
+      ref={ref}
+      className={`ade-music-art${className ? ` ${className}` : ""}${mosaic ? " ade-music-cover-grid" : ""}`}
+      style={{ width: size, height: size }}
+      aria-hidden
+    >
+      {mosaic ? (
+        arts.slice(0, 4).map((art) => (
+          <img key={art.url} src={musicArtworkUrl(art, coverPixels(displayPx / 2)) ?? undefined} alt="" loading={loading} decoding="async" draggable={false} onError={setFailed} />
+        ))
+      ) : arts.length ? (
+        <img src={musicArtworkUrl(arts[0], coverPixels(displayPx)) ?? undefined} alt="" loading={loading} decoding="async" draggable={false} onError={setFailed} />
+      ) : (
+        <MusicNotesSimple size={Math.round(size * 0.38)} weight="fill" />
+      )}
+    </span>
+  );
+});
+
 export function CollectionTile({
   item,
   onOpen,
@@ -205,7 +379,11 @@ export function CollectionTile({
   return (
     <div className={`ade-music-tile${round ? " is-artist" : ""}`} data-testid="music-tile">
       <button type="button" className="ade-music-tile-art" onClick={onOpen} aria-label={`Open ${item.title}`}>
-        <MusicArt artwork={item.artwork} size={168} round={round} className="ade-music-tile-img" />
+        {item.kind === "playlist" && !loadableArtwork(item.artwork) ? (
+          <PlaylistCoverArt item={item} />
+        ) : (
+          <MusicArt artwork={item.artwork} size={168} round={round} className="ade-music-tile-img" />
+        )}
         {onPlay ? (
           <span
             role="button"

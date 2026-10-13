@@ -9,10 +9,12 @@ import {
   within,
   waitFor,
 } from "@testing-library/react";
+import { __resetDialogRequestsForTests } from "../ui/dialog/confirm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AdeAccountMachine,
   RemoteRuntimeTarget,
+  UpdateImpact,
 } from "../../../shared/types";
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../shared/accountDirectory";
 import { AccountMachineRow } from "./AccountMachineRow";
@@ -40,6 +42,7 @@ const remoteRuntimeMock = {
   pairWithMachine: vi.fn(),
   runDoctor: vi.fn(),
   updateAndRestart: vi.fn(),
+  getUpdateImpact: vi.fn(async (_id: string): Promise<UpdateImpact> => ({ checked: true, chats: [], cliSessions: 0, terminals: 0 })),
 };
 
 const updateGetStateMock = vi.fn();
@@ -169,6 +172,7 @@ afterEach(() => {
 
 describe("RemoteTargetList", () => {
   afterEach(() => {
+    __resetDialogRequestsForTests();
     cleanup();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -2024,9 +2028,11 @@ describe("RemoteTargetList", () => {
   });
   // --- Update & restart on a connected machine ----------------------------
 
-  function installConnectedMachine(remoteVersion: string): void {
+  // The update store outlives a page, and a test, by design, so each update
+  // test uses its own machine id.
+  function installConnectedMachine(remoteVersion: string, id = "target-c"): void {
     const connectedTarget = {
-      id: "target-c",
+      id,
       name: "Studio Mac",
       hostname: "studio.local",
       transport: "paired" as const,
@@ -2090,8 +2096,14 @@ describe("RemoteTargetList", () => {
     ).toBeTruthy();
   });
 
-  it("asks the outdated machine to update to the newest version this computer knows", async () => {
-    installConnectedMachine("1.1.9");
+  it("names what is running there, then asks the machine to update to the newest version this computer knows", async () => {
+    installConnectedMachine("1.1.9", "target-update-ok");
+    remoteRuntimeMock.getUpdateImpact.mockResolvedValueOnce({
+      checked: true,
+      chats: [{ sessionId: "chat-1", title: "Nightly perf pass", projectName: "ADE" }],
+      cliSessions: 0,
+      terminals: 0,
+    });
     installAdeMock();
     // This computer runs 1.2.0 but has already seen 1.3.0 published.
     updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0", "1.3.0"));
@@ -2110,9 +2122,16 @@ describe("RemoteTargetList", () => {
       await screen.findByRole("button", { name: /Update & restart/ }),
     );
 
+    // Nothing restarts before the yes, and the question names the running chat.
+    const question = await screen.findByRole("alertdialog");
+    expect(question.textContent).toContain("Nightly perf pass");
+    expect(remoteRuntimeMock.getUpdateImpact).toHaveBeenCalledWith("target-update-ok");
+    expect(remoteRuntimeMock.updateAndRestart).not.toHaveBeenCalled();
+    fireEvent.click(within(question).getByRole("button", { name: "Update & restart" }));
+
     await waitFor(() =>
       expect(remoteRuntimeMock.updateAndRestart).toHaveBeenCalledWith(
-        "target-c",
+        "target-update-ok",
         "1.3.0",
       ),
     );
@@ -2128,7 +2147,7 @@ describe("RemoteTargetList", () => {
   });
 
   it("shows the machine's own failure line when the update does not land", async () => {
-    installConnectedMachine("1.1.9");
+    installConnectedMachine("1.1.9", "target-update-fails");
     installAdeMock();
     updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0"));
     remoteRuntimeMock.updateAndRestart.mockResolvedValue({
@@ -2145,6 +2164,8 @@ describe("RemoteTargetList", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: /Update & restart/ }),
     );
+    const question = await screen.findByRole("alertdialog");
+    fireEvent.click(within(question).getByRole("button", { name: "Update & restart" }));
 
     expect(
       await screen.findByText(

@@ -5,6 +5,7 @@ import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { isWindowsPlatform, requestWindowsBetaNotice } from "../../lib/windowsBetaNotice";
 import { canRestartAde, restartAde } from "../app/restartAde";
 import { AutoUpdatesControls } from "./AutoUpdatesSection";
+import { OtherMachinesUpdateSection } from "./OtherMachinesUpdateSection";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 
 type RuntimeServiceInstallState = NonNullable<AppInfo["localRuntime"]>["serviceInstall"]["state"];
@@ -414,6 +415,8 @@ export function AboutSection() {
       <ModernSection group="Updates" title="Updates" hint="Choose whether ADE installs downloaded updates automatically.">
         <AutoUpdatesControls />
       </ModernSection>
+
+      <OtherMachinesUpdateSection group="Updates" anchor="update-other-machines" />
     </div>
   );
 }

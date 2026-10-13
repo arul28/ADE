@@ -62,6 +62,7 @@ import { createChatLaunchSnapshot, toQueuedMessage } from "../shared/chatLaunch"
 // same source the host stamps onto every snapshot.
 import { usageProviderAccountUrl } from "../shared/types/usage";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
+import { mcpSecretVaultKey, mcpSecretVaultKeyPrefix } from "../shared/mcpRegistry";
 import {
   CHAT_MENTION_KINDS,
   CHAT_MENTION_MAX_PER_KIND,
@@ -4826,6 +4827,62 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         sync: async () => ({ ok: true as const, value: null }),
       };
     })(),
+    // Settings > MCP servers, in memory. Values given to `setSecret` are kept
+    // only as "held" flags, as the real bridge never hands one back either.
+    mcpRegistry: (() => {
+      const held = new Set<string>();
+      const secretKey = (ref: { server: string; field: string; name: string }) =>
+        mcpSecretVaultKey(ref.server, ref.field === "header" ? "header" : "env", ref.name);
+      const found = [
+        { name: "linear", transport: "http" as const, url: "https://mcp.linear.app/mcp", envNames: [], headerNames: [], providers: ["codex" as const, "droid" as const] },
+        {
+          name: "posthog",
+          transport: "stdio" as const,
+          command: "npx",
+          args: ["-y", "mcp-remote@latest", "https://mcp.posthog.com/sse"],
+          envNames: ["POSTHOG_AUTH_HEADER"],
+          headerNames: [],
+          providers: ["codex" as const],
+        },
+      ];
+      return {
+        context: async () => ({ deviceOffKey: "device.browser-mock.mcp.off", repoScope: "repo:github.com/ade/browser-preview", cached: null }),
+        check: async (args: { servers: Array<{ name: string; transport: string; command?: string; envNames: string[]; headerNames: string[] }> }) => ({
+          ok: true as const,
+          value: {
+            heldSecretKeys: [...held],
+            missingCommands: args.servers
+              .filter((server) => server.transport === "stdio" && server.command === "missing-command")
+              .map((server) => server.name),
+          },
+        }),
+        setSecret: async (args: { server: string; field: string; name: string; value: string }) => {
+          held.add(secretKey(args));
+          return { ok: true as const, value: null };
+        },
+        removeSecret: async (args: { server: string; field: string; name: string }) => {
+          held.delete(secretKey(args));
+          return { ok: true as const, value: null };
+        },
+        pruneSecrets: async (args: { server: string; keep: { envNames: string[]; headerNames: string[] } | null }) => {
+          const keep = new Set([
+            ...(args.keep?.envNames ?? []).map((name) => secretKey({ server: args.server, field: "env", name })),
+            ...(args.keep?.headerNames ?? []).map((name) => secretKey({ server: args.server, field: "header", name })),
+          ]);
+          for (const key of [...held]) {
+            if (key.startsWith(mcpSecretVaultKeyPrefix(args.server)) && !keep.has(key)) held.delete(key);
+          }
+          return { ok: true as const, value: null };
+        },
+        scan: async () => ({ servers: found, skipped: [] }),
+        import: async (args: { name: string }) => {
+          const server = found.find((entry) => entry.name === args.name);
+          if (!server) return { ok: false as const, rejected: true as const, message: "That server is no longer in a provider's settings on this computer." };
+          const { providers: _providers, ...definition } = server;
+          return { ok: true as const, value: { ...definition, enabled: true } };
+        },
+      };
+    })(),
     app: {
       // Mirrors the preload's synchronous channel bridge.
       packageChannel: browserMockPackageChannel(),
@@ -7057,6 +7114,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getImageDataUrl: resolvedArg({ dataUrl: BROWSER_MOCK_IMAGE_DATA_URL }),
       resolveSmartLinkPreview: async ({ url }: { url: string }) => deriveSmartLinkPreview(url),
       resolveSourceFavicons: async () => ({ icons: {} }),
+      getMcpApp: async () => ({ status: "unavailable" as const, reason: "Apps do not run in the browser preview." }),
+      mcpAppRequest: async () => ({ ok: false as const, error: { code: -32000, message: "Apps do not run in the browser preview." } }),
+      listMcpAppGrants: async () => ({ server: null, tools: [] }),
+      revokeMcpAppGrant: async () => ({ server: null, tools: [] }),
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;
@@ -8924,7 +8985,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateSetPreferences: async (
       preferences: AutoUpdatePreferences,
     ): Promise<AutoUpdatePreferences> => preferences,
-    updateGetInstallImpact: resolved({ connectedPhones: [], interruptedChats: [] }),
+    updateGetInstallImpact: resolved({ checked: true, chats: [], cliSessions: 0, terminals: 0, connectedPhones: [] }),
     updateQuitAndInstall: resolved(true),
     updateCancelAutoApply: resolved(false),
     updateDismissInstalledNotice: resolved(undefined),

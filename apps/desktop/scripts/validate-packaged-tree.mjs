@@ -34,9 +34,9 @@ import { BUNDLED_AGENT_SKILLS } from "./bundled-agent-skills.mjs";
  * Re-exported from bundled-agent-skills.mjs rather than declared here: the same
  * roster has to be readable from a TypeScript test that also checks it against
  * the on-disk resources/agent-skills tree and against the prompt-facing list in
- * src/shared/adeCliGuidance.ts. This copy had drifted three skills behind the
- * directory (ade-scene, ade-search and ade-mosaic were never checked to exist
- * in a packaged build) before that test existed.
+ * src/shared/adeCliGuidance.ts. This copy had drifted behind the directory
+ * (ade-scene and ade-search were never checked to exist in a packaged build)
+ * before that test existed.
  */
 export { BUNDLED_AGENT_SKILLS };
 

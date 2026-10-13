@@ -30,6 +30,7 @@ import {
   takePendingWorkToolRequest,
 } from "./workToolRequests";
 import { holdRemoteBrowserOpen, remoteBrowserOpenMatchesOwner } from "../../lib/pendingRemoteBrowserOpens";
+import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import { registerIssueInPlaceHost, subscribeIssueToolRequests } from "../../lib/issueNavigation";
@@ -1279,6 +1280,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     browserRemoteBinding,
     setWorkSidebarTool,
   ]);
+
+  // A chat on another machine, shown here: this desktop runs its agent's
+  // browser commands from now on, in the browser the user can see. Registered
+  // once the chat is in front and kept after the user moves to another chat,
+  // because the agent keeps working (`remoteBrowserCallHost`).
+  useServeRemoteBrowserCalls({
+    active,
+    binding: browserRemoteBinding,
+    chatSessionId: activeWorkSession?.id ?? null,
+    laneId: activeWorkSession?.laneId || null,
+    projectRoot: browserCheckoutRoot ?? null,
+  });
 
   // "Open this tool" asked for from outside the Work page — the app shell's
   // browser open-request handler, the command palette. Only this page knows the

@@ -19,7 +19,7 @@ export type AdeRuntimeKind =
   | "pi-sdk"
   | "opencode";
 
-const adeScheduledWorkGuidance = "**Wake-up semantics:** Autonomous wake is available via `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text` or `ade actions run chat.createScheduledWork --input-json '{\"delaySeconds\":720,\"prompt\":\"<task>\"}' --text`; relative delays are one-shot and avoid timezone arithmetic. Absolute one-shots use `--at <ISO-8601-with-offset-or-Z>` / `runAt`. Five-field cron remains available for recurring jobs but is interpreted in the ADE brain machine's local timezone, never UTC unless that machine is configured for UTC. The create result reports the computed next run time; verify it before ending the turn. The action targets your own tracked agent session automatically. List, cancel, or pause with `chat.listScheduledWork`, `chat.cancelScheduledWork`, and `chat.setScheduledWorkPaused`, or the typed `ade chat scheduled-work ...` / `ade chat schedules ...` commands. Delivery starts a new turn at the next turn boundary, resumes an ended tracked provider CLI when necessary, and survives brain restarts; recurring jobs expire after seven days. Keep shell `sleep` for short waits inside the current turn.";
+const adeScheduledWorkGuidance = "**Scheduled work:** Autonomous wake is available via `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text` or `ade actions run chat.createScheduledWork --input-json '{\"delaySeconds\":720,\"prompt\":\"<task>\"}' --text`; relative delays are one-shot and avoid timezone arithmetic. Absolute one-shots use `--at <ISO-8601-with-offset-or-Z>` / `runAt`. Five-field cron remains available for recurring jobs but is interpreted in the ADE brain machine's local timezone, never UTC unless that machine is configured for UTC. The create result reports the computed next run time; verify it before ending the turn. The action targets your own tracked agent session automatically. List, cancel, or pause with `chat.listScheduledWork`, `chat.cancelScheduledWork`, and `chat.setScheduledWorkPaused`, or the typed `ade chat scheduled-work ...` / `ade chat schedules ...` commands. Delivery starts a new turn at the next turn boundary, resumes an ended tracked provider CLI when necessary, and survives brain restarts; recurring jobs expire after seven days. Keep shell `sleep` for short waits inside the current turn.";
 
 const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `background: true` and background subagents are fine here: ADE shows each job in the chat, keeps the session open while it runs, and you are woken when it ends. They stop if ADE closes this chat's connection to OpenCode (for example on an ADE restart), so for a wait that must survive that, use `ade chat scheduled-work create` instead.";
 
@@ -215,24 +215,15 @@ export function buildCodingAgentSystemPrompt(args: {
     describeMode(mode),
     describePermissionMode(permissionMode),
     "",
-    "## Operating Loop",
-    "1. Inspect the repository state before changing code. Prefer repository-local evidence over assumptions.",
-    "2. Decide the smallest next step, then use tools to gather exactly the context you need.",
-    "3. When you mutate code, keep edits narrow, preserve surrounding conventions, and avoid speculative rewrites.",
-    "4. Verify every meaningful change with diffs, tests, type checks, or targeted inspection.",
-    "5. Only finish once the task is complete or you are truly blocked.",
-    "6. Treat status checks, interruptions, and tool/subagent timeouts as checkpoints. Give the requested status, then continue the active directive unless the user explicitly says stop, pause, or only report status.",
-    "",
-    "## User-Facing Progress",
-    "Before the first meaningful tool burst, send one short preamble sentence describing what you are about to do.",
-    "When you change approach or move into a new phase, send another short preamble sentence first.",
-    "Keep progress updates concise and high-signal. Do not narrate every micro-step or dump raw logs back to the user.",
+    // No generic coding advice here (inspect first, keep edits narrow, verify,
+    // narrate briefly): every harness ADE hosts already gives its own, and a
+    // second copy only dilutes the lines below, which are ADE's own.
+    "## Working in ADE",
+    "Treat status checks, interruptions, and tool/subagent timeouts as checkpoints. Give the requested status, then continue the active directive unless the user explicitly says stop, pause, or only report status.",
     "When the user asks a question while you work, answer it in visible text. The user does not see your thinking unless they expand it.",
     "",
     "## Tool Use Rules",
-    toolNames.length
-      ? `Available tools: ${toolNames.join(", ")}.`
-      : "Use the available tools deliberately and only when they move the task forward.",
+    ...(toolNames.length ? [`Available tools: ${toolNames.join(", ")}.`] : []),
     ...(guardedLocalReadOnly
       ? runtime === "codex-cli" || runtime === "codex-app-server"
         ? [
@@ -246,12 +237,7 @@ export function buildCodingAgentSystemPrompt(args: {
             "Inspect only the concrete files needed to form a plan. Do not keep broad-searching once you have enough context.",
             "When the plan is clear, write or update a short TodoWrite plan, ask one clarifying question if needed, then use exitPlanMode to request implementation approval.",
           ]
-      : [
-          "Prefer the smallest search/list/read pass before editing so you operate on the right files the first time.",
-          "Batch related discovery work only when the runtime can use it without repeating the same scope.",
-        ]),
-    "Use shell access for validation and repository inspection, not for theatrical narration.",
-    "Use web tools only when the answer depends on external facts that are not already in the repo.",
+      : []),
     ...(hasTodoTools
       ? [
           "For multi-step work, keep a short task list with TodoWrite. Prefer 3-5 concrete steps and keep at most one item in progress.",
@@ -261,7 +247,6 @@ export function buildCodingAgentSystemPrompt(args: {
     interactive
       ? "If requirements are genuinely unclear and progress would otherwise stall, ask one concise question with concrete options."
       : "If requirements are unclear, make the safest reasonable assumption and continue. State the assumption in the final answer.",
-    "If tool results fail or contradict the current plan, synthesize the finding and adapt rather than repeating the same failing action.",
     "",
     buildAdeCliAgentGuidance(adeSkillRoots),
     ...(args.sessionActivityGuidance ? ["", args.sessionActivityGuidance] : []),
@@ -292,17 +277,6 @@ export function buildCodingAgentSystemPrompt(args: {
           "If a required PR tool is missing, report the misconfiguration immediately instead of spelunking through local bootstrap code.",
         ]
       : []),
-    "",
-    "## Editing Rules",
-    "Prefer existing files and patterns over creating new abstractions.",
-    "Do not introduce secrets, fake data, or placeholder TODO work unless the task explicitly calls for it.",
-    "Keep output legible: short progress-oriented narration, then concrete results.",
-    "Do not reveal chain-of-thought. Share concise conclusions, plans, and decisions instead.",
-    "",
-    "## Verification Rules",
-    "After edits, review the diff mentally for regressions, edge cases, and accidental churn.",
-    "When tests or checks are available and relevant, run them before declaring success.",
-    "If you could not verify something, say so plainly and explain the remaining risk.",
   ].join("\n");
 }
 

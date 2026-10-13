@@ -8,8 +8,10 @@ import type {
   PersonalChatCallResponse,
   PersonalChatCapabilities,
   RuntimeActivityCounts,
+  RuntimeUpdateImpact,
 } from "../../../../desktop/src/shared/types";
 import { PERSONAL_CHAT_ACTIONS } from "../../../../desktop/src/shared/types";
+import { summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "../runtime/runtimeWorkSummary";
 import { USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../../desktop/src/shared/types/macDesktop";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
@@ -71,18 +73,6 @@ type PersonalChatScopeOptions = {
 };
 
 type ObjectArgs = Record<string, unknown>;
-
-export function summarizeRuntimeActivity(runtime: AdeRuntime): RuntimeActivityCounts {
-  return {
-    activeAgentTurns: runtime.agentChatService?.hasActiveWorkloads() ? 1 : 0,
-    activeWorkSessions: runtime.ptyService.list({ status: "running", limit: 500 })
-      .filter(
-        (session) =>
-          session.runtimeState === "running"
-          || session.runtimeState === "waiting-input",
-      ).length,
-  };
-}
 
 function asObject(value: unknown): ObjectArgs {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -251,6 +241,13 @@ export class PersonalChatScope {
     const runtime = await pending.catch(() => null);
     if (!runtime) return { activeAgentTurns: 0, activeWorkSessions: 0 };
     return summarizeRuntimeActivity(runtime);
+  }
+
+  /** Same rule as `activitySummary`: never boots the runtime to answer. */
+  async updateImpact(): Promise<RuntimeUpdateImpact> {
+    const runtime = await this.runtimePromise?.catch(() => null);
+    if (!runtime) return { chats: [], cliSessions: 0, terminals: 0 };
+    return await summarizeRuntimeUpdateImpact(runtime, null);
   }
 
   /**

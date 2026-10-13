@@ -427,7 +427,9 @@ describe("ACP CLI providers", () => {
     expect(launch.args).toEqual(["-m", "kimi-code/k3", "--plan"]);
     expect(launch.assignedSessionId).toBeUndefined();
     expect(launch.startupCommand).not.toContain("Review this lane.");
-    expect(launch.initialInput).toBe("Review this lane.");
+    // ADE guidance rides in front of the first prompt; the user prompt comes last.
+    expect(launch.initialInput).toMatch(/^ADE session guidance\b/u);
+    expect(launch.initialInput?.endsWith("Review this lane.")).toBe(true);
     expect(launch.initialInputDelayMs).toBe(750);
   });
 
@@ -503,7 +505,11 @@ describe("ACP CLI providers", () => {
     expect(launch.args.some((arg) => arg.startsWith("--resume"))).toBe(false);
     expect(launch.args).toEqual(expect.arrayContaining(["--model", "gpt-5.4"]));
     expect(launch.args).toEqual(expect.arrayContaining(["--deny-tool=write", "--deny-tool=shell"]));
-    expect(launch.args).toEqual(expect.arrayContaining(["-i", "Plan the change."]));
+    // The first prompt is the ADE guidance followed by the user prompt.
+    const iIndex = launch.args.indexOf("-i");
+    expect(iIndex).toBeGreaterThan(-1);
+    expect(launch.args[iIndex + 1]).toMatch(/^ADE session guidance\b/u);
+    expect(launch.args[iIndex + 1].endsWith("Plan the change.")).toBe(true);
   });
 
   it("rejects the permission modes each ACP provider has no mapping for", () => {

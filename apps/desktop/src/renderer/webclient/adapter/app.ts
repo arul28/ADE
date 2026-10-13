@@ -7,6 +7,7 @@ import {
   type ProjectInfo,
   type UpdateInstallImpact,
 } from "../../../shared/types";
+import { UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import {
   INERT_KEEP_AWAKE_SNAPSHOT,
   type KeepAwakeFixResult,
@@ -306,7 +307,8 @@ export const webUpdateMethods = {
     return preferences;
   },
   async updateGetInstallImpact(): Promise<UpdateInstallImpact> {
-    return { connectedPhones: [], interruptedChats: [] };
+    // A browser installs nothing and cannot see what a machine is running.
+    return { ...UNKNOWN_UPDATE_IMPACT, connectedPhones: [] };
   },
   async updateQuitAndInstall(_options?: { resumeChats?: boolean }) {
     return false;

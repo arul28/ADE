@@ -41,6 +41,7 @@ import { ConfirmSheet, YourMacsCard } from "./YourMacsCard";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { ModernPage, ModernRows, ModernSection } from "../settings/primitives";
+import { OtherMachinesUpdateSection } from "../settings/OtherMachinesUpdateSection";
 import "./accountPage.css";
 import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
 import { useSignInFlow } from "./useSignInFlow";
@@ -572,6 +573,8 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
       ) : null}
 
       <YourMacsCard />
+
+      <OtherMachinesUpdateSection group="Account" />
 
       <ModernSection group="Account" title="Session">
         <SignOutCard onSignOut={() => void handleSignOut()} signingOut={signingOut} />

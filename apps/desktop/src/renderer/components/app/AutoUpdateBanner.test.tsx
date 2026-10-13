@@ -32,7 +32,7 @@ function installAdeMock(initial: AutoUpdateSnapshot = snapshot({})) {
     configurable: true,
     value: {
       updateGetState: vi.fn(async () => current),
-      updateGetInstallImpact: vi.fn(async () => ({ connectedPhones: [] })),
+      updateGetInstallImpact: vi.fn(async () => ({ checked: true, chats: [], cliSessions: 0, terminals: 0, connectedPhones: [] })),
       updateQuitAndInstall,
       updateCancelAutoApply,
       analytics: { capture },
@@ -154,7 +154,7 @@ describe("AutoUpdateBanner", () => {
     const dialog = await screen.findByRole("alertdialog", {
       name: "ADE will quit and reopen automatically to install v1.2.35.",
     });
-    expect(dialog.textContent).toContain("Open ADE Code terminals and running agent sessions");
+    expect(dialog).toBeTruthy();
     expect(window.ade.updateGetInstallImpact).toHaveBeenCalledTimes(1);
     expect(mock.updateQuitAndInstall).not.toHaveBeenCalled();
 

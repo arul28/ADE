@@ -87,6 +87,10 @@ struct PrDetailView: View {
   @State private var isRefreshingSnapshot = false
   @State private var mergeAnywayConfirmationPresented = false
   @State private var stackMergeConfirmationPresented = false
+  /// Field diagnostics: this screen's open-to-ready timings.
+  @State private var openTiming = ScreenOpenTiming()
+  /// A `reload` is running (see `isAwaitingPrSnapshot`).
+  @State private var detailLoadInFlight = false
 
   /// How long a warm detail cache entry is considered fresh. Within this window
   /// a PR projection bump renders from cache without re-firing the cold sidecar
@@ -197,6 +201,20 @@ struct PrDetailView: View {
 
   private var hasActionablePrId: Bool {
     actionablePrId != nil
+  }
+
+  /// A load that can still bring this PR's snapshot is running: the first
+  /// read, an on-demand host read, or any reload.
+  private var isAwaitingPrSnapshot: Bool {
+    snapshot == nil && (!hasAttemptedInitialLoad || isRefreshingSnapshot || detailLoadInFlight)
+  }
+
+  /// The merge state comes from the snapshot only. Without one, the list
+  /// row's data would read as "Ready to merge", so the bar says it is still
+  /// checking, or that the state is unavailable once the loads settle.
+  private var mergeStatusPresence: PrMergeStatusPresence {
+    if snapshot != nil { return .known }
+    return isAwaitingPrSnapshot ? .checking : .unavailable
   }
 
   private var isAwaitingInitialPrDetail: Bool {
@@ -402,6 +420,7 @@ struct PrDetailView: View {
   }
 
   var body: some View {
+    let _ = ScrollDiagnostics.shared.count(.prDetailBody)
     List {
       if isAwaitingInitialPrDetail {
         Section {
@@ -421,7 +440,7 @@ struct PrDetailView: View {
       } else {
         Section {
           detailHeader
-            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16), separator: .hidden)
+            .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
           if let errorMessage, !syncService.connectionState.isHostUnreachable {
             ADEFlatInlineNotice(message: errorMessage, tint: ADEColor.danger, retry: { Task { await retryPrDetailLoad() } })
               .adeFlatRow(separator: .hidden)
@@ -450,7 +469,8 @@ struct PrDetailView: View {
             threadsById: threadsById,
             canAct: canRunPrActions,
             onReply: { threadId, body in replyToThread(threadId: threadId, body: body) },
-            onResolve: { threadId, resolved in setThreadResolved(threadId: threadId, resolved: resolved) }
+            onResolve: { threadId, resolved in setThreadResolved(threadId: threadId, resolved: resolved) },
+            isLoading: isAwaitingPrSnapshot
           )
         case .files:
           PrFilesSections(
@@ -479,11 +499,33 @@ struct PrDetailView: View {
     .adeFlatList()
     .listSectionSpacing(.compact)
     .contentMargins(.bottom, 16, for: .scrollContent)
+    // Rows scrolled under the clock and the floating back/actions buttons
+    // with nothing between them.
+    .scrollEdgeEffectStyle(.hard, for: .top)
+    .adeScrollDiagnosticsSurface(.prDetail, key: "pr-detail")
+    .onAppear { openTiming.opened() }
+    .onChange(of: snapshot != nil) { _, loaded in
+      if loaded { openTiming.mark("prDetail.snapshot") }
+    }
+    .onChange(of: hasLoadedLiveSidecars) { _, loaded in
+      if loaded { openTiming.mark("prDetail.ready") }
+    }
     .adeAnalyticsScreen(.pullRequestDetail)
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar(.visible, for: .navigationBar)
     .toolbar {
+      if !isAwaitingInitialPrDetail && !isPrDetailUnavailable {
+        ToolbarItem(placement: .principal) {
+          PrFlatDetailNavTitle(
+            number: displayedPrNumber ?? currentPr.githubPrNumber,
+            author: snapshot?.detail?.author.login ?? githubItem?.author,
+            authorIsBot: snapshot?.detail?.author.isBot ?? githubItem?.isBot,
+            state: displayedState
+          )
+        }
+        .sharedBackgroundVisibility(.hidden)
+      }
       ToolbarItem(placement: .topBarTrailing) {
         moreMenu
       }
@@ -497,7 +539,8 @@ struct PrDetailView: View {
     .refreshable {
       await reload(refreshRemote: true)
     }
-    .task(id: "\(syncService.prsProjectionRevision):\(syncService.prsRemoteRevision)") {
+    // `isLive` is in the key so a reconnect reads the detail again.
+    .task(id: "\(syncService.prsProjectionRevision):\(syncService.prsRemoteRevision):\(isLive)") {
       // Seed from the warm cache first so the first frame has content and, when
       // the entry is fresh, the sidecar fan-out below is skipped.
       seedFromWarmCacheIfNeeded()
@@ -660,12 +703,8 @@ struct PrDetailView: View {
 
   private var detailHeader: some View {
     PrFlatDetailHeader(
-      number: displayedPrNumber ?? currentPr.githubPrNumber,
-      author: snapshot?.detail?.author.login ?? githubItem?.author,
-      authorIsBot: snapshot?.detail?.author.isBot ?? githubItem?.isBot,
       createdAt: githubItem?.createdAt ?? currentPr.createdAt,
       updatedAt: githubItem?.updatedAt ?? currentPr.updatedAt,
-      state: displayedState,
       title: currentPr.title,
       baseBranch: currentPr.baseBranch,
       headBranch: currentPr.headBranch,
@@ -834,7 +873,10 @@ struct PrDetailView: View {
         case .checksFailing, .checksPending: selectedTab = .checks
         default: selectedTab = .overview
         }
-      }
+      },
+      // A merged or closed PR's state is in the list row already; an open
+      // one's merge gate is only known once its snapshot arrives.
+      mergeStatus: step.kind == .merged || step.kind == .closed ? .known : mergeStatusPresence
     ) {
       nextStepPrimary(step)
     }
@@ -1010,6 +1052,8 @@ struct PrDetailView: View {
 
   @MainActor
   private func reload(refreshRemote: Bool = false, includeLiveSidecars: Bool? = nil) async {
+    detailLoadInFlight = true
+    defer { detailLoadInFlight = false }
     let requestedPrNumber = routedPrNumber
     let routeCoordinates = routedGitHubCoordinates
     let shouldFetchLiveSidecars = isLive && (includeLiveSidecars ?? (refreshRemote || requestedPrNumber != nil))

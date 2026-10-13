@@ -13,6 +13,12 @@ export type BrowserTabMentionTarget = {
   tabId: string;
   title: string | null;
   url: string | null;
+  /**
+   * The tab is in the browser of the computer the user sits at, and the chat's
+   * agent runs on another machine. Only changes the sentence the agent reads;
+   * the block's attributes, and so every chip drawn from it, stay the same.
+   */
+  onUserMachine?: boolean;
 };
 
 export type BrowserTabMentionMatch = BrowserTabMentionTarget & {
@@ -49,13 +55,20 @@ export function browserTabTakeoverHint(tabId: string): string {
   return `It is live in front of the user: take it over with \`ade browser claim --tab ${tabId} --text\`, then read it with \`ade browser text --tab ${tabId} --text\` (its words) or \`ade browser observe --tab ${tabId}\` (what to click), and act on it in place with \`ade browser <command> --tab ${tabId}\`. Do not web-fetch or curl its URL or open it in a new tab: a copy is not what the user sees.`;
 }
 
+/**
+ * What tells an agent on another machine where an attached tab is. Without it
+ * the agent looks for the tab in a browser on its own machine, finds nothing,
+ * and can only tell the user it cannot see what they see.
+ */
+const USER_MACHINE_HINT = "The user controls this chat from another computer, and this tab is in the ADE browser on that computer, not on the machine you run on. `ade browser` reaches it while that computer is connected to this chat. If a command cannot find the tab, tell the user that their computer is not reachable; do not look for the tab in a browser on this machine. ";
+
 /** The serialized block a chat message carries for one attached tab. */
 export function formatBrowserTabMentionToken(target: BrowserTabMentionTarget): string {
   const tabId = oneLine(target.tabId);
   const title = oneLine(target.title);
   const url = oneLine(target.url);
   return `${OPEN_TAG}id="${escapeAttribute(tabId)}" title="${escapeAttribute(title)}" url="${escapeAttribute(url)}">`
-    + `The user attached ADE browser tab ${tabId}. ${browserTabTakeoverHint(tabId)}${CLOSE_TAG}`;
+    + `The user attached ADE browser tab ${tabId}. ${target.onUserMachine ? USER_MACHINE_HINT : ""}${browserTabTakeoverHint(tabId)}${CLOSE_TAG}`;
 }
 
 /** Plain text for a CLI agent's terminal, which has no chip to draw. */
@@ -64,7 +77,7 @@ export function formatBrowserTabMentionForPrompt(target: BrowserTabMentionTarget
   const title = oneLine(target.title);
   const url = oneLine(target.url);
   const described = [title ? `"${title}"` : null, url ? `(${url})` : null].filter(Boolean).join(" ");
-  return `ADE browser tab ${described ? `${described}, ` : ""}tab id ${tabId}. ${browserTabTakeoverHint(tabId)}`;
+  return `ADE browser tab ${described ? `${described}, ` : ""}tab id ${tabId}. ${target.onUserMachine ? USER_MACHINE_HINT : ""}${browserTabTakeoverHint(tabId)}`;
 }
 
 /** Automatic page context omits credentials and fragments from the live URL. */

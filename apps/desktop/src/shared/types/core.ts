@@ -250,6 +250,17 @@ export type UpdateInterruptedChat = {
   sessionId: string;
   title: string;
   projectName: string;
+  /**
+   * Where the chat's project lives on its machine. The resume after an install
+   * is armed per project, and the chat may belong to one with no tab open.
+   * Null for a personal chat; absent from any reader that predates the field.
+   */
+  projectRoot?: string | null;
+  /**
+   * False for a chat ADE cannot queue to continue (a personal chat). Absent
+   * means it can.
+   */
+  resumable?: boolean;
 };
 
 /**
@@ -382,23 +393,49 @@ export type RuntimeActivitySummary = RuntimeActivityCounts & {
   idle: boolean;
 };
 
+/**
+ * Everything a restart of one machine's ADE stops, answered by that machine's
+ * brain (`runtime.updateImpact`) for every project it has open and its
+ * personal chats, whether or not a window shows them.
+ */
+export type RuntimeUpdateImpact = {
+  /** Chats with a live turn right now. */
+  chats: UpdateInterruptedChat[];
+  /** Agent CLI sessions (Claude Code, Codex, …) that are open; a restart closes them. */
+  cliSessions: number;
+  /** Other terminals that are open, busy or quiet; a restart closes them too. */
+  terminals: number;
+};
+
 export type UpdateInstallImpactPhone = {
   deviceId: string;
   deviceName: string;
 };
 
 /**
- * Live connections that drop while ADE (and its brain service) restarts for an
- * update. Best-effort: probes are time-boxed, so an empty list means "none
- * detected", not a guarantee.
+ * What an update would stop on one machine, as a client shows it before the
+ * update runs.
  */
-export type UpdateInstallImpact = {
-  connectedPhones: UpdateInstallImpactPhone[];
+export type UpdateImpact = RuntimeUpdateImpact & {
   /**
-   * Chats with a live turn right now, on this machine only. A chat on another
-   * machine is not interrupted by this update, so it never appears here.
+   * False when the machine did not answer in time, so the rest means
+   * "unknown", not "nothing is running".
    */
-  interruptedChats: UpdateInterruptedChat[];
+  checked: boolean;
+  /**
+   * Set when the machine's ADE is too old to name everything it runs: more
+   * work is running than `chats` lists, and that is all it can say.
+   */
+  busyWithoutDetail?: boolean;
+};
+
+/**
+ * What stops or drops while ADE (and its brain service) restarts this
+ * computer for an update: its running work, and the phones connected to it.
+ * A chat on another machine is not interrupted, so it never appears here.
+ */
+export type UpdateInstallImpact = UpdateImpact & {
+  connectedPhones: UpdateInstallImpactPhone[];
 };
 
 export type ProjectInfo = {

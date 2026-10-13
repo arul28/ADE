@@ -1,7 +1,7 @@
 name: Warm release caches
 
 # Builds the release's slow, source-pinned native pieces on main and caches
-# them: the transcribe.cpp binary (voice) and the four universal Swift helpers.
+# them: the transcribe.cpp binary (voice) and the five universal Swift helpers.
 # release-core.yml only restores these caches. It cannot fill them itself:
 # a release runs on its tag, and GitHub lets a run restore caches saved on its
 # own ref or the default branch only, so a cache saved by one release tag is
@@ -19,10 +19,12 @@ on:
       - "apps/desktop/native/ADECaptureHelper/**"
       - "apps/desktop/native/ADESimHelper/**"
       - "apps/desktop/native/ADEMedia/**"
+      - "apps/desktop/native/ADEMusicHostMac/**"
       - "apps/desktop/scripts/build-mac-desktop-driver.mjs"
       - "apps/desktop/scripts/build-capture-helper.mjs"
       - "apps/desktop/scripts/build-sim-helper.mjs"
       - "apps/desktop/scripts/build-ade-media.mjs"
+      - "apps/desktop/scripts/build-music-host-mac.mjs"
       - "apps/desktop/scripts/materialize-whisper-resources.mjs"
       - "apps/desktop/scripts/native-helper-cache.mjs"
       - ".github/actions/release-cache-keys/**"
@@ -89,6 +91,7 @@ jobs:
           node scripts/build-capture-helper.mjs
           node scripts/build-sim-helper.mjs
           node scripts/build-ade-media.mjs
+          node scripts/build-music-host-mac.mjs
           while read -r helper; do lipo -archs "../../$helper"; done <<< "$HELPER_PATHS"
 
       - name: Attest native helpers

@@ -69,16 +69,20 @@ export function quitPromptModel(request: QuitPromptRequest, options: { canRepair
   const count = request.runningAgents;
   const owned = request.appOwnedService;
   if (owned) {
-    const stops = count > 0
-      ? `ADE is running ${pluralCount(count, "agent")} itself for now, so ${request.relaunch ? "restarting" : "quitting"} stops ${agentsPronoun(count, "object")}.`
-      : "ADE is running it itself for now.";
+    const stopping = request.relaunch ? "restarting" : "quitting";
+    const stops = count == null
+      ? `ADE is running it itself for now and couldn't check what is running, so ${stopping} may stop agents.`
+      : count > 0
+        ? `ADE is running ${pluralCount(count, "agent")} itself for now, so ${stopping} stops ${agentsPronoun(count, "object")}.`
+        : "ADE is running it itself for now.";
     const offerRepair = options.canRepair && owned.repair !== "wait";
     const fixAction: QuitPromptAction = owned.repair === "system_settings"
       ? { choice: "system_settings", label: "Open System Settings", primary: true }
       : { choice: "repair", label: "Repair service", primary: true };
     return {
       title: "ADE's background service isn't running",
-      description: `${stops} ${appOwnedFix(owned.repair, count, options.canRepair)}`,
+      // Unknown is treated as "something is running": the fix that keeps agents is the safe advice.
+      description: `${stops} ${appOwnedFix(owned.repair, count ?? 1, options.canRepair)}`,
       tone: "warning",
       dontAskAgainLabel: null,
       actions: [
@@ -89,7 +93,7 @@ export function quitPromptModel(request: QuitPromptRequest, options: { canRepair
     };
   }
   let description = "Your agents keep running in the background. Open ADE any time to check on them.";
-  if (count > 0) description = `${agentsAre(count)} working and will keep going in the background.`;
+  if (count != null && count > 0) description = `${agentsAre(count)} working and will keep going in the background.`;
   else if (request.relaunch) description = "Your agents keep running in the background while ADE restarts.";
   return {
     title: `${verb} ADE?`,

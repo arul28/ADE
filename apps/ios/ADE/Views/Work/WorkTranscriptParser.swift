@@ -1186,7 +1186,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .unknown(type: type)
       }
 
-      return WorkChatEnvelope(
+      var parsed = WorkChatEnvelope(
         sessionId: sessionId,
         timestamp: timestamp,
         sequence: sequence,
@@ -1209,6 +1209,13 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           ? optionalString(eventDict["steerId"]) ?? optionalString(eventDict["steer_id"])
           : nil
       )
+      if type == "user_message", let metadata = eventDict["metadata"] as? [String: Any] {
+        parsed.userMessageWrittenByAde = agentChatAdeAuthoredMetadataKeys.contains { name in
+          guard let value = metadata[name] else { return false }
+          return !(value is NSNull)
+        }
+      }
+      return parsed
     }
     .sorted(by: workChatEnvelopeOrderedBefore)
 }

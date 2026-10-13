@@ -2958,6 +2958,12 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// `AgentChatEvent.toolResult` already carries seven associated values that
   /// every construction site in the app and the tests would have to restate.
   var toolResultFullBytes: Int?
+  /// True for a `user_message` that ADE wrote for the user (a board move, a
+  /// wake, a relay, a continuation, a resume): its `metadata` carries one of
+  /// the markers in `agentChatAdeAuthoredMetadataKeys`. Kept beside the event
+  /// so `AgentChatEvent.userMessage` does not grow. A scene reads it: only a
+  /// message the reader wrote answers a scene.
+  var userMessageWrittenByAde: Bool = false
   /// Byte offset of this row in the host's transcript, when it arrived on a
   /// `chat_history` page that reported one.
   ///
@@ -3031,8 +3037,18 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var accountLabel: String?
     var failDetail: String?
     var summary: String?
+    var metadataMarksAdeAuthor = false
+
+    private struct MetadataKey: CodingKey {
+      var stringValue: String
+      var intValue: Int? { nil }
+      init(_ name: String) { stringValue = name }
+      init?(stringValue: String) { self.stringValue = stringValue }
+      init?(intValue: Int) { return nil }
+    }
 
     private enum CodingKeys: String, CodingKey {
+      case metadata
       case type
       case apiErrorStatus
       case apiErrorStatusSnake = "api_error_status"
@@ -3066,6 +3082,12 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       accountLabel = try? container.decodeIfPresent(String.self, forKey: .accountLabel)
       failDetail = try? container.decodeIfPresent(String.self, forKey: .failDetail)
       summary = try? container.decodeIfPresent(String.self, forKey: .summary)
+      if let metadata = try? container.nestedContainer(keyedBy: MetadataKey.self, forKey: .metadata) {
+        metadataMarksAdeAuthor = agentChatAdeAuthoredMetadataKeys.contains { name in
+          let key = MetadataKey(name)
+          return metadata.contains(key) && (try? metadata.decodeNil(forKey: key)) == false
+        }
+      }
     }
   }
 
@@ -3130,6 +3152,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
     stopSource = rawEvent?.stopSource
     stopReason = rawEvent?.stopReason
+    userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.
@@ -3581,6 +3604,13 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
     )
   }
 }
+
+/// The `metadata` markers of a `user_message` that ADE wrote for the user.
+/// The same list as desktop `isReaderAuthoredMessage`; keep the two the same.
+let agentChatAdeAuthoredMetadataKeys = [
+  "boardMove", "prWatchWake", "scheduledWake", "spawnCompletion",
+  "agentRelay", "hostContinuation", "usageLimitResume",
+]
 
 private struct AgentChatSpawnCompletionContainer: Decodable {
   var spawnCompletion: AgentChatSpawnCompletionPayload?

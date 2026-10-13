@@ -97,8 +97,15 @@ export function registerMusicIpc(args: {
   handle(MUSIC_IPC.unload, () => service.unloadPlayer());
   handle(MUSIC_IPC.showSignIn, () => service.showSignIn());
   handle(MUSIC_IPC.cancelSignIn, () => service.cancelSignIn());
-  handle(MUSIC_IPC.tracks, (input: { kind: "album" | "playlist"; id: string; library: boolean }) =>
-    service.tracks({ kind: input?.kind === "album" ? "album" : "playlist", id: str(input?.id), library: Boolean(input?.library) }));
+  const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+  handle(MUSIC_IPC.tracks, (input: { kind: "album" | "playlist"; id: string; library: boolean; offset?: number; limit?: number }) =>
+    service.tracks({
+      kind: input?.kind === "album" ? "album" : "playlist",
+      id: str(input?.id),
+      library: Boolean(input?.library),
+      offset: num(input?.offset),
+      limit: num(input?.limit),
+    }));
   handle(MUSIC_IPC.rating, (input: { id: string; library: boolean }) =>
     service.rating({ id: str(input?.id), library: Boolean(input?.library) }));
   handle(MUSIC_IPC.setRating, (input: { id: string; library: boolean; liked: boolean | null }) =>

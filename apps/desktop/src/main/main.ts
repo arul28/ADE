@@ -218,7 +218,7 @@ import {
   attentionItemNavigationRequest,
   remoteBindingMatchesProject,
 } from "./services/attention/attentionItemRouting";
-import { pathsEqual } from "./services/shared/pathCompare";
+import { pathKey, pathsEqual } from "./services/shared/pathCompare";
 import { assertLocalProjectDataAvailable, deriveProjectId, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
 import {
@@ -396,7 +396,7 @@ import {
   type RemoteArtifactRangeReader,
 } from "./services/computerUse/artifactStreamProtocol";
 import { createArtifactMediaServer } from "./services/computerUse/artifactMediaServer";
-import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
+import { respondToSceneProtocolRequest } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
@@ -432,6 +432,7 @@ import {
 } from "./services/updates/runtimeRestartVerification";
 import { createProjectRecoveryService, restartBrainForRepair } from "./services/runtime/projectRecoveryService";
 import { createQuitPrompt } from "./services/runtime/quitPrompt";
+import { createUpdateImpactProbe, settledWithin } from "./services/runtime/updateImpactProbe";
 import { registerBackgroundServiceControls } from "./services/runtime/backgroundServiceControls";
 import { createOpenProjectDataWatch } from "./services/runtime/openProjectDataWatch";
 import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnosticsService";
@@ -1530,7 +1531,7 @@ app.whenReady().then(async () => {
   // a path: this scheme has no filesystem reach by construction, so there is no
   // jail here to widen and none of `ade-artifact`'s allow-root applies to it.
   protocol.handle("ade-scene", (request) => {
-    const { status, body, headers } = sceneDocumentStore.respond(request.url);
+    const { status, body, headers } = respondToSceneProtocolRequest(request.url);
     return new Response(body, { status, headers });
   });
 
@@ -2999,7 +3000,9 @@ app.whenReady().then(async () => {
     // here — the list is persisted with the pending install and only becomes a
     // resume on the launch that actually lands it. That is what makes an
     // aborted handoff harmless: no install, no resume rows.
-    const interruptedChats = resumeRequested ? await collectInterruptedChats() : [];
+    const interruptedChats = resumeRequested
+      ? (await updateImpactProbe.liveChats()).filter((chat) => chat.resumable !== false)
+      : [];
     if (!shouldRepairRuntimeServiceOnFallback) {
       updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
         serviceManaged: false,
@@ -7974,6 +7977,8 @@ app.whenReady().then(async () => {
       projectRoot: string;
       inProcessService: AppContext["agentChatService"] | null;
     }) => Promise<void>,
+    /** Projects with no tab open that the action must still reach. */
+    extraRoots: Iterable<string> = [],
   ): Promise<void> => {
     if (shouldUseInProcessProjectRuntime()) {
       for (const ctx of projectContexts.values()) {
@@ -7985,11 +7990,14 @@ app.whenReady().then(async () => {
       }
       return;
     }
-    const roots = new Set<string>([
-      ...rootsBoundToWindows(),
-      ...projectContexts.keys(),
-    ]);
-    await Promise.all(Array.from(roots).map(async (root) => {
+    // An extra root comes from the brain and can spell an open project's path
+    // differently (drive-letter case, slashes), so the set is keyed, not raw.
+    const roots = new Map<string, string>();
+    for (const root of [...rootsBoundToWindows(), ...projectContexts.keys(), ...extraRoots]) {
+      const key = pathKey(root);
+      if (!roots.has(key)) roots.set(key, root);
+    }
+    await Promise.all(Array.from(roots.values()).map(async (root) => {
       await run({ projectName: labelForProjectRoot(root), projectRoot: root, inProcessService: null });
     }));
   };
@@ -8000,9 +8008,12 @@ app.whenReady().then(async () => {
     return Array.isArray(payload?.chats) ? payload.chats : [];
   };
 
-  // Chats with a live turn on this machine right now. An ADE restart stops
-  // them mid-flight, so the install dialog names them and offers to resume.
-  const collectInterruptedChats = async (options: { strict?: boolean } = {}): Promise<UpdateInterruptedChat[]> => {
+  /**
+   * Chats with a live turn in the projects open in a window, asked one project
+   * at a time: all an in-process runtime has, and all a brain from before
+   * `runtime.updateImpact` can answer.
+   */
+  const listOpenProjectChats = async (strict: boolean): Promise<UpdateInterruptedChat[]> => {
     const chats: UpdateInterruptedChat[] = [];
     await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
@@ -8013,11 +8024,11 @@ app.whenReady().then(async () => {
               action: "listInterruptedChats",
             })).result);
         for (const chat of refs) {
-          chats.push({ sessionId: chat.sessionId, title: chat.title, projectName });
+          chats.push({ sessionId: chat.sessionId, title: chat.title, projectName, projectRoot });
         }
       } catch (error) {
         // Best-effort for the dialogs; a decision that stops agents needs every project.
-        if (options.strict) throw error;
+        if (strict) throw error;
       }
     });
     return chats;
@@ -8028,23 +8039,24 @@ app.whenReady().then(async () => {
    * project could not answer in time, so "unknown" is never read as "none".
    */
   const collectLiveChatsOrNull = async (timeoutMs = 3_000): Promise<UpdateInterruptedChat[] | null> =>
-    await Promise.race([
-      collectInterruptedChats({ strict: true }).catch((): null => null),
-      new Promise<null>((resolve) => {
-        const timer = setTimeout(() => resolve(null), timeoutMs);
-        timer.unref?.();
-      }),
-    ]);
+    await settledWithin<UpdateInterruptedChat[] | null>(
+      updateImpactProbe.liveChats({ strict: true }),
+      timeoutMs,
+      null,
+    );
 
   // Arms one durable continue row per chat a restart interrupted: on the
   // launch that lands an install, with the ids the previous process persisted
   // (a freshly started brain has no live turns to discover), and after a
   // quit-prompt Repair.
-  const armResumeForSessions = async (
-    sessionIds: readonly string[],
+  const armResumeForChats = async (
+    chats: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],
   ): Promise<UpdateInterruptedChat[]> => {
-    if (sessionIds.length === 0) return [];
+    if (chats.length === 0) return [];
+    const sessionIds = chats.map((chat) => chat.sessionId);
     const armed: UpdateInterruptedChat[] = [];
+    // A chat's project may have no tab open; its root is how the arm reaches it.
+    const chatRoots = chats.flatMap((chat) => (chat.projectRoot ? [chat.projectRoot] : []));
     await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
         const refs = inProcessService
@@ -8063,7 +8075,7 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    });
+    }, chatRoots);
     return armed;
   };
 
@@ -8092,11 +8104,11 @@ app.whenReady().then(async () => {
     }
   };
 
-  // Live-connection probe shown before an update install or quit. Mirrors the
-  // lane-delete quit probe: in-process services in dev, runtime actions against
-  // the brain in packaged builds. Best-effort — an unreachable runtime simply
-  // reports no phones.
-  const collectUpdateInstallImpact = async (): Promise<UpdateInstallImpact> => {
+  // Phones connected through ADE phone sync, which drop while ADE restarts.
+  // Mirrors the lane-delete quit probe: in-process services in dev, runtime
+  // actions against the brain in packaged builds. Best-effort — an unreachable
+  // runtime simply reports no phones.
+  const collectConnectedPhones = async (): Promise<UpdateInstallImpact["connectedPhones"]> => {
     const phonesById = new Map<string, string>();
     const recordPeers = (peers: readonly SyncPeerConnectionState[] | undefined): void => {
       for (const peer of peers ?? []) {
@@ -8131,33 +8143,18 @@ app.whenReady().then(async () => {
         }
       }));
     }
-    return {
-      connectedPhones: Array.from(phonesById, ([deviceId, deviceName]) => ({
-        deviceId,
-        deviceName,
-      })),
-      interruptedChats: await collectInterruptedChats(),
-    };
+    return Array.from(phonesById, ([deviceId, deviceName]) => ({ deviceId, deviceName }));
   };
 
-  const EMPTY_UPDATE_INSTALL_IMPACT: UpdateInstallImpact = {
-    connectedPhones: [],
-    interruptedChats: [],
-  };
-
-  // Quit/update dialogs are synchronous, so cap how long the impact probe can
-  // delay them. On timeout the dialog falls back to generic copy.
-  const collectUpdateInstallImpactBounded = async (
-    timeoutMs = 1_500,
-  ): Promise<UpdateInstallImpact> => {
-    return await Promise.race([
-      collectUpdateInstallImpact().catch((): UpdateInstallImpact => EMPTY_UPDATE_INSTALL_IMPACT),
-      new Promise<UpdateInstallImpact>((resolve) => {
-        const timer = setTimeout(() => resolve(EMPTY_UPDATE_INSTALL_IMPACT), timeoutMs);
-        timer.unref?.();
-      }),
-    ]);
-  };
+  // What restarting ADE on this computer stops, for the update and quit
+  // dialogs. In-process project runtimes (tests) have no brain to ask.
+  const updateImpactProbe = createUpdateImpactProbe({
+    logger: updateLogger,
+    readMachineImpact: shouldUseInProcessProjectRuntime() ? null : () => localRuntimePool.updateImpact(),
+    readMachineActivity: shouldUseInProcessProjectRuntime() ? null : () => localRuntimePool.activitySummary(),
+    listOpenProjectChats,
+    listConnectedPhones: collectConnectedPhones,
+  });
 
   const confirmNoRunningLaneDeleteForQuit = async (ownerWindow?: BrowserWindow | null): Promise<boolean> => {
     const runningDeletes = await getRunningLaneDeleteLabels();
@@ -8196,10 +8193,10 @@ app.whenReady().then(async () => {
     logger: localRuntimeLogger,
     globalStatePath,
     getRuntimeStatus: () => localRuntimePool.getStatus(),
-    collectImpact: () => collectUpdateInstallImpactBounded(),
+    collectImpact: () => updateImpactProbe.collect(1_500),
     collectLiveChats: () => collectLiveChatsOrNull(),
     restartService: () => restartBrainForRepair(machineRecoveryService, productAnalyticsService),
-    armResume: (sessionIds) => armResumeForSessions(sessionIds),
+    armResume: (chats) => armResumeForChats(chats),
   });
   registerBackgroundServiceControls({
     logger: localRuntimeLogger,
@@ -9267,7 +9264,9 @@ app.whenReady().then(async () => {
         ctx.agentToolsCacheService = agentToolsCacheService;
       }
       if (!ctx.updateInstallImpactProvider) {
-        ctx.updateInstallImpactProvider = () => collectUpdateInstallImpactBounded();
+        // The update dialog opens on a click, so it can wait a little longer
+        // for a real answer than a quit can.
+        ctx.updateInstallImpactProvider = () => updateImpactProbe.collect(3_000);
       }
       return ctx;
     },
@@ -9410,7 +9409,7 @@ app.whenReady().then(async () => {
   // no landed install, no resumed chats, no rows.
   const resumedAfterUpdate = savedUpdateState.recentlyInstalledUpdate?.resumedChats ?? [];
   if (resumedAfterUpdate.length > 0) {
-    void armResumeForSessions(resumedAfterUpdate.map((chat) => chat.sessionId))
+    void armResumeForChats(resumedAfterUpdate)
       .then((armed) => consumeArmedResumeChats(armed.map((chat) => chat.sessionId)))
       .catch(() => undefined);
   }

@@ -186,7 +186,7 @@ export function buildPersonalAssistantSystemPrompt(args: {
     "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
     "Web pages go in ADE's browser (`ade browser`, the `ade-browser` skill), which shares the user's sign-ins; do not use a headless or external browser.",
     "For computer use, read `ade-computer-use` first. The user's own screen, apps and windows are not yours to change: act on their real screen only when they ask, and never close or quit an app you did not open.",
-    "Visuals: when a comparison, a trend or status across many items would read faster as a picture, add one ```scene block (read `ade-scene` first). To ask the user for structured choices, use a ```mosaic block (read `ade-mosaic`).",
+    "Visuals: when there is an obvious thing to show and a picture reads faster than prose, add one ```scene block; always when the user asks for a visual. Its buttons can offer options for a larger decision. Run `ade scene guide` first.",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up processes you start.",
     ...(args.activityGuidance?.trim()
       ? [

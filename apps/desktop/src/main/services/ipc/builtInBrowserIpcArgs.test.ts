@@ -108,6 +108,23 @@ describe("createBuiltInBrowserIpcArgParsers", () => {
     });
   });
 
+  it("keeps reuseOwnedTab only when it is a boolean", () => {
+    const p = parsers();
+    expect(
+      p.parseBuiltInBrowserNavigateArgs({ url: "https://x.test", reuseOwnedTab: true }, CHANNEL),
+    ).toMatchObject({ url: "https://x.test", reuseOwnedTab: true });
+    // An explicit false and a non-boolean must both be dropped, not coerced or
+    // passed through, so a remote command cannot claim a tab it did not ask for.
+    expect(
+      p.parseBuiltInBrowserNavigateArgs({ url: "https://x.test", reuseOwnedTab: false }, CHANNEL)
+        .reuseOwnedTab,
+    ).toBeUndefined();
+    expect(
+      p.parseBuiltInBrowserNavigateArgs({ url: "https://x.test", reuseOwnedTab: "yes" }, CHANNEL)
+        .reuseOwnedTab,
+    ).toBeUndefined();
+  });
+
   it("bounds the recording fps to the supported range", () => {
     const p = parsers();
     expect(p.parseBuiltInBrowserStartRecordingArgs({ fps: 60 }, CHANNEL)).toMatchObject({ fps: 60 });

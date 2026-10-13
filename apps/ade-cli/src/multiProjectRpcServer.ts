@@ -33,6 +33,7 @@ import type {
   ProjectBrowseInput,
   RuntimeActivityCounts,
   RuntimeActivitySummary,
+  RuntimeUpdateImpact,
   SearchDocKind,
   SearchQueryResult,
   SearchResultItem,
@@ -66,10 +67,12 @@ import {
   type ProjectRegistrationSource,
 } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
-import {
-  PersonalChatScope,
-  summarizeRuntimeActivity,
-} from "./services/personalChats/personalChatScope";
+import type { AdeRuntime } from "./bootstrap";
+import { PersonalChatScope } from "./services/personalChats/personalChatScope";
+import { summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
+import { readSessionToolTypeFromDisk } from "./services/sync/rosterBuilder";
+import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
+import { querySearchIndexReadOnly } from "../../desktop/src/main/services/search/searchIndexQuery";
 import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
 import { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai/providerStatusDetails";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
@@ -301,7 +304,7 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
-  > & Partial<Pick<PersonalChatScope, "activitySummary" | "subscribeEvents">>;
+  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents">>;
   /**
    * Backs `providers.status`: what each CLI-backed provider actually is on this
    * machine (installed, where, which version, signed in). Injected like
@@ -377,35 +380,63 @@ export type MultiProjectRpcHandlerOptions = {
   reconcileAccountOwnership?: typeof reconcileAccountOwnedMachineTrust;
 };
 
-export async function readMachineRuntimeActivitySummary(args: {
+type BootedRuntimeSources = {
   projectRegistry: Pick<ProjectRegistry, "list">;
   scopeRegistry: Pick<ProjectScopeRegistry, "getIfBooted">;
-  personalChatScope: Partial<Pick<PersonalChatScope, "activitySummary">>;
-}): Promise<RuntimeActivitySummary> {
-  const projectActivity = await Promise.all(
-    args.projectRegistry.list().map(async (record) => {
-      const pendingScope = args.scopeRegistry.getIfBooted(record.projectId);
-      if (!pendingScope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
-      const scope = await pendingScope.catch(() => null);
-      if (!scope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
-      return summarizeRuntimeActivity(scope.runtime);
+};
+
+/**
+ * One answer per project this brain has already booted. A project that is not
+ * booted has nothing running, and asking must not boot it.
+ */
+async function mapBootedProjectRuntimes<T>(
+  sources: BootedRuntimeSources,
+  read: (runtime: AdeRuntime, record: ProjectRecord) => T | Promise<T>,
+): Promise<T[]> {
+  const answers = await Promise.all(
+    sources.projectRegistry.list().map(async (record) => {
+      const scope = await sources.scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+      return scope ? [await read(scope.runtime, record)] : [];
     }),
   );
-  const personalActivity = typeof args.personalChatScope.activitySummary === "function"
-    ? await args.personalChatScope.activitySummary()
-    : { activeAgentTurns: 0, activeWorkSessions: 0 };
-  const activeAgentTurns = projectActivity.reduce<number>(
-    (total, activity) => total + activity.activeAgentTurns,
-    personalActivity.activeAgentTurns,
-  );
-  const activeWorkSessions = projectActivity.reduce<number>(
-    (total, activity) => total + activity.activeWorkSessions,
-    personalActivity.activeWorkSessions,
-  );
+  return answers.flat();
+}
+
+export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSources & {
+  personalChatScope: Partial<Pick<PersonalChatScope, "activitySummary">>;
+}): Promise<RuntimeActivitySummary> {
+  const parts: RuntimeActivityCounts[] = [
+    ...await mapBootedProjectRuntimes(args, (runtime) => summarizeRuntimeActivity(runtime)),
+    typeof args.personalChatScope.activitySummary === "function"
+      ? await args.personalChatScope.activitySummary()
+      : { activeAgentTurns: 0, activeWorkSessions: 0 },
+  ];
+  const activeAgentTurns = parts.reduce((total, part) => total + part.activeAgentTurns, 0);
+  const activeWorkSessions = parts.reduce((total, part) => total + part.activeWorkSessions, 0);
   return {
     idle: activeAgentTurns === 0 && activeWorkSessions === 0,
     activeAgentTurns,
     activeWorkSessions,
+  };
+}
+
+/**
+ * What restarting this machine's ADE would stop, across every project the
+ * brain has booted and its personal chats.
+ */
+export async function readMachineUpdateImpact(args: BootedRuntimeSources & {
+  personalChatScope: Partial<Pick<PersonalChatScope, "updateImpact">>;
+}): Promise<RuntimeUpdateImpact> {
+  const parts: RuntimeUpdateImpact[] = [
+    ...await mapBootedProjectRuntimes(args, (runtime, record) => summarizeRuntimeUpdateImpact(runtime, record)),
+    typeof args.personalChatScope.updateImpact === "function"
+      ? await args.personalChatScope.updateImpact()
+      : { chats: [], cliSessions: 0, terminals: 0 },
+  ];
+  return {
+    chats: parts.flatMap((part) => part.chats),
+    cliSessions: parts.reduce((total, part) => total + part.cliSessions, 0),
+    terminals: parts.reduce((total, part) => total + part.terminals, 0),
   };
 }
 
@@ -421,6 +452,7 @@ const RUNTIME_METHODS = new Set([
   "exit",
   "runtime/info",
   "runtime.activitySummary",
+  "runtime.updateImpact",
   "account.call",
   "attention.call",
   "notify.send",
@@ -1333,26 +1365,106 @@ export function createMultiProjectRpcRequestHandler(
     ];
   };
 
+  const isProjectBackedChatToolType = (value: unknown): boolean => {
+    const toolType = typeof value === "string" ? value.trim().toLowerCase() : "";
+    return toolType === "cursor" || toolType.endsWith("-chat");
+  };
+
+  /** Hand the event loop one turn, so a pass over every project cannot starve timers. */
+  const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  /**
+   * Which registered project owns this chat. Only the caller's own project and
+   * projects that are already loaded are asked through their runtime; every
+   * other project is asked from its database on disk, so the lookup never
+   * loads a project just to learn the chat is not there.
+   */
   const resolveProjectBackedChatOwner = async (
     sessionId: string,
     preferredProjectId: ProjectId,
   ): Promise<ProjectId | null> => {
     for (const record of orderedProjectRecords(preferredProjectId)) {
       try {
-        const scope = await scopeRegistry.get(record.projectId);
-        const session = scope.runtime.sessionService.get(sessionId);
-        const toolType = typeof session?.toolType === "string"
-          ? session.toolType.trim().toLowerCase()
-          : "";
-        if (toolType === "cursor" || toolType.endsWith("-chat")) {
+        const booted = record.projectId === preferredProjectId
+          ? scopeRegistry.get(record.projectId)
+          : scopeRegistry.getIfBooted(record.projectId);
+        if (booted) {
+          const scope = await booted;
+          if (isProjectBackedChatToolType(scope.runtime.sessionService.get(sessionId)?.toolType)) {
+            return record.projectId;
+          }
+          continue;
+        }
+        if (isProjectBackedChatToolType(readSessionToolTypeFromDisk(record.rootPath, sessionId))) {
           return record.projectId;
         }
+        await yieldToEventLoop();
       } catch {
         // A stale/unavailable registered project cannot own a readable chat in
         // this process. Continue through the remaining project-backed scopes.
       }
     }
     return null;
+  };
+
+  type ProjectRecordForSearch = ReturnType<typeof orderedProjectRecords>[number];
+  type UnloadedProjectSearch =
+    | {
+        status: "searched";
+        items: SearchResultItem[];
+        totalByKind: Partial<Record<SearchDocKind, number>>;
+        truncated: boolean;
+      }
+    /** `entry` is the text listed under projectsUnavailable. */
+    | { status: "unavailable"; entry: string };
+
+  /**
+   * Answers a chat search for one project whose runtime is not loaded, from its
+   * index file. A project with no index yet has no indexed chats, so it is
+   * searched with no hits. A project whose folder is gone, or whose index this
+   * build cannot read, is unavailable; the index is rebuilt when the project is
+   * opened in ADE, and nothing here creates, migrates or deletes it.
+   */
+  const searchUnloadedProjectIndex = (
+    record: ProjectRecordForSearch,
+    query: { query: string; laneId: string | null },
+  ): UnloadedProjectSearch => {
+    if (!fs.existsSync(record.rootPath)) {
+      return { status: "unavailable", entry: record.displayName };
+    }
+    const indexed = querySearchIndexReadOnly({
+      cacheDir: resolveAdeLayout(record.rootPath).cacheDir,
+      query: query.query,
+      kinds: ["chat"],
+      laneId: query.laneId,
+      limit: 200,
+    });
+    if (indexed.status === "unusable") {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its search index is from another ADE version or unreadable; open this project in ADE once to rebuild it)`,
+      };
+    }
+    if (indexed.status === "busy") {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its search index is busy; run the search again)`,
+      };
+    }
+    if (indexed.status === "missing") {
+      return { status: "searched", items: [], totalByKind: {}, truncated: false };
+    }
+    return {
+      status: "searched",
+      items: indexed.results.map((item) => ({
+        ...item,
+        projectId: record.projectId,
+        projectName: record.displayName,
+        projectRoot: record.rootPath,
+      })),
+      totalByKind: indexed.totalByKind,
+      truncated: indexed.truncated,
+    };
   };
 
   const aggregateProjectSearch = async (args: {
@@ -1396,11 +1508,33 @@ export function createMultiProjectRpcRequestHandler(
     let resultsTruncated = false;
 
     for (const record of records) {
+      const isPreferred = record.projectId === args.preferredProjectId;
       try {
+        // The caller's project and projects whose runtime is already loaded
+        // answer through their own search service. Every other project is
+        // answered from its index file, so a search never loads a runtime per
+        // registered project and the brain's event loop stays responsive.
+        if (!isPreferred && !scopeRegistry.getIfBooted(record.projectId)) {
+          await yieldToEventLoop();
+          const unloaded = searchUnloadedProjectIndex(record, {
+            query: typeof args.queryArgs.query === "string" ? args.queryArgs.query : "",
+            laneId: typeof args.queryArgs.laneId === "string" ? args.queryArgs.laneId : null,
+          });
+          if (unloaded.status === "unavailable") {
+            unavailableProjects.push(unloaded.entry);
+            continue;
+          }
+          resultsTruncated ||= unloaded.truncated;
+          buckets.push(unloaded.items);
+          for (const [kind, count] of Object.entries(unloaded.totalByKind)) {
+            totals[kind as SearchDocKind] = (totals[kind as SearchDocKind] ?? 0) + count;
+          }
+          continue;
+        }
         const entry = await getProjectHandler(record.projectId);
         const projectQueryArgs: Record<string, unknown> = {
           ...args.queryArgs,
-          ...(record.projectId === args.preferredProjectId
+          ...(isPreferred
             ? {}
             : { kinds: ["chat"] }),
           limit: 200,
@@ -1418,7 +1552,7 @@ export function createMultiProjectRpcRequestHandler(
           },
         });
         if (!isRecord(response) || !isRecord(response.result)) continue;
-        if (record.projectId === args.preferredProjectId) baseResponse = response;
+        if (isPreferred) baseResponse = response;
         const result = decodeSearchQueryResult(response.result);
         resultsTruncated ||= result.nextCursor != null;
         const projectResults = result.results.map((item) => ({
@@ -2506,6 +2640,22 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "runtime.activitySummary") {
       return await readMachineRuntimeActivitySummary({
+        projectRegistry,
+        scopeRegistry,
+        personalChatScope,
+      });
+    }
+
+    // Names every chat mid-turn on this machine, so it is the user's to ask,
+    // not an agent's: the same gate as the update it informs.
+    if (method === "runtime.updateImpact") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "runtime.updateImpact requires the cto role.",
+        );
+      }
+      return await readMachineUpdateImpact({
         projectRegistry,
         scopeRegistry,
         personalChatScope,

@@ -174,6 +174,8 @@ struct WorkChatMessage: Identifiable, Equatable {
   var steerId: String? = nil
   var deliveryState: String? = nil
   var processed: Bool? = nil
+  /// True for a user message that ADE wrote for the user (a wake, a relay).
+  var writtenByAde = false
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
   /// Monotonic content revision for the incremental streaming path. The
@@ -2265,6 +2267,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   let event: WorkChatEvent
   /// Provider text phase retained beside the normalized event.
   var textPhase: String? = nil
+  /// True for a user message that ADE wrote for the user, not the reader.
+  var userMessageWrittenByAde = false
   /// Raw fields intentionally kept beside the normalized event so the broad
   /// WorkChatEvent associated-value surface does not need to grow just for
   /// subagent classification.

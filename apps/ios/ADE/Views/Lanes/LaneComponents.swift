@@ -270,13 +270,16 @@ struct LaneStackCard: View, Equatable {
   /// below, and the lane's live chats as one status mark on the trailing edge
   /// (the desktop lane sidebar row).
   var body: some View {
+    let _ = ScrollDiagnostics.shared.count(.laneRowBody)
     HStack(alignment: .center, spacing: 11) {
       laneGlyphTile
       VStack(alignment: .leading, spacing: 4) {
         HStack(alignment: .center, spacing: 6) {
           Text(snapshot.lane.name)
             .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(laneLabelColor)
+            // The glyph carries the lane colour; the name stays readable (a
+            // yellow or pale name on the light page failed contrast).
+            .foregroundStyle(machine?.isLive == false ? ADEColor.textSecondary : ADEColor.textPrimary)
             .lineLimit(1)
             .truncationMode(.tail)
             .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
@@ -330,25 +333,19 @@ struct LaneStackCard: View, Equatable {
   @ViewBuilder
   private var runtimeMark: some View {
     if snapshot.runtime.awaitingInputCount > 0 {
-      HStack(spacing: 3) {
-        Circle()
-          .fill(ADEColor.warning)
-          .frame(width: 7, height: 7)
-        Text("\(snapshot.runtime.awaitingInputCount)")
-          .font(.caption2.weight(.semibold).monospacedDigit())
-          .foregroundStyle(ADEColor.warning)
-      }
+      LaneRuntimePill(
+        symbol: "hand.raised.fill",
+        text: "\(snapshot.runtime.awaitingInputCount)",
+        tint: ADEColor.warning
+      )
       .accessibilityLabel("\(snapshot.runtime.awaitingInputCount) waiting for you")
     } else if snapshot.runtime.runningCount > 0 {
-      HStack(spacing: 3) {
-        Image(systemName: "circle.dashed")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(Color.cyan)
-        Text("\(snapshot.runtime.runningCount)")
-          .font(.caption2.weight(.semibold).monospacedDigit())
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-      .accessibilityLabel("\(snapshot.runtime.runningCount) running")
+      LaneRuntimePill(
+        symbol: "circle.dashed",
+        text: "\(snapshot.runtime.runningCount)",
+        tint: ADEColor.accent
+      )
+      .accessibilityLabel("\(snapshot.runtime.runningCount) chat\(snapshot.runtime.runningCount == 1 ? "" : "s") running")
     }
   }
 
@@ -510,6 +507,27 @@ func laneStackCardRenderSignature(
     hasher.combine(0)
   }
   return hasher.finalize()
+}
+
+/// A lane's live chats on its row: a tinted capsule with a glyph and count.
+struct LaneRuntimePill: View {
+  let symbol: String
+  let text: String
+  let tint: Color
+
+  var body: some View {
+    HStack(spacing: 3) {
+      Image(systemName: symbol)
+        .font(.system(size: 9.5, weight: .bold))
+      Text(text)
+        .font(.caption2.weight(.semibold).monospacedDigit())
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 7)
+    .frame(height: 20)
+    .background(tint.opacity(0.13), in: Capsule(style: .continuous))
+    .fixedSize()
+  }
 }
 
 // MARK: - Form section

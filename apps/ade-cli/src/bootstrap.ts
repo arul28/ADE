@@ -259,6 +259,7 @@ import {
 } from "../../desktop/src/shared/appleDeviceSettings";
 import { ADE_ACCENT_COLOR } from "../../desktop/src/shared/themeTokens";
 import type { AccountVaultStore } from "./services/account/accountVaultStore";
+import { MCP_SECRET_VAULT_KIND } from "../../desktop/src/shared/mcpRegistry";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot, PrSummary } from "../../desktop/src/shared/types";
@@ -2031,6 +2032,7 @@ export async function createAdeRuntime(args: {
           emitEvent: (payload) => pushEvent("runtime", payload),
           logger,
           resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
+          receivedFilesDir: path.join(paths.cacheDir, "browser-observations", "remote"),
         }),
         userBrowserAttachService: createUserBrowserAttachService({
           projectRoot,
@@ -2279,6 +2281,8 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         machineAdeHome: resolveMachineAdeLayout().adeDir,
+        // The MCP registry's secret values: the generic vault kind, account-wide.
+        readAccountSecret: (vaultKey) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null,
         runtimeBudget: chatRuntimeBudget,
         releaseChatBrowser,
         projectRoot,

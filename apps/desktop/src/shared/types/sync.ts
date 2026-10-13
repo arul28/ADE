@@ -2547,6 +2547,8 @@ export type SyncRemoteCommandAction =
   | "chat.getSlashCommands"
   | "chat.resolveSmartLinkPreview"
   | "chat.resolveSourceFavicons"
+  | "chat.getMcpApp"
+  | "chat.mcpAppRequest"
   | "chat.getParallelLaunchState"
   | "chat.setParallelLaunchState"
   | "chat.handoff"

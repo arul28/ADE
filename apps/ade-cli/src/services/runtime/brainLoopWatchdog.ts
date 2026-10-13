@@ -3,15 +3,27 @@ import path from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
 import { SUSPEND_GAP_THRESHOLD_MS } from "../power/suspendGapDetector";
+import {
+  BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
+  buildBrainLoopWatchdogWorkerSource,
+} from "./brainLoopWatchdogWorker";
+
+export {
+  BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
+  BRAIN_LOOP_WORKER_LATE_REPORT_MS,
+  buildBrainLoopWatchdogWorkerSource,
+  evaluateBrainLoopWatchdog,
+} from "./brainLoopWatchdogWorker";
 
 export const DEFAULT_BRAIN_LOOP_WATCHDOG_MS = 30_000;
 export const DEFAULT_WINDOWS_BRAIN_LOOP_WATCHDOG_MS = 60_000;
-export const BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS = 1_000;
 export const BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS = 2_000;
 export const BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE = "event-loop-wedge.json";
 export const BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE = "last-wedge.json";
 export const BRAIN_LOOP_WATCHDOG_REPORT_FILE = "event-loop-wedge-report.json";
 export const BRAIN_LOOP_WATCHDOG_LAST_REPORT_FILE = "last-wedge-report.json";
+export const BRAIN_LOOP_WATCHDOG_SAMPLE_FILE = "event-loop-wedge-sample.txt";
+export const BRAIN_LOOP_WATCHDOG_LAST_SAMPLE_FILE = "last-wedge-sample.txt";
 
 export type BrainLoopWatchdogDiagnostics = {
   capturedAt: string;
@@ -48,6 +60,8 @@ export type BrainLoopWatchdogBreadcrumb = {
   thresholdMs?: number;
   diagnostics?: BrainLoopWatchdogDiagnostics;
   diagnosticReportPath?: string | null;
+  /** The macOS `sample` of the wedged brain, taken before the kill. */
+  nativeSamplePath?: string | null;
 };
 
 export type BrainLoopWatchdogEvaluation = {
@@ -64,43 +78,6 @@ export type BrainLoopWatchdogEvaluation = {
   sleepGapMs: number;
 };
 
-export function evaluateBrainLoopWatchdog(args: {
-  nowWallMs: number;
-  nowMonotonicMs: number;
-  lastHeartbeatWallMs: number;
-  lastHeartbeatMonotonicMs: number;
-  previousCheckWallMs: number;
-  previousCheckMonotonicMs: number;
-  thresholdMs: number;
-  checkIntervalMs?: number;
-}): BrainLoopWatchdogEvaluation {
-  const wallSinceHeartbeat = Math.max(0, args.nowWallMs - args.lastHeartbeatWallMs);
-  const monotonicSinceHeartbeat = Math.max(
-    0,
-    args.nowMonotonicMs - args.lastHeartbeatMonotonicMs,
-  );
-  const blockedMs = Math.floor(Math.min(wallSinceHeartbeat, monotonicSinceHeartbeat));
-  const wallSinceCheck = Math.max(0, args.nowWallMs - args.previousCheckWallMs);
-  const monotonicSinceCheck = Math.max(
-    0,
-    args.nowMonotonicMs - args.previousCheckMonotonicMs,
-  );
-  const sleepGapFloorMs = Math.max(
-    args.thresholdMs,
-    (args.checkIntervalMs ?? BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS) * 4,
-  );
-  const checkGapDeltaMs = Math.abs(wallSinceCheck - monotonicSinceCheck);
-  const slept = wallSinceCheck > sleepGapFloorMs
-    && monotonicSinceCheck > sleepGapFloorMs
-    && checkGapDeltaMs <= Math.max(2_000, Math.max(wallSinceCheck, monotonicSinceCheck) * 0.25);
-  return {
-    blocked: !slept && blockedMs > args.thresholdMs,
-    blockedMs,
-    slept,
-    sleepGapMs: slept ? Math.floor(Math.min(wallSinceCheck, monotonicSinceCheck)) : 0,
-  };
-}
-
 /**
  * How long a suspension-shaped lag waits for the worker's verdict.
  *
@@ -111,13 +88,6 @@ export function evaluateBrainLoopWatchdog(args: {
  * retracted.
  */
 export const BRAIN_LOOP_SLEEP_PROOF_GRACE_MS = 3_000;
-
-/**
- * How late the worker's own 1 s check must run before it reports a pause. A late
- * check means this thread was not running either: the whole process was off the
- * CPU, not just the main thread blocked.
- */
-export const BRAIN_LOOP_WORKER_LATE_REPORT_MS = 500;
 
 /**
  * The share of a long lag the worker's lateness may leave unexplained. See
@@ -442,6 +412,9 @@ function readBreadcrumb(filePath: string): BrainLoopWatchdogBreadcrumb | null {
     if (typeof parsed.diagnosticReportPath === "string" || parsed.diagnosticReportPath === null) {
       breadcrumb.diagnosticReportPath = parsed.diagnosticReportPath;
     }
+    if (typeof parsed.nativeSamplePath === "string" || parsed.nativeSamplePath === null) {
+      breadcrumb.nativeSamplePath = parsed.nativeSamplePath;
+    }
     return breadcrumb;
   } catch {
     return null;
@@ -452,6 +425,25 @@ export function readBrainLoopWatchdogLastWedge(
   runtimeDir: string,
 ): BrainLoopWatchdogBreadcrumb | null {
   return readBreadcrumb(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE));
+}
+
+/**
+ * Move the latest artifact onto its "last" name so the next run can take the
+ * latest name. Returns the path to record: the last name after a move, the latest
+ * name if the move failed (the artifact is still there), or null when there was
+ * nothing to rotate.
+ */
+function rotateLatestArtifact(latestPath: string, lastPath: string): string | null {
+  if (!fs.existsSync(latestPath)) return null;
+  try {
+    if (process.platform === "win32" && fs.existsSync(lastPath)) {
+      fs.unlinkSync(lastPath);
+    }
+    fs.renameSync(latestPath, lastPath);
+    return lastPath;
+  } catch {
+    return latestPath;
+  }
 }
 
 export function recoverBrainLoopWatchdogBreadcrumb(args: {
@@ -478,18 +470,20 @@ export function recoverBrainLoopWatchdogBreadcrumb(args: {
   }
   const reportPath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_REPORT_FILE);
   const lastReportPath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_LAST_REPORT_FILE);
-  if (fs.existsSync(reportPath)) {
-    try {
-      if (process.platform === "win32" && fs.existsSync(lastReportPath)) {
-        fs.unlinkSync(lastReportPath);
-      }
-      fs.renameSync(reportPath, lastReportPath);
-      breadcrumb.diagnosticReportPath = lastReportPath;
-    } catch {
-      breadcrumb.diagnosticReportPath = reportPath;
-    }
+  const rotatedReport = rotateLatestArtifact(reportPath, lastReportPath);
+  if (rotatedReport !== null) {
+    breadcrumb.diagnosticReportPath = rotatedReport;
   } else if (breadcrumb.diagnosticReportPath !== undefined) {
     breadcrumb.diagnosticReportPath = null;
+  }
+  const samplePath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_SAMPLE_FILE);
+  const lastSamplePath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_LAST_SAMPLE_FILE);
+  try { fs.unlinkSync(`${samplePath}.log`); } catch { /* the sampler's progress file, if it ran */ }
+  const rotatedSample = rotateLatestArtifact(samplePath, lastSamplePath);
+  if (rotatedSample !== null) {
+    breadcrumb.nativeSamplePath = rotatedSample;
+  } else if (breadcrumb.nativeSamplePath !== undefined) {
+    breadcrumb.nativeSamplePath = null;
   }
   fs.writeFileSync(lastWedgePath, `${JSON.stringify(breadcrumb)}\n`, {
     encoding: "utf8",
@@ -505,6 +499,8 @@ export function recoverBrainLoopWatchdogBreadcrumb(args: {
 
 let nextCommandToken = 0;
 const activeCommands = new Map<number, string>();
+/** Tells a running watchdog worker the current command; null when none runs. */
+let announceCommandToWatchdog: ((command: string) => void) | null = null;
 
 function currentCommandName(): string {
   let current = "idle";
@@ -527,137 +523,11 @@ export function currentBrainLoopWatchdogCommand(): string {
 export function trackBrainLoopWatchdogCommand(action: string): () => void {
   const token = ++nextCommandToken;
   activeCommands.set(token, action.trim() || "unknown");
+  announceCommandToWatchdog?.(currentCommandName());
   return () => {
     activeCommands.delete(token);
+    announceCommandToWatchdog?.(currentCommandName());
   };
-}
-
-export function buildBrainLoopWatchdogWorkerSource(): string {
-  return String.raw`
-    const fs = require("node:fs");
-    const path = require("node:path");
-    const { parentPort, workerData } = require("node:worker_threads");
-    const BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS = ${BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS};
-    const BRAIN_LOOP_WORKER_LATE_REPORT_MS = ${BRAIN_LOOP_WORKER_LATE_REPORT_MS};
-    const evaluateBrainLoopWatchdog = ${evaluateBrainLoopWatchdog.toString()};
-
-    const monotonicMs = () => Number(process.hrtime.bigint() / 1000000n);
-    let lastHeartbeatWallMs = null;
-    let lastHeartbeatMonotonicMs = null;
-    let previousCheckWallMs = Date.now();
-    let previousCheckMonotonicMs = monotonicMs();
-    let lastCommand = "idle";
-    let diagnostics = null;
-
-    const writeBreadcrumbAndKill = (blockedMs) => {
-      const breadcrumb = {
-        lastCommand,
-        blockedMs: Math.max(0, Math.floor(blockedMs)),
-        ts: new Date().toISOString(),
-        thresholdMs: workerData.thresholdMs,
-        diagnostics,
-        diagnosticReportPath: workerData.reportEnabled ? workerData.reportPath : null,
-      };
-      const breadcrumbPath = path.join(workerData.runtimeDir, workerData.breadcrumbFile);
-      let tempPath = null;
-      try {
-        fs.mkdirSync(workerData.runtimeDir, { recursive: true, mode: 0o700 });
-        tempPath = breadcrumbPath + "." + process.pid + "." + Date.now() + ".tmp";
-        fs.writeFileSync(tempPath, JSON.stringify(breadcrumb) + "\n", {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-        if (process.platform === "win32" && fs.existsSync(breadcrumbPath)) {
-          fs.unlinkSync(breadcrumbPath);
-        }
-        fs.renameSync(tempPath, breadcrumbPath);
-      } catch (error) {
-        if (tempPath) {
-          try { fs.unlinkSync(tempPath); } catch {}
-        }
-        try {
-          fs.writeSync(
-            2,
-            "brain.event_loop_breadcrumb_failed " +
-              JSON.stringify({ error: error instanceof Error ? error.message : String(error) }) +
-              "\n",
-          );
-        } catch {}
-      } finally {
-        try {
-          fs.writeSync(2, "brain.event_loop_blocked " + JSON.stringify(breadcrumb) + "\n");
-        } finally {
-          if (workerData.reportEnabled) {
-            try { process.kill(process.pid, workerData.reportSignal); } catch {}
-          }
-          setTimeout(() => process.kill(process.pid, "SIGKILL"), workerData.reportGraceMs);
-        }
-      }
-    };
-
-    parentPort.on("message", (message) => {
-      if (!message || message.type !== "heartbeat") return;
-      lastHeartbeatWallMs = Date.now();
-      lastHeartbeatMonotonicMs = monotonicMs();
-      if (typeof message.lastCommand === "string" && message.lastCommand.length > 0) {
-        lastCommand = message.lastCommand;
-      }
-      if (message.diagnostics && typeof message.diagnostics === "object") {
-        diagnostics = message.diagnostics;
-      }
-    });
-
-    setInterval(() => {
-      const nowWallMs = Date.now();
-      const nowMonotonicMs = monotonicMs();
-      if (lastHeartbeatWallMs == null || lastHeartbeatMonotonicMs == null) {
-        previousCheckWallMs = nowWallMs;
-        previousCheckMonotonicMs = nowMonotonicMs;
-        return;
-      }
-
-      const monotonicSinceCheck = nowMonotonicMs - previousCheckMonotonicMs;
-      const evaluation = evaluateBrainLoopWatchdog({
-        nowWallMs,
-        nowMonotonicMs,
-        lastHeartbeatWallMs,
-        lastHeartbeatMonotonicMs,
-        previousCheckWallMs,
-        previousCheckMonotonicMs,
-        thresholdMs: workerData.thresholdMs,
-        checkIntervalMs: workerData.checkIntervalMs,
-      });
-      previousCheckWallMs = nowWallMs;
-      previousCheckMonotonicMs = nowMonotonicMs;
-      // This thread's own 1 s timer ran late, so the whole process was off the CPU
-      // for the lateness. Nothing on the main thread can observe its own absence,
-      // so report it whether or not it is long enough to forgive below. The
-      // timer was due at previousCheck + interval and fired now, so the paused
-      // interval is [now - lateMs, now]. The main thread matches it against its
-      // own lag.
-      const lateMs = monotonicSinceCheck - workerData.checkIntervalMs;
-      if (lateMs >= BRAIN_LOOP_WORKER_LATE_REPORT_MS) {
-        try {
-          parentPort.postMessage({
-            type: "sleep",
-            pausedMs: Math.floor(lateMs),
-            resumedAtMonotonicMs: nowMonotonicMs,
-          });
-        } catch {}
-      }
-      if (evaluation.slept) {
-        lastHeartbeatWallMs = nowWallMs;
-        lastHeartbeatMonotonicMs = nowMonotonicMs;
-        // A suspended process resumes with a stale heartbeat. Forgive that gap so
-        // the resume is not read as a block; the pause report above labels it.
-        return;
-      }
-
-      if (evaluation.blocked) {
-        writeBreadcrumbAndKill(evaluation.blockedMs);
-      }
-    }, workerData.checkIntervalMs);
-  `;
 }
 
 export function startBrainLoopWatchdog(args: {
@@ -743,6 +613,12 @@ export function startBrainLoopWatchdog(args: {
         reportPath,
         reportSignal,
         reportGraceMs: 1_000,
+        sampleEnabled: process.platform === "darwin",
+        samplePath: path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_SAMPLE_FILE),
+        sampleSeconds: 2,
+        // Symbol loading plus the 2 s of sampling took ~8 s on a Node process, so
+        // 12 s leaves room; past this the brain is killed whether or not the sample is done.
+        sampleTimeoutMs: 12_000,
       },
     });
   } catch (error) {
@@ -752,6 +628,14 @@ export function startBrainLoopWatchdog(args: {
     return () => {};
   }
   worker.unref();
+  const announceCommand = (command: string): void => {
+    try {
+      worker.postMessage({ type: "command", lastCommand: command });
+    } catch {
+      // The worker's error/exit handlers report a failed watchdog once.
+    }
+  };
+  announceCommandToWatchdog = announceCommand;
 
   const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
   eventLoopDelay.enable();
@@ -1020,6 +904,7 @@ export function startBrainLoopWatchdog(args: {
     // reading that gets investigated.
     emitHeldLag();
     eventLoopDelay.disable();
+    if (announceCommandToWatchdog === announceCommand) announceCommandToWatchdog = null;
     void worker.terminate();
   };
 }

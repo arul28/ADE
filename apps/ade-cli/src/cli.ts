@@ -89,6 +89,7 @@ import {
   STATUS_NOTE_GUIDELINE_WORDS,
 } from "../../desktop/src/shared/sessionStatusNote";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
+import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
@@ -3235,6 +3236,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --panel, --show-panel
                          Reveal the Work sidebar Browser panel for this command.
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
+    --here               Use the browser on the machine this agent runs on. Without
+                         it, when the user drives this chat from another computer,
+                         browser commands run in the ADE browser on that computer,
+                         where the user can see them. Use --here to test a page
+                         on this machine, to record, or to upload a local file.
     --isolated           open/new-tab: use a throwaway sign-in, not the user's.
     --profile <name>     open/new-tab: the isolated sign-in to use; implies --isolated.
     --tab, --tab-id <id> Target tab for switch/close/open/control/capture/claim.
@@ -3377,6 +3383,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   scene that never settles, and source mistakes the policy turns into blanks.
   Needs the ADE desktop app on this machine.
 
+    $ ade scene guide                                  The short rules for writing a scene (read this first)
     $ ade scene preview /tmp/chart.html --text         Preview a scene file
     $ ade scene preview /tmp/chart.html --theme light  In the light theme
     $ ade scene preview /tmp/chart.html --width 980    At another frame width (default 720)
@@ -5375,6 +5382,24 @@ export function actionStep(
   toolExtras: JsonObject = {},
 ): InvocationStep {
   return actionCallStep(key, "run_ade_action", { ...toolExtras, domain, action, args });
+}
+
+/**
+ * `step` with `extra` merged into its action's args when it runs an action of
+ * `domain` (the shape `actionStep` builds); any other step comes back as is.
+ */
+function withActionStepArgs(step: InvocationStep, domain: string, extra: JsonObject): InvocationStep {
+  const merge = (params: JsonObject): JsonObject => {
+    const call = isRecord(params.arguments) ? params.arguments : null;
+    if (params.name !== "run_ade_action" || !call || call.domain !== domain) return params;
+    return { ...params, arguments: { ...call, args: { ...(isRecord(call.args) ? call.args : {}), ...extra } } };
+  };
+  const params = step.params;
+  if (params === undefined) return step;
+  return {
+    ...step,
+    params: typeof params === "function" ? (values: JsonObject) => merge(params(values)) : merge(params),
+  };
 }
 
 function accountActionStep(
@@ -8917,10 +8942,27 @@ function buildSearchPlan(args: string[]): CliPlan {
     }
   }
 
-  const query = firstPositional(args) ?? readValue(args, ["--query", "-q"]);
+  // `--query <text>` first: read after the positional, its value was taken as
+  // the query and the bare flag was left behind as an unknown option. A flag
+  // after `--query` is not its value: it stays for the unknown-option check,
+  // so `--query --socket <path>` is refused rather than searched for.
+  const queryFlagIndex = args.findIndex((arg) => arg === "--query" || arg === "-q");
+  if (queryFlagIndex >= 0 && args[queryFlagIndex + 1]?.startsWith("-")) args.splice(queryFlagIndex, 1);
+  const query = readValue(args, ["--query", "-q"]) ?? firstPositional(args);
   if (!query || !query.trim()) {
     throw new CliUsageError(
       'search requires a query, e.g. ade search "login redirect" --text (or --status / --rebuild).',
+    );
+  }
+  // An option this command does not know is refused, never dropped. A
+  // `--socket <path>` written after the command was read as nothing, and the
+  // search went to the default brain instead of the one the caller named.
+  const unknownOption = args.find((arg) => arg.startsWith("-") && arg !== "--");
+  if (unknownOption) {
+    throw new CliUsageError(
+      unknownOption === "--socket" || unknownOption.startsWith("--socket=")
+        ? '--socket is a global option and goes before the command: ade --socket <path> search "<query>".'
+        : `Unknown search option: ${unknownOption}. Run 'ade help search' for the options it takes.`,
     );
   }
 
@@ -11893,7 +11935,9 @@ function buildScenePlan(args: string[]): CliPlan {
   const stdin = args.includes("-");
   const sub = firstPositional(args);
   if (!sub || sub === "help") return { kind: "help", text: HELP_BY_COMMAND.scene };
-  if (sub !== "preview") throw new CliUsageError(`Unknown scene command '${sub}'. Try: ade scene preview <file>`);
+  // The short rules for writing a scene: local text, no runtime needed.
+  if (sub === "guide") return { kind: "help", text: SCENE_GUIDE };
+  if (sub !== "preview") throw new CliUsageError(`Unknown scene command '${sub}'. Try: ade scene guide, or ade scene preview <file>`);
   let width: number | undefined;
   if (widthRaw) {
     width = Number(widthRaw);
@@ -15212,10 +15256,24 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
  * flag (or its own name demanded a value) long before the fallback was reached.
  */
 function buildBrowserPlan(args: string[]): CliPlan {
-  return buildBrowserPlanWithLiteralTail(
-    args,
-    takeArgsAfterTerminator(args, BROWSER_VALUE_CARRIER_FLAGS) ?? [],
-  );
+  // The tail first: a `--here` after `--` is text to type, not this flag.
+  const literalTail = takeArgsAfterTerminator(args, BROWSER_VALUE_CARRIER_FLAGS) ?? [];
+  const here = readFlag(args, ["--here"]);
+  const plan = buildBrowserPlanWithLiteralTail(args, literalTail);
+  return here ? withBrowserOnThisMachine(plan) : plan;
+}
+
+/**
+ * `--here`: run the plan's browser commands in the browser on the machine the
+ * agent runs on. Without it, a chat whose user sits at another desktop has
+ * its commands sent to the browser on that desktop (`remoteBrowserForwarder`).
+ */
+function withBrowserOnThisMachine(plan: CliPlan): CliPlan {
+  if (plan.kind !== "execute") return plan;
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => withActionStepArgs(step, "built_in_browser", { here: true })),
+  };
 }
 
 function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]): CliPlan {
@@ -30588,6 +30646,10 @@ function formatBrowserObservation(value: unknown): string {
     ["scratch deleted", cleanup?.deletedCount],
   ]);
   const sections = [header];
+  // A full sentence with two commands in it: its own line, where a key/value
+  // row would cut it short.
+  const narrowPageHint = asString(observation.narrowPageHint);
+  if (narrowPageHint) sections.push("", `note: ${narrowPageHint}`);
   if (elements.length) sections.push("", domElementTable(elements));
   if (consoleDiagnostics.length) {
     sections.push(
@@ -33505,14 +33567,19 @@ function formatOutput(
 ): string {
   if (options.text) {
     if (isMachineFanOutResult(value)) return `${formatMachineFanOut(value)}\n`;
-    const targetLine = userBrowserTargetLine(value);
+    const targetLine = browserTargetLine(value);
     // Said once, on the first line; not again as a row of the result.
     const shown = targetLine && isRecord(value)
-      ? (({ userBrowserTarget: _target, ...rest }) => rest)(value)
+      ? (({ userBrowserTarget: _target, browserHost: _host, ...rest }) => rest)(value)
       : value;
     return `${targetLine}${formatTextOutput(shown, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
+}
+
+/** The first line of a browser command's text output: which browser it ran in, when that needs saying. */
+function browserTargetLine(value: unknown): string {
+  return userBrowserTargetLine(value) || builtInBrowserHostLine(value);
 }
 
 /**
@@ -33524,6 +33591,24 @@ function userBrowserTargetLine(value: unknown): string {
   if (!isRecord(value) || value.attached === true) return "";
   const target = asString(value.userBrowserTarget);
   return target ? `${USER_BROWSER_TARGET_PREFIX} ${target}\n` : "";
+}
+
+/**
+ * Which machine's ADE browser a command ran in, when that is not simply "the
+ * one beside the agent" (`BuiltInBrowserHostNote`). Printed first, so an agent
+ * whose user sits at another computer knows where its tab is and can say so.
+ */
+function builtInBrowserHostLine(value: unknown): string {
+  const host = isRecord(value) && isRecord(value.browserHost) ? value.browserHost : null;
+  if (!host) return "";
+  const machine = asString(host.machine) ?? "another computer";
+  if (host.userComputer === true) {
+    return `browser: on ${machine}, the computer the user sits at. They see this tab and it uses their sign-ins.\n`;
+  }
+  if (host.userElsewhere === true) {
+    return "browser: on this machine. The user drives this chat from another computer, which did not take the command, so they cannot see this browser and it has none of their tabs.\n";
+  }
+  return "";
 }
 
 function appendOutputSuffix(output: string, suffix: string): string {
@@ -34038,7 +34123,7 @@ async function runParsedCli(
       const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath);
       return {
         output: parsed.options.text
-          ? `${userBrowserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
+          ? `${browserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
             ["saved", saved.savedPath],
             ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
             ["bytes", saved.bytes],

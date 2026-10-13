@@ -205,8 +205,8 @@ import {
   AgentChatMessageList,
   ChatInfoHostContext,
 } from "./AgentChatMessageList";
+import { SceneReplyContext } from "./SceneFrame";
 import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
-import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
@@ -3425,15 +3425,6 @@ export function buildParallelLaunchPrompt(args: {
     return { sendText: "", displayText: "" };
   }
   return { sendText: displayText, displayText };
-}
-
-/** Deterministic djb2 hash → stable, collision-resilient mosaic card key suffix. */
-function djb2Hash(input: string): string {
-  let hash = 5381;
-  for (let i = 0; i < input.length; i += 1) {
-    hash = ((hash << 5) + hash + input.charCodeAt(i)) | 0;
-  }
-  return (hash >>> 0).toString(36);
 }
 
 export type ParallelLaunchCleanupIssue = {
@@ -10108,36 +10099,26 @@ export function AgentChatPane({
     }
   }, [refreshAvailableModels, refreshSessions, rejectAuthRetry, touchSession]);
 
-  // Mosaic card submit → structured reply through the normal chat send path.
-  const handleMosaicSubmit = useCallback(async (submission: { text: string; displayText: string }) => {
-    const sessionId = selectedSessionIdRef.current;
-    if (!sessionId) return;
-    try {
-      setError(null);
-      touchSession(sessionId);
-      await agentChatApiRef.current.send({ sessionId, text: submission.text, displayText: submission.displayText }, chatRuntimePinRef.current);
-      void refreshSessions().catch(() => {});
-    } catch (mosaicSendError) {
-      setError(mosaicSendError instanceof Error ? mosaicSendError.message : String(mosaicSendError));
-      throw mosaicSendError;
+  // A scene's `ade.reply` → the prompt box. Nothing is sent: the reader can
+  // add to the draft and sends it themselves. Picking another option swaps
+  // the earlier pick for the new one, and anything the reader typed stays.
+  // The last pick is remembered per source (one scene, one app): a second
+  // scene's pick is a second answer, added beside the first, not a swap.
+  const lastSceneReplyBySourceRef = useRef(new Map<string, string>());
+  const handleSceneReply = useLatestCallback((text: string, sourceKey: string) => {
+    const picks = lastSceneReplyBySourceRef.current;
+    // Per chat: a pick made in one chat must never match words in the draft of another.
+    const pickKey = `${selectedSessionIdRef.current ?? ""}\u0000${sourceKey}`;
+    const previous = picks.get(pickKey);
+    if (picks.size >= 64 && !picks.has(pickKey)) picks.clear();
+    picks.set(pickKey, text);
+    if (previous && draft.includes(previous)) {
+      // A function, not a string: `$&` or `$$` in a reply is text, not a pattern.
+      replaceComposerDraft(draft.replace(previous, () => text));
+      return;
     }
-  }, [refreshSessions, touchSession]);
-
-  const mosaicCardKeyFor = useCallback(
-    // Scope (the transcript row key) keeps byte-identical cards at different
-    // positions independently answerable.
-    (source: string, scope: string) => `${selectedSessionIdRef.current ?? "draft"}:${scope}:${djb2Hash(source)}`,
-    [],
-  );
-
-  // Interactive mosaic cards are Claude-family only; other runtimes fall back to
-  // the plain code fence. Memoized so AgentChatMessageList's row memo holds.
-  const mosaicContext = useMemo<MosaicRenderContext | undefined>(() => {
-    if (sessionProvider !== "claude") return undefined;
-    // Pass the promise through — the card awaits it and rolls back its
-    // answered latch when the send rejects.
-    return { cardKeyFor: mosaicCardKeyFor, onSubmit: handleMosaicSubmit };
-  }, [sessionProvider, mosaicCardKeyFor, handleMosaicSubmit]);
+    insertComposerDraft(text);
+  });
 
   // The inline re-login card dispatches CHAT_RETRY_AUTH_TURN_EVENT on "Retry
   // turn"; only the pane that owns the session resends.
@@ -17291,6 +17272,7 @@ export function AgentChatPane({
                     {!cloudConversationPending && !(cloudHydrateFailed && !chatHasMessages) ? (
                     <ChatInfoHostContext.Provider value={true}>
                     <ThreadEntityProvider skillNames={threadEntitySkillNames}>
+                      <SceneReplyContext.Provider value={subagentView ? null : handleSceneReply}>
                       <AgentChatMessageList
                         key={renderedSessionId ?? "chat-draft"}
                         threadComments={subagentView ? null : threadCommentsProp}
@@ -17356,7 +17338,6 @@ export function AgentChatPane({
                         latestCompactionKey={latestCompactionKey}
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
                         onStopSubagent={listStopSubagent}
-                        mosaic={subagentView ? undefined : mosaicContext}
                         unreadSince={subagentView ? null : unreadSince}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}
                         proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
@@ -17365,6 +17346,7 @@ export function AgentChatPane({
                         onOpenTurnSources={subagentView ? undefined : openTurnSources}
                         onForkFromTurn={subagentView || !canShowHandoff || !handoffForkSupported ? undefined : openForkFromTurn}
                       />
+                      </SceneReplyContext.Provider>
                     </ThreadEntityProvider>
                     </ChatInfoHostContext.Provider>
                     ) : null}
