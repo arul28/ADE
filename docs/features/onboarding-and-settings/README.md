@@ -1753,7 +1753,24 @@ banner):
   `lastInstallFailed` names the staged version, the ready label reads "Retry
   install vX.Y.Z" and the tooltip says whether the download is still on the
   machine. Clicking the
-  install affordance prompts the user, sets a local
+  install affordance prompts the user (`autoUpdateInstallAction.tsx`). The
+  prompt always says what the restart stops on this computer: "2 agent
+  chats running, 1 terminal open" with the chats by name, "Nothing is
+  running", or "Couldn't check what's running" when the brain did not
+  answer within 3 seconds. The answer is the brain's
+  `runtime.updateImpact` (read by `main/services/runtime/updateImpactProbe.ts`),
+  which covers every project it has open and personal chats, not only the
+  projects with a tab. A brain from before that method is asked for chats
+  project by project, plus `runtime.activitySummary`; when that says more
+  is running than the chats it found, the prompt says more work is
+  running rather than claim nothing else is. The quit prompt reads the
+  same probe and, when it could not check (or only knows that something
+  unnamed is running), says so instead of counting zero. Each probe logs
+  `autoUpdate.impact_probe` or `autoUpdate.impact_probe_unknown` to
+  `ade-update.jsonl`. "Resume this computer's chats" is offered when a listed chat
+  can be queued to continue (personal chats cannot). Connected machines on
+  an older ADE are listed too, and update first when their checkbox stays
+  on (see remote runtime, `machine.updateAndRestart`). The prompt then sets a local
   `installRequested` flag, and calls
   `window.ade.updateQuitAndInstall()`; if the IPC returns `false`
   (refresh check failed, no longer ready, etc.) the flag is cleared

@@ -61,3 +61,9 @@ export function compareUpdateVersions(left: string, right: string): number {
   }
   return 0;
 }
+
+/** "v1.2.3" for a version, however it was spelled; `fallback` when there is none. */
+export function updateVersionLabel(version: string | null | undefined, fallback: string): string {
+  const bare = version?.trim().replace(/^v/i, "");
+  return bare ? `v${bare}` : fallback;
+}

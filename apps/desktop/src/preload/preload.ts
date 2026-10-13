@@ -227,6 +227,7 @@ import type {
   KeepAwakeLevel,
   KeepAwakeSnapshot,
   AutoUpdateSnapshot,
+  UpdateImpact,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -5100,6 +5101,8 @@ const adeBridge = {
         id,
         targetVersion: targetVersion ?? null,
       }),
+    getUpdateImpact: async (id: string): Promise<UpdateImpact> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeGetUpdateImpact, { id }),
     listProjects: async (id: string): Promise<RemoteRuntimeProjectRecord[]> =>
       ipcRenderer.invoke(IPC.remoteRuntimeListProjects, { id }),
     addProject: async (

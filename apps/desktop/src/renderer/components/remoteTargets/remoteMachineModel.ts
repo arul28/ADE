@@ -3,6 +3,7 @@ import type {
   AdeAccountMachine,
   RemoteRuntimeConnectErrorInfo,
   RemoteRuntimeConnectionAttemptFailure,
+  RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeTarget,
@@ -718,6 +719,34 @@ export function describeMachineUpdateAttempt(
     message: `Not back yet after the update to ${pending}. Check that ADE is running on that machine.`,
     inFlight: false,
   };
+}
+
+/** A connected machine and the ADE version it runs, as an update needs it. */
+export type ConnectedMachine = {
+  id: string;
+  name: string;
+  version: string | null;
+};
+
+/** The machines a connection snapshot says are connected right now. */
+export function connectedMachinesFromSnapshot(
+  snapshot: RemoteRuntimeConnectionSnapshot | null | undefined,
+): ConnectedMachine[] {
+  return (snapshot?.connections ?? [])
+    .filter((connection) => connection.state === "connected")
+    .map((connection) => ({
+      id: connection.target.id,
+      name: connection.target.name,
+      version: connection.version ?? connection.target.runtimeBinaryVersion ?? null,
+    }));
+}
+
+/** The machines running an ADE older than `newestVersion`. */
+export function outdatedMachines<T extends Pick<ConnectedMachine, "version">>(
+  machines: readonly T[],
+  newestVersion: string | null | undefined,
+): T[] {
+  return machines.filter((machine) => isMachineVersionOutdated(machine.version, newestVersion));
 }
 
 /** The newest ADE version this computer knows about — running or staged. */

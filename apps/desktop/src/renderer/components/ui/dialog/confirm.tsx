@@ -22,14 +22,11 @@ export type ConfirmDialogOptions = {
   /** Content under the message (e.g. the list a decision affects). */
   children?: ReactNode;
   /**
-   * One optional checkbox under the body. Present, the confirm resolves the
-   * checkbox state alongside the yes/no; absent, it is a plain confirm.
+   * Optional checkboxes under the body, in order. Present, the confirm
+   * resolves each one's state by `key` alongside the yes/no; absent, it is a
+   * plain confirm.
    */
-  checkbox?: {
-    label: ReactNode;
-    /** Defaults on: the caller is offering to do something helpful. */
-    defaultChecked?: boolean;
-  };
+  checkboxes?: readonly ConfirmDialogCheckbox[];
   confirmLabel?: string;
   cancelLabel?: string;
   /** Icon tile + confirm button tone. Defaults to `error` when destructive, else `accent`. */
@@ -46,11 +43,24 @@ export type ConfirmDialogOptions = {
   signal?: AbortSignal;
 };
 
-/** A confirm that carries a checkbox: both halves of the answer. */
+export type ConfirmDialogCheckbox = {
+  key: string;
+  label: ReactNode;
+  /** Defaults on: the caller is offering to do something helpful. */
+  defaultChecked?: boolean;
+};
+
+/** A confirm that carries checkboxes: the yes/no, and each box by its key. */
 export type CheckboxConfirmResult = {
   confirmed: boolean;
-  checked: boolean;
+  checked: Record<string, boolean>;
 };
+
+function defaultChecked(options: ConfirmDialogOptions): Record<string, boolean> {
+  return Object.fromEntries(
+    (options.checkboxes ?? []).map((box) => [box.key, box.defaultChecked ?? true]),
+  );
+}
 
 export type PromptDialogOptions = {
   title: string;
@@ -143,7 +153,7 @@ function ensureHost() {
 function confirmRequest(options: ConfirmDialogOptions): Promise<CheckboxConfirmResult> {
   return new Promise<CheckboxConfirmResult>((resolve) => {
     const { signal } = options;
-    const unchecked = { confirmed: false, checked: options.checkbox?.defaultChecked ?? true };
+    const unchecked = { confirmed: false, checked: defaultChecked(options) };
     if (signal?.aborted) {
       resolve(unchecked);
       return;
@@ -185,11 +195,11 @@ export function promptDialog(options: PromptDialogOptions): Promise<string | nul
 }
 
 /**
- * `confirmDialog` plus one checkbox. Resolves both the yes/no and the checkbox
- * state so the caller can pass the choice on without a second prompt.
+ * `confirmDialog` plus checkboxes. Resolves the yes/no and each checkbox's
+ * state so the caller can pass the choices on without a second prompt.
  */
 export async function checkboxConfirmDialog(
-  options: ConfirmDialogOptions & { checkbox: NonNullable<ConfirmDialogOptions["checkbox"]> },
+  options: ConfirmDialogOptions & { checkboxes: readonly ConfirmDialogCheckbox[] },
 ): Promise<CheckboxConfirmResult> {
   return await confirmRequest(options);
 }
@@ -200,7 +210,7 @@ export function __resetDialogRequestsForTests() {
   requests = [];
   emit();
   for (const request of pending) {
-    if (request.kind === "confirm") request.resolve({ confirmed: false, checked: false });
+    if (request.kind === "confirm") request.resolve({ confirmed: false, checked: {} });
     else request.resolve(null);
   }
   removeFallbackHost();
@@ -280,23 +290,24 @@ function ConfirmDialogView({
   onResult: (result: CheckboxConfirmResult) => void;
 }): JSX.Element {
   const tone: NoticeTone = options.tone ?? (options.destructive ? "error" : "accent");
-  const [checked, setChecked] = useState(options.checkbox?.defaultChecked ?? true);
+  const [checked, setChecked] = useState(() => defaultChecked(options));
   const settle = (confirmed: boolean) => onResult({ confirmed, checked });
-  const body = options.children != null || options.checkbox != null ? (
+  const checkboxes = options.checkboxes ?? [];
+  const body = options.children != null || checkboxes.length > 0 ? (
     <>
       {options.children != null ? (
         <div className="ade-dialog-checkbox-content">{options.children}</div>
       ) : null}
-      {options.checkbox != null ? (
-        <label className="ade-dialog-checkbox">
+      {checkboxes.map((box) => (
+        <label key={box.key} className="ade-dialog-checkbox">
           <input
             type="checkbox"
-            checked={checked}
-            onChange={(event) => setChecked(event.target.checked)}
+            checked={checked[box.key] ?? false}
+            onChange={(event) => setChecked((current) => ({ ...current, [box.key]: event.target.checked }))}
           />
-          <span>{options.checkbox.label}</span>
+          <span>{box.label}</span>
         </label>
-      ) : null}
+      ))}
     </>
   ) : undefined;
   return (

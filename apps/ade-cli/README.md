@@ -287,6 +287,7 @@ The runtime exposes two layers of JSON-RPC methods (`src/multiProjectRpcServer.t
 ```text
 ade/initialize   ade/initialized   ping   shutdown   exit
 runtime/info     machineInfo.get   machine.updateAndRestart
+runtime.activitySummary            runtime.updateImpact
 account.call     attention.call
 projects.list    projects.add      projects.remove   projects.touch
 projects.browseDirectories         projects.getDetail
@@ -322,6 +323,13 @@ machine-directory action is CTO-only, including `renameMachine` and
 identity (a chat, run, step or attempt), and it refuses without
 `confirmation: "REMOVE"`, the token `ade machines remove --confirm REMOVE`
 sends.
+
+`runtime.updateImpact` answers what restarting this machine's ADE would stop:
+the chats mid-turn (by name, with their project) and counts of agent CLI
+sessions and terminals that are open (a restart closes each one, quiet or not), across every booted project and the
+personal-chat runtime. It never boots a project to answer. It is CTO-gated,
+because it names every running chat on the machine; clients show it before an
+update restarts anything.
 
 `machine.updateAndRestart` is the host half of "Update & restart". When this
 machine's desktop app is open it asks that app to install its own update over

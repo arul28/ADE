@@ -88,6 +88,8 @@ type SavedMachineRowProps = {
    */
   updateTargetVersion?: string | null;
   updating?: boolean;
+  /** ADE is asking the machine what an update would stop, before it confirms. */
+  checkingUpdate?: boolean;
   /** Outcome of the last update run on this machine. */
   updateStatus?: { ok: boolean; message: string } | null;
   /** ADE version running on this computer, used for the quiet skew note. */
@@ -126,6 +128,7 @@ export function SavedMachineRow({
   transientStatus = null,
   updateTargetVersion = null,
   updating = false,
+  checkingUpdate = false,
   updateStatus = null,
   localAdeVersion = null,
   onUpdateAndRestart,
@@ -253,7 +256,7 @@ export function SavedMachineRow({
             {row.connected && updateTargetVersion && onUpdateAndRestart ? (
               <button
                 type="button"
-                disabled={busy || updating}
+                disabled={busy || updating || checkingUpdate}
                 onClick={() => onUpdateAndRestart(updateTargetVersion)}
                 style={outlineButton({
                   height: 28,
@@ -262,7 +265,7 @@ export function SavedMachineRow({
                 })}
               >
                 <ArrowClockwise size={14} weight="bold" />
-                {updating ? "Updating…" : "Update & restart"}
+                {updating ? "Updating…" : checkingUpdate ? "Checking…" : "Update & restart"}
               </button>
             ) : null}
             {!row.connected && targetConnecting && !connectingStale ? (

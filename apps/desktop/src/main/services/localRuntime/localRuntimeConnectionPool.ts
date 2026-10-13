@@ -1896,6 +1896,20 @@ export class LocalRuntimeConnectionPool {
     );
   }
 
+  /**
+   * The brain's raw `runtime.updateImpact` reply: what restarting this
+   * machine's ADE would stop. Unparsed, because an older brain answers
+   * differently. Bounded like `activitySummary`: it reads live turns from
+   * memory, and the dialog asking must not wait on a wedged brain.
+   */
+  async updateImpact(): Promise<unknown> {
+    return await this.callSync<unknown>(
+      "runtime.updateImpact",
+      {},
+      { timeoutMs: LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS },
+    );
+  }
+
   async syncStatusForRoot(rootPath: string, args: SyncGetStatusArgs = {}): Promise<SyncRoleSnapshot> {
     return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.getStatus", {
       includeTransferReadiness: args.includeTransferReadiness === true,

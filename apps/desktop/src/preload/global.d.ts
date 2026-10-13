@@ -160,6 +160,7 @@ import type {
   KeepAwakeLevel,
   KeepAwakeSnapshot,
   AutoUpdateSnapshot,
+  UpdateImpact,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -1440,6 +1441,11 @@ declare global {
           id: string,
           targetVersion?: string | null,
         ) => Promise<RemoteRuntimeUpdateAndRestartResult>;
+        /**
+         * What "Update & restart" would stop on that machine right now. Never
+         * rejects: a machine that cannot answer comes back `checked: false`.
+         */
+        getUpdateImpact: (id: string) => Promise<UpdateImpact>;
         listProjects: (id: string) => Promise<RemoteRuntimeProjectRecord[]>;
         addProject: (
           id: string,

@@ -314,6 +314,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Updates",
   },
   {
+    id: "general.update-other-machines",
+    label: "Update other machines",
+    keywords: ["update", "upgrade", "version", "machines", "computers", "remote", "update all", "restart"],
+    tab: "general",
+    anchor: "update-other-machines",
+    scope: "machine",
+    // A browser cannot ask a machine to update itself.
+    web: "hidden",
+    group: "Updates",
+  },
+  {
     id: "general.keep-awake",
     label: "Keep this computer awake",
     keywords: ["sleep", "awake", "lid", "idle", "power", "battery", "caffeinate", "pmset"],

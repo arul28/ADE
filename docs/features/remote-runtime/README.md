@@ -1739,6 +1739,41 @@ the machine against it: once the machine reports that version the row says
 "Still on Y — the update to X didn't apply" with the version it is actually on.
 The button stays busy until then.
 
+Nothing restarts without a yes. Before the call, the desktop asks the machine
+what the update would stop (`ade.remoteRuntime.getUpdateImpact`, which calls the
+projectless `runtime.updateImpact`) and shows it in the confirmation: the chats
+mid-turn by name, plus counts of the CLI sessions and terminals that are open (a restart closes each one, quiet or not).
+`runtime.updateImpact` is `cto`-gated, reads only projects the brain has already
+booted (it never boots one to answer), and includes personal chats. A machine
+that needs the update is usually too old to have the method, so the desktop
+falls back to `runtime.activitySummary` and says only "Work is running" or
+"Nothing is running". One 3-second deadline covers both asks; a machine that
+has not answered by then (or is no longer saved) reads "Couldn't check what's
+running", never as idle. The IPC never rejects. When two or more connected
+machines are behind, the Connected header offers **Update all N**: one
+confirmation with a block per machine, then the same per-machine update in
+parallel.
+
+The same action is offered where this computer's own update lives: **Update
+other machines** (`components/settings/OtherMachinesUpdateSection.tsx`) sits
+under Updates in Settings > General and under Your computers on the Account
+page. It lists each connected machine with its version, "Update & restart" for
+the ones behind, and "Update all N". Every place that starts or shows one of
+these updates, the install dialog below included, goes through one store
+(`components/remoteTargets/machineUpdates.ts`), so an update started in one
+shows as in flight in the others and its outcome survives leaving the page.
+The words for what is running live in
+`components/remoteTargets/MachineUpdateImpact.tsx`. The
+browser client cannot ask a machine to update, so the section is not rendered
+there.
+
+The same blocks appear in this computer's own install dialog
+(`components/app/autoUpdateInstallAction.tsx`) for connected machines older
+than the version being installed, with an "Update … too" checkbox that is on by
+default (the confirm dialog takes several checkboxes, each answered by key). Those machines update first and this computer installs last, because
+its relaunch ends the run. If one refuses, the dialog names it and asks whether
+to install here anyway.
+
 ### Account state and reachability
 
 Relay gating asks "is this machine still theirs", not "can I call the API".

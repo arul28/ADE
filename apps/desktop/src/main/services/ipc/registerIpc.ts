@@ -11,6 +11,7 @@ import {
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import { UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import type { BuiltInBrowserEventPayload } from "../../../shared/types";
 import type { ProjectTabDragService } from "../projects/projectTabDragService";
 import { PROJECT_ICON_DIALOG_EXTENSIONS } from "../../../shared/projectIcons";
@@ -13811,12 +13812,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.updateGetInstallImpact, async (): Promise<UpdateInstallImpact> => {
     const provider = getCtx().updateInstallImpactProvider;
-    if (!provider) return { connectedPhones: [], interruptedChats: [] };
+    if (!provider) return { ...UNKNOWN_UPDATE_IMPACT, connectedPhones: [] };
     try {
       return await provider();
     } catch {
       // Best-effort probe: a failed impact query must never block the update UI.
-      return { connectedPhones: [], interruptedChats: [] };
+      return { ...UNKNOWN_UPDATE_IMPACT, connectedPhones: [] };
     }
   });
 

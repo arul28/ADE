@@ -82,6 +82,42 @@
   cursor: pointer;
   user-select: none;
 }
+.ade-dialog-checkbox + .ade-dialog-checkbox {
+  margin-top: 8px;
+}
+/* What a decision affects, inside a confirm's body: one block per subject (a
+   machine), each a quiet label, a headline, a list and a note. */
+.ade-dialog-impact {
+  display: grid;
+  gap: 12px;
+  margin-top: 2px;
+}
+.ade-dialog-impact-block + .ade-dialog-impact-block {
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+.ade-dialog-impact-label {
+  margin-bottom: 2px;
+  font-size: 11.5px;
+  color: var(--color-muted-fg);
+}
+.ade-dialog-impact-headline {
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.ade-dialog-impact-list {
+  display: grid;
+  gap: 3px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.ade-dialog-impact-list li {
+  overflow-wrap: anywhere;
+}
+.ade-dialog-impact-note {
+  margin-top: 6px;
+  color: var(--color-muted-fg);
+}
 /* A checkbox in the footer, beside the actions (`footerStart`). */
 .ade-dialog-checkbox.ade-dialog-checkbox--footer {
   margin-top: 0;
