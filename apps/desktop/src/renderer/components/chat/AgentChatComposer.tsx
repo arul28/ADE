@@ -5974,7 +5974,9 @@ export function AgentChatComposer({
   }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
-  const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
+  // A running turn already has its model, and the picker is locked mid-turn:
+  // steering it must not wait on a model the composer has not loaded yet.
+  const singleModelReady = (Boolean(modelId) || turnActive) && !singleModelBlockedMessage;
 
   const hasIosElementContext = iosElementContextItems.length > 0;
   const hasAppControlContext = appControlContextItems.length > 0;
@@ -6285,7 +6287,7 @@ export function AgentChatComposer({
       if (cloudSendBlock) return cloudSendBlock.reason;
       return `Send to ${cloudTargetLabel}`;
     }
-    if (!modelId) return singleModelBlockedMessage ?? "Select a model first";
+    if (!modelId && !turnActive) return singleModelBlockedMessage ?? "Select a model first";
     if (singleModelBlockedMessage) return singleModelBlockedMessage;
     if (!draft.trim().length && allowAttachmentOnlySubmit && attachments.length > 0) return "Send attached files";
     if (!draft.trim().length && contextAttachmentCount > 0) return "Send attached issue context";

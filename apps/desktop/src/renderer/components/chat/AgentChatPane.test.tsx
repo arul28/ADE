@@ -3987,7 +3987,9 @@ describe("AgentChatPane submit recovery", () => {
     // own retry brings the model back once the brain answers.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      const session = buildSession("session-1", { status: "idle", title: "Finished chat" });
+      // Its own id: the pane remembers summaries across mounts, and a chat it
+      // has read before would show its model from the start.
+      const session = buildSession("session-summary-recovery", { status: "idle", title: "Finished chat" });
       installAdeMocks({ sessions: [session] });
       let brainUp = false;
       const getSummary = vi.mocked(window.ade.agentChat.getSummary);

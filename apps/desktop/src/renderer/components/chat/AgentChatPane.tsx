@@ -2231,6 +2231,23 @@ const LOCKED_SUMMARY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_0
  */
 const LOCKED_SUMMARY_MISSING_CONFIRM_MS = 60_000;
 
+/**
+ * Last summary read for each locked chat, kept across pane mounts. The summary
+ * is the composer's only source of the chat's model, and a fresh mount (a chat
+ * switch, a Focus grid page) starts empty; on a busy brain the first read can
+ * fail for a while, which left a running chat on "Select model".
+ */
+const lastLockedSessionSummaryById = new Map<string, AgentChatSessionSummary>();
+const LAST_LOCKED_SESSION_SUMMARY_LIMIT = 200;
+function rememberLockedSessionSummary(summary: AgentChatSessionSummary): void {
+  lastLockedSessionSummaryById.delete(summary.sessionId);
+  lastLockedSessionSummaryById.set(summary.sessionId, summary);
+  if (lastLockedSessionSummaryById.size > LAST_LOCKED_SESSION_SUMMARY_LIMIT) {
+    const oldest = lastLockedSessionSummaryById.keys().next().value;
+    if (oldest != null) lastLockedSessionSummaryById.delete(oldest);
+  }
+}
+
 /** Last-used model, then the app-wide default, then whatever is listed first. */
 function pickFallbackChatModelId(selectableModelIds: readonly string[]): string {
   const preferred = readLastUsedModelId();
@@ -7456,10 +7473,18 @@ export function AgentChatPane({
     // "Select model", because nothing else would ask. A "not found" is
     // believed once it has lasted the confirm window, so a deleted chat clears.
     const keepHeld = summary == null && scheduleLockedSummaryRetry(readFailed ? "failed" : "missing");
-    if (summary) resetLockedSummaryRetry();
+    if (summary) {
+      resetLockedSummaryRetry();
+      rememberLockedSessionSummary(summary);
+    } else if (!keepHeld) {
+      lastLockedSessionSummaryById.delete(lockSessionId);
+    }
+    const remembered = keepHeld ? lastLockedSessionSummaryById.get(lockSessionId) ?? null : null;
     setSessions((prev) => {
       if (summary) return [summary];
-      return keepHeld && prev[0]?.sessionId === lockSessionId ? prev : [];
+      if (!keepHeld) return [];
+      if (prev[0]?.sessionId === lockSessionId) return prev;
+      return remembered ? [remembered] : [];
     });
     if (keepHeld) {
       // The held summary still describes the turn; an empty read must not
@@ -8174,7 +8199,16 @@ export function AgentChatPane({
   }, [lockSessionId, setSelectedSessionId]);
 
   useLayoutEffect(() => {
-    if (!lockedSingleSessionMode || !lockSessionId || initialSessionSummary?.sessionId !== lockSessionId) return;
+    if (!lockedSingleSessionMode || !lockSessionId) return;
+    if (initialSessionSummary?.sessionId !== lockSessionId) {
+      // No summary handed in: show the one this chat had last time it was
+      // open until the fresh read lands, so its model is known meanwhile.
+      const remembered = lastLockedSessionSummaryById.get(lockSessionId);
+      if (remembered) {
+        setSessions((prev) => (prev[0]?.sessionId === lockSessionId ? prev : [remembered]));
+      }
+      return;
+    }
     setSessions([initialSessionSummary]);
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
@@ -13337,7 +13371,11 @@ export function AgentChatPane({
       setError(constrainedModelSelectionError);
       return;
     }
-    if (!modelId) {
+    // A message into a running turn is a steer, which the session's own model
+    // handles; the picker is locked mid-turn, so requiring a pick here would
+    // leave no way to steer while the chat's summary is still loading.
+    const steeringActiveTurn = Boolean(selectedSessionId && turnActiveBySession[selectedSessionId]);
+    if (!modelId && !steeringActiveTurn) {
       setError("Select a model first");
       return;
     }
