@@ -5158,7 +5158,14 @@ function flushQueuedTranscriptWrite(
   return flush;
 }
 
-async function flushAllQueuedTranscriptWrites(): Promise<void> {
+/**
+ * Await every queued and in-flight transcript append. This is the real
+ * completion signal for transcript persistence: it clears the debounce timers
+ * that `queueTranscriptWrite` set and waits for the underlying `fs.appendFile`
+ * calls. Used by `disposeAll` at shutdown, and by tests that must know a
+ * transcript line reached disk before a restart reads it.
+ */
+export async function flushAllQueuedTranscriptWrites(): Promise<void> {
   const queued = [...pendingTranscriptWrites.keys()]
     .map((filePath) => flushQueuedTranscriptWrite(filePath));
   await Promise.all([...transcriptWriteFlushInFlight.values(), ...queued]);
