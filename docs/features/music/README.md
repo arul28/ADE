@@ -111,7 +111,9 @@ Main process: musicService
 - **Resume second.** A restored queue is loaded with `play:false`; MusicKit
   drops a seek made before the song has loaded, so `player.js` keeps the
   second as `pendingSeek`, reports it as the current time, and seeks right
-  after the next play.
+  after the next play. A seek before that play moves `pendingSeek` instead.
+  Opening the tab while connected (`warm()`) restores the queue paused, so
+  the card shows the song at its second before anything plays.
 
 ## Tokens and secrets
 
