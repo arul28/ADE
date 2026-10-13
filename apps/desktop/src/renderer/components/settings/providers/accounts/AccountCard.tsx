@@ -17,6 +17,7 @@ import {
   type ProviderInstance,
 } from "../../../../../shared/types/providerInstances";
 import { accountIdentityLine } from "./accountPresentation";
+import type { ClaudePromptCacheTtl } from "../../../../../shared/claudePromptCache";
 
 export type RowMenuAction = "rename" | "signIn" | "remove";
 
@@ -40,6 +41,7 @@ export function AccountCard({
   replacedNote,
   compactionControl,
   onSetPromptCache,
+  onSetMainPromptCache,
   renaming,
   onCommitRename,
   onCancelRename,
@@ -61,6 +63,8 @@ export function AccountCard({
   compactionControl?: React.ReactNode;
   /** Claude only: sets this account's subagent prompt cache; null is the Claude default. */
   onSetPromptCache?: (instance: ProviderInstance, value: "1h" | null) => void;
+  /** Claude only: sets this account's main-conversation prompt cache; null lets Claude decide. */
+  onSetMainPromptCache?: (instance: ProviderInstance, value: ClaudePromptCacheTtl | null) => void;
   renaming: boolean;
   onCommitRename: (instance: ProviderInstance, label: string) => void;
   onCancelRename: () => void;
@@ -70,7 +74,7 @@ export function AccountCard({
   const [focusWithin, setFocusWithin] = useState(false);
   const [draftLabel, setDraftLabel] = useState(instance.label);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [menuView, setMenuView] = useState<"main" | "compaction" | "cache">("main");
+  const [menuView, setMenuView] = useState<"main" | "compaction" | "cache" | "mainCache">("main");
   const closeMenu = useCallback(() => {
     setMenuOpen(false);
     setMenuView("main");
@@ -121,7 +125,7 @@ export function AccountCard({
     color: COLORS.textMuted,
   };
   /** A main-menu row that opens one page of the menu and shows that page's current value. */
-  const subviewRow = (view: "compaction" | "cache", text: string, value: string) => (
+  const subviewRow = (view: "compaction" | "cache" | "mainCache", text: string, value: string) => (
     <button
       type="button"
       role="menuitem"
@@ -146,8 +150,7 @@ export function AccountCard({
       {text}
     </button>
   );
-  const cacheChoice = (value: "1h" | null, text: string, note: string) => {
-    const checked = longPromptCache === (value === "1h");
+  const radioChoice = (checked: boolean, onPick: () => void, text: string, note: string) => {
     return (
       <button
         type="button"
@@ -155,7 +158,7 @@ export function AccountCard({
         aria-checked={checked}
         onClick={() => {
           closeMenu();
-          if (!checked) onSetPromptCache?.(instance, value);
+          if (!checked) onPick();
         }}
         style={{ ...menuItemStyle(), display: "flex", alignItems: "flex-start", gap: 8 }}
       >
@@ -167,6 +170,11 @@ export function AccountCard({
       </button>
     );
   };
+  const cacheChoice = (value: "1h" | null, text: string, note: string) =>
+    radioChoice(longPromptCache === (value === "1h"), () => onSetPromptCache?.(instance, value), text, note);
+  const mainPromptCache = instance.mainPromptCacheTtl ?? null;
+  const mainCacheChoice = (value: ClaudePromptCacheTtl | null, text: string, note: string) =>
+    radioChoice(mainPromptCache === value, () => onSetMainPromptCache?.(instance, value), text, note);
 
   return (
     <div
@@ -304,7 +312,7 @@ export function AccountCard({
             remeasureKey={`${menuView}:${instance.compaction ? "custom" : "default"}`}
             style={{
               minWidth: 170,
-              width: menuView === "main" ? undefined : menuView === "cache" ? 264 : 340,
+              width: menuView === "main" ? undefined : menuView === "compaction" ? 340 : 264,
               padding: "4px 0",
               background: COLORS.cardBgSolid,
               border: `1px solid ${COLORS.outlineBorder}`,
@@ -316,8 +324,9 @@ export function AccountCard({
               <>
                 {item("rename", "Rename")}
                 {item("signIn", signedOut ? "Sign in" : "Sign in again")}
-                {compactionControl || onSetPromptCache ? <div style={menuRuleStyle} /> : null}
+                {compactionControl || onSetPromptCache || onSetMainPromptCache ? <div style={menuRuleStyle} /> : null}
                 {compactionControl ? subviewRow("compaction", "Auto-compact", instance.compaction ? "Custom" : "Default") : null}
+                {onSetMainPromptCache ? subviewRow("mainCache", "Main chat cache", mainPromptCache === "1h" ? "1 hour" : mainPromptCache === "5m" ? "5 minutes" : "Automatic") : null}
                 {onSetPromptCache ? subviewRow("cache", "Subagent cache", longPromptCache ? "1 hour" : "5 minutes") : null}
                 {/* The store refuses both: the default, and the machine's own login. */}
                 {instance.isDefault || isBaseProviderInstance(instance) ? null : (
@@ -331,6 +340,15 @@ export function AccountCard({
               <>
                 {subviewHead("Auto-compact")}
                 <div style={{ padding: "2px 8px 6px" }}>{compactionControl}</div>
+              </>
+            ) : menuView === "mainCache" ? (
+              <>
+                {subviewHead("Main chat cache")}
+                <p style={menuNoteStyle}>How long Claude keeps a chat's context ready between your messages.</p>
+                {mainCacheChoice(null, "Automatic", "Default — 1 hour on a subscription, 5 minutes on an API key or extra usage.")}
+                {mainCacheChoice("5m", "5 minutes", "Each save costs less. A pause over 5 minutes re-sends the whole chat.")}
+                {mainCacheChoice("1h", "1 hour", "Each save costs more. The chat stays ready through breaks up to an hour.")}
+                <p style={{ ...menuNoteStyle, color: COLORS.textDim }}>Applies to new sessions.</p>
               </>
             ) : (
               <>

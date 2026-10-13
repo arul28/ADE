@@ -66,7 +66,7 @@ export function CompactionSettings({ provider, value, account = false, onChange 
         <ModernRow title={provider === "opencode" ? "Compaction buffer" : "Reserve tokens"} control={control("reserveTokens", "Reserve tokens")} />
         <ModernRow title="Keep recent tokens" control={control("keepRecentTokens", "Keep recent tokens")} />
       </>}
-      {provider === "claude" ? <ModernRow title="After an hour idle" control={<select aria-label="After an hour idle" disabled={saving} value={settings.idleMode ?? "ask"}
+      {provider === "claude" ? <ModernRow title="After the cache expires" hint="An hour idle, or 5 minutes on an API key or extra usage." control={<select aria-label="After the cache expires" disabled={saving} value={settings.idleMode ?? "ask"}
         className={FIELD_CLASS}
         onChange={(event) => void save({ ...settings, idleMode: event.target.value as "ask" | "always" | "never" })}>
         <option value="ask">Ask (pill)</option><option value="always">Always compact first</option><option value="never">Never</option>

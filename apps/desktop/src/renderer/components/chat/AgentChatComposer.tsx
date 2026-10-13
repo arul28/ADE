@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { formatContextTokens } from "./usage/contextUsageModel";
 import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { linearIssueRef } from "../../../shared/issueRefs";
-import type { CompactFirstOffer } from "../../../shared/compactFirst";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
@@ -1957,9 +1955,6 @@ export function AgentChatComposer({
   cursorCloudServiceTier = null,
   usageViewModel = null,
   compactionPulse = false,
-  compactFirstOffer = null,
-  compactFirstEnabled = false,
-  onCompactFirstChange,
   onCompactContext,
   compactSessionProvider,
   draft,
@@ -2154,9 +2149,6 @@ export function AgentChatComposer({
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
-  compactFirstOffer?: CompactFirstOffer | null;
-  compactFirstEnabled?: boolean;
-  onCompactFirstChange?: (value: boolean) => void;
   /** Sends `/compact` without replacing the unsent draft. Claude/Codex/Pi only. */
   onCompactContext?: () => void;
   /**
@@ -7199,11 +7191,6 @@ export function AgentChatComposer({
             );
           })() : null}
 
-          {!parallelChatMode && compactFirstOffer ? <SmartTooltip forceEnabled side="top" content={{ label: "Compact first", description: `The cache expired after an hour. Compacting first re-sends about ${formatContextTokens(compactFirstOffer.estimatedPostTokens)} tokens instead of ${formatContextTokens(compactFirstOffer.contextTokens)}.` }}>
-            <button type="button" aria-pressed={compactFirstEnabled} onClick={() => onCompactFirstChange?.(!compactFirstEnabled)} className={cn("rounded-full px-2 py-1 text-[10px] transition-colors", compactFirstEnabled ? "bg-accent/10 text-accent" : "bg-fg/5 text-fg/50 hover:bg-fg/10")}>
-              Compact first · {formatContextTokens(compactFirstOffer.contextTokens)}
-            </button>
-          </SmartTooltip> : null}
           {!parallelChatMode && usageViewModel ? (
             <ContextUsageDial
               usage={usageViewModel}

@@ -4,6 +4,7 @@ import { WorkHeaderOpenFullViewButton, WorkHeaderToolsToggle } from "./WorkHeade
 import { WorkHeaderDevServerButton } from "./WorkHeaderDevServerButton";
 import { LaneBranchDriftChip } from "../lanes/LaneBranchDrift";
 import { LaneChip } from "../terminals/LaneChip";
+import type { ClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { useFloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { cn } from "../ui/cn";
@@ -121,10 +122,12 @@ export type WorkSurfaceHeaderProps = {
   /**
    * When true, renders the Claude cache TTL badge. Caller decides whether
    * the gate applies (e.g. via `shouldShowClaudeCacheTtl`). The badge is
-   * surface-agnostic — it reads `idleSinceAt` and counts down.
+   * surface-agnostic — it reads `idleSinceAt` and `cacheTtl` and counts down.
    */
   showCacheBadge?: boolean;
   cacheIdleSinceAt?: string | null;
+  /** The lifetime the chat's cache was last written with; the badge needs it. */
+  cacheTtl?: ClaudePromptCacheTtl | null;
   /** Session id whose metadata-generation state controls the title shimmer. */
   lifecycleSessionId?: string | null;
   /** When true and laneId is set, renders the ChatGitToolbar. */
@@ -240,6 +243,7 @@ export function WorkSurfaceHeader(props: WorkSurfaceHeaderProps) {
     onLaneChipClick,
     showCacheBadge = false,
     cacheIdleSinceAt,
+    cacheTtl,
     runtimePin = null,
     trailingActions,
     actionsToggle,
@@ -269,7 +273,7 @@ export function WorkSurfaceHeader(props: WorkSurfaceHeaderProps) {
           ) : null}
           {laneId ? <LaneBranchDriftChip laneId={laneId} /> : null}
           {showCacheBadge ? (
-            <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
+            <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} cacheTtl={cacheTtl} />
           ) : null}
         </div>
         <div className="relative z-10 ml-auto flex shrink-0 items-center gap-2">
@@ -298,6 +302,7 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
     titleAccessory,
     showCacheBadge = false,
     cacheIdleSinceAt,
+    cacheTtl,
     runtimePin = null,
     trailingActions,
     actionsToggle,
@@ -357,7 +362,7 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
         </div>
         <div ref={clusterRef} className="relative z-10 ml-auto flex shrink-0 items-center gap-2">
           {showCacheBadge ? (
-            <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
+            <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} cacheTtl={cacheTtl} />
           ) : null}
           {trailingActions}
           {gitToolbar || actionsToggle || toolButtons ? (

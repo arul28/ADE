@@ -2209,6 +2209,15 @@ file, so they have exactly one identity per machine.
   `claude` sessions on that account. It adds nothing when the environment
   already states a TTL, and a launch on a preset or a stored credential never
   gets it, because that endpoint bills separately.
+- **Main chat prompt cache (Claude).** The same menu has a **Main chat cache**
+  page: Automatic (the default, Claude Code decides: 1 hour on a subscription
+  within its limits, 5 minutes otherwise), 5 minutes, or 1 hour. A choice is
+  stored as `mainPromptCacheTtl` on the account record and travels the same
+  path as `CLAUDE_CODE_PROMPT_CACHE_TTL`; Automatic stores nothing. The chat's
+  cache countdown and the Compact first offer do not read this setting. They
+  read the lifetime Claude really wrote
+  ([composer and UI](../chat/composer-and-ui.md)), so they follow it on the next
+  turn.
 - **AI settings save to `.ade/local.yaml`.** `ai.updateConfig` (IPC, the `ai`
   action domain, and the brain's remote command) merges its partial config into
   the local layer through `projectConfigService.updateAiConfig`. The shared

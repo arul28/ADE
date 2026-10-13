@@ -1115,6 +1115,10 @@ struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
 
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var compactionIdleMode: String? = nil
+  /// Claude only: "5m" or "1h", the lifetime the chat's last cache-writing turn used.
+  var promptCacheTtl: String? = nil
+  /// Sent only by a brain started with a lowered Compact first limit (testing).
+  var compactFirstMinTokens: Int? = nil
   var manualCompactAvailable: Bool? = nil
   var id: String { sessionId }
   /// Built on the phone from a roster row (`RemoteRosterChat.rosterChatSummary`)
@@ -1256,6 +1260,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
     lhs.sessionId == rhs.sessionId
       && lhs.compactionIdleMode == rhs.compactionIdleMode
+      && lhs.promptCacheTtl == rhs.promptCacheTtl
+      && lhs.compactFirstMinTokens == rhs.compactFirstMinTokens
       && lhs.manualCompactAvailable == rhs.manualCompactAvailable
       && lhs.laneId == rhs.laneId
       && lhs.provider == rhs.provider

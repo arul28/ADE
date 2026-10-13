@@ -1,4 +1,5 @@
-import { compactFirstOffer } from "../../../shared/compactFirst";
+import { compactFirstMinTokensFromEnv, compactFirstOffer } from "../../../shared/compactFirst";
+import { claudePromptCacheTtlOfWrites, isClaudePromptCacheTtl, type ClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
@@ -2062,6 +2063,7 @@ type PersistedChatState = {
   requestedCwd?: string | null;
   attachmentRoots?: string[];
   idleSinceAt?: string | null;
+  promptCacheTtl?: ClaudePromptCacheTtl;
   /** Non-interactive runtime mode (e.g. "print" for one-shot CLI output). Drives initialize handshake opt-outs. */
   runtimeMode?: AgentChatRuntimeMode;
   /** Recent terminal Codex turn ids, used to suppress late replayed lifecycle events. */
@@ -17700,6 +17702,7 @@ export function createAgentChatService(args: {
         : {}),
       ...attachmentRootsField(managed.session.attachmentRoots),
       ...(managed.session.idleSinceAt !== undefined ? { idleSinceAt: managed.session.idleSinceAt ?? null } : {}),
+      ...(managed.session.promptCacheTtl ? { promptCacheTtl: managed.session.promptCacheTtl } : {}),
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
         : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
@@ -18282,6 +18285,7 @@ export function createAgentChatService(args: {
           : record.idleSinceAt === null
             ? { idleSinceAt: null }
             : {}),
+        ...(isClaudePromptCacheTtl(record.promptCacheTtl) ? { promptCacheTtl: record.promptCacheTtl } : {}),
         ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
         ...(answeredPlanApprovalItemIds?.length ? { answeredPlanApprovalItemIds } : {}),
         ...(record.codexAutomaticRecoveryAttempted === true
@@ -20656,6 +20660,7 @@ export function createAgentChatService(args: {
 
   const openNativeCompactions = new Map<string, Map<string, Extract<AgentChatEvent, { type: "context_compact" }>>>();
   const compactOnlyTurns = new Set<string>();
+  const compactFirstMinTokens = compactFirstMinTokensFromEnv(process.env);
 
   const emitChatEvent = (
     managed: ManagedChatSession,
@@ -20716,6 +20721,11 @@ export function createAgentChatService(args: {
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") settleClaudeGoalOnTurnEnd(managed, event.status);
+    if (event.type === "done" && managed.session.provider === "claude") {
+      // A turn that wrote no cache keeps the last lifetime seen: the entry it read is still on that timer.
+      const writtenTtl = claudePromptCacheTtlOfWrites(event.usage?.cacheCreationTokens, event.usage?.cacheWrite1hTokens);
+      if (writtenTtl) managed.session.promptCacheTtl = writtenTtl;
+    }
     const normalizedEvent = (() => {
       switch (event.type) {
         case "text":
@@ -24839,6 +24849,7 @@ export function createAgentChatService(args: {
         ...(persisted?.importedFrom ? { importedFrom: persisted.importedFrom } : {}),
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
+        ...(persisted?.promptCacheTtl ? { promptCacheTtl: persisted.promptCacheTtl } : {}),
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
         ...(persisted?.continuityRecovery ? { continuityRecovery: persisted.continuityRecovery } : {}),
         ...(persisted?.recoveredFromSessionId ? { recoveredFromSessionId: persisted.recoveredFromSessionId } : {}),
@@ -52477,7 +52488,7 @@ export function createAgentChatService(args: {
       // Native resume_return owns its send; never combine it with ADE's pill.
       if (!collectPendingInputRequests(managed).length) {
         const history = (await getChatEventHistory(args.sessionId, { maxEvents: 512 })).events;
-        const offer = compactFirstOffer({ provider: "claude", events: history, mode: compactionSettingsFor(managed).idleMode ?? "ask" });
+        const offer = compactFirstOffer({ provider: "claude", events: history, cacheTtl: managed.session.promptCacheTtl, minTokens: compactFirstMinTokens, mode: compactionSettingsFor(managed).idleMode ?? "ask" });
         if (offer) {
           const before = managed.compactionEmitterState.sessionCompactionCount;
           const result = await runSessionTurn({ sessionId: args.sessionId, text: "/compact", timeoutMs: 90_000 });
@@ -56518,6 +56529,7 @@ export function createAgentChatService(args: {
       model,
       ...(provider === "opencode" ? { manualCompactAvailable: getSlashCommands({ sessionId: row.id, provider }).some((command) => command.name.replace(/^\//, "") === "compact") } : {}),
       ...(provider === "claude" ? { compactionIdleMode: compactionSettingsForSession({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }).idleMode ?? "ask" } : {}),
+      ...(provider === "claude" && compactFirstMinTokens != null ? { compactFirstMinTokens } : {}),
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
       ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
       ...(crossMachineMove ? { crossMachineHandoff: crossMachineMove } : {}),
@@ -56647,6 +56659,7 @@ export function createAgentChatService(args: {
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
         ? liveSession?.idleSinceAt ?? persisted?.idleSinceAt ?? null
         : null,
+      promptCacheTtl: liveSession?.promptCacheTtl ?? persisted?.promptCacheTtl ?? null,
       startedAt: row.startedAt,
       endedAt: row.endedAt,
       archivedAt: row.archivedAt ?? null,

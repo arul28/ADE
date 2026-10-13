@@ -2724,6 +2724,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
               createdAt: chat.startedAt,
               lastActivityAt: chat.lastActivityAt,
               idleSinceAt: chat.idleSinceAt,
+              promptCacheTtl: chat.promptCacheTtl,
             },
             laneName: lanes.find((lane) => lane.id === chat.laneId)?.name ?? chat.laneId,
           });

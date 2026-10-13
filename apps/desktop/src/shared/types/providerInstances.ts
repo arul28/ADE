@@ -1,3 +1,4 @@
+import type { ClaudePromptCacheTtl } from "../claudePromptCache";
 import type { ProviderCompactionSettings } from "../compactionSettings";
 /**
  * Provider accounts ("instances").
@@ -83,6 +84,12 @@ export type ProviderInstance = {
    * and Claude Code applies its own default (5 minutes).
    */
   subagentPromptCacheTtl?: "1h";
+  /**
+   * Claude only. The prompt cache lifetime the user chose for this account's
+   * main conversation. Absent means ADE states nothing and Claude Code decides:
+   * 1 hour on a subscription within its limits, 5 minutes otherwise.
+   */
+  mainPromptCacheTtl?: ClaudePromptCacheTtl;
 };
 
 export type ProviderInstanceReplacedAccount = {
@@ -200,16 +207,20 @@ export type ProviderInstanceSetSettingsArgs = {
 };
 
 /**
- * `compaction` and `subagentPromptCacheTtl` are account settings: they need an
- * `instanceId`, a missing key leaves the stored value alone, and null clears it.
+ * `compaction` and the two prompt cache lifetimes are account settings: they
+ * need an `instanceId`, a missing key leaves the stored value alone, and null
+ * clears it.
  */
 export type ProviderInstanceSettingsPatch = Omit<Partial<ProviderInstanceSettings>, "compaction"> & {
   compaction?: ProviderCompactionSettings | null;
   subagentPromptCacheTtl?: "1h" | null;
+  mainPromptCacheTtl?: ClaudePromptCacheTtl | null;
 };
 
 /** The env var Claude Code reads for the prompt cache TTL outside the main conversation. */
 export const CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
+/** The env var Claude Code reads for the prompt cache TTL of the main conversation. */
+export const CLAUDE_MAIN_PROMPT_CACHE_TTL_ENV = "CLAUDE_CODE_PROMPT_CACHE_TTL";
 
 export type ProviderInstanceLoginCommandArgs = {
   id: string;

@@ -1057,6 +1057,7 @@ import type {
   DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
 import { listWebhookAutomations } from "../automations/webhookAutomationFactory";
+import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
 let appResourceUsageCache: {
@@ -6959,6 +6960,9 @@ export function registerIpc({
     }
     if (instanceId && provider === "claude" && Object.hasOwn(settings, "subagentPromptCacheTtl")) {
       captureProviderAccount("subagent_cache_changed", settings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", provider);
+    }
+    if (instanceId && provider === "claude" && Object.hasOwn(settings, "mainPromptCacheTtl")) {
+      captureProviderAccount("main_cache_changed", isClaudePromptCacheTtl(settings.mainPromptCacheTtl) ? "enabled" : "disabled", provider);
     }
     return result;
   });

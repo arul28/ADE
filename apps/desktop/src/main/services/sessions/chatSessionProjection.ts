@@ -197,6 +197,7 @@ export function projectChatOntoSession(
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
+    ...(chat.promptCacheTtl ? { chatPromptCacheTtl: chat.promptCacheTtl } : {}),
     lastActivityAt: chat.lastActivityAt ?? session.lastActivityAt ?? null,
     ...(chat.cursorCloudAgentId ? { cursorCloudAgentId: chat.cursorCloudAgentId } : {}),
     ...(chat.cursorRuntime ? { cursorRuntime: chat.cursorRuntime } : {}),

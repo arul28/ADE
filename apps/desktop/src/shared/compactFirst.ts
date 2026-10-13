@@ -1,13 +1,44 @@
+import { CLAUDE_PROMPT_CACHE_TTL_MS, type ClaudePromptCacheTtl } from "./claudePromptCache";
 import type { AgentChatEventEnvelope } from "./types/chat";
 
-export const COMPACT_FIRST_IDLE_MS = 60 * 60_000;
-export type CompactFirstOffer = { contextTokens: number; estimatedPostTokens: number; eligibleAt: number };
+/** Idle time before the offer when the chat's cache lifetime is not known. */
+export const COMPACT_FIRST_IDLE_MS = CLAUDE_PROMPT_CACHE_TTL_MS["1h"];
+/** How long the chat must sit idle before its prompt cache is gone. */
+export function compactFirstIdleMs(cacheTtl: ClaudePromptCacheTtl | null | undefined): number {
+  return cacheTtl ? CLAUDE_PROMPT_CACHE_TTL_MS[cacheTtl] : COMPACT_FIRST_IDLE_MS;
+}
+/**
+ * A compacted chat never gets smaller than its fixed part (system prompt,
+ * tools, the summary's frame): two measured Claude compactions of 67k and 81k
+ * both ended near 5.5k, where 2% alone would promise 1.5k.
+ */
+const COMPACTED_FLOOR_TOKENS = 5_000;
+/** Size after compaction when the chat has none to go by: 2% of the context, never under the floor. */
+export function estimateCompactedTokens(contextTokens: number): number {
+  return Math.max(COMPACTED_FLOOR_TOKENS, Math.round(contextTokens * 0.02));
+}
+/** Smallest measured context the offer is worth showing for. */
+export const COMPACT_FIRST_MIN_TOKENS = 100_000;
+/**
+ * `ADE_COMPACT_FIRST_MIN_TOKENS` lowers that limit for a brain, so the offer
+ * can be tried on a small chat. The brain sends it on the session summary;
+ * nothing else reads the environment.
+ */
+export function compactFirstMinTokensFromEnv(env: Record<string, string | undefined>): number | null {
+  const parsed = Number(env.ADE_COMPACT_FIRST_MIN_TOKENS);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+export type CompactFirstOffer = { contextTokens: number; estimatedPostTokens: number; eligibleAt: number; idleMs: number };
 
 /** Only measured occupancy is eligible; cumulative turn totals are never used. */
-export function compactFirstOffer({ provider, events, contextTokens, mode = "ask", now = Date.now() }: {
+export function compactFirstOffer({ provider, events, contextTokens, cacheTtl, minTokens, mode = "ask", now = Date.now() }: {
   provider: string;
   events: readonly AgentChatEventEnvelope[];
   contextTokens?: number | null;
+  /** The lifetime the chat's cache was last written with (`AgentChatSession.promptCacheTtl`). */
+  cacheTtl?: ClaudePromptCacheTtl | null;
+  /** Overrides `COMPACT_FIRST_MIN_TOKENS` (`AgentChatSessionSummary.compactFirstMinTokens`). */
+  minTokens?: number | null;
   mode?: "ask" | "always" | "never";
   now?: number;
 }): CompactFirstOffer | null {
@@ -27,8 +58,9 @@ export function compactFirstOffer({ provider, events, contextTokens, mode = "ask
       if (contextTokens == null) measured = lastPost;
     }
   }
-  if (measured == null || !Number.isFinite(measured) || measured < 100_000 || endedAt == null || !Number.isFinite(endedAt)) return null;
-  const eligibleAt = endedAt + COMPACT_FIRST_IDLE_MS;
+  if (measured == null || !Number.isFinite(measured) || measured < (minTokens ?? COMPACT_FIRST_MIN_TOKENS) || endedAt == null || !Number.isFinite(endedAt)) return null;
+  const idleMs = compactFirstIdleMs(cacheTtl);
+  const eligibleAt = endedAt + idleMs;
   if (now < eligibleAt) return null;
-  return { contextTokens: measured, estimatedPostTokens: lastPost ?? Math.round(measured * 0.02), eligibleAt };
+  return { contextTokens: measured, estimatedPostTokens: lastPost ?? estimateCompactedTokens(measured), eligibleAt, idleMs };
 }

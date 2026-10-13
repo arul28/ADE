@@ -12,7 +12,7 @@ import {
   useStateSkippingSameValue,
 } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
-import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowsInLineVertical, CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import type { ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
@@ -181,7 +181,7 @@ import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecycl
 import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
-import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
+import { formatContextTokens, latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
@@ -5095,7 +5095,7 @@ export function AgentChatPane({
     : EMPTY_CHAT_EVENTS;
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
-  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId);
+  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCacheTtl);
   const latestCompactionKey = useMemo(() => latestCompactionKeyOf(selectedEvents), [selectedEvents]);
 
   const selectedSyncPending = renderedSessionId ? syncPendingBySession[renderedSessionId] === true : false;
@@ -7119,6 +7119,7 @@ export function AgentChatPane({
     provider: selectedSession?.provider ?? null,
     status: selectedSession?.status ?? null,
     idleSinceAt: selectedSession?.idleSinceAt,
+    cacheTtl: selectedSession?.promptCacheTtl,
     awaitingInput: selectedSessionAwaitingInput,
   });
 
@@ -15683,6 +15684,7 @@ export function AgentChatPane({
         </>}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
+        cacheTtl={selectedSession?.promptCacheTtl ?? null}
         lifecycleSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
@@ -15927,11 +15929,37 @@ export function AgentChatPane({
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
   // it only runs once a chat has sat an hour, when no deltas stream.
   const idleCompactOffer = compactionIdleMode != null && compactFirst.idleWindowOpen && !turnActive && !pendingInput && measuredContextTokens != null
-    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, mode: compactionIdleMode, now: compactFirst.now })
+    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, cacheTtl: selectedSession?.promptCacheTtl, minTokens: selectedSession?.compactFirstMinTokens, mode: compactionIdleMode, now: compactFirst.now })
     : null;
-  const compactFirstEnabled = compactFirst.choice?.sessionId === selectedSessionId
-    ? compactFirst.choice.value : selectedSession?.compactionIdleMode === "always";
+  const compactFirstChoice = compactFirst.choice?.sessionId === selectedSessionId ? compactFirst.choice : null;
+  const compactFirstEnabled = compactFirstChoice ? compactFirstChoice.value : selectedSession?.compactionIdleMode === "always";
   compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
+  const compactFirstChip = idleCompactOffer && selectedSessionId && !compactFirstChoice?.dismissed && !parallelChatMode
+    ? (() => {
+        const full = formatContextTokens(idleCompactOffer.contextTokens);
+        const compacted = formatContextTokens(idleCompactOffer.estimatedPostTokens);
+        const idle = idleCompactOffer.idleMs < 3_600_000 ? "5 minutes" : "an hour";
+        return (
+          <StatusChip
+            tone={compactFirstEnabled ? "accent" : "warning"}
+            icon={<ArrowsInLineVertical size={10} weight="bold" />}
+            label={compactFirstEnabled ? "Compacts on next send" : "Cache expired"}
+            detail={full}
+            tooltip={compactFirstEnabled
+              ? `Your next message compacts this chat first — about ${compacted} tokens instead of ${full}.`
+              : `The cache expired after ${idle} — your next message re-sends all ${full} tokens. Compact first to send about ${compacted}.`}
+            actions={[{
+              label: compactFirstEnabled ? "Cancel" : "Compact first",
+              title: compactFirstEnabled ? "Send the full chat instead" : undefined,
+              onClick: () => compactFirst.setChoice({ sessionId: selectedSessionId, value: !compactFirstEnabled }),
+              testId: "chat-compact-first-toggle",
+            }]}
+            onDismiss={() => compactFirst.setChoice({ sessionId: selectedSessionId, value: false, dismissed: true })}
+            testId="chat-compact-first-chip"
+          />
+        );
+      })()
+    : null;
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
@@ -15978,9 +16006,6 @@ export function AgentChatPane({
             cursorCloudServiceTier={cursorCloudServiceTier}
             onCursorCloudServiceTierChange={handleCursorCloudServiceTierChange}
             usageViewModel={selectedUsageViewModel}
-            compactFirstOffer={idleCompactOffer}
-            compactFirstEnabled={compactFirstEnabled}
-            onCompactFirstChange={(value) => { if (selectedSessionId) compactFirst.setChoice({ sessionId: selectedSessionId, value }); }}
             compactionPulse={contextCompactionPulse}
             onCompactContext={compactContext}
             compactSessionProvider={selectedSession?.provider ?? null}
@@ -16421,6 +16446,7 @@ export function AgentChatPane({
       <StatusStrip className="min-w-0 flex-1">
         {lifecyclePill}
         <LaneBranchComposerChip laneId={laneId} />
+        {compactFirstChip}
         {sessionDelta ? (
           <StatusChip
             tone="neutral"

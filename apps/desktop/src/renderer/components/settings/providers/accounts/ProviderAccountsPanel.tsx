@@ -28,6 +28,7 @@ import { confirmDialog } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
 import { useUsageSnapshot } from "../../../usage/useUsageSnapshot";
 import { usePrefersReducedMotion } from "../../../../hooks/usePrefersReducedMotion";
+import type { ClaudePromptCacheTtl } from "../../../../../shared/claudePromptCache";
 import type { ProviderInstance, ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
 import { accountLimitRow, accountSignedOut, providerHasFiveHourWindow } from "./accountPresentation";
 import { AccountCard, type CardState, type RowMenuAction } from "./AccountCard";
@@ -250,6 +251,15 @@ export function ProviderAccountsPanel({
     [pin, provider, run],
   );
 
+  const setMainPromptCache = useCallback(
+    (instance: ProviderInstance, mainPromptCacheTtl: ClaudePromptCacheTtl | null) => {
+      const api = pinnedProviderInstances(pin);
+      if (!api) return;
+      void run(() => api.setSettings({ provider, instanceId: instance.id, settings: { mainPromptCacheTtl } }));
+    },
+    [pin, provider, run],
+  );
+
   const signedOutById = useMemo(() => {
     const out = new Map<string, boolean>();
     for (const instance of instances) out.set(instance.id, accountSignedOut(snapshot, provider, instance));
@@ -438,6 +448,7 @@ export function ProviderAccountsPanel({
                 instance={instance}
                 compactionControl={instances.length > 1 ? <CompactionSettings provider={provider} account value={instance.compaction} onChange={async (compaction) => { await window.ade.providerInstances.setSettings({ provider, instanceId: instance.id, settings: { compaction } }, pin); await reload(); }} /> : null}
                 onSetPromptCache={provider === "claude" ? setPromptCache : undefined}
+                onSetMainPromptCache={provider === "claude" ? setMainPromptCache : undefined}
                 limitRow={accountLimitRow(snapshot, provider, instance, nowMs)}
                 state={state}
                 badge={badge}

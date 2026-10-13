@@ -223,7 +223,7 @@ import { ChatTaskListCard } from "./ChatTaskListCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { ContextCompactDivider } from "./ContextCompactDivider";
-import { contextCompactMergeKey } from "../../../shared/contextCompaction";
+import { contextCompactMergeKey, isManualCompactCommand } from "../../../shared/contextCompaction";
 import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from "./chatEventDisplay";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
@@ -2669,6 +2669,23 @@ function renderEvent(
     );
   }
 
+  /* ── Compact command ──
+     `/compact` is an action, not something the user said: the compaction line
+     under it carries the result. A quiet chip keeps the record of who asked
+     without a full message bubble. */
+  if (event.type === "user_message" && isManualCompactCommand(event.text)) {
+    return (
+      <div className="flex w-full justify-end" data-chat-compact-command="">
+        <span
+          title={envelope.timestampSynthetic === true ? undefined : new Date(envelope.timestamp).toLocaleString()}
+          className="inline-flex max-w-[82%] items-center rounded-full border border-fg/[0.08] bg-fg/[0.03] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*11.5/14)] text-fg/55"
+        >
+          <span className="min-w-0 truncate">{event.text.trim()}</span>
+        </span>
+      </div>
+    );
+  }
+
   /* ── User message ── */
   if (event.type === "user_message") {
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
@@ -4765,6 +4782,8 @@ type EventRowProps = SpawnedChatProviderProps & {
   pacedTextReveal?: boolean;
   /** This reasoning row is the live turn's newest, still-streaming row. */
   liveThinking?: boolean;
+  /** A finished `/compact` turn: the compaction line stands in for the turn-end line. */
+  compactOnlyTurn?: boolean;
   /** `turn_fold` rows: whether the fold is open. */
   turnFoldOpen?: boolean;
   onToggleTurnFold?: (foldId: string) => void;
@@ -4839,6 +4858,7 @@ const EventRow = React.memo(function EventRow({
   onOpenProofDrawer,
   pacedTextReveal,
   liveThinking = false,
+  compactOnlyTurn = false,
   turnFoldOpen = false,
   onToggleTurnFold,
   turnWorkInFold = false,
@@ -4952,7 +4972,7 @@ const EventRow = React.memo(function EventRow({
             pacedTextReveal,
             liveThinking,
           })}
-      {envelope.event.type === "done" ? (
+      {envelope.event.type === "done" && !(compactOnlyTurn && envelope.event.status === "completed") ? (
         <DoneTurnDivider
           event={envelope.event}
           timestamp={envelope.timestamp}
@@ -6073,6 +6093,15 @@ function AgentChatMessageListMain({
     const ids = new Set<string>();
     for (const row of allGroupedRows) {
       if (row.event.type === "done" && row.event.turnId) ids.add(row.event.turnId);
+    }
+    return ids;
+  }, [allGroupedRows]);
+  // Turns that only ran `/compact`. The compaction line is their whole story,
+  // so they get no working indicator and no turn-end line of their own.
+  const compactOnlyTurnIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of allGroupedRows) {
+      if (row.event.type === "user_message" && row.event.turnId && isManualCompactCommand(row.event.text)) ids.add(row.event.turnId);
     }
     return ids;
   }, [allGroupedRows]);
@@ -8060,6 +8089,7 @@ function AgentChatMessageListMain({
           onStopSubagent={onStopSubagent}
           pacedTextReveal={envelope.key === pacedTextRowKey}
           liveThinking={envelope.key === liveThinkingDrawnKey}
+          compactOnlyTurn={envelope.event.type === "done" && envelope.event.turnId != null && compactOnlyTurnIds.has(envelope.event.turnId)}
           turnFoldOpen={turnFoldOpen}
           onToggleTurnFold={toggleTurnFold}
           turnWorkInFold={turnWorkInFold}
@@ -8135,12 +8165,13 @@ function AgentChatMessageListMain({
         onStopSubagent={onStopSubagent}
         pacedTextReveal={envelope.key === pacedTextRowKey}
         liveThinking={envelope.key === liveThinkingDrawnKey}
+        compactOnlyTurn={envelope.event.type === "done" && envelope.event.turnId != null && compactOnlyTurnIds.has(envelope.event.turnId)}
         turnFoldOpen={turnFoldOpen}
         onToggleTurnFold={toggleTurnFold}
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -8156,7 +8187,7 @@ function AgentChatMessageListMain({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
-  const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
+  const streamingIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId)) ? (
     <motion.div
       className="w-fit max-w-[var(--chat-content-width,52rem)] pt-3 pb-2"
       initial={{ opacity: 0 }}

@@ -21,6 +21,7 @@ import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ChatThreadComment } from "../threadComments";
+import type { ClaudePromptCacheTtl } from "../claudePromptCache";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
@@ -2921,6 +2922,8 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   /** Start of the currently active provider turn; live-only and cleared when idle. */
   currentTurnStartedAt?: string | null;
   idleSinceAt?: string | null;
+  /** Claude only. The lifetime the chat's last cache-writing turn used; absent until one is seen. */
+  promptCacheTtl?: ClaudePromptCacheTtl | null;
   archivedAt?: string | null;
   threadId?: string;
   continuityRecovery?: AgentChatContinuityRecovery;
@@ -2992,6 +2995,8 @@ export type AgentChatRuntimeOwnerRef = {
 
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   compactionIdleMode?: "ask" | "always" | "never";
+  /** Set only by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`: the lowered Compact first limit. */
+  compactFirstMinTokens?: number;
   manualCompactAvailable?: boolean;
   sessionId: string;
   laneId: string;
@@ -3100,6 +3105,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   /** Start of the currently active provider turn; null when no turn is running. */
   currentTurnStartedAt?: string | null;
   idleSinceAt?: string | null;
+  /** Claude only. The lifetime the chat's last cache-writing turn used; absent until one is seen. */
+  promptCacheTtl?: ClaudePromptCacheTtl | null;
   startedAt: string;
   endedAt: string | null;
   archivedAt?: string | null;

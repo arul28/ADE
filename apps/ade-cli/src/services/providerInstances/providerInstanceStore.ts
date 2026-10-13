@@ -1,3 +1,4 @@
+import { isClaudePromptCacheTtl, type ClaudePromptCacheTtl } from "../../../../desktop/src/shared/claudePromptCache";
 import { normalizeCompactionSettings, type ProviderCompactionSettings } from "../../../../desktop/src/shared/compactionSettings";
 import fs from "node:fs";
 import os from "node:os";
@@ -22,6 +23,7 @@ import { providerInstanceLaunchEnv } from "../../../../desktop/src/shared/cliLau
 import { resolveClaudeCodeExecutable } from "../../../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../../../desktop/src/main/services/ai/codexExecutable";
 import {
+  CLAUDE_MAIN_PROMPT_CACHE_TTL_ENV,
   CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV,
   DEFAULT_PROVIDER_INSTANCE_SETTINGS,
   PROVIDER_INSTANCE_PROVIDERS,
@@ -69,6 +71,7 @@ const DEFAULT_INSTANCE_CREATED_AT = new Date(0).toISOString();
 type StoredInstance = {
   compaction?: ProviderCompactionSettings;
   subagentPromptCacheTtl?: "1h";
+  mainPromptCacheTtl?: ClaudePromptCacheTtl;
   id: string;
   provider: ProviderInstanceProvider;
   label: string;
@@ -201,6 +204,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     ...(accentColor ? { accentColor } : {}),
     ...(isRecord(value.compaction) ? { compaction: normalizeCompactionSettings(value.compaction) } : {}),
     ...(provider === "claude" && value.subagentPromptCacheTtl === "1h" ? { subagentPromptCacheTtl: "1h" as const } : {}),
+    ...(provider === "claude" && isClaudePromptCacheTtl(value.mainPromptCacheTtl) ? { mainPromptCacheTtl: value.mainPromptCacheTtl } : {}),
     configHome,
     createdAt: createdAt ?? DEFAULT_INSTANCE_CREATED_AT,
     ...(account && (account.email || account.plan) ? { account } : {}),
@@ -371,6 +375,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       id: stored.id,
       ...(stored.compaction ? { compaction: stored.compaction } : {}),
       ...(stored.subagentPromptCacheTtl ? { subagentPromptCacheTtl: stored.subagentPromptCacheTtl } : {}),
+      ...(stored.mainPromptCacheTtl ? { mainPromptCacheTtl: stored.mainPromptCacheTtl } : {}),
       provider: stored.provider,
       label: stored.label,
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
@@ -640,6 +645,10 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
           if (resolved === "claude" && settings.subagentPromptCacheTtl === "1h") next.subagentPromptCacheTtl = "1h";
           else delete next.subagentPromptCacheTtl;
         }
+        if (Object.hasOwn(settings, "mainPromptCacheTtl")) {
+          if (resolved === "claude" && isClaudePromptCacheTtl(settings.mainPromptCacheTtl)) next.mainPromptCacheTtl = settings.mainPromptCacheTtl;
+          else delete next.mainPromptCacheTtl;
+        }
         return next;
       });
       return { ...getProviderSettings(resolved), compaction: updated.compaction };
@@ -647,6 +656,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     // An account setting with no account would be dropped and reported as saved.
     if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
       throw new Error("The subagent cache setting needs a provider account id.");
+    }
+    if (Object.hasOwn(settings, "mainPromptCacheTtl")) {
+      throw new Error("The main chat cache setting needs a provider account id.");
     }
     const file = readFile();
     const current = { ...DEFAULT_PROVIDER_INSTANCE_SETTINGS, ...(file.settings[resolved] ?? {}) };
@@ -812,19 +824,25 @@ export type ProviderInstanceStore = ReturnType<typeof createProviderInstanceStor
  * one directory the provider owns.
  */
 /**
- * The env that carries one Claude account's prompt cache choice to a Claude
- * process, or nothing: the account made no choice, or `env` already states a
- * TTL. Only for a launch that runs on the account's own login — a preset or a
- * stored credential bills somewhere else and must not get it.
+ * The env that carries one Claude account's prompt cache choices to a Claude
+ * process. Each of the two lifetimes (main conversation, subagents) is left
+ * out when the account made no choice for it or `env` already states it. Only
+ * for a launch that runs on the account's own login — a preset or a stored
+ * credential bills somewhere else and must not get it.
  */
 export function claudeAccountPromptCacheEnv(
   instanceId: string | null | undefined,
   env: NodeJS.ProcessEnv,
 ): Record<string, string> {
-  if (env[CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]?.trim()) return {};
+  const statesSubagent = Boolean(env[CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]?.trim());
+  const statesMain = Boolean(env[CLAUDE_MAIN_PROMPT_CACHE_TTL_ENV]?.trim());
+  if (statesSubagent && statesMain) return {};
   try {
-    const ttl = getMachineProviderInstanceStore().resolve("claude", instanceId).instance.subagentPromptCacheTtl;
-    return ttl ? { [CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]: ttl } : {};
+    const { subagentPromptCacheTtl, mainPromptCacheTtl } = getMachineProviderInstanceStore().resolve("claude", instanceId).instance;
+    return {
+      ...(subagentPromptCacheTtl && !statesSubagent ? { [CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]: subagentPromptCacheTtl } : {}),
+      ...(mainPromptCacheTtl && !statesMain ? { [CLAUDE_MAIN_PROMPT_CACHE_TTL_ENV]: mainPromptCacheTtl } : {}),
+    };
   } catch {
     // An unreadable registry must not stop a launch; Claude Code's default applies.
     return {};

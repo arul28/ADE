@@ -1312,22 +1312,46 @@ chat pane mount, which happens either way.
   Droid, and ACP agents stay read-only. It is disabled while a turn or pending
   input is live; ADE already compacts Claude at 97% of `compactAtTokens` at a
   turn boundary.
-- **Compact first after an hour idle.** For a Claude chat whose last turn ended
-  60 minutes ago or more (the prompt cache has expired) and whose last measured
-  context is 100,000 tokens or more, a pill left of the meter reads `Compact
-  first · 412k`. The tooltip gives the trade: "Compacting first re-sends about 8k
-  tokens instead of 412k" (the last `postTokens` for the chat, else 2% of the
-  context). The pill is off by default; a click turns it on for the next send
-  only. With it on, `chat.send` carries `compactFirst: true` and the brain runs
+- **Compact first after the cache expires.** For a Claude chat whose prompt
+  cache has expired and whose last measured context is 100,000 tokens or more, a
+  `StatusChip` in the composer's status strip reads `Cache expired · 412k` with
+  one action, **Compact first**. The tooltip gives the trade: the next message
+  re-sends all 412k tokens, or about 8k after compacting (the last `postTokens`
+  for the chat, else `estimateCompactedTokens`: 2% of the context, never under
+  5k). The action turns it on for the next
+  send only; the chip then reads `Compacts on next send · 412k` in the accent
+  tone with **Cancel** to undo. The × hides the chip until the next turn
+  ends, and that send keeps the full history. With it on, `chat.send` carries `compactFirst: true` and the brain runs
   `/compact` as its own turn (90 s limit) before the message. If that compaction
   does not complete, the message stays unsent and the user sees "Compaction did
-  not finish. Your message was not sent." The Claude provider setting "After an
-  hour idle" chooses `ask` (the pill), `always` (the pill starts on), or
-  `never` (no pill). Only a send that carries `compactFirst: true` compacts
+  not finish. Your message was not sent." The Claude provider setting "After
+  the cache expires" chooses `ask` (the chip), `always` (the chip starts on), or
+  `never` (no chip). Only a send that carries `compactFirst: true` compacts
   first, so CLI, automation, and queued sends never do. When Claude's own
   `resume_return` question is pending, ADE does not also compact. Thresholds:
-  `shared/compactFirst.ts` (`COMPACT_FIRST_IDLE_MS`, 100k). Desktop, web, and
-  iOS share the rule.
+  `shared/compactFirst.ts` (`compactFirstIdleMs`, `COMPACT_FIRST_MIN_TOKENS`).
+  Desktop, web, and iOS share the rule. To try it on a small chat, start the
+  brain with `ADE_COMPACT_FIRST_MIN_TOKENS=<n>`: the brain uses that limit and
+  sends it to the clients on the session summary (`compactFirstMinTokens`).
+- **The real cache lifetime.** Claude Code picks the prompt cache lifetime of
+  the main conversation per request: 1 hour on a subscription within its
+  limits, 5 minutes on an API key, Bedrock, Vertex or extra usage. ADE does not
+  guess. At each Claude turn end, `claudePromptCacheTtlOfWrites`
+  (`shared/claudePromptCache.ts`) reads the turn's cache writes
+  (`done.usage.cacheCreationTokens` and `cacheWrite1hTokens`) and the chat
+  service stores the result as `promptCacheTtl` (`"5m"` or `"1h"`) on the
+  session, its persisted record and its summary
+  (`TerminalSessionSummary.chatPromptCacheTtl`). A turn that wrote no cache
+  keeps the last value. Two things read it:
+  - **Compact first** waits that lifetime after the last turn ended, or an hour
+    when no lifetime is known yet.
+  - **The cache countdown badge** (`ClaudeCacheTtlBadge`, `lib/claudeCacheTtl.ts`)
+    on the chat header and the Work session card. A 5-minute cache counts down
+    from 5:00 at turn end. A 1-hour cache shows nothing for 45 minutes, then
+    counts down from 10:00 and ends at 55 minutes: Claude times an entry from
+    the start of the turn's last request, so the hour ends a little early. With
+    no known lifetime (a gateway preset, a chat with no cache write yet) there
+    is no badge.
 - **Question answering.** When a question-type pending input is active, the
   question card *replaces* the composer textarea (`AskQuestionComposer`) and
   the model / permission / effort footer is hidden until it resolves. Selecting

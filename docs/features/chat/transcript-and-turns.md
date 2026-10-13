@@ -195,16 +195,25 @@ rendering nothing or a guess.
 
 ## Compaction divider and activity
 
-Every surface draws one quiet divider row per `compactionId`, the same height as other dividers:
+Every surface draws one line per `compactionId` across the thread: everything above it was replaced
+by a summary. On desktop (`ContextCompactDivider.tsx`) the line is one pill between two rules:
 
-| State | Copy |
+| State | Pill |
 |---|---|
-| Running | `Compacting context · 481k tokens`, plus `· 12 s` after five seconds. The rule lines pulse. |
-| Done | `Context compacted · 481k → 6k · 28 s`, then the trigger: `you asked`, `automatic`, or `ADE (near limit)`, and `· 2nd this chat` from the second compaction on. |
-| Failed | `Compaction failed` (or `Compaction timed out`), plus `· weekly limit on <account>` or `· usage limit on <account>` when the provider said so, and a **Retry** action that sends `/compact`. Hover shows the provider's text. |
+| Running | A spinner, `Compacting`, the token count (`481k`), and the seconds after five seconds. |
+| Done | `Compacted`, then `481k → 6k`. Hover gives who asked (`You asked`, `Automatic`, or ADE near the limit), how long it took, and `2nd time in this chat` from the second compaction on. |
+| Failed | Warning tone: `Compaction failed` (or `Compaction timed out`), plus `— weekly limit on <account>` or `— usage limit on <account>` when the provider said so, and a **Retry** action that sends `/compact`. Hover shows the provider's text. |
 
-A done row with a `summary` expands to show it. Desktop is `ContextCompactDivider.tsx`; iOS is
-`WorkContextCompactDivider.swift`. The copy matches.
+A done pill with a `summary` is a button. It opens a `.kit-card` under the line, "Summary the chat
+continues from", with the provider's wrapper tags removed and a fixed height that scrolls.
+
+A turn that only ran `/compact` is drawn as that line and nothing else (`AgentChatMessageList.tsx`):
+the command is a quiet right-aligned chip instead of a message bubble, the working indicator stays
+hidden while it runs, and the finished turn gets no turn-end line. Every provider goes through this
+one component (`context_compact`, and Codex's `codex_context_compaction` mapped onto it).
+
+iOS is `WorkContextCompactDivider.swift`. It still draws the earlier one-line text divider
+(`Context compacted · 481k → 6k · 28 s`, then the trigger).
 
 `sessionActivityDetector` sets the system activity `compacting` while a compaction runs ("Compacting… · 481k" on
 the Work row and sidebar), restores the prior activity when it completes, and sets `compaction_failed`

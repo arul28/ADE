@@ -260,6 +260,7 @@ import {
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 
 export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
 export type { AdeActionDomain } from "./domains";
@@ -3871,6 +3872,7 @@ export function buildProviderInstancesDomainService(
       const settings = store.setProviderSettings(input.provider, {
         ...(Object.hasOwn(requestedSettings, "compaction") ? { compaction: requestedSettings.compaction === null ? null : normalizeCompactionSettings(requestedSettings.compaction) } : {}),
         ...(Object.hasOwn(requestedSettings, "subagentPromptCacheTtl") ? { subagentPromptCacheTtl: requestedSettings.subagentPromptCacheTtl === "1h" ? "1h" as const : null } : {}),
+        ...(Object.hasOwn(requestedSettings, "mainPromptCacheTtl") ? { mainPromptCacheTtl: isClaudePromptCacheTtl(requestedSettings.mainPromptCacheTtl) ? requestedSettings.mainPromptCacheTtl : null } : {}),
         ...(typeof requestedSettings.smartBalance === "boolean" ? { smartBalance: requestedSettings.smartBalance } : {}),
         ...(typeof requestedSettings.autoStartWindows === "boolean"
           ? { autoStartWindows: requestedSettings.autoStartWindows }
@@ -3884,6 +3886,9 @@ export function buildProviderInstancesDomainService(
       }
       if (typeof input.instanceId === "string" && input.provider === "claude" && Object.hasOwn(requestedSettings, "subagentPromptCacheTtl")) {
         capture("subagent_cache_changed", requestedSettings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", input.provider);
+      }
+      if (typeof input.instanceId === "string" && input.provider === "claude" && Object.hasOwn(requestedSettings, "mainPromptCacheTtl")) {
+        capture("main_cache_changed", isClaudePromptCacheTtl(requestedSettings.mainPromptCacheTtl) ? "enabled" : "disabled", input.provider);
       }
       return { settings };
     },

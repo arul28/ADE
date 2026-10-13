@@ -17,6 +17,7 @@ import type {
   WorkBoardColumn,
   WorkBoardMoveTarget,
 } from "./chat";
+import type { ClaudePromptCacheTtl } from "../claudePromptCache";
 import type { ModelId } from "./core";
 import type { LaneLinearIssue } from "./lanes";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
@@ -424,6 +425,8 @@ export type TerminalSessionSummary = {
   resumeCommand: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
   chatIdleSinceAt?: string | null;
+  /** Claude chats: the lifetime the chat's last cache-writing turn used. */
+  chatPromptCacheTtl?: ClaudePromptCacheTtl | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
   /**

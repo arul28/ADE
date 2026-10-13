@@ -230,6 +230,9 @@ func workChatShouldContinueAutomaticOlderHistory(
 
 struct WorkChatSummaryRenderContext: Equatable {
   let compactionIdleMode: String
+  /// Idle time after which the chat's prompt cache is gone: the lifetime Claude wrote, or an hour when unknown.
+  let compactFirstIdleSeconds: TimeInterval
+  let compactFirstMinTokens: Int
   let compactFirstSupported: Bool
   let manualCompactAvailable: Bool
   let isAvailable: Bool
@@ -275,6 +278,8 @@ struct WorkChatSummaryRenderContext: Equatable {
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
       self.compactionIdleMode = "ask"
+      self.compactFirstIdleSeconds = 3600
+      self.compactFirstMinTokens = 100_000
       self.compactFirstSupported = false
       self.manualCompactAvailable = false
       self.isAvailable = false
@@ -308,6 +313,8 @@ struct WorkChatSummaryRenderContext: Equatable {
     }
 
     self.compactionIdleMode = summary.compactionIdleMode ?? "ask"
+    self.compactFirstIdleSeconds = summary.promptCacheTtl == "5m" ? 300 : 3600
+    self.compactFirstMinTokens = summary.compactFirstMinTokens ?? 100_000
     self.compactFirstSupported = summary.compactionIdleMode != nil
     self.manualCompactAvailable = summary.manualCompactAvailable == true
     self.isAvailable = true
@@ -1498,7 +1505,7 @@ struct WorkChatSessionView: View {
     guard chatSummaryContext.compactFirstSupported, chatSummaryContext.provider == "claude", chatSummaryContext.compactionIdleMode != "never",
           !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",
           let usage = composerContextMeter?.usage, usage.state == .measured,
-          let context = usage.usedTokens, context >= 100_000,
+          let context = usage.usedTokens, context >= chatSummaryContext.compactFirstMinTokens,
           let lastDone = transcript.last(where: { if case .done = $0.event { return true }; return false }),
           let ended = workParsedDate(lastDone.timestamp) else { return nil }
     let post = transcript.reversed().compactMap { entry -> Int? in
@@ -1506,7 +1513,7 @@ struct WorkChatSessionView: View {
             !workCompactSummaryHeader(summary).contains("state:failed") else { return nil }
       return tokens
     }.first
-    return WorkCompactFirstOffer(endedAt: ended, contextTokens: context, estimatedPostTokens: post ?? Int(Double(context) * 0.02), mode: chatSummaryContext.compactionIdleMode)
+    return WorkCompactFirstOffer(endedAt: ended, contextTokens: context, estimatedPostTokens: post ?? max(5_000, Int(Double(context) * 0.02)), mode: chatSummaryContext.compactionIdleMode, idleSeconds: chatSummaryContext.compactFirstIdleSeconds)
   }
 
   /// The chat's goal for the composer chip: the transcript's live Claude goal
