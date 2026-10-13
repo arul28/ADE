@@ -159,6 +159,7 @@ import type {
   KeepAwakeLevel,
   KeepAwakeSnapshot,
   AutoUpdateSnapshot,
+  UpdateImpact,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -1009,7 +1010,6 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
   RemoteRuntimeUpdateAndRestartResult,
-  RemoteRuntimeUpdateImpact,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalPreviewArgs,
@@ -1438,7 +1438,7 @@ declare global {
          * What "Update & restart" would stop on that machine right now. Never
          * rejects: a machine that cannot answer comes back `checked: false`.
          */
-        getUpdateImpact: (id: string) => Promise<RemoteRuntimeUpdateImpact>;
+        getUpdateImpact: (id: string) => Promise<UpdateImpact>;
         listProjects: (id: string) => Promise<RemoteRuntimeProjectRecord[]>;
         addProject: (
           id: string,

@@ -326,7 +326,7 @@ sends.
 
 `runtime.updateImpact` answers what restarting this machine's ADE would stop:
 the chats mid-turn (by name, with their project) and counts of agent CLI
-sessions and terminals with work in them, across every booted project and the
+sessions and terminals that are open (a restart closes each one, quiet or not), across every booted project and the
 personal-chat runtime. It never boots a project to answer. It is CTO-gated,
 because it names every running chat on the machine; clients show it before an
 update restarts anything.

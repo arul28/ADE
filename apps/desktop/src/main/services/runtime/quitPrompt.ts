@@ -29,7 +29,7 @@ export type QuitPromptDeps = {
   /** The Repair button's restart; throws when the service does not come back. */
   restartService: () => Promise<void>;
   /** Queues each chat to continue where it stopped once a brain is back. */
-  armResume: (sessionIds: readonly string[]) => Promise<UpdateInterruptedChat[]>;
+  armResume: (chats: readonly UpdateInterruptedChat[]) => Promise<UpdateInterruptedChat[]>;
 };
 
 export type QuitPrompt = {
@@ -134,7 +134,7 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
       return { repaired: true, resumedChats: 0 };
     }
     const stillRunning = new Set(after.map((chat) => chat.sessionId));
-    const stopped = before.map((chat) => chat.sessionId).filter((id) => !stillRunning.has(id));
+    const stopped = before.filter((chat) => !stillRunning.has(chat.sessionId));
     const resumed = await deps.armResume(stopped);
     return { repaired: true, resumedChats: resumed.length };
   };
@@ -221,14 +221,18 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
   const confirm: QuitPrompt["confirm"] = async (ownerWindow, relaunch) => {
     const owned = appOwnedService(deps.getRuntimeStatus());
     // A normal quit stops nothing, so "Don't ask again" skips even the probe.
-    // When it would stop agents, ask every time: a probe that timed out reads
-    // as zero agents, so zero is not proof that nothing is running.
+    // When it would stop agents, ask every time: a probe that timed out
+    // cannot prove that nothing is running, and the prompt says so.
     if (!owned && !readAskBeforeQuit()) return true;
     const impact = await deps.collectImpact();
     const request: QuitPromptRequest = {
       requestId: randomUUID(),
       relaunch,
-      runningAgents: impact.interruptedChats.length,
+      // Unknown when ADE could not check, or when an older brain only knows
+      // that something it cannot name is running.
+      runningAgents: !impact.checked || (impact.busyWithoutDetail && impact.chats.length === 0)
+        ? null
+        : impact.chats.length,
       appOwnedService: owned,
     };
     const parentWindow =

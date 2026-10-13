@@ -8916,7 +8916,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateSetPreferences: async (
       preferences: AutoUpdatePreferences,
     ): Promise<AutoUpdatePreferences> => preferences,
-    updateGetInstallImpact: resolved({ connectedPhones: [], interruptedChats: [] }),
+    updateGetInstallImpact: resolved({ checked: true, chats: [], cliSessions: 0, terminals: 0, connectedPhones: [] }),
     updateQuitAndInstall: resolved(true),
     updateCancelAutoApply: resolved(false),
     updateDismissInstalledNotice: resolved(undefined),

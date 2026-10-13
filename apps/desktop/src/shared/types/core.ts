@@ -253,7 +253,7 @@ export type UpdateInterruptedChat = {
   /**
    * Where the chat's project lives on its machine. The resume after an install
    * is armed per project, and the chat may belong to one with no tab open.
-   * Absent for a personal chat, and from any reader that predates the field.
+   * Null for a personal chat; absent from any reader that predates the field.
    */
   projectRoot?: string | null;
   /**
@@ -401,9 +401,9 @@ export type RuntimeActivitySummary = RuntimeActivityCounts & {
 export type RuntimeUpdateImpact = {
   /** Chats with a live turn right now. */
   chats: UpdateInterruptedChat[];
-  /** Agent CLI sessions (Claude Code, Codex, …) that are running or waiting on input. */
+  /** Agent CLI sessions (Claude Code, Codex, …) that are open; a restart closes them. */
   cliSessions: number;
-  /** Other terminals with a command running. */
+  /** Other terminals that are open, busy or quiet; a restart closes them too. */
   terminals: number;
 };
 
@@ -413,26 +413,29 @@ export type UpdateInstallImpactPhone = {
 };
 
 /**
- * What stops or drops while ADE (and its brain service) restarts for an
- * update. The probes are time-boxed; `checked` says whether the running-work
- * half answered, so "nothing is running" is never read off a probe that failed.
+ * What an update would stop on one machine, as a client shows it before the
+ * update runs.
  */
-export type UpdateInstallImpact = {
+export type UpdateImpact = RuntimeUpdateImpact & {
+  /**
+   * False when the machine did not answer in time, so the rest means
+   * "unknown", not "nothing is running".
+   */
+  checked: boolean;
+  /**
+   * Set when the machine's ADE is too old to name everything it runs: more
+   * work is running than `chats` lists, and that is all it can say.
+   */
+  busyWithoutDetail?: boolean;
+};
+
+/**
+ * What stops or drops while ADE (and its brain service) restarts this
+ * computer for an update: its running work, and the phones connected to it.
+ * A chat on another machine is not interrupted, so it never appears here.
+ */
+export type UpdateInstallImpact = UpdateImpact & {
   connectedPhones: UpdateInstallImpactPhone[];
-  /**
-   * Chats with a live turn right now, on this machine only. A chat on another
-   * machine is not interrupted by this update, so it never appears here.
-   */
-  interruptedChats: UpdateInterruptedChat[];
-  /** Running agent CLI sessions on this machine. Absent reads as zero. */
-  cliSessions?: number;
-  /** Other terminals with a command running on this machine. Absent reads as zero. */
-  terminals?: number;
-  /**
-   * False when ADE could not ask what is running in time, so the lists above
-   * mean "unknown", not "none". Absent reads as answered.
-   */
-  checked?: boolean;
 };
 
 export type ProjectInfo = {

@@ -2,47 +2,48 @@ import { useEffect, useMemo, useState } from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react";
 import type { RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
-import type { OutdatedMachine } from "../app/updateRunningWork";
 import {
   canUpdateOtherMachines,
+  isMachineUpdateBusy,
   requestMachineUpdates,
   useMachineUpdates,
 } from "../remoteTargets/machineUpdates";
 import {
+  connectedMachinesFromSnapshot,
   describeMachineUpdateAttempt,
-  isMachineVersionOutdated,
   newestKnownAdeVersion,
+  outdatedMachines,
+  type ConnectedMachine,
 } from "../remoteTargets/remoteMachineModel";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 
-/** The connected machines, kept current by main's connection snapshot. */
-function useConnectedMachines(): OutdatedMachine[] {
+/**
+ * The connected machines, kept current by main's connection snapshot. Null
+ * until ADE has read them; `failed` when the read failed and no push has
+ * arrived since, so an error never reads as "no machines".
+ */
+function useConnectedMachines(): { machines: ConnectedMachine[] | null; failed: boolean } {
   const [snapshot, setSnapshot] = useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     let cancelled = false;
     // Whichever arrives later wins; an older read must not replace a newer push.
     const accept = (next: RemoteRuntimeConnectionSnapshot) => {
       if (cancelled) return;
+      setFailed(false);
       setSnapshot((current) => (current && current.updatedAt > next.updatedAt ? current : next));
     };
-    void window.ade.remoteRuntime.getConnectionSnapshot().then(accept).catch(() => undefined);
+    void window.ade.remoteRuntime.getConnectionSnapshot().then(accept).catch(() => {
+      if (!cancelled) setFailed(true);
+    });
     const unsubscribe = window.ade.remoteRuntime.onConnectionSnapshotChanged?.(accept);
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
   }, []);
-  return useMemo(
-    () =>
-      (snapshot?.connections ?? [])
-        .filter((connection) => connection.state === "connected")
-        .map((connection) => ({
-          id: connection.target.id,
-          name: connection.target.name,
-          version: connection.version ?? connection.target.runtimeBinaryVersion ?? null,
-        })),
-    [snapshot],
-  );
+  const machines = useMemo(() => (snapshot ? connectedMachinesFromSnapshot(snapshot) : null), [snapshot]);
+  return { machines, failed };
 }
 
 /**
@@ -58,9 +59,10 @@ export function OtherMachinesUpdateSection({ group, anchor }: { group: string; a
 }
 
 function OtherMachinesUpdates({ group, anchor }: { group: string; anchor?: string }) {
-  const machines = useConnectedMachines();
+  const { machines: readMachines, failed } = useConnectedMachines();
+  const machines = readMachines ?? [];
   const updateSnapshot = useAutoUpdateSnapshot();
-  const { updatingIds, checkingIds, attempts, nowMs } = useMachineUpdates();
+  const machineUpdates = useMachineUpdates();
   const newestVersion = useMemo(
     () =>
       newestKnownAdeVersion({
@@ -69,41 +71,48 @@ function OtherMachinesUpdates({ group, anchor }: { group: string; anchor?: strin
       }),
     [updateSnapshot.currentVersion, updateSnapshot.latestKnownVersion],
   );
-  const outdated = machines.filter((machine) => isMachineVersionOutdated(machine.version, newestVersion));
-  const anyBusy = outdated.some((machine) => updatingIds.has(machine.id) || checkingIds.has(machine.id));
+  const behind = outdatedMachines(machines, newestVersion);
+  const behindIds = new Set(behind.map((machine) => machine.id));
+  const anyBusy = behind.some((machine) => isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
 
   return (
     <ModernSection
       group={group}
       anchor={anchor}
       title="Update other machines"
-      hint="ADE on the machines this computer is connected to. A machine with the ADE app open updates the app and its background service together; with the app closed, only the background service updates, and the app offers its own update when it is next opened."
-      actions={outdated.length > 1 ? (
+      hint="With the ADE app open there, the app and its background service update together; otherwise only the service does."
+      actions={behind.length > 1 ? (
         <button
           type="button"
           className="ade-modern-btn"
           disabled={anyBusy}
-          onClick={() => void requestMachineUpdates(outdated, newestVersion)}
+          onClick={() => void requestMachineUpdates(behind, newestVersion)}
         >
           <ArrowsClockwise size={13} weight="bold" />
-          {`Update all ${outdated.length}`}
+          {`Update all ${behind.length}`}
         </button>
       ) : undefined}
     >
       <ModernRows>
-        {machines.length === 0 ? (
+        {failed && readMachines == null ? (
+          <ModernRow
+            title="Couldn't read the connected machines"
+            hint="ADE could not list them just now. Open Connections in the top bar to see them."
+          />
+        ) : readMachines == null ? (
+          <ModernRow title="Reading connected machines…" />
+        ) : machines.length === 0 ? (
           <ModernRow
             title="No other machines connected"
             hint="Connect a machine from Connections in the top bar to see its version and update it from here."
           />
         ) : machines.map((machine) => {
-          const attempt = attempts[machine.id] ?? null;
+          const attempt = machineUpdates.attempts[machine.id] ?? null;
           const status = attempt
-            ? describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version }, nowMs)
+            ? describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version }, machineUpdates.nowMs)
             : null;
-          const behind = isMachineVersionOutdated(machine.version, newestVersion);
-          const updating = updatingIds.has(machine.id) || status?.inFlight === true;
-          const checking = checkingIds.has(machine.id);
+          const updating = machineUpdates.updatingIds.has(machine.id) || status?.inFlight === true;
+          const checking = machineUpdates.checkingIds.has(machine.id);
           return (
             <ModernRow
               key={machine.id}
@@ -111,10 +120,12 @@ function OtherMachinesUpdates({ group, anchor }: { group: string; anchor?: strin
               hint={(
                 <>
                   {machine.version ? <>ADE <span className="kit-num">{machine.version}</span></> : "Version unknown"}
-                  {behind && newestVersion ? <> · <span className="kit-num">{newestVersion}</span> available</> : null}
+                  {behindIds.has(machine.id) && newestVersion
+                    ? <> · <span className="kit-num">{newestVersion}</span> available</>
+                    : null}
                 </>
               )}
-              control={behind ? (
+              control={behindIds.has(machine.id) ? (
                 <button
                   type="button"
                   className="ade-modern-btn"
@@ -129,13 +140,9 @@ function OtherMachinesUpdates({ group, anchor }: { group: string; anchor?: strin
               ) : undefined}
             >
               {status ? (
-                <p
-                  role="status"
-                  className={status.ok ? "ade-ap-rowhint" : "ade-modern-error"}
-                  style={{ margin: "6px 0 0" }}
-                >
+                <div role="status" className={status.ok ? "ade-ap-rowhint" : "ade-modern-error"}>
                   {status.message}
-                </p>
+                </div>
               ) : null}
             </ModernRow>
           );

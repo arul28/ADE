@@ -1,66 +1,36 @@
-import type { AutoUpdateSnapshot } from "../../../shared/types";
-import { confirmDialog } from "../ui/dialog/confirm";
+import type { AutoUpdateSnapshot, UpdateImpact, UpdateInstallImpact } from "../../../shared/types";
+import { UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
+import { updateVersionLabel } from "../../../shared/updateVersions";
+import { checkboxConfirmDialog, confirmDialog } from "../ui/dialog/confirm";
+import {
+  listOutdatedConnectedMachines,
+  readMachinesUpdateImpact,
+  runMachineUpdates,
+} from "../remoteTargets/machineUpdates";
+import {
+  MachinesUpdateImpact,
+  UpdateImpactSummary,
+  type MachineWithImpact,
+} from "../remoteTargets/MachineUpdateImpact";
+import type { ConnectedMachine } from "../remoteTargets/remoteMachineModel";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 import { dismissToast, showToast } from "./toast/toastStore";
-import {
-  ChoiceCheckbox,
-  listOutdatedConnectedMachines,
-  MachinesRunningWork,
-  readMachinesRunningWork,
-  runningWorkFromInstallImpact,
-  RunningWorkSummary,
-  type OutdatedMachine,
-  type OutdatedMachineWork,
-  type RunningWork,
-} from "./updateRunningWork";
 
 const UPDATING_MACHINES_TOAST_ID = "ade-update-other-machines";
+const RESUME_CHATS = "resumeChats";
+const UPDATE_MACHINES = "updateMachines";
 
-function versionLabel(version: string | null): string {
-  return version ? `v${version}` : "the latest update";
-}
+/** The install flow running now; a second click joins it instead of asking again. */
+let installInFlight: Promise<boolean> | null = null;
 
-function machineNames(machines: readonly OutdatedMachine[]): string {
-  return machines.map((machine) => machine.name).join(", ");
-}
-
-type InstallChoices = { resumeChats: boolean; updateMachines: boolean };
-
-/**
- * What the install stops, here and on the other machines it can bring along,
- * with the two things the person can still decide.
- */
-function InstallImpactBody({
-  local,
-  machines,
-  choices,
-  offerResume,
-}: {
-  local: RunningWork;
-  machines: readonly OutdatedMachineWork[];
-  choices: InstallChoices;
-  offerResume: boolean;
-}) {
-  return (
-    <div style={{ display: "grid", gap: 4 }}>
-      <RunningWorkSummary work={local} heading={machines.length > 0 ? "This computer" : undefined} />
-      {offerResume ? (
-        <ChoiceCheckbox choices={choices} name="resumeChats" label="Resume these chats when ADE is back" />
-      ) : null}
-      {machines.length > 0 ? (
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--color-border)" }}>
-          <MachinesRunningWork machines={machines} />
-          <ChoiceCheckbox
-            choices={choices}
-            name="updateMachines"
-            label={machines.length === 1
-              ? `Update ${machines[0].name} too`
-              : `Update these ${machines.length} machines too`}
-          />
-        </div>
-      ) : null}
-    </div>
-  );
+function phonesLine(phones: UpdateInstallImpact["connectedPhones"]): string | null {
+  if (phones.length === 1) {
+    return `${phones[0].deviceName} is connected through ADE phone sync. It will disconnect during the update and reconnect automatically once ADE is back.`;
+  }
+  if (phones.length > 1) {
+    return `Connected phones (${phones.map((phone) => phone.deviceName).join(", ")}) will disconnect during the update and reconnect automatically once ADE is back.`;
+  }
+  return null;
 }
 
 /**
@@ -69,38 +39,33 @@ function InstallImpactBody({
  * install here either.
  */
 async function updateOtherMachinesFirst(
-  machines: readonly OutdatedMachine[],
+  machines: readonly ConnectedMachine[],
   targetVersion: string | null,
 ): Promise<boolean> {
   showToast({
     id: UPDATING_MACHINES_TOAST_ID,
-    title: `Updating ${machineNames(machines)}`,
+    title: `Updating ${machines.map((machine) => machine.name).join(", ")}`,
     message: "This computer installs once they have started.",
     tone: "info",
     durationMs: 0,
   });
-  const results = await Promise.all(machines.map(async (machine) => {
-    try {
-      const result = await window.ade.remoteRuntime.updateAndRestart(machine.id, targetVersion);
-      return { machine, ok: result.ok, message: result.message };
-    } catch (error) {
-      return { machine, ok: false, message: error instanceof Error ? error.message : String(error) };
-    }
-  }));
-  dismissToast(UPDATING_MACHINES_TOAST_ID);
-  const failed = results.filter((result) => !result.ok);
+  let results: Awaited<ReturnType<typeof runMachineUpdates>>;
+  try {
+    results = await runMachineUpdates(machines, targetVersion);
+  } finally {
+    dismissToast(UPDATING_MACHINES_TOAST_ID);
+  }
+  const failed = results.filter((result) => !result.attempt.ok);
   if (failed.length === 0) return true;
   return await confirmDialog({
     title: failed.length === 1
       ? `${failed[0].machine.name} did not update`
       : `${failed.length} machines did not update`,
-    message: "Install on this computer anyway? You can update a machine later from its row in Machines.",
+    message: "Install on this computer anyway? You can update a machine later from Update other machines in Settings.",
     children: (
-      <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 3 }}>
-        {failed.map((result) => (
-          <li key={result.machine.id} style={{ overflowWrap: "anywhere" }}>
-            {`${result.machine.name}: ${result.message}`}
-          </li>
+      <ul className="ade-dialog-impact-list">
+        {failed.map(({ machine, attempt }) => (
+          <li key={machine.id}>{`${machine.name}: ${attempt.message}`}</li>
         ))}
       </ul>
     ),
@@ -110,62 +75,84 @@ async function updateOtherMachinesFirst(
   });
 }
 
-/** Shared confirmation and install action for every manual update affordance. */
-export async function requestDownloadedUpdateInstall(
-  snapshot: AutoUpdateSnapshot,
-  onAccepted?: () => void,
-): Promise<boolean> {
+async function runInstallFlow(snapshot: AutoUpdateSnapshot, onAccepted?: () => void): Promise<boolean> {
   const [impact, machines] = await Promise.all([
     Promise.resolve()
       .then(() => window.ade.updateGetInstallImpact())
-      .catch(() => null),
-    listOutdatedConnectedMachines(snapshot.version).then(readMachinesRunningWork),
+      .catch((): UpdateInstallImpact => ({ ...UNKNOWN_UPDATE_IMPACT, connectedPhones: [] })),
+    listOutdatedConnectedMachines(snapshot.version).then(readMachinesUpdateImpact),
   ]);
-  const phones = impact?.connectedPhones ?? [];
-  const local = runningWorkFromInstallImpact(impact);
+  const { connectedPhones, ...local } = impact;
   const offerResume = local.chats.some((chat) => chat.resumable !== false);
-  const title = `ADE will quit and reopen automatically to install ${versionLabel(snapshot.version)}.`;
-  const lines: string[] = [];
-  if (phones.length === 1) {
-    lines.push(
-      `${phones[0].deviceName} is connected through ADE phone sync. It will disconnect during the update and reconnect automatically once ADE is back.`,
-    );
-  } else if (phones.length > 1) {
-    lines.push(
-      `Connected phones (${phones.map((phone) => phone.deviceName).join(", ")}) will disconnect during the update and reconnect automatically once ADE is back.`,
-    );
-  }
-  lines.push(
-    "Open ADE Code terminals and running agent sessions on this machine will disconnect while the ADE service restarts — you can reopen them right after the update.",
-    "",
-    "You do not need to restart ADE yourself. Any unsaved work may be lost. Continue?",
-  );
+  const phones = phonesLine(connectedPhones);
 
-  const choices: InstallChoices = { resumeChats: offerResume, updateMachines: machines.length > 0 };
-  const confirmed = await confirmDialog({
-    title,
-    message: lines.join("\n"),
-    children: (
-      <InstallImpactBody local={local} machines={machines} choices={choices} offerResume={offerResume} />
-    ),
+  const answer = await checkboxConfirmDialog({
+    title: `ADE will quit and reopen automatically to install ${updateVersionLabel(snapshot.version, "the latest update")}.`,
+    message: [
+      ...(phones ? [phones, ""] : []),
+      "You do not need to restart ADE yourself. Any unsaved work may be lost. Continue?",
+    ].join("\n"),
+    children: <InstallImpactBody local={local} machines={machines} />,
+    checkboxes: [
+      ...(offerResume
+        ? [{ key: RESUME_CHATS, label: "Resume this computer's chats when ADE is back" }]
+        : []),
+      ...(machines.length > 0
+        ? [{
+            key: UPDATE_MACHINES,
+            label: machines.length === 1 ? `Update ${machines[0].name} too` : `Update these ${machines.length} machines too`,
+          }]
+        : []),
+    ],
     confirmLabel: "Continue",
   });
-  if (!confirmed) {
+  if (!answer.confirmed) {
     captureUpdatePromptDecision(snapshot, "deferred");
     return false;
   }
 
-  const resumeChats = offerResume && choices.resumeChats;
-  captureUpdatePromptDecision(snapshot, "accepted", { resumeChats });
-  onAccepted?.();
-  if (choices.updateMachines && machines.length > 0) {
+  const resumeChats = offerResume && answer.checked[RESUME_CHATS] === true;
+  if (machines.length > 0 && answer.checked[UPDATE_MACHINES] === true) {
     const proceed = await updateOtherMachinesFirst(machines, snapshot.version);
-    if (!proceed) return false;
+    if (!proceed) {
+      captureUpdatePromptDecision(snapshot, "deferred");
+      return false;
+    }
   }
+  onAccepted?.();
+  let started = false;
   try {
-    return await window.ade.updateQuitAndInstall({ resumeChats });
+    started = await window.ade.updateQuitAndInstall({ resumeChats });
   } catch {
     // The main process logs updater failures.
-    return false;
   }
+  captureUpdatePromptDecision(snapshot, started ? "accepted" : "deferred", { resumeChats });
+  return started;
+}
+
+/** What the install stops here and, when they come along, on the other machines. */
+function InstallImpactBody({ local, machines }: { local: UpdateImpact; machines: readonly MachineWithImpact[] }) {
+  return (
+    <div className="ade-dialog-impact">
+      <UpdateImpactSummary impact={local} label={machines.length > 0 ? "This computer" : undefined} />
+      <MachinesUpdateImpact machines={machines} />
+    </div>
+  );
+}
+
+/**
+ * Shared confirmation and install action for every manual update affordance.
+ * Resolves true once the install has started; false when the person said no,
+ * or it could not start. Never rejects.
+ */
+export function requestDownloadedUpdateInstall(
+  snapshot: AutoUpdateSnapshot,
+  onAccepted?: () => void,
+): Promise<boolean> {
+  installInFlight ??= runInstallFlow(snapshot, onAccepted)
+    .catch(() => false)
+    .finally(() => {
+      installInFlight = null;
+    });
+  return installInFlight;
 }

@@ -82,14 +82,10 @@ export function AutoUpdateBanner() {
   const handleRestart = useCallback(() => {
     // The same confirmation every other manual install affordance uses, so a
     // retry after a failed or parked install also names the chats it will
-    // interrupt and offers to resume them.
-    setRestarting(true);
+    // interrupt and offers to resume them. "Restarting…" waits for the yes.
     void requestDownloadedUpdateInstall(snapshot, () => setRestarting(true))
       .then((started) => {
         if (!started) setRestarting(false);
-      })
-      .catch(() => {
-        setRestarting(false);
       });
   }, [snapshot]);
 

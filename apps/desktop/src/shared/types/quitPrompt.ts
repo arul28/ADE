@@ -17,8 +17,8 @@ export type QuitPromptAppOwnedService = {
 export type QuitPromptRequest = {
   requestId: string;
   relaunch: boolean;
-  /** Chats with a live turn right now. */
-  runningAgents: number;
+  /** Chats with a live turn right now; null when ADE could not check in time. */
+  runningAgents: number | null;
   appOwnedService: QuitPromptAppOwnedService | null;
 };
 

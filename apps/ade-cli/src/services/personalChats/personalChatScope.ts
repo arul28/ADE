@@ -10,8 +10,8 @@ import type {
   RuntimeActivityCounts,
   RuntimeUpdateImpact,
 } from "../../../../desktop/src/shared/types";
-import { PERSONAL_CHAT_ACTIONS, isTrackedAgentCliToolType } from "../../../../desktop/src/shared/types";
-import { isChatToolType } from "../../../../desktop/src/shared/sessionSpawnNesting";
+import { PERSONAL_CHAT_ACTIONS } from "../../../../desktop/src/shared/types";
+import { summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "../runtime/runtimeWorkSummary";
 import { USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../../desktop/src/shared/types/macDesktop";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
@@ -73,54 +73,6 @@ type PersonalChatScopeOptions = {
 };
 
 type ObjectArgs = Record<string, unknown>;
-
-/** Terminals and CLI sessions with work in them right now, not ones idling at a prompt. */
-function listRunningWorkSessions(runtime: AdeRuntime) {
-  return runtime.ptyService.list({ status: "running", limit: 500 })
-    .filter(
-      (session) =>
-        session.runtimeState === "running"
-        || session.runtimeState === "waiting-input",
-    );
-}
-
-export function summarizeRuntimeActivity(runtime: AdeRuntime): RuntimeActivityCounts {
-  return {
-    activeAgentTurns: runtime.agentChatService?.hasActiveWorkloads() ? 1 : 0,
-    activeWorkSessions: listRunningWorkSessions(runtime).length,
-  };
-}
-
-/** The label a personal chat carries where a project chat names its project. */
-const PERSONAL_CHATS_IMPACT_LABEL = "Personal chats";
-
-/**
- * What a restart stops in one runtime: the chats mid-turn, by name, and the
- * CLI sessions and terminals with work in them, by count. `project` is null
- * for the personal-chat runtime, whose chats cannot be queued to continue.
- */
-export async function summarizeRuntimeUpdateImpact(
-  runtime: AdeRuntime,
-  project: { displayName: string; rootPath: string } | null,
-): Promise<RuntimeUpdateImpact> {
-  const live = await runtime.agentChatService?.listInterruptedChats();
-  const chats = (live?.chats ?? []).map((chat) => ({
-    sessionId: chat.sessionId,
-    title: chat.title,
-    projectName: project?.displayName ?? PERSONAL_CHATS_IMPACT_LABEL,
-    projectRoot: project?.rootPath ?? null,
-    ...(project ? {} : { resumable: false }),
-  }));
-  let cliSessions = 0;
-  let terminals = 0;
-  for (const session of listRunningWorkSessions(runtime)) {
-    // A chat row is already named above; counting it again would double it.
-    if (isChatToolType(session.toolType)) continue;
-    if (isTrackedAgentCliToolType(session.toolType)) cliSessions += 1;
-    else terminals += 1;
-  }
-  return { chats, cliSessions, terminals };
-}
 
 function asObject(value: unknown): ObjectArgs {
   return value && typeof value === "object" && !Array.isArray(value)

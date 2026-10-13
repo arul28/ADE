@@ -1,4 +1,4 @@
-import type { ProjectIcon, RuntimeUpdateImpact } from "./core";
+import type { ProjectIcon } from "./core";
 import type { SyncPairingHostIdentity } from "./sync";
 
 export type RemoteRuntimeTransportKind = "ssh" | "paired";
@@ -533,23 +533,6 @@ export type RemoteRuntimeUpdateAndRestartResult = {
    * `targetVersion` for an `ok` result that applied an update.
    */
   pendingVersion?: string | null;
-};
-
-/**
- * What "Update & restart" would stop on a connected machine, asked of that
- * machine before the update runs.
- */
-export type RemoteRuntimeUpdateImpact = RuntimeUpdateImpact & {
-  /**
-   * False when the machine did not answer in time, so the rest means
-   * "unknown", not "nothing is running".
-   */
-  checked: boolean;
-  /**
-   * True from a machine whose ADE is too old to name what it is running:
-   * something is, and that is all it can say.
-   */
-  busyWithoutDetail?: boolean;
 };
 
 export type RemoteRuntimeLocalWorkMatch = {

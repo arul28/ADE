@@ -44,6 +44,7 @@ import {
   formatRemoteTargetError,
   describeMachineUpdateAttempt,
   isMachineVersionOutdated,
+  outdatedMachines,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   newestKnownAdeVersion,
@@ -55,8 +56,7 @@ import {
 } from "../../../shared/machinePresence";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
-import type { OutdatedMachine } from "../app/updateRunningWork";
-import { requestMachineUpdates, useMachineUpdates } from "./machineUpdates";
+import { isMachineUpdateBusy, requestMachineUpdates, useMachineUpdates } from "./machineUpdates";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
 import { accountRowKey, useRowActions } from "./useRowActions";
@@ -216,12 +216,8 @@ export function RemoteTargetList({
   } = useRowActions();
   // An add/edit form submit is in flight. Locks the forms, never the rows.
   const [saving, setSaving] = useState(false);
-  const {
-    updatingIds: updatingTargetIds,
-    checkingIds: checkingUpdateIds,
-    attempts: updateResultByTargetId,
-    nowMs: updateClockMs,
-  } = useMachineUpdates();
+  const machineUpdates = useMachineUpdates();
+  const { attempts: updateResultByTargetId, nowMs: updateClockMs } = machineUpdates;
   const updateSnapshot = useAutoUpdateSnapshot();
   const [trustingHostKey, setTrustingHostKey] = useState(false);
   const [formPrefill, setFormPrefill] =
@@ -1108,29 +1104,30 @@ export function RemoteTargetList({
     const rows = sections[section];
     if (rows.length === 0) return null;
     // Connected machines behind the newest ADE this computer knows about.
-    const outdatedMachines: OutdatedMachine[] = section === "connected"
-      ? rows.flatMap((row) =>
-          row.kind === "saved"
-          && row.connected
-          && isMachineVersionOutdated(row.version, newestKnownVersion)
-            ? [{ id: row.target.id, name: row.target.name, version: row.version }]
-            : [])
+    const behindMachines = section === "connected"
+      ? outdatedMachines(
+          rows.flatMap((row) =>
+            row.kind === "saved" && row.connected
+              ? [{ id: row.target.id, name: row.target.name, version: row.version }]
+              : []),
+          newestKnownVersion,
+        )
       : [];
-    const updateAllBusy = outdatedMachines.some((machine) =>
-      updatingTargetIds.has(machine.id) || checkingUpdateIds.has(machine.id));
+    const updateAllBusy = behindMachines.some((machine) =>
+      isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
     return (
       <div style={{ display: "grid", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
           <div style={sectionHeaderStyle}>{SECTION_LABELS[section]}</div>
-          {outdatedMachines.length > 1 ? (
+          {behindMachines.length > 1 ? (
             <button
               type="button"
               disabled={updateAllBusy}
-              onClick={() => void requestMachineUpdates(outdatedMachines, newestKnownVersion)}
+              onClick={() => void requestMachineUpdates(behindMachines, newestKnownVersion)}
               style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })}
             >
               <ArrowClockwise size={13} weight="bold" />
-              {`Update all ${outdatedMachines.length}`}
+              {`Update all ${behindMachines.length}`}
             </button>
           ) : null}
         </div>
@@ -1189,8 +1186,8 @@ export function RemoteTargetList({
                     ? newestKnownVersion
                     : null
                 }
-                updating={updatingTargetIds.has(row.target.id) || updateStatus?.inFlight === true}
-                checkingUpdate={checkingUpdateIds.has(row.target.id)}
+                updating={machineUpdates.updatingIds.has(row.target.id) || updateStatus?.inFlight === true}
+                checkingUpdate={machineUpdates.checkingIds.has(row.target.id)}
                 updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
                 localAdeVersion={updateSnapshot.currentVersion}
                 onUpdateAndRestart={(targetVersion) =>

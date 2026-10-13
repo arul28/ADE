@@ -45,14 +45,14 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
   RemoteRuntimeUpdateAndRestartResult,
-  RemoteRuntimeUpdateImpact,
   RuntimeActivitySummary,
-  RuntimeUpdateImpact,
+  UpdateImpact,
   RuntimeEventsReleaseRequest,
   RuntimeEventsReleaseResult,
   SyncWebPairingInfo,
 } from "../../../shared/types";
 import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
+import { parseRuntimeUpdateImpact, UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import { PROJECT_ICON_DIALOG_EXTENSIONS } from "../../../shared/projectIcons";
 import { readProjectIconForUpload } from "../projects/projectIconResolver";
 import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
@@ -237,8 +237,11 @@ function trackPageFileWatch(
  * leaving the request open forever.
  */
 const REMOTE_MACHINE_UPDATE_TIMEOUT_MS = 15 * 60_000;
-/** A confirmation dialog waits on this, so it is a few seconds, not a work budget. */
-const REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS = 4_000;
+/**
+ * A confirmation dialog waits on this, so it is a few seconds, not a work
+ * budget. One deadline covers the ask and its older-machine fallback.
+ */
+const REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS = 3_000;
 const REMOTE_RUNTIME_SYNC_METHODS = new Set([
   "sync.getStatus",
   "sync.refreshDiscovery",
@@ -1534,41 +1537,35 @@ export function registerRuntimeBridge({
 
   ipcMain.handle(
     IPC.remoteRuntimeGetUpdateImpact,
-    async (_event, arg: { id: string }): Promise<RemoteRuntimeUpdateImpact> => {
+    async (_event, arg: { id: string }): Promise<UpdateImpact> => {
+      // Never rejects: the caller is a confirmation dialog, and a machine that
+      // cannot answer (or is gone) is "unknown", not an error to show.
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const target = id ? remoteConnectionService.getTarget(id) : null;
-      if (!target) throw new Error("Remote target was not found.");
-      const unknown: RemoteRuntimeUpdateImpact = {
-        checked: false,
-        chats: [],
-        cliSessions: 0,
-        terminals: 0,
-      };
-      const ask = async <T,>(method: string): Promise<T> =>
-        await remoteConnectionService.callMachineMethod<T>(
+      if (!target) return UNKNOWN_UPDATE_IMPACT;
+      const deadlineMs = Date.now() + REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS;
+      const ask = async (method: string): Promise<unknown> => {
+        const remainingMs = deadlineMs - Date.now();
+        if (remainingMs <= 0) throw new Error("The update-impact deadline passed.");
+        return await remoteConnectionService.callMachineMethod<unknown>(
           target.id,
           method,
           {},
-          { timeoutMs: REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS, retryOnConnectionError: false },
+          { timeoutMs: remainingMs, retryOnConnectionError: false },
         );
+      };
       try {
-        const impact = await ask<RuntimeUpdateImpact>("runtime.updateImpact");
-        if (!Array.isArray(impact?.chats)) return unknown;
-        return {
-          checked: true,
-          chats: impact.chats,
-          cliSessions: Number(impact.cliSessions) || 0,
-          terminals: Number(impact.terminals) || 0,
-        };
+        const impact = parseRuntimeUpdateImpact(await ask("runtime.updateImpact"));
+        return impact ? { ...impact, checked: true } : UNKNOWN_UPDATE_IMPACT;
       } catch {
         // A machine that needs this update usually predates the method. It can
         // still say whether anything is running, just not what.
         try {
-          const activity = await ask<RuntimeActivitySummary>("runtime.activitySummary");
-          if (typeof activity?.idle !== "boolean") return unknown;
-          return { ...unknown, checked: true, busyWithoutDetail: !activity.idle };
+          const activity = await ask("runtime.activitySummary") as Partial<RuntimeActivitySummary> | null;
+          if (typeof activity?.idle !== "boolean") return UNKNOWN_UPDATE_IMPACT;
+          return { ...UNKNOWN_UPDATE_IMPACT, checked: true, busyWithoutDetail: !activity.idle };
         } catch {
-          return unknown;
+          return UNKNOWN_UPDATE_IMPACT;
         }
       }
     },

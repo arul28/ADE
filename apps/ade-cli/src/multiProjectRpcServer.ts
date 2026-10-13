@@ -67,11 +67,9 @@ import {
   type ProjectRegistrationSource,
 } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
-import {
-  PersonalChatScope,
-  summarizeRuntimeActivity,
-  summarizeRuntimeUpdateImpact,
-} from "./services/personalChats/personalChatScope";
+import type { AdeRuntime } from "./bootstrap";
+import { PersonalChatScope } from "./services/personalChats/personalChatScope";
+import { summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
 import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
 import { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai/providerStatusDetails";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
@@ -379,31 +377,39 @@ export type MultiProjectRpcHandlerOptions = {
   reconcileAccountOwnership?: typeof reconcileAccountOwnedMachineTrust;
 };
 
-export async function readMachineRuntimeActivitySummary(args: {
+type BootedRuntimeSources = {
   projectRegistry: Pick<ProjectRegistry, "list">;
   scopeRegistry: Pick<ProjectScopeRegistry, "getIfBooted">;
-  personalChatScope: Partial<Pick<PersonalChatScope, "activitySummary">>;
-}): Promise<RuntimeActivitySummary> {
-  const projectActivity = await Promise.all(
-    args.projectRegistry.list().map(async (record) => {
-      const pendingScope = args.scopeRegistry.getIfBooted(record.projectId);
-      if (!pendingScope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
-      const scope = await pendingScope.catch(() => null);
-      if (!scope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
-      return summarizeRuntimeActivity(scope.runtime);
+};
+
+/**
+ * One answer per project this brain has already booted. A project that is not
+ * booted has nothing running, and asking must not boot it.
+ */
+async function mapBootedProjectRuntimes<T>(
+  sources: BootedRuntimeSources,
+  read: (runtime: AdeRuntime, record: ProjectRecord) => T | Promise<T>,
+): Promise<T[]> {
+  const answers = await Promise.all(
+    sources.projectRegistry.list().map(async (record) => {
+      const scope = await sources.scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+      return scope ? [await read(scope.runtime, record)] : [];
     }),
   );
-  const personalActivity = typeof args.personalChatScope.activitySummary === "function"
-    ? await args.personalChatScope.activitySummary()
-    : { activeAgentTurns: 0, activeWorkSessions: 0 };
-  const activeAgentTurns = projectActivity.reduce<number>(
-    (total, activity) => total + activity.activeAgentTurns,
-    personalActivity.activeAgentTurns,
-  );
-  const activeWorkSessions = projectActivity.reduce<number>(
-    (total, activity) => total + activity.activeWorkSessions,
-    personalActivity.activeWorkSessions,
-  );
+  return answers.flat();
+}
+
+export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSources & {
+  personalChatScope: Partial<Pick<PersonalChatScope, "activitySummary">>;
+}): Promise<RuntimeActivitySummary> {
+  const parts: RuntimeActivityCounts[] = [
+    ...await mapBootedProjectRuntimes(args, (runtime) => summarizeRuntimeActivity(runtime)),
+    typeof args.personalChatScope.activitySummary === "function"
+      ? await args.personalChatScope.activitySummary()
+      : { activeAgentTurns: 0, activeWorkSessions: 0 },
+  ];
+  const activeAgentTurns = parts.reduce((total, part) => total + part.activeAgentTurns, 0);
+  const activeWorkSessions = parts.reduce((total, part) => total + part.activeWorkSessions, 0);
   return {
     idle: activeAgentTurns === 0 && activeWorkSessions === 0,
     activeAgentTurns,
@@ -413,25 +419,17 @@ export async function readMachineRuntimeActivitySummary(args: {
 
 /**
  * What restarting this machine's ADE would stop, across every project the
- * brain has booted and its personal chats. A project that is not booted has
- * nothing running, and asking must not boot it.
+ * brain has booted and its personal chats.
  */
-export async function readMachineUpdateImpact(args: {
-  projectRegistry: Pick<ProjectRegistry, "list">;
-  scopeRegistry: Pick<ProjectScopeRegistry, "getIfBooted">;
+export async function readMachineUpdateImpact(args: BootedRuntimeSources & {
   personalChatScope: Partial<Pick<PersonalChatScope, "updateImpact">>;
 }): Promise<RuntimeUpdateImpact> {
-  const empty: RuntimeUpdateImpact = { chats: [], cliSessions: 0, terminals: 0 };
-  const parts = await Promise.all([
-    ...args.projectRegistry.list().map(async (record) => {
-      const scope = await args.scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
-      if (!scope) return empty;
-      return await summarizeRuntimeUpdateImpact(scope.runtime, record);
-    }),
+  const parts: RuntimeUpdateImpact[] = [
+    ...await mapBootedProjectRuntimes(args, (runtime, record) => summarizeRuntimeUpdateImpact(runtime, record)),
     typeof args.personalChatScope.updateImpact === "function"
-      ? args.personalChatScope.updateImpact()
-      : empty,
-  ]);
+      ? await args.personalChatScope.updateImpact()
+      : { chats: [], cliSessions: 0, terminals: 0 },
+  ];
   return {
     chats: parts.flatMap((part) => part.chats),
     cliSessions: parts.reduce((total, part) => total + part.cliSessions, 0),
