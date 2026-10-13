@@ -16,6 +16,7 @@ import type {
   MusicSearchScope,
   MusicState,
 } from "../../../shared/types/music";
+import { musicPositionNow } from "../../../shared/types/music";
 import { AppleMusicApiError, createAppleMusicApi } from "./appleMusicApi";
 import { MusicTokenUnavailableError, type DeveloperTokenProvider } from "./musicDeveloperToken";
 import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } from "./musicHostProcess";
@@ -39,6 +40,12 @@ import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } f
  */
 
 export const IDLE_UNLOAD_MS = 5 * 60_000;
+/**
+ * How far the host's position may drift from the renderers' interpolation
+ * before it is pushed. MusicKit reports whole seconds, so a steady song already
+ * differs from the interpolation by up to a second either way.
+ */
+const POSITION_DRIFT_S = 1.25;
 export const MUSIC_USER_TOKEN_KEY = "music.appleMusic.userToken";
 const AUTHORIZE_TIMEOUT_MS = 10 * 60_000;
 
@@ -178,12 +185,18 @@ export function createMusicService(args: {
 
   const snapshotState = (): MusicState => JSON.parse(JSON.stringify(state)) as MusicState;
 
-  // Coalesce bursts (MusicKit fires several events per transition) into one IPC message.
+  // Coalesce bursts (MusicKit fires several events per transition) into one IPC
+  // message, and send nothing when the state is what every window already has.
+  let lastBroadcast = "";
   const emit = () => {
     if (broadcastTimer) return;
     broadcastTimer = setTimeout(() => {
       broadcastTimer = null;
-      if (!disposed) args.broadcast(snapshotState());
+      if (disposed) return;
+      const json = JSON.stringify(state);
+      if (json === lastBroadcast) return;
+      lastBroadcast = json;
+      args.broadcast(JSON.parse(json) as MusicState);
     }, 30);
   };
 
@@ -255,9 +268,14 @@ export function createMusicService(args: {
   const applyHostState = (s: HostState | null | undefined) => {
     if (!s || s.ready === false) return;
     const p = state.playback;
+    const before = { state: p.state, isPlaying: p.isPlaying, position: musicPositionNow(p) };
     if (typeof s.state === "string") p.state = PLAYBACK_STATES.has(s.state as MusicPlaybackState) ? (s.state as MusicPlaybackState) : "none";
     if (typeof s.isPlaying === "boolean") p.isPlaying = s.isPlaying;
-    if (typeof s.time === "number") {
+    // Re-anchor the position only when the interpolation stops holding (see "time").
+    if (
+      typeof s.time === "number" &&
+      (p.state !== before.state || p.isPlaying !== before.isPlaying || Math.abs(before.position - s.time) > POSITION_DRIFT_S)
+    ) {
       p.position = s.time;
       p.positionAt = Date.now();
     }
@@ -302,17 +320,27 @@ export function createMusicService(args: {
         applyHostState(event.state as HostState);
         break;
       case "time": {
+        // The host ticks once a second while playing. Renderers interpolate the
+        // position from `position` + `positionAt`, so a tick that agrees with
+        // that is not news and is not pushed; one that does not (a stall, a
+        // seek, a new duration, play/pause) re-anchors every window.
         const p = state.playback;
-        if (typeof event.time === "number") {
-          p.position = event.time;
-          p.positionAt = Date.now();
+        let news = false;
+        if (typeof event.duration === "number" && event.duration > 0 && event.duration !== p.duration) {
+          p.duration = event.duration;
+          news = true;
         }
-        if (typeof event.duration === "number" && event.duration > 0) p.duration = event.duration;
         if (typeof event.isPlaying === "boolean" && event.isPlaying !== p.isPlaying) {
           p.isPlaying = event.isPlaying;
           scheduleIdleUnload();
+          news = true;
         }
-        emit();
+        if (typeof event.time === "number" && (news || Math.abs(musicPositionNow(p) - event.time) > POSITION_DRIFT_S)) {
+          p.position = event.time;
+          p.positionAt = Date.now();
+          news = true;
+        }
+        if (news) emit();
         break;
       }
       case "queueChanged":
@@ -582,13 +610,15 @@ export function createMusicService(args: {
     if (state.connecting) return { ok: false, error: "A sign-in window is already open." };
     state.connecting = true;
     emit();
+    let h: MusicHost | null = null;
+    let signedIn = false;
     try {
-      const h = await ensureHost();
+      h = await ensureHost();
       // MusicKit's promise can hang when the user closes Apple's window, so the
       // window closing (with no answer shortly after) also ends the wait.
       let offClosed: () => void = () => {};
       const closed = new Promise<{ cancelled: true }>((resolve) => {
-        offClosed = h.onEvent((event) => {
+        offClosed = h!.onEvent((event) => {
           if (event.event === "authWindow" && event.state === "closed") {
             setTimeout(() => resolve({ cancelled: true }), 2_500);
           }
@@ -606,6 +636,7 @@ export function createMusicService(args: {
       api.clearCache();
       state.authorized = true;
       state.message = null;
+      signedIn = true;
       args.logger?.info("music.connected");
       return { ok: true };
     } catch (error) {
@@ -614,6 +645,9 @@ export function createMusicService(args: {
       const cancelled = /cancel|unauthori|AUTHORIZATION_ERROR/i.test(message);
       return { ok: false, error: cancelled ? "Sign-in was cancelled." : message, cancelled };
     } finally {
+      // A sign-in that timed out or failed leaves Apple's window open; it would
+      // sit there with nothing waiting on it.
+      if (!signedIn && h === host) h?.send({ cmd: "closeAuth" });
       state.connecting = false;
       scheduleIdleUnload();
       emit();
