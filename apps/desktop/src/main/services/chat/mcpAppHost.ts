@@ -285,7 +285,7 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
       title,
       subtitle: server,
       // What a surface that cannot run an app shows instead.
-      fallbackText: `${server} showed an app for ${title}. Apps from MCP servers run in ADE on desktop, in Claude and Codex chats.`,
+      fallbackText: `${server} showed an app for ${title}. Apps from MCP servers run in the ADE desktop app and the iPhone app, in Claude and Codex chats. They do not run in the web client.`,
       ...(call.turnId ? { turnId: call.turnId } : {}),
     });
   };

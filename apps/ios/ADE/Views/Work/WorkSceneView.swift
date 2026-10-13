@@ -73,7 +73,9 @@ final class WorkSceneChatBridge {
     return nil
   }
 
-  fileprivate func reply(_ text: String) {
+  /// Put `text` in this chat's prompt box as a draft. A scene and an MCP App
+  /// both end here; neither sends anything.
+  func reply(_ text: String) {
     WorkSceneReplyCenter.replies.send(WorkSceneReplyRequest(sessionId: sessionId, text: text))
   }
 }
@@ -804,17 +806,36 @@ private final class WorkSceneTapObserver: UIGestureRecognizer {
   override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
 }
 
+/// What a container reports to: a scene's controller here, or an MCP App's
+/// (`WorkMcpAppView.swift`). Both get the same tap observer and the same
+/// "on screen" rule, because both hold code ADE did not write.
+@MainActor
+protocol WorkSceneContainerOwner: AnyObject {
+  /// The reader tapped inside the container. The host saw it; the page did not say it.
+  func containerNoteTap()
+  func containerScheduleEvaluate()
+  func containerThemeChanged()
+  func containerDetach(_ container: WorkSceneContainerView)
+}
+
+extension WorkSceneController: WorkSceneContainerOwner {
+  func containerNoteTap() { noteTap() }
+  func containerScheduleEvaluate() { scheduleEvaluate() }
+  func containerThemeChanged() { themeChanged() }
+  func containerDetach(_ container: WorkSceneContainerView) { detach(container) }
+}
+
 /// The scene's place in the row: the picture, and the web view over it while
 /// the row is on screen. It decides "on screen" itself, from the feed it sits
 /// in, because a transcript cell is also built off screen to be measured.
 final class WorkSceneContainerView: UIView {
-  private weak var controller: WorkSceneController?
+  private weak var controller: (any WorkSceneContainerOwner)?
   private let stillView = UIImageView()
   private weak var webView: WKWebView?
   private weak var observedScrollView: UIScrollView?
   private var offsetObservation: NSKeyValueObservation?
 
-  init(controller: WorkSceneController) {
+  init(controller: any WorkSceneContainerOwner) {
     self.controller = controller
     super.init(frame: .zero)
     clipsToBounds = true
@@ -829,13 +850,13 @@ final class WorkSceneContainerView: UIView {
     taps.cancelsTouchesInView = false
     taps.delaysTouchesBegan = false
     taps.delaysTouchesEnded = false
-    taps.onTap = { [weak self] in self?.controller?.noteTap() }
+    taps.onTap = { [weak self] in self?.controller?.containerNoteTap() }
     addGestureRecognizer(taps)
 
     registerForTraitChanges(
       [UITraitUserInterfaceStyle.self, UITraitPreferredContentSizeCategory.self]
     ) { (view: WorkSceneContainerView, _) in
-      view.controller?.themeChanged()
+      view.controller?.containerThemeChanged()
     }
   }
 
@@ -867,14 +888,14 @@ final class WorkSceneContainerView: UIView {
   override func didMoveToWindow() {
     super.didMoveToWindow()
     observeEnclosingScrollView()
-    controller?.scheduleEvaluate()
+    controller?.containerScheduleEvaluate()
   }
 
   override func layoutSubviews() {
     super.layoutSubviews()
     webView?.frame = bounds
     stillView.frame = bounds
-    controller?.scheduleEvaluate()
+    controller?.containerScheduleEvaluate()
   }
 
   private func observeEnclosingScrollView() {
@@ -892,17 +913,17 @@ final class WorkSceneContainerView: UIView {
     observedScrollView = window == nil ? nil : found
     offsetObservation = observedScrollView?.observe(\.contentOffset) { [weak self] _, _ in
       MainActor.assumeIsolated {
-        self?.controller?.scheduleEvaluate()
+        self?.controller?.containerScheduleEvaluate()
       }
     }
   }
 
-  fileprivate func showStill(_ image: UIImage?, covering: Bool) {
+  func showStill(_ image: UIImage?, covering: Bool) {
     if stillView.image !== image { stillView.image = image }
     stillView.isHidden = image == nil || !covering
   }
 
-  fileprivate func install(_ webView: WKWebView, hidden: Bool) {
+  func install(_ webView: WKWebView, hidden: Bool) {
     self.webView?.removeFromSuperview()
     self.webView = webView
     webView.frame = bounds
@@ -910,12 +931,12 @@ final class WorkSceneContainerView: UIView {
     addSubview(webView)
   }
 
-  fileprivate func revealWebView() {
+  func revealWebView() {
     webView?.alpha = 1
     stillView.isHidden = true
   }
 
-  fileprivate func remove(_ webView: WKWebView) {
+  func remove(_ webView: WKWebView) {
     webView.removeFromSuperview()
     if self.webView === webView { self.webView = nil }
   }
@@ -944,10 +965,10 @@ private struct WorkSceneContainer: UIViewRepresentable {
 }
 
 extension WorkSceneContainerView {
-  fileprivate func detachFromController() {
+  func detachFromController() {
     offsetObservation = nil
     observedScrollView = nil
-    controller?.detach(self)
+    controller?.containerDetach(self)
     // Whatever became of the controller, no web view outlives its row.
     webView?.removeFromSuperview()
     webView = nil

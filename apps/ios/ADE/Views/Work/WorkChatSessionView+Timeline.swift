@@ -115,6 +115,10 @@ extension WorkChatSessionView {
       if card.isHiddenAfterDismiss
         || (card.variant == "claude_session_quota" && chatSummaryContext.usageLimitResume != nil) {
         EmptyView()
+      } else if card.variant == WorkMcpAppLimits.cardVariant {
+        // An MCP App: the page a server ships with a tool, run in a web view
+        // of its own. Where this phone cannot run it, its fallback text stands.
+        WorkMcpAppCardView(card: card)
       } else if card.variant == "lane_setup", let launchStore = SyncService.shared?.chatLaunchStore {
         // The instant-lane setup record. Rendered from the live launch snapshot
         // while this device holds one, from the card's own rows otherwise.

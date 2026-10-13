@@ -14513,6 +14513,82 @@ final class SyncService: ObservableObject {
     return result.icons.compactMapValues { $0 }
   }
 
+  // MARK: MCP Apps (`WorkMcpAppView.swift`)
+
+  /// True when this chat's machine serves apps to a phone. A personal chat
+  /// has no such command, and an older machine does not advertise it.
+  func supportsMcpApps(sessionId: String) -> Bool {
+    !isPersonalChatScope(sessionId: sessionId)
+      && supportsRemoteAction("chat.getMcpApp")
+      && supportsRemoteAction("chat.mcpAppRequest")
+  }
+
+  /// The app a tool call produced: its page, already bounded by the machine,
+  /// and the policy the machine built for it.
+  func fetchMcpApp(sessionId: String, itemId: String) async throws -> WorkMcpAppFetch {
+    try requireInvokableRemoteAction("chat.getMcpApp")
+    let scope = chatCommandScope(for: sessionId)
+    let response = try await sendCommand(
+      action: "chat.getMcpApp",
+      args: ["sessionId": sessionId, "itemId": itemId],
+      disconnectOnTimeout: false,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    return workParseMcpAppFetch(response)
+  }
+
+  /// One `tools/call` or `resources/read` from an app's page. The machine
+  /// routes it to the app's own server, and for a tool that may change data it
+  /// needs `userActivated` and may raise the chat's approval card first, so
+  /// this can take minutes. Never queued: an answer nobody is waiting for
+  /// must not run a tool later.
+  func sendMcpAppRequest(
+    sessionId: String,
+    itemId: String,
+    method: String,
+    params: [String: Any],
+    userActivated: Bool
+  ) async -> Result<Any, WorkMcpAppRefusal> {
+    do {
+      try requireInvokableRemoteAction("chat.mcpAppRequest")
+      guard canSendLiveRequests() else {
+        return .failure(WorkMcpAppRefusal(message: "This phone is not connected to the machine right now."))
+      }
+      let scope = chatCommandScope(for: sessionId)
+      let response = try await sendCommand(
+        action: "chat.mcpAppRequest",
+        args: [
+          "sessionId": sessionId,
+          "itemId": itemId,
+          "method": method,
+          "params": JSONSerialization.isValidJSONObject(params) ? params : [String: Any](),
+          "userActivated": userActivated,
+        ],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: WorkMcpAppLimits.requestTimeoutNanoseconds,
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath
+      )
+      guard let payload = response as? [String: Any] else {
+        return .failure(WorkMcpAppRefusal(message: "The machine gave no answer."))
+      }
+      if payload["queued"] as? Bool == true {
+        return .failure(WorkMcpAppRefusal(message: "This phone is not connected to the machine right now."))
+      }
+      if payload["ok"] as? Bool == true {
+        return .success(payload["result"] ?? [String: Any]())
+      }
+      let error = payload["error"] as? [String: Any]
+      return .failure(WorkMcpAppRefusal(
+        code: (error?["code"] as? NSNumber)?.intValue ?? WorkMcpAppLimits.refusedCode,
+        message: (error?["message"] as? String) ?? "The request failed."
+      ))
+    } catch {
+      return .failure(WorkMcpAppRefusal(message: error.localizedDescription))
+    }
+  }
+
   func fetchChatSummary(sessionId: String) async throws -> AgentChatSessionSummary {
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableCommand(

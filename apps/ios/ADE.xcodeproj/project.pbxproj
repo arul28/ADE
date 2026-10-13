@@ -193,6 +193,8 @@
 		E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000034 /* WorkMarkdownParsing.swift */; };
 		E20000000000000000005CE1 /* WorkSceneDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE1 /* WorkSceneDocument.swift */; };
 		E20000000000000000005CE2 /* WorkSceneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE2 /* WorkSceneView.swift */; };
+		E20000000000000000005CE5 /* WorkMcpAppDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE5 /* WorkMcpAppDocument.swift */; };
+		E20000000000000000005CE6 /* WorkMcpAppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE6 /* WorkMcpAppView.swift */; };
 		E20000000000000000005CE3 /* SceneShell.html in Resources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE3 /* SceneShell.html */; };
 		E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0B /* WorkUsageLimitResume.swift */; };
 		E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */; };
@@ -600,6 +602,8 @@
 		D10000000000000000000034 /* WorkMarkdownParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownParsing.swift; path = ADE/Views/Work/WorkMarkdownParsing.swift; sourceTree = "<group>"; };
 		D20000000000000000005CE1 /* WorkSceneDocument.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSceneDocument.swift; path = ADE/Views/Work/WorkSceneDocument.swift; sourceTree = "<group>"; };
 		D20000000000000000005CE2 /* WorkSceneView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSceneView.swift; path = ADE/Views/Work/WorkSceneView.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE5 /* WorkMcpAppDocument.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMcpAppDocument.swift; path = ADE/Views/Work/WorkMcpAppDocument.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE6 /* WorkMcpAppView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMcpAppView.swift; path = ADE/Views/Work/WorkMcpAppView.swift; sourceTree = "<group>"; };
 		D20000000000000000005CE3 /* SceneShell.html */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.html; name = SceneShell.html; path = ADE/Resources/SceneShell.html; sourceTree = "<group>"; };
 		D10000000000000000000F0B /* WorkUsageLimitResume.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResume.swift; path = ADE/Views/Work/WorkUsageLimitResume.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResumeViews.swift; path = ADE/Views/Work/WorkUsageLimitResumeViews.swift; sourceTree = "<group>"; };
@@ -1233,6 +1237,8 @@
 				D10000000000000000000034 /* WorkMarkdownParsing.swift */,
 				D20000000000000000005CE1 /* WorkSceneDocument.swift */,
 				D20000000000000000005CE2 /* WorkSceneView.swift */,
+				D20000000000000000005CE5 /* WorkMcpAppDocument.swift */,
+				D20000000000000000005CE6 /* WorkMcpAppView.swift */,
 				D10000000000000000000F0B /* WorkUsageLimitResume.swift */,
 				D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */,
 				D10000000000000000000F81 /* WorkSessionHandoffSheets.swift */,
@@ -2148,6 +2154,8 @@
 				E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */,
 				E20000000000000000005CE1 /* WorkSceneDocument.swift in Sources */,
 				E20000000000000000005CE2 /* WorkSceneView.swift in Sources */,
+				E20000000000000000005CE5 /* WorkMcpAppDocument.swift in Sources */,
+				E20000000000000000005CE6 /* WorkMcpAppView.swift in Sources */,
 				E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */,
 				E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */,
 				E10000000000000000000F82 /* SyncService+SessionHandoff.swift in Sources */,

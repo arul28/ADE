@@ -466,6 +466,19 @@ needed) read for the Sources list. `{ domains: string[] }` returns
 the host's SSRF-guarded favicon resolver and cached on its disk. See
 [Favicons](../chat/transcript-and-turns.md#favicons).
 
+`chat.getMcpApp` and `chat.mcpAppRequest` carry MCP Apps to a controller (the
+iPhone app). `chat.getMcpApp` (`{ sessionId, itemId }`, viewer-allowed) returns
+the stored app with `contentSecurityPolicy`, the page's policy as the brain
+built it, including `sandbox allow-scripts`; the controller serves the page
+with that string and builds none. A page over 1 MB is answered
+`{ status: "unavailable", reason }` instead of being sent.
+`chat.mcpAppRequest` (`{ sessionId, itemId, method, params, userActivated }`)
+is not viewer-allowed and not queueable: it runs a tool for the app, on the
+app's own server, through the chat's live session. `userActivated` is the
+controller's word that the user tapped inside the app just before; a tool that
+may change data runs only when it is true. Both are optional in
+`syncMobileCompatibility.ts`. See [MCP Apps](../chat/README.md#mcp-apps).
+
 `chat.createScheduledWork` takes `{ sessionId, cron, prompt, recurring?,
 reason? }` and creates an ADE-owned durable schedule for any provider-backed
 chat. `recurring` defaults to true; false creates a one-shot at the next
