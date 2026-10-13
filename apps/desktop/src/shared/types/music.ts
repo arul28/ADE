@@ -159,6 +159,9 @@ export type MusicSearchResult = {
 
 export type MusicLibraryKind = "playlists" | "albums" | "songs";
 
+/** A collection (album or playlist) is read up to this many songs, 100 per page. */
+export const MUSIC_MAX_COLLECTION_TRACKS = 2_000;
+
 export type MusicPage = {
   items: MusicItem[];
   /** Offset for the next page, or null at the end. */
@@ -188,7 +191,8 @@ export type MusicBridge = {
   search: (args: { term: string; scope: MusicSearchScope; limit?: number }) => Promise<MusicSearchResult>;
   library: (args: { kind: MusicLibraryKind; offset?: number; limit?: number }) => Promise<MusicPage>;
   recent: () => Promise<MusicRecent>;
-  tracks: (args: { kind: "album" | "playlist"; id: string; library: boolean }) => Promise<MusicItem[]>;
+  /** One page of an album's or playlist's songs (`limit` up to 100); read on with `nextOffset`. */
+  tracks: (args: { kind: "album" | "playlist"; id: string; library: boolean; offset?: number; limit?: number }) => Promise<MusicPage>;
   /** The like state of a song: true liked, false disliked, null neither. */
   rating: (args: { id: string; library: boolean }) => Promise<boolean | null>;
   setRating: (args: { id: string; library: boolean; liked: boolean | null }) => Promise<void>;

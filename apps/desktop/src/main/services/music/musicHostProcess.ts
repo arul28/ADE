@@ -9,10 +9,11 @@ import { killWindowsProcessTreeAsync, terminateProcessTree } from "../shared/pro
  * The player host: a separate process that runs MusicKit JS in the OS web
  * engine and speaks newline-delimited JSON over stdio.
  *
- * Every platform implements the same `MusicHost`. Windows runs
- * `ade-music-host.exe` (WebView2, `native/ADEMusicHostWin`). macOS has no host
- * yet: `resolveMusicHostExecutable` (`native/nativeHelperPaths.ts`) returns null there and the Music tab says
- * Music on Mac is coming. A WKWebView helper only has to speak this protocol.
+ * Every platform implements the same `MusicHost` and runs the same player page
+ * (`native/ADEMusicHostWin/page`). Windows runs `ade-music-host.exe` (WebView2,
+ * `native/ADEMusicHostWin`); macOS runs `ade-music-host` (WKWebView,
+ * `native/ADEMusicHostMac`). `resolveMusicHostExecutable`
+ * (`native/nativeHelperPaths.ts`) returns null on other platforms.
  *
  * Protocol (see `native/ADEMusicHostWin/page/player.js`):
  *   → {"rid":"r1","cmd":"<name>",...}         one line per command

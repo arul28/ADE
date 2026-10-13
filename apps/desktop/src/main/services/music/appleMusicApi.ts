@@ -9,6 +9,7 @@ import type {
   MusicCharts,
   MusicAccount,
 } from "../../../shared/types/music";
+import { MUSIC_MAX_COLLECTION_TRACKS } from "../../../shared/types/music";
 
 /**
  * The Apple Music API, called from the main process.
@@ -294,22 +295,28 @@ export function createAppleMusicApi(args: {
       return ids.filter((id) => !/^\d+$/.test(id) || found.has(id));
     },
 
-    async tracks(input: { kind: "album" | "playlist"; id: string; library: boolean }): Promise<MusicItem[]> {
+    /**
+     * One page of an album's or playlist's songs (up to 100). The caller reads
+     * the next page from `nextOffset`, so the first rows show while the rest
+     * load. Pages stop at MUSIC_MAX_COLLECTION_TRACKS.
+     */
+    async tracks(input: { kind: "album" | "playlist"; id: string; library: boolean; offset?: number; limit?: number }): Promise<MusicPage> {
       const id = encodeURIComponent(input.id);
       const collection = input.kind === "album" ? "albums" : "playlists";
       const base = input.library
         ? `/v1/me/library/${collection}/${id}/tracks`
         : `/v1/catalog/${await storefrontId()}/${collection}/${id}/tracks`;
-      const items: MusicItem[] = [];
-      // Playlists can run to thousands of songs; read pages of 100 up to a bound.
-      for (let offset = 0; offset < 2_000; offset += 100) {
-        const body = await request<{ data?: Resource[]; next?: string }>(`${base}?${qs({ limit: 100, offset })}`, {
-          user: input.library ? true : false,
-        });
-        items.push(...normalizeAll(body.data));
-        if (!body.next) break;
-      }
-      return items;
+      const limit = Math.min(Math.max(Math.floor(input.limit ?? 100), 1), 100);
+      const offset = Math.min(Math.max(Math.floor(input.offset ?? 0), 0), MUSIC_MAX_COLLECTION_TRACKS);
+      const body = await request<{ data?: Resource[]; next?: string; meta?: { total?: number } }>(`${base}?${qs({ limit, offset })}`, {
+        user: input.library ? true : false,
+      });
+      const next = offset + (body.data?.length ?? limit);
+      return {
+        items: normalizeAll(body.data),
+        nextOffset: body.next && next < MUSIC_MAX_COLLECTION_TRACKS ? next : null,
+        total: typeof body.meta?.total === "number" ? body.meta.total : null,
+      };
     },
 
     async rating(input: { id: string; library: boolean }): Promise<boolean | null> {

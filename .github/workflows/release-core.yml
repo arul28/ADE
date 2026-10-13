@@ -194,7 +194,7 @@ jobs:
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
 
-      # The transcribe.cpp binary and the four Swift helpers are universal and
+      # The transcribe.cpp binary and the five Swift helpers are universal and
       # depend only on their own sources, yet compiling them took 16 minutes of
       # every release. warm-release-caches.yml builds them on main; a release
       # restores them here and builds from source only on a miss.

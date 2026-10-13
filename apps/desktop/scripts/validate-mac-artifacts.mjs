@@ -257,19 +257,25 @@ async function assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, descrip
   }
 }
 
-async function assertBundledMacDesktopDriver(resourcesPath, description) {
-  const helperPath = path.join(resourcesPath, "native", "ade-desktop-driver");
-  await assertPathExists(helperPath, `native Mac Desktop driver for ${description}`);
-  await assertExecutable(helperPath, `native Mac Desktop driver for ${description}`);
+/**
+ * A helper must carry both architectures: built for one, it ships happily and
+ * then fails to spawn on the other half of the install base.
+ */
+async function assertUniversalBinary(helperPath, label, description) {
   const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
   const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
   for (const architecture of ["arm64", "x86_64"]) {
     if (!architectures.has(architecture)) {
-      throw new Error(
-        `[release:mac] Native Mac Desktop driver for ${description} is missing ${architecture}: ${helperPath}`,
-      );
+      throw new Error(`[release:mac] ${label} for ${description} is missing ${architecture}: ${helperPath}`);
     }
   }
+}
+
+async function assertBundledMacDesktopDriver(resourcesPath, description) {
+  const helperPath = path.join(resourcesPath, "native", "ade-desktop-driver");
+  await assertPathExists(helperPath, `native Mac Desktop driver for ${description}`);
+  await assertExecutable(helperPath, `native Mac Desktop driver for ${description}`);
+  await assertUniversalBinary(helperPath, "Native Mac Desktop driver", description);
 }
 
 /**
@@ -281,35 +287,36 @@ async function assertBundledAdeMedia(resourcesPath, description) {
   const helperPath = path.join(resourcesPath, "native", "ade-media");
   await assertPathExists(helperPath, `native demo engine for ${description}`);
   await assertExecutable(helperPath, `native demo engine for ${description}`);
-  const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
-  const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
-  for (const architecture of ["arm64", "x86_64"]) {
-    if (!architectures.has(architecture)) {
-      throw new Error(
-        `[release:mac] Native demo engine for ${description} is missing ${architecture}: ${helperPath}`,
-      );
-    }
-  }
+  await assertUniversalBinary(helperPath, "Native demo engine", description);
 }
 
 /**
- * The capture helper is a universal Mach-O, and the arch check is
- * the point: a helper built for one arch ships happily, then fails to spawn on
- * the other half of the install base with nothing but an EACCES-shaped silence.
+ * The Apple Music player host and its page. Missing, the Music tab says the
+ * install is broken; one arch short, Music fails on half the Macs.
+ */
+async function assertBundledMusicHost(resourcesPath, description) {
+  const hostDir = path.join(resourcesPath, "native", "ade-music-host");
+  const helperPath = path.join(hostDir, "ade-music-host");
+  await assertPathExists(helperPath, `Apple Music player host for ${description}`);
+  await assertExecutable(helperPath, `Apple Music player host for ${description}`);
+  // Not ade-icon.png: the shared page links it at https://music.ade.local/,
+  // which only WebView2 (Windows) serves; the macOS host never loads it.
+  for (const pageFile of ["index.html", "player.js"]) {
+    await assertPathExists(path.join(hostDir, "page", pageFile), `Apple Music player page ${pageFile} for ${description}`);
+  }
+  await assertUniversalBinary(helperPath, "Apple Music player host", description);
+}
+
+/**
+ * The capture helper is a universal Mach-O, and the arch check is the point
+ * (see assertUniversalBinary): a one-arch helper fails with nothing but an
+ * EACCES-shaped silence.
  */
 async function assertBundledCaptureHelper(resourcesPath, description) {
   const helperPath = path.join(resourcesPath, "native", "ade-capture-helper");
   await assertPathExists(helperPath, `native capture helper for ${description}`);
   await assertExecutable(helperPath, `native capture helper for ${description}`);
-  const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
-  const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
-  for (const architecture of ["arm64", "x86_64"]) {
-    if (!architectures.has(architecture)) {
-      throw new Error(
-        `[release:mac] Native capture helper for ${description} is missing ${architecture}: ${helperPath}`,
-      );
-    }
-  }
+  await assertUniversalBinary(helperPath, "Native capture helper", description);
   // The gesture is useless without the usage string: macOS refuses the Screen
   // Recording prompt outright for an app that does not declare one, so the
   // capture fails with no way for the user to find out why.
@@ -520,6 +527,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertBundledMacDesktopDriver(resourcesPath, description);
   await assertBundledCaptureHelper(resourcesPath, description);
   await assertBundledAdeMedia(resourcesPath, description);
+  await assertBundledMusicHost(resourcesPath, description);
   await assertNoRuntimeFetchedToolPayload(nodeModulesPath, description);
   await assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, description, expectedArch);
   assertPackagedTuiEsmShims(await fs.readFile(adeCliTuiPath, "utf8"));
