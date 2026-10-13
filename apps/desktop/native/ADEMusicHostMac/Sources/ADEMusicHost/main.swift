@@ -35,13 +35,15 @@ func log(_ message: String) {
     let ms = Int(Date().timeIntervalSince(clock) * 1000)
     let line = "[\(String(ms).leftPad(7))ms] \(message)\n"
     outLock.lock()
-    FileHandle.standardError.write(line.data(using: .utf8)!)
+    // `write(_:)` raises an Objective-C exception on EPIPE (SIGPIPE is
+    // ignored), which aborted the host with a crash report once ADE was gone.
+    try? FileHandle.standardError.write(contentsOf: Data(line.utf8))
     outLock.unlock()
 }
 
 func emit(_ json: String) {
     outLock.lock()
-    FileHandle.standardOutput.write((json + "\n").data(using: .utf8)!)
+    try? FileHandle.standardOutput.write(contentsOf: Data((json + "\n").utf8))
     outLock.unlock()
 }
 
@@ -117,7 +119,9 @@ func jsString(_ s: String) -> String {
 }
 
 /// A stable WebKit profile per ADE user-data directory, so dev and installed
-/// builds (and test instances) never share Apple's cookies.
+/// builds (and test instances) never share Apple's cookies. Per-profile stores
+/// need macOS 14; on older systems the host refuses to start (see the end of
+/// this file) rather than fall back to the shared default store.
 @available(macOS 14.0, *)
 func dataStore(for udf: String) -> WKWebsiteDataStore {
     var bytes = Array(SHA256.hash(data: Data(("ade-music:" + udf).utf8)).prefix(16))
@@ -129,6 +133,7 @@ func dataStore(for udf: String) -> WKWebsiteDataStore {
 
 final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
     let options: Options
+    let store: WKWebsiteDataStore
     var playerWindow: NSWindow!
     var player: WKWebView!
     var authWindows: [NSWindow: (webView: WKWebView, n: Int)] = [:]
@@ -136,8 +141,9 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNav
     var parentSource: DispatchSourceProcess?
     var closing = false
 
-    init(options: Options) {
+    init(options: Options, store: WKWebsiteDataStore) {
         self.options = options
+        self.store = store
     }
 
     var origin: String { "https://" + options.host }
@@ -167,9 +173,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNav
         // MusicKit's authorize() opens Apple's sign-in with window.open from a
         // command, not a click.
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
-        if #available(macOS 14.0, *) {
-            config.websiteDataStore = dataStore(for: options.udf!)
-        }
+        config.websiteDataStore = store
         let content = WKUserContentController()
         content.add(self, name: "ade")
         content.addUserScript(WKUserScript(source: bridgeScript(origin: origin), injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -436,15 +440,28 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNav
     }
 }
 
-let options = Options(CommandLine.arguments)
-guard let udf = options.udf, !udf.isEmpty else {
-    emit(["event": "hostError", "code": "usage", "error": "--udf is required"])
-    exit(2)
+/// Parse, check the OS, then run the app; never returns.
+func runHost() -> Never {
+    let options = Options(CommandLine.arguments)
+    guard let udf = options.udf, !udf.isEmpty else {
+        emit(["event": "hostError", "code": "usage", "error": "--udf is required"])
+        exit(2)
+    }
+    // ADE supports macOS 12 and the host is built to launch there, but without
+    // a per-profile WebKit store dev, installed and test builds would share one
+    // Apple sign-in. Say so and leave; ADE shows the message.
+    guard #available(macOS 14.0, *) else {
+        emit(["event": "hostError", "code": "unsupported_os", "error": "Apple Music in ADE needs macOS 14 or later."])
+        exit(6)
+    }
+    // --udf only names the profile here (the WebKit store is keyed by it); the
+    // host writes nothing into the directory, which ADE itself creates.
+    signal(SIGPIPE, SIG_IGN)
+    let host = Host(options: options, store: dataStore(for: udf))
+    let app = NSApplication.shared
+    app.delegate = host
+    app.run()
+    exit(0)
 }
-try? FileManager.default.createDirectory(atPath: udf, withIntermediateDirectories: true)
-signal(SIGPIPE, SIG_IGN)
 
-let app = NSApplication.shared
-let host = Host(options: options)
-app.delegate = host
-app.run()
+runHost()
