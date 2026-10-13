@@ -70,6 +70,9 @@ import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import type { AdeRuntime } from "./bootstrap";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import { summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
+import { readSessionToolTypeFromDisk } from "./services/sync/rosterBuilder";
+import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
+import { querySearchIndexReadOnly } from "../../desktop/src/main/services/search/searchIndexQuery";
 import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
 import { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai/providerStatusDetails";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
@@ -1362,26 +1365,106 @@ export function createMultiProjectRpcRequestHandler(
     ];
   };
 
+  const isProjectBackedChatToolType = (value: unknown): boolean => {
+    const toolType = typeof value === "string" ? value.trim().toLowerCase() : "";
+    return toolType === "cursor" || toolType.endsWith("-chat");
+  };
+
+  /** Hand the event loop one turn, so a pass over every project cannot starve timers. */
+  const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  /**
+   * Which registered project owns this chat. Only the caller's own project and
+   * projects that are already loaded are asked through their runtime; every
+   * other project is asked from its database on disk, so the lookup never
+   * loads a project just to learn the chat is not there.
+   */
   const resolveProjectBackedChatOwner = async (
     sessionId: string,
     preferredProjectId: ProjectId,
   ): Promise<ProjectId | null> => {
     for (const record of orderedProjectRecords(preferredProjectId)) {
       try {
-        const scope = await scopeRegistry.get(record.projectId);
-        const session = scope.runtime.sessionService.get(sessionId);
-        const toolType = typeof session?.toolType === "string"
-          ? session.toolType.trim().toLowerCase()
-          : "";
-        if (toolType === "cursor" || toolType.endsWith("-chat")) {
+        const booted = record.projectId === preferredProjectId
+          ? scopeRegistry.get(record.projectId)
+          : scopeRegistry.getIfBooted(record.projectId);
+        if (booted) {
+          const scope = await booted;
+          if (isProjectBackedChatToolType(scope.runtime.sessionService.get(sessionId)?.toolType)) {
+            return record.projectId;
+          }
+          continue;
+        }
+        if (isProjectBackedChatToolType(readSessionToolTypeFromDisk(record.rootPath, sessionId))) {
           return record.projectId;
         }
+        await yieldToEventLoop();
       } catch {
         // A stale/unavailable registered project cannot own a readable chat in
         // this process. Continue through the remaining project-backed scopes.
       }
     }
     return null;
+  };
+
+  type ProjectRecordForSearch = ReturnType<typeof orderedProjectRecords>[number];
+  type UnloadedProjectSearch =
+    | {
+        status: "searched";
+        items: SearchResultItem[];
+        totalByKind: Partial<Record<SearchDocKind, number>>;
+        truncated: boolean;
+      }
+    /** `entry` is the text listed under projectsUnavailable. */
+    | { status: "unavailable"; entry: string };
+
+  /**
+   * Answers a chat search for one project whose runtime is not loaded, from its
+   * index file. A project with no index yet has no indexed chats, so it is
+   * searched with no hits. A project whose folder is gone, or whose index this
+   * build cannot read, is unavailable; the index is rebuilt when the project is
+   * opened in ADE, and nothing here creates, migrates or deletes it.
+   */
+  const searchUnloadedProjectIndex = (
+    record: ProjectRecordForSearch,
+    query: { query: string; laneId: string | null },
+  ): UnloadedProjectSearch => {
+    if (!fs.existsSync(record.rootPath)) {
+      return { status: "unavailable", entry: record.displayName };
+    }
+    const indexed = querySearchIndexReadOnly({
+      cacheDir: resolveAdeLayout(record.rootPath).cacheDir,
+      query: query.query,
+      kinds: ["chat"],
+      laneId: query.laneId,
+      limit: 200,
+    });
+    if (indexed.status === "unusable") {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its search index is from another ADE version or unreadable; open this project in ADE once to rebuild it)`,
+      };
+    }
+    if (indexed.status === "busy") {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its search index is busy; run the search again)`,
+      };
+    }
+    if (indexed.status === "missing") {
+      return { status: "searched", items: [], totalByKind: {}, truncated: false };
+    }
+    return {
+      status: "searched",
+      items: indexed.results.map((item) => ({
+        ...item,
+        projectId: record.projectId,
+        projectName: record.displayName,
+        projectRoot: record.rootPath,
+      })),
+      totalByKind: indexed.totalByKind,
+      truncated: indexed.truncated,
+    };
   };
 
   const aggregateProjectSearch = async (args: {
@@ -1425,11 +1508,33 @@ export function createMultiProjectRpcRequestHandler(
     let resultsTruncated = false;
 
     for (const record of records) {
+      const isPreferred = record.projectId === args.preferredProjectId;
       try {
+        // The caller's project and projects whose runtime is already loaded
+        // answer through their own search service. Every other project is
+        // answered from its index file, so a search never loads a runtime per
+        // registered project and the brain's event loop stays responsive.
+        if (!isPreferred && !scopeRegistry.getIfBooted(record.projectId)) {
+          await yieldToEventLoop();
+          const unloaded = searchUnloadedProjectIndex(record, {
+            query: typeof args.queryArgs.query === "string" ? args.queryArgs.query : "",
+            laneId: typeof args.queryArgs.laneId === "string" ? args.queryArgs.laneId : null,
+          });
+          if (unloaded.status === "unavailable") {
+            unavailableProjects.push(unloaded.entry);
+            continue;
+          }
+          resultsTruncated ||= unloaded.truncated;
+          buckets.push(unloaded.items);
+          for (const [kind, count] of Object.entries(unloaded.totalByKind)) {
+            totals[kind as SearchDocKind] = (totals[kind as SearchDocKind] ?? 0) + count;
+          }
+          continue;
+        }
         const entry = await getProjectHandler(record.projectId);
         const projectQueryArgs: Record<string, unknown> = {
           ...args.queryArgs,
-          ...(record.projectId === args.preferredProjectId
+          ...(isPreferred
             ? {}
             : { kinds: ["chat"] }),
           limit: 200,
@@ -1447,7 +1552,7 @@ export function createMultiProjectRpcRequestHandler(
           },
         });
         if (!isRecord(response) || !isRecord(response.result)) continue;
-        if (record.projectId === args.preferredProjectId) baseResponse = response;
+        if (isPreferred) baseResponse = response;
         const result = decodeSearchQueryResult(response.result);
         resultsTruncated ||= result.nextCursor != null;
         const projectResults = result.results.map((item) => ({

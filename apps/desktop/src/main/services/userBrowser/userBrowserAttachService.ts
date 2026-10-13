@@ -45,6 +45,10 @@ import {
   MAX_APP_CONTROL_NETWORK_DIAGNOSTICS,
 } from "../appControl/appControlObservations";
 import type { Logger } from "../logging/logger";
+import {
+  BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
+} from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { CdpClient, type CdpCommandChannel } from "../shared/cdpClient";
 import { subscribeCdpPageDiagnostics, type CdpPendingRequest } from "../shared/cdpPageDiagnostics";
 import { imageDimensions } from "../shared/imageDimensions";
@@ -182,9 +186,15 @@ function navigableUrl(raw: string): string {
 
 /**
  * Methods that keep going to ADE's own browser machinery even while attached:
- * they do not act on a page (the dev-server list, a demo step caption).
+ * they do not act on a page (the dev-server list, a demo step caption, a
+ * desktop's answer to a forwarded command).
  */
-const PASSTHROUGH_METHODS = new Set(["getDevServers", "noteDemoStep", "acknowledgeRemoteRequest"]);
+const PASSTHROUGH_METHODS = new Set<string>([
+  "getDevServers",
+  "noteDemoStep",
+  BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
+]);
 
 /** The CLI word for a refused method, so the message names what the agent typed. */
 const METHOD_COMMAND_WORDS: Record<string, string> = {

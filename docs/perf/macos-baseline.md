@@ -106,6 +106,7 @@ Run without the app (`scripts/perf/service/`).
 | Settings › MCP servers: scan of the provider CLI configs (169 KB `~/.claude.json`, 17 KB Codex `config.toml`; runs in Electron main, twice per page open) | one-off `tsx` loop over `scanProviderMcpConfigs`, 20 runs (no bench file yet) | — | 4–6 ms, 18 ms cold | 25 ms |
 | MCP App: file one app with the chat (218 KB page, its record, and the prune of a 40-app chat; `mcpAppStore.write`, runs in the brain once per tool call that has a page) | one-off `tsx` loop, 60 runs (no bench file yet) | — | 0.9–1.7 ms; reading one back 0.1 ms | 10 ms |
 | MCP App: tool result to transcript card (list lookup, `resources/read` through the live session, file, emit), 6 KB page | timestamps of the `tool_result` and `ade_card` events in a dev-brain transcript, Claude ×4 and Codex ×2 | — | 2–10 ms (Claude, first call of a session reads the tool list); 2 ms (Codex) | 100 ms |
+| Chat search across 37 registered projects (2,000 chat docs each, every doc a hit) | `search-fanout.bench.mts` | not from #1560: until 2026-10-13 the search loaded every project and blocked the brain past its 30 s watchdog | 325–341 ms, longest event-loop block 10 ms | 800 ms, block 50 ms |
 
 ### Open items (measured, over budget or unbudgeted)
 
@@ -116,6 +117,13 @@ Run without the app (`scripts/perf/service/`).
 - **First Work open after launch:** a long chat backfills its older history
   in idle slots: 114–171 pages over 8–14 s, at about 350 ms/s of main-thread
   work, once per chat per session.
+- **Remote browser host, not measured:** a desktop that has shown a chat
+  from another machine keeps one runtime event subscription for that machine
+  after the chat leaves the front, so it can run that chat's browser commands
+  (`remoteBrowserCallHost.ts`, the four most recently shown machines). While
+  the chat is in front the subscription is one the pane already holds. The
+  idle cost with the chat in the background needs two machines to measure and
+  was not measured when this was added (2026-10-13).
 - **GitHub calls:** `pr.getChecks` and `pr.getStatus` take 1–1.5 s each
   (network) and dominate the Lanes and PRs IPC totals.
 - **Prewarmed Claude processes:** 150–420 MB each until they are reaped
@@ -191,7 +199,7 @@ UI, against a running dev app (`scripts/perf/ui/`):
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
 `file-index`, `registry-read`, `roster`, `rpc-read`, `shell-path`,
-`chat-transcript`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
+`search-fanout`, `chat-transcript`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
 comparison and not a timing). They read temp copies of state and never write
 to `~/.ade`.
 `chat-transcript` is the chat renderer's own pipeline (live merge, display

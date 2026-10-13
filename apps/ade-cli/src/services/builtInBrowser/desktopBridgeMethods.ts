@@ -1,4 +1,5 @@
 import type { BuiltInBrowserService } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
+import type { BuiltInBrowserRemoteCallMethod } from "../../../../desktop/src/shared/types/builtInBrowserRemote";
 import {
   BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
   type BuiltInBrowserRuntimeStatus,
@@ -100,16 +101,102 @@ export type BuiltInBrowserDesktopBridgeMethod =
   (typeof BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS)[number];
 
 /**
+ * Which machine's browser runs each bridge method for an agent whose user sits
+ * at a desktop on another machine (`remoteBrowserForwarder`):
+ *
+ * - `open`: puts a URL on a screen. It tries the user's desktop first.
+ * - `user-desktop`: acts on one of the chat's tabs, so it runs where the tabs
+ *   are. Only a method in `BUILT_IN_BROWSER_REMOTE_CALL_METHODS` can be here.
+ * - `local-file`: reads or writes a file on the agent's machine, so it runs
+ *   there (`--here`).
+ * - `agent-machine`: about the agent's machine itself (its dev servers, a
+ *   recording's step caption, the pane's own layout).
+ *
+ * Every bridge method must have a route; the type makes a new one fail to
+ * compile until it is given one.
+ */
+type BuiltInBrowserMethodRoutes = {
+  readonly [Method in BuiltInBrowserDesktopBridgeMethod]: Method extends BuiltInBrowserRemoteCallMethod
+    ? "open" | "user-desktop"
+    : "open" | "local-file" | "agent-machine";
+};
+
+export const BUILT_IN_BROWSER_METHOD_ROUTES = {
+  getStatus: "user-desktop",
+  getDevServers: "agent-machine",
+  requestOriginAccess: "user-desktop",
+  claim: "user-desktop",
+  startHandoff: "user-desktop",
+  waitForHandoff: "user-desktop",
+  startSession: "user-desktop",
+  listSessions: "user-desktop",
+  endSession: "user-desktop",
+  showPanel: "open",
+  setBounds: "agent-machine",
+  navigate: "open",
+  createTab: "open",
+  switchTab: "user-desktop",
+  closeTab: "user-desktop",
+  reload: "user-desktop",
+  goBack: "user-desktop",
+  goForward: "user-desktop",
+  stop: "user-desktop",
+  observe: "user-desktop",
+  getTrace: "user-desktop",
+  click: "user-desktop",
+  typeText: "user-desktop",
+  dispatchKey: "user-desktop",
+  scroll: "user-desktop",
+  fill: "user-desktop",
+  clear: "user-desktop",
+  wait: "user-desktop",
+  startInspect: "user-desktop",
+  stopInspect: "user-desktop",
+  captureScreenshot: "user-desktop",
+  selectPoint: "user-desktop",
+  selectCurrent: "user-desktop",
+  clearSelection: "user-desktop",
+  setEmulation: "user-desktop",
+  setZoom: "user-desktop",
+  findInPage: "user-desktop",
+  readText: "user-desktop",
+  stopFindInPage: "user-desktop",
+  setDevTools: "user-desktop",
+  setNetworkLogging: "user-desktop",
+  getNetworkLog: "user-desktop",
+  exportHar: "local-file",
+  hover: "user-desktop",
+  drag: "user-desktop",
+  selectOption: "user-desktop",
+  uploadFile: "local-file",
+  startRecording: "local-file",
+  stopRecording: "local-file",
+  noteDemoStep: "agent-machine",
+} as const satisfies BuiltInBrowserMethodRoutes;
+
+export type BuiltInBrowserLocalFileMethod = {
+  [Method in BuiltInBrowserDesktopBridgeMethod]: (typeof BUILT_IN_BROWSER_METHOD_ROUTES)[Method] extends "local-file"
+    ? Method
+    : never;
+}[BuiltInBrowserDesktopBridgeMethod];
+
+/**
  * Methods the runtime daemon serves itself rather than proxying to Electron.
  *
  * `acknowledgeRemoteRequest` is not a `BuiltInBrowserService` method and never
  * reaches the desktop bridge: it is how a desktop elsewhere tells THIS machine
- * that it took a forwarded `ade browser open`. Named once here so the three
- * sites that special-case it (the action allowlist, `adeRpcServer`'s scoping
- * chain, and `remoteBrowserForwarder`) all point at the same constant instead
- * of three bare string comparisons.
+ * that it took a forwarded `ade browser open`. The daemon and desktop main
+ * import this constant; the shared action allowlist (`adeActionAccess`) names
+ * it as a literal, because the shared layer does not import the CLI.
  */
 export const BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD = "acknowledgeRemoteRequest";
+
+/**
+ * How a desktop elsewhere answers a command this machine sent it
+ * (`built_in_browser_remote_call`): once when it takes the command, once with
+ * the outcome. Runtime-served for the same reason as `acknowledgeRemoteRequest`.
+ */
+export const BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD = "replyRemoteCall";
 
 /**
  * Runtime-served methods for the user's own browser (`ade browser attach` /
@@ -142,6 +229,7 @@ export type BuiltInBrowserDesktopBridgeClient = {
   acknowledgeRemoteRequest: (
     input: BuiltInBrowserAcknowledgeRemoteRequestArgs,
   ) => { ok: boolean };
+  replyRemoteCall: (input: unknown) => { ok: boolean };
   dispose: () => void;
 };
 

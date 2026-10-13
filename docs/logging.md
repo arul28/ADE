@@ -224,6 +224,16 @@ command, not a user decision, so an event here would report engagement nobody
 generated; the user's own `Switch back` / `Keep` choice uses the existing
 drift-resolution path, which this change does not instrument.
 
+A browser command that an agent on another machine sends to the desktop the
+user sits at writes local lines on the agent's brain:
+`built_in_browser.remote_call` (request id, method, whether a desktop took it,
+whether it succeeded, duration), `built_in_browser.remote_call_emit_failed`,
+and `built_in_browser.remote_call_file_write_failed`. The event-loop watchdog
+also writes a native `sample` of a wedged brain (macOS only) next to its wedge
+report. None of these is a PostHog event: agent browser commands are
+high-frequency agent activity, not a person's decision, and a wedge already has
+`ade_brain_recovered`.
+
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
 ## Source file map

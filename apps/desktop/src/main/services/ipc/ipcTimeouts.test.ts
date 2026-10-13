@@ -415,6 +415,17 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(remote).toBeGreaterThanOrEqual(longRunningLocalRuntimeActionTimeoutMs("ios_simulator.deviceCleanup")!);
   });
 
+  // A browser command from an agent on another machine carries the same budget
+  // the daemon waiting for its `done` reply uses. On the old 30s default the
+  // desktop's own IPC timer cut a person's sign-in handoff off mid-way.
+  it.each([
+    ["a plain observe", { method: "observe", input: {} }, 60_000],
+    ["a wait that asked for two minutes", { method: "wait", input: { timeoutMs: 120_000 } }, 135_000],
+    ["a sign-in handoff with no timeout of its own", { method: "waitForHandoff", input: {} }, 30 * 60_000],
+  ] as const)("gives %s the desktop's own remote-call budget", (_label, payload, expectedMs) => {
+    expect(ipcInvokeTimeoutMs(IPC.builtInBrowserRunRemoteAgentCall, [payload])).toBe(expectedMs);
+  });
+
   // These wait on a person at a native dialog, or on a download that can run
   // for many minutes. The renderer must not report a failure while either is
   // still going; the reset confirmation in particular stayed answerable after

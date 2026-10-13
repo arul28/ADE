@@ -605,7 +605,7 @@ ade history show --id operation-id --text
 ade history commits --lane lane-id --text
 ade history export --lane lane-id --out history.json
 ade diff patch --lane lane-id --path src/file.ts --text
-ade search "login redirect" --text                          # active-project search plus bounded chat hits from every registered project
+ade search "login redirect" --text                          # active-project search plus bounded chat hits from every registered project (read from each project's index file; no project is loaded)
 ade search "flaky test" --kind chat,terminal --lane fix-login --text  # exit 1 when nothing matches
 ade search --status --text                                  # index doc counts, backfill state, index path
 ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # prints GitHub + ADE PR URLs
@@ -997,6 +997,16 @@ a caller-supplied `--lane` is dropped there. From a plain terminal with no chat,
 flag and the runtime rejects it, and calls from another machine's brain are
 refused. On a machine with no ADE window, `open`/`new-tab`/`panel` are
 forwarded to a desktop that has this lane pinned.
+
+When the user drives the chat from another computer, the chat's browser is the
+one on that computer: `open`, `observe`, `click`, `fill`, `text`, `claim` and
+the other page commands run in the ADE browser of the desktop that sent the
+chat its last message, and the first line of `--text` output says so
+(`browser: on <machine>, the computer the user sits at`). If that desktop does
+not take a command within 4 s, the command runs in this machine's browser and
+says that instead. `--here` picks this machine's browser on purpose, and
+`upload`, `har` and `record` need it, because their file is on this machine.
+See "The browser where the user sits" in `docs/features/remote-runtime/README.md`.
 
 `ade browser attach` / `detach`, and the page commands of a chat attached to
 the user's own browser, never reach ADE's browser or the desktop, so the

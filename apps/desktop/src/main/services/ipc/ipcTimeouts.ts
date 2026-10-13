@@ -17,6 +17,7 @@ import {
   WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
+import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -139,6 +140,12 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
   if (channel === IPC.accountRepairMachinePairing) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
   if (channel === IPC.localRuntimeListActionRegistry) return LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS;
   if (channel === IPC.localRuntimeStreamEvents) return LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS;
+  // A command from an agent on another machine: a `wait` or a sign-in handoff
+  // runs for minutes, and the daemon that sent it waits the same budget.
+  if (channel === IPC.builtInBrowserRunRemoteAgentCall) {
+    const request = args[0] && typeof args[0] === "object" ? args[0] as { method?: unknown; input?: unknown } : {};
+    return builtInBrowserRemoteCallDoneTimeoutMs(typeof request.method === "string" ? request.method : "", request.input);
+  }
   if (channel === IPC.remoteRuntimeCallAction) {
     const actionTimeoutMs = runtimeActionTimeoutMs(args);
     if (actionTimeoutMs != null) return actionTimeoutMs;

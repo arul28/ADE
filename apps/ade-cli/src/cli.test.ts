@@ -3347,6 +3347,17 @@ describe("ADE CLI", () => {
       /Unknown search kind/,
     );
 
+    // `--query <text>` names the query; its value is not read as a positional.
+    for (const flag of ["--query", "-q"]) {
+      expect(expectExecutePlan(buildCliPlan(["search", flag, "login redirect", "--kind", "chat"])).steps[0]?.params)
+        .toMatchObject({ arguments: { args: { query: "login redirect", kinds: ["chat"] } } });
+    }
+    // An option search does not know is refused, never dropped: a `--socket`
+    // written after the command used to send the search to the default brain.
+    expect(() => buildCliPlan(["search", "q", "--socket", "/tmp/test.sock"])).toThrow(/goes before the command/);
+    expect(() => buildCliPlan(["search", "--query", "--socket", "/tmp/test.sock"])).toThrow(/goes before the command/);
+    expect(() => buildCliPlan(["search", "q", "--bogus"])).toThrow(/Unknown search option: --bogus/);
+
     // A missing query is a usage error, but --status / --rebuild are not queries.
     expect(() => buildCliPlan(["search"])).toThrow(/requires a query/);
     const status = expectExecutePlan(buildCliPlan(["search", "--status"]));

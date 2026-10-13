@@ -92,6 +92,9 @@ import type {
   WindowsDesktopTakeoverArgs,
 } from "../shared/types/macDesktop";
 import type {
+  BuiltInBrowserRemoteCall,
+  BuiltInBrowserRemoteAgentCallOutcome,
+  BuiltInBrowserRemoteCallReply,
   BuiltInBrowserRemoteRequest,
   BuiltInBrowserRemoteRequestAck,
 } from "../shared/types/builtInBrowserRemote";
@@ -3568,6 +3571,18 @@ declare global {
          * other window's panel is told no. Always local; feature-detect before use.
          */
         claimRemoteRequest: (args: { requestId: string }) => Promise<{ claimed: boolean }>;
+        /**
+         * Run a browser command an agent on another machine sent to this
+         * desktop, in this desktop's browser. Always local.
+         */
+        runRemoteAgentCall: (
+          args: { method: string; input: Record<string, unknown> },
+        ) => Promise<BuiltInBrowserRemoteAgentCallOutcome>;
+        /** Answer a browser command on the pinned runtime that sent it. */
+        replyRemoteCall: (
+          args: BuiltInBrowserRemoteCallReply,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
         setDevTools: (
           args: BuiltInBrowserSetDevToolsArgs,
           pin?: OpenProjectBinding | null,
@@ -3613,6 +3628,14 @@ declare global {
          */
         onRemoteRequest: (
           cb: (ev: BuiltInBrowserRemoteRequest) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+        /**
+         * Browser commands of an agent on the pinned machine, to run in this
+         * desktop's browser. A no-op unsubscribe for any non-remote pin.
+         */
+        onRemoteCall: (
+          cb: (ev: BuiltInBrowserRemoteCall) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
       };

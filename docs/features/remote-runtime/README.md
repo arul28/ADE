@@ -762,22 +762,94 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     oldest evicted first. A request carrying no usable id cannot be arbitrated
     and is let through, so an older daemon's unlabelled request stays answerable.
 
-    Only navigation forwards;
-    `observe` / `click` and the rest act on a specific live tab and still fail,
-    with an error that says where the browser runs.
+    **The browser where the user sits.** The rule since 2026-10-13: an agent's
+    `ade browser` commands run in the browser of the desktop that sent its chat
+    the last message (see "Which desktop shows it" below), when that desktop is
+    not on the agent's machine. A chat on a Windows PC, driven from a Mac
+    Studio, works in the Mac Studio's browser: the user watches it in their own
+    pane, the page uses their sign-ins, and the agent can take a tab they
+    attach. Before this only "show the user" opens crossed over; `observe`,
+    `click` and the rest ran in a browser on the agent's machine that the user
+    could not see and that held none of their tabs, and the agent could only
+    answer "I cannot see what you see".
 
-    **A machine WITH a desktop also reaches the user's other screen.** When the
-    Mac Studio runs ADE Desktop, its bridge takes every browser call, because an
-    agent drives the tab it opened through that bridge (`observe`, `click`). A
-    call that asks to show the user (`showPanel`, which `ade browser panel`
-    sends, or `openPanel: true`, which `ade browser open --panel` sends) is
-    also forwarded as a
+    `BUILT_IN_BROWSER_METHOD_ROUTES` (`desktopBridgeMethods.ts`) gives every
+    bridge method one route, and the compiler refuses a method without one:
+    `open`, `user-desktop` (acts on a chat's tab), `local-file` (`upload`,
+    `har`, `record`: a file on the agent's machine) or `agent-machine` (its dev
+    servers, a recording's step caption, the pane's own layout). Two paths
+    carry the first two, both chosen by `remoteBrowserForwarder.ts#route`:
+
+    - **Opens** (`navigate`, `createTab`). The agent's own open is sent as a
+      command (below) and loads quietly in a background tab the chat owns, as
+      it does for a chat on the desktop's own machine. A loopback URL cannot
+      load quietly, because its port forward may need a person's yes: the
+      desktop answers `needs_pane`, and the daemon sends the open as a
+      `built_in_browser_remote_request`, which brings the Browser pane and its
+      approval bar up. `showPanel` and `--panel` always take the request path.
+    - **Commands** (`built_in_browser_remote_call`, the methods in
+      `BUILT_IN_BROWSER_REMOTE_CALL_METHODS`): `observe`, `click`, `fill`,
+      `readText`, `claim`, `getStatus`, the element picker, DevTools and the
+      other calls that act on a tab. The daemon publishes the command,
+      addressed to that one desktop, and takes a reply only from that desktop's
+      id. The desktop answers through the `built_in_browser.replyRemoteCall`
+      runtime action twice: `taken` at once, then `done` with the result. A
+      `wait` or a sign-in handoff gets its own time budget
+      (`builtInBrowserRemoteCallDoneTimeoutMs`) on both machines. A result's
+      screenshot is a file on the desktop, so its bytes travel in the reply and
+      the daemon writes them under `.ade/cache/browser-observations/remote/`
+      and points the result at that copy.
+
+    On the desktop, `renderer/lib/remoteBrowserCallHost.ts` answers. It is not
+    a component: the agent keeps working while the user reads another chat or
+    has Git in the tools pane. A chat is registered when the Work page shows it
+    and stays registered; one event subscription per machine, the four most
+    recently shown machines. It swaps the agent's project path (a path on
+    another machine) for the project its own window shows, runs the command
+    through `builtInBrowser.runRemoteAgentCall` (main:
+    `builtInBrowserRemoteCalls.ts`, the same `dispatchBuiltInBrowserAgentCall`
+    the bridge socket uses, so ownership, presence and agent access apply
+    unchanged), and replies on the pinned runtime. Two windows showing the chat
+    are arbitrated by `remoteRequestClaims`, as for an open.
+
+    The agent's own machine is the fallback and the opt-out:
+
+    - No desktop takes a command within 4 s (the laptop is closed): it runs in
+      the browser on the agent's machine, and the chat's commands stay there for
+      60 s before the desktop is asked again.
+    - The last message came from the phone or the CLI: there is no desktop to
+      name, so nothing changes from before.
+    - `--here` on any `ade browser` command, and every isolated sign-in
+      (`--isolated`, `--profile`): the browser on the agent's machine.
+    - `upload`, `har` and `record` read or write a file on the agent's machine.
+      They are refused with a pointer to `--here` while the chat's browser is on
+      the user's computer.
+
+    Every result says where it ran (`browserHost`, printed by `--text` as a
+    first line), so an agent whose command fell back can tell the user why they
+    cannot see its browser.
+
+    Known limits: a tab opened through a tunnel reports its forward port
+    (`127.0.0.1:<ephemeral>`) to the agent rather than the port it asked for; a
+    personal chat on another machine is not served (only chats shown on the
+    Work page are); a download lands on the user's computer.
+
+    On the desktop, three things say where a remote chat's browser is, and no
+    more: the Browser card in the tools picker ends with `chat on <machine>`;
+    the floating preview pictures only a tab that chat owns (it used to fall
+    back to the person's own active tab); and "Attach to chat" works, with a
+    sentence in the attached block telling the agent the tab is on the user's
+    computer.
+
+    **A request to show the user also reaches every screen when nobody can
+    tell.** A call that asks to show the user (`showPanel`, which
+    `ade browser panel` sends, or `openPanel: true`, which
+    `ade browser open --panel` sends) is forwarded as a
     `built_in_browser_remote_request`, addressed to the desktop that sent the
-    chat its last message (see "Which desktop shows it" below). When that
-    desktop is another machine, the Studio's own copy loads without revealing
-    its panel. When nobody can tell where the user is, the request goes to
-    every connected desktop and the Studio's panel opens too. If the addressed
-    desktop does not acknowledge, the request is sent again to every desktop.
+    chat its last message. When nobody can tell where the user is, the request
+    goes to every connected desktop and the agent machine's panel opens too. If
+    the addressed desktop does not acknowledge, the request is sent again to
+    every desktop.
 
     **Links in a chat open the chat machine's `localhost`.** A chat link to
     `http://localhost:4180` carries the chat's pin (`openLinkFromUi(url,

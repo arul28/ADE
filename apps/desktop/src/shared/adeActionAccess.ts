@@ -552,7 +552,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "selectPoint", "selectCurrent", "clearSelection", "setEmulation", "setZoom", "findInPage",
       "stopFindInPage", "setDevTools", "setNetworkLogging", "exportHar", "hover", "drag",
       "selectOption", "uploadFile", "startRecording", "stopRecording", "noteDemoStep",
-      "acknowledgeRemoteRequest", "attachUserBrowser", "detachUserBrowser",
+      "acknowledgeRemoteRequest", "replyRemoteCall", "attachUserBrowser", "detachUserBrowser",
     ],
   },
   automations: {
