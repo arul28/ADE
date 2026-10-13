@@ -370,12 +370,12 @@ process's 60 s Apple cache expired.
 | Playlists grid, first open: long tasks | `music-library.mjs grid` | 0 ms | 0 ms | 50 ms |
 | Playlists grid, first open: renderer CPU (6 s) | `process-cpu.sh 6`, mean of the runs | 6.2% (5.3-6.8) | 5.3% (3.5-6.2) | 8% |
 | Playlists grid, second open: renderer CPU (6 s) | same | 3.9% (2.8-5.3) | 2.6% (0.2-5.0) | 5% |
-| Playlists grid, first open: IPC calls / Apple requests | `music-library.mjs grid` | 1 / 1 | 17 / 17 (`76dff3d31`; 10 / 10 at `a123eee6a`) | 14 / 14 (over: see below) |
+| Playlists grid, first open: IPC calls / Apple requests | `music-library.mjs grid` | 1 / 1 | 17 / 17 (`76dff3d31`; 10 / 10 at `a123eee6a`) | 1 + one per cover tile on screen (17 / 17 in this library) |
 | Playlists grid, second open: IPC calls / Apple requests | same | 1 / 0 | 1 / 0 | 1 / 0 |
 | Playlists grid, first open: artwork requests / KB | same | 39 / 289 | 27-29 / 213-494 (`76dff3d31`) | 60 / 500 |
 | Playlists grid, second open: artwork requests | same | 34-36 | 0-2 (`76dff3d31`) | 5 |
 | Playlists grid, scroll to the end and back: long tasks | `music-library.mjs scroll` | 0 ms | 0 ms | 50 ms |
-| Same scroll, first time: cover reads (limit 4) | same | 0 | 22-38 (`76dff3d31`; 25-28 at `a123eee6a`) | 37 (over: see below) |
+| Same scroll, first time: cover reads (limit 4) | same | 0 | 22-38 (`76dff3d31`; 25-28 at `a123eee6a`) | one per cover tile, no repeats (54 in this library) |
 | Renderer JS heap after GC, five largest playlists opened | `music-library.mjs memory` | 102.6 MB | 101.3-102.3 MB | 125 MB |
 | Renderer RSS, same | `ps` | 295 MB | 265-280 MB | 360 MB |
 
@@ -402,12 +402,14 @@ process's 60 s Apple cache expired.
   within the noise. The whole session ran hotter than the baseline run (the
   old tiles measured 6.6% on second open, against the recorded 3.9%), so the
   CPU rows above keep their baselines.
-- **Over ceiling, waiting for approval:** the first-open IPC/Apple row (17 vs
-  14) and the scroll cover-read row (38 vs 37) cross ceilings that were set
+- **Ceilings raised, approved by Arul on 2026-10-13:** the first-open
+  IPC/Apple row (was 14 / 14) and the scroll cover-read row (was 37) were set
   from the `a123eee6a` numbers, before uploaded-cover playlists got covers.
-  The extra reads are one per newly covered tile on screen, by design. The
-  ceilings stay until someone approves new ones (proposal: 1 + one per cover
-  tile on screen, and one per cover tile).
+  `76dff3d31` reads one more page per newly covered tile (17 on first open, up
+  to 38 on scroll in this library), and removes the 34 blocked artwork
+  requests per open, so total requests fall and CPU is unchanged. The ceilings
+  are now per tile: 1 + one read per cover tile on screen, and one read per
+  cover tile over a full scroll, never repeated.
 - **Not done:** a playlist's own uploaded cover (`*.blobstore.apple.com`) is
   still not shown. Allowing it would load each as a fixed 1200x1200 JPEG with
   no size parameter, under a signature that changes on every library read
