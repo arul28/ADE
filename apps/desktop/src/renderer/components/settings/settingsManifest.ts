@@ -36,6 +36,7 @@ export const SETTINGS_TAB_IDS = [
   "lanes-git",
   "integrations",
   "notifications",
+  "mcp",
   "secrets",
   "storage",
   "archive",
@@ -124,6 +125,9 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "account", label: "Account", group: "account" },
   { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "account" },
   { id: "notifications", label: "Notifications", description: "What ADE tells you about running work, and where.", group: "account" },
+  // The list follows the account. The page also shows what this computer and
+  // this project do with it, because that is where a server is switched off.
+  { id: "mcp", label: "MCP servers", description: "Tools you add once. Every ADE agent gets them, on every computer.", group: "account" },
   { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
 
   // ── Project: this repository, on every machine ─────────────────────────
@@ -230,6 +234,30 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "account",
     web: "account",
     group: "Account",
+  },
+
+  // ── MCP servers ──────────────────────────────────────────────────────────
+  // Hidden on the hosted web client: a browser has no account-settings or
+  // vault bridge, and the checks and the import read files on a computer.
+  {
+    id: "mcp.servers",
+    label: "MCP servers",
+    keywords: ["mcp", "model context protocol", "tools", "server", "stdio", "http", "sse", "context7", "registry", "header", "env", "secret", "token"],
+    tab: "mcp",
+    anchor: "mcp-servers",
+    scope: "account",
+    web: "hidden",
+    group: "In your account",
+  },
+  {
+    id: "mcp.found",
+    label: "Import MCP servers from this computer",
+    keywords: ["mcp", "import", "claude", "codex", "cursor", "opencode", "droid", "found", "config", "mcp.json", "config.toml"],
+    tab: "mcp",
+    anchor: "mcp-found",
+    scope: "account",
+    web: "hidden",
+    group: "Found on this computer",
   },
 
   // ── General ──────────────────────────────────────────────────────────────

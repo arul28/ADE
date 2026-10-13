@@ -28,8 +28,7 @@ import {
   joinAdeAgentSkillRoots,
 } from "./agentSkillRoots";
 import {
-  buildAdeCliAgentGuidance,
-  buildAdeCliInlineGuidance,
+  buildAdeCliSessionGuidance,
   buildAdePosixTrackedCliActivityGuidance,
   buildAdeWindowsTrackedCliActivityGuidance,
 } from "./adeCliGuidance";
@@ -871,7 +870,7 @@ function workTabCliPreamblePrompt(
   return [
     launchInstruction,
     "",
-    buildAdeCliInlineGuidance(skillRoots),
+    buildAdeCliSessionGuidance(skillRoots),
   ].join("\n");
 }
 
@@ -1071,7 +1070,7 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     commandArgs.push(...claudeRuntimeEffortFlags(args.reasoningEffort));
     commandArgs.push(...claudeSessionSettingsFlags(args.fastMode, args.reasoningEffort));
-    const guidance = [buildAdeCliAgentGuidance(skillRoots), activityGuidance]
+    const guidance = [buildAdeCliSessionGuidance(skillRoots), activityGuidance]
       .filter((part): part is string => Boolean(part))
       .join("\n\n");
     commandArgs.push("--append-system-prompt", guidance);
@@ -1211,7 +1210,7 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "pi") {
     const guidance = [
-      buildAdeCliAgentGuidance(skillRoots),
+      buildAdeCliSessionGuidance(skillRoots),
       activityGuidance,
       `ADE permission policy for this Pi session: ${permissionMode}. Pi has no supported native ADE permission flag, so follow this policy and the ADE guidance without bypassing it.`,
     ].filter((part): part is string => Boolean(part)).join("\n\n");
@@ -1247,7 +1246,7 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     commandArgs.push(...qwenModelFlags(modelForLaunch));
     commandArgs.push(...permissionModeToQwenFlags(permissionMode));
-    commandArgs.push("--append-system-prompt", buildAdeCliAgentGuidance(skillRoots));
+    commandArgs.push("--append-system-prompt", buildAdeCliSessionGuidance(skillRoots));
     // `qwen` is an npm bin, so on Windows it resolves to a `.cmd` shim and the
     // prompt goes through `cmd.exe`, which expands `%NAME%`, flattens newlines,
     // and caps the command line at ~8191 characters. Same rule as Claude:
@@ -1273,7 +1272,10 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "kimi") {
     // Kimi's interactive TUI takes no argv prompt at all, so the prompt is
-    // typed in after launch — the Cursor branch's shape. Kimi also cannot be
+    // typed in after launch — the Cursor branch's shape. It has no flag for
+    // system text either, so ADE's guidance rides in front of that first
+    // message, and an empty launch stays idle rather than submitting guidance
+    // as work, exactly as Cursor's does. Kimi also cannot be
     // handed a session id at launch; the id is captured from its sessions
     // directory afterwards, so no `assignedSessionId` is returned here.
     const commandArgs = [
@@ -1284,7 +1286,9 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "kimi",
       args: commandArgs,
       startupCommand: commandArrayToLine(["kimi", ...commandArgs], { platform: "linux" }),
-      ...(initialPrompt ? { initialInput: initialPrompt, initialInputDelayMs: 750 } : {}),
+      ...(initialPrompt
+        ? { initialInput: workTabCliPrompt(initialPrompt, skillRoots, activityGuidance), initialInputDelayMs: 750 }
+        : {}),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
@@ -1300,7 +1304,7 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push(...grokModelFlags(modelForLaunch));
     commandArgs.push(...grokReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToGrokFlags(permissionMode));
-    commandArgs.push("--rules", buildAdeCliAgentGuidance(skillRoots));
+    commandArgs.push("--rules", buildAdeCliSessionGuidance(skillRoots));
     const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
     if (initialPrompt && promptRidesInArgv) {
       commandArgs.push(initialPrompt);
@@ -1338,17 +1342,28 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push(...copilotModelFlags(modelForLaunch));
     commandArgs.push(...copilotReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToCopilotFlags(permissionMode));
-    const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
-    if (initialPrompt && promptRidesInArgv) {
-      commandArgs.push("-i", initialPrompt);
+    // Copilot has no flag for system text, so ADE's guidance rides in front of
+    // the first message. An empty launch stays idle, as Cursor's does.
+    const copilotFirstMessage = initialPrompt
+      ? workTabCliPrompt(initialPrompt, skillRoots, activityGuidance)
+      : null;
+    const promptRidesInArgv = Boolean(copilotFirstMessage) && currentPlatform() !== "win32";
+    if (copilotFirstMessage && promptRidesInArgv) {
+      commandArgs.push("-i", copilotFirstMessage);
     }
     return {
       command: "copilot",
       args: commandArgs,
-      startupCommand: commandArrayToLine(["copilot", ...commandArgs], { platform: "linux" }),
+      // The shell fallback types this line; it carries the user's prompt only.
+      // The guidance is several KB of multi-line text with apostrophes, which
+      // the direct argv path carries safely and a typed line does not.
+      startupCommand: commandArrayToLine(
+        ["copilot", ...commandArgs.map((arg) => (arg === copilotFirstMessage && initialPrompt ? initialPrompt : arg))],
+        { platform: "linux" },
+      ),
       ...(assignedSessionId ? { assignedSessionId } : {}),
-      ...(initialPrompt && !promptRidesInArgv
-        ? { initialInput: initialPrompt, initialInputDelayMs: 750 }
+      ...(copilotFirstMessage && !promptRidesInArgv
+        ? { initialInput: copilotFirstMessage, initialInputDelayMs: 750 }
         : {}),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
@@ -1362,14 +1377,23 @@ export function buildTrackedCliLaunchCommand(args: {
     // `devin` is a native binary on every platform (no `.cmd` shim), and its
     // documented initial-prompt spelling is `devin -- <prompt>` — argv is a
     // safe transport for it on Windows too. Devin discovers AGENTS.md and
-    // `.agents/skills/` in the lane itself, so no prompt injection rides here.
-    if (initialPrompt) {
-      commandArgs.push("--", initialPrompt);
+    // `.agents/skills/` in the lane itself, but neither names the `ade`
+    // commands, so ADE's guidance rides in front of the first message. An
+    // empty launch stays idle, as Cursor's does.
+    const devinFirstMessage = initialPrompt
+      ? workTabCliPrompt(initialPrompt, skillRoots, activityGuidance)
+      : null;
+    if (devinFirstMessage) {
+      commandArgs.push("--", devinFirstMessage);
     }
     return {
       command: "devin",
       args: commandArgs,
-      startupCommand: commandArrayToLine(["devin", ...commandArgs], { platform: "linux" }),
+      // As for Copilot: the typed fallback line carries the user's prompt only.
+      startupCommand: commandArrayToLine(
+        ["devin", ...commandArgs.map((arg) => (arg === devinFirstMessage && initialPrompt ? initialPrompt : arg))],
+        { platform: "linux" },
+      ),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }

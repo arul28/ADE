@@ -911,6 +911,16 @@ import {
   createBrainRefreshBroker,
 } from "../account/accountBridge";
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
+import { createMcpRegistryService } from "../mcp/mcpRegistryService";
+import type { McpRegistryServer } from "../../../shared/mcpRegistry";
+import type {
+  McpRegistryCheck,
+  McpRegistryContext,
+  McpRegistryImportResult,
+  McpRegistryResult,
+  McpRegistryScan,
+  McpRegistrySecretRef,
+} from "../../../shared/types/mcpRegistry";
 import {
   createAccountMigrationRunner,
   createAccountMigrationStartRetry,
@@ -1030,7 +1040,18 @@ import type { createProjectScaffoldService } from "../projects/projectScaffoldSe
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { createComputerUseArtifactPath, toProjectArtifactUri } from "../computerUse/localComputerUse";
-import { sceneDocumentStore } from "../scenes/sceneDocumentStore";
+import { prepareMcpAppDocument, prepareSceneDocument } from "../scenes/sceneDocumentStore";
+import {
+  buildMcpAppContentSecurityPolicy,
+  MCP_APP_LIMITS,
+  type McpAppGetArgs,
+  type McpAppGetResult,
+  type McpAppGrantsArgs,
+  type McpAppGrantsResult,
+  type McpAppRequestArgs,
+  type McpAppRequestResult,
+  type McpAppRevokeGrantArgs,
+} from "../../../shared/mcpApp";
 import {
   resolveSceneCaptureRect,
   decodeScenePngDataUrl,
@@ -9182,6 +9203,26 @@ export function registerIpc({
     await ctx.agentChatService.respondToInput(arg);
   });
 
+  ipcMain.handle(IPC.agentChatGetMcpApp, async (_event, arg: McpAppGetArgs): Promise<McpAppGetResult> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.getMcpApp(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatMcpAppRequest, async (_event, arg: McpAppRequestArgs): Promise<McpAppRequestResult> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.mcpAppRequest(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatListMcpAppGrants, async (_event, arg: McpAppGrantsArgs): Promise<McpAppGrantsResult> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.listMcpAppGrants(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatRevokeMcpAppGrant, async (_event, arg: McpAppRevokeGrantArgs): Promise<McpAppGrantsResult> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.revokeMcpAppGrant(arg);
+  });
+
   ipcMain.handle(
     IPC.agentChatDismissPendingInput,
     async (_event, arg: AgentChatDismissPendingInputArgs): Promise<void> => {
@@ -9695,7 +9736,8 @@ export function registerIpc({
    * Nothing is written to disk and nothing in the URL is a path — the id is a
    * key into an in-memory map that the `ade-scene:` handler reads.
    */
-  ipcMain.handle(IPC.scenePrepare, async (_event, arg: { html?: unknown } | string): Promise<string> => {
+  ipcMain.handle(IPC.scenePrepare, async (event, arg: { html?: unknown } | string): Promise<string> => {
+    assertTrustedAppControlSender(event, IPC.scenePrepare);
     const html = typeof arg === "string" ? arg : typeof arg?.html === "string" ? arg.html : "";
     if (!html.length) throw new Error("A scene document is required.");
     // The renderer checks its own ceiling before it ever gets here; this is the
@@ -9704,7 +9746,26 @@ export function registerIpc({
     if (Buffer.byteLength(html, "utf8") > SCENE_LIMITS.maxDocumentBytes) {
       throw new Error("This scene is too large to render.");
     }
-    return sceneDocumentStore.put(html).url;
+    return prepareSceneDocument(html).url;
+  });
+
+  /**
+   * Store an MCP App's page and hand back the URL its frame loads it from.
+   *
+   * The page is third-party HTML. Its policy is built HERE, in the main
+   * process, from the origins the resource declared: the renderer passes the
+   * declaration, never a policy string, and `buildMcpAppContentSecurityPolicy`
+   * sanitizes it again. The page lives in its own store, under its own URL
+   * host, so no scene URL can ever answer with it.
+   */
+  ipcMain.handle(IPC.mcpAppPrepare, async (event, arg: { html?: unknown; csp?: unknown }): Promise<string> => {
+    assertTrustedAppControlSender(event, IPC.mcpAppPrepare);
+    const html = typeof arg?.html === "string" ? arg.html : "";
+    if (!html.length) throw new Error("An app document is required.");
+    if (Buffer.byteLength(html, "utf8") > MCP_APP_LIMITS.maxDocumentBytes) {
+      throw new Error("This app is too large to show.");
+    }
+    return prepareMcpAppDocument(html, buildMcpAppContentSecurityPolicy(arg?.csp)).url;
   });
 
   /**
@@ -12041,6 +12102,46 @@ export function registerIpc({
     getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null,
     logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
   });
+
+  const mcpRegistryService = createMcpRegistryService({
+    vault: accountVaultBridge,
+    adeHome: harnessPresetsAdeDir,
+  });
+  ipcMain.handle(
+    IPC.mcpRegistryContext,
+    (_event, args?: { projectRoot?: string | null }): McpRegistryContext =>
+      mcpRegistryService.context(args?.projectRoot ?? null),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryCheck,
+    async (_event, args?: { servers?: unknown }): Promise<McpRegistryResult<McpRegistryCheck>> =>
+      await mcpRegistryService.check(args?.servers),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistrySetSecret,
+    async (_event, args: McpRegistrySecretRef & { value: string }): Promise<McpRegistryResult<null>> =>
+      await mcpRegistryService.setSecret(args, args?.value),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryRemoveSecret,
+    async (_event, args: McpRegistrySecretRef): Promise<McpRegistryResult<null>> =>
+      await mcpRegistryService.removeSecret(args),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryPruneSecrets,
+    async (_event, args: { server: string; keep?: McpRegistryServer | null }): Promise<McpRegistryResult<null>> =>
+      await mcpRegistryService.pruneSecrets(String(args?.server ?? ""), args?.keep ?? null),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryScan,
+    (_event, args?: { projectRoot?: string | null }): McpRegistryScan =>
+      mcpRegistryService.scan(args?.projectRoot ?? null),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryImport,
+    async (_event, args: { name: string; projectRoot?: string | null }): Promise<McpRegistryImportResult> =>
+      await mcpRegistryService.importServer(String(args?.name ?? ""), args?.projectRoot ?? null),
+  );
 
   const accountMigrationRunner = createAccountMigrationRunner({
     accountBridge,

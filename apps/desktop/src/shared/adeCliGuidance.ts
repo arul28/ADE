@@ -30,7 +30,6 @@ export const adeBundledAgentSkills = [
   "ade-proof-artifacts",
   "ade-deeplinks",
   "ade-search",
-  "ade-mosaic",
   "ade-scene",
 ] as const;
 
@@ -200,6 +199,29 @@ export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeA
 
 export const ADE_CLI_AGENT_GUIDANCE = buildAdeCliAgentGuidance();
 
+/**
+ * The screen rules a tracked CLI session needs in its own prompt.
+ *
+ * An ADE chat gets the full computer-use directive, written for the screens
+ * its machine actually has. A provider CLI in a terminal is started with fixed
+ * text and never gets that directive, yet every `ade` command works there
+ * (the terminal carries the lane and session identity), so it could drive a
+ * screen knowing only the name of a skill. These are the rules that prevent
+ * damage; the how-to stays in `ade-computer-use`.
+ */
+export const ADE_CLI_SESSION_SCREEN_RULES = [
+  "Screens and proof: every `ade` command works from this terminal.",
+  "- The user's own screen, apps and windows are not yours to change. Never close, quit, hide or reset an app or window you did not open. Act on their real screen only when they ask.",
+  "- Pick the surface: a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS or SwiftUI app is `ade apple`; any other desktop app is this lane's own screen, `ade mac-desktop` (`ade screen` on Windows).",
+  "- Do not click, type or capture with anything else (osascript, cliclick, screencapture, a browser you start yourself): those drive the user's real screen.",
+  "- An ok result only means the input was sent. Observe before you report, and file proof with the surface's own `proof` or `record` command.",
+].join("\n");
+
+/** What a tracked provider CLI session is told: the bootstrap, then the screen rules. */
+export function buildAdeCliSessionGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
+  return [buildAdeCliAgentGuidance(skillRoots), "", ADE_CLI_SESSION_SCREEN_RULES].join("\n");
+}
+
 export function buildAdeCliInlineGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
   return buildAdeCliAgentGuidance(skillRoots);
 }
@@ -225,7 +247,7 @@ export function buildAdeBootstrapGuidance(
     "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
     // The one scene line every agent sees. Without it the skill was opened only
     // when a model happened to read the index, so scenes almost never appeared.
-    "Visuals: when status across many items (lanes, PRs, checks), a comparison or a trend would read faster as a picture, add one ```scene block; it can show live ADE data. Skip it for short answers, single facts and plain lists. Read `ade-scene` first; check it with `ade scene preview`.",
+    "Visuals: when there is an obvious thing to show and a picture reads faster than prose (status across many items, a comparison, a trend), add one ```scene block; always when the user asks for a visual. Its buttons can offer options for a larger decision. Run `ade scene guide` first; check with `ade scene preview`.",
     "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up started processes.",
     "`ade chat scheduled-work create` durably resumes bound chats and tracked provider CLIs.",

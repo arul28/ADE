@@ -50,6 +50,7 @@ export * from "./account";
 export * from "./machineInventory";
 export * from "./accountSettings";
 export * from "./accountVault";
+export * from "./mcpRegistry";
 export * from "./accountStore";
 export * from "./attention";
 export * from "./power";

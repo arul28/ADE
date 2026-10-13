@@ -53,6 +53,8 @@ _    ____  _____
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
+                                                    Send a push to the phones on your ADE account
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -60,10 +62,14 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade drafts list | create | schedule | update | delete | now | show
+                                                    Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
-    $ ade linear attach | comment | set-state | issue | graphql
-                                                    Read and write attached Linear issues
+    $ ade linear create | edit | comment | set-state | assign | issue | graphql
+                                                    Create, read, and edit Linear issues
+    $ ade github issue list | view | create | edit | comment | close
+                                                    Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -73,6 +79,7 @@ _    ____  _____
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
@@ -213,6 +220,8 @@ _    ____  _____
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
+                                                    Send a push to the phones on your ADE account
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -220,10 +229,14 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade drafts list | create | schedule | update | delete | now | show
+                                                    Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
-    $ ade linear attach | comment | set-state | issue | graphql
-                                                    Read and write attached Linear issues
+    $ ade linear create | edit | comment | set-state | assign | issue | graphql
+                                                    Create, read, and edit Linear issues
+    $ ade github issue list | view | create | edit | comment | close
+                                                    Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -233,6 +246,7 @@ _    ____  _____
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
@@ -823,6 +837,18 @@ _    ____  _____
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
+    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+                                                    Move the chat to another machine on your account (brief by
+                                                    default; --fork carries full history). --machine names the
+                                                    DESTINATION; the chat moves from here. Add --effort,
+                                                    --permissions, --include-changes (bring uncommitted and unpushed
+                                                    work), --clone (set the repo up there), --when-turn-ends (queue
+                                                    it; a newer user message cancels it). An agent moves only its
+                                                    own chat, keeps its permissions, and waits for the person's
+                                                    approval unless the chat is full-auto.
+    $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
+    $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
+    $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
@@ -879,7 +905,8 @@ _    ____  _____
     --dry-run               Alias for --print-config; does not create a chat.
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
-    --no-parent             Create the chat without a parent link.
+    --no-parent             Create the chat without a parent link. From an agent
+                            it is still recorded as launched by that agent.
     --type <subagent|peer>  Required with a parent. subagent always wakes the
                             parent after every turn; peer leaves quiet notes.
 
@@ -995,6 +1022,8 @@ _    ____  _____
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
+                                                    Send a push to the phones on your ADE account
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1002,10 +1031,14 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade drafts list | create | schedule | update | delete | now | show
+                                                    Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
-    $ ade linear attach | comment | set-state | issue | graphql
-                                                    Read and write attached Linear issues
+    $ ade linear create | edit | comment | set-state | assign | issue | graphql
+                                                    Create, read, and edit Linear issues
+    $ ade github issue list | view | create | edit | comment | close
+                                                    Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -1015,6 +1048,7 @@ _    ____  _____
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
@@ -1100,15 +1134,40 @@ _    ____  _____
     $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
     $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
     $ ade linear comment ENG-431 "Done"             Comment on a specific issue
-    $ ade linear set-state ENG-431 <state-id>       Move an issue to a workflow state
-    $ ade linear assign ENG-431 <user-id|none>      Assign or clear an issue assignee
+    $ ade linear set-state ENG-431 "In Progress"    Move an issue to a state (name in the issue's team, or id)
+    $ ade linear assign ENG-431 me                  Assign: me, none, a name, an email, or a user id
     $ ade linear label ENG-431 "needs-review"       Add a label to an issue
+    $ ade linear unlabel ENG-431 "needs-review"     Remove a label from an issue
     $ ade linear graphql --query 'query { viewer { id name } }'
                                                     Run Linear GraphQL through the project connection
     $ ade linear graphql --query-file query.graphql --variables-file vars.json
                                                     Use files for larger GraphQL operations
     $ ade linear detach --this-session [--issue-id ENG-431]
                                                     Detach one issue (or all) from this session
+
+  Create and edit issues. Names work where Linear has names: states, users,
+  labels, projects, milestones, cycles, and templates. Ids work too.
+
+    $ ade linear create --team ENG --title "Fix login redirect" --text
+                                                    Create an issue; prints its id and URL
+        [--description "..." | --description-file <path|->]
+        [--state "Todo"] [--assignee me|<name|email|id>] [--priority urgent|high|normal|low|none|0-4]
+        [--label bug]... [--project "Mobile"] [--milestone "Beta"] [--cycle current|next|<n>]
+        [--estimate 3] [--due 2026-11-01] [--parent ENG-400] [--template "Bug report"]
+        Inside a session with an attached issue, the new issue is linked to it
+        as related. --blocks, --blocked-by, --sub-issue, or --duplicate pick the
+        link. --standalone skips it. A near-duplicate of an open issue is not
+        created unless you pass --allow-duplicate.
+    $ ade linear edit ENG-431 --title "New title" --description-file notes.md
+                                                    Change any field; takes the create flags plus --remove-label
+    $ ade linear set-priority ENG-431 high          Priority: urgent, high, normal, low, none, or 0-4
+    $ ade linear set-estimate ENG-431 3             Estimate in the team's scale, or none
+    $ ade linear set-cycle ENG-431 current          Cycle: current, next, a number, an id, or none
+    $ ade linear set-project ENG-431 "Mobile"       Project by name or id, or none
+    $ ade linear set-milestone ENG-431 "Beta"       Milestone in the issue's project, or none
+    $ ade linear set-due ENG-431 2026-11-01         Due date as YYYY-MM-DD, or none
+    $ ade linear set-parent ENG-431 ENG-400         Make it a sub-issue, or none to detach it
+    $ ade linear relate ENG-431 --blocks ENG-432    Link issues: --blocks, --blocked-by, --related, --duplicate-of
 
   Workspace + automation (typically run with --role cto):
     $ ade --role cto linear quick-view --text      Show connected workspace, projects, and issues
@@ -1133,6 +1192,14 @@ _    ____  _____
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a local rule
     $ ade automations toggle <id> --enabled true|false
+    $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
+          [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
+                                                     Test a rule with an event. preview shows
+                                                     what a real run does; safe runs in a
+                                                     throwaway lane and only reports posts and
+                                                     pushes; live runs for real and needs --yes.
+                                                     --plan shows a test's plan without running it
+    $ ade automations cleanup-test <run-id>         Delete the lanes a test run made
     $ ade automations run <id> [--lane <id>] [--dry-run]
     $ ade automations trigger <id> [--lane <id>]
                                                      Trigger a rule manually
@@ -1169,7 +1236,9 @@ _    ____  _____
     $ ade automations example                       Print an example rule (stdout)
 
   Lane mode flags (apply to create/update on top of --from-file/--stdin/--text):
-    --lane-mode <create|reuse|require-on-trigger>   Create, reuse, or require lane at trigger time
+    --lane-mode <create|reuse|require-on-trigger|pr-branch>
+                                                    Create, reuse, or require lane at trigger time;
+                                                    pr-branch runs in the trigger PR's own branch
     --lane <id>                                     Target lane (only with --lane-mode reuse)
     --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
     --lane-name-template <string>                   Template (only with preset custom)
@@ -1231,6 +1300,8 @@ _    ____  _____
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
+                                                    Send a push to the phones on your ADE account
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1238,10 +1309,14 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade drafts list | create | schedule | update | delete | now | show
+                                                    Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
-    $ ade linear attach | comment | set-state | issue | graphql
-                                                    Read and write attached Linear issues
+    $ ade linear create | edit | comment | set-state | assign | issue | graphql
+                                                    Create, read, and edit Linear issues
+    $ ade github issue list | view | create | edit | comment | close
+                                                    Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -1251,6 +1326,7 @@ _    ____  _____
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
@@ -1684,7 +1760,8 @@ _    ____  _____
   tab creation, explicit claims, sessions, and page actions read
   ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls. Panel reveal and plain
   tab switching are passive view operations; use
-  "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab.
+  "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab
+  (a personal chat needs no lane: "browser claim --tab <tab-id>").
   ADE-launched agents should list tabs first and use only a tab/session owned
   by their current chat. Plain "browser open <url>" navigates that chat's tab
   (the one it used last) and creates one only when none exists, without
@@ -1710,6 +1787,28 @@ _    ____  _____
   test can keep "owner" and "viewer" signed in side by side. A tab's sign-in is
   fixed when it opens: plain "open" reuses only this chat's shared-profile tab,
   and "open --profile viewer" reuses only this chat's "viewer" tab.
+
+  The user's own browser (only when the user asks for it):
+    $ ade --socket browser attach --text           The tab the user is looking at
+    $ ade --socket browser attach --tab "Stripe" --text
+                                                   The tab whose title or URL contains "Stripe"
+    $ ade --socket browser attach --browser edge --text
+                                                   chrome, edge, brave, arc, helium or chromium
+    $ ade --socket browser detach --text           Back to ADE's browser
+  ADE's browser is the default for all web work. Attach only when the user asks
+  you to look at or use their own browser ("the tab I have open", "use my
+  Chrome"), never on your own. Attach runs on the machine this chat runs on and
+  prints "attached: <browser> on <machine>, tab "<title>" (<url>)": tell the
+  user which machine and tab. The browser needs remote debugging on; when
+  attach says it is off, ask the user to open the page it names
+  (chrome://inspect/#remote-debugging, or edge:// / brave://) and turn it on.
+  The browser then asks them once to allow the connection. While attached, this
+  chat's observe, click, fill, clear, type, key, scroll, hover, wait, open,
+  reload, back, forward, screenshot, proof and trace act in that tab and print
+  "target: your <browser> on <machine>" first; other commands say to detach.
+  The attachment ends on detach, when the tab closes or the browser quits, or
+  after 30 idle minutes; the next command says so. "status" shows it.
+  --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
@@ -1797,6 +1896,9 @@ _    ____  _____
     $ ade --socket browser open localhost:5173 --device ipad
     $ ade --socket browser zoom --tab <tab-id> --factor 1.25
     $ ade --socket browser zoom --tab <tab-id> --reset
+    $ ade --socket browser text --tab <tab-id> --text           Read the page's text (main content)
+    $ ade --socket browser text --tab <tab-id> --offset 20000 --text
+    $ ade --socket browser text --tab <tab-id> --selector "#content" --max-chars 5000
     $ ade --socket browser find --tab <tab-id> "checkout"
     $ ade --socket browser find-stop --tab <tab-id>
     $ ade --socket browser devtools --tab <tab-id> --mode bottom
@@ -1948,6 +2050,8 @@ _    ____  _____
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
+                                                    Send a push to the phones on your ADE account
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1955,10 +2059,14 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade drafts list | create | schedule | update | delete | now | show
+                                                    Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
-    $ ade linear attach | comment | set-state | issue | graphql
-                                                    Read and write attached Linear issues
+    $ ade linear create | edit | comment | set-state | assign | issue | graphql
+                                                    Create, read, and edit Linear issues
+    $ ade github issue list | view | create | edit | comment | close
+                                                    Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -1968,6 +2076,7 @@ _    ____  _____
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user

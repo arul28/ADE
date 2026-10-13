@@ -2,6 +2,7 @@ import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { MusicBridge } from "../shared/types/music";
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
   ChatThreadComment,
@@ -562,6 +563,12 @@ import type {
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
+  McpRegistryCheck,
+  McpRegistryContext,
+  McpRegistryImportResult,
+  McpRegistryResult,
+  McpRegistryScan,
+  McpRegistrySecretRef,
   AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -2604,6 +2611,26 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<{ dataUrl: string }>;
         resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
+        /** The MCP App a tool call produced, from the machine that owns the chat. */
+        getMcpApp: (
+          args: import("../shared/mcpApp").McpAppGetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGetResult>;
+        /** One call from an MCP App's frame, to the server the app came from. */
+        mcpAppRequest: (
+          args: import("../shared/mcpApp").McpAppRequestArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppRequestResult>;
+        /** The tools the user always allows for the server an app came from. */
+        listMcpAppGrants: (
+          args: import("../shared/mcpApp").McpAppGrantsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
+        /** Take one "always allow" back; answers the grants that are left. */
+        revokeMcpAppGrant: (
+          args: import("../shared/mcpApp").McpAppRevokeGrantArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
         /** Sources favicons as data URLs (null: the site has none), keyed by each domain as given. */
         resolveSourceFavicons: (args: { domains: string[] }) => Promise<{ icons: Record<string, string | null> }>;
         getEventHistory: (
@@ -2703,6 +2730,8 @@ declare global {
            */
           scopeKey?: string | null;
         }) => Promise<import("../shared/chatScene").SceneStillRecord | null>;
+        /** The URL an MCP App's frame loads its page from; main builds the page's policy. */
+        prepareApp: (args: { html: string; csp: import("../shared/mcpApp").McpAppCsp }) => Promise<string>;
       };
       computerUse: {
         listArtifacts: (
@@ -4205,6 +4234,24 @@ declare global {
           args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
         ) => Promise<AccountSettingsResult<null>>;
         sync: () => Promise<AccountSettingsResult<null>>;
+      };
+      /**
+       * Settings > MCP servers: this computer's view of the registry, and the
+       * one path that writes a registry secret to the account vault. No call
+       * returns a secret value.
+       *
+       * Optional because the hosted web client does not expose it; the page
+       * is hidden there.
+       */
+      mcpRegistry?: {
+        context: (args: { projectRoot: string | null }) => Promise<McpRegistryContext>;
+        check: (args: { servers: McpRegistryServer[] }) => Promise<McpRegistryResult<McpRegistryCheck>>;
+        setSecret: (args: McpRegistrySecretRef & { value: string }) => Promise<McpRegistryResult<null>>;
+        removeSecret: (args: McpRegistrySecretRef) => Promise<McpRegistryResult<null>>;
+        /** Drops the vault items `server` no longer names; all of them when `keep` is null. */
+        pruneSecrets: (args: { server: string; keep: McpRegistryServer | null }) => Promise<McpRegistryResult<null>>;
+        scan: (args: { projectRoot: string | null }) => Promise<McpRegistryScan>;
+        import: (args: { name: string; projectRoot: string | null }) => Promise<McpRegistryImportResult>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

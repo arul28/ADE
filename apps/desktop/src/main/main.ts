@@ -395,7 +395,7 @@ import {
   type RemoteArtifactRangeReader,
 } from "./services/computerUse/artifactStreamProtocol";
 import { createArtifactMediaServer } from "./services/computerUse/artifactMediaServer";
-import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
+import { respondToSceneProtocolRequest } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
@@ -1525,7 +1525,7 @@ app.whenReady().then(async () => {
   // a path: this scheme has no filesystem reach by construction, so there is no
   // jail here to widen and none of `ade-artifact`'s allow-root applies to it.
   protocol.handle("ade-scene", (request) => {
-    const { status, body, headers } = sceneDocumentStore.respond(request.url);
+    const { status, body, headers } = respondToSceneProtocolRequest(request.url);
     return new Response(body, { status, headers });
   });
 

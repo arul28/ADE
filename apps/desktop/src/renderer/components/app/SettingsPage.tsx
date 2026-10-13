@@ -15,6 +15,7 @@ import {
   Key,
   MagnifyingGlass,
   Palette,
+  Plugs,
   PlugsConnected,
   UserCircle,
 } from "@phosphor-icons/react";
@@ -80,6 +81,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   "lanes-git": GitBranch,
   integrations: PlugsConnected,
   notifications: Bell,
+  mcp: Plugs,
   secrets: Key,
   storage: HardDrives,
   archive: Archive,
@@ -92,6 +94,7 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "chat",
   "apple",
   "notifications",
+  "mcp",
   "stats",
   "secrets",
   "general",

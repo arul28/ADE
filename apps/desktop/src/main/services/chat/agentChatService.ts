@@ -142,6 +142,7 @@ import {
   planClaudeSlashCommandInjection,
   renderClaudeSlashCommandEntries,
 } from "./claudeSlashCommandDiscovery";
+import { buildDroidSkillListing } from "./droidSkillListing";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import { forkCodexThreadInEphemeralAppServer } from "./codexEphemeralFork";
 import { createClaudePluginUiService } from "./claudePluginUiService";
@@ -380,6 +381,7 @@ import {
 } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
+import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
 import { decodeRoutePresetId, isRoutePresetId } from "../../../shared/harnessRoutes";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
@@ -922,6 +924,16 @@ import {
 } from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { buildDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
+import {
+  MCP_APP_RESOURCE_MIME_TYPE,
+  type McpAppGrantsArgs,
+  type McpAppGrantsResult,
+  type McpAppRevokeGrantArgs,
+} from "../../../shared/mcpApp";
+import { createMcpAppGrantStore, MCP_APP_GRANTS_KEY } from "./mcpAppGrants";
+import { createMcpAppHost } from "./mcpAppHost";
+import { claudeMcpAppLink, codexMcpAppLink } from "./mcpAppProviderLinks";
+import { createMcpAppStore } from "./mcpAppStore";
 import {
   adeCardFallbackText,
   adeCardFingerprint,
@@ -10013,6 +10025,46 @@ function isClaudeStaleSessionError(err: unknown): boolean {
     || msg.includes("session expired");
 }
 
+/** What a caller hands `requestChatInput` to raise a blocking pending-input card in a chat. */
+export type RequestChatInputArgs = {
+  chatSessionId: string;
+  title: string;
+  /** Cancel the card and answer `timedOut` when nobody answers in time. */
+  timeoutMs?: number;
+  body: string;
+  source?: PendingInputSource;
+  kind?: PendingInputKind;
+  allowsFreeform?: boolean;
+  providerMetadata?: Record<string, unknown>;
+  eventDescription?: string;
+  eventDetail?: Record<string, unknown>;
+  /**
+   * Cancels the card when the asker stops waiting, so a late answer cannot
+   * act for a caller that is gone. Resolves as `cancel`.
+   */
+  signal?: AbortSignal;
+  /** Do the answer's work before the card resolves; throw to keep it open. */
+  beforeAccept?: (answers: Record<string, string[]>) => void;
+  questions?: Array<{
+    id?: string;
+    header?: string;
+    question: string;
+    options?: Array<{
+      label: string;
+      value?: string;
+      description?: string;
+      recommended?: boolean;
+      preview?: string;
+      previewFormat?: string;
+    }>;
+    multiSelect?: boolean;
+    allowsFreeform?: boolean;
+    isSecret?: boolean;
+    defaultAssumption?: string | null;
+    impact?: string | null;
+  }>;
+};
+
 export function createAgentChatService(args: {
   projectRoot: string;
   /**
@@ -10020,6 +10072,13 @@ export function createAgentChatService(args: {
    * (tests, embedders) keeps them in memory only, never in someone's real home.
    */
   machineAdeHome?: string | null;
+  /**
+   * One account-vault secret by key, or null when this machine does not hold
+   * it. The MCP registry's env and header values are read through it at
+   * launch. Absent (tests, the in-process desktop) launches registry servers
+   * without their secret values.
+   */
+  readAccountSecret?: ((vaultKey: string) => string | null) | null;
   /** Optional main-process analytics sink for successful desktop voice starts. */
   analytics?: FeatureAnalytics | null;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
@@ -10428,16 +10487,53 @@ export function createAgentChatService(args: {
     });
 
   /**
-   * Thread-level Codex config for one session. A session keeps the user's Codex
-   * config untouched unless an external embedder injected servers or asked for
-   * strict mode.
-   */
-  /**
    * Which withheld-header server set each chat was last warned about, so the
    * notice is written once per restart rather than once per provider launch.
    * Cleared when the host replaces the servers.
    */
   const callerMcpMissingHeadersNoticeBySession = new Map<string, string>();
+
+  /** Which registry gaps each chat was last told about, so a notice is written once, not once per launch. */
+  const mcpRegistryNoticeBySession = new Map<string, string>();
+
+  /**
+   * The servers the user defined once in Settings (the MCP registry), for an
+   * ordinary chat. A chat that asked for a strict MCP surface, and the light
+   * profile (side jobs, embedders, personal chats), get none: those callers
+   * decide their own servers.
+   */
+  const registryMcpServersForLaunch = (managed: ManagedChatSession): CallerMcpServers | null => {
+    const adeHome = args.machineAdeHome?.trim();
+    if (!adeHome) return null;
+    if (managed.session.strictMcpConfig === true || managed.session.sessionProfile === "light") return null;
+    // A personal chat runs outside any project, on its own MCP rules; an
+    // assistant chat is one of those even though it uses the workflow profile.
+    if (isPersonalSession(managed.session)) return null;
+    const registry = resolveMcpRegistryForLaunch({
+      adeHome,
+      projectRoot: args.projectRoot,
+      provider: managed.session.provider,
+      readSecret: (vaultKey) => args.readAccountSecret?.(vaultKey) ?? null,
+    });
+    const gaps = mcpRegistryLaunchNotices(registry);
+    const key = gaps.join("\n");
+    if (!key) {
+      mcpRegistryNoticeBySession.delete(managed.session.id);
+    } else if (mcpRegistryNoticeBySession.get(managed.session.id) !== key) {
+      mcpRegistryNoticeBySession.set(managed.session.id, key);
+      for (const message of gaps) {
+        emitChatEvent(managed, { type: "system_notice", noticeKind: "warning", severity: "warning", message });
+      }
+    }
+    return registry.servers;
+  };
+
+  /** The caller's servers on top of the registry's: a caller that names a server keeps its own definition. */
+  const withRegistryMcpServers = (managed: ManagedChatSession, caller: CallerMcpServers | null): CallerMcpServers | null => {
+    const registry = registryMcpServersForLaunch(managed);
+    if (!registry) return caller;
+    return { ...registry, ...(caller ?? {}) };
+  };
 
   /**
    * The caller's MCP servers as a provider adapter should launch them.
@@ -10455,7 +10551,7 @@ export function createAgentChatService(args: {
     const notice = callerMcpMissingHeadersNotice(servers);
     if (!notice) {
       callerMcpMissingHeadersNoticeBySession.delete(managed.session.id);
-      return servers;
+      return withRegistryMcpServers(managed, servers);
     }
     if (callerMcpMissingHeadersNoticeBySession.get(managed.session.id) !== notice.key) {
       callerMcpMissingHeadersNoticeBySession.set(managed.session.id, notice.key);
@@ -10466,9 +10562,14 @@ export function createAgentChatService(args: {
         message: notice.message,
       });
     }
-    return servers;
+    return withRegistryMcpServers(managed, servers);
   };
 
+  /**
+   * Thread-level Codex config for one session. A session keeps the user's Codex
+   * config untouched unless an external embedder injected servers or asked for
+   * strict mode.
+   */
   const codexThreadConfigArgsFor = async (
     managed: ManagedChatSession,
     reasoningEffort: string | null | undefined,
@@ -11431,6 +11532,63 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+
+  /* MCP Apps (`shared/mcpApp.ts`, `mcpAppHost.ts`, `mcpAppProviderLinks.ts`). */
+  const mcpApps = createMcpAppHost({
+    store: createMcpAppStore({
+      rootDir: path.join(transcriptsDir, "chat-apps"),
+      onError: (event, detail) => logger.warn(event, detail),
+    }),
+    linkFor: (sessionId) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed || managed.closed || managed.deleted || managed.session.status === "ended") return null;
+      const runtime = managed.runtime;
+      if (runtime?.kind === "claude") {
+        return claudeMcpAppLink({ protocolCapabilities: managed.session.protocolCapabilities, runtime });
+      }
+      if (runtime?.kind === "codex") {
+        return codexMcpAppLink({
+          threadId: managed.session.threadId,
+          process: runtime.process,
+          request: (method, params, options) => runtime.request(method, params, options),
+          // The merged map Codex was launched with: a registry server is in
+          // it and is not in the session's own list.
+          serverConfig: (server) => callerMcpServersForLaunch(managed)?.[server],
+        });
+      }
+      // Every other provider: no way to read a tool's page or to call back.
+      return null;
+    },
+    emitCard: (sessionId, card) => {
+      void emitAdeCard({ sessionId, card }).catch((error) => {
+        logger.warn("agent_chat.mcp_app_card_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+      });
+    },
+    requestChatInput: (input) => requestChatInput(input),
+    grants: createMcpAppGrantStore({
+      load: () => db?.getJson(MCP_APP_GRANTS_KEY) ?? null,
+      save: (value) => db?.setJson(MCP_APP_GRANTS_KEY, value),
+    }),
+    log: (level, event, detail) => logger[level](event, detail),
+  });
+  // Once, well after boot: apps left by chats another brain deleted.
+  const mcpAppOrphanSweepTimer = setTimeout(() => {
+    try {
+      const removed = mcpApps.sweepOrphans((sessionId) =>
+        // A chat whose lane row is gone no longer answers `get`, yet its
+        // transcript may still be restorable; an app folder is an orphan only
+        // when the transcript is gone too.
+        Boolean(sessionService.get(sessionId))
+        || [".chat.jsonl", ".chat.jsonl.gz"].some((ext) => fs.existsSync(path.join(transcriptsDir, `${sessionId}${ext}`))));
+      if (removed > 0) logger.info("agent_chat.mcp_app_orphans_removed", { removed });
+    } catch (error) {
+      logger.warn("agent_chat.mcp_app_orphan_sweep_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }, 120_000);
+  mcpAppOrphanSweepTimer.unref?.();
+  const listMcpAppGrants = async (args: McpAppGrantsArgs): Promise<McpAppGrantsResult> => mcpApps.grants(args);
+  const revokeMcpAppGrant = async (args: McpAppRevokeGrantArgs): Promise<McpAppGrantsResult> => mcpApps.revokeGrant(args);
+
   /** Assigned once the handoff helpers below exist; hooks before that no-op. */
   let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
   let crossMachineHandoffSweepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -20766,6 +20924,9 @@ export function createAgentChatService(args: {
       }
     })();
     turnEndQuestion.onEvent(managed.session.id, normalizedEvent);
+    if (normalizedEvent.type === "tool_call" || normalizedEvent.type === "tool_result") {
+      mcpApps.observe(managed.session.id, managed.session.provider, normalizedEvent);
+    }
     if (
       (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started")
       || normalizedEvent.type === "done"
@@ -38729,6 +38890,9 @@ export function createAgentChatService(args: {
       capabilities: {
         experimentalApi: true,
         optOutNotificationMethods,
+        // ADE renders MCP Apps, so a server that asks before it registers a
+        // tool with a page is told so.
+        extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [MCP_APP_RESOURCE_MIME_TYPE] } },
       }
     });
     runtime.serverVersion = parseCodexServerVersion(initializeResponse?.userAgent);
@@ -39402,6 +39566,12 @@ export function createAgentChatService(args: {
       // exits, instead of ending with stderr alone. Without it those failures
       // reach ADE as an exit code with no cause.
       CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1",
+      // ADE renders MCP Apps. With this the CLI declares the
+      // `io.modelcontextprotocol/ui` extension to each MCP server, so a server
+      // that asks before it registers a tool with a page is told so. Read in
+      // the CLI (2.1.293), not documented: recheck on a bump. Without it apps
+      // still work for servers that do not ask.
+      CLAUDE_CODE_MCP_APPS_HOST: "1",
     };
     // The account's own prompt cache choice. A preset or stored credential
     // bills another endpoint, so it gets none.
@@ -51835,8 +52005,15 @@ export function createAgentChatService(args: {
             adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
             sessionActivityGuidance: droidActivityGuidance,
           });
+      // Droid reads only `.factory/skills`, so the project's and the user's
+      // own skills (`.claude/skills`, `.agents/skills`) are listed for it, as
+      // they are for Claude. A personal chat has no project to list.
+      const droidSkillListing = isPersonalSession(managed.session)
+        ? []
+        : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }));
       const sdkInput = [
         droidHarnessPrompt,
+        ...(droidSkillListing.length ? ["", ...droidSkillListing] : []),
         "",
         "## User Request",
         composed,
@@ -60221,6 +60398,8 @@ export function createAgentChatService(args: {
     for (const filePath of transcriptPaths) {
       deletePersistedChatFile(filePath);
     }
+    mcpApps.deleteSession(trimmedSessionId);
+    mcpRegistryNoticeBySession.delete(trimmedSessionId);
 
     sessionService.deleteSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
@@ -60277,6 +60456,7 @@ export function createAgentChatService(args: {
    */
   const beginDispose = (): void => {
     runtimeBudget.unregister(runtimeBudgetParticipant);
+    clearTimeout(mcpAppOrphanSweepTimer);
     if (crossMachineHandoffSweepTimer) clearTimeout(crossMachineHandoffSweepTimer);
     crossMachineHandoffSweepTimer = null;
     hostSleepChips.dispose();
@@ -63729,44 +63909,7 @@ export function createAgentChatService(args: {
   /**
    * Create a blocking pending-input request for a chat session. Returns the user's answer.
    */
-  const requestChatInput = async (args: {
-    chatSessionId: string;
-    title: string;
-    /** Cancel the card and answer `timedOut` when nobody answers in time. */
-    timeoutMs?: number;
-    body: string;
-    source?: PendingInputSource;
-    kind?: PendingInputKind;
-    allowsFreeform?: boolean;
-    providerMetadata?: Record<string, unknown>;
-    eventDescription?: string;
-    eventDetail?: Record<string, unknown>;
-    /**
-     * Cancels the card when the asker stops waiting, so a late answer cannot
-     * act for a caller that is gone. Resolves as `cancel`.
-     */
-    signal?: AbortSignal;
-    /** Do the answer's work before the card resolves; throw to keep it open. */
-    beforeAccept?: (answers: Record<string, string[]>) => void;
-    questions?: Array<{
-      id?: string;
-      header?: string;
-      question: string;
-      options?: Array<{
-        label: string;
-        value?: string;
-        description?: string;
-        recommended?: boolean;
-        preview?: string;
-        previewFormat?: string;
-      }>;
-      multiSelect?: boolean;
-      allowsFreeform?: boolean;
-      isSecret?: boolean;
-      defaultAssumption?: string | null;
-      impact?: string | null;
-    }>;
-  }): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }> => {
+  const requestChatInput = async (args: RequestChatInputArgs): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }> => {
     const inferQuestionsFromBody = (bodyText: string): PendingInputQuestion[] | null => {
       const normalizedBody = bodyText.replace(/\r/g, "").trim();
       if (!normalizedBody.length) return null;
@@ -64911,6 +65054,10 @@ export function createAgentChatService(args: {
     isUserOnlyPendingInput,
     listPendingInputs,
     respondToInput,
+    getMcpApp: mcpApps.get,
+    mcpAppRequest: mcpApps.request,
+    listMcpAppGrants,
+    revokeMcpAppGrant,
     dismissPendingInputForSettlement,
     requestChatInput,
     getAvailableModels,

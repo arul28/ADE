@@ -202,6 +202,7 @@ struct WorkChatMessageFold {
           steerId: steerId,
           deliveryState: deliveryState,
           processed: processed,
+          writtenByAde: envelope.userMessageWrittenByAde,
           attachments: attachments
         ))
       }
@@ -1073,7 +1074,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
     let details = [entry.compactionAccountLabel.map { "account:\($0)" }, entry.compactionFailDetail.map { "failure:" + $0.components(separatedBy: .newlines).joined(separator: " ") }, entry.compactionSummary.map { "summary:\($0)" }].compactMap { $0 }
     event = .contextCompact(summary: ([summary].compactMap { $0 } + details).joined(separator: "\n"), isInProgress: running, postTokens: post, turnId: turn, compactionId: id)
   }
-  return WorkChatEnvelope(
+  var envelope = WorkChatEnvelope(
     sessionId: entry.sessionId,
     timestamp: entry.timestamp,
     sequence: entry.sequence,
@@ -1102,6 +1103,8 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
     }(),
     sourceOffset: entry.sourceOffset
   )
+  envelope.userMessageWrittenByAde = entry.userMessageWrittenByAde
+  return envelope
 }
 
 /// The subagent filter of `makeWorkChatTranscript`, kept as state so a log can

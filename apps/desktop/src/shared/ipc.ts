@@ -407,6 +407,14 @@ export const IPC = {
   agentChatApprove: "ade.agentChat.approve",
   agentChatRespondToInput: "ade.agentChat.respondToInput",
   agentChatDismissPendingInput: "ade.agentChat.dismissPendingInput",
+  // MCP Apps (`shared/mcpApp.ts`). `get` reads the page a tool call produced,
+  // `request` passes one call from the app's frame to its own server, and
+  // `prepare` mints the ade-scene://app/ URL the frame loads the page from.
+  agentChatGetMcpApp: "ade.agentChat.getMcpApp",
+  agentChatMcpAppRequest: "ade.agentChat.mcpAppRequest",
+  agentChatListMcpAppGrants: "ade.agentChat.listMcpAppGrants",
+  agentChatRevokeMcpAppGrant: "ade.agentChat.revokeMcpAppGrant",
+  mcpAppPrepare: "ade.mcpApp.prepare",
   agentChatModels: "ade.agentChat.models",
   agentChatLaunchDefaults: "ade.agentChat.launchDefaults",
   agentChatModelCatalog: "ade.agentChat.modelCatalog",
@@ -1003,6 +1011,20 @@ export const IPC = {
   accountSettingsGet: "ade.accountSettings.get",
   accountSettingsSet: "ade.accountSettings.set",
   accountSettingsSync: "ade.accountSettings.sync",
+
+  /**
+   * Settings > MCP servers: what the renderer cannot do itself. It reads and
+   * writes the registry's settings rows through `accountSettings`; these look
+   * at this computer and put secret values in the account vault. None of them
+   * returns a secret value.
+   */
+  mcpRegistryContext: "ade.mcpRegistry.context",
+  mcpRegistryCheck: "ade.mcpRegistry.check",
+  mcpRegistrySetSecret: "ade.mcpRegistry.setSecret",
+  mcpRegistryRemoveSecret: "ade.mcpRegistry.removeSecret",
+  mcpRegistryPruneSecrets: "ade.mcpRegistry.pruneSecrets",
+  mcpRegistryScan: "ade.mcpRegistry.scan",
+  mcpRegistryImport: "ade.mcpRegistry.import",
   prsCreateFromLane: "ade.prs.createFromLane",
   prsLinkToLane: "ade.prs.linkToLane",
   prsPreflightCreateLaneFromPrBranch: "ade.prs.preflightCreateLaneFromPrBranch",

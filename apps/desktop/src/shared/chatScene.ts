@@ -1,8 +1,7 @@
 /**
  * Scenes — agent-authored generated UI.
  *
- * A scene is a ```scene fence containing ordinary HTML, CSS and JS. Unlike a
- * mosaic card (data, validated, rendered by ADE's own components) a scene is
+ * A scene is a ```scene fence containing ordinary HTML, CSS and JS. A scene is
  * *code the agent wrote*, so it never runs in ADE's renderer. It runs inside a
  * frame that has its own opaque origin, its own Content-Security-Policy, and
  * `sandbox="allow-scripts"` WITHOUT `allow-same-origin` — that pair is the one
@@ -35,8 +34,9 @@
  * until the pointer or focus comes back. There is no CPU watchdog for a busy
  * script loop.
  *
- * Division of labour with mosaic: a scene SHOWS, a mosaic ASKS. Approvals and
- * destructive confirmations stay in mosaic and in ADE's native surfaces — a
+ * A scene shows, and it can ask: `ade.reply(text)` puts a draft reply in the
+ * chat's prompt box, on a real click only, and the reader sends it. That is a
+ * chat message, never a permission: approvals stay in ADE's native surfaces — a
  * scene drawing its own "Approve" button would be a scene approving itself.
  */
 
@@ -48,8 +48,7 @@ export const SCENE_FENCE_LANGUAGE = "scene";
  * A row identity is not enough on its own: a message may hold two scene
  * fences, and both of them being handed the row's identity meant they shared a
  * still — whichever settled last overwrote the other, and a reopened chat
- * showed the same picture twice. The source hash is what separates them, the
- * same way mosaic cards separate two answerable cards in one message.
+ * showed the same picture twice. The source hash is what separates them.
  *
  * Stored with the still in main, so it must be derived identically on every
  * mount: a pure function of the row identity and the fence body, and nothing
@@ -139,6 +138,10 @@ export const SCENE_SETTLE_QUIET_MS = 600;
  */
 export const SCENE_SETTLE_MAX_MS = 4_000;
 
+/**
+ * The hosted web client serves this same policy as a response header for
+ * `/scene-frame.html` (`src/renderer/webclient/public/_headers`). Change both.
+ */
 export const SCENE_CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
   "script-src 'unsafe-inline'",
@@ -409,8 +412,7 @@ export function isSceneParseFailure(value: ParsedScene | SceneParseFailure): val
  *
  * The TUI is the caller that matters: a scene is up to 96 KB of HTML and CSS,
  * and printing it into a terminal transcript buries the answer the user asked
- * for under a wall of markup. The mosaic fence already collapses this way; this
- * is the same contract for the other fence ADE renders natively.
+ * for under a wall of markup.
  */
 export function summarizeSceneFence(source: string): string {
   const parsed = parseSceneFence(source);
@@ -497,7 +499,14 @@ export function sceneThemeSignature(theme: SceneTheme): string {
 export type SceneFrameInbound =
   | { type: "theme"; payload: SceneThemeMessagePayload }
   /** A snapshot of the live sources the scene asked for (`sceneData.ts`). */
-  | { type: "data"; payload: unknown };
+  | { type: "data"; payload: unknown }
+  /** The host's answer to a `reply`, by `id`: the text is in the prompt box, or `error` says why not. */
+  | { type: "picked"; payload: { id: string; ok: boolean; error?: string } }
+  /**
+   * The reader answered: a message of theirs follows this scene in the
+   * transcript, and `text` is that message. The scene stops asking.
+   */
+  | { type: "answered"; payload: { text: string } };
 
 /**
  * A theme as the frame applies it: the resolved theme for `ade.theme`, and the
@@ -553,7 +562,6 @@ export type SceneHostMessage = { nonce?: string } & (
    * the view is finished but before the turn ends and the frame comes down.
    */
   | { type: "settled"; payload: { height?: number } }
-  | { type: "emit"; payload: { name: string; payload?: unknown } }
   /** `policy`: a request the scene policy blocked (a remote font, an image), not a thrown error. */
   | { type: "error"; payload: { message: string; policy?: true } }
   /**
@@ -562,9 +570,20 @@ export type SceneHostMessage = { nonce?: string } & (
    * The host acts on it only right after the user clicked inside the frame.
    */
   | { type: "open"; payload: { url: string } }
+  /**
+   * Put `text` in the chat's prompt box as the reader's draft reply. Sent by
+   * `ade.reply(text)`, a `data-reply` control or a `data-reply` form. Nothing
+   * is sent to the agent: the reader edits the draft and sends it themselves.
+   * The host acts on it only right after the user clicked or pressed a key
+   * inside the frame, and answers with a `picked` message carrying the `id`.
+   */
+  | { type: "reply"; payload: { id: string; text: string } }
 );
 
-const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "settled", "emit", "error", "open"]);
+/** Longest reply a scene may put in the prompt box. */
+export const SCENE_REPLY_MAX_CHARS = 4_000;
+
+const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "settled", "error", "open", "reply"]);
 
 /**
  * Validate an inbound frame message. The frame is untrusted, so shape-check
@@ -582,11 +601,6 @@ export function parseSceneHostMessage(value: unknown): SceneHostMessage | null {
   const rawNonce = typeof record.nonce === "string" ? record.nonce.slice(0, 120) : "";
   const nonce = rawNonce.length ? { nonce: rawNonce } : {};
 
-  if (type === "emit") {
-    const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "";
-    if (!name.length) return null;
-    return { ...nonce, type: "emit", payload: { name, payload: payload.payload } };
-  }
   if (type === "error") {
     const message = typeof payload.message === "string" ? payload.message.slice(0, 500) : "scene error";
     return { ...nonce, type: "error", payload: { message, ...(payload.policy === true ? { policy: true as const } : {}) } };
@@ -595,6 +609,12 @@ export function parseSceneHostMessage(value: unknown): SceneHostMessage | null {
     const url = typeof payload.url === "string" ? payload.url.trim() : "";
     if (!url.length || url.length > 2048) return null;
     return { ...nonce, type: "open", payload: { url } };
+  }
+  if (type === "reply") {
+    const id = typeof payload.id === "string" ? payload.id.slice(0, 40) : "";
+    const text = typeof payload.text === "string" ? payload.text.trim() : "";
+    if (!id.length || !text.length || text.length > SCENE_REPLY_MAX_CHARS) return null;
+    return { ...nonce, type: "reply", payload: { id, text } };
   }
   const height = typeof payload.height === "number" && Number.isFinite(payload.height)
     ? Math.max(0, Math.min(4000, Math.round(payload.height)))

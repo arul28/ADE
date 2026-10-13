@@ -61,7 +61,6 @@ describe("chat find searches the displayed text of a reply", () => {
     { label: "a link's URL does not count", markdown: "[read the docs](https://example.com/zebra-page)", query: "zebra", total: 0 },
     { label: "a link's label counts", markdown: "[read the docs](https://example.com/zebra-page)", query: "read the docs", total: 1 },
     { label: "a scene fence's source does not count", markdown: "```scene\n<div>zebra</div>\n```", query: "zebra", total: 0 },
-    { label: "a mosaic fence's source does not count", markdown: "```mosaic\nzebra\n```", query: "zebra", total: 0 },
     { label: "an ordinary code fence counts", markdown: "```ts\nconst zebra = 1\n```", query: "zebra", total: 1 },
   ])("$label ($query: $total)", ({ markdown, query, total }) => {
     const rows = transcriptRows([{ type: "text", text: markdown, messageId: "reply-1", turnId: "turn-1" }]);

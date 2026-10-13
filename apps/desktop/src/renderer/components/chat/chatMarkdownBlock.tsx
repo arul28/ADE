@@ -1,10 +1,9 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useContext, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { remarkCachedParse } from "./remarkCachedParse";
 import { FileCode } from "@phosphor-icons/react";
 
-import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
 import { openFence, SCENE_FENCE_LANGUAGE, sceneScopeKeyFor } from "../../../shared/chatScene";
 import { MermaidDiagram } from "../shared/MermaidDiagram";
 import {
@@ -23,9 +22,8 @@ import {
   type WorkspacePathLocation,
 } from "./chatWorkspacePaths";
 import { HighlightedCode } from "./CodeHighlighter";
-import { MosaicCard } from "./MosaicCard";
 import { ProofCitationFigure, ProofCompareFigure } from "./ChatProofCitation";
-import { SceneFrame } from "./SceneFrame";
+import { SceneAnswerContext, SceneFrame } from "./SceneFrame";
 import { TranscriptChip } from "./ChipText";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatLinkContextMenu } from "./useChatLinkContextMenu";
@@ -37,17 +35,6 @@ import {
   THREAD_ENTITY_TAG,
   useThreadEntityLookup,
 } from "./threadEntities";
-
-/**
- * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
- * ```mosaic fence renders as an interactive card instead of a plain code block.
- * `scope` is the transcript row's stable key so byte-identical cards at
- * different positions keep independent answered state.
- */
-export type MosaicRenderContext = {
-  cardKeyFor: (source: string, scope: string) => string;
-  onSubmit: (submission: { text: string; displayText: string }) => void | Promise<void>;
-};
 
 // File links read as code that happens to be clickable: a quiet tint, the
 // file glyph, and an underline only on hover. A border plus an underline plus
@@ -175,8 +162,6 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   markdown,
   tailMarkdown,
   onOpenWorkspacePath,
-  mosaic,
-  mosaicScopeKey,
   sceneScopeKey,
   sceneLive,
   tone,
@@ -189,21 +174,15 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
    */
   tailMarkdown?: string;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
-  mosaic?: MosaicRenderContext;
-  /** Stable transcript-row key scoping mosaic answered state per message. */
-  mosaicScopeKey?: string;
   /**
    * What names the ROW a scene in this body belongs to, on disk.
    *
-   * Separate from `mosaicScopeKey` because the two need different things from
-   * a key. Mosaic answers live in this window and die with it, so the render
-   * key is fine; a scene's still is a file in the project, looked up again on
-   * every reopen, and the render key moves when the transcript is rebuilt from
-   * a different window of events. See `sceneRowIdentity`.
+   * Not the render key: a scene's still is a file in the project, looked up
+   * again on every reopen, and the render key moves when the transcript is
+   * rebuilt from a different window of events. See `sceneRowIdentity`.
    *
    * Absent means this body's scenes leave no picture behind — the honest answer
-   * for a caller with no row identity. It is never the mosaic key: the two
-   * would be silently interchangeable, and one of them is wrong on disk.
+   * for a caller with no row identity.
    */
   sceneScopeKey?: string;
   /**
@@ -235,6 +214,9 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   // document that is still arriving.
   const openTail = sceneLive ? openFence(tailMarkdown ? `${markdown}${tailMarkdown}` : markdown) : null;
   const sceneStreaming = openTail?.language === SCENE_FENCE_LANGUAGE;
+  // The reader's message that followed this row, when its scene was answered.
+  const sceneAnswers = useContext(SceneAnswerContext);
+  const sceneAnswer = (sceneScopeKey && sceneAnswers?.get(sceneScopeKey)) || null;
   // A mermaid fence still arriving is shown as its source: half a diagram
   // either fails to parse or draws the wrong graph. Only that fence holds;
   // the diagrams above it, already closed, stay drawn.
@@ -340,9 +322,6 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       const language = typeof className === "string"
         ? (className.match(/language-([^\s]+)/)?.[1] ?? "text")
         : "text";
-      if (isBlock && language === MOSAIC_FENCE_LANGUAGE && mosaic) {
-        return <MosaicCard source={text} cardKey={mosaic.cardKeyFor(text, mosaicScopeKey ?? "")} onSubmit={mosaic.onSubmit} />;
-      }
       if (isBlock && language === PROOF_COMPARE_FENCE_LANGUAGE) {
         const block = parseProofCompareBlock(text);
         // A block that names no pair renders as the code it is.
@@ -357,6 +336,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
           <SceneFrame
             source={text}
             scopeKey={sceneScopeKey ? sceneScopeKeyFor(sceneScopeKey, text) : null}
+            answeredText={sceneAnswer}
             live={sceneLive}
             streaming={sceneStreaming}
           />
@@ -447,7 +427,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, runtimePin, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought, onLinkContextMenu]);
+  }), [sceneScopeKey, sceneAnswer, neu, openWorkspacePath, runtimePin, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought, onLinkContextMenu]);
 
   return (
     <div

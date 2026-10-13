@@ -42,7 +42,7 @@ internal lane (`docs/features/personal-chats/README.md`). They were built as a
 - **ADE skills:** stripped for every provider. That covers Claude plugin paths,
   the Codex skill roots and slash commands, OpenCode skill paths, the Cursor
   workspace dirs, Qwen and the Pi extensions. So the agent is never taught
-  `ade browser`, `ade screen`, `ade app-control`, Linear, scene or mosaic, even
+  `ade browser`, `ade screen`, `ade app-control`, Linear or scenes, even
   though `ADE_CLI_PATH` and a browser actor token *are* in its environment.
 - **User settings:** Claude `settingSources` defaults to `"none"`, so there is
   no user CLAUDE.md, no user MCP servers and no user skills.

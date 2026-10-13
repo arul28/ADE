@@ -4,6 +4,12 @@ import { parseGitHubIssueListState } from "../../../../desktop/src/shared/github
 import type { LinearIssueCreateInput, SessionAttentionSource } from "../../../../desktop/src/shared/types";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
+import {
+  buildMcpAppContentSecurityPolicy,
+  MCP_APP_LIMITS,
+  MCP_APP_TOO_LARGE_FOR_REMOTE,
+  type McpAppRemoteDocument,
+} from "../../../../desktop/src/shared/mcpApp";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -5031,6 +5037,39 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // to public HTTPS hosts; see chat/sourceFaviconService.ts.
   register("chat.resolveSourceFavicons", { viewerAllowed: true }, async (payload) =>
     getSourceFaviconService().resolve(payload), "runtime");
+  // MCP Apps (shared/mcpApp.ts). The page a phone gets is bounded, and it
+  // comes with the policy the phone must serve it with: the brain builds that
+  // string, from what the resource declared, and the phone builds none.
+  register("chat.getMcpApp", { viewerAllowed: true }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").getMcpApp({
+      sessionId: requireString(payload.sessionId, "chat.getMcpApp requires sessionId."),
+      itemId: requireString(payload.itemId, "chat.getMcpApp requires itemId."),
+    });
+    if (result.status !== "ready") return result;
+    if (Buffer.byteLength(result.app.html, "utf8") > MCP_APP_LIMITS.maxRemoteDocumentBytes) {
+      return { status: "unavailable" as const, reason: MCP_APP_TOO_LARGE_FOR_REMOTE };
+    }
+    const app: McpAppRemoteDocument = {
+      ...result.app,
+      contentSecurityPolicy: buildMcpAppContentSecurityPolicy(result.app.csp, { sandbox: true }),
+    };
+    return { status: "ready" as const, app };
+  });
+  // Not for a viewer: this is what runs a tool. `userActivated` is the
+  // controller's own word that the user just tapped inside the app's frame.
+  // `controllerAllowed` is what lets the owner's own phone through:
+  // `viewerAllowed: false` alone refuses every paired device.
+  register("chat.mcpAppRequest", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const method = payload.method === "tools/call" || payload.method === "resources/read" ? payload.method : null;
+    if (!method) throw new Error("chat.mcpAppRequest requires method tools/call or resources/read.");
+    return requireService(args.agentChatService, "Agent chat service not available.").mcpAppRequest({
+      sessionId: requireString(payload.sessionId, "chat.mcpAppRequest requires sessionId."),
+      itemId: requireString(payload.itemId, "chat.mcpAppRequest requires itemId."),
+      method,
+      params: payload.params,
+      userActivated: payload.userActivated === true,
+    });
+  });
   // Bound the registry sent to a phone: a project can discover hundreds of
   // skill/command files, and the composer only ever renders a prefix list.
   register("chat.getSlashCommands", { viewerAllowed: true }, async (payload) =>

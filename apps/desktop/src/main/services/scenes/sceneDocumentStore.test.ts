@@ -7,7 +7,7 @@ import { clampSceneCaptureRect, decodeScenePngDataUrl, resolveSceneCaptureRect }
 describe("scene document store", () => {
   it("serves a prepared document with the scene policy headers", () => {
     const store = createSceneDocumentStore();
-    const prepared = store.put("<!doctype html><p>hello</p>");
+    const prepared = store.put("<!doctype html><p>hello</p>", SCENE_CONTENT_SECURITY_POLICY);
 
     expect(prepared.url).toBe(`ade-scene://view/${prepared.id}`);
 
@@ -21,7 +21,7 @@ describe("scene document store", () => {
 
   it("404s an unknown id, a foreign scheme, and a URL with no id", () => {
     const store = createSceneDocumentStore();
-    store.put("<p>known</p>");
+    store.put("<p>known</p>", SCENE_CONTENT_SECURITY_POLICY);
 
     for (const url of [
       "ade-scene://view/does-not-exist",
@@ -53,13 +53,13 @@ describe("scene document store", () => {
     let counter = 0;
     const store = createSceneDocumentStore({ capacity: 3, makeId: () => `id-${counter++}` });
 
-    const first = store.put("<p>1</p>");
-    const second = store.put("<p>2</p>");
-    const third = store.put("<p>3</p>");
+    const first = store.put("<p>1</p>", SCENE_CONTENT_SECURITY_POLICY);
+    const second = store.put("<p>2</p>", SCENE_CONTENT_SECURITY_POLICY);
+    const third = store.put("<p>3</p>", SCENE_CONTENT_SECURITY_POLICY);
     expect(store.size()).toBe(3);
     expect(store.respond(first.url).status).toBe(200);
 
-    const fourth = store.put("<p>4</p>");
+    const fourth = store.put("<p>4</p>", SCENE_CONTENT_SECURITY_POLICY);
     expect(store.size()).toBe(3);
     // `first` was loaded; `second` was never read and is the oldest.
     expect(store.respond(first.url).status).toBe(200);

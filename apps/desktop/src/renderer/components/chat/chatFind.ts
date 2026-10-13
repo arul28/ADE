@@ -15,7 +15,6 @@
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
-import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
 import { SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
 import { countOccurrences, foldFindCase } from "../../lib/findText";
 import { resolveUserMessageBody, userMessageBodySearchText } from "./userMessageBody";
@@ -33,7 +32,7 @@ type MdNode = {
 };
 
 /** Fences that render as something other than their source. */
-const NON_TEXT_FENCES = new Set([MOSAIC_FENCE_LANGUAGE, SCENE_FENCE_LANGUAGE, "mermaid"]);
+const NON_TEXT_FENCES = new Set([SCENE_FENCE_LANGUAGE, "mermaid"]);
 
 const BLOCK_NODES = new Set([
   "paragraph", "heading", "blockquote", "list", "listItem", "table", "tableRow", "tableCell", "code", "thematicBreak", "break",
@@ -75,7 +74,7 @@ let cachedChars = 0;
 
 /**
  * The text a markdown body shows: link labels without their URLs, code
- * without fences, no scene/mosaic/diagram source, blocks separated by "\n" so
+ * without fences, no scene/diagram source, blocks separated by "\n" so
  * a match never runs from one paragraph into the next. Cached by source text:
  * a reply is parsed once, however many queries are typed.
  */

@@ -22,6 +22,7 @@
 
 import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
 import { PROJECT_SECRET_REQUEST_METADATA_KEY } from "../projectSecretRequest";
+import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -1744,13 +1745,14 @@ export const MAC_DESKTOP_INPUT_LEASE_METADATA_KEY = "macDesktopInputLease" as co
 
 /**
  * True for a pending-input card only the user may answer: the shared-seat
- * consent, the real-input lease, and the private secret card. The answer IS
- * the permission (or the secret), so an agent caller (session-bound, unbound,
- * or the CTO's tools) is refused.
+ * consent, the real-input lease, the private secret card, and an MCP App's
+ * tool call. The answer IS the permission (or the secret), so an agent caller
+ * (session-bound, unbound, or the CTO's tools) is refused.
  */
 export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> | null | undefined): boolean {
   return providerMetadata?.[WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY] === true
     || providerMetadata?.[MAC_DESKTOP_INPUT_LEASE_METADATA_KEY] === true
+    || providerMetadata?.[MCP_APP_TOOL_CALL_METADATA_KEY] === true
     || isNonNullRecord(providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY]);
 }
 

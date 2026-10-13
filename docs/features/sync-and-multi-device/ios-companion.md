@@ -372,6 +372,13 @@ apps/ios/
 │   │   │                            # lifecycle columns for fresh installs
 │   │   │                            # (Database.swift owns the matching
 │   │   │                            # ensureColumn migrations for upgrades)
+│   │   ├── SceneShell.html          # generated from desktop buildSceneDocument
+│   │   │                            # (policy, base styles, the in-frame SDK,
+│   │   │                            # ade.chart) with tokens Swift fills.
+│   │   │                            # Regenerate after a change to
+│   │   │                            # shared/chatScene*.ts:
+│   │   │                            # node apps/desktop/scripts/generate-ios-scene-shell.mjs
+│   │   │                            # (--check exits 1 when it is stale)
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
 │   │   ├── AccountService.swift     # Clerk-backed account identity,

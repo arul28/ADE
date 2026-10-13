@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import {
   type AppOpenSystemSettingsPaneArgs,
@@ -13,6 +14,16 @@ import { isUnsupportedAdeActionError } from "../shared/codedError";
 import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
 import type { SceneStillRecord } from "../shared/chatScene";
+import type {
+  McpAppCsp,
+  McpAppGetArgs,
+  McpAppGetResult,
+  McpAppGrantsArgs,
+  McpAppGrantsResult,
+  McpAppRequestArgs,
+  McpAppRequestResult,
+  McpAppRevokeGrantArgs,
+} from "../shared/mcpApp";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
@@ -465,6 +476,12 @@ import type {
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
+  McpRegistryCheck,
+  McpRegistryContext,
+  McpRegistryImportResult,
+  McpRegistryResult,
+  McpRegistryScan,
+  McpRegistrySecretRef,
   AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -8631,6 +8648,36 @@ const adeBridge = {
       callProjectRuntimeActionOr("chat", "resolveSmartLinkPreview", { args }, async () =>
         deriveSmartLinkPreview(args.url),
       ),
+    // MCP Apps. Both go to the machine that owns the chat: the page is filed
+    // with the chat there, and a call can only reach the chat's live session.
+    getMcpApp: async (
+      args: McpAppGetArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<McpAppGetResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getMcpApp", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetMcpApp, args),
+      ),
+    mcpAppRequest: async (
+      args: McpAppRequestArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<McpAppRequestResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "mcpAppRequest", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatMcpAppRequest, args),
+      ),
+    listMcpAppGrants: async (
+      args: McpAppGrantsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<McpAppGrantsResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "listMcpAppGrants", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListMcpAppGrants, args),
+      ),
+    revokeMcpAppGrant: async (
+      args: McpAppRevokeGrantArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<McpAppGrantsResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "revokeMcpAppGrant", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatRevokeMcpAppGrant, args),
+      ),
     // No runtime bound: no favicons, and every Sources row keeps its initial.
     resolveSourceFavicons: async (args: { domains: string[] }): Promise<{ icons: Record<string, string | null> }> =>
       callProjectRuntimeActionOr("chat", "resolveSourceFavicons", { args }, async () => ({ icons: {} })),
@@ -8830,6 +8877,12 @@ const adeBridge = {
         scopeKey?: string | null;
       },
     ): Promise<SceneStillRecord | null> => ipcRenderer.invoke(IPC.sceneStoreStill, args),
+    /**
+     * An MCP App's page, as a URL its frame can load. The declared network
+     * origins go along; the main process builds the policy from them.
+     */
+    prepareApp: (args: { html: string; csp: McpAppCsp }): Promise<string> =>
+      ipcRenderer.invoke(IPC.mcpAppPrepare, args),
   },
   computerUse: {
     listArtifacts: async (
@@ -12175,6 +12228,27 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.accountSettingsSet, args),
     sync: (): Promise<AccountSettingsResult<null>> =>
       ipcRenderer.invoke(IPC.accountSettingsSync),
+  },
+  /**
+   * Settings > MCP servers. Secret values go in; none come out. Each call
+   * that reaches the vault resolves to an `ok: false` result rather than
+   * rejecting when no brain is reachable.
+   */
+  mcpRegistry: {
+    context: (args: { projectRoot: string | null }): Promise<McpRegistryContext> =>
+      ipcRenderer.invoke(IPC.mcpRegistryContext, args),
+    check: (args: { servers: McpRegistryServer[] }): Promise<McpRegistryResult<McpRegistryCheck>> =>
+      ipcRenderer.invoke(IPC.mcpRegistryCheck, args),
+    setSecret: (args: McpRegistrySecretRef & { value: string }): Promise<McpRegistryResult<null>> =>
+      ipcRenderer.invoke(IPC.mcpRegistrySetSecret, args),
+    removeSecret: (args: McpRegistrySecretRef): Promise<McpRegistryResult<null>> =>
+      ipcRenderer.invoke(IPC.mcpRegistryRemoveSecret, args),
+    pruneSecrets: (args: { server: string; keep: McpRegistryServer | null }): Promise<McpRegistryResult<null>> =>
+      ipcRenderer.invoke(IPC.mcpRegistryPruneSecrets, args),
+    scan: (args: { projectRoot: string | null }): Promise<McpRegistryScan> =>
+      ipcRenderer.invoke(IPC.mcpRegistryScan, args),
+    import: (args: { name: string; projectRoot: string | null }): Promise<McpRegistryImportResult> =>
+      ipcRenderer.invoke(IPC.mcpRegistryImport, args),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

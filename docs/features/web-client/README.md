@@ -54,6 +54,7 @@ Build and static host:
   output root. It relies on Rollup's normal graph splitting instead of forcing
   the desktop renderer's heavy vendor groups into eager module preloads; the
   shared renderer's dynamic imports remain the feature-loading boundaries.
+- `apps/desktop/src/renderer/public/scene-frame.html` - the page a chat scene loads in on the hosted client. `_headers` gives it the scene policy in place of the app's (and lifts `X-Frame-Options`), because a `blob:` scene document inherits the app's policy and its scripts never run. `SceneFrame` posts the scene document to it on request.
 - `apps/desktop/scripts/check-webclient-entry.mjs` - post-build regression
   guard for the first-load graph. It collects local entry scripts and
   `modulepreload` links from the generated `index.html`, rejects eagerly linked
