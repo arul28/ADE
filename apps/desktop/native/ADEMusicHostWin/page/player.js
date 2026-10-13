@@ -22,6 +22,10 @@
   var loaded = false;
   var mk = null;
   var lastTimeEmit = 0;
+  // The second a restored queue continues from (play:false with a position).
+  // MusicKit drops a seek made before the song has loaded, so it is applied
+  // right after the next play instead.
+  var pendingSeek = 0;
 
   // MusicKit's key is "<prefix>.<team id>.media-user-token".
   var forgetSavedUserToken = function () {
@@ -130,13 +134,27 @@
     var index = typeof c.index === "number" && c.index > 0 ? c.index : 0;
     if (index > 0) descriptor.startWith = index;
     descriptor.startPlaying = false;
+    pendingSeek = 0;
     await mk.setQueue(descriptor);
     if (typeof c.shuffle === "number") mk.shuffleMode = c.shuffle;
     if (mk.queue && index > 0 && mk.queue.position !== index && index < mk.queue.length) {
       await mk.changeToMediaAtIndex(index);
     }
     if (c.play !== false) await mk.play();
-    if (typeof c.position === "number" && c.position > 0) await mk.seekToTime(c.position);
+    if (typeof c.position === "number" && c.position > 0) {
+      if (c.play === false) pendingSeek = c.position;
+      else await mk.seekToTime(c.position);
+    }
+  };
+
+  var startPlaying = async function (m) {
+    await m.play();
+    if (pendingSeek > 0) {
+      var at = pendingSeek;
+      pendingSeek = 0;
+      await m.seekToTime(at);
+      lastTimeEmit = 0;
+    }
   };
 
   var needMk = function () {
@@ -194,25 +212,26 @@
       return snapshot();
     },
     pause: async function () { needMk().pause(); return snapshot(); },
-    resume: async function () { await needMk().play(); return snapshot(); },
+    resume: async function () { await startPlaying(needMk()); return snapshot(); },
     toggle: async function () {
       var m = needMk();
-      if (m.isPlaying) m.pause(); else await m.play();
+      if (m.isPlaying) m.pause(); else await startPlaying(m);
       return snapshot();
     },
-    next: async function () { await needMk().skipToNextItem(); return snapshot(); },
+    next: async function () { pendingSeek = 0; await needMk().skipToNextItem(); return snapshot(); },
     prev: async function () {
       var m = needMk();
+      pendingSeek = 0;
       // Like every player: a few seconds in, "previous" restarts the song.
       if (m.currentPlaybackTime > 3) await m.seekToTime(0);
       else await m.skipToPreviousItem();
       return snapshot();
     },
-    seek: async function (c) { await needMk().seekToTime(Math.max(0, Number(c.position) || 0)); lastTimeEmit = 0; return snapshot(); },
+    seek: async function (c) { pendingSeek = 0; await needMk().seekToTime(Math.max(0, Number(c.position) || 0)); lastTimeEmit = 0; return snapshot(); },
     volume: async function (c) { needMk().volume = Math.max(0, Math.min(1, Number(c.value))); return snapshot(); },
     shuffle: async function (c) { needMk().shuffleMode = c.mode ? 1 : 0; return snapshot(); },
     repeat: async function (c) { var r = Number(c.mode); needMk().repeatMode = r === 1 || r === 2 ? r : 0; return snapshot(); },
-    playAt: async function (c) { await needMk().changeToMediaAtIndex(Number(c.index) || 0); return snapshot(); },
+    playAt: async function (c) { pendingSeek = 0; await needMk().changeToMediaAtIndex(Number(c.index) || 0); return snapshot(); },
     playNext: async function (c) { await needMk().playNext({ songs: (c.ids || []).map(String) }); return queueItems(); },
     playLater: async function (c) { await needMk().playLater({ songs: (c.ids || []).map(String) }); return queueItems(); },
     // What ADE keeps when it unloads this host, so a relaunch continues the
@@ -223,7 +242,7 @@
       return {
         ids: q.items.map(function (i) { return i.id; }),
         index: q.position,
-        position: round(m.currentPlaybackTime),
+        position: pendingSeek > 0 ? pendingSeek : round(m.currentPlaybackTime),
         shuffle: m.shuffleMode,
         repeat: m.repeatMode,
         volume: m.volume,
