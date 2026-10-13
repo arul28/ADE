@@ -47,7 +47,7 @@ export function ChatPlanChecklist({
         <div className="flex min-w-0 items-baseline gap-2">
           <ChatCardTitle className="shrink-0 font-semibold">plan</ChatCardTitle>
           {planName ? (
-            <span className="truncate text-[length:calc(var(--chat-font-size)*11/14)] text-fg/62">
+            <span data-chat-find-text="" className="truncate text-[length:calc(var(--chat-font-size)*11/14)] text-fg/62">
               {planName}
             </span>
           ) : null}
@@ -60,7 +60,7 @@ export function ChatPlanChecklist({
               key={`${step.text}:${index}`}
               tone={planStepTone(step.status)}
               strike={step.status === "completed"}
-              label={step.text}
+              label={<span data-chat-find-text="">{step.text}</span>}
               title={step.text}
             />
           ))}

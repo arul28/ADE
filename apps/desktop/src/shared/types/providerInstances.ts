@@ -90,6 +90,12 @@ export type ProviderInstance = {
    * 1 hour on a subscription within its limits, 5 minutes otherwise.
    */
   mainPromptCacheTtl?: ClaudePromptCacheTtl;
+  /**
+   * Claude only. `"stop"` means ADE stops a turn when Claude reports that the
+   * turn draws on extra usage (billed past the plan limit). Absent means the
+   * turn continues, which is what Claude Code does by itself.
+   */
+  onExtraUsage?: "stop";
 };
 
 export type ProviderInstanceReplacedAccount = {
@@ -172,8 +178,10 @@ export type ProviderInstanceRemoveArgs = {
 
 export type ProviderInstanceRemoveResult = {
   removed: boolean;
-  /** The config home left on disk; removing an account never deletes credentials. */
+  /** The config home left on disk; removing an account never deletes the directory. */
   configHome: string;
+  /** Why the sign-out before the removal failed; the login is still in `configHome`. */
+  signOutError?: string;
 };
 
 export type ProviderInstanceRenameArgs = {
@@ -207,14 +215,15 @@ export type ProviderInstanceSetSettingsArgs = {
 };
 
 /**
- * `compaction` and the two prompt cache lifetimes are account settings: they
- * need an `instanceId`, a missing key leaves the stored value alone, and null
- * clears it.
+ * `compaction`, the two prompt cache lifetimes and `onExtraUsage` are account
+ * settings: they need an `instanceId`, a missing key leaves the stored value
+ * alone, and null clears it.
  */
 export type ProviderInstanceSettingsPatch = Omit<Partial<ProviderInstanceSettings>, "compaction"> & {
   compaction?: ProviderCompactionSettings | null;
   subagentPromptCacheTtl?: "1h" | null;
   mainPromptCacheTtl?: ClaudePromptCacheTtl | null;
+  onExtraUsage?: "stop" | null;
 };
 
 /** The env var Claude Code reads for the prompt cache TTL outside the main conversation. */

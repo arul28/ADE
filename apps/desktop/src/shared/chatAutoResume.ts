@@ -250,9 +250,9 @@ export const UPDATE_RESUME_SCHEDULED_WORK_SOURCE = "update_restart";
  * under it, so the agent needs the reason as much as the instruction.
  */
 export const UPDATE_RESUME_PROMPT =
-  "ADE restarted to install an update, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.";
+  "ADE restarted, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.";
 
-export const UPDATE_RESUME_REASON = "Resume after ADE update";
+export const UPDATE_RESUME_REASON = "Resume after ADE restart";
 
 const UPDATE_RESUME_ID_PREFIX = "update-resume:";
 

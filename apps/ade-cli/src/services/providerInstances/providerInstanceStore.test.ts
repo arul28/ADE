@@ -322,6 +322,15 @@ describe("providerInstanceStore", () => {
 
     // With no account named there is nothing to set it on; saying "saved" would be a lie.
     expect(() => store.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" })).toThrow(/account id/);
+    expect(() => store.setProviderSettings("claude", { onExtraUsage: "stop" })).toThrow(/account id/);
+    // One patch that names an account setting and a provider setting saves both.
+    const before = store.getProviderSettings("claude").smartBalance;
+    const mixed = store.setProviderSettings("claude", { onExtraUsage: "stop", smartBalance: !before }, work.id);
+    expect(mixed.smartBalance).toBe(!before);
+    expect(store.getProviderSettings("claude").smartBalance).toBe(!before);
+    expect(store.get(work.id)).toMatchObject({ onExtraUsage: "stop", subagentPromptCacheTtl: "1h" });
+    store.setProviderSettings("claude", { onExtraUsage: null }, work.id);
+    expect(store.get(work.id)?.onExtraUsage).toBeUndefined();
     store.setProviderSettings("codex", { subagentPromptCacheTtl: "1h" }, codex.id);
     expect(store.get(codex.id)?.subagentPromptCacheTtl).toBeUndefined();
     store.setProviderSettings("claude", { subagentPromptCacheTtl: "2h" as never }, work.id);
@@ -431,7 +440,7 @@ describe("providerInstanceStore", () => {
     expect(reused?.loginBroken).toBeUndefined();
   });
 
-  it("gives a shared login to the first working account, not a broken one", async () => {
+  it("gives a shared login to the working default account, else the first working one", async () => {
     const { store } = makeStore({
       readAccount: async (_provider, configHome) => (
         configHome.includes("provider-homes") ? { email: "shared@example.com" } : {}
@@ -449,6 +458,53 @@ describe("providerInstanceStore", () => {
     store.setLoginBroken(first.instance.id, true);
     expect(store.get(first.instance.id)?.sameLoginAs).toBe(second.instance.id);
     expect(store.get(second.instance.id)?.sameLoginAs).toBeUndefined();
+
+    // The default owns it whatever its place in the list, so smart balance
+    // counts the account the usage poller keeps the reading for.
+    store.setLoginBroken(first.instance.id, false);
+    store.setDefault(second.instance.id);
+    expect(store.get(second.instance.id)?.sameLoginAs).toBeUndefined();
+    expect(store.get(first.instance.id)?.sameLoginAs).toBe(second.instance.id);
+
+    // …unless the default's own login is broken.
+    store.setLoginBroken(second.instance.id, true);
+    expect(store.get(first.instance.id)?.sameLoginAs).toBeUndefined();
+    expect(store.get(second.instance.id)?.sameLoginAs).toBe(first.instance.id);
+  });
+
+  it.each([
+    { provider: "claude" as const, args: ["auth", "logout"], envKey: "CLAUDE_CONFIG_DIR" },
+    { provider: "codex" as const, args: ["logout"], envKey: "CODEX_HOME" },
+  ])("signs a $provider account out in its own home, and refuses the default", ({ provider, args, envKey }) => {
+    const { store } = makeStore();
+    const created = store.create({ provider, label: "Work" });
+
+    const command = store.logoutCommand(created.instance.id);
+    expect(command.args).toEqual(args);
+    expect(command.env[envKey]).toBe(created.instance.configHome);
+    // The machine's own login is the default until another account is.
+    expect(() => store.logoutCommand(provider)).toThrow(/default/);
+
+    store.setDefault(created.instance.id);
+    expect(() => store.logoutCommand(created.instance.id)).toThrow(/default/);
+    // Then it signs out wherever the environment points.
+    expect(store.logoutCommand(provider).env).toEqual({});
+  });
+
+  it("does not let an account become the default while its sign-out runs", async () => {
+    const { store } = makeStore();
+    const created = store.create({ provider: "claude", label: "Work" });
+    let finish: () => void = () => undefined;
+    const signingOut = store.whileSigningOut(created.instance.id, () => new Promise<void>((resolve) => { finish = resolve; }));
+
+    // It would come out of the logout as a signed-out default.
+    expect(() => store.setDefault(created.instance.id)).toThrow(/being signed out/);
+    expect(() => store.remove(created.instance.id)).toThrow(/being signed out/);
+    await expect(store.whileSigningOut(created.instance.id, async () => undefined)).rejects.toThrow(/already/);
+
+    finish();
+    await signingOut;
+    expect(store.setDefault(created.instance.id).isDefault).toBe(true);
   });
 
   it("keeps a listener that throws from rolling back the write", () => {

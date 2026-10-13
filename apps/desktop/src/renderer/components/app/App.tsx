@@ -24,6 +24,7 @@ import {
 import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { DialogHost } from "../ui/dialog/confirm";
 import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
+import { QuitPromptHost } from "./QuitPromptHost";
 import { GitFolderTrustPromptHost } from "./GitFolderTrustPrompt";
 import { LeftoverWorktreeDialogHost } from "../lanes/LeftoverWorktreeDialogHost";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
@@ -686,6 +687,31 @@ function ProjectTabHost() {
   const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
+  // The project's .ade folder or database disappeared (or was swapped) while
+  // it was open: show the recovery screen instead of letting every panel fail.
+  // Asked once when the window loads (the project that could not reopen at
+  // launch) and whenever its project changes, so a reload or a second window
+  // learns what the main process already knows. A window that later goes
+  // back to the welcome screen does not bring the launch problem back.
+  const activeProjectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  React.useEffect(() => {
+    void window.ade?.recovery?.projectDataStatus?.().then((problem) => {
+      if (!problem || useAppStore.getState().project) return;
+      useAppStore.getState().reportProjectDataProblem(problem.projectRoot, problem.status);
+    }).catch(() => undefined);
+  }, []);
+  React.useEffect(() => {
+    if (!activeProjectRoot) return;
+    void window.ade?.recovery?.projectDataStatus?.(activeProjectRoot).then((problem) => {
+      // Dropped if the window moved to another project while this was asked.
+      if (!problem || useAppStore.getState().project?.rootPath !== activeProjectRoot) return;
+      useAppStore.getState().reportProjectDataProblem(problem.projectRoot, problem.status);
+    }).catch(() => undefined);
+  }, [activeProjectRoot]);
+  React.useEffect(() => window.ade?.recovery?.onProjectDataMissing?.(({ projectRoot, status }) => {
+    if (useAppStore.getState().project?.rootPath !== projectRoot) return;
+    useAppStore.getState().reportProjectDataProblem(projectRoot, status);
+  }), []);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots ?? EMPTY_PROJECT_TAB_ROOTS);
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot ?? EMPTY_PROJECT_INFO_BY_ROOT);
@@ -1559,6 +1585,8 @@ export function App() {
           <DialogHost />
           {/* "May this agent use the ADE browser?" — only when the setting asks. */}
           <BrowserAgentAccessPromptHost />
+          {/* "Quit ADE?" — main asks the window it is quitting from. */}
+          <QuitPromptHost />
           {/* "Trust this folder?" — git refused a folder the user chose to open. */}
           <GitFolderTrustPromptHost />
           <LeftoverWorktreeDialogHost />

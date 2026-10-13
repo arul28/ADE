@@ -5,6 +5,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { ConflictFileType } from "../../../shared/types";
 import { GIT_UNTRUSTED_FOLDER_CODE } from "../../../shared/codedError";
+import { GIT_READ_ENV } from "./gitReadEnv";
 import { terminateProcessTree } from "../shared/processExecution";
 import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
 import { pathKey } from "../shared/pathCompare";
@@ -290,17 +291,18 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
   }
   const executable = await resolveGitExecutable();
   return await new Promise<GitRunResult>((resolve) => {
-    const hasEnvOverrides = opts.env !== undefined && Object.keys(opts.env).length > 0;
+    // A caller's env wins over GIT_READ_ENV.
+    const envPatch = { ...GIT_READ_ENV, ...(opts.env ?? {}) };
     // On Windows, CreateProcess runs on the calling thread, so a git spawned
     // here blocks the event loop for 5-1,000 ms. See offThreadSpawn.ts.
     const child: GitChild = offThreadSpawnEnabled()
       ? spawnOffThread(executable, args, {
         cwd: opts.cwd,
-        env: hasEnvOverrides ? { ...process.env, ...opts.env } : undefined,
+        envPatch,
       })
       : spawn(executable, args, {
         cwd: opts.cwd,
-        env: { ...process.env, ...(opts.env ?? {}) },
+        env: { ...process.env, ...envPatch },
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });

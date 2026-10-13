@@ -22,6 +22,7 @@ import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ChatThreadComment } from "../threadComments";
 import type { ClaudePromptCacheTtl } from "../claudePromptCache";
+import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
@@ -339,6 +340,8 @@ export type AgentChatClaudePlugin = {
   source: "local";
   description?: string;
   version?: string;
+  /** True when the plugin has a hooks module: a mod, which may draw in the chat. */
+  isMod?: boolean;
 };
 export type AgentChatClaudePluginsArgs = {
   sessionId?: string;
@@ -441,6 +444,39 @@ export type AgentChatSpawnCompletion = {
  */
 export function spawnCompletedNoticeMessage(childTitle: string): string {
   return `Chat "${childTitle}" finished its turn`;
+}
+
+/** What a `spawn_completed` notice reports: the child chat, and where it ran. */
+export type SpawnCompletedNotice = {
+  /** Null when the notice's detail lost its completion (an old or truncated transcript). */
+  childSessionId: string | null;
+  childTitle: string;
+  childMachineName: string | null;
+};
+
+/**
+ * Inverts `spawnCompletedNoticeMessage` for a notice whose detail lost its
+ * completion, in EITHER wording: the current sentence, and the pre-rename
+ * `Peer "<title>" turn finished` that persisted transcripts still hold and are
+ * never re-emitted. One anchored match with a capture group, so a message that
+ * is not a completion notice fails to match instead of coming back mangled.
+ */
+const SPAWN_COMPLETED_TITLE_PATTERN = /^(?:Peer|Chat)\s+"?(.*?)"?\s+(?:turn finished|finished its turn)$/;
+
+/**
+ * The one reader of a `spawn_completed` notice, for every surface that draws
+ * or groups it. Null for any other event.
+ */
+export function readSpawnCompletedNotice(event: AgentChatEvent): SpawnCompletedNotice | null {
+  if (event.type !== "system_notice" || event.noticeKind !== "info" || event.status !== "spawn_completed") return null;
+  const completion = event.detail && typeof event.detail === "object" ? event.detail.spawnCompletion : undefined;
+  return {
+    childSessionId: completion?.childSessionId?.trim() || null,
+    childTitle: completion?.childTitle?.trim()
+      || SPAWN_COMPLETED_TITLE_PATTERN.exec(event.message)?.[1]?.trim()
+      || "Chat",
+    childMachineName: completion?.childMachineName?.trim() || null,
+  };
 }
 
 /** One-line notice when a child can no longer report to a deleted parent chat. */
@@ -2228,6 +2264,8 @@ export type AgentChatEvent =
       title?: string;
       manuallyNamed?: boolean;
       claudeTag?: string | null;
+      /** What Claude mods draw for this chat right now, whole. Never stored. */
+      claudePluginUi?: ClaudePluginUiSnapshot;
       /** Signals that persisted envelope history changed and open views must refetch. */
       historyInvalidated?: boolean;
       /**

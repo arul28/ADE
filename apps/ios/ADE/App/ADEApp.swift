@@ -21,6 +21,9 @@ struct ADEApp: App {
   /// Pending cross-machine deep link awaiting a "Send to Mac" confirmation.
   /// Driven by `.adeSendToMacRequested` notifications from `DeepLinkRouter`.
   @State private var sendToMacTarget: SendToMacTarget?
+  /// Pending sign-in of another computer awaiting approval on this phone.
+  /// Driven by `.adeDeviceSignInRequested` notifications from `DeepLinkRouter`.
+  @State private var deviceSignInRequest: DeviceSignInRequest?
 
   @MainActor
   init() {
@@ -167,6 +170,19 @@ struct ADEApp: App {
             sendToMacTarget = nil
           }
           .environmentObject(syncService)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .adeDeviceSignInRequested)) { note in
+          guard let raw = note.userInfo?["url"] as? String, let url = URL(string: raw) else { return }
+          deviceSignInRequest = DeviceSignInRequest(url: url)
+        }
+        .sheet(item: $deviceSignInRequest) { request in
+          DeviceSignInApprovalSheet(request: request) {
+            deviceSignInRequest = nil
+          }
+          // One sheet, and so one approval model, for each code: a second link
+          // cannot reset an approval that is in flight for the first.
+          .id(request.userCode)
+          .environmentObject(accountService)
         }
   }
 }

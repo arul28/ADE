@@ -6,6 +6,10 @@ export const ADE_RECOVERY_ERROR_CODES = [
   "migration_unknown_state",
   /** The data files exist but the filesystem refuses to read them. */
   "storage_read_failed",
+  /** ADE opened this project's data before, and its .ade folder or database is gone. */
+  "project_data_missing",
+  /** The open database was moved or replaced while ADE was using it. */
+  "db_path_changed",
   "brain_not_installed",
   "brain_crash_looping",
   /** macOS loaded the launch agent but "Allow in the Background" is off for ADE. */
@@ -55,6 +59,18 @@ export type ProjectRecoveryDiagnosis = {
      * the fix is to move the folder.
      */
     | "storage_unreadable"
+    /**
+     * The project's .ade folder or its database was moved or deleted. Nothing
+     * is repaired automatically: the person puts it back, or starts fresh.
+     */
+    | "data_missing"
+    /**
+     * A different database appeared where the open one was, while the project
+     * was open. ADE does not switch to it mid-session; the person chooses to.
+     * (A database swapped while ADE was closed, such as a restored backup, is
+     * simply opened.)
+     */
+    | "data_replaced"
     | "brain_crash_looping"
     | "brain_not_installed"
     /**
@@ -82,8 +98,35 @@ export type ProjectRecoveryDiagnosis = {
   requiresFreeSpaceBytes?: number;
   freeBytes?: number;
   lastFailure?: AdeLastFailureReport;
+  /** `data_missing` only: ADE found this project's data in the Trash and can put it back. */
+  restoreAvailable?: boolean;
+  /**
+   * `data_missing` only: the project folder itself is gone (moved, deleted,
+   * or on a drive that is not plugged in). Nothing can be restored into it.
+   */
+  projectFolderMissing?: boolean;
   technicalDetail: string;
 };
+
+export type ProjectDataRestoreResult = { restored: true } | { restored: false; reason: string };
+
+/**
+ * `data_missing` when the project folder itself is gone (moved, deleted, or on
+ * a drive that is not plugged in): nothing can be restored into it, so the
+ * screen only says how to bring it back.
+ */
+export const PROJECT_FOLDER_MISSING_COPY = {
+  headline: "This project's folder isn't there",
+  body: "If it's on a drive, plug it in. If you moved it, move it back. Your files aren't touched.",
+  /** Why Restore, Start fresh and Repair refuse. */
+  refusal: "The project folder itself isn't there. Put it back first.",
+} as const;
+
+/** What happened to a project's ADE data: gone, or swapped for another copy while open. */
+export type ProjectDataProblem = "missing" | "replaced";
+
+/** An open project whose ADE data went missing or was swapped, or one that could not reopen at launch. */
+export type ProjectDataStatus = { projectRoot: string; status: ProjectDataProblem };
 
 export type RepairStepId =
   | "check_space"
@@ -167,6 +210,16 @@ export const RECOVERY_COPY: Record<RecoveryState, {
       "Move the project folder to a normal folder on this computer.",
       "Then choose Try again.",
     ],
+  },
+  data_missing: {
+    headline: "This project's ADE data is missing",
+    body: "Your code is safe. Only ADE's lanes and chat history for it are gone.",
+    canAutoRepair: false,
+  },
+  data_replaced: {
+    headline: "This project's ADE data changed",
+    body: "Your code is safe. A different copy of ADE's data appeared while the project was open.",
+    canAutoRepair: false,
   },
   brain_not_installed: {
     headline: "ADE's background service is missing",
@@ -285,6 +338,8 @@ export function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnos
     case "migration_incomplete":
     case "migration_unknown_state": return "db_repair_needed";
     case "storage_read_failed": return "storage_unreadable";
+    case "project_data_missing": return "data_missing";
+    case "db_path_changed": return "data_replaced";
     case "brain_crash_looping": return "brain_crash_looping";
     case "brain_not_installed": return "brain_not_installed";
     case "background_item_blocked": return "background_blocked";

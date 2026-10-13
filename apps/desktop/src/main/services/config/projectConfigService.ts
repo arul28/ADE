@@ -348,6 +348,8 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   if (continueAfterRestart != null) chat.continueAfterRestart = continueAfterRestart;
   const piExtensionsEnabled = asBool(value.piExtensionsEnabled);
   if (piExtensionsEnabled != null) chat.piExtensionsEnabled = piExtensionsEnabled;
+  const claudePluginUiEnabled = asBool(value.claudePluginUiEnabled);
+  if (claudePluginUiEnabled != null) chat.claudePluginUiEnabled = claudePluginUiEnabled;
   const codexSandbox = asString(value.codexSandbox)?.trim();
   if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
     chat.codexSandbox = codexSandbox;

@@ -88,6 +88,7 @@ function toRemarks(comments: PrComment[] | null, reviews: PrReview[] | null, ign
       line: comment.line,
       url: comment.url,
       createdAt: comment.createdAt,
+      editedAt: comment.updatedAt,
       kind: comment.source === "review" ? "review_comment" : "comment",
     });
   }

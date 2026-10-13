@@ -108,6 +108,7 @@ import {
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
 import type { ProviderCompactionSettings } from "../shared/compactionSettings";
+import type { ProviderInstanceSettingsPatch } from "../shared/types/providerInstances";
 import type {
   ApiCredentialGetArgs,
   ApiCredentialListArgs,
@@ -843,6 +844,7 @@ const mockProviderInstances: Array<{
   replacedAccount?: { email: string; plan?: string; replacedAt: string };
   subagentPromptCacheTtl?: "1h";
   mainPromptCacheTtl?: "5m" | "1h";
+  onExtraUsage?: "stop";
   compaction?: ProviderCompactionSettings;
 }> = [
   {
@@ -7838,6 +7840,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         login.state = "cancelled";
         return { ...login };
       },
+      signOut: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        delete instance.account;
+        instance.signedIn = false;
+        return instance;
+      },
       dismissReplaced: async (args: { id: string }) => {
         const instance = mockProviderInstanceById(args.id);
         delete instance.replacedAccount;
@@ -7854,7 +7862,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setSettings: async (args: {
         provider: "claude" | "codex";
         instanceId?: string;
-        settings: { smartBalance?: boolean; autoStartWindows?: boolean; subagentPromptCacheTtl?: "1h" | null; mainPromptCacheTtl?: "5m" | "1h" | null; compaction?: ProviderCompactionSettings | null };
+        settings: ProviderInstanceSettingsPatch;
       }) => {
         const current = mockProviderInstanceSettings[args.provider];
         const account = args.instanceId ? mockProviderInstances.find((entry) => entry.id === args.instanceId) : undefined;
@@ -7869,6 +7877,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         if (account && args.settings && Object.hasOwn(args.settings, "mainPromptCacheTtl")) {
           if (args.settings.mainPromptCacheTtl) account.mainPromptCacheTtl = args.settings.mainPromptCacheTtl;
           else delete account.mainPromptCacheTtl;
+        }
+        if (account && args.settings && Object.hasOwn(args.settings, "onExtraUsage")) {
+          if (args.settings.onExtraUsage === "stop") account.onExtraUsage = "stop";
+          else delete account.onExtraUsage;
         }
         if (typeof args.settings?.smartBalance === "boolean") current.smartBalance = args.settings.smartBalance;
         if (typeof args.settings?.autoStartWindows === "boolean") {

@@ -305,6 +305,8 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * attach pass rather than this module reaching into the view.
    */
   onPreviewWatchersChanged?: (tabId: string) => void;
+  /** A device preset changed the size this tab is drawn at, so a parked view must be re-placed. */
+  onTabEmulationChanged?: (tabId: string) => void;
   /**
    * Whether this tab's view currently holds a compositor surface.
    *
@@ -509,12 +511,17 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     if (!tab.emulation) return;
     const wc = tab.webContents;
     if (wc.isDestroyed() || !wc.debugger.isAttached()) return;
-    void sendEmulationCommands(tab, tab.emulation).catch((error) => {
-      logger()?.debug("built_in_browser.emulation_reapply_failed", {
-        tabId: tab.id,
-        err: errorMessage(error),
-      });
-    });
+    // The applied scale is only known once the override lands, and a parked
+    // view is boxed at that scale, so the view is re-placed after it.
+    void sendEmulationCommands(tab, tab.emulation).then(
+      () => deps.onTabEmulationChanged?.(tab.id),
+      (error) => {
+        logger()?.debug("built_in_browser.emulation_reapply_failed", {
+          tabId: tab.id,
+          err: errorMessage(error),
+        });
+      },
+    );
   };
 
   /** The scale Chromium draws an emulating tab at: what its override last applied. */
@@ -555,6 +562,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       }
       tab.emulation = next;
     });
+    deps.onTabEmulationChanged?.(tab.id);
     emitStatus();
     return {
       tabId: tab.id,

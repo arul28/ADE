@@ -100,6 +100,9 @@ html[data-scene="image"][data-theme="light"] {
   color: var(--color-fg);
 }
 
+/* Compact: a 28px head for a one-line card that sits on another surface. */
+.kit-card-head[data-compact="true"] { height: 28px; padding: 0 12px; font-size: 11px; }
+
 .kit-card-head > svg { flex: none; color: var(--kit-text-3); }
 .kit-card-head-count { font-family: var(--font-mono); font-size: 11px; color: var(--kit-text-3); font-variant-numeric: tabular-nums; }
 .kit-card-head-action {
@@ -258,6 +261,11 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 }
 .kit-icon-btn:hover:not(:disabled) { background: var(--kit-active); color: var(--color-fg); }
 .kit-icon-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* The floating ⌘F bar over a chat transcript or a diff (shared/FindBar.tsx):
+   one row in a card, small icon buttons. */
+.kit-find-bar { flex-direction: row; align-items: center; gap: 6px; height: 36px; padding: 0 4px 0 10px; }
+.kit-find-bar .kit-icon-btn { flex: none; width: 24px; height: 24px; }
 
 /* Buttons for card surfaces (the recovery screen, the error screens). One
    primary per card — the thing to do next — drawn in the theme's own ink, so

@@ -910,6 +910,17 @@ implements a two-layer transform:
    entries — a turn whose bursts were broken up by prose used to stack six
    near-identical panels through one reply. Assistant narration is unchanged.
 
+   **The live turn's tools.** The working status names the running tool and
+   its dropdown lists the open turn's tools (`deriveTranscriptToolActivity` in
+   `chatTranscriptPresentation.ts`). The open turn ends at `done`, or at a user
+   message that starts a new one. A message that carries the open turn's id
+   (Codex's `!` shell command sent mid-turn) never starts one. A steer the live
+   turn took in (`accepted`, `inline`, `processed`, `unprocessed`) or that went
+   nowhere (`failed`) never starts one either, so it does not cut the
+   activity. The rule is `userMessageStartsTurn` in `shared/chatTranscript.ts`,
+   which the `ade code` TUI uses too. A queued steer is still in the composer
+   and is ignored.
+
    **Desktop and hosted web** implement this in `AgentChatMessageList` through
    `ChatTurnWorkSummary` on the done divider: one expandable `N tools · M files`
    row sits immediately above the turn's existing time/usage cutout, left-aligned
@@ -949,7 +960,11 @@ implements a two-layer transform:
    errors, the `attached:` / `target:` lines from `shared/userBrowserLabels.ts`,
    `--json` results); the summary returns null
    whenever it is unsure (unknown verb, two acting commands in one call, shell
-   control flow), which keeps the plain shell row.
+   control flow), which keeps the plain shell row. The tokenizer splits shell
+   redirections (`2>&1`, `>out`, `> out`, `&>log`, `*>$null`, and `snapshot>out`
+   with no space) off the words, but only the unquoted ones, so a redirection
+   is never a flag's value or a click target (`click --text 2>&1` has none), and
+   a quoted `"<x>"` stays an argument.
 
    A row names the app it touched ("in TextEdit"). A surface names itself only
    when no app says where: a screen or simulator for a screen-level action
@@ -972,9 +987,11 @@ implements a two-layer transform:
    that enlarges in place. A later `proof publish` adds "· posted to PR #N" to
    the lines whose records it reports posted, instead of a row of its own.
 
-   The latest action of a run draws in full (action icon, the line, a status
-   icon and the failure reason); earlier ones are one muted line with a status
-   dot (amber when unconfirmed, red when it failed). A running action shimmers
+   The latest action of a run draws in full: its line in a stronger colour, a
+   status icon, and the failure reason under it. Earlier ones are one muted
+   line with a status dot (amber when unconfirmed, red when it failed). Every
+   line is the same size, so the newest stands out by colour and status icon,
+   not by size. A running action shimmers
    as one sweep across the line. App icons come from `app.getAppIcon` (macOS,
    cached per name in both processes); browsers use the installed-browser
    icons; everything else draws a glyph. In the tools list the same commands
@@ -1078,7 +1095,7 @@ implements a two-layer transform:
      the row's own prose, so replays reproduce it.
    - **Only history folds.** Thought rows, interim narration text, a Codex
      plan-mode proposal card, finished activity bundles, the Turn details row,
-     spawned/completed chips, compaction dividers, goal pills, the host-sleep
+     spawned chips, completion lines, compaction dividers, goal pills, the host-sleep
      chip, a finished stall card, and warning, info, hook, and config notices
      (including a usage notice marked `warning`/`info`) fold: they have nothing
      to act on. These stay visible below the fold row, in order, above the

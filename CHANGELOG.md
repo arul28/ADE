@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.102] - 2026-10-13
+
+### Desktop and web
+
+- Send a message into a running turn without a loaded model, and keep a chat's model across pane remounts (#1606).
+- Sign a machine in from your phone with a QR code (#1603).
+- Videos play in PRs, and the phone shows a PR description's pictures (#1604).
+
+## [1.2.101] - 2026-10-12
+
+### Desktop and web
+
+- Find in a chat or any diff with ⌘F, plus "Find in this chat" in ⌘K (#1600).
+- Claude Code mod UI (status lines, toasts, band, panes) in ADE chat, opt-in (#1601).
+- Readable agent-written PRs, a "needs you" line, side-by-side proof, and Add to chat in the PRs tab (#1595).
+- Chat fixes: steered turns keep their tool list, photo paste, kept chat models, browser preview sizing (#1598, #1602).
+- Multi-machine chats: voice, terminal logs, sign-in and session diffs reach the owning machine (#1592).
+- Sign out of non-default accounts; remove signs out first (#1593, #1599).
+- Idle Claude accounts stay readable for smart balance; option to stop turns on extra usage (#1587, #1588).
+- Project switching keeps the right lane, protects moved project data, and no longer breaks the simulator pane (#1589, #1594).
+- Background git status no longer blocks your commits; PR Watch wakes on bot comment edits; chat-settled automation trigger (#1587).
+- ADE-styled quit prompt and a Background service stop; readable Focus grid with a chats-per-page setting (#1590, #1591).
+- Project tabs switch on press, 44–51 ms warm (#1585).
+
 ## [1.2.100] - 2026-10-11
 
 ### Desktop and web
@@ -2441,7 +2465,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.100...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.102...HEAD
+[1.2.102]: https://github.com/arul28/ADE/compare/v1.2.101...v1.2.102
+[1.2.101]: https://github.com/arul28/ADE/compare/v1.2.100...v1.2.101
 [1.2.100]: https://github.com/arul28/ADE/compare/v1.2.99...v1.2.100
 [1.2.99]: https://github.com/arul28/ADE/compare/v1.2.98...v1.2.99
 [1.2.98]: https://github.com/arul28/ADE/compare/v1.2.97...v1.2.98

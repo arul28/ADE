@@ -92,7 +92,7 @@ Every worktree, agent, and PR synced to iOS. Start a task on the desktop, approv
 
 Think of ADE as having 4 UI clients (web, desktop app, terminal, and mobile app) you can interact and work with. Each one of those clients needs to connect to a machine, and it does that via "ADE Brain". You can install the Brain to any machine, and magically it will then be accessible and controllable by any of those UI clients. The machine just needs to stay on, and suddenly you get a full agentic development experience from anywhere. 
 
-This one command below installs the **ADE brain** — the always-on engine that every ADE UI client talks to. Running this command will also optionally ask you to install the desktop app, which is one of the four UI clients, and the most powerful one. This command will also ask you to sign up or login to your ADE account. Your ADE account is what lets you seamlessly connect to all other machines you use. Of course, you can use ADE without an account, you will just have to connect to your machines to an ADE Brain via LAN, Tailscale, or SSH. 
+This one command below installs the **ADE brain** — the always-on engine that every ADE UI client talks to. Running this command will also optionally ask you to install the desktop app, which is one of the four UI clients, and the most powerful one. This command will also ask you to sign up or login to your ADE account. Your ADE account is what lets you seamlessly connect to all other machines you use. The desktop app, the web client, and the mobile app need that account. Without an account, the Brain and `ade code` still work on the machine itself. 
 
 **macOS and Linux**
 
@@ -109,6 +109,38 @@ irm https://ade-app.dev/install.ps1 | iex
 **Want to install the full Desktop App + Brain via a dmg or exe file?** Download it from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest) or [ade-app.dev](https://ade-app.dev) instead. That gets you the same thing as the above command, but with the above command you can opt out of the desktop app and only install the Brain, these download files bundle it all together. Note - linux doesnt have a desktop app yet, only Brain.
 
 If you already have the Brain installed, and want the desktop app, you can safely run the command above, or install the appropriate download file. 
+
+### Sign in
+
+One command signs a machine in and puts it on your account:
+
+```bash
+ade connect
+```
+
+It is safe to run again at any time. It does only the steps that are not done: a machine that is signed in is not asked to sign in again, and a service that runs is left alone.
+
+It gives you two ways to finish. Use the one that fits:
+
+- **On this machine.** Your browser opens. Sign in there.
+- **On another device.** The terminal prints a QR code, a link, and a short code. Scan the QR code with your phone, or open the link on a different computer. This machine signs in when you finish. Your password is never typed on this machine, which is what you want on a VM or a shared computer. If ADE Mobile is on the phone and signed in, the scan opens the app: tap **Approve**, then **Allow**, and type no password at all.
+
+A machine with no browser (an SSH session, a headless server) shows only the second way. The desktop app has the same choice: select **Sign in with your phone or another device** on the sign-in card.
+
+| You want to | Run |
+| --- | --- |
+| Sign in and connect this machine | `ade connect` |
+| Sign in from another device only, and open no browser here | `ade connect --headless` |
+| See who is signed in | `ade auth status --text` |
+| Sign out | `ade logout` |
+| Sign in a CI job or an unattended host | `ade account token create`, then set `ADE_ACCOUNT_TOKEN` on that host |
+| Use the Brain with no account, on this machine only | `ade connect --no-login` |
+| See what is connected | `ade connect --status --text` |
+| List the machines on your account | `ade machines list --text` |
+| Set the PIN that pairs a phone directly | `ade sync pin generate` |
+| Open the terminal UI | `ade code` |
+| Find a problem | `ade doctor` |
+| Read the help for a command | `ade help <command>` |
 
 ### Desktop app
 
@@ -148,7 +180,7 @@ Nothing to install. Sign in at [**app.ade-app.dev**](https://app.ade-app.dev) an
 
 Available now on [**TestFlight**](https://testflight.apple.com/join/ZSdJGKPy). App Store coming soon; Android coming soon.
 
-Sign in on the phone to see your machines and connect automatically. If you choose not to create a free account, you can **Continue without an account** and pair to any machine via direct QR/link, Nearby LAN/Tailscale scan, or SSH pairing. To maintain and relay information between machines, ADE will prefer LAN, then Tailscale, and use its own relay service as fallback to maintain mobile to machine connections. Having an account makes the discovery of machines seamless, and will also allow you to connect off wifi or without Tailscale. But if you have access to internet, or have Tailscale setup on mobile and another machine, then ADE will automatically use that to maintain the connection, it's always a bit faster. 
+Sign in on the phone with the same account to see your machines and connect automatically. You can also pair a phone to one machine directly, with the QR code in the desktop **Connections** panel or a Nearby LAN/Tailscale scan, and a 6-digit PIN. To maintain and relay information between machines, ADE will prefer LAN, then Tailscale, and use its own relay service as fallback to maintain mobile to machine connections. Having an account makes the discovery of machines seamless, and will also allow you to connect off wifi or without Tailscale. But if you have access to internet, or have Tailscale setup on mobile and another machine, then ADE will automatically use that to maintain the connection, it's always a bit faster. 
 
 
 
@@ -161,7 +193,7 @@ You rarely run it yourself. The install script runs it at the end, and the deskt
 ```bash
 ade connect                  # sign in, install the service, publish this machine
 ade connect --status --text  # report the three steps, change nothing
-ade connect --headless       # copy-paste device flow, for SSH sessions
+ade connect --headless       # sign in from another device: QR code, link, and code
 ade connect --no-login       # service only; stay local/LAN-only
 ```
 

@@ -30,7 +30,7 @@ func providerAccountProviderTitle(_ account: ProviderAccount) -> String {
 
 /// What removing an account does, for both places that offer it.
 func providerAccountRemoveMessage(hostName: String?) -> String {
-  "ADE stops using this account. Its login stays on \(hostName ?? "the machine"), so you can add it back later."
+  "ADE signs this account out on \(hostName ?? "the machine") and stops using it. Adding it back starts with a fresh sign-in."
 }
 
 // MARK: - Page
@@ -454,7 +454,8 @@ struct ProviderAccountRow: View {
   }
 
   private var detailLine: String {
-    if let ownerLabel { return "Same login as \(ownerLabel) · shares its limits" }
+    // A broken login shares nothing; its own line says why, like desktop.
+    if let ownerLabel, account.loginBroken != true { return "Same login as \(ownerLabel) · shares its limits" }
     return providerAccountDetailLine(account)
   }
 

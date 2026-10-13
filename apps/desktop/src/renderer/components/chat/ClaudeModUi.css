@@ -1,0 +1,151 @@
+/*
+ * Claude mod UI: one dock (a kit card) on the prompt box, holding the panes,
+ * the band and the status lines that Claude Code plugins draw. Mods lay out in terminal
+ * cells, so a mod surface is monospace, one line per row, sized in `ch`.
+ */
+.ade-mod-ui {
+  /* The composer's own column, so the dock sits square on the prompt box. */
+  width: 100%;
+  max-width: var(--chat-column, 52rem);
+  margin: 0 auto 6px;
+  min-width: 0;
+}
+
+/* The header (a compact kit card head): a label, the mods' status lines, and the fold control. */
+.ade-mod-head { gap: 10px; width: 100%; color: var(--kit-text-2); text-align: left; }
+button.ade-mod-head { border: 0; background: none; font-family: inherit; cursor: pointer; }
+button.ade-mod-head:hover { background: var(--kit-hover); }
+/* The card clips its children, so the focus ring is the card's own edge. */
+button.ade-mod-head:focus-visible { outline: none; background: var(--kit-hover); }
+.ade-mod-ui > .kit-card { transition: border-color 160ms ease; }
+.ade-mod-ui > .kit-card:has(> .ade-mod-head:focus-visible) { border-color: var(--color-accent); }
+.ade-mod-statuses {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 14px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  line-height: 1.4;
+}
+.ade-mod-status { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.ade-mod-status-name { color: var(--kit-text-3); }
+.ade-mod-caret { flex: none; color: var(--kit-text-3); transition: transform 180ms ease; }
+.ade-mod-ui[data-collapsed="true"] .ade-mod-caret { transform: rotate(180deg); }
+
+/* The fold: the body's row goes from its own height to nothing. */
+.ade-mod-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows 200ms cubic-bezier(0.2, 0, 0, 1), opacity 160ms ease;
+}
+.ade-mod-ui[data-collapsed="true"] .ade-mod-body { grid-template-rows: 0fr; opacity: 0; }
+.ade-mod-body-inner { min-height: 0; overflow: hidden; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-mod-body,
+  .ade-mod-caret { transition: none; }
+}
+
+.ade-mod-surface {
+  container-type: inline-size;
+  min-width: 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  color: var(--color-fg);
+}
+
+/* The mod's own cell grid, centred, shrunk when the column is narrower than its columns. */
+.ade-mod-fit {
+  font-size: clamp(8px, calc(100cqi / (var(--ade-mod-columns, 100) * 0.602)), 13px);
+  line-height: 1.25;
+  width: calc(var(--ade-mod-columns, 100) * 1ch);
+  margin: 0 auto;
+}
+
+/* A band taller than the rows the host asked for scrolls, as in Claude Code. */
+.ade-mod-band {
+  max-height: calc(var(--ade-mod-band-rows, 12) * 1lh + 12px);
+  padding: 4px 12px 8px;
+  border-top: 1px solid var(--kit-rule);
+  overflow-y: auto;
+}
+
+.ade-mod-ui[data-live="false"] .ade-mod-band,
+.ade-mod-ui[data-live="false"] .ade-mod-pane-body { opacity: 0.6; }
+
+.ade-mod-pane { border-top: 1px solid var(--kit-rule); }
+.ade-mod-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 6px 0 12px;
+  font-size: 12px;
+  color: var(--color-fg);
+}
+.ade-mod-pane-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.ade-mod-pane-plugin { font-family: var(--font-mono); font-size: 11px; color: var(--kit-text-3); white-space: nowrap; }
+.ade-mod-pane-close { margin-left: auto; }
+.ade-mod-pane-body { max-height: calc(var(--ade-mod-pane-rows, 20) * 1lh + 12px); padding: 2px 12px 10px; overflow-y: auto; }
+
+.ade-mod-button {
+  /* A terminal button is as wide as its label, also in a column. */
+  width: fit-content;
+  flex: none;
+  font: inherit;
+  line-height: inherit;
+  white-space: pre;
+  padding: 0 1ch;
+  border: 1px solid var(--kit-rule);
+  border-radius: 4px;
+  background: var(--kit-hover);
+  color: inherit;
+  cursor: pointer;
+}
+.ade-mod-button:hover:not(:disabled) { background: var(--kit-active); }
+.ade-mod-button:disabled { cursor: default; opacity: 0.55; }
+.ade-mod-button:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 1px; }
+.ade-mod-button[data-variant="primary"] {
+  border-color: transparent;
+  background: var(--color-fg);
+  color: var(--color-bg);
+}
+.ade-mod-button[data-variant="primary"]:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 86%, transparent); }
+.ade-mod-button[data-variant="plain"] { padding: 0; border-color: transparent; background: none; }
+.ade-mod-button[data-variant="plain"]:hover:not(:disabled) { text-decoration: underline; }
+.ade-mod-button[data-dim="true"] { opacity: 0.6; }
+
+.ade-mod-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.ade-mod-link:hover { color: var(--color-accent); }
+.ade-mod-link,
+.ade-mod-plain-link { white-space: pre; }
+
+.ade-mod-code {
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  white-space: pre;
+  background: none;
+}
+.ade-mod-code[data-wrap="true"] { white-space: pre-wrap; }
+
+.ade-mod-markdown { font-family: var(--font-sans, inherit); min-width: 0; }
+.ade-mod-markdown[data-dim="true"] { opacity: 0.6; }
+
+.ade-mod-field { display: inline-flex; align-items: center; gap: 1ch; margin: 0; width: fit-content; flex: none; }
+.ade-mod-field-label { color: var(--kit-text-2); white-space: pre; }
+.ade-mod-input,
+.ade-mod-select {
+  font: inherit;
+  line-height: inherit;
+  min-width: 16ch;
+  padding: 0 1ch;
+  border: 1px solid var(--kit-rule);
+  border-radius: 4px;
+  background: var(--kit-track, transparent);
+  color: inherit;
+}
+.ade-mod-input:focus-visible,
+.ade-mod-select:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 1px; }

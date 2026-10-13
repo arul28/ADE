@@ -15,7 +15,6 @@ import {
 } from "@phosphor-icons/react";
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { formatThisComputerVersion } from "../remoteTargets/remoteMachineModel";
-import { QRCodeSVG } from "qrcode.react";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
 import {
@@ -28,7 +27,7 @@ import {
 } from "../../../shared/types";
 import { buildPairingQrPayload, encodePairingQrUrl } from "../../../shared/pairingQr";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { publicAssetUrl } from "../onboarding/WelcomeVideoGate";
+import { AdeQrCode, AdeQrCodeTile } from "../ui/AdeQrCode";
 import { WEB_CLIENT_BASE_URL } from "../../../shared/webClientUrl";
 import {
   isLocalReleaseBuildOutputError,
@@ -1073,29 +1072,6 @@ export function WebConnectionsTab({
 // QR tile (shared) — QR only, never carries the PIN.
 // ---------------------------------------------------------------------------
 
-// White tile, accent-tinted border, excavated ADE mark in the center (hence
-// error-correction level H). Shared by the This-Mac card and Phone tab.
-function QrCodeSvgTile({ value, title, size }: { value: string; title: string; size: number }) {
-  const iconSize = Math.round(size * (32 / 148));
-  return (
-    <QRCodeSVG
-      value={value}
-      size={size}
-      level="H"
-      marginSize={1}
-      bgColor="#FFFFFF"
-      fgColor="#111827"
-      title={title}
-      imageSettings={{
-        src: publicAssetUrl("welcome/ade-icon.webp"),
-        height: iconSize,
-        width: iconSize,
-        excavate: true,
-      }}
-    />
-  );
-}
-
 function QrCodeBox({ value, title }: { value: string; title: string }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -1114,17 +1090,7 @@ function QrCodeBox({ value, title }: { value: string; title: string }) {
         }}
         style={{ ...panelStyle, gap: 0, padding: 12, placeItems: "center", cursor: "pointer" }}
       >
-        <div
-          style={{
-            display: "inline-flex",
-            padding: 14,
-            borderRadius: 14,
-            background: "#FFFFFF",
-            border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 30%, transparent)",
-          }}
-        >
-          <QrCodeSvgTile value={value} title={title} size={148} />
-        </div>
+        <AdeQrCodeTile value={value} title={title} size={148} />
       </div>
       <Dialog
         open={expanded}
@@ -1145,7 +1111,7 @@ function QrCodeBox({ value, title }: { value: string; title: string }) {
           border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 30%, transparent)",
         }}
       >
-        <QrCodeSvgTile value={value} title={title} size={360} />
+        <AdeQrCode value={value} title={title} size={360} />
       </Dialog>
     </>
   );

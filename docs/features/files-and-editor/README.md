@@ -240,7 +240,8 @@ Renderer:
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
   `PatchDiff` with split/unified, wrap, line numbers, and an
   **Ignore whitespace** toggle); editable working-tree diffs delegate to
-  `MonacoDiffView`. Also used from `LaneDiffPane`,
+  `MonacoDiffView`. ⌘F opens its find bar (`useDiffFind.ts`, see
+  [editor surfaces](./editor-surfaces.md#find-in-a-diff)). Also used from `LaneDiffPane`,
   `ChatFileChangesPanel`, and `PrDetailPane`. The toggle is persisted per
   view under `ade:diff:ignoreWhitespace:<persistKey>` (the PR code tab and
   chat turn diff panel pass one; default off). `diffWhitespace.ts` owns the

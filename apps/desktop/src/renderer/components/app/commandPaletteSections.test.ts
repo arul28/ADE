@@ -26,51 +26,68 @@ function renderOrder(
 }
 
 describe("buildPaletteSections", () => {
-  it("puts threads first by default", () => {
-    const sections = buildPaletteSections({
+  it.each([
+    {
+      name: "threads lead by default, and the find row is empty when no chat is offered",
       commandsLead: false,
-      threadCount: 3,
-      commandCount: 5,
-      entityCount: 2,
-    });
-    expect(sections.map((section) => section.key)).toEqual([
-      "threads",
-      "commands",
-      "entities",
-    ]);
-    expect(sections.map((section) => section.count)).toEqual([3, 5, 2]);
-  });
-
-  it("flips commands ahead of threads when the query leads with a command", () => {
-    const sections = buildPaletteSections({
+      chatFindOffered: false,
+      keys: ["chatFind", "threads", "commands", "entities"],
+      counts: [0, 3, 5, 2],
+    },
+    {
+      name: "the find row leads the threads when a chat is offered",
+      commandsLead: false,
+      chatFindOffered: true,
+      keys: ["chatFind", "threads", "commands", "entities"],
+      counts: [1, 3, 5, 2],
+    },
+    {
+      name: "commands lead when the query is a command title, and the find row is empty when no chat is offered",
       commandsLead: true,
+      chatFindOffered: false,
+      keys: ["commands", "chatFind", "threads", "entities"],
+      counts: [5, 0, 3, 2],
+    },
+    {
+      name: "the find row sits directly under the commands when they lead",
+      commandsLead: true,
+      chatFindOffered: true,
+      keys: ["commands", "chatFind", "threads", "entities"],
+      counts: [5, 1, 3, 2],
+    },
+  ])("$name", ({ commandsLead, chatFindOffered, keys, counts }) => {
+    const sections = buildPaletteSections({
+      commandsLead,
+      chatFindOffered,
       threadCount: 3,
       commandCount: 5,
       entityCount: 2,
     });
-    expect(sections.map((section) => section.key)).toEqual([
-      "commands",
-      "threads",
-      "entities",
-    ]);
-    expect(sections.map((section) => section.count)).toEqual([5, 3, 2]);
+    expect(sections.map((section) => section.key)).toEqual(keys);
+    expect(sections.map((section) => section.count)).toEqual(counts);
+    // A find row with nothing to offer stays in the list, at its place, empty.
+    expect(sections).toHaveLength(4);
   });
 
-  it("keeps entities last in both orders", () => {
+  it("keeps entities last in every order", () => {
     for (const commandsLead of [false, true]) {
-      const sections = buildPaletteSections({
-        commandsLead,
-        threadCount: 1,
-        commandCount: 1,
-        entityCount: 1,
-      });
-      expect(sections[sections.length - 1]?.key).toBe("entities");
+      for (const chatFindOffered of [false, true]) {
+        const sections = buildPaletteSections({
+          commandsLead,
+          chatFindOffered,
+          threadCount: 1,
+          commandCount: 1,
+          entityCount: 1,
+        });
+        expect(sections[sections.length - 1]?.key).toBe("entities");
+      }
     }
   });
 
   it("does no filtering of its own — the total is exactly the counts it was given", () => {
     const sections = buildPaletteSections({
       commandsLead: false,
+      chatFindOffered: false,
       threadCount: 4,
       commandCount: 7,
       entityCount: 6,
@@ -81,6 +98,7 @@ describe("buildPaletteSections", () => {
   it("reflects a narrowed query only through the counts and the lead flag", () => {
     const unfiltered = buildPaletteSections({
       commandsLead: false,
+      chatFindOffered: false,
       threadCount: 9,
       commandCount: 20,
       entityCount: 0,
@@ -88,6 +106,7 @@ describe("buildPaletteSections", () => {
     // Typing a command title drops the thread matches and flips the order.
     const filtered = buildPaletteSections({
       commandsLead: true,
+      chatFindOffered: false,
       threadCount: 0,
       commandCount: 2,
       entityCount: 0,
@@ -104,6 +123,7 @@ describe("empty sections", () => {
   it("renders no rows and claims no flat indices", () => {
     const sections = buildPaletteSections({
       commandsLead: false,
+      chatFindOffered: false,
       threadCount: 0,
       commandCount: 2,
       entityCount: 0,
@@ -118,6 +138,7 @@ describe("empty sections", () => {
   it("never resolves an index to a zero-count section", () => {
     const sections = buildPaletteSections({
       commandsLead: false,
+      chatFindOffered: false,
       threadCount: 0,
       commandCount: 0,
       entityCount: 3,
@@ -130,6 +151,7 @@ describe("empty sections", () => {
   it("has no navigable rows when every section is empty", () => {
     const sections = buildPaletteSections({
       commandsLead: false,
+      chatFindOffered: false,
       threadCount: 0,
       commandCount: 0,
       entityCount: 0,
@@ -141,11 +163,12 @@ describe("empty sections", () => {
 });
 
 describe("keyboard order matches render order", () => {
+  // Every lead × offered combination appears with rows in every section.
   const cases = [
-    { commandsLead: false, threadCount: 3, commandCount: 4, entityCount: 2 },
-    { commandsLead: true, threadCount: 3, commandCount: 4, entityCount: 2 },
-    { commandsLead: false, threadCount: 0, commandCount: 4, entityCount: 0 },
-    { commandsLead: true, threadCount: 5, commandCount: 0, entityCount: 1 },
+    { commandsLead: false, chatFindOffered: false, threadCount: 3, commandCount: 4, entityCount: 2 },
+    { commandsLead: true, chatFindOffered: true, threadCount: 3, commandCount: 4, entityCount: 2 },
+    { commandsLead: false, chatFindOffered: true, threadCount: 0, commandCount: 4, entityCount: 0 },
+    { commandsLead: true, chatFindOffered: false, threadCount: 5, commandCount: 0, entityCount: 1 },
   ];
 
   for (const input of cases) {
@@ -169,6 +192,7 @@ describe("keyboard order matches render order", () => {
   it("returns null for indices outside the list", () => {
     const sections = buildPaletteSections({
       commandsLead: false,
+      chatFindOffered: false,
       threadCount: 2,
       commandCount: 1,
       entityCount: 0,
@@ -177,9 +201,25 @@ describe("keyboard order matches render order", () => {
     expect(paletteSectionAt(sections, 3)).toBeNull();
   });
 
-  it("hands each section the flat index of its own first row", () => {
-    const sections = buildPaletteSections({
+  it.each([
+    {
+      name: "a find row that is not offered claims no index, so threads start at 0",
       commandsLead: false,
+      chatFindOffered: false,
+      starts: [["chatFind", 0], ["threads", 0], ["commands", 3], ["entities", 7]],
+      firstKey: "threads",
+    },
+    {
+      name: "an offered find row takes the index right after the commands it sits under",
+      commandsLead: true,
+      chatFindOffered: true,
+      starts: [["commands", 0], ["chatFind", 4], ["threads", 5], ["entities", 8]],
+      firstKey: "commands",
+    },
+  ])("hands each section the flat index of its own first row: $name", ({ commandsLead, chatFindOffered, starts, firstKey }) => {
+    const sections = buildPaletteSections({
+      commandsLead,
+      chatFindOffered,
       threadCount: 3,
       commandCount: 4,
       entityCount: 2,
@@ -189,10 +229,8 @@ describe("keyboard order matches render order", () => {
         section.key,
         startIndex,
       ]),
-    ).toEqual([
-      ["threads", 0],
-      ["commands", 3],
-      ["entities", 7],
-    ]);
+    ).toEqual(starts);
+    expect(paletteSectionAt(sections, 0)?.section.key).toBe(firstKey);
+    expect(paletteSectionsTotal(sections)).toBe(chatFindOffered ? 10 : 9);
   });
 });

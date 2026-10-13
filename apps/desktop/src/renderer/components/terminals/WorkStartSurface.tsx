@@ -7,6 +7,7 @@ import type {
 } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { defaultLaneId } from "../../lib/laneSelection";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
 import type {
@@ -83,21 +84,28 @@ export function WorkStartSurface({
       typeof laneId === "string" && Boolean(laneForMachine(draftMachineId, laneId)),
     [draftMachineId, laneForMachine],
   );
+  const foreignDraft = Boolean(draftMachineId && draftMachineId !== boundMachineId);
+  const fallbackLaneId = defaultLaneId(lanes) ?? "";
   const [selectedLaneId, setSelectedLaneId] = useState<string>(() => {
-    if (draftLaneId) {
+    if (draftLaneId && (foreignDraft || isKnownLaneId(draftLaneId))) {
       return draftLaneId;
     }
     if (isKnownLaneId(globallySelectedLaneId)) {
       return globallySelectedLaneId;
     }
-    return lanes[0]?.id ?? "";
+    return fallbackLaneId;
   });
   const [launchBusy, setLaunchBusy] = useState(false);
+  // Resolve during render as well as in the effect: a project switch must
+  // never give the composer one render with the previous project's lane.
+  const launchLaneId = !foreignDraft && !isKnownLaneId(selectedLaneId)
+    ? fallbackLaneId
+    : selectedLaneId;
   const selectedLane = useMemo(
-    () => laneForMachine(draftMachineId, selectedLaneId)
-      ?? (selectedLaneId ? null : lanes[0])
+    () => laneForMachine(draftMachineId, launchLaneId)
+      ?? (launchLaneId ? null : lanes[0])
       ?? null,
-    [draftMachineId, laneForMachine, lanes, selectedLaneId],
+    [draftMachineId, laneForMachine, lanes, launchLaneId],
   );
 
   const setLaneAndSync = useCallback((laneId: string) => {
@@ -110,35 +118,35 @@ export function WorkStartSurface({
 
   // `lanes` is this tab's machine only. A draft lane on another machine does
   // not depend on it, so an empty local list neither clears nor hides it.
-  const foreignDraft = Boolean(draftMachineId && draftMachineId !== boundMachineId);
-
   useEffect(() => {
     if (!lanes.length && !foreignDraft) {
       setSelectedLaneId("");
       return;
     }
-    if (draftLaneId && draftLaneId !== selectedLaneId) {
+    if (draftLaneId && (foreignDraft || isKnownLaneId(draftLaneId)) && draftLaneId !== selectedLaneId) {
       setSelectedLaneId(draftLaneId);
       if (!foreignDraft) selectLaneGlobal(draftLaneId);
       return;
     }
-    if (!selectedLaneId && lanes.length) {
-      const fallbackLaneId =
+    if ((!selectedLaneId || (!foreignDraft && !isKnownLaneId(selectedLaneId))) && lanes.length) {
+      // `lanes` is non-empty here, so the render-scope fallback is a real lane id.
+      const nextLaneId =
         draftLaneId && isKnownLaneId(draftLaneId)
           ? draftLaneId
           : globallySelectedLaneId && isKnownLaneId(globallySelectedLaneId)
             ? globallySelectedLaneId
-            : lanes[0]!.id;
-      setSelectedLaneId(fallbackLaneId);
-      onDraftLaneChange?.(fallbackLaneId);
+            : fallbackLaneId;
+      setSelectedLaneId(nextLaneId);
+      onDraftLaneChange?.(nextLaneId);
       if (!draftMachineId || draftMachineId === boundMachineId) {
-        selectLaneGlobal(fallbackLaneId);
+        selectLaneGlobal(nextLaneId);
       }
     }
   }, [
     draftLaneId,
     draftMachineId,
     boundMachineId,
+    fallbackLaneId,
     foreignDraft,
     globallySelectedLaneId,
     isKnownLaneId,
@@ -190,8 +198,8 @@ export function WorkStartSurface({
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex w-full min-h-0 flex-1 flex-col overflow-hidden">
         <AgentChatPane
-          laneId={selectedLaneId}
-          laneLabel={selectedLane?.name ?? selectedLaneId}
+          laneId={launchLaneId}
+          laneLabel={selectedLane?.name ?? launchLaneId}
           hideSessionTabs
           hideLaneToolDrawers
           forceDraftMode

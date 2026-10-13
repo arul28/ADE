@@ -498,6 +498,16 @@ function readOptionalString(value: unknown): string | undefined {
     : undefined;
 }
 
+/**
+ * Icon writes go through `.ade/local.yaml`, which would recreate a project
+ * folder that was moved, deleted or unplugged.
+ */
+function assertProjectFolderPresent(rootPath: string): void {
+  if (!fs.existsSync(rootPath)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Project folder not found: ${rootPath}`);
+  }
+}
+
 function requireRegisteredProjectForIcon(
   projectRegistry: Pick<ProjectRegistry, "findByRootPath">,
   params: Record<string, unknown>,
@@ -2564,6 +2574,7 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.setIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.setIcon");
+      assertProjectFolderPresent(project.rootPath);
       const upload = readProjectIconUpload(params);
       try {
         importProjectIconBytes(project.rootPath, upload.fileName, upload.data);
@@ -2584,6 +2595,7 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.removeIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
+      assertProjectFolderPresent(project.rootPath);
       removeProjectIconOverride(project.rootPath);
       return await resolveIconBeforeDeadline(
         resolveRemoteProjectIconInWorker,

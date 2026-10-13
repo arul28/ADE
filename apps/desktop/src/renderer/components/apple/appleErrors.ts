@@ -94,6 +94,9 @@ const RULES: readonly Rule[] = [
     sentence: "Could not connect to the video stream.",
     action: "reconnect",
   },
+  // The preload refuses a change while the project tab is switching, because
+  // the project it was meant for is ambiguous. Nothing is wrong with the device.
+  { test: matches(/Project is switching/i), sentence: "ADE was switching projects. Try again." },
   // A viewer asked to watch a device that is off. Watching never boots it.
   { test: includes(APPLE_DEVICE_OFF_CODE), sentence: "The device is off.", action: "start" },
   // The device is off (helper `DeviceSession` refusal, or `simctl` on a shut-down device).

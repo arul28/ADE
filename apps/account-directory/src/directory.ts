@@ -2,6 +2,7 @@ import {
   handleDeviceAuthorizationRequest,
   type DeviceAuthorizationRequestOptions,
 } from "./deviceAuthorization";
+import { handleDeviceAppApprovalRequest, type DeviceAppApprovalOptions } from "./deviceAppApproval";
 import { authenticate, type CallerTokenEnv } from "./callerToken";
 import {
   callActivityRelay,
@@ -25,9 +26,11 @@ export type Env = CallerTokenEnv & ActivityRelayEnv & {
   ONLINE_WINDOW_MS?: string;
 };
 
-export type DirectoryRequestOptions = DeviceAuthorizationRequestOptions & {
-  activityRelay?: ActivityRelayOptions;
-};
+export type DirectoryRequestOptions = DeviceAuthorizationRequestOptions
+  & Partial<Pick<DeviceAppApprovalOptions, "authenticateCaller">>
+  & {
+    activityRelay?: ActivityRelayOptions;
+  };
 
 type MachineRow = {
   user_id: string;
@@ -1142,6 +1145,14 @@ async function handleRequestCore(
     })),
   });
   if (deviceResponse) return deviceResponse;
+
+  // The one device route that takes an account bearer: a signed-in ADE app
+  // approves a sign-in for another computer.
+  const appApprovalResponse = await handleDeviceAppApprovalRequest(request, env, {
+    ...options,
+    authenticateCaller: options.authenticateCaller ?? ((incoming) => authenticate(incoming, env)),
+  });
+  if (appApprovalResponse) return appApprovalResponse;
 
   const route = routeAccount(url.pathname);
   if (!route) return text("not found", 404);

@@ -1,0 +1,651 @@
+/**
+ * Whether each ADE action only reads, or changes something.
+ *
+ * Every action in `ADE_ACTION_ALLOWLIST` (main/services/adeActions/actionPolicy)
+ * is declared here, once, as `read` or `write`; `actionPolicy.test.ts` fails
+ * when the two disagree, so a new action cannot ship undeclared.
+ *
+ * Two decisions read it. While a project tab is switching, the preload refuses
+ * a write, because the project it was meant for is ambiguous, and lets a read
+ * go ahead. After a dropped connection, the runtime pools run a call again only
+ * when `isReplaySafeAdeAction` says so.
+ *
+ * Declare by what the action does, not by its name. `lane.portGetLease`
+ * creates the lease it cannot find, `automations.webhookGetEndpoint` and
+ * `automations.webhookList` register URLs with the relay, and
+ * `ai.getCursorAgentUsage` records billed usage, so all four are writes.
+ * When unsure, declare `write`: a read declared as a write only fails during a
+ * switch, but a write declared as a read can land on the wrong project.
+ */
+export type AdeActionAccess = "read" | "write";
+
+type AdeActionAccessTable = Readonly<
+  Record<string, { readonly read: readonly string[]; readonly write: readonly string[] }>
+>;
+
+export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
+  account: {
+    read: [
+      "getToken",
+    ],
+    write: [
+      "startLogin", "pollLogin", "startDeviceLogin", "pollDeviceLogin", "status", "cancelLogin",
+      "signOut", "createToken",
+    ],
+  },
+  attention: {
+    read: [
+      "getSnapshot", "getPreferences",
+    ],
+    write: [
+      "acknowledge", "reportPresence", "putPreferences", "putMachinePreferences",
+      "sendNotification",
+    ],
+  },
+  lane: {
+    read: [
+      "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift", "getChildren",
+      "getDefaultTemplate", "getDeleteRisk", "getLeftoverWorktree", "getReclaimRisk",
+      "getEnvStatus", "getOverlay", "getStackChain", "getSummary", "getTemplate",
+      "listAutoRebaseStatuses", "list", "listDeleteProgress", "listSnapshots",
+      "listRebaseSuggestions", "listTemplates", "listLinearIssuesForLaneSessions",
+      "listLinearIssuesForSession", "listGitHubIssuesForLaneSessions",
+      "listGitHubIssuesForSession", "oauthDecodeState", "oauthGenerateRedirectUris",
+      "oauthGetStatus", "oauthListSessions", "portListConflicts", "portListLeases",
+      "previewBranchSwitch", "proxyGetPreviewInfo", "proxyGetStatus",
+    ],
+    write: [
+      "archive", "archiveAndReclaim", "attachLinearIssueToSession", "attachGitHubIssueToSession",
+      "cancelDelete", "create", "createChild", "createFromUnstaged", "deferRebaseSuggestion",
+      "delete", "deleteLeftoverWorktree", "deleteTemplate", "detachLinearIssueFromSession",
+      "detachGitHubIssueFromSession", "diagnosticsActivateFallback",
+      "diagnosticsDeactivateFallback", "diagnosticsRunFullCheck", "diagnosticsRunHealthCheck",
+      "dismissAutoRebaseStatus", "dismissRebaseSuggestion", "importBranch", "initEnv",
+      "linkLinearIssues", "oauthEncodeState", "oauthUpdateConfig", "portAcquire", "portGetLease",
+      "portRecoverOrphans", "portRelease", "proxyAddRoute", "proxyRemoveRoute", "proxyStart",
+      "proxyStop", "refreshSnapshots", "rebaseAbort", "rebasePush", "rebaseRollback",
+      "rebaseStart", "rename", "reparent", "resolveBranchDrift", "applyTemplate", "saveTemplate",
+      "setDefaultTemplate", "switchBranch", "unarchive", "unlinkLinearIssues",
+      "updateAppearance",
+    ],
+  },
+  proxy: {
+    read: [],
+    write: [
+      "ensureRunning", "setDisabled", "signIn", "signOut", "stop", "status",
+    ],
+  },
+  git: {
+    read: [
+      "getCommit", "getCommitMessage", "isCommitInLaneHistory", "getConflictState",
+      "getFileHistory", "getOpenPrForBranch", "getOriginRemote", "getUserIdentity",
+      "getSyncStatus", "getSyncStatuses", "listBranches", "listCommitFiles", "listRecentCommits",
+      "listStashes",
+    ],
+    write: [
+      "abortRebase", "checkoutBranch", "cherryPickCommit", "commit", "continueRebase",
+      "createTag", "discardFile", "fetch", "generateCommitMessage", "mergeAbort",
+      "mergeContinue", "pull", "push", "rebaseAbort", "rebaseContinue", "redoLastHeadChange",
+      "resetToCommit", "restoreStagedFile", "revertCommit", "stageAll", "stageFile",
+      "stagePaths", "stash", "stashApply", "stashClear", "stashDrop", "stashPop", "stashPush",
+      "sync", "undoLastHeadChange", "unstageAll", "unstageFile", "unstagePaths",
+    ],
+  },
+  diff: {
+    read: [
+      "getChanges", "getBranchChanges", "getLaneDiffStats", "listLaneDiffStats", "getFileDiff",
+      "getFilePatch",
+    ],
+    write: [],
+  },
+  conflicts: {
+    read: [
+      "getBatchAssessment", "getLaneStatus", "getRiskMatrix", "listExternalResolverRuns",
+      "listOverlaps", "listProposals", "scanRebaseNeeds", "getRebaseNeed",
+    ],
+    write: [
+      "applyProposal", "attachResolverSession", "cancelResolverSession",
+      "commitExternalResolverRun", "finalizeResolverSession", "prepareProposal",
+      "prepareResolverSession", "rebaseLane", "requestProposal", "runExternalResolver",
+      "runPrediction", "simulateMerge", "suggestResolverTarget", "undoProposal", "dismissRebase",
+      "deferRebase",
+    ],
+  },
+  pr: {
+    read: [
+      "aiResolutionGetSession", "getActionRuns", "getActionRunsByGithub", "getActivity",
+      "getActivityByGithub", "getWorkflowGraph", "getCheckLog", "getChecks", "getChecksByGithub",
+      "getStatusByGithub", "getComments", "getCommentsByGithub", "getCommits",
+      "getCommitsByGithub", "getConflictAnalysis", "getDetail", "getDetailBundle",
+      "getDetailByGithub", "getDeployments", "getForLane", "getFiles", "getFilesByGithub",
+      "getGithubSnapshot", "listGithubStacks", "getIntegrationResolutionState",
+      "getMergeContext", "getMergeContexts", "getMobileGithubDetail", "getMobileSnapshot",
+      "getPrHealth", "getAiSummary", "getReviewThreads", "getReviewThreadsByGithub",
+      "getReviews", "getReviewsByGithub", "getStatus", "listAll", "listGroupPrs",
+      "listIntegrationProposals", "listIntegrationWorkflows", "listPrsByLane",
+      "listOpenPullRequests", "listSnapshots", "listWithConflicts", "listChatSessionsForPr",
+      "getStackLinkOffer", "getChatWatches",
+    ],
+    write: [
+      "addComment", "reconcileOnFocus", "syncLanePr", "aiResolutionInput", "aiResolutionStart",
+      "aiResolutionStop", "aiReviewSummary", "cleanupBranch", "cleanupIntegrationWorkflow",
+      "closePr", "commitIntegration", "createFromLane", "createLaneFromPrBranch",
+      "createIntegrationLane", "createIntegrationLaneForProposal", "createIntegrationPr",
+      "createGithubStack", "delete", "deleteIntegrationProposal", "dismissIntegrationCleanup",
+      "draftDescription", "ingestGithubWebhook", "land", "linkToLane", "postReviewComment",
+      "reactToComment", "recheckIntegrationStep", "refresh", "addGithubStackPullRequests",
+      "requestReviewers", "resolveReviewThread", "retargetBase", "reopenPr", "setDraft",
+      "setAutoMerge", "replyToReviewThread", "rerunChecks", "regenerateAiSummary", "setLabels",
+      "setReviewThreadResolved", "simulateIntegration", "startIntegrationResolution",
+      "preflightCreateLaneFromPrBranch", "submitReview", "syncGithubStacks",
+      "unstackGithubStack", "linkChatSession", "unlinkChatSession", "linkChatStack",
+      "setChatWatch", "updateBody", "updateBranch", "updateComment", "updateDescription",
+      "updateIntegrationProposal", "updateTitle",
+    ],
+  },
+  tests: {
+    read: [
+      "getLogTail", "listRuns", "listSuites",
+    ],
+    write: [
+      "run", "stop",
+    ],
+  },
+  chat: {
+    read: [
+      "getAvailableModels", "getLaunchDefaults", "getClaudeSessionInfo",
+      "getClaudeSessionMessages", "getChatEventHistory", "getChatEventHistoryPage",
+      "getContextUsage", "getImageDataUrl", "getMainTranscript", "getSubagentTranscript",
+      "getCodexRealtimeState", "getCodexGoal", "listClaudeOutputStyles",
+      "getSessionCapabilities", "getSessionSummary", "getTurnStatus", "getSlashCommands",
+      "getTurnFileDiff", "getParallelLaunchState", "waitFor", "listWaits", "getLaunch",
+      "listLaunches", "listScheduledWork", "getScheduledWorkState", "listInterruptedChats",
+      "listClaudePlugins", "listCodexPlugins", "listClaudeSessions", "listSessions",
+      "listCliChildSessions", "listSubagents", "listDrafts", "getDraft", "listThreadComments",
+      "getClaudePluginUi",
+      "modelCatalog", "codexFuzzyFileSearch", "fileSearch", "listMentionSuggestions",
+      "preflightCrossMachineDestination", "getCrossMachineHandoffOptions",
+      "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSourceFavicons",
+      "readTranscript", "readTranscriptPage", "suggestLaneNameFromPrompt",
+      "generateAutoLaneIdentity",
+    ],
+    write: [
+      "archiveSession", "cancelDispatchedSteer", "cancelSteer", "createSession", "deleteSession",
+      "dispatchSteer", "editSteer", "ensureCtoSession", "moveSteer", "setCodexGoal",
+      "setCodexGoalStatus", "clearCodexGoal", "startCodexRealtime", "stopCodexRealtime",
+      "resetCodexMemory", "terminateCodexBackgroundTerminal", "interrupt",
+      "interruptWithQueueMode", "stopTask", "restartSession", "armWait", "cancelWait",
+      "holdBackgroundWork", "recoverTurn", "recoverCodexTurn", "resolveUnprocessedMessage",
+      "recoverContinuity", "restoreCancelledQueue", "killDroidWorker", "launchCli",
+      "launchHeadless", "startLaunch", "cancelLaunch", "retryLaunch", "startLaunchNow",
+      "queueLaunchMessage", "completeLaunchClient", "createScheduledWork", "armUpdateResume",
+      "createDraft", "updateDraft", "deleteDraft", "claimDraft", "sendDraftNow",
+      "createThreadComment", "updateThreadComment", "deleteThreadComment", "messageSession",
+      "actOnClaudePluginUi",
+      "approveToolUse", "handoffSession", "prepareCrossMachineHandoff",
+      "validateCrossMachineSource", "fastForwardCrossMachineHandoffLane",
+      "acceptCrossMachineHandoff", "markCrossMachineHandoff", "startCrossMachineHandoff",
+      "cancelCrossMachineHandoff", "retryCrossMachineHandoff",
+      "resolveCrossMachineHandoffApproval", "acknowledgeCrossMachineHandoff", "respondToInput",
+      "dismissPendingInput", "reloadClaudePlugins", "rewindFiles", "saveTempAttachment",
+      "copyTempAttachment", "createAttachmentUpload", "sendMessage", "setClaudeOutputStyle",
+      "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",
+      "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused", "steer",
+      "unarchiveSession", "updateSession", "regenerateSessionMetadata", "setSpawnKind",
+      "dismissSubagentTakeoverPrompt", "warmupModel",
+    ],
+  },
+  keybindings: {
+    read: [
+      "get",
+    ],
+    write: [
+      "set",
+    ],
+  },
+  ai: {
+    read: [
+      "getStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "listApiCredentials",
+      "getApiCredential", "listApiKeys", "opencodeAuthMethods", "listHarnessRoutes",
+      "piLoginProviders", "cursorAuthStatus", "listCursorCloudRepositories",
+      "listCursorCloudAgents", "listCursorCloudRuns", "getCursorCloudLaneSecretNames",
+      "getCursorCloudAgent", "listCursorCloudArtifacts", "getCursorCloudFleet",
+      "listCloudAgents",
+    ],
+    write: [
+      "getCursorAgentUsage",
+      "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential",
+      "verifyApiKeyConnection", "storeApiKey", "deleteApiKey", "updateConfig",
+      "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",
+      "clearOpencodeProviderKey", "refreshModelsDev", "testHarnessRoute", "harnessLaunchEnv",
+      "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout",
+      "cursorAuthCancel", "createCursorCloudRun", "archiveCursorCloudAgent",
+      "unarchiveCursorCloudAgent", "deleteCursorCloudAgent", "downloadCursorCloudArtifact",
+      "cursorCloudStreamRun", "cancelCursorCloudRun", "cursorCloudFollowUp",
+      "openCursorCloudChat", "watchCursorCloudMirror", "resolveCursorCloudAgentLane",
+      "pullCursorCloudAgentIntoLane", "stopCursorCloudAgentRun", "openCloudAgent",
+      "stopCloudAgent", "archiveCloudAgent", "launchCloudAgent",
+    ],
+  },
+  onboarding: {
+    read: [
+      "detectDefaults", "getStatus",
+    ],
+    write: [
+      "complete", "setDismissed",
+    ],
+  },
+  automation_planner: {
+    read: [],
+    write: [
+      "parseNaturalLanguage", "saveDraft", "simulate", "validateDraft",
+    ],
+  },
+  cto_state: {
+    read: [
+      "getAttention", "getIdentity", "getOnboardingState", "getSessionLogs", "getSnapshot",
+      "getThreadHealth", "previewSystemPrompt",
+    ],
+    write: [
+      "completeOnboardingStep", "runProjectScan", "startFreshSession", "updateIdentity",
+    ],
+  },
+  cto_memory: {
+    read: [
+      "getSnapshot", "searchMemory",
+    ],
+    write: [
+      "updateMemory", "recordDiscovery",
+    ],
+  },
+  session: {
+    read: [
+      "get", "getDelta", "getLifecycleSettings", "getSettleResidue", "list",
+      "readTranscriptTail",
+    ],
+    write: [
+      "backfillDeltas", "clearWokeMarker", "deleteSession", "moveOnBoard",
+      "requestSessionAttention", "setSessionActivity", "setSessionStatusNote",
+      "setSettleOverride", "undoBoardMove", "snoozeSession", "snoozeSessions", "settleSession",
+      "settleSessions", "updateLifecycleSettings", "unsettleSession", "unsettleSessions",
+      "updateMeta", "wakeSession", "wakeSessions",
+    ],
+  },
+  operation: {
+    read: [
+      "get", "list",
+    ],
+    write: [
+      "finish", "start",
+    ],
+  },
+  ade_project: {
+    read: [
+      "getSnapshot",
+    ],
+    write: [
+      "clearLocalData", "initializeOrRepair", "runIntegrityCheck",
+    ],
+  },
+  project_config: {
+    read: [
+      "diffAgainstDisk", "get",
+    ],
+    write: [
+      "save", "setPrTranscriptGists", "validate",
+    ],
+  },
+  project_secret: {
+    read: [
+      "list", "get",
+    ],
+    write: [
+      "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount",
+      "request",
+    ],
+  },
+  account_settings: {
+    read: [
+      "list", "get",
+    ],
+    write: [
+      "set", "remove", "sync",
+    ],
+  },
+  account_vault: {
+    read: [
+      "list", "get",
+    ],
+    write: [
+      "set", "remove", "sync", "pendingKeys",
+    ],
+  },
+  linear_credentials: {
+    read: [
+      "getStatus",
+    ],
+    write: [
+      "clearOAuthClientCredentials", "clearToken", "setOAuthClientCredentials", "setOAuthToken",
+      "setToken",
+    ],
+  },
+  linear_oauth: {
+    read: [
+      "getSession",
+    ],
+    write: [
+      "startSession",
+    ],
+  },
+  linear_agent: {
+    read: [
+      "getInstallSession", "getOverview",
+    ],
+    write: [
+      "registerMember", "startInstall", "uninstall", "unregisterMember", "updateSettings",
+    ],
+  },
+  linear_issue_tracker: {
+    read: [
+      "countIssues", "getIssueCreateOptions", "listProjectMilestones", "fetchIssueById",
+      "fetchIssueComments", "getIssuePickerData", "getConnectionStatus", "getQuickView",
+      "getStatus", "getWorkflowCatalog", "listCustomViews", "listLabels", "listIssues",
+      "listNotifications", "listProjects", "listWorkflowStates", "listUsers", "searchIssues",
+    ],
+    write: [
+      "addIssueLabel", "addLabel", "cancelIssue", "createComment", "createFollowUpIssue",
+      "createIssue", "createIssueRelation", "createProjectUpdate", "uploadFile",
+      "fetchIssuesByIds", "graphql", "markNotification", "removeIssueLabel", "updateComment",
+      "updateIssue", "updateIssueAssignee", "updateIssuePriority", "updateIssueState",
+    ],
+  },
+  github: {
+    read: [
+      "getAppInstallationStatus", "getAppUserAuthStatus", "getRepoOrThrow", "getRemoteStatus",
+      "getRequestBudget", "getStatus", "listRepoAutolinks", "listRepoCollaborators",
+      "listRepoIssues", "getIssue", "getRepoIssueSummary", "listRepoIssueList",
+      "getIssueWriteAccess", "listIssueTemplates", "listIssueTypes", "listRepoMilestones",
+      "listIssueComments", "listRepoLabels",
+    ],
+    write: [
+      "clearToken", "clearAppUserAuth", "detectRepo", "createRepoAutolink", "createIssue",
+      "linkSubIssue", "updateIssue", "commentOnIssue", "pollAppUserDeviceAuth",
+      "publishCurrentProject", "setToken", "startAppUserDeviceAuth",
+    ],
+  },
+  feedback: {
+    read: [
+      "list",
+    ],
+    write: [
+      "prepareDraft", "submitPreparedDraft",
+    ],
+  },
+  usage: {
+    read: [
+      "getAdeUsageStats", "getCostBreakdown", "getModelDetail", "getModelPriceOverrides",
+      "getModelRoutes", "getRouterEfficiency", "getRouterShadowSummary", "getTurnUsageSummary",
+      "getUsageSnapshot",
+    ],
+    write: [
+      "applyAccountRollups", "consumeResetCredit", "forceRefresh", "noteQuotaDemand",
+      "refreshHistory", "poll", "previewModelRoute", "refreshModelRegistry",
+      "setModelPriceOverride", "start", "stop",
+    ],
+  },
+  analytics: {
+    read: [
+      "getStatus",
+    ],
+    write: [
+      "capture", "setEnabled", "flush",
+    ],
+  },
+  storage: {
+    read: [
+      "cleanupPreview", "getSnapshot",
+    ],
+    write: [
+      "cleanup", "compressNow", "runMaintenanceNow",
+    ],
+  },
+  archive: {
+    read: [
+      "list", "summary",
+    ],
+    write: [
+      "delete", "restore",
+    ],
+  },
+  budget: {
+    read: [
+      "checkBudget", "getConfig", "getCumulativeUsage",
+    ],
+    write: [
+      "recordUsage", "updateConfig",
+    ],
+  },
+  update: {
+    read: [
+      "getSnapshot",
+    ],
+    write: [
+      "checkForUpdates", "dismissInstalledNotice", "quitAndInstall",
+    ],
+  },
+  file: {
+    read: [
+      "blame", "listTree", "listTreeChildren", "listWorkspaces", "quickOpen", "readFile",
+      "readFileRange", "searchText",
+    ],
+    write: [
+      "createDirectory", "createFile", "deletePath", "refreshGitDecorations", "rename",
+      "stopWatching", "watchWorkspace", "writeTextAtomic", "writeWorkspaceText",
+    ],
+  },
+  pty: {
+    read: [
+      "list",
+    ],
+    write: [
+      "create", "dispose", "resize", "resumeSession", "sendToSession", "write",
+    ],
+  },
+  terminal: {
+    read: [
+      "list", "read", "preview", "activeForChat",
+    ],
+    write: [
+      "write", "resize", "signal", "reattachChatCli",
+    ],
+  },
+  layout: {
+    read: [
+      "get",
+    ],
+    write: [
+      "set",
+    ],
+  },
+  tiling_tree: {
+    read: [
+      "get",
+    ],
+    write: [
+      "set",
+    ],
+  },
+  work_tools: {
+    read: [
+      "getLaneState", "readObservationPreview", "listDevServers", "probePort",
+    ],
+    write: [
+      "setActiveTool", "show", "acknowledgeShow",
+    ],
+  },
+  computer_use_artifacts: {
+    read: [
+      "getOwnerSnapshot", "getBackendStatus", "listArtifacts", "listBrokenArtifacts",
+      "readArtifactPreview", "readArtifactRange",
+    ],
+    write: [
+      "deleteArtifacts", "ingestSceneSnapshot", "pruneBrokenArtifacts", "recoverArtifact",
+      "updateArtifactReview",
+    ],
+  },
+  ios_simulator: {
+    read: [
+      "getStatus", "listDevices", "listLaunchTargets", "deviceList", "getStreamStatus",
+      "getAppState", "getForegroundApp", "getScreenSnapshot", "getInspectorSnapshot",
+      "getDeviceSettings", "getEventLog", "recordList", "recordingsTotalBytes",
+      "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "getDeviceSession",
+    ],
+    write: [
+      "claim", "attachToChatSession", "deviceCreate", "deviceAttach", "deviceStart",
+      "deviceStop", "deviceDetach", "deviceDelete", "deviceCleanup", "runTests", "startStream",
+      "stopStream", "frame", "launch", "relaunchApp", "terminateApp", "uninstallApp", "openUrl",
+      "tap", "typeText", "drag", "swipe", "scroll", "pressButton", "rotate", "selectPoint",
+      "inspectPoint", "findElement", "tapElement", "fillElement", "waitForElement",
+      "assertVisible", "setAppearance", "setContentSize", "setAccessibilityOption",
+      "setLocation", "clearLocation", "setPermission", "sendPushNotification", "setStatusBar",
+      "clearStatusBar", "startEventLog", "stopEventLog", "screenshot", "captureProofBundle",
+      "recordStart", "recordStop", "recordDelete", "ensurePreviewWorkspace",
+      "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "shutdown", "openDevice",
+      "closeDevice", "deviceDeleteInstalled",
+    ],
+  },
+  mac_desktop: {
+    read: [
+      "getStatus", "listWindows", "getStreamStatus",
+    ],
+    write: [
+      "recheckPermissions", "requestPermission", "start", "stop", "open", "claimWindow",
+      "releaseWindow", "quitApp", "focusWindow", "minimizeWindow", "closeWindow",
+      "requestSharedDesktop", "observe", "click", "type", "press", "scroll", "drag", "move",
+      "wait", "screenshot", "startRecording", "stopRecording", "requestInputLease", "present",
+      "startStream", "stopStream", "takeControl", "returnControl", "renewLease", "setupWindows",
+      "takeoverWindows", "useSharedDesktop",
+    ],
+  },
+  app_control: {
+    read: [
+      "getStatus", "getSnapshot", "listTargets", "readTerminal", "listDrivers", "getTrace",
+      "getRecordingStatus", "getLatestFrame",
+    ],
+    write: [
+      "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow",
+      "screenshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey",
+      "attachToTarget", "writeTerminal", "signalTerminal", "observe", "agentClick", "agentHover",
+      "agentFill", "agentClear", "agentType", "agentPress", "agentScroll", "agentWait",
+      "windows", "switchWindow", "startRecording", "stopRecording", "captureProof",
+    ],
+  },
+  built_in_browser: {
+    read: [
+      "getStatus", "getDevServers", "listSessions", "getTrace", "readText", "getNetworkLog",
+    ],
+    write: [
+      "requestOriginAccess", "claim", "startHandoff", "waitForHandoff", "startSession",
+      "endSession", "showPanel", "setBounds", "navigate", "createTab", "switchTab", "closeTab",
+      "reload", "goBack", "goForward", "stop", "observe", "click", "typeText", "dispatchKey",
+      "scroll", "fill", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
+      "selectPoint", "selectCurrent", "clearSelection", "setEmulation", "setZoom", "findInPage",
+      "stopFindInPage", "setDevTools", "setNetworkLogging", "exportHar", "hover", "drag",
+      "selectOption", "uploadFile", "startRecording", "stopRecording", "noteDemoStep",
+      "acknowledgeRemoteRequest", "attachUserBrowser", "detachUserBrowser",
+    ],
+  },
+  automations: {
+    read: [
+      "list", "get", "getHistory", "listRuns", "getRunDetail", "getIngressStatus",
+      "listIngressEvents", "listScheduledCleanups", "linearIngressGetStatus",
+      "webhookListDeliveries", "webhookGetDelivery",
+    ],
+    write: [
+      "webhookList",
+      "saveRule", "deleteRule", "toggleRule", "triggerManually", "planTest", "runTest",
+      "cleanUpTestRun", "startIngress", "refreshWebhookGatewayStatus",
+      "setWebhookGatewayPublicUrl", "cancelScheduledCleanup", "linearIngressSetup",
+      "linearIngressTeardown", "linearIngressPollNow", "webhookCreateEndpoint",
+      "webhookGetEndpoint", "webhookRotateEndpoint", "webhookReplayDelivery", "webhookSendTest",
+      "webhookCreateAutomation", "webhookRetire",
+    ],
+  },
+  issue: {
+    read: [],
+    write: [
+      "addComment", "setLabels", "close", "reopen", "assign", "setTitle",
+    ],
+  },
+  search: {
+    read: [
+      "query", "indexStatus",
+    ],
+    write: [
+      "rebuildIndex",
+    ],
+  },
+  "external-sessions": {
+    read: [
+      "list", "getDetail",
+    ],
+    write: [
+      "import",
+    ],
+  },
+  provider_instances: {
+    read: [
+      "list", "loginStatus", "getSettings",
+    ],
+    write: [
+      "create", "remove", "signOut", "rename", "setDefault", "setAccent", "dismissReplaced", "loginStart",
+      "loginSubmitCode", "loginCancel", "setSettings", "loginCommand", "refresh",
+    ],
+  },
+};
+
+const accessByAction = new Map<string, AdeActionAccess>();
+for (const [domain, declared] of Object.entries(ADE_ACTION_ACCESS)) {
+  for (const action of declared.read) accessByAction.set(`${domain}.${action}`, "read");
+  for (const action of declared.write) accessByAction.set(`${domain}.${action}`, "write");
+}
+
+/** The declared access, or null for an action this table does not know. */
+export function adeActionAccess(domain: string, action: string): AdeActionAccess | null {
+  return accessByAction.get(`${domain}.${action}`) ?? null;
+}
+
+// Writes that are idempotent, so a call whose answer was lost to a dropped
+// connection may run again: they prepare or record a state that a second run
+// leaves as it was.
+const REPLAY_SAFE_WRITES = new Set<string>([
+  "chat.prepareCrossMachineHandoff",
+  "chat.validateCrossMachineSource",
+  "chat.markCrossMachineHandoff",
+  "file.refreshGitDecorations",
+  "lane.portGetLease",
+]);
+
+// Reads that are never run again: they wait on purpose, call a model, or walk
+// a whole tree or disk. A replay repeats the whole cost, and a replayable
+// remote call gets a 25s budget per attempt, less than these can need.
+const UNREPLAYED_READS = new Set<string>([
+  "chat.waitFor",
+  "chat.suggestLaneNameFromPrompt",
+  "chat.generateAutoLaneIdentity",
+  "conflicts.scanRebaseNeeds",
+  "file.blame",
+  "storage.cleanupPreview",
+]);
+
+/**
+ * May a runtime call whose connection dropped before it answered run again?
+ * Declared reads may, except the costly ones above; writes may not, except the
+ * idempotent ones named above. Never a `start`: a replayed start whose first
+ * answer was lost runs the work twice.
+ */
+export function isReplaySafeAdeAction(domain: string, action: string): boolean {
+  const key = `${domain}.${action}`;
+  if (REPLAY_SAFE_WRITES.has(key)) return true;
+  return accessByAction.get(key) === "read" && !UNREPLAYED_READS.has(key);
+}

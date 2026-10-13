@@ -213,6 +213,7 @@ import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNamin
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
+import { removeProviderAccount, signOutProviderAccount } from "../providerAccounts/signOutProviderAccount";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
   getSessionLifecycleSettings,
@@ -230,6 +231,7 @@ import {
   captureProviderCliUpdateAnalytics,
   captureWebhookUrlCreatedAnalytics,
   captureAutomationTestAnalytics,
+  captureProviderAccountSettingsChange,
   providerAccountAnalyticsCapture,
 } from "../analytics/featureProductAnalytics";
 
@@ -2553,6 +2555,11 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       aiIntegrationService.deleteCursorCloudAgent(requireNonEmptyString(args?.agentId, "agentId")),
     getCursorCloudAgent: (args?: { agentId?: string }) =>
       aiIntegrationService.getCursorCloudAgent(requireNonEmptyString(args?.agentId, "agentId")),
+    getCursorAgentUsage: (args?: { agentId?: string; runId?: string | null }) =>
+      aiIntegrationService.getCursorAgentUsage({
+        agentId: requireNonEmptyString(args?.agentId, "agentId"),
+        ...(typeof args?.runId === "string" ? { runId: args.runId } : {}),
+      }),
     listCursorCloudArtifacts: async (args?: { agentId?: string }) => {
       const items = await aiIntegrationService.listCursorCloudArtifacts(requireNonEmptyString(args?.agentId, "agentId"));
       return items.map((entry) => ({
@@ -3810,12 +3817,18 @@ export function buildProviderInstancesDomainService(
       capture("account_created", "completed", result.instance.provider);
       return result;
     },
-    remove(args: unknown) {
+    async remove(args: unknown) {
       const id = String((isRecord(args) ? args.id : "") ?? "");
       const provider = store.get(id)?.provider;
-      const result = store.remove(id);
+      const result = await removeProviderAccount(id);
       capture("account_removed", "completed", provider);
       return result;
+    },
+    async signOut(args: unknown) {
+      const id = String((isRecord(args) ? args.id : "") ?? "");
+      const instance = await signOutProviderAccount(id, runtime.usageTrackingService);
+      capture("account_signed_out", "completed", instance?.provider);
+      return { instance };
     },
     rename(args: unknown) {
       const input = isRecord(args) ? args : {};
@@ -3873,23 +3886,17 @@ export function buildProviderInstancesDomainService(
         ...(Object.hasOwn(requestedSettings, "compaction") ? { compaction: requestedSettings.compaction === null ? null : normalizeCompactionSettings(requestedSettings.compaction) } : {}),
         ...(Object.hasOwn(requestedSettings, "subagentPromptCacheTtl") ? { subagentPromptCacheTtl: requestedSettings.subagentPromptCacheTtl === "1h" ? "1h" as const : null } : {}),
         ...(Object.hasOwn(requestedSettings, "mainPromptCacheTtl") ? { mainPromptCacheTtl: isClaudePromptCacheTtl(requestedSettings.mainPromptCacheTtl) ? requestedSettings.mainPromptCacheTtl : null } : {}),
+        ...(Object.hasOwn(requestedSettings, "onExtraUsage") ? { onExtraUsage: requestedSettings.onExtraUsage === "stop" ? "stop" as const : null } : {}),
         ...(typeof requestedSettings.smartBalance === "boolean" ? { smartBalance: requestedSettings.smartBalance } : {}),
         ...(typeof requestedSettings.autoStartWindows === "boolean"
           ? { autoStartWindows: requestedSettings.autoStartWindows }
           : {}),
       }, typeof input.instanceId === "string" ? input.instanceId : undefined);
-      if (typeof requestedSettings.smartBalance === "boolean") {
-        capture("balance_changed", requestedSettings.smartBalance ? "enabled" : "disabled", input.provider);
-      }
-      if (typeof requestedSettings.autoStartWindows === "boolean") {
-        capture("auto_start_changed", requestedSettings.autoStartWindows ? "enabled" : "disabled", input.provider);
-      }
-      if (typeof input.instanceId === "string" && input.provider === "claude" && Object.hasOwn(requestedSettings, "subagentPromptCacheTtl")) {
-        capture("subagent_cache_changed", requestedSettings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", input.provider);
-      }
-      if (typeof input.instanceId === "string" && input.provider === "claude" && Object.hasOwn(requestedSettings, "mainPromptCacheTtl")) {
-        capture("main_cache_changed", isClaudePromptCacheTtl(requestedSettings.mainPromptCacheTtl) ? "enabled" : "disabled", input.provider);
-      }
+      captureProviderAccountSettingsChange(capture, {
+        settings: requestedSettings,
+        provider: input.provider,
+        instanceId: typeof input.instanceId === "string" ? input.instanceId : undefined,
+      });
       return { settings };
     },
     loginCommand(args: unknown) {

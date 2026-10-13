@@ -22,6 +22,7 @@ import type {
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
+import { Banner } from "../ui/notice";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
 import type { AppleDevice3DFailure, AppleDeviceDuoProps } from "./AppleDevice3DView";
 import {
@@ -203,6 +204,9 @@ export function AppleDevicePane({
     runtimes,
     defaultNewDevice,
     refreshing,
+    listLoaded,
+    listFailed,
+    listError,
     bootedRead,
     refreshList,
     dropLaneDevice,
@@ -804,6 +808,29 @@ export function AppleDevicePane({
           />
         );
       case "no-device":
+        // Until a list read answers, "no device" only means "not known yet":
+        // the picker's empty card would claim no simulators are installed.
+        if (!listLoaded) {
+          return listFailed ? (
+            <div data-apple-list-failed="" className="flex size-full items-start justify-center px-4 py-6">
+              <div className="w-full max-w-sm">
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: "apple-device-list",
+                    tone: "error",
+                    title: "Couldn't load this lane's simulators.",
+                    detail: describeAppleError(listError).sentence,
+                    busy: refreshing,
+                    actions: [{ label: "Retry", onClick: refreshList, disabled: refreshing }],
+                  }}
+                />
+              </div>
+            </div>
+          ) : (
+            <PaneMessage title="Loading simulators…" description={null} />
+          );
+        }
         return (
           <AppleDevicePicker
             installed={installed}

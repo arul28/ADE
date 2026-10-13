@@ -10,6 +10,8 @@ import {
   CHAT_RETRY_AUTH_TURN_EVENT,
   type AgentCliAuthCardInfo,
 } from "./AgentCliAuthCard";
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
+import type { OpenProjectBinding } from "../../../shared/types";
 
 const originalAde = globalThis.window.ade;
 
@@ -94,6 +96,34 @@ describe("AgentCliAuthCard", () => {
       ptyId: "pty-auth-1",
       label: "install",
     });
+  });
+
+  it("runs a chat's commands on the chat's own machine and lane, not the pane's", async () => {
+    const studio: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/Users/me/Projects/app",
+      displayName: "app",
+    };
+
+    render(
+      <ChatRuntimeScopeProvider pin={studio} binding={studio} laneId="studio-lane" sessionId="chat-remote">
+        <AgentCliAuthCard agentCli={unauthenticatedCli} laneId="pane-lane" chatSessionId="chat-remote" />
+      </ChatRuntimeScopeProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /run auth/i }));
+
+    await waitFor(() => {
+      expect(window.ade.pty.create).toHaveBeenCalledTimes(1);
+    });
+    const [args, pin] = vi.mocked(window.ade.pty.create).mock.calls[0]!;
+    expect(pin).toBe(studio);
+    expect(args).toMatchObject({ laneId: "studio-lane", chatSessionId: "chat-remote", startupCommand: "codex login" });
+    expect(window.ade.lanes.list).not.toHaveBeenCalled();
   });
 
   it("opens auth commands in the chat PTY context", async () => {

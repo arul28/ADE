@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import type * as Monaco from "monaco-editor";
 import { claimAppMenuCommands } from "../../../../lib/appMenuCommands";
+import { findScopeOwnsTarget, isLiveFindScope, trackFindTargets } from "../../../../lib/findScope";
 import { resolveLanguageId } from "../../filePresentation";
 import { adeMonacoTheme, loadMonaco } from "../monacoLoader";
 import { applyMonacoTheme } from "../../../../theme/codeTheme";
@@ -8,7 +9,6 @@ import { useActiveResolvedTheme } from "../../../../theme/useActiveTheme";
 import { takePendingReveal } from "../pendingReveals";
 import { updateCachedFileContentText } from "../useFileContent";
 import type { EditorApi, ViewerProps } from "./types";
-import { isInParkedSurface } from "../../../../lib/parkedSurface";
 
 /**
  * The code/text editor: a Monaco instance bound to the shared model registry so
@@ -159,27 +159,25 @@ export function CodeViewer({
   }, [tab.id, content.content, content.languageId]);
 
   /**
-   * ⌘F while this editor holds the keyboard.
+   * ⌘F while this editor is where the user is.
    *
    * `Edit ▸ Find…` is a native menu accelerator, and Electron consumes an
    * accelerator in the browser process *before* the renderer sees a keydown —
    * so Monaco's own ⌘F keybinding never fires on the packaged app. The menu
    * sends a `find` command down instead; claim it here and run the same action
-   * Monaco would have. Declining when the editor does not own focus leaves the
-   * chord to whoever does (the built-in browser's find bar, or nothing).
+   * Monaco would have, when the editor is on screen (not parked or inert) and
+   * has Monaco's text focus or owns ⌘F under the shared rule (`lib/findScope`:
+   * the innermost find scope around focus, or around the last press).
    */
   useEffect(() => {
+    trackFindTargets();
     return claimAppMenuCommands((command) => {
       if (command !== "find") return false;
       const editor = editorRef.current;
       const host = hostRef.current;
-      if (!editor || !host || !host.isConnected) return false;
-      // A parked surface or an inert column stays mounted but is not on screen.
-      if (isInParkedSurface(host)) return false;
-      const active = document.activeElement;
-      const focused =
-        editor.hasTextFocus() || (active instanceof Node && host.contains(active));
-      if (!focused) return false;
+      if (!editor || !isLiveFindScope(host)) return false;
+      // Monaco's own text focus, or the shared rule (focus or last press).
+      if (!editor.hasTextFocus() && !findScopeOwnsTarget(host)) return false;
       void editor.getAction("actions.find")?.run();
       return true;
     });
@@ -225,5 +223,5 @@ export function CodeViewer({
     }
   }
 
-  return <div ref={hostRef} className="h-full w-full min-h-0" data-testid="files-v2-code-editor" />;
+  return <div ref={hostRef} className="h-full w-full min-h-0" data-testid="files-v2-code-editor" data-ade-find-scope="code-editor" />;
 }

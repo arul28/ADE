@@ -1,6 +1,7 @@
 /**
- * `ade proof publish`: posts chosen proof to a GitHub pull request as one
- * comment, through `gh pr comment --attach`.
+ * `ade proof publish`: puts proof on a GitHub pull request. Either as one
+ * comment of chosen items (`gh pr comment --attach`), or in the PR's own text,
+ * where the author cited it (`gh pr edit --attach`).
  *
  * GitHub stores the pictures and videos as its own attachments, with the
  * repository's privacy. ADE hosts nothing and pushes no proof branch. `gh`
@@ -13,6 +14,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+import { prBodyProofIds, rewritePrBodyProofForGithub, type PrBodyProofFile } from "../../desktop/src/shared/prBodyProof";
 
 /** `gh pr comment --attach` shipped in 2.99.0. */
 export const GH_ATTACH_MIN_VERSION = [2, 99, 0] as const;
@@ -115,6 +118,48 @@ export function resolveStoredProofFile(projectRoot: string, uri: string): string
   return fs.statSync(candidate).isFile() ? candidate : null;
 }
 
+type StagedProofFile =
+  | { file: string; bytes: number; caption: string; video: boolean; warning: string | null }
+  | { skip: string };
+
+/**
+ * Copies one proof file into the staging directory under a plain, unique name
+ * (gh matches body references by path), or says why it cannot go up.
+ */
+function stageProofFile(artifact: PublishableArtifact, projectRoot: string, staging: string, ordinal: number): StagedProofFile {
+  if (!isPicture(artifact) && !isVideo(artifact)) {
+    return { skip: `a ${artifact.kind.replace(/_/g, " ")} cannot be attached to a PR` };
+  }
+  const source = resolveStoredProofFile(projectRoot, artifact.uri);
+  if (!source) {
+    // The list comes from the brain; the file must be on this machine too.
+    // A brain on another machine keeps its proof there, so run the command
+    // on that machine (where its agents run) to post it.
+    return {
+      skip: `its stored file is not on this machine under ${path.join(projectRoot, ".ade", "artifacts")}; if the ADE brain runs on another machine, run this command there`,
+    };
+  }
+  const video = isVideo(artifact);
+  const bytes = fs.statSync(source).size;
+  const limit = video ? GITHUB_ATTACHMENT_LIMITS.videoPaidBytes : GITHUB_ATTACHMENT_LIMITS.imageBytes;
+  if (bytes > limit) {
+    return {
+      skip: `it is ${(bytes / 1024 / 1024).toFixed(1)} MB, over GitHub's ${limit / 1024 / 1024} MB limit for ${video ? "a video" : "a picture"}`,
+    };
+  }
+  const file = `proof-${ordinal}${path.extname(source).toLowerCase() || (video ? ".mp4" : ".png")}`;
+  fs.copyFileSync(source, path.join(staging, file));
+  return {
+    file,
+    bytes,
+    caption: markdownCaption(artifact.description?.trim() || artifact.title || file),
+    video,
+    warning: video && bytes > GITHUB_ATTACHMENT_LIMITS.videoFreeBytes
+      ? `${artifact.id} is ${(bytes / 1024 / 1024).toFixed(1)} MB. GitHub Free accepts videos up to 10 MB; paid plans up to 100 MB.`
+      : null,
+  };
+}
+
 /**
  * Posts the artifacts to the PR as one comment and returns what went up and
  * what was left out, with the reason. Throws when nothing could be posted or
@@ -151,37 +196,13 @@ export function publishProofToPullRequest(args: {
   const attachArgs: string[] = [];
   try {
     for (const artifact of args.artifacts) {
-      if (!isPicture(artifact) && !isVideo(artifact)) {
-        skipped.push({ id: artifact.id, reason: `a ${artifact.kind.replace(/_/g, " ")} cannot be attached to a PR` });
+      const staged = stageProofFile(artifact, args.projectRoot, staging, posted.length + 1);
+      if ("skip" in staged) {
+        skipped.push({ id: artifact.id, reason: staged.skip });
         continue;
       }
-      const source = resolveStoredProofFile(args.projectRoot, artifact.uri);
-      if (!source) {
-        // The list comes from the brain; the file must be on this machine too.
-        // A brain on another machine keeps its proof there, so run the command
-        // on that machine (where its agents run) to post it.
-        skipped.push({
-          id: artifact.id,
-          reason: `its stored file is not on this machine under ${path.join(args.projectRoot, ".ade", "artifacts")}; if the ADE brain runs on another machine, run this command there`,
-        });
-        continue;
-      }
-      const bytes = fs.statSync(source).size;
-      const limit = isVideo(artifact) ? GITHUB_ATTACHMENT_LIMITS.videoPaidBytes : GITHUB_ATTACHMENT_LIMITS.imageBytes;
-      if (bytes > limit) {
-        skipped.push({
-          id: artifact.id,
-          reason: `it is ${(bytes / 1024 / 1024).toFixed(1)} MB, over GitHub's ${limit / 1024 / 1024} MB limit for ${isVideo(artifact) ? "a video" : "a picture"}`,
-        });
-        continue;
-      }
-      if (isVideo(artifact) && bytes > GITHUB_ATTACHMENT_LIMITS.videoFreeBytes) {
-        warnings.push(`${artifact.id} is ${(bytes / 1024 / 1024).toFixed(1)} MB. GitHub Free accepts videos up to 10 MB; paid plans up to 100 MB.`);
-      }
-      // A plain, unique name: gh matches body references by path.
-      const file = `proof-${posted.length + 1}${path.extname(source).toLowerCase() || (isVideo(artifact) ? ".mp4" : ".png")}`;
-      fs.copyFileSync(source, path.join(staging, file));
-      const caption = markdownCaption(artifact.description?.trim() || artifact.title || file);
+      if (staged.warning) warnings.push(staged.warning);
+      const { file, bytes, caption } = staged;
       posted.push({ id: artifact.id, caption, file, bytes });
       lines.push(`![${caption}](./${file})`, "", caption, "");
       attachArgs.push("--attach", `./${file}`);
@@ -207,4 +228,105 @@ export function publishProofToPullRequest(args: {
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
+}
+
+/**
+ * Uploads the proof a pull request's text cites and rewrites each citation in
+ * place, so GitHub shows the picture beside the claim it proves.
+ *
+ * The text is read from GitHub, not taken from the caller: ADE adds its own
+ * link block to a description after the PR is made, and a `--body-file` edit
+ * replaces the whole text. An item that cannot go up keeps its citation, which
+ * ADE still shows. Throws when the text cites nothing that could be uploaded.
+ */
+export function publishProofIntoPullRequestBody(args: {
+  pr: string;
+  projectRoot: string;
+  artifacts: PublishableArtifact[];
+  cwd?: string;
+  run?: typeof spawnSync;
+}): ProofPublishResult {
+  const run = args.run ?? spawnSync;
+  assertGhSupportsAttach(run);
+  const { url: prUrl, body } = readPullRequestBody(args.pr, { cwd: args.cwd, run });
+  const cited = new Set(prBodyProofIds(body));
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), "ade-proof-publish-"));
+  const posted: ProofPublishResult["posted"] = [];
+  const skipped: ProofPublishResult["skipped"] = [];
+  const warnings: string[] = [];
+  const files = new Map<string, PrBodyProofFile>();
+  try {
+    for (const artifact of args.artifacts) {
+      if (!cited.has(artifact.id)) continue;
+      const staged = stageProofFile(artifact, args.projectRoot, staging, posted.length + 1);
+      if ("skip" in staged) {
+        skipped.push({ id: artifact.id, reason: staged.skip });
+        continue;
+      }
+      if (staged.warning) warnings.push(staged.warning);
+      files.set(artifact.id, { file: staged.file, video: staged.video });
+      posted.push({ id: artifact.id, caption: staged.caption, file: staged.file, bytes: staged.bytes });
+    }
+    for (const id of cited) {
+      if (!files.has(id) && !skipped.some((entry) => entry.id === id)) {
+        skipped.push({ id, reason: "not in this chat's or lane's proof" });
+      }
+    }
+    if (!posted.length) {
+      throw new ProofPublishError(
+        `nothing to upload: ${skipped.map((entry) => `${entry.id} (${entry.reason})`).join("; ") || "the PR text cites no proof"}`,
+      );
+    }
+    const rewritten = rewritePrBodyProofForGithub(body, (id) => files.get(id) ?? null);
+    // A comparison goes up whole or stays as written. A side staged for a pair
+    // whose other side could not go up is in no sentence of the new text, so
+    // it is not attached and not reported as uploaded.
+    for (const entry of [...posted]) {
+      if (rewritten.includes(`](./${entry.file})`)) continue;
+      posted.splice(posted.indexOf(entry), 1);
+      skipped.push({ id: entry.id, reason: "the other side of its comparison could not be uploaded" });
+    }
+    if (!posted.length) {
+      throw new ProofPublishError(`nothing to upload: ${skipped.map((entry) => `${entry.id} (${entry.reason})`).join("; ")}`);
+    }
+    // An item cited two times can go up for one citation and stay behind in a
+    // comparison. It is uploaded, so it is not skipped; say what stayed.
+    const stillCited = new Set(prBodyProofIds(rewritten));
+    for (const entry of posted) {
+      if (stillCited.has(entry.id)) warnings.push(`${entry.id} is uploaded, but it also stays as a citation in a comparison whose other side could not be uploaded`);
+    }
+    fs.writeFileSync(path.join(staging, "body.md"), rewritten);
+    const edit = run(
+      "gh",
+      ["pr", "edit", prUrl, "--body-file", "body.md", ...posted.flatMap((entry) => ["--attach", `./${entry.file}`])],
+      { encoding: "utf8", cwd: staging, timeout: GH_TIMEOUTS_MS.upload },
+    );
+    if (edit.status !== 0) {
+      throw new ProofPublishError(`gh pr edit failed: ${ghFailure(edit, `exit ${edit.status}`)}`);
+    }
+    return { prUrl, commentUrl: null, posted, skipped, warnings };
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+/** The PR's URL and its text as GitHub holds them now. */
+export function readPullRequestBody(pr: string, options: { cwd?: string; run?: typeof spawnSync } = {}): { url: string; body: string } {
+  const run = options.run ?? spawnSync;
+  const view = run("gh", ["pr", "view", pr, "--json", "url,body"], {
+    encoding: "utf8",
+    cwd: options.cwd,
+    timeout: GH_TIMEOUTS_MS.quick,
+  });
+  let parsed: { url?: unknown; body?: unknown } = {};
+  try {
+    parsed = JSON.parse(String(view.stdout ?? "")) as typeof parsed;
+  } catch {
+    // Reported below with gh's own words.
+  }
+  const url = typeof parsed.url === "string" ? parsed.url.trim() : "";
+  if (view.status !== 0 || !/\/pull\/\d+$/.test(url)) {
+    throw new ProofPublishError(`gh could not find pull request ${pr}: ${ghFailure(view, "no URL returned")}`);
+  }
+  return { url, body: typeof parsed.body === "string" ? parsed.body : "" };
 }

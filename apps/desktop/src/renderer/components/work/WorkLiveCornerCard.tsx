@@ -439,6 +439,10 @@ export function WorkLiveCornerCard({
     () => browserTabForChat(browserStatus, chatSessionId),
     [browserStatus, chatSessionId],
   );
+  // A failed page load (the agent's dev server stopped, a bad URL) is painted
+  // by Chromium as plain white, and that white is all the frames would carry.
+  // The card steps aside until the tab loads again rather than float a blank.
+  const browserLoadFailed = Boolean(activeBrowserTab?.loadError);
   // The signature is per chat. Re-base it on a chat switch, or the next status
   // event compares the new chat's tab with the old chat's and counts as activity.
   const browserStatusRef = useRef(browserStatus);
@@ -512,7 +516,7 @@ export function WorkLiveCornerCard({
     {
       tool: "browser",
       lastActivityAt: activityAt.browser,
-      available: canBrowser,
+      available: canBrowser && !browserLoadFailed,
       live: sources.browser.live,
       ownerChatSessionId: activeBrowserTab?.ownerChatSessionId ?? null,
       sessionKey: sources.browser.sessionKey,
@@ -533,6 +537,7 @@ export function WorkLiveCornerCard({
   ], [
     activeBrowserTab?.ownerChatSessionId,
     activityAt,
+    browserLoadFailed,
     canBrowser,
     seen,
     sources,

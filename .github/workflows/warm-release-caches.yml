@@ -1,0 +1,128 @@
+name: Warm release caches
+
+# Builds the release's slow, source-pinned native pieces on main and caches
+# them: the transcribe.cpp binary (voice) and the four universal Swift helpers.
+# release-core.yml only restores these caches. It cannot fill them itself:
+# a release runs on its tag, and GitHub lets a run restore caches saved on its
+# own ref or the default branch only, so a cache saved by one release tag is
+# invisible to the next. A release that misses the cache still builds from
+# source, as before.
+#
+# The cache keys come from .github/actions/release-cache-keys, which
+# release-core.yml uses too, so the two cannot drift apart.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/desktop/native/ADEDesktopDriver/**"
+      - "apps/desktop/native/ADECaptureHelper/**"
+      - "apps/desktop/native/ADESimHelper/**"
+      - "apps/desktop/native/ADEMedia/**"
+      - "apps/desktop/scripts/build-mac-desktop-driver.mjs"
+      - "apps/desktop/scripts/build-capture-helper.mjs"
+      - "apps/desktop/scripts/build-sim-helper.mjs"
+      - "apps/desktop/scripts/build-ade-media.mjs"
+      - "apps/desktop/scripts/materialize-whisper-resources.mjs"
+      - "apps/desktop/scripts/native-helper-cache.mjs"
+      - ".github/actions/release-cache-keys/**"
+      - ".github/workflows/warm-release-caches.yml"
+  workflow_dispatch:
+
+# id-token and attestations: the builds below are attested, and release-core.yml
+# uses a cached file only when it carries this workflow's attestation.
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: warm-release-caches
+  cancel-in-progress: false
+
+jobs:
+  mac:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve release cache keys
+        id: cache-keys
+        uses: ./.github/actions/release-cache-keys
+
+      - name: Cache transcribe-cli
+        id: transcribe
+        uses: actions/cache@v4
+        with:
+          path: apps/desktop/resources/whisper/transcribe-cli
+          key: ${{ steps.cache-keys.outputs.transcribe-darwin }}
+
+      - name: Build transcribe-cli
+        if: ${{ steps.transcribe.outputs.cache-hit != 'true' }}
+        run: cd apps/desktop && node scripts/materialize-whisper-resources.mjs
+
+      - name: Attest transcribe-cli
+        if: ${{ steps.transcribe.outputs.cache-hit != 'true' }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: apps/desktop/resources/whisper/transcribe-cli
+
+      - name: Cache native helpers
+        id: helpers
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.cache-keys.outputs.native-helper-paths }}
+          key: ${{ steps.cache-keys.outputs.native-helpers }}
+
+      - name: Build native helpers
+        if: ${{ steps.helpers.outputs.cache-hit != 'true' }}
+        env:
+          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
+        run: |
+          set -euo pipefail
+          cd apps/desktop
+          node scripts/build-mac-desktop-driver.mjs
+          node scripts/build-capture-helper.mjs
+          node scripts/build-sim-helper.mjs
+          node scripts/build-ade-media.mjs
+          while read -r helper; do lipo -archs "../../$helper"; done <<< "$HELPER_PATHS"
+
+      - name: Attest native helpers
+        if: ${{ steps.helpers.outputs.cache-hit != 'true' }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.cache-keys.outputs.native-helper-paths }}
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve release cache keys
+        id: cache-keys
+        uses: ./.github/actions/release-cache-keys
+
+      - name: Cache transcribe-cli
+        id: transcribe
+        uses: actions/cache@v4
+        with:
+          path: apps/desktop/resources/whisper/transcribe-cli.exe
+          key: ${{ steps.cache-keys.outputs.transcribe-win32 }}
+
+      - name: Build transcribe-cli
+        if: ${{ steps.transcribe.outputs.cache-hit != 'true' }}
+        run: cd apps/desktop && node scripts/materialize-whisper-resources.mjs
+
+      - name: Attest transcribe-cli
+        if: ${{ steps.transcribe.outputs.cache-hit != 'true' }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: apps/desktop/resources/whisper/transcribe-cli.exe

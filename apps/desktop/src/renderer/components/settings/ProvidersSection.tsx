@@ -1228,6 +1228,7 @@ export function ProvidersSection({
 
       {signInProvider && signInCommand ? (
         <ProviderSignInModal
+          runtimePin={pin}
           providerId={signInProvider}
           providerLabel={acpProviderLabel(signInProvider) ?? signInProvider}
           command={signInCommand}

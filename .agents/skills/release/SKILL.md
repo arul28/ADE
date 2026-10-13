@@ -86,15 +86,17 @@ progress — poll the run and keep working.
 
 Stay serial only for:
 
-1. Docs merge → green `ci-pass` on that SHA → desktop `v*` tag. Tagging
-   before `ci-pass` fails `verify`.
+1. Docs merge → desktop `v*` tag. When the release commit changes only
+   release notes (`CHANGELOG.md`, `changelog/*.mdx`, `docs.json`), tag at once:
+   `verify` accepts the parent's green `ci-pass`. Any other change in that
+   commit still needs its own green `ci-pass` first.
 2. Draft asset verification → `--draft=false`. npm versions are immutable.
 3. iOS IPA inspect / `altool --validate-app` → upload → `asc builds wait` →
    group attach.
 4. A Windows release host cannot archive iOS. Keep desktop and Cloudflare
    in flight and say iOS needs a macOS host. Do not call the release done.
 
-### During the `ci-pass` wait (docs PR just landed)
+### Right after the docs commit lands
 
 - Cloudflare: `deploy-web.yml` is already running for that SHA. Start
   Phase 5.5 verification. Do not wait for a desktop tag.
@@ -488,15 +490,16 @@ commands such as `release:mac:local`, `dist:mac:universal:signed`,
 
 ### Create the release tag
 
-**The tag must point at a commit that already has a green `ci-pass` check run.**
-`release-core.yml`'s `verify` job is fail-closed on it: it looks up the `ci-pass`
-check run for the tagged SHA and exits 1 with
-`No ci-pass check run was found for <sha>. Run CI before releasing.` when the
-check is absent, still running, or red. Merging the release-docs PR and tagging
-immediately is exactly how you hit this — the squash-merge creates a brand-new
-commit on `main` whose CI has not started yet.
+**The tag must point at a commit with green CI, its own or borrowed.**
+`release-core.yml`'s `verify` job looks up `ci-pass` for the tagged SHA. When
+that check is missing, still running, or cancelled, and the commit changes only
+`CHANGELOG.md`, `changelog/*.mdx` and `docs.json`, it walks to the parent (up to
+five such commits) and accepts the first green `ci-pass` it finds. So the
+release-docs commit does **not** wait for its own CI: run
+`node scripts/validate-docs.mjs` locally before pushing it, then tag right away.
 
-Wait for it before tagging:
+`verify` still fails when the tagged commit's `ci-pass` is red, or when a commit
+that changes anything else has no green `ci-pass` yet. In that case wait:
 
 ```bash
 RELEASE_SHA=$(git rev-parse origin/main)
@@ -504,10 +507,7 @@ gh api "repos/arul28/ADE/commits/$RELEASE_SHA/check-runs" \
   --jq '.check_runs[] | select(.name=="ci-pass") | {status,conclusion,html_url}'
 ```
 
-Tag only when that prints `completed` / `success`. An empty result means CI has
-not reported on the commit yet.
-
-After release docs are committed on `main` and `ci-pass` is green:
+After release docs are committed on `main`:
 
 ```bash
 git fetch origin --tags --prune
@@ -523,7 +523,7 @@ git push origin "v<VERSION>"
 
 If you tagged early and `verify` failed, the tag is still correct and nothing
 was published — do **not** delete or move it. Wait for `ci-pass` to go green on
-the same SHA, then rerun only the failed job:
+the same SHA (or its release-notes-only parent), then rerun only the failed job:
 
 ```bash
 gh run rerun "$RUN_ID" --repo arul28/ADE --failed
@@ -564,7 +564,10 @@ gh run view "$RUN_ID" --repo arul28/ADE --json status,conclusion,url,jobs
 Expected shape:
 
 - runtime/resource jobs run first
-- `arm64 mac release` and `x64 mac release` build/sign/notarize independently
+- `arm64 mac release` and `x64 mac release` build, sign and notarize the app
+  independently, both on Apple Silicon; `smoke-mac-x64` then runs the x64
+  validator on an Intel runner, and the macOS result counts only when it passes.
+  DMGs are not notarized separately; the stapled app inside them is.
 - `build-win-release` builds/signs/validates Windows independently, in parallel
   with the mac jobs, when `platforms` includes `win`. With the gate off it is
   skipped, and a skipped Windows job does not block the mac release.
@@ -779,8 +782,8 @@ treat a failed tap bump as a desktop-leg failure.
 
 ## Phase 5: iOS TestFlight Build and Distribution
 
-Do this only if iOS scope is `yes`. Start it after the shared `ci-pass` +
-tag gate (or immediately on an iOS-only release). Do **not** wait for the
+Do this only if iOS scope is `yes`. Start it after the docs commit and
+tag (or immediately on an iOS-only release). Do **not** wait for the
 desktop draft, undraft, npm publish, or brew tap — see **Parallel schedule**.
 
 Preflight:

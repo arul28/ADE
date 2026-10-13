@@ -216,6 +216,7 @@ export class ProjectScopeRegistry {
       throw new Error(`Unknown projectId: ${projectId}`);
     }
 
+    this.projectRegistry.assertProjectDataAvailable(record);
     const pending = (async () => {
       if (options.touch ?? true) {
         this.projectRegistry.touch(projectId);
@@ -235,6 +236,12 @@ export class ProjectScopeRegistry {
           ? { crossMachineHandoffTransport: this.options.crossMachineHandoffTransport }
           : {}),
       });
+      try {
+        this.projectRegistry.recordDatabaseIdentity(projectId);
+      } catch (error) {
+        runtime.dispose();
+        throw error;
+      }
       return new ProjectScope({
         registryProjectId: projectId,
         record,
