@@ -950,6 +950,7 @@ import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, typ
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
+import { isExternalSessionProvider } from "../../../shared/types/externalSessions";
 import {
   loadExternalSessionDetail,
   normalizeExternalSessionDetailArgs,
@@ -6860,7 +6861,7 @@ export function registerIpc({
     if (!isRecord(arg)) throw new Error("external session import expects an object payload.");
     const record = arg as Record<string, unknown>;
     const { provider, target, mode } = record;
-    if (provider !== "claude" && provider !== "codex" && provider !== "cursor" && provider !== "droid" && provider !== "opencode" && provider !== "pi") {
+    if (!isExternalSessionProvider(provider)) {
       throw new Error("external session import provider is invalid.");
     }
     if (target !== "cli" && target !== "chat") throw new Error("external session import target must be cli or chat.");

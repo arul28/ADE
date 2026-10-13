@@ -132,6 +132,9 @@ missing or malformed file contributes nothing.
 | OpenCode | `~/.config/opencode/opencode.json` or `.jsonc` (`$XDG_CONFIG_HOME`) | `mcp` |
 | Droid | `~/.factory/mcp.json` | `mcpServers` |
 
+Muse Code is not scanned. A Muse chat still receives the registry's servers;
+only importing servers from Muse's own config files is missing.
+
 The same name in two providers is one row; the first definition found wins
 (the order above) and the others add their provider to the row. A name the
 registry cannot hold (it allows letters, numbers, `-` and `_`) is listed under

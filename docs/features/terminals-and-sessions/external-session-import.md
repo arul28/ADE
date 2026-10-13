@@ -5,9 +5,10 @@ tools keep their own sessions on disk, or expose a provider-native session
 list. ADE's external-session import feature lets the user browse those sessions
 from the Work surface and continue one inside ADE.
 
-ADE imports sessions from 10 providers:
+ADE imports sessions from 11 providers:
 
-- Claude Code, Codex, Cursor `cursor-agent`, Factory Droid, OpenCode, and Pi.
+- Claude Code, Codex, Cursor `cursor-agent`, Factory Droid, OpenCode, Pi, and
+  Muse Code.
 - The ACP providers: Qwen Code, Kimi Code, Grok, and GitHub Copilot CLI.
 
 Every import has two choices:
