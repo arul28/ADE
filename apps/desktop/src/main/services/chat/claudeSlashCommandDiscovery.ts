@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -160,6 +161,39 @@ export function claudeNativeSlashCommandRoots(
   };
 }
 
+function realPathOrNull(target: string): string | null {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return null;
+  }
+}
+
+/** Skill roots hold one folder per skill; a few hundred is already far past any real collection. */
+const MAX_SKILL_DIRS_PER_ROOT = 500;
+
+/**
+ * The real folders behind the entries of Claude's own skill roots that are
+ * links. An entry that is a plain folder is already matched by its path.
+ */
+function realSkillDirsUnder(skillRoots: readonly string[]): Set<string> {
+  const dirs = new Set<string>();
+  for (const root of skillRoots) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries.slice(0, MAX_SKILL_DIRS_PER_ROOT)) {
+      if (!entry.isSymbolicLink()) continue;
+      const real = realPathOrNull(path.join(root, entry.name));
+      if (real) dirs.add(pathKey(real));
+    }
+  }
+  return dirs;
+}
+
 export type ClaudeSlashCommandInjectionPlan = {
   commands: DiscoveredClaudeSlashCommand[];
   skills: DiscoveredClaudeSlashCommand[];
@@ -184,9 +218,20 @@ export function planClaudeSlashCommandInjection(
     options.pluginRoots ?? [],
     options.home ?? os.homedir(),
   );
+  // A skill Claude reaches through a link counts as native too. A common setup
+  // keeps the real skill in `~/.agents/skills` and links it into
+  // `~/.claude/skills`, so Claude lists it under the link while ADE finds the
+  // same folder under the root Claude does not read, and the skill appeared
+  // twice. Matched on the folder's real path only: two different skills that
+  // share a name are both kept, because hiding one Claude does not have is the
+  // worse mistake.
+  const linkedSkillDirs = realSkillDirsUnder(native.skillRoots);
   const isNative = (entry: DiscoveredClaudeSlashCommand): boolean => {
     const roots = entry.source === "command" ? native.commandRoots : native.skillRoots;
-    return roots.some((root) => isPathInside(entry.filePath, root));
+    if (roots.some((root) => isPathInside(entry.filePath, root))) return true;
+    if (entry.source !== "skill" || !linkedSkillDirs.size) return false;
+    const real = realPathOrNull(path.dirname(entry.filePath));
+    return real !== null && linkedSkillDirs.has(pathKey(real));
   };
 
   const plan: ClaudeSlashCommandInjectionPlan = { commands: [], skills: [], nativeCount: 0 };
