@@ -6591,6 +6591,44 @@ describe("AgentChatMessageList turn fold", () => {
     expect(text).not.toMatch(/\d+ms/);
   });
 
+  it.each<{
+    name: string;
+    provider: string;
+    message: Partial<Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>>;
+    compactTurn: boolean;
+  }>([
+    { name: "a /compact the user sent as its own turn", provider: "claude", message: {}, compactTurn: true },
+    // A /compact steered into a running turn belongs to that turn: its tools, proof and turn-end line stay.
+    { name: "a /compact steered into a running turn", provider: "claude", message: { steerId: "steer-1", deliveryState: "inline" }, compactTurn: false },
+    // On a provider with no compact action the text is an ordinary prompt.
+    { name: "a /compact sent to a provider with no compact action", provider: "cursor", message: {}, compactTurn: false },
+    {
+      name: "a /compact that carries an attachment",
+      provider: "claude",
+      message: { attachments: [{ path: "/tmp/notes.md", type: "file" }] },
+      compactTurn: false,
+    },
+  ])("draws $name as a compaction line only when that is all the turn was", ({ provider, message, compactTurn }) => {
+    const at = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-09-23T10:00:${String(second).padStart(2, "0")}.000Z`,
+      event,
+    });
+    const view = renderMessageList([
+      at(0, { type: "user_message", text: "/compact", turnId: "turn-c", ...message }),
+      at(1, { type: "context_compact", trigger: "manual", state: "completed", turnId: "turn-c", compactionId: "c-1", preTokens: 66_800, postTokens: 5_500 }),
+      at(9, { type: "done", turnId: "turn-c", status: "completed" }),
+    ], { sessionProvider: provider });
+    const text = view.container.textContent ?? "";
+    // The compaction itself always shows, with how much smaller the chat got.
+    expect(text).toContain("66.8k");
+    expect(text).toContain("5.5k");
+    expect(view.container.querySelector("[data-chat-compact-command]") !== null, "quiet command chip").toBe(compactTurn);
+    expect(view.container.querySelector("[data-chat-user-message-card]") === null, "no message bubble").toBe(compactTurn);
+    // An ordinary turn keeps its turn-end line; a compact turn ends at the compaction line.
+    expect(/ran \d/.test(text), "turn-end line").toBe(!compactTurn);
+  });
+
   it("omits the duration of a turn with no user message and no start event", () => {
     const view = renderMessageList([
       ...turnEvents(),

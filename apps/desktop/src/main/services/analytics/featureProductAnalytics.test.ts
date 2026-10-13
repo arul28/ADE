@@ -52,6 +52,8 @@ describe("providerAccountAnalyticsCapture", () => {
   it.each([
     { settings: { subagentPromptCacheTtl: "1h" }, instanceId: "acct-1", action: "subagent_cache_changed", outcome: "enabled" },
     { settings: { subagentPromptCacheTtl: null }, instanceId: "acct-1", action: "subagent_cache_changed", outcome: "disabled" },
+    { settings: { mainPromptCacheTtl: "5m" }, instanceId: "acct-1", action: "main_cache_changed", outcome: "enabled" },
+    { settings: { mainPromptCacheTtl: null }, instanceId: "acct-1", action: "main_cache_changed", outcome: "disabled" },
     { settings: { onExtraUsage: "stop" }, instanceId: "acct-1", action: "extra_usage_stop_changed", outcome: "enabled" },
     { settings: { onExtraUsage: null }, instanceId: "acct-1", action: "extra_usage_stop_changed", outcome: "disabled" },
     // An account setting with no account changes nothing, so it reports nothing.

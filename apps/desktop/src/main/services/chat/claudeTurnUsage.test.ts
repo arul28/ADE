@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createClaudeTurnRequestTally,
   pickClaudeLeadingModelUsage,
@@ -8,18 +8,28 @@ import {
 } from "./claudeTurnUsage";
 
 describe("Claude turn request tally", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-09T12:00:00.000Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("counts requests and keeps the last request's whole input side", () => {
     const tally = createClaudeTurnRequestTally();
     recordClaudeRequestStart(tally, { input_tokens: 10, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 50 });
+    vi.setSystemTime(new Date("2026-10-09T12:03:00.000Z"));
     recordClaudeRequestStart(tally, { input_tokens: 4, cache_read_input_tokens: 1_050, cache_creation_input_tokens: 120 });
-    expect(tally).toEqual({ requestCount: 2, contextTokens: 1_174 });
+    // Claude times the prompt cache from the start of the last request.
+    expect(tally).toEqual({ requestCount: 2, contextTokens: 1_174, lastRequestStartedAt: "2026-10-09T12:03:00.000Z" });
   });
 
   it("counts a request whose usage is missing without losing the last context size", () => {
     const tally = createClaudeTurnRequestTally();
     recordClaudeRequestStart(tally, { input_tokens: 7 });
     recordClaudeRequestStart(tally, null);
-    expect(tally).toEqual({ requestCount: 2, contextTokens: 7 });
+    expect(tally).toEqual({ requestCount: 2, contextTokens: 7, lastRequestStartedAt: "2026-10-09T12:00:00.000Z" });
   });
 
   it("adds the tally and context window to done usage", () => {
@@ -30,6 +40,7 @@ describe("Claude turn request tally", () => {
       outputTokens: 9,
       contextTokens: 100,
       requestCount: 1,
+      lastRequestStartedAt: "2026-10-09T12:00:00.000Z",
       contextWindow: 1_000_000,
     });
   });
