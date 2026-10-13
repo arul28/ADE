@@ -25,7 +25,7 @@ import {
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
 import { loadCursorSdk } from "./cursorSdkLoader";
-import { resolveMuseBinaryPath } from "./museExecutable";
+import { resolveMuseExecutable } from "./museExecutable";
 
 type CliName =
   | "claude"
@@ -1371,11 +1371,11 @@ export async function detectAllAuth(
   // Muse is not a PATH CLI: ADE runs only its pinned build from the tools
   // cache, so it is reported from there, signed in when META_API_KEY, a key
   // saved in ADE, or Muse's auth.json is present. Never from a `muse` on PATH.
-  const musePath = resolveMuseBinaryPath();
+  const musePath = resolveMuseExecutable().path;
   if (musePath) {
     // Lazy, like every other key-store read in this file.
-    const { inspectMuseCredentials, museStoredApiKeyPresent } = await import("./museAuth");
-    const museCredentials = inspectMuseCredentials({ storedKeyPresent: museStoredApiKeyPresent });
+    const { inspectMuseCredentials } = await import("./museAuth");
+    const museCredentials = inspectMuseCredentials();
     results.push({
       type: "cli-subscription",
       cli: "muse",

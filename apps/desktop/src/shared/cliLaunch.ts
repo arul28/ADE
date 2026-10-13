@@ -42,6 +42,7 @@ import { grokSupervisionEnv } from "./grokSupervision";
 import { decodeOpenCodeRegistryId, decodePiRegistryId } from "./modelRegistry";
 import { musePermissionModeFromLegacyPermissionMode } from "./modelPermissions";
 import { PI_THINKING_LEVELS } from "./piThinkingLevels";
+import { PROVIDER_DISPLAY_NAME } from "./providers";
 import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
 
 export { PI_THINKING_LEVELS } from "./piThinkingLevels";
@@ -270,7 +271,7 @@ export const LAUNCH_PROFILE_TITLE: Record<LaunchProfile, string> = {
   droid: "Factory Droid CLI",
   opencode: "OpenCode CLI",
   pi: "Pi CLI",
-  muse: "Muse Code",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen Code CLI",
   kimi: "Kimi Code CLI",
   grok: "Grok CLI",
@@ -1646,7 +1647,7 @@ export function piThinkingFlags(reasoningEffort: string | null | undefined): str
 
 /**
  * The word ADE launches Muse with. The PTY boundary swaps it for the pinned
- * binary ADE fetched (`resolveMuseBinaryPath`); ADE never runs a user's own
+ * binary ADE fetched (`resolveMuseExecutable`); ADE never runs a user's own
  * `muse` install.
  */
 export const MUSE_CLI_COMMAND = "muse";

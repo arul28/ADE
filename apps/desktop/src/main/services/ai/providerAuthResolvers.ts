@@ -18,7 +18,7 @@ import { resolvePiInstallation } from "./piInstallation";
 import type { ShippedProvider } from "../../../shared/providers";
 import { getCachedCliAuthStatuses, parseJsonAuthStatus } from "./authDetector";
 import { getCursorSdkAuthSnapshot } from "./cursorSdkAuth";
-import { inspectMuseCredentials, museStoredApiKeyPresent } from "./museAuth";
+import { inspectMuseCredentials } from "./museAuth";
 import { readClaudeCredentials, readCodexCredentials } from "./providerCredentialSources";
 import {
   PROVIDER_AUTH_STATUS_TIMEOUT_MS,
@@ -236,7 +236,6 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
     const snapshot = inspectMuseCredentials({
       env: context.env,
       readTextFile: context.readTextFile,
-      storedKeyPresent: museStoredApiKeyPresent,
     });
     if (snapshot.envKey || snapshot.storedKey) return { authenticated: true, authMethod: "api-key" };
     if (snapshot.authFile) return { authenticated: true, authMethod: "unknown" };

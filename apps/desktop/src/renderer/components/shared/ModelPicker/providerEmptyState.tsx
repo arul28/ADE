@@ -1,3 +1,5 @@
+import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
+
 import type { AuthType, ProviderFamily } from "../../../../shared/modelRegistry";
 import { PROVIDER_REMEDIATION } from "../../../../shared/providerRemediation";
 import { openExternalUrl } from "../../../lib/openExternal";
@@ -43,7 +45,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   muse: {
     title: "Sign in to Muse Code",
-    body: "Sign in with your Meta account (`muse login`) or set META_API_KEY to use Muse models. ADE runs its own pinned copy of Muse.",
+    body: "Sign in with your Meta account (`" + MUSE_LOGIN_COMMAND + "`) or set META_API_KEY to use Muse models. ADE runs its own pinned copy of Muse.",
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Muse Code docs",
@@ -165,7 +167,7 @@ export type ProviderEmptyStateProps =
 const PROVIDER_DISPLAY_LABELS: Partial<Record<ProviderFamily, string>> = {
   anthropic: "Claude",
   openai: "OpenAI Codex",
-  muse: "Muse",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   cursor: "Cursor",
   factory: "Droid",
   pi: "Pi",

@@ -1,5 +1,7 @@
 /** Shared session/terminal utilities for the renderer. */
 
+import { PROVIDER_DISPLAY_NAME } from "../../shared/providers";
+
 import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
 import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
 import { stripElectronErrorWrapper } from "../../shared/codedError";
@@ -276,7 +278,7 @@ const SHORT_TOOL_TYPE_LABELS: Record<string, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
-  muse: "Muse",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",
@@ -291,7 +293,7 @@ const SHORT_TOOL_TYPE_PREFIXES: readonly [string, string][] = [
   ["codex", "Codex"],
   ["opencode", "OpenCode"],
   ["pi", "Pi"],
-  ["muse", "Muse"],
+  ["muse", PROVIDER_DISPLAY_NAME.muse],
   ["qwen", "Qwen"],
   ["kimi", "Kimi"],
   ["grok", "Grok"],

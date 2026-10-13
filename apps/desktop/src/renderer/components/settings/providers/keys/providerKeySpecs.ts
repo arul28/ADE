@@ -18,6 +18,7 @@
 import type { SettingsProviderId } from "../types";
 import type { ApiCredentialSummary } from "../../../../../shared/types/apiCredentials";
 import { HARNESS_CREDENTIAL_STORE_PROVIDER } from "../../../../../shared/harnessCredentialProviders";
+import { MUSE_LOGIN_COMMAND } from "../../../../../shared/providers";
 
 export type ProviderKeyProtocol = NonNullable<ApiCredentialSummary["protocol"]>;
 
@@ -159,7 +160,7 @@ const SPECS: Record<SettingsProviderId, ProviderKeySpec> = {
     providerId: false,
     verifiable: false,
     legacyDefaultSlot: false,
-    note: "A key takes priority over a `muse login` sign-in, the same way META_API_KEY does in Muse.",
+    note: "A key takes priority over a `" + MUSE_LOGIN_COMMAND + "` sign-in, the same way META_API_KEY does in Muse.",
   },
   opencode: {
     provider: "opencode",

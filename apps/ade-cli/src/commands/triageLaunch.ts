@@ -4,7 +4,7 @@ import {
   resolveExecutableFromKnownLocations,
   type ResolvedExecutable,
 } from "../../../desktop/src/main/services/ai/cliExecutableResolver";
-import { resolveMuseBinaryPath } from "../../../desktop/src/main/services/ai/museExecutable";
+import { resolveMuseExecutable } from "../services/tools/muse";
 import { resolveCliSpawnInvocation } from "../../../desktop/src/main/services/shared/processExecution";
 import type { TriageBundle } from "./triageContext";
 import { TriageCommandError, TriageUsageError } from "./triageErrors";
@@ -83,10 +83,10 @@ type TriageExecutableResolver = (
  * reports the on-disk casing.
  */
 export const defaultTriageExecutableResolver: TriageExecutableResolver = (command, env) => {
-  // Muse runs only as ADE's pinned build, never a user's own install: its
+  // `muse` runs only as ADE's pinned build, never a user's own install: its
   // version must match the protocol ADE ships against, and it self-updates.
   if (command === "muse") {
-    const pinned = resolveMuseBinaryPath({ env });
+    const pinned = resolveMuseExecutable({ env }).path;
     return pinned ? { path: pinned, source: "path" } : null;
   }
   return resolveExecutableFromKnownLocations(command, env);

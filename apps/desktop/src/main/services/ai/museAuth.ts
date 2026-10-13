@@ -87,18 +87,11 @@ function defaultReadText(target: string): string | null {
 export function inspectMuseCredentials(args: {
   env?: NodeJS.ProcessEnv;
   readTextFile?: (target: string) => string | null;
-  /** Whether ADE's key store holds a Muse key. Injected so this stays free of Electron. */
-  storedKeyPresent?: () => boolean;
 } = {}): MuseCredentialSnapshot {
   const env = args.env ?? process.env;
   const authFilePath = museAuthFilePath(env);
   const envKey = Boolean(env[MUSE_API_KEY_ENV]?.trim());
-  let storedKey = false;
-  try {
-    storedKey = args.storedKeyPresent?.() ?? false;
-  } catch {
-    storedKey = false;
-  }
+  const storedKey = museStoredApiKeyPresent();
   const providers = readMuseAuthFileProviders((args.readTextFile ?? defaultReadText)(authFilePath));
   const authFile = Boolean(providers && providers.length > 0);
   return {
@@ -148,6 +141,3 @@ export function museCredentialEnv(
   }
   return key?.trim() ? { [MUSE_API_KEY_ENV]: key.trim() } : {};
 }
-
-/** The sign-in command, run in an ADE terminal with the pinned binary. */
-export const MUSE_LOGIN_ARGS = ["login"] as const;

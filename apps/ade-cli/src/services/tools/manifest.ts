@@ -137,6 +137,32 @@ function requireHttpsUrl(value: unknown, label: string, context: { tool: string;
   return url;
 }
 
+/**
+ * The only host a direct-file pin may download from: Meta's lookaside host,
+ * which serves the muse builds. `scripts/file-pin-host.mjs` holds the same
+ * literal for the pin scripts (they cannot import TypeScript), and the
+ * downloader refuses any redirect off the pinned host.
+ */
+const FILE_PIN_HOST = "lookaside.facebook.com";
+
+function requireFilePinUrl(value: unknown, label: string, context: { tool: string; packageName: string }): string {
+  const url = requireHttpsUrl(value, label, context);
+  let host: string | null = null;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    host = null;
+  }
+  if (host !== FILE_PIN_HOST) {
+    throw new ToolError(`Invalid tools manifest: ${label} must be on ${FILE_PIN_HOST}.`, {
+      kind: "manifest",
+      tool: context.tool,
+      packageName: context.packageName,
+    });
+  }
+  return url;
+}
+
 function parseTargetPin(raw: unknown, toolName: string, target: string): ToolTargetPin {
   if (!isRecord(raw)) {
     throw new ToolError(`Invalid tools manifest: ${toolName}.targets.${target} must be an object.`, {
@@ -151,7 +177,7 @@ function parseTargetPin(raw: unknown, toolName: string, target: string): ToolTar
   // Absent means npm-tarball: every pin written before file pins existed.
   const format = raw.format ?? "npm-tarball";
   if (format === "file") {
-    const url = requireHttpsUrl(raw.url, `${label}.url`, { tool: toolName, packageName });
+    const url = requireFilePinUrl(raw.url, `${label}.url`, { tool: toolName, packageName });
     const sha256 = requireString(raw.sha256, `${label}.sha256`);
     if (!SHA256_HEX_PATTERN.test(sha256)) {
       throw new ToolError(`Invalid tools manifest: ${label}.sha256 must be 64 lowercase hex characters.`, {

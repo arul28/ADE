@@ -101,6 +101,7 @@ function messagesFromRecords(
   provider: ExternalSessionProvider,
   records: unknown[],
 ): ExternalSessionDetailMessage[] {
+  if (provider === "muse") return museDetailMessages(records);
   const source = provider === "codex" ? canonicalCodexRecords(records) : records;
   const messages: ExternalSessionDetailMessage[] = [];
   for (const record of source) {
@@ -212,9 +213,7 @@ export async function loadExternalSessionDetail(
   // `messages` is the text tail older iOS and TUI clients read. Without a
   // JSONL tail (a store-only Cursor chat) it comes from the preview events.
   const messages = suffix.length
-    ? args.provider === "muse"
-      ? museDetailMessages(suffix)
-      : messagesFromRecords(args.provider, suffix)
+    ? messagesFromRecords(args.provider, suffix)
     : record.messages?.length
       ? record.messages
       : messagesFromEvents(page?.events ?? []);

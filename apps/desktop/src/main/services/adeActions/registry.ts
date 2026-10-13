@@ -2504,14 +2504,14 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     // skills, hooks, computer use and feedback, through a short-lived
     // Settings-owned `muse serve` host per page visit (never a chat's host).
     museSettings: async (args?: { handleId?: string; request?: unknown }) => {
-      const { runMuseSettings } = await import("../ai/museSettingsService");
-      return runMuseSettings(
-        { handleId: requireNonEmptyString(args?.handleId, "handleId"), request: args?.request as never },
+      const { runMuseSettingsFor, parseMuseSettingsRunArgs } = await import("../ai/museSettingsService");
+      return runMuseSettingsFor(
         {
-          workspaceRoot: runtime.projectRoot,
+          projectRoot: runtime.projectRoot,
           logger: runtime.logger,
           clientVersion: process.env.ADE_CLI_VERSION?.trim() || undefined,
         },
+        parseMuseSettingsRunArgs(args),
       );
     },
     museSettingsClose: async (args?: { handleId?: string }) => {

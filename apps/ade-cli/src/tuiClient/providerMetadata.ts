@@ -1,3 +1,4 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../desktop/src/shared/providers";
 import type { ProviderFamily } from "../../../desktop/src/shared/modelRegistry";
 import { MODEL_PICKER_PROVIDER_ORDER } from "../../../desktop/src/shared/modelCatalog";
 import type { AgentChatModelCatalogRefreshProvider } from "../../../desktop/src/shared/types/chat";
@@ -6,7 +7,7 @@ import type { AdeCodeProvider } from "./types";
 const TUI_PROVIDER_LABELS: Record<AdeCodeProvider, string> = {
   claude: "Claude",
   codex: "Codex",
-  muse: "Muse",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   cursor: "Cursor",
   opencode: "OpenCode",
   pi: "Pi",

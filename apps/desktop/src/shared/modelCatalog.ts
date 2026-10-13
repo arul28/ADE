@@ -1,4 +1,5 @@
 import { compareTextInsensitive } from "./formatting";
+import { PROVIDER_DISPLAY_NAME } from "./providers";
 import {
   CURSOR_CLI_LINE_ORDER,
   DROID_CLI_LINE_ORDER,
@@ -104,7 +105,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   cursor: "Cursor",
   factory: "Factory Droid",
   pi: "Pi",
-  muse: "Meta Muse",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   google: "Google",
   "github-copilot": "GitHub Copilot",
   deepseek: "DeepSeek",

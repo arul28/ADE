@@ -1,3 +1,5 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentChatSessionSummary,
@@ -93,7 +95,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex",
   cursor: "Cursor",
   droid: "Droid",
-  muse: "Muse",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   opencode: "OpenCode",
 };
 

@@ -1,3 +1,4 @@
+import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { compactFirstOffer } from "../../../shared/compactFirst";
 import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
@@ -61,6 +62,7 @@ import {
   type AgentChatSessionSummary,
   type AgentChatLaunchDefaults,
   type CodexThreadGoal,
+  type CodexThreadGoalStatus,
   type ClaudeActiveGoal,
   type BuiltInBrowserContextItem,
   type ComputerUseArtifactView,
@@ -2338,14 +2340,14 @@ function resolveAssistantLabel(
 ): string {
   if (model?.family === "cursor" || model?.cliCommand === "cursor") return "Cursor";
   if (model?.family === "factory" || model?.cliCommand === "droid") return "Droid";
-  if (model?.family === "muse" || model?.cliCommand === "muse") return "Muse";
+  if (model?.family === "muse" || model?.cliCommand === "muse") return PROVIDER_DISPLAY_NAME.muse;
   if (model?.family === "anthropic" || model?.cliCommand === "claude") return "Claude";
   if (model?.family === "openai" || model?.cliCommand === "codex") return "Codex";
   if (sessionProvider === "claude") return "Claude";
   if (sessionProvider === "codex") return "Codex";
   if (sessionProvider === "cursor") return "Cursor";
   if (sessionProvider === "droid") return "Droid";
-  if (sessionProvider === "muse") return "Muse";
+  if (sessionProvider === "muse") return PROVIDER_DISPLAY_NAME.muse;
   return "Assistant";
 }
 
@@ -5925,7 +5927,7 @@ export function AgentChatPane({
   }, []);
   const setCodexGoalStatusFromPanel = useCallback(async (
     sessionId: string,
-    status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">,
+    status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">,
   ) => {
     setError(null);
     setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
@@ -6365,7 +6367,7 @@ export function AgentChatPane({
     ?? (activeProviderConnection?.provider === "droid"
       ? "Droid is not available. Install the Factory CLI, ensure `droid` is on PATH, and configure Factory authentication."
       : activeProviderConnection?.provider === "muse"
-        ? "Muse Code is not available. Let ADE finish downloading its pinned Muse, then sign in with `muse login` or set META_API_KEY."
+        ? "Muse Code is not available. Let ADE finish downloading its pinned Muse, then sign in with `" + MUSE_LOGIN_COMMAND + "` or set META_API_KEY."
       : activeProviderConnection?.provider === "cursor"
         ? "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."
       : null);

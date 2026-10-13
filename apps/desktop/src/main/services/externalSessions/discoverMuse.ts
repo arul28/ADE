@@ -109,7 +109,23 @@ function textFromBlocks(value: unknown): string | null {
   return parts.length ? parts.join("\n") : null;
 }
 
-function neutralMuseRecord(record: Record<string, unknown>): NeutralSessionRecord | null {
+/**
+ * One conversation turn in a Muse log record, or null for runtime bookkeeping
+ * (task lifecycle, context diagnostics, reminders). The discovery summary, the
+ * detail tail and the chat event converter all read turns through this, so they
+ * cannot disagree about what a turn is.
+ */
+export type MuseTurn = {
+  role: "user" | "assistant";
+  /** The turn's text, or null when it carries none. */
+  text: string | null;
+  /** The assistant reply's message id, when Muse names one. */
+  messageId: string | null;
+  /** `recorded_at` in epoch ms, or null when the record has none. */
+  atMs: number | null;
+};
+
+export function museTurnFromRecord(record: Record<string, unknown>): MuseTurn | null {
   const payload = asRecord(record.payload);
   if (!payload) return null;
   if (record.payload_type === "runtime.user_intent.accepted") {
@@ -117,15 +133,30 @@ function neutralMuseRecord(record: Record<string, unknown>): NeutralSessionRecor
     if (asString(payload.surface) && payload.surface !== "main") return null;
     const kind = asString(asRecord(payload.semantic_kind)?.kind);
     if (kind && kind !== "chat") return null;
-    return neutralRecord("user", textFromBlocks(payload.refill_blocks), museRecordTimeMs(record));
+    return {
+      role: "user",
+      text: textFromBlocks(payload.refill_blocks),
+      messageId: null,
+      atMs: museRecordTimeMs(record),
+    };
   }
   if (record.payload_type === "runtime.session" && payload.kind === "run") {
     const event = asRecord(payload.event);
     if (event?.kind === "assistant_message_committed") {
-      return neutralRecord("assistant", asString(event.text), museRecordTimeMs(record));
+      return {
+        role: "assistant",
+        text: asString(event.text),
+        messageId: asString(event.message_id),
+        atMs: museRecordTimeMs(record),
+      };
     }
   }
   return null;
+}
+
+function neutralMuseRecord(record: Record<string, unknown>): NeutralSessionRecord | null {
+  const turn = museTurnFromRecord(record);
+  return turn ? neutralRecord(turn.role, turn.text, turn.atMs) : null;
 }
 
 /** User and assistant turns from raw log lines, oldest first, for detail tails. */
@@ -275,7 +306,8 @@ function museRecordFromCandidate(
 ): ExternalSessionDiscoveryRecord | null {
   const window = readJsonlWindow(candidate.logPath, candidate.size);
   const headRecords = flattenMuseRecords(window.head);
-  const header = headerFromRecords(window.all ? flattenMuseRecords(window.all) : headRecords);
+  const allRecords = window.all ? flattenMuseRecords(window.all) : null;
+  const header = headerFromRecords(allRecords ?? headRecords);
   // ADE's own Muse chats are listed as chats already; importing one would
   // fork ownership of a session the chat runtime is driving.
   if (header.clientInfoName === "ade") return null;
@@ -289,7 +321,7 @@ function museRecordFromCandidate(
   const summary = summarizeNeutralRecords("muse", {
     head,
     tail: compact(tailRecords.map(neutralMuseRecord)),
-    all: window.all ? compact(flattenMuseRecords(window.all).map(neutralMuseRecord)) : null,
+    all: allRecords ? compact(allRecords.map(neutralMuseRecord)) : null,
   });
   if (!summary.hasPrompt) return null;
 

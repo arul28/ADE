@@ -22,6 +22,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { FILE_PIN_HOST } from "./file-pin-host.mjs";
 
 const packageRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const lockPath = path.join(packageRoot, "package-lock.json");
@@ -175,6 +176,9 @@ function readFileToolRelease(packages, tool) {
     if (!pin) fail(`${relative} has no ${tool.name} build for supported target ${target}.`);
     if (typeof pin.url !== "string" || !pin.url.startsWith("https://")) {
       fail(`${relative} ${target} has no https url.`);
+    }
+    if (new URL(pin.url).hostname !== FILE_PIN_HOST) {
+      fail(`${relative} ${target} downloads from ${new URL(pin.url).hostname}; a file pin must be on ${FILE_PIN_HOST}.`);
     }
     if (typeof pin.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(pin.sha256)) {
       fail(`${relative} ${target} has no lowercase hex sha256.`);

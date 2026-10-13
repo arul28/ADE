@@ -11,8 +11,8 @@ import {
 } from "../usage/providerAccountIdentity";
 import { getAllApiKeys } from "./apiKeyStore";
 import { getCursorSdkAuthSnapshot } from "./cursorSdkAuth";
-import { inspectMuseCredentials, museStoredApiKeyPresent } from "./museAuth";
-import { museFetchPending, resolveMuseExecutable } from "./museExecutable";
+import { inspectMuseCredentials } from "./museAuth";
+import { museBinaryBlocker, resolveMuseExecutable } from "./museExecutable";
 import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { isCursorAdminApiKey } from "./utils";
 import {
@@ -483,20 +483,14 @@ export async function buildProviderConnections(
  */
 function buildMuseConnection(checkedAt: string): AiProviderConnectionStatus {
   const binary = resolveMuseExecutable();
-  const credentials = inspectMuseCredentials({ storedKeyPresent: museStoredApiKeyPresent });
+  const credentials = inspectMuseCredentials();
   const runtimeDetected = binary.path != null;
   const authAvailable = credentials.source != null;
   const keychainMayHoldLogin = process.platform === "darwin";
   const runtimeAvailable = runtimeDetected && (authAvailable || keychainMayHoldLogin);
 
-  let blocker: string | null = null;
-  if (binary.source === "unsupported") {
-    blocker = "ADE has no pinned Muse build for this platform.";
-  } else if (!runtimeDetected) {
-    blocker = museFetchPending()
-      ? `ADE's pinned Muse build (${binary.pinnedVersion}) is not downloaded yet. Download it from Settings > Providers.`
-      : "ADE's pinned Muse build is not available.";
-  } else if (!authAvailable) {
+  let blocker: string | null = museBinaryBlocker(binary);
+  if (!blocker && !authAvailable) {
     blocker = keychainMayHoldLogin
       ? "No Muse sign-in file was found. If you signed in, Muse keeps it in the macOS Keychain and your first chat confirms it; otherwise sign in or add a Meta API key."
       : "Muse is not signed in. Sign in or add a Meta API key.";

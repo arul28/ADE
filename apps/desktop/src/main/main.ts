@@ -353,6 +353,7 @@ import {
   type AccountRollupFetcher,
 } from "./services/usage/usageTrackingService";
 import { bootedUsageScopeRoot } from "./services/usage/bootedUsageScope";
+import { createMuseQuotaStore } from "./services/usage/museLiveQuota";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import {
   markMachineStateMigrationComplete,
@@ -1432,6 +1433,10 @@ if (process.platform !== "darwin") {
     if (filePath) pendingProjectOpenFiles.push(filePath);
   }
 }
+
+// One Muse quota store for the process: the chat service records what its hosts
+// report, and the usage tracker publishes it in the header meter.
+const museQuota = createMuseQuotaStore();
 
 app.whenReady().then(async () => {
   // Perf run init — must come first so subsequent IPC + sampler hooks can see the active run.
@@ -4448,6 +4453,7 @@ app.whenReady().then(async () => {
     };
 
     const agentChatService = createAgentChatService({
+      museQuota,
       // This host's account machine key, so a scheduled send that names a
       // machine can be matched to it. Resolved lazily and defensively: the
       // bridge may not exist yet at construction time, and a null simply means
@@ -5280,6 +5286,7 @@ app.whenReady().then(async () => {
     const usageTrackingService = createUsageTrackingService({
       logger,
       db,
+      museQuota,
       pollIntervalMs: 120_000,
       // In-process (tests): unbound windows have no runtime pump, so this
       // tracker is the producer and must broadcast. Production project open
@@ -6280,6 +6287,7 @@ app.whenReady().then(async () => {
     if (options.enableUsageTracking !== false) {
       usageTrackingService = createUsageTrackingService({
         logger,
+        museQuota,
         pollIntervalMs: 120_000,
         onUpdate: (snapshot) => {
           const currentDormantUsageService =

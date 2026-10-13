@@ -1,152 +1,86 @@
 /**
- * Muse Code's left-rail actions: download ADE's pinned `muse`, then sign in.
+ * Muse Code's right-hand body: the page that coordinates the Muse Settings
+ * sections (plugins and marketplaces, skills, hooks, computer use, feedback).
  *
- * ADE never runs a user's own `muse`. It fetches one pinned build into the
- * machine's agent-tools cache, so "Install" here is a download button, not a
- * command to copy. Both the download and the sign-in go to the machine the
- * Settings page is showing (`useSettingsMachineScope().pin`): that machine's
- * cache and that machine's `~/.config/muse`.
- *
- * Sign-in runs the pinned `muse login` in an ADE terminal (the shared
- * `ProviderSignInModal`). An API key is the other path; it is saved through
- * the key panel below and handed to Muse as `META_API_KEY`, never on argv.
+ * Every call goes to the machine the Settings page is showing
+ * (`useSettingsMachineScope().pin`) and runs on a Settings-owned `muse serve`
+ * host there, one per page visit: `useMuseSettingsHost` mints the visit's
+ * `handleId`, and closes that host when it unmounts or the page switches
+ * machine. A chat's host is never touched. Muse's own errors are shown as Muse
+ * words them; ADE does not paper over them.
  */
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { DownloadSimple, SignIn } from "@phosphor-icons/react";
-import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
+import React, { useCallback, useEffect, useState } from "react";
+import { ArrowsClockwise } from "@phosphor-icons/react";
+import { MONO_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
-import type { MuseBinaryStatus } from "../../../../../shared/museBinary";
+import { useSettingsAction } from "../../useSettingsAction";
+import type { MuseSettingsSnapshot } from "../../../../../shared/museSettings";
+import type { OpenProjectBinding } from "../../../../../shared/types";
 import type { ProvidersViewContext } from "../types";
+import { ComputerUseSection } from "./museSettings/ComputerUseSection";
+import { FeedbackSection } from "./museSettings/FeedbackSection";
+import { HooksSection } from "./museSettings/HooksSection";
+import { PluginsSection } from "./museSettings/PluginsSection";
+import { SkillsSection } from "./museSettings/SkillsSection";
+import { DIVIDER_STYLE, ErrorNotice, TEXT_MUTED } from "./museSettings/museSettingsShared";
+import { useMuseSettingsHost } from "./museSettings/useMuseSettingsHost";
 
-/** How often the download's progress is re-read while it runs. */
-const DOWNLOAD_POLL_MS = 1_000;
-
-function formatMegabytes(bytes: number | null): string | null {
-  if (bytes == null) return null;
-  return `${Math.round(bytes / (1024 * 1024))} MB`;
-}
-
-function downloadLine(status: MuseBinaryStatus): string {
-  const received = formatMegabytes(status.receivedBytes);
-  const total = formatMegabytes(status.totalBytes);
-  if (received && total && status.totalBytes) {
-    const percent = Math.min(100, Math.floor(((status.receivedBytes ?? 0) / status.totalBytes) * 100));
-    return `Downloading Muse ${status.pinnedVersion ?? ""} — ${received} of ${total} (${percent}%)`;
-  }
-  return `Downloading Muse ${status.pinnedVersion ?? ""}…`;
-}
-
-function MuseDownload({ ctx }: { ctx: ProvidersViewContext }) {
+export function MuseBody({ ctx }: { ctx: ProvidersViewContext }) {
   const { pin } = useSettingsMachineScope();
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
-  const pinKey = pin?.key ?? null;
-  const [status, setStatus] = useState<MuseBinaryStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const refreshStatus = ctx.actions.refreshStatus;
-
-  // Read where the download stands on this machine; one read per machine.
-  useEffect(() => {
-    let cancelled = false;
-    const read = window.ade?.ai?.museBinaryStatus;
-    if (!read) return undefined;
-    void read(pinRef.current)
-      .then((next) => {
-        if (!cancelled) setStatus(next);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [pinKey]);
-
-  // While a download runs, poll its progress; when it lands, refresh the page.
-  const downloading = status?.state === "downloading";
-  useEffect(() => {
-    if (!downloading) return undefined;
-    const read = window.ade?.ai?.museBinaryStatus;
-    if (!read) return undefined;
-    let stopped = false;
-    const timer = window.setInterval(() => {
-      void read(pinRef.current)
-        .then((next) => {
-          if (stopped) return;
-          setStatus(next);
-          if (next.state === "installed") void refreshStatus({ force: true, silent: true });
-        })
-        .catch(() => undefined);
-    }, DOWNLOAD_POLL_MS);
-    return () => {
-      stopped = true;
-      window.clearInterval(timer);
-    };
-  }, [downloading, pinKey, refreshStatus]);
-
-  const start = useCallback(async () => {
-    const ensure = window.ade?.ai?.ensureMuseBinary;
-    if (!ensure) {
-      setError("This ADE build cannot download Muse on that machine. Update ADE there and try again.");
-      return;
-    }
-    setError(null);
-    try {
-      const next = await ensure(pinRef.current);
-      setStatus(next);
-      if (next.state === "installed") void refreshStatus({ force: true, silent: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [refreshStatus]);
-
-  if (status?.state === "unsupported") {
+  const connection = ctx.status?.providerConnections?.muse ?? null;
+  const ready = Boolean(connection?.runtimeDetected);
+  if (ctx.isInitialCheckInFlight) return <div style={TEXT_MUTED}>Checking Muse…</div>;
+  if (!ready) {
     return (
-      <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-        ADE has no Muse build for this platform.
+      <div style={TEXT_MUTED}>
+        Download Muse (left) to manage its plugins, skills, hooks, and computer use on this machine.
       </div>
     );
   }
-
-  const failure = error ?? (status?.state === "failed" ? status.error : null);
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-        {downloading && status
-          ? downloadLine(status)
-          : `ADE runs its own pinned Muse${status?.pinnedVersion ? ` ${status.pinnedVersion}` : ""} (about 350–470 MB). It does not use a copy you installed yourself.`}
-      </div>
-      {downloading ? null : (
-        <button
-          type="button"
-          onClick={() => void start()}
-          style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
-        >
-          <DownloadSimple size={13} /> {status?.state === "failed" ? "Retry download" : "Download Muse"}
-        </button>
-      )}
-      {failure ? (
-        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger }}>{failure}</div>
-      ) : null}
-    </div>
-  );
+  return <MuseSettingsPanels key={pin?.key ?? "local"} pin={pin} />;
 }
 
-export function MuseAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
-  const connection = ctx.status?.providerConnections?.muse ?? null;
-  if (ctx.isInitialCheckInFlight) return null;
-  if (!connection?.runtimeDetected) return <MuseDownload ctx={ctx} />;
-  if (connection.authAvailable) return null;
+function MuseSettingsPanels({ pin }: { pin: OpenProjectBinding | null }) {
+  const { run } = useMuseSettingsHost(pin);
+  const [snapshot, setSnapshot] = useState<MuseSettingsSnapshot | null>(null);
+  const snapshotAction = useSettingsAction();
+  const loading = snapshotAction.busy === "snapshot";
+
+  const reload = useCallback(async () => {
+    await snapshotAction.run("snapshot", async () => {
+      setSnapshot(await run({ kind: "snapshot" }));
+    });
+  }, [run, snapshotAction.run]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <button
-        type="button"
-        onClick={() => ctx.actions.openSignInTerminal("muse")}
-        style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
-      >
-        <SignIn size={13} /> Sign in to Muse
-      </button>
-      <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-        Opens <code>muse login</code> in a terminal for your Meta account. Or add a Meta API key below.
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div style={TEXT_MUTED}>
+          Read from Muse on this machine{snapshot ? <> for <span style={{ fontFamily: MONO_FONT }}>{snapshot.workspaceRoot}</span></> : null}.
+        </div>
+        <button type="button" style={outlineButton({ height: 26, padding: "0 10px", fontSize: 12 })} disabled={loading} onClick={() => void reload()}>
+          <ArrowsClockwise size={11} weight="bold" /> {loading ? "Refreshing…" : "Refresh"}
+        </button>
       </div>
+      <ErrorNotice id="muse-snapshot-error" message={snapshotAction.error} />
+      {snapshot == null && !snapshotAction.error ? <div style={TEXT_MUTED}>Starting Muse…</div> : null}
+      {snapshot ? (
+        <>
+          <PluginsSection snapshot={snapshot} run={run} reload={reload} />
+          <div style={DIVIDER_STYLE} />
+          <SkillsSection snapshot={snapshot} run={run} reload={reload} />
+          <div style={DIVIDER_STYLE} />
+          <HooksSection snapshot={snapshot} />
+        </>
+      ) : null}
+      <div style={DIVIDER_STYLE} />
+      <ComputerUseSection run={run} />
+      <div style={DIVIDER_STYLE} />
+      <FeedbackSection run={run} />
     </div>
   );
 }

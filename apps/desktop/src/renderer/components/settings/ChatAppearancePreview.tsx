@@ -1,3 +1,5 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
+
 import React from "react";
 import { ChatMarkdown } from "../chat/chatMarkdown";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
@@ -101,7 +103,7 @@ export const PREVIEW_PROVIDER_META = {
   cursor: { name: "Cursor", Logo: CursorAgentLogo },
   droid: { name: "Droid", Logo: DroidLogo },
   pi: { name: "Pi", Logo: PiLogo },
-  muse: { name: "Muse", Logo: MuseLogo },
+  muse: { name: PROVIDER_DISPLAY_NAME.muse, Logo: MuseLogo },
 } as const;
 
 export type PreviewProviderKey = keyof typeof PREVIEW_PROVIDER_META;

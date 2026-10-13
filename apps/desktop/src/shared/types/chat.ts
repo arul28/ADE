@@ -1029,7 +1029,8 @@ export type CodexThreadGoalStatus =
 export type CodexThreadGoal = {
   objective?: string | null;
   tokenBudget?: number | null;
-  status?: CodexThreadGoalStatus;
+  /** Muse sends status strings ADE does not name yet; the card renders them as-is. */
+  status?: CodexThreadGoalStatus | (string & {});
   tokensUsed?: number | null;
   timeUsedSeconds?: number | null;
   createdAt?: string | null;

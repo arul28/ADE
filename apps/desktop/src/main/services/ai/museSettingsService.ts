@@ -43,7 +43,7 @@ import {
   type MuseNotification,
 } from "../chat/museSdkHost";
 import { museCredentialEnv } from "./museAuth";
-import { resolveMuseExecutable } from "./museExecutable";
+import { museProviderOverride, resolveMuseExecutable } from "./museExecutable";
 import type { Logger } from "../logging/logger";
 import type {
   MuseComputerUseSettings,
@@ -83,21 +83,59 @@ type SettingsHost = {
   pushedSetup: ComputerUseSetupState | null;
 };
 
+/**
+ * Narrow a `ComputerUseSetupState` from Muse's wire. Its permission and phase
+ * fields are open strings in msp.d.ts (a newer Muse may add a value), so only
+ * their shape is checked. Anything else is not a setup state: null.
+ */
+function parseSetupState(value: unknown): ComputerUseSetupState | null {
+  const row = asRecord(value);
+  const { setup, accessibility, inputMonitoring, screenRecording, message, refused } = row;
+  if (
+    typeof setup !== "string"
+    || typeof accessibility !== "string"
+    || typeof inputMonitoring !== "string"
+    || typeof screenRecording !== "string"
+    || (message !== undefined && typeof message !== "string")
+    || (refused !== undefined && typeof refused !== "string")
+  ) {
+    return null;
+  }
+  return {
+    setup,
+    accessibility,
+    inputMonitoring,
+    screenRecording,
+    ...(message !== undefined ? { message } : {}),
+    ...(refused !== undefined ? { refused } : {}),
+  };
+}
+
 /** Keep the latest computer-use setup state Muse pushed (host-level or session-level). */
 function takeSetupPush(state: SettingsHost, notification: MuseNotification): void {
   if (notification.method !== "computerUseSetup/changed") return;
-  const pushed = asRecord(notification.params.state);
-  if (typeof pushed.setup === "string") state.pushedSetup = pushed as unknown as ComputerUseSetupState;
+  const pushed = parseSetupState(notification.params.state);
+  if (pushed) state.pushedSetup = pushed;
 }
 
 type Entry = {
   key: string;
   started: Promise<SettingsHost>;
+  /** The host once it has started, so the exit hook can end it synchronously. */
+  liveHost: MuseHost | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
   lastUsedAt: number;
 };
 
-export type MuseSettingsServiceOptions = {
+/** Where a Settings call runs: the project, and the ADE version Muse is told about. */
+export type MuseSettingsScope = {
+  projectRoot: string;
+  /** ADE's version: `ADE_CLI_VERSION` (every brain has it), else the desktop's `app.getVersion()`. */
+  clientVersion?: string;
+  logger?: Pick<Logger, "info" | "warn" | "debug"> | null;
+};
+
+type MuseSettingsServiceOptions = {
   workspaceRoot: string;
   clientVersion?: string;
   logger?: Pick<Logger, "info" | "warn" | "debug"> | null;
@@ -109,10 +147,9 @@ let exitHookInstalled = false;
 function installExitHook(): void {
   if (exitHookInstalled) return;
   exitHookInstalled = true;
+  // An exit hook cannot await a graceful close, so end each live host's tree now.
   process.once("exit", () => {
-    for (const entry of entries.values()) {
-      void entry.started.then((state) => state.host.close()).catch(() => undefined);
-    }
+    for (const entry of entries.values()) entry.liveHost?.killNow();
   });
 }
 
@@ -224,6 +261,13 @@ function toSkill(raw: unknown): MuseSettingsSkill {
   };
 }
 
+/** A setup answer, or an error when Muse sent something that is not one. */
+function readSetupState(value: unknown): ComputerUseSetupState {
+  const state = parseSetupState(value);
+  if (!state) throw new Error("Muse answered computer-use setup in a shape ADE does not understand.");
+  return state;
+}
+
 function toSetup(state: ComputerUseSetupState): MuseComputerUseSetup {
   return {
     setup: String(state.setup),
@@ -254,7 +298,7 @@ async function startSettingsHost(options: MuseSettingsServiceOptions): Promise<S
   // The page offers the download itself when the binary is missing.
   const musePath = resolveMuseExecutable({ env }).path;
   if (!musePath) throw new Error("Muse Code is not downloaded on this machine yet. Download it above, then try again.");
-  const provider = process.env.ADE_MUSE_PROVIDER?.trim();
+  const provider = museProviderOverride(baseEnv);
   const host = await startMuseHost({
     musePath,
     cwd: options.workspaceRoot,
@@ -351,7 +395,7 @@ async function readComputerUse(state: SettingsHost): Promise<MuseComputerUseStat
     settingsError = describeMuseError(error);
   }
   try {
-    setup = toSetup(await state.host.request<ComputerUseSetupState>("computerUseSetup/read", setupParams));
+    setup = toSetup(readSetupState(await state.host.request<unknown>("computerUseSetup/read", setupParams)));
   } catch (error) {
     if (isMuseErrorKind(error, "computerUseUnavailable")) return { available: false, reason: describeMuseError(error) };
     if (isMuseErrorKind(error, "capabilityRequired")) {
@@ -464,7 +508,7 @@ async function run(state: SettingsHost, request: MuseSettingsRequest): Promise<M
       if (!state.host.grantedCapabilities.has("computerUseHostSetup")) {
         throw new Error("This Muse host did not grant computer-use setup to ADE, so it cannot check permissions.");
       }
-      const checked = await state.host.request<ComputerUseSetupState>("computerUseSetup/check", {});
+      const checked = readSetupState(await state.host.request<unknown>("computerUseSetup/check", {}));
       const current = await readComputerUse(state);
       if (!current.available) return current;
       return { ...current, setup: toSetup(checked), setupError: null };
@@ -521,7 +565,8 @@ async function hostFor(handleId: string, options: MuseSettingsServiceOptions): P
   if (entry) {
     const state = await entry.started.catch(() => null);
     if (!state || !state.host.alive) {
-      entries.delete(key);
+      // A newer host may have replaced this entry while we awaited; only drop our own.
+      if (entries.get(key) === entry) entries.delete(key);
       entry = undefined;
     }
   }
@@ -529,26 +574,72 @@ async function hostFor(handleId: string, options: MuseSettingsServiceOptions): P
     evictOldest();
     installExitHook();
     const started = startSettingsHost(options);
-    entry = { key, started, idleTimer: null, lastUsedAt: Date.now() };
-    entries.set(key, entry);
-    started.catch(() => {
-      if (entries.get(key)?.started === started) entries.delete(key);
-    });
+    const created: Entry = { key, started, liveHost: null, idleTimer: null, lastUsedAt: Date.now() };
+    entry = created;
+    entries.set(key, created);
+    started.then(
+      (state) => {
+        created.liveHost = state.host;
+      },
+      () => {
+        if (entries.get(key)?.started === started) entries.delete(key);
+      },
+    );
   }
   entry.lastUsedAt = Date.now();
   scheduleIdleClose(entry);
   return await entry.started;
 }
 
+/**
+ * Every request kind Settings may send. The record is keyed by the request
+ * union, so a kind added to `MuseSettingsRequest` fails to compile until it is
+ * listed here.
+ */
+const MUSE_SETTINGS_REQUEST_KINDS: Record<MuseSettingsRequest["kind"], true> = {
+  snapshot: true,
+  computerUse: true,
+  pluginInstall: true,
+  marketplaceAdd: true,
+  marketplaceUpdate: true,
+  marketplaceRemove: true,
+  skillSetActivation: true,
+  skillImport: true,
+  computerUseUpdate: true,
+  computerUseSetupStart: true,
+  computerUseSetupCheck: true,
+  feedback: true,
+};
+
+/**
+ * Narrow an untrusted IPC or action payload to the typed run args. The kind is
+ * checked against the allowlist here; each request's fields are checked where
+ * `run` reads them (`requireText`, `oneOf`).
+ */
+export function parseMuseSettingsRunArgs(raw: unknown): MuseSettingsRunArgs {
+  const record = asRecord(raw);
+  const request = asRecord(record.request);
+  const kind = request.kind;
+  if (typeof kind !== "string" || !Object.hasOwn(MUSE_SETTINGS_REQUEST_KINDS, kind)) {
+    throw new Error(`Unknown Muse settings request: ${String(kind)}`);
+  }
+  return {
+    handleId: requireText(record.handleId, "handleId", 200),
+    request: request as MuseSettingsRequest,
+  };
+}
+
 /** Run one Settings request on this machine's Settings host for `handleId`. */
-export async function runMuseSettings(
+export async function runMuseSettingsFor(
+  scope: MuseSettingsScope,
   args: MuseSettingsRunArgs,
-  options: MuseSettingsServiceOptions,
 ): Promise<MuseSettingsResult> {
-  const handleId = requireText(args?.handleId, "handleId", 200);
-  const request = asRecord(args?.request) as MuseSettingsRequest;
-  const state = await hostFor(handleId, options);
-  return await run(state, request);
+  const state = await hostFor(args.handleId, {
+    workspaceRoot: scope.projectRoot,
+    clientVersion: scope.clientVersion,
+    logger: scope.logger ?? null,
+  });
+  return await run(state, args.request);
 }
 
 /** Close the Settings host for `handleId` (every workspace), if one is open. */

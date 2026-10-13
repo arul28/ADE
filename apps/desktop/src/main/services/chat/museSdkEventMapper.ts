@@ -26,12 +26,17 @@ import type {
   TokenUsage,
   TurnRetryScheduledParams,
 } from "@muse-code/sdk/dist/src/msp.js";
+import { isRecord } from "../shared/utils";
 import { liveContextUsageEvent } from "./liveContextUsageEvent";
+import {
+  isMuseKnownNotification,
+  type MuseNotification,
+} from "./museSdkHost";
 
 type TodoEvent = Extract<AgentChatEvent, { type: "todo_update" }>;
 type DoneUsage = NonNullable<Extract<AgentChatEvent, { type: "done" }>["usage"]>;
 
-export type MuseItemKind = Item["kind"];
+type MuseItemKind = Item["kind"];
 
 export type MuseEventMapperState = {
   /** Kind of every item seen this session (deltas carry only the id). */
@@ -46,13 +51,62 @@ export type MuseEventMapperState = {
   startedItemIds: Set<string>;
   /** Subagent items that already announced themselves. */
   announcedSubagents: Set<string>;
-  /** Latest model completion usage this turn, for the `done` event. */
-  turnUsage: TokenUsage | null;
+  /** This turn's usage, summed over its model completions, in ADE's convention. */
+  turnUsage: MuseTurnUsage | null;
   /** Model that served the latest completion. */
   servedModelId: string | null;
   /** Last context window size Muse reported. */
   contextWindow: number | null;
 };
+
+/**
+ * Token counts in ADE's convention: `inputTokens` is uncached input only, with
+ * cache reads and writes beside it. Muse's raw `inputTokens` follows the
+ * provider's cache convention (`cachedTokens` may sit inside or beside it), so
+ * the uncached part is derived from `promptTokens`, which MSP counts exactly
+ * once (`SessionTokenUsageParams.promptTokens`).
+ */
+export type MuseTurnUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+};
+
+export function museCompletionUsage(params: Pick<SessionTokenUsageParams, "promptTokens" | "usage">): MuseTurnUsage {
+  const raw = params.usage;
+  const cacheReadTokens = raw.cacheReadTokens ?? raw.cachedTokens ?? 0;
+  const cacheWriteTokens = raw.cacheWriteTokens ?? 0;
+  return {
+    inputTokens: Math.max(0, params.promptTokens - cacheReadTokens - cacheWriteTokens),
+    outputTokens: raw.outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    reasoningTokens: raw.reasoningTokens ?? 0,
+  };
+}
+
+/**
+ * A turn's aggregate usage from `turn/completed`, in ADE's convention. That
+ * payload carries no counted-once `promptTokens`, so the provider's input count
+ * stands in for it. The per-completion sum (`session/tokenUsage`) is exact and
+ * stays the primary source whenever Muse reported completions.
+ */
+export function museTurnAggregateUsage(usage: TokenUsage): MuseTurnUsage {
+  return museCompletionUsage({ promptTokens: usage.inputTokens, usage });
+}
+
+export function addUsage(total: MuseTurnUsage | null, next: MuseTurnUsage): MuseTurnUsage {
+  if (!total) return next;
+  return {
+    inputTokens: total.inputTokens + next.inputTokens,
+    outputTokens: total.outputTokens + next.outputTokens,
+    cacheReadTokens: total.cacheReadTokens + next.cacheReadTokens,
+    cacheWriteTokens: total.cacheWriteTokens + next.cacheWriteTokens,
+    reasoningTokens: total.reasoningTokens + next.reasoningTokens,
+  };
+}
 
 export function createMuseEventMapperState(): MuseEventMapperState {
   return {
@@ -73,7 +127,7 @@ export function resetMuseTurnState(state: MuseEventMapperState): void {
   state.turnUsage = null;
 }
 
-export type MuseMapContext = {
+type MuseMapContext = {
   /** The turn ADE is running, used when an item carries none. */
   activeTurnId: string | null;
   cwd: string;
@@ -101,15 +155,15 @@ const EDIT_TOOLS = new Set([
 const READ_TOOLS = new Set(["read_file", "view_image", "list_dir", "file_glob_search", "glob", "grep"]);
 const WEB_TOOLS = new Set(["web_search", "web_fetch"]);
 
-export function isMuseShellTool(tool: string): boolean {
+function isMuseShellTool(tool: string): boolean {
   return SHELL_TOOLS.has(tool);
 }
 
-export function isMuseEditTool(tool: string): boolean {
+function isMuseEditTool(tool: string): boolean {
   return EDIT_TOOLS.has(tool);
 }
 
-export function parseMuseToolArgs(raw: string | undefined): unknown {
+function parseMuseToolArgs(raw: string | undefined): unknown {
   if (!raw) return {};
   try {
     return JSON.parse(raw);
@@ -120,7 +174,7 @@ export function parseMuseToolArgs(raw: string | undefined): unknown {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  return isRecord(value) ? value : null;
 }
 
 function firstString(record: Record<string, unknown> | null, ...keys: string[]): string | null {
@@ -129,18 +183,18 @@ function firstString(record: Record<string, unknown> | null, ...keys: string[]):
     const value = record[key];
     if (typeof value === "string" && value.trim()) return value;
     if (Array.isArray(value) && value.every((part) => typeof part === "string") && value.length) {
-      return (value as string[]).join(" ");
+      return value.join(" ");
     }
   }
   return null;
 }
 
-export function museShellCommandText(args: unknown): string {
+function museShellCommandText(args: unknown): string {
   const record = asRecord(args);
   return firstString(record, "command", "cmd", "script", "commandLine", "argv") ?? JSON.stringify(args ?? {});
 }
 
-export function museEditPath(args: unknown): string | null {
+function museEditPath(args: unknown): string | null {
   return firstString(asRecord(args), "path", "file_path", "filePath", "target", "file");
 }
 
@@ -213,7 +267,7 @@ function mapItemStarted(item: Item, context: MuseMapContext, state: MuseEventMap
           },
         ];
       }
-      if (WEB_TOOLS.has(tool) && tool === "web_search") {
+      if (tool === "web_search") {
         return [{ type: "web_search", query: webSearchQuery(args), itemId, ...(turnId ? { turnId } : {}), status: "running" }];
       }
       const activity = isMuseEditTool(tool)
@@ -288,7 +342,12 @@ function mapItemStarted(item: Item, context: MuseMapContext, state: MuseEventMap
   }
 }
 
-function mapItemCompleted(item: Item, context: MuseMapContext, state: MuseEventMapperState): AgentChatEvent[] {
+/**
+ * The ADE events one completed item produces. Callers that hold a completed
+ * item without a notification (a page of a child session's items) use this
+ * directly; `item/completed` routes here as well.
+ */
+export function mapItemCompleted(item: Item, context: MuseMapContext, state: MuseEventMapperState): AgentChatEvent[] {
   const turnId = itemTurnId(item, context, state);
   const itemId = item.itemId;
   switch (item.kind) {
@@ -508,7 +567,7 @@ function todoStatus(status: string): TodoEvent["items"][number]["status"] {
   return "pending";
 }
 
-export function mapMuseTodoList(params: SessionTodoListChangedParams, turnId: string | null): TodoEvent {
+function mapMuseTodoList(params: SessionTodoListChangedParams, turnId: string | null): TodoEvent {
   return {
     type: "todo_update",
     items: params.items.map((todo, index) => ({
@@ -522,13 +581,13 @@ export function mapMuseTodoList(params: SessionTodoListChangedParams, turnId: st
   };
 }
 
-export function museUsageToDoneUsage(usage: TokenUsage | null | undefined, contextWindow?: number | null): DoneUsage | undefined {
+export function museUsageToDoneUsage(usage: MuseTurnUsage | null | undefined, contextWindow?: number | null): DoneUsage | undefined {
   if (!usage) return undefined;
   return {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
-    cacheReadTokens: usage.cacheReadTokens ?? usage.cachedTokens ?? null,
-    cacheCreationTokens: usage.cacheWriteTokens ?? null,
+    cacheReadTokens: usage.cacheReadTokens,
+    cacheCreationTokens: usage.cacheWriteTokens,
     reasoningTokens: usage.reasoningTokens,
     ...(contextWindow ? { contextWindow } : {}),
   };
@@ -540,20 +599,20 @@ export function museUsageToDoneUsage(usage: TokenUsage | null | undefined, conte
  * nothing here.
  */
 export function mapMuseNotification(
-  method: string,
-  params: Record<string, unknown>,
+  notification: MuseNotification,
   context: MuseMapContext,
   state: MuseEventMapperState,
 ): AgentChatEvent[] {
-  switch (method) {
+  if (!isMuseKnownNotification(notification)) return [];
+  switch (notification.method) {
     case "item/started":
     case "item/updated": {
-      const item = params.item as Item | undefined;
+      const item = notification.params.item;
       if (!item?.itemId) return [];
       state.kindByItemId.set(item.itemId, item.kind);
       if (typeof item.turnId === "string" && item.turnId) state.turnByItemId.set(item.itemId, item.turnId);
       if (item.kind === "toolCall" && item.tool) state.toolByItemId.set(item.itemId, item.tool);
-      if (method === "item/updated" || state.startedItemIds.has(item.itemId)) {
+      if (notification.method === "item/updated" || state.startedItemIds.has(item.itemId)) {
         if ((item.kind === "subagent" || item.kind === "workflow") && item.statusLine) {
           return [{
             type: "subagent_progress",
@@ -569,9 +628,9 @@ export function mapMuseNotification(
       return mapItemStarted(item, context, state);
     }
     case "item/delta":
-      return mapDelta(params as unknown as ItemDeltaParams, context, state);
+      return mapDelta(notification.params, context, state);
     case "item/completed": {
-      const item = params.item as Item | undefined;
+      const item = notification.params.item;
       if (!item?.itemId) return [];
       state.kindByItemId.set(item.itemId, item.kind);
       if (typeof item.turnId === "string" && item.turnId) state.turnByItemId.set(item.itemId, item.turnId);
@@ -580,24 +639,23 @@ export function mapMuseNotification(
       return events;
     }
     case "session/tokenUsage": {
-      const usage = params as unknown as SessionTokenUsageParams;
-      state.turnUsage = usage.usage;
+      const usage: SessionTokenUsageParams = notification.params;
+      const completion = museCompletionUsage(usage);
+      state.turnUsage = addUsage(state.turnUsage, completion);
       if (usage.modelId) state.servedModelId = usage.modelId;
       return [{
         type: "tokens",
         turnId: usage.turnId,
-        inputTokens: usage.usage.inputTokens,
-        outputTokens: usage.usage.outputTokens,
-        ...(usage.usage.cacheReadTokens ?? usage.usage.cachedTokens
-          ? { cacheReadTokens: usage.usage.cacheReadTokens ?? usage.usage.cachedTokens }
-          : {}),
-        ...(usage.usage.cacheWriteTokens ? { cacheWriteTokens: usage.usage.cacheWriteTokens } : {}),
-        ...(usage.usage.reasoningTokens ? { reasoningTokens: usage.usage.reasoningTokens } : {}),
+        inputTokens: completion.inputTokens,
+        outputTokens: completion.outputTokens,
+        ...(completion.cacheReadTokens ? { cacheReadTokens: completion.cacheReadTokens } : {}),
+        ...(completion.cacheWriteTokens ? { cacheWriteTokens: completion.cacheWriteTokens } : {}),
+        ...(completion.reasoningTokens ? { reasoningTokens: completion.reasoningTokens } : {}),
         ...(state.contextWindow ? { contextWindow: state.contextWindow } : {}),
       }];
     }
     case "session/contextUsage": {
-      const usage = params as unknown as SessionContextUsageParams;
+      const usage: SessionContextUsageParams = notification.params;
       if (!usage.windowTokens) return [];
       state.contextWindow = usage.windowTokens;
       return [liveContextUsageEvent({
@@ -608,9 +666,9 @@ export function mapMuseNotification(
       })];
     }
     case "session/todoListChanged":
-      return [mapMuseTodoList(params as unknown as SessionTodoListChangedParams, context.activeTurnId)];
+      return [mapMuseTodoList(notification.params, context.activeTurnId)];
     case "turn/retryScheduled": {
-      const retry = params as unknown as TurnRetryScheduledParams;
+      const retry: TurnRetryScheduledParams = notification.params;
       return [{
         type: "activity",
         activity: "thinking",
@@ -656,10 +714,11 @@ export function mapMuseItemsToTranscript(
       });
       continue;
     }
-    const events = mapMuseNotification("item/completed", { item }, {
+    const events = mapItemCompleted(item, {
       activeTurnId: typeof item.turnId === "string" ? item.turnId : null,
       cwd,
     }, state);
+    state.startedItemIds.add(item.itemId);
     events.forEach((event, index) => {
       const text = event.type === "text" || event.type === "reasoning" ? event.text : undefined;
       rows.push({

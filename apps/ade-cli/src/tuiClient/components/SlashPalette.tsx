@@ -1,3 +1,4 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../../desktop/src/shared/providers";
 import React from "react";
 import { Box, Text } from "ink";
 import type { AgentChatProvider, AgentChatSlashCommand } from "../../../../desktop/src/shared/types/chat";
@@ -51,7 +52,7 @@ const PROVIDER_LABELS: Record<AgentChatProvider, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
-  muse: "Muse",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",

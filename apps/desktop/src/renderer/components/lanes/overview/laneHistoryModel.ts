@@ -1,3 +1,5 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
+
 import type {
   AutoRebaseLaneStatus,
   GitCommitSummary,
@@ -31,7 +33,7 @@ const PROVIDER_NAMES: Record<string, string> = {
   copilot: "Copilot",
   gemini: "Gemini",
   pi: "Pi",
-  muse: "Muse",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",

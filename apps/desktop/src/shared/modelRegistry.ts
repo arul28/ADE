@@ -2309,7 +2309,12 @@ const ACP_MODEL_PROVIDER_GROUPS = ["qwen", "kimi", "grok", "copilot", "devin"] a
  * live list is capped. Muse is not an ACP provider; only the catalog rules are
  * shared, so it is kept out of {@link AcpModelProviderGroup}.
  */
-type LiveModelProviderGroup = AcpModelProviderGroup | "muse";
+export type LiveModelProviderGroup = AcpModelProviderGroup | "muse";
+
+/** True for a provider group whose live list the runtime reports (see {@link LiveModelProviderGroup}). */
+export function isLiveModelProviderGroup(value: string | null | undefined): value is LiveModelProviderGroup {
+  return value === "muse" || isAcpModelProviderGroup(value);
+}
 
 /** Family, route prefix, and brand color for each live-catalog provider group. */
 const ACP_GROUP_METADATA: Record<
@@ -2636,6 +2641,11 @@ export function museModelDescriptorFromCatalogRow(row: MuseModelCatalogRow): Mod
     if (cached != null) descriptor.cacheReadPricePer1M = cached;
   }
   return descriptor;
+}
+
+/** The curated (registry) rows for one model family, deprecated rows left out. */
+export function listCuratedModelDescriptors(family: ProviderFamily): ModelDescriptor[] {
+  return MODEL_REGISTRY.filter((model) => model.family === family && !model.deprecated);
 }
 
 /** Live Muse models the registry does not curate. */
@@ -3371,26 +3381,27 @@ export function resolveChatProviderForDescriptor(
   return { provider, model: getRuntimeModelRefForDescriptor(descriptor, provider) };
 }
 
+/** Providers whose CLI or SDK takes the model's own `providerModelId`, not the ADE `id`. */
+const PROVIDER_MODEL_ID_IS_RUNTIME_REF: ReadonlySet<ModelProviderGroup> = new Set<ModelProviderGroup>([
+  "claude",
+  "codex",
+  "muse",
+  "cursor",
+  "droid",
+  "pi",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+  "devin",
+]);
+
 export function getRuntimeModelRefForDescriptor(
   descriptor: ModelDescriptor,
   providerHint?: ModelProviderGroup,
 ): string {
   const provider = providerHint ?? resolveProviderGroupForModel(descriptor);
-  if (provider === "claude") {
-    return descriptor.providerModelId;
-  }
-  if (
-    provider === "codex"
-    || provider === "muse"
-    || provider === "cursor"
-    || provider === "droid"
-    || provider === "pi"
-    || provider === "qwen"
-    || provider === "kimi"
-    || provider === "grok"
-    || provider === "copilot"
-    || provider === "devin"
-  ) {
+  if (PROVIDER_MODEL_ID_IS_RUNTIME_REF.has(provider)) {
     return descriptor.providerModelId;
   }
   return descriptor.id;
@@ -3408,27 +3419,36 @@ export function classifyWorkerExecutionPath(
   return "api";
 }
 
+/** The family each CLI-wrapped provider's curated rows carry. A row must be CLI-wrapped to belong to it. */
+const CLI_WRAPPED_FAMILY_BY_PROVIDER: Partial<Record<ModelProviderGroup, ProviderFamily>> = {
+  claude: "anthropic",
+  codex: "openai",
+  muse: "muse",
+  droid: "factory",
+  qwen: "qwen",
+  kimi: "moonshot",
+  grok: "xai",
+  copilot: "github-copilot",
+  devin: "devin",
+};
+
+/** Providers whose picker keeps the registry's own order instead of hoisting the default. */
+const REGISTRY_ORDER_PROVIDERS: ReadonlySet<ModelProviderGroup> = new Set<ModelProviderGroup>(["claude", "codex", "muse"]);
+
 function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescriptor[] {
   if (provider === "pi") return getDynamicPiModelDescriptors();
+  const cliFamily = CLI_WRAPPED_FAMILY_BY_PROVIDER[provider];
   const curated = curatedRows().filter((descriptor) => {
     if (descriptor.deprecated) return false;
-    if (provider === "claude") return descriptor.isCliWrapped && descriptor.family === "anthropic";
-    if (provider === "codex") return descriptor.isCliWrapped && descriptor.family === "openai";
-    if (provider === "muse") return descriptor.isCliWrapped && descriptor.family === "muse";
+    if (cliFamily) return descriptor.isCliWrapped && descriptor.family === cliFamily;
     if (provider === "cursor") return descriptor.family === "cursor";
-    if (provider === "droid") return descriptor.isCliWrapped && descriptor.family === "factory";
-    if (provider === "qwen") return descriptor.isCliWrapped && descriptor.family === "qwen";
-    if (provider === "kimi") return descriptor.isCliWrapped && descriptor.family === "moonshot";
-    if (provider === "grok") return descriptor.isCliWrapped && descriptor.family === "xai";
-    if (provider === "copilot") return descriptor.isCliWrapped && descriptor.family === "github-copilot";
-    if (provider === "devin") return descriptor.isCliWrapped && descriptor.family === "devin";
     return !descriptor.isCliWrapped;
   });
   // Curated rows first (with the efforts a live session reported), then the
   // live models the registry does not curate. The replacer folds every live
   // report of a curated model into its curated row, so this cannot duplicate
   // a model.
-  if (isAcpModelProviderGroup(provider) || provider === "muse") {
+  if (isLiveModelProviderGroup(provider)) {
     return [...curated, ...getDynamicAcpModelDescriptors(provider)];
   }
   return curated;
@@ -3633,7 +3653,7 @@ export function listModelDescriptorsForProvider(
   // other, and promoting the default split the picker from Settings. Every other
   // provider still leads with its default, which for most of them is the first
   // curated row anyway.
-  if (provider === "claude" || provider === "codex" || provider === "muse") return models;
+  if (REGISTRY_ORDER_PROVIDERS.has(provider)) return models;
   const preferred = pickDefaultModelForProvider(provider, models);
   if (!preferred) return models;
   return [preferred, ...models.filter((model) => model.id !== preferred.id)];

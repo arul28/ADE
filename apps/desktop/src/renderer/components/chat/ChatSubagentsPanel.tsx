@@ -50,6 +50,7 @@ import type {
   AgentChatSessionStatus,
   ClaudeActiveGoal,
   CodexThreadGoal,
+  CodexThreadGoalStatus,
 } from "../../../shared/types";
 import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
@@ -1166,7 +1167,7 @@ export function ChatSubagentsPanel({
   claudeGoalLocked?: boolean;
   onEditGoal?: (nextObjective: string) => void;
   onClearGoal?: () => void;
-  onSetGoalStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
+  onSetGoalStatus?: (status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">) => void;
   goalPending?: boolean;
   /**
    * The chat's one task list (`shared/chatTaskList.ts`). The host derives it

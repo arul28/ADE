@@ -97,6 +97,7 @@ type ProviderTheme = {
 // Anthropic's canonical sparkle; `◎` is OpenAI's mark for Codex; `⬢`/`✺` map to
 // Cursor/Droid. Keeping these in sync with the picker means a lane's runtime is
 // shown with the same brand glyph everywhere in the TUI.
+import { PROVIDER_DISPLAY_NAME } from "../../../desktop/src/shared/providers";
 const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
   claude: { glyph: "✻", wordmark: "Claude", color: CLAUDE, label: "Claude" },
   codex: { glyph: "◎", wordmark: "Codex", color: CODEX, label: "Codex" },
@@ -104,7 +105,7 @@ const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
   droid: { glyph: "✺", wordmark: "Droid", color: DROID, label: "Droid" },
   opencode: { glyph: "▣", wordmark: "OpenCode", color: OPENCODE, label: "OpenCode" },
   pi: { glyph: "◈", wordmark: "Pi", color: PI, label: "Pi" },
-  muse: { glyph: "◉", wordmark: "Muse", color: MUSE, label: "Muse" },
+  muse: { glyph: "◉", wordmark: "Muse", color: MUSE, label: PROVIDER_DISPLAY_NAME.muse },
   qwen: { glyph: "◇", wordmark: "Qwen", color: QWEN, label: "Qwen" },
   kimi: { glyph: "◐", wordmark: "Kimi", color: KIMI, label: "Kimi" },
   grok: { glyph: "✧", wordmark: "Grok", color: GROK, label: "Grok" },

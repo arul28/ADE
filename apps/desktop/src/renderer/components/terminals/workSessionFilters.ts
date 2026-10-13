@@ -9,6 +9,7 @@
  * Pure by design: the sidebar hands over the session plus the two lane lookups
  * it can answer, so the matching rules are unit-testable without a store.
  */
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
 import { sessionFilingBucket, type SessionFilingBucket } from "../../lib/terminalAttention";
 
@@ -40,7 +41,7 @@ export const WORK_TOOL_FAMILIES: readonly WorkToolFamily[] = [
 const TOOL_FAMILY_LABELS: Record<WorkToolFamily, string> = {
   claude: "Claude",
   codex: "Codex",
-  muse: "Muse",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   cursor: "Cursor",
   droid: "Droid",
   opencode: "OpenCode",

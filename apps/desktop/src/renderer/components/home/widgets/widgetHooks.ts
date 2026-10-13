@@ -1,32 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-
-/**
- * Runs `task` now and then every `intervalMs`, but only while `active` (the
- * widget is on screen and the window is visible). A run never overlaps the
- * previous one: the next wait starts when the last run settles.
- */
-export function usePolling(task: () => Promise<void> | void, intervalMs: number, active: boolean): void {
-  const taskRef = useRef(task);
-  taskRef.current = task;
-  useEffect(() => {
-    if (!active) return undefined;
-    let cancelled = false;
-    let timer: number | null = null;
-    const run = async () => {
-      try {
-        await taskRef.current();
-      } catch {
-        // The widget shows its own error state; a failed run just waits for the next.
-      }
-      if (!cancelled) timer = window.setTimeout(run, intervalMs);
-    };
-    void run();
-    return () => {
-      cancelled = true;
-      if (timer != null) window.clearTimeout(timer);
-    };
-  }, [active, intervalMs]);
-}
+import { useEffect, useState } from "react";
 
 export function formatBytesShort(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";

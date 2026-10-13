@@ -1,4 +1,4 @@
-import type { ShippedProvider } from "./providers";
+import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME, type ShippedProvider } from "./providers";
 
 /**
  * How a user installs and signs in to each CLI-backed provider ADE supports.
@@ -118,13 +118,13 @@ export const PROVIDER_REMEDIATION = {
     docsUrl: "https://github.com/earendil-works/pi",
   },
   muse: {
-    displayName: "Muse Code",
+    displayName: PROVIDER_DISPLAY_NAME.muse,
     // Nothing to install: ADE downloads its own pinned `muse` build into the
     // agent-tools cache and never uses a copy on PATH.
     installCommand: null,
     // Run with ADE's pinned binary in an ADE terminal. A Meta API key
     // (META_API_KEY) is the other way in.
-    loginCommand: "muse login",
+    loginCommand: MUSE_LOGIN_COMMAND,
     docsUrl: "https://dev.meta.ai",
   },
 } as const satisfies Record<ShippedProvider, ProviderRemediation>;

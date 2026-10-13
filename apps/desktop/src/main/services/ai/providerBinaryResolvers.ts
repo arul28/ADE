@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { resolveCodexExecutable } from "./codexExecutable";
 import { resolveDroidExecutable } from "./droidExecutable";
-import { museFetchPending, resolveMuseExecutable } from "./museExecutable";
+import { museBinaryBlocker, resolveMuseExecutable } from "./museExecutable";
 import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
 import { resolvePiInstallation } from "./piInstallation";
 import type { ShippedProvider } from "../../../shared/providers";
@@ -151,15 +151,7 @@ export const DEFAULT_RESOLVERS: Record<ShippedProvider, ProviderBinaryResolver> 
     const userNote = userInstall
       ? ` A separate Muse install was found at ${userInstall}; ADE does not use it.`
       : "";
-    if (resolved.source === "unsupported") {
-      return { path: null, detail: `ADE has no pinned Muse build for this platform.${userNote}` };
-    }
-    return {
-      path: null,
-      detail: museFetchPending(target)
-        ? `ADE's pinned Muse ${resolved.pinnedVersion} has not been downloaded yet.${userNote}`
-        : `ADE's pinned Muse build is not available.${userNote}`,
-    };
+    return { path: null, detail: `${museBinaryBlocker(resolved) ?? ""}${userNote}` };
   },
   /**
    * Cursor is two things wearing one name. The chat runtime is the `@cursor/sdk`

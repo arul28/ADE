@@ -34,7 +34,7 @@ export const EXTERNAL_SESSION_PROVIDER_LABELS: Record<ExternalSessionProvider, s
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
-  muse: "Muse",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",
@@ -232,3 +232,4 @@ export type ExternalSessionImportResult =
   | { kind: "chat"; chatSessionId: string; laneId: string; chatSummary: AgentChatSessionSummary };
 import type { AgentChatSessionSummary } from "./chat";
 import type { TerminalResumeLaunchConfig, TerminalSessionSummary } from "./sessions";
+import { PROVIDER_DISPLAY_NAME } from "../providers";

@@ -169,7 +169,7 @@ import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
 import { claudeConfigHome, codexConfigHome, factoryConfigHome, kimiCodeConfigHome } from "../shared/providerConfigHomes";
 import { checkKimiWindowsPrerequisites } from "../ai/acpExecutables";
-import { ensureMuseBinary, museFetchPending, resolveMuseExecutable } from "../ai/museExecutable";
+import { resolveMuseExecutable, startMuseBinaryFetch } from "../ai/museExecutable";
 import { museCredentialEnv } from "../ai/museAuth";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
@@ -1245,11 +1245,9 @@ function pinnedMuseBinaryPathOrThrow(): string {
   if (resolution.source === "unsupported") {
     throw new Error("Muse Code has no build for this computer, so ADE cannot start it here.");
   }
-  const pending = museFetchPending();
-  void ensureMuseBinary().catch(() => {
-    // Settings > Providers reports fetch failures; the launch error below is enough here.
-  });
-  throw new Error(pending
+  // Settings > Providers reports fetch failures; the launch error below is enough here.
+  startMuseBinaryFetch();
+  throw new Error(resolution.fetchPending
     ? "Muse Code is still downloading. Try again when it finishes (Settings > Providers > Muse Code)."
     : "Muse Code is not installed yet. ADE started downloading it; try again when it finishes (Settings > Providers > Muse Code).");
 }

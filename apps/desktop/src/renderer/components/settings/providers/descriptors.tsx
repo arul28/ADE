@@ -21,9 +21,10 @@ import { ClaudeAuthActions, CodexAuthActions, DroidAuthActions } from "./bodies/
 import { CodexBody } from "./bodies/CodexBody";
 import { CursorAuthActions, cursorOauthSignedIn } from "./bodies/CursorBody";
 import { PiBody } from "./bodies/PiBody";
-import { MuseAuthActions } from "./bodies/MuseBody";
-import { MuseBody } from "./bodies/MuseSettingsBody";
-import { MODEL_REGISTRY, MUSE_DEFAULT_MODEL_ID } from "../../../../shared/modelRegistry";
+import { MuseAuthActions } from "./bodies/MuseAuthActions";
+import { MuseBody } from "./bodies/MuseBody";
+import { MUSE_DEFAULT_MODEL_ID, listCuratedModelDescriptors } from "../../../../shared/modelRegistry";
+import { PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
 import { OpenCodeBody } from "./bodies/OpenCodeBody";
 import { ACP_PROVIDER_DESCRIPTORS } from "./acpProviders";
 import type {
@@ -73,8 +74,7 @@ function descriptorModels(rows: Array<{ id: string; label: string; description?:
 
 /** Muse's curated models from the registry, shown while none are usable yet. */
 function museCuratedModels(): ProviderModelRow[] {
-  return MODEL_REGISTRY
-    .filter((model) => model.family === "muse" && !model.deprecated)
+  return listCuratedModelDescriptors("muse")
     .map((model) => ({ id: model.id, label: model.displayName, isDefault: model.id === MUSE_DEFAULT_MODEL_ID }));
 }
 
@@ -226,12 +226,12 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   },
   {
     id: "muse",
-    label: "Muse Code",
+    label: PROVIDER_DISPLAY_NAME.muse,
     tagline: "Meta's coding agent. ADE runs its own pinned build with your Meta sign-in or a Meta API key.",
     logo: (size) => <MuseLogo size={size} />,
     permissions: { family: "muse", isCliWrapped: true, key: "muse" },
     status: (ctx) => {
-      if (statusProbeFailed(ctx)) return probeFailedView(ctx, "Muse Code");
+      if (statusProbeFailed(ctx)) return probeFailedView(ctx, PROVIDER_DISPLAY_NAME.muse);
       if (ctx.isInitialCheckInFlight) {
         return { ...CHECKING, message: "Checking ADE's Muse build and sign-in." };
       }

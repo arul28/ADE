@@ -38,7 +38,7 @@ import type {
 import type { KeepAwakeService } from "../power/keepAwakeService";
 import type { AgentToolsCacheService } from "../tools/agentToolsCacheService";
 import type { MuseBinaryStatus } from "../../../shared/museBinary";
-import type { MuseSettingsResult, MuseSettingsRunArgs } from "../../../shared/museSettings";
+import type { MuseSettingsResult } from "../../../shared/museSettings";
 import {
   buildGithubReleaseUrl,
   compareUpdateVersions,
@@ -125,6 +125,7 @@ import {
 } from "../projects/projectIconResolver";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import { isAgentChatSubagentControlAction } from "../chat/museSessionSupport";
 import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import {
   claimDraft,
@@ -506,7 +507,6 @@ import type {
   AgentChatStopTaskResult,
   AgentChatMessageSubagentArgs,
   AgentChatMessageSubagentResult,
-  AgentChatControlSubagentArgs,
   AgentChatControlSubagentResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
@@ -5471,14 +5471,17 @@ export function registerIpc({
 
   // The unpinned route for Settings > Muse Code on this machine; a pinned call
   // goes to the owning machine's `ai.museSettings` / `ai.museSettingsClose`.
-  ipcMain.handle(IPC.aiMuseSettings, async (_event, args: MuseSettingsRunArgs): Promise<MuseSettingsResult> => {
-    const { runMuseSettings } = await import("../ai/museSettingsService");
+  ipcMain.handle(IPC.aiMuseSettings, async (_event, args: unknown): Promise<MuseSettingsResult> => {
+    const { runMuseSettingsFor, parseMuseSettingsRunArgs } = await import("../ai/museSettingsService");
     const ctx = getCtx();
-    return runMuseSettings(args, {
-      workspaceRoot: ctx.project.rootPath,
-      logger: ctx.logger,
-      clientVersion: app.getVersion(),
-    });
+    return runMuseSettingsFor(
+      {
+        projectRoot: ctx.project.rootPath,
+        logger: ctx.logger,
+        clientVersion: process.env.ADE_CLI_VERSION?.trim() || app.getVersion(),
+      },
+      parseMuseSettingsRunArgs(args),
+    );
   });
 
   ipcMain.handle(IPC.aiMuseSettingsClose, async (_event, args: { handleId?: string }): Promise<{ ok: true }> => {
@@ -9170,10 +9173,15 @@ export function registerIpc({
     if (!record || typeof record.sessionId !== "string" || typeof record.taskId !== "string" || typeof record.action !== "string") {
       throw new Error("A chat session id, subagent task id and action are required.");
     }
+    // The allowlist lives with the Muse control mapping (`museSubagentControlRequest`),
+    // so this early reject and the service's own refusal agree.
+    if (!isAgentChatSubagentControlAction(record.action)) {
+      throw new Error(`Unknown subagent control action: ${record.action}.`);
+    }
     return await ctx.agentChatService.controlSubagent({
       sessionId: record.sessionId,
       taskId: record.taskId,
-      action: record.action as AgentChatControlSubagentArgs["action"],
+      action: record.action,
       ...(typeof record.childId === "string" ? { childId: record.childId } : {}),
       ...(typeof record.attempt === "number" ? { attempt: record.attempt } : {}),
       ...(typeof record.reason === "string" ? { reason: record.reason } : {}),

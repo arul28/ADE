@@ -1,3 +1,5 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
+
 const KNOWN_PROVIDER_NAMES: Record<string, string> = {
   anthropic: "Anthropic",
   claude: "Claude",
@@ -11,7 +13,7 @@ const KNOWN_PROVIDER_NAMES: Record<string, string> = {
   google: "Google",
   lmstudio: "LM Studio",
   mistral: "Mistral",
-  muse: "Muse",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   ollama: "Ollama",
   opencode: "OpenCode",
   openai: "OpenAI",

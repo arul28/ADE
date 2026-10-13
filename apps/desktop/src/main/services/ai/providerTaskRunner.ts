@@ -35,9 +35,9 @@ import {
   resolveQwenCliModelForLaunch,
 } from "../../../shared/cliLaunch";
 import { resolveCliProviderForModel } from "../../../shared/modelRegistry";
-import { startMuseHost } from "../chat/museSdkHost";
-import { ensureMuseBinary } from "./museExecutable";
-import { museCredentialEnv } from "./museAuth";
+import type { Item } from "@muse-code/sdk/dist/src/msp.js";
+import { isMuseKnownNotification, startPinnedMuseHost } from "../chat/museSdkHost";
+import { addUsage, museCompletionUsage, type MuseTurnUsage } from "../chat/museSdkEventMapper";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -506,38 +506,52 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
 async function runMuseTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const combinedPrompt = args.system?.trim() ? `${args.system.trim()}\n\n${prompt}` : prompt;
-  const baseEnv = { ...userProcessEnv(), ...(args.accountEnv ?? {}) };
-  const env = { ...baseEnv, ...museCredentialEnv(baseEnv) };
-  const musePath = await ensureMuseBinary({ env });
-  const providerOverride = process.env.ADE_MUSE_PROVIDER?.trim();
-  const host = await startMuseHost({
-    musePath,
+  const host = await startPinnedMuseHost({
+    baseEnv: { ...userProcessEnv(), ...(args.accountEnv ?? {}) },
+    noSessionLog: true,
     cwd: args.cwd,
-    env,
-    serveArgs: [...(providerOverride ? ["--provider", providerOverride] : []), "--no-session-log"],
     clientVersion: "ade",
+    userInputDialogs: false,
   });
   try {
-    const readOnly = args.backgroundUtility || args.permissionMode === "read-only";
+    // Nobody watches a one-shot task, so it can never answer an approval or a
+    // question: Muse refuses anything its rules do not already allow, and the
+    // host says it has no question dialogs (`userInputDialogs: false`).
     const started = await host.command<{ session: { sessionId: string } }>("session/start", {
       workspaceRoot: args.cwd,
       modelId: args.descriptor.providerModelId,
-      approvalMode: readOnly ? "denyUnmatched" : "onRequest",
+      approvalMode: "denyUnmatched",
     });
     const sessionId = started.session.sessionId;
     const texts = new Map<string, string>();
-    let usage: { inputTokens?: number; outputTokens?: number } | null = null;
+    // Filled in by the subscription callback below.
+    const tally: { usage: MuseTurnUsage | null } = { usage: null };
     const turnId = host.mintCommandId();
     const completed = new Promise<{ terminal: string; message?: string }>((resolve) => {
-      host.subscribe(sessionId, ({ method, params }) => {
-        const item = params.item as { itemId?: string; kind?: string; text?: string; turnId?: string } | undefined;
-        if (method === "item/completed" && item?.kind === "agentMessage" && item.itemId && item.turnId === turnId) {
-          texts.set(item.itemId, item.text ?? "");
-        } else if (method === "session/tokenUsage" && params.turnId === turnId) {
-          usage = params.usage as typeof usage;
-        } else if (method === "turn/completed" && params.turnId === turnId) {
-          const error = params.error as { message?: string } | undefined;
-          resolve({ terminal: String(params.terminal ?? "completed"), ...(error?.message ? { message: error.message } : {}) });
+      host.subscribe(sessionId, (notification) => {
+        if (!isMuseKnownNotification(notification)) return;
+        switch (notification.method) {
+          case "item/completed": {
+            const item: Item | undefined = notification.params.item;
+            if (item?.kind === "agentMessage" && item.itemId && item.turnId === turnId) {
+              texts.set(item.itemId, item.text ?? "");
+            }
+            return;
+          }
+          case "session/tokenUsage": {
+            if (notification.params.turnId !== turnId) return;
+            // Uncached input from MSP's counted-once `promptTokens`.
+            tally.usage = addUsage(tally.usage, museCompletionUsage(notification.params));
+            return;
+          }
+          case "turn/completed": {
+            if (notification.params.turnId !== turnId) return;
+            const error = notification.params.error;
+            resolve({ terminal: String(notification.params.terminal ?? "completed"), ...(error?.message ? { message: error.message } : {}) });
+            return;
+          }
+          default:
+            return;
         }
       });
       host.onExit(() => resolve({ terminal: "failed", message: host.stderrTail().slice(-4).join("\n") || "Muse stopped." }));
@@ -558,7 +572,7 @@ async function runMuseTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
     if (timer) clearTimeout(timer);
     if (outcome.terminal !== "completed") throw new Error(outcome.message ?? `Muse turn ${outcome.terminal}.`);
     const text = [...texts.values()].join("\n").trim();
-    const counted = usage as { inputTokens?: number; outputTokens?: number } | null;
+    const counted = tally.usage;
     return {
       text,
       structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null,

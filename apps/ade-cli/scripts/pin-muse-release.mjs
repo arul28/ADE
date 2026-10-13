@@ -19,6 +19,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { FILE_PIN_HOST } from "./file-pin-host.mjs";
 
 const packageRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const lockPath = path.join(packageRoot, "package-lock.json");
@@ -126,6 +127,10 @@ for (const [target, artifactKey] of Object.entries(TARGET_ARTIFACTS)) {
   if (!artifact) fail(`${manifestUrl} has no ${artifactKey} artifact for ${target}.`);
   const { url, checksum, size } = artifact;
   if (typeof url !== "string" || !url.startsWith("https://")) fail(`${artifactKey} has no https url.`);
+  // A file pin is only ever Meta's lookaside host (see file-pin-host.mjs).
+  if (new URL(url).hostname !== FILE_PIN_HOST) {
+    fail(`${artifactKey} is served from ${new URL(url).hostname}; a muse pin must be on ${FILE_PIN_HOST}.`);
+  }
   if (typeof checksum !== "string" || !/^[0-9a-fA-F]{64}$/.test(checksum)) fail(`${artifactKey} has no sha256 hex checksum.`);
   if (!Number.isSafeInteger(size) || size <= 0) fail(`${artifactKey} has no byte size.`);
   targets[target] = { artifact: artifactKey, url, sha256: checksum.toLowerCase(), size };

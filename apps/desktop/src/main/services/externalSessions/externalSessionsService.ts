@@ -440,6 +440,13 @@ function metadataForImport(args: {
   } as TerminalResumeMetadata;
 }
 
+/** Display names for providers whose copy is refused; any other provider shows its id. */
+const COPY_REFUSAL_LABELS: Partial<Record<ExternalSessionProvider, string>> = {
+  kimi: "Kimi",
+  copilot: "Copilot",
+  muse: "Muse",
+};
+
 async function forkCommandFor(args: {
   provider: ExternalSessionProvider;
   metadata: TerminalResumeMetadata;
@@ -490,14 +497,7 @@ async function forkCommandFor(args: {
   }
 
   if (args.provider === "cursor") throw new Error("Cursor sessions cannot be forked.");
-  const label = args.provider === "kimi"
-    ? "Kimi"
-    : args.provider === "copilot"
-      ? "Copilot"
-      : args.provider === "muse"
-        ? "Muse"
-        : args.provider;
-  throw new Error(`${label} sessions cannot be copied.`);
+  throw new Error(`${COPY_REFUSAL_LABELS[args.provider] ?? args.provider} sessions cannot be copied.`);
 }
 
 export function createExternalSessionsService(args: ExternalSessionsServiceArgs) {
