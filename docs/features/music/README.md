@@ -230,7 +230,7 @@ development; `ADE_MUSIC_HOST_SHOW=1` shows the player window (with DevTools).
 ## The player host (macOS)
 
 `apps/desktop/native/ADEMusicHostMac/` (Swift package, product
-`ade-music-host`, macOS 13+): an `NSApplication` (accessory, no Dock icon)
+`ade-music-host`): an `NSApplication` (accessory, no Dock icon)
 with one WKWebView in a window that is never shown, so WebKit throttles it like
 a background tab. Same protocol, same arguments (`--gpu` is accepted and
 ignored) and the same `page/` as Windows:
@@ -248,10 +248,15 @@ ignored) and the same `page/` as Windows:
   so Apple's Allow screen shows no ADE icon on macOS. **Never inline it as a
   data URL:** MusicKit copies that link's `href` into the authorize URL as a
   GET query, and the 41 KB URL left Apple's sign-in window blank.
-- **Profile.** macOS 14+: a persistent `WKWebsiteDataStore(forIdentifier:)`
-  whose UUID is derived from `--udf`, so dev and installed builds keep apart;
-  macOS 13 uses the default store. MusicKit's saved user token is deleted by
-  `player.js` exactly as on Windows.
+- **macOS 14 or later.** The binary targets macOS 12, ADE's own minimum, so
+  it launches everywhere ADE does; below 14 it writes
+  `{"event":"hostError","code":"unsupported_os","error":"Apple Music in ADE needs macOS 14 or later."}`
+  and exits 6, because there is no per-profile WebKit store to keep builds'
+  sign-ins apart.
+- **Profile.** A persistent `WKWebsiteDataStore(forIdentifier:)` whose UUID is
+  derived from `--udf`, so dev, installed and test builds never share Apple's
+  sign-in. `--udf` only names the profile; the host writes nothing there.
+  MusicKit's saved user token is deleted by `player.js` exactly as on Windows.
 - **Sign-in.** MusicKit's `window.open` becomes a real WKWebView created from
   WebKit's configuration (so `window.opener` works) with an empty content
   controller (nothing of ADE's runs in Apple's page), in a light-appearance
@@ -265,7 +270,9 @@ ignored) and the same `page/` as Windows:
   dispatch process source). If WebKit's WebContent process dies, the host
   reports `hostError process_failed` and exits, so the next play starts a
   fresh host. WebKit's WebContent, Networking and GPU processes are XPC
-  services and exit with the host.
+  services and exit with the host. Writes to stdout and stderr ignore a closed
+  pipe, so a host whose ADE was killed exits 0 instead of aborting with a crash
+  report.
 - **Memory.** 73-81 MB physical footprint across the host and its three
   WebKit processes, playing or paused (see `docs/perf/macos-baseline.md`).
 
@@ -277,7 +284,9 @@ SwiftPM, folds them with `lipo` and writes `resources/native/ade-music-host/`
 (hardened runtime, the inherited entitlements) and the app is notarized
 whole. The release caches and attests the binary with the other Swift helpers
 (`.github/actions/release-cache-keys`), and `validate-mac-artifacts.mjs`
-checks it is universal and the page is present. `ADE_MUSIC_HOST_PATH`
+checks it is universal and the page is present. The build shares
+`buildUniversalSwiftProduct` (`scripts/native-helper-cache.mjs`) with the
+other Swift helpers. `ADE_MUSIC_HOST_PATH`
 overrides it in development and `ADE_MUSIC_HOST_SHOW=1` shows the player
 window (Web Inspector enabled).
 
@@ -361,4 +370,6 @@ formatMusicTime(seconds)
 - **Resume after unload** restores the queue in its current order with shuffle
   off (re-enabling shuffle in MusicKit would reshuffle) and repeat restored.
 - **Apple rate limits** (429) show as a message; browse results are cached 60 s.
-- **ADE crash:** the host exits on stdin EOF or when the parent pid exits.
+- **ADE crash:** the host exits on stdin EOF or when the parent pid exits
+  (on macOS with code 0 and no crash report, even though its pipes are gone).
+- **macOS 12 or 13:** the host reports `unsupported_os` and exits.

@@ -41,14 +41,20 @@ const firstPlay = (mode) => `(async () => {
     for (let i = 0; i < 50 && (await m.getState()).host.status === "running"; i++) await wait(200);
   }
   const t0 = performance.now();
-  const playing = new Promise((resolve) => {
-    const off = m.onState((s) => {
-      if (s.playback.isPlaying && s.playback.state === "playing") { off(); resolve(performance.now() - t0); }
-    });
+  let resolvePlaying;
+  const playing = new Promise((resolve) => { resolvePlaying = resolve; });
+  const off = m.onState((s) => {
+    if (s.playback.isPlaying && s.playback.state === "playing") resolvePlaying(performance.now() - t0);
   });
-  const result = await m.command({ type: "playItems", ids, index: 0 });
-  const ms = await Promise.race([playing, wait(60000).then(() => -1)]);
-  return { mode: ${JSON.stringify(mode)}, ok: result.ok, error: result.error ?? null, firstPlayingMs: Math.round(ms) };
+  try {
+    const result = await m.command({ type: "playItems", ids, index: 0 });
+    // A refused play never reaches "playing": report it now, not after 60 s.
+    if (!result.ok) return { mode: ${JSON.stringify(mode)}, ok: false, error: result.error ?? null, firstPlayingMs: -1 };
+    const ms = await Promise.race([playing, wait(60000).then(() => -1)]);
+    return { mode: ${JSON.stringify(mode)}, ok: true, error: null, firstPlayingMs: Math.round(ms) };
+  } finally {
+    off();
+  }
 })()`;
 
 const pushes = (secs) => `new Promise((resolve) => {

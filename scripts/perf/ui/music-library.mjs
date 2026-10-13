@@ -87,7 +87,7 @@ const MAIN_INSTALL = `(() => {
 const mainReset = async () => (main ? main.evaluate(MAIN_INSTALL) : null);
 const mainRead = async () => (main ? main.evaluate("JSON.parse(JSON.stringify(globalThis.__musicPerf))") : null);
 
-// In the page: long tasks and mzstatic image requests since the mark.
+// In the page: long tasks since the mark (artwork requests come from the Network domain above).
 const PAGE_MARK = `(() => {
   const w = window;
   w.__mlp?.obs?.disconnect();

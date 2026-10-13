@@ -20,18 +20,24 @@ for p in $(pgrep -f "com.apple.WebKit\.(WebContent|Networking|GPU)"); do
   c=$(ps -o comm= -p "$p")
   procs="$procs ${c##*.}=$p"
 done
-cputime() { ps -o time= -p "$1" | python3 -c "import sys
-s=0
-for x in sys.stdin.read().strip().replace('-',':').split(':'): s=s*60+float(x)
-print(s)"; }
+# CPU seconds of a pid, or nothing when it has exited (WebKit may end one).
+cputime() { ps -o time= -p "$1" 2>/dev/null | python3 -c "import sys
+t=sys.stdin.read().strip()
+if t:
+  s=0
+  for x in t.replace('-',':').split(':'): s=s*60+float(x)
+  print(s)"; }
 before=""
-for kv in $procs; do before="$before $(cputime "${kv#*=}")"; done
+for kv in $procs; do v=$(cputime "${kv#*=}" || true); before="$before ${v:--}"; done
 sleep "$secs"
 set -- $before
 tcpu=0; trss=0; tfoot=0
 for kv in $procs; do
   n=${kv%%=*}; p=${kv#*=}; was=$1; shift
-  now=$(cputime "$p"); rss=$(( $(ps -o rss= -p "$p" | tr -d ' ') / 1024 ))
+  [ "$was" = "-" ] && { echo "$n ($p): exited before the sample, skipped"; continue; }
+  now=$(cputime "$p" || true); rss=$(ps -o rss= -p "$p" 2>/dev/null | tr -d ' ' || true)
+  if [ -z "$now" ] || [ -z "$rss" ]; then echo "$n ($p): exited during the sample, skipped"; continue; fi
+  rss=$(( rss / 1024 ))
   foot=$(footprint -p "$p" 2>/dev/null | python3 -c "import re,sys
 m=re.search(r'Footprint: ([0-9.]+) (KB|MB|GB)', sys.stdin.read())
 print(0 if not m else round(float(m[1])*{'KB':1/1024,'MB':1,'GB':1024}[m[2]],1))")
