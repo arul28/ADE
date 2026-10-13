@@ -1407,6 +1407,66 @@ export function createMultiProjectRpcRequestHandler(
     return null;
   };
 
+  type ProjectRecordForSearch = ReturnType<typeof orderedProjectRecords>[number];
+  type UnloadedProjectSearch =
+    | {
+        status: "searched";
+        items: SearchResultItem[];
+        totalByKind: Partial<Record<SearchDocKind, number>>;
+        truncated: boolean;
+      }
+    /** `entry` is the text listed under projectsUnavailable. */
+    | { status: "unavailable"; entry: string };
+
+  /**
+   * Answers a chat search for one project whose runtime is not loaded, from its
+   * index file. A project with no index yet has no indexed chats, so it is
+   * searched with no hits. A project whose folder is gone, or whose index this
+   * build cannot read, is unavailable; the index is rebuilt when the project is
+   * opened in ADE, and nothing here creates, migrates or deletes it.
+   */
+  const searchUnloadedProjectIndex = (
+    record: ProjectRecordForSearch,
+    query: { query: string; laneId: string | null },
+  ): UnloadedProjectSearch => {
+    if (!fs.existsSync(record.rootPath)) {
+      return { status: "unavailable", entry: record.displayName };
+    }
+    const indexed = querySearchIndexReadOnly({
+      cacheDir: resolveAdeLayout(record.rootPath).cacheDir,
+      query: query.query,
+      kinds: ["chat"],
+      laneId: query.laneId,
+      limit: 200,
+    });
+    if (indexed.status === "unusable") {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its search index is from another ADE version or unreadable; open this project in ADE once to rebuild it)`,
+      };
+    }
+    if (indexed.status === "busy") {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its search index is busy; run the search again)`,
+      };
+    }
+    if (indexed.status === "missing") {
+      return { status: "searched", items: [], totalByKind: {}, truncated: false };
+    }
+    return {
+      status: "searched",
+      items: indexed.results.map((item) => ({
+        ...item,
+        projectId: record.projectId,
+        projectName: record.displayName,
+        projectRoot: record.rootPath,
+      })),
+      totalByKind: indexed.totalByKind,
+      truncated: indexed.truncated,
+    };
+  };
+
   const aggregateProjectSearch = async (args: {
     request: JsonRpcRequest;
     params: Record<string, unknown>;
@@ -1450,36 +1510,23 @@ export function createMultiProjectRpcRequestHandler(
     for (const record of records) {
       const isPreferred = record.projectId === args.preferredProjectId;
       try {
-        // The caller's project and projects that are already loaded answer
-        // through their own search service. Any other project is read from
-        // its index file: loading a whole runtime per registered project is
-        // what froze the brain on a machine with dozens of them.
+        // The caller's project and projects whose runtime is already loaded
+        // answer through their own search service. Every other project is
+        // answered from its index file, so a search never loads a runtime per
+        // registered project and the brain's event loop stays responsive.
         if (!isPreferred && !scopeRegistry.getIfBooted(record.projectId)) {
           await yieldToEventLoop();
-          if (!fs.existsSync(record.rootPath)) {
-            unavailableProjects.push(record.displayName);
-            continue;
-          }
-          const indexed = querySearchIndexReadOnly({
-            cacheDir: resolveAdeLayout(record.rootPath).cacheDir,
+          const unloaded = searchUnloadedProjectIndex(record, {
             query: typeof args.queryArgs.query === "string" ? args.queryArgs.query : "",
-            kinds: ["chat"],
             laneId: typeof args.queryArgs.laneId === "string" ? args.queryArgs.laneId : null,
-            limit: 200,
           });
-          // No index yet means no indexed chats, not a failed project.
-          if (!indexed) {
-            buckets.push([]);
+          if (unloaded.status === "unavailable") {
+            unavailableProjects.push(unloaded.entry);
             continue;
           }
-          resultsTruncated ||= indexed.truncated;
-          buckets.push(indexed.results.map((item) => ({
-            ...item,
-            projectId: record.projectId,
-            projectName: record.displayName,
-            projectRoot: record.rootPath,
-          })));
-          for (const [kind, count] of Object.entries(indexed.totalByKind)) {
+          resultsTruncated ||= unloaded.truncated;
+          buckets.push(unloaded.items);
+          for (const [kind, count] of Object.entries(unloaded.totalByKind)) {
             totals[kind as SearchDocKind] = (totals[kind as SearchDocKind] ?? 0) + count;
           }
           continue;

@@ -2,12 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 
 // Anchor createRequire to a synthetic CJS file so builtin resolution follows
 // the active runtime (same pattern as kvDb.ts).
 const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 const { DatabaseSync } = require("node:sqlite") as {
-  DatabaseSync: new (dbPath: string, options?: { readOnly?: boolean }) => DatabaseSyncType;
+  DatabaseSync: new (dbPath: string) => DatabaseSyncType;
 };
 
 /**
@@ -208,48 +209,51 @@ export function openSearchIndexDb(cacheDir: string): SearchIndexDb {
   };
 }
 
+/** What a read-only open found at a project's index path. */
+export type SearchIndexReadOpen =
+  | { status: "open"; index: SearchIndexDb }
+  /** No index file yet. */
+  | { status: "missing" }
+  /** An index file this build cannot read: another schema version, or it fails to open. */
+  | { status: "unusable" };
+
 /**
- * Open an existing index for reading only, or null when there is none to read.
+ * Open an existing index for reading only.
  *
  * For a caller that does not own the index: a search across projects reads
- * the file of a project whose runtime is not loaded. So unlike
- * `openSearchIndexDb` this never creates, migrates or deletes anything — a
- * missing file, another schema version or an unreadable file is "no index
- * here", and the owning runtime repairs it the next time it loads.
+ * the file of a project whose runtime is not loaded. So this never creates,
+ * migrates or deletes anything. The owning runtime rebuilds an unusable index
+ * the next time the project is opened.
  */
-export function openSearchIndexDbReadOnly(cacheDir: string): SearchIndexDb | null {
+export function openSearchIndexDbReadOnly(cacheDir: string): SearchIndexReadOpen {
   const dbPath = path.join(cacheDir, SEARCH_INDEX_DB_FILENAME);
-  if (!fs.existsSync(dbPath)) return null;
-  let db: DatabaseSyncType | null = null;
+  if (!fs.existsSync(dbPath)) return { status: "missing" };
+  let db: DatabaseSyncType;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
-    // A WAL reader does not wait on the owner's writes; this only bounds the
-    // rare checkpoint or recovery lock, on a thread that must not stall.
-    db.exec("PRAGMA busy_timeout = 250");
-    if (readSchemaVersion(db) !== SEARCH_INDEX_SCHEMA_VERSION) {
-      db.close();
-      return null;
-    }
+    db = openReadOnlyDatabase(dbPath);
   } catch {
-    try {
-      db?.close();
-    } catch {
-      // ignore
-    }
-    return null;
+    return { status: "unusable" };
   }
   const opened = db;
-  return {
-    db: opened,
-    path: dbPath,
-    close: () => {
-      try {
-        opened.close();
-      } catch {
-        // ignore double-close
-      }
+  const close = (): void => {
+    try {
+      opened.close();
+    } catch {
+      // ignore double-close
     }
   };
+  try {
+    // A WAL reader does not wait on the owner's writes; this only bounds the
+    // rare checkpoint or recovery lock, on a thread that must not stall.
+    opened.exec("PRAGMA busy_timeout = 250");
+    if (readSchemaVersion(opened) === SEARCH_INDEX_SCHEMA_VERSION) {
+      return { status: "open", index: { db: opened, path: dbPath, close } };
+    }
+  } catch {
+    // Fall through: a handle that cannot be configured cannot be read.
+  }
+  close();
+  return { status: "unusable" };
 }
 
 /** Drop every row (docs, FTS, cursors) while keeping the schema. */

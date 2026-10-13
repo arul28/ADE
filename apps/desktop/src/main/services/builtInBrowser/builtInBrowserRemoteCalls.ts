@@ -13,23 +13,17 @@ import os from "node:os";
 import path from "node:path";
 import {
   BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILE_BYTES,
+  BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILES,
   isBuiltInBrowserRemoteCallMethod,
+  type BuiltInBrowserRemoteAgentCallOutcome,
   type BuiltInBrowserRemoteCallFile,
 } from "../../../shared/types/builtInBrowserRemote";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
-import { dispatchBuiltInBrowserAgentCall } from "./desktopBridgeServer";
+import { dispatchBuiltInBrowserAgentCall } from "./builtInBrowserAgentDispatch";
 
 /** Every screenshot and element map the browser writes lives under a directory of this name. */
 const OBSERVATION_DIR_SEGMENT = "browser-observations";
-const MAX_FILES_PER_RESULT = 4;
 const MAX_POINTER_DEPTH = 5;
-
-export type BuiltInBrowserRemoteCallOutcome = {
-  result: unknown;
-  files: BuiltInBrowserRemoteCallFile[];
-  /** This computer's name, for the agent to tell the user where the tab is. */
-  machineName: string;
-};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -37,9 +31,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * The `filePath`s in a result that name an observation file on this machine,
- * read and packed. Only files under a `browser-observations` directory travel:
- * a result is the page's own data, and a path it carries must not be able to
- * name any other file on the user's computer.
+ * read and packed. Only a real file inside a `browser-observations` directory
+ * travels, after symlinks are resolved: a result is the page's own data, and a
+ * path it carries must not be able to name any other file on the user's
+ * computer.
  */
 export function packRemoteCallFiles(
   result: unknown,
@@ -49,7 +44,7 @@ export function packRemoteCallFiles(
   const visit = (node: unknown, pointer: string[]): void => {
     if (!isRecord(node) || pointer.length > MAX_POINTER_DEPTH) return;
     for (const [key, value] of Object.entries(node)) {
-      if (files.length >= MAX_FILES_PER_RESULT) return;
+      if (files.length >= BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILES) return;
       if (key === "filePath" && typeof value === "string" && value.trim()) {
         const bytes = isObservationFilePath(value) ? readFile(value) : null;
         if (bytes) {
@@ -75,26 +70,38 @@ function isObservationFilePath(filePath: string): boolean {
 
 function readObservationFile(filePath: string): Buffer | null {
   try {
-    const stat = fs.statSync(filePath);
+    const realPath = fs.realpathSync(filePath);
+    if (!isObservationFilePath(realPath)) return null;
+    const stat = fs.statSync(realPath);
     if (!stat.isFile() || stat.size <= 0 || stat.size > BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILE_BYTES) return null;
-    return fs.readFileSync(filePath);
+    return fs.readFileSync(realPath);
   } catch {
     return null;
   }
 }
 
+/** This computer's name, for the agent to tell the user where the tab is. */
+function machineName(): string {
+  return os.hostname().replace(/\.local$/i, "") || "the user's computer";
+}
+
+/** Run one command for an agent on another machine. A failure is an outcome, never a throw. */
 export async function runRemoteAgentBrowserCall(args: {
   service: BuiltInBrowserService;
   method: string;
   input: Record<string, unknown>;
-}): Promise<BuiltInBrowserRemoteCallOutcome> {
+}): Promise<BuiltInBrowserRemoteAgentCallOutcome> {
   if (!isBuiltInBrowserRemoteCallMethod(args.method)) {
-    throw new Error(`built_in_browser.${args.method} cannot be run for an agent on another machine.`);
+    return {
+      ok: false,
+      error: `built_in_browser.${args.method} cannot be run for an agent on another machine.`,
+      machineName: machineName(),
+    };
   }
-  const result = await dispatchBuiltInBrowserAgentCall(args.service, args.method, args.input);
-  return {
-    result,
-    files: packRemoteCallFiles(result),
-    machineName: os.hostname().replace(/\.local$/i, "") || "the user's computer",
-  };
+  try {
+    const result = await dispatchBuiltInBrowserAgentCall(args.service, args.method, args.input);
+    return { ok: true, result, files: packRemoteCallFiles(result), machineName: machineName() };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error), machineName: machineName() };
+  }
 }

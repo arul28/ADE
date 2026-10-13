@@ -773,7 +773,12 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     could not see and that held none of their tabs, and the agent could only
     answer "I cannot see what you see".
 
-    Two paths carry it, both chosen by `remoteBrowserForwarder.ts#route`:
+    `BUILT_IN_BROWSER_METHOD_ROUTES` (`desktopBridgeMethods.ts`) gives every
+    bridge method one route, and the compiler refuses a method without one:
+    `open`, `user-desktop` (acts on a chat's tab), `local-file` (`upload`,
+    `har`, `record`: a file on the agent's machine) or `agent-machine` (its dev
+    servers, a recording's step caption, the pane's own layout). Two paths
+    carry the first two, both chosen by `remoteBrowserForwarder.ts#route`:
 
     - **Opens** (`navigate`, `createTab`). The agent's own open is sent as a
       command (below) and loads quietly in a background tab the chat owns, as
@@ -784,10 +789,13 @@ relay payload E2E encryption is planned security work. See the trust boundary in
       approval bar up. `showPanel` and `--panel` always take the request path.
     - **Commands** (`built_in_browser_remote_call`, the methods in
       `BUILT_IN_BROWSER_REMOTE_CALL_METHODS`): `observe`, `click`, `fill`,
-      `readText`, `claim`, `getStatus` and the other calls that act on a tab.
-      The daemon publishes the command, addressed to that one desktop. The
-      desktop answers through the `built_in_browser.replyRemoteCall` runtime
-      action twice: `taken` at once, then `done` with the result. A result's
+      `readText`, `claim`, `getStatus`, the element picker, DevTools and the
+      other calls that act on a tab. The daemon publishes the command,
+      addressed to that one desktop, and takes a reply only from that desktop's
+      id. The desktop answers through the `built_in_browser.replyRemoteCall`
+      runtime action twice: `taken` at once, then `done` with the result. A
+      `wait` or a sign-in handoff gets its own time budget
+      (`builtInBrowserRemoteCallDoneTimeoutMs`) on both machines. A result's
       screenshot is a file on the desktop, so its bytes travel in the reply and
       the daemon writes them under `.ade/cache/browser-observations/remote/`
       and points the result at that copy.

@@ -135,7 +135,8 @@ export type BuiltInBrowserTab = {
   emulation: BuiltInBrowserEmulationState | null;
   /**
    * The fixed page size a recording tab is laid out at
-   * (`BUILT_IN_BROWSER_AGENT_VIEWPORT`), or null when the tab follows its box.
+   * (`BUILT_IN_BROWSER_RECORDING_VIEWPORT`), or null when the tab follows its box.
+   * The wire name predates recording-only use and stays for compatibility.
    * The pane letterboxes it exactly like a device preset. Absent on a main
    * process that predates it, which reads as null.
    */
@@ -1380,8 +1381,9 @@ export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH = 960;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT = 600;
 /**
  * A page narrower than this, because the person's pane is, gets a
- * `narrowPageHint` on an agent's observation. It no longer changes the page's
- * size: a tab keeps the size of the pane that showed it.
+ * `narrowPageHint` on an agent's observation. The page keeps
+ * the size of the pane that showed it; the hint tells the agent how to ask
+ * for a desktop layout.
  */
 export const BUILT_IN_BROWSER_NARROW_PAGE_WIDTH = 640;
 
@@ -1394,7 +1396,7 @@ export const BUILT_IN_BROWSER_NARROW_PAGE_WIDTH = 640;
  * scaled to fit whatever box shows it; parked off screen, it is exactly this
  * size at scale 1. Agent-owned tabs are not pinned: they lay out at the pane.
  */
-export const BUILT_IN_BROWSER_AGENT_VIEWPORT: { readonly width: number; readonly height: number } = {
+export const BUILT_IN_BROWSER_RECORDING_VIEWPORT: { readonly width: number; readonly height: number } = {
   width: 1280,
   height: 800,
 };

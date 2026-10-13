@@ -32,11 +32,6 @@ export type BuiltInBrowserRemoteRequest = {
   reuseOwnedTab?: boolean;
 };
 
-export type BuiltInBrowserRemoteRequestEvent = {
-  type: typeof BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT;
-  request: BuiltInBrowserRemoteRequest;
-};
-
 /** Sent back by the desktop that took the request, over the pinned runtime. */
 export type BuiltInBrowserRemoteRequestAck = {
   requestId: string;
@@ -93,7 +88,8 @@ export function isBuiltInBrowserForwardedToDesktop(
 export const BUILT_IN_BROWSER_REMOTE_CALL_EVENT = "built_in_browser_remote_call" as const;
 
 /**
- * The commands a desktop elsewhere runs on an agent's behalf.
+ * The commands a desktop elsewhere runs on an agent's behalf: every command
+ * that acts on one of the chat's tabs.
  *
  * `navigate` and `createTab` are here for the agent's own opens: the page
  * loads in a background tab the chat owns, as it does for a chat on the
@@ -102,8 +98,9 @@ export const BUILT_IN_BROWSER_REMOTE_CALL_EVENT = "built_in_browser_remote_call"
  * approve), and the daemon then sends it down the request path above, which
  * opens the Browser pane. `showPanel` always takes the request path.
  *
- * Not here, because their input or output is a file on one machine:
- * `uploadFile`, `exportHar`, `startRecording` / `stopRecording`.
+ * The daemon's route table (`BUILT_IN_BROWSER_METHOD_ROUTES`) gives every
+ * other bridge method its machine; a method can be sent here only when it is
+ * in this list.
  */
 export const BUILT_IN_BROWSER_REMOTE_CALL_METHODS = [
   "navigate",
@@ -142,6 +139,12 @@ export const BUILT_IN_BROWSER_REMOTE_CALL_METHODS = [
   "hover",
   "drag",
   "selectOption",
+  "startInspect",
+  "stopInspect",
+  "selectPoint",
+  "selectCurrent",
+  "clearSelection",
+  "setDevTools",
 ] as const;
 
 export type BuiltInBrowserRemoteCallMethod = (typeof BUILT_IN_BROWSER_REMOTE_CALL_METHODS)[number];
@@ -151,14 +154,6 @@ const REMOTE_CALL_METHOD_SET = new Set<string>(BUILT_IN_BROWSER_REMOTE_CALL_METH
 export function isBuiltInBrowserRemoteCallMethod(value: unknown): value is BuiltInBrowserRemoteCallMethod {
   return typeof value === "string" && REMOTE_CALL_METHOD_SET.has(value);
 }
-
-/** Commands that read or write a file on the agent's machine, so they stay there. */
-export const BUILT_IN_BROWSER_LOCAL_FILE_METHODS: ReadonlySet<string> = new Set([
-  "uploadFile",
-  "exportHar",
-  "startRecording",
-  "stopRecording",
-]);
 
 /** Emitted by the daemon; taken only by the desktop it names. */
 export type BuiltInBrowserRemoteCall = {
@@ -177,11 +172,6 @@ export type BuiltInBrowserRemoteCall = {
   targetClientId: string;
 };
 
-export type BuiltInBrowserRemoteCallEvent = {
-  type: typeof BUILT_IN_BROWSER_REMOTE_CALL_EVENT;
-  request: BuiltInBrowserRemoteCall;
-};
-
 /**
  * A file a result points at (an observation's screenshot). The path in the
  * result is a path on the desktop, which the agent cannot read, so the bytes
@@ -194,6 +184,28 @@ export type BuiltInBrowserRemoteCallFile = {
   base64: string;
 };
 
+/** How long a desktop that took a command has to answer, when the command sets no time of its own. */
+const REMOTE_CALL_DONE_TIMEOUT_MS = 60_000;
+/** A `wait` or a sign-in handoff runs as long as the agent asked, plus the trip. */
+const REMOTE_CALL_DONE_MARGIN_MS = 15_000;
+const REMOTE_CALL_DONE_MAX_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * The time a taken command has to finish. The daemon waits this long for the
+ * `done` reply, and the desktop's own IPC call gets the same budget, so a long
+ * `wait` or a person's sign-in is not cut off on either side.
+ */
+export function builtInBrowserRemoteCallDoneTimeoutMs(method: string, input: unknown): number {
+  const asked = input && typeof input === "object" ? (input as { timeoutMs?: unknown }).timeoutMs : undefined;
+  if (typeof asked !== "number" || !Number.isFinite(asked) || asked <= 0) {
+    return method === "waitForHandoff" ? REMOTE_CALL_DONE_MAX_TIMEOUT_MS : REMOTE_CALL_DONE_TIMEOUT_MS;
+  }
+  return Math.min(REMOTE_CALL_DONE_MAX_TIMEOUT_MS, Math.max(REMOTE_CALL_DONE_TIMEOUT_MS, asked + REMOTE_CALL_DONE_MARGIN_MS));
+}
+
+/** Files one reply may carry (an observation has a screenshot and an element map). */
+export const BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILES = 4;
+
 /** One screenshot is ~150 KB; a reply is refused past this so it cannot stall the channel. */
 export const BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILE_BYTES = 4 * 1024 * 1024;
 
@@ -201,26 +213,33 @@ export const BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILE_BYTES = 4 * 1024 * 1024;
  * Sent by the desktop over the pinned runtime, twice: `taken` the moment it
  * accepts the command (so a desktop that is gone is noticed in seconds, not
  * after the command's own timeout), then `done` with the outcome.
+ *
+ * `clientId` is the replying desktop's own id; the daemon takes a reply only
+ * from the desktop it sent the command to. `desktopLabel` is the machine name
+ * the desktop's main process reads; the daemon never shows a desktop's word
+ * for itself ("This computer") to an agent on another machine.
  */
-export type BuiltInBrowserRemoteCallReply =
-  | { requestId: string; phase: "taken"; desktopLabel: string }
+export type BuiltInBrowserRemoteCallReplyBody =
+  | { phase: "taken" }
+  | { phase: "done"; desktopLabel?: string; ok: true; result: unknown; files?: BuiltInBrowserRemoteCallFile[] }
   | {
-    requestId: string;
     phase: "done";
-    desktopLabel: string;
-    ok: true;
-    result: unknown;
-    files?: BuiltInBrowserRemoteCallFile[];
-  }
-  | {
-    requestId: string;
-    phase: "done";
-    desktopLabel: string;
+    desktopLabel?: string;
     ok: false;
     error: string;
     /** The desktop can only do this open with its Browser pane on screen. */
     code?: "needs_pane";
   };
+
+export type BuiltInBrowserRemoteCallReply = {
+  requestId: string;
+  clientId: string | null;
+} & BuiltInBrowserRemoteCallReplyBody;
+
+/** What this desktop's main process returns for one command it ran for an agent elsewhere. */
+export type BuiltInBrowserRemoteAgentCallOutcome =
+  | { ok: true; result: unknown; files: BuiltInBrowserRemoteCallFile[]; machineName: string }
+  | { ok: false; error: string; machineName: string };
 
 /**
  * Where a command ran, added to object results so the agent can say it in

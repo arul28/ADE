@@ -195,8 +195,9 @@ change in their pane.
 
 Add `--here` to use the browser on the machine you run on: to test a page on
 this OS, and for `upload`, `har` and `record`, which read or write a file here
-and are refused while your browser is on the user's computer. A tab id belongs
-to one browser, so keep a task in one of them.
+and are refused while your browser is on the user's computer. `--here` needs
+ADE Desktop open on your machine; without it the command fails and tells you
+so. A tab id belongs to one browser, so keep a task in one of them.
 
 To show them a page, use `ade --socket browser open <url> --panel`. Writing
 `http://localhost:<port>` in a reply is fine too: their click opens this

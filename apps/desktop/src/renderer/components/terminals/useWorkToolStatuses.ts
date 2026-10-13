@@ -669,31 +669,33 @@ export function useWorkToolStatuses(args: {
 
   // Keyed on the name, not the pin object: a pin can be rebuilt with the same key.
   const remoteChatMachineName = runtimePin?.kind === "remote" ? machineNameForBinding(runtimePin) : null;
-  const statuses = useMemo<WorkToolStatusMap>(() => ({
-    terminal: terminalStatusLine(terminalTitles, panelShellCount),
-    browser: offline
+  const statuses = useMemo<WorkToolStatusMap>(() => {
+    const browserLine = offline
       ? IDLE
-      : (() => {
-        const line = browserStatusLine(
-          browserStatus,
-          laneId,
-          workToolBrowserErrorCount(browserErrors, browserStatus),
-          devServerPorts,
-        );
-        return remoteChatMachineName ? browserStatusLineForRemoteChat(line, remoteChatMachineName) : line;
-      })(),
-    git: gitStatusLine(lane, laneStatusStale),
-    files: filesStatusLine(lane),
-    ios: offline ? IDLE : iosStatusLine(appleDevice),
-    "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
-    // No `offline ? IDLE` arm: an unreachable machine leaves the last known
-    // answer standing rather than claiming the lane has no screen, and the
-    // hook already stops reading.
-    "mac-desktop": macDesktopStatus,
-    "windows-desktop": macDesktopStatus,
-    pr: prToolStatusLine(prCount),
-    issues: issuesToolStatusLine(openIssueTabCount),
-  }), [
+      : browserStatusLine(
+        browserStatus,
+        laneId,
+        workToolBrowserErrorCount(browserErrors, browserStatus),
+        devServerPorts,
+      );
+    return {
+      terminal: terminalStatusLine(terminalTitles, panelShellCount),
+      browser: !offline && remoteChatMachineName
+        ? browserStatusLineForRemoteChat(browserLine, remoteChatMachineName)
+        : browserLine,
+      git: gitStatusLine(lane, laneStatusStale),
+      files: filesStatusLine(lane),
+      ios: offline ? IDLE : iosStatusLine(appleDevice),
+      "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
+      // No `offline ? IDLE` arm: an unreachable machine leaves the last known
+      // answer standing rather than claiming the lane has no screen, and the
+      // hook already stops reading.
+      "mac-desktop": macDesktopStatus,
+      "windows-desktop": macDesktopStatus,
+      pr: prToolStatusLine(prCount),
+      issues: issuesToolStatusLine(openIssueTabCount),
+    };
+  }, [
     appControlSession,
     macDesktopStatus,
     appleDevice,

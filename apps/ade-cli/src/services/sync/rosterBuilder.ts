@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { fileIdentity } from "../projects/fileIdentity";
@@ -18,18 +17,16 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
+import {
+  hasColumn,
+  hasTable,
+  openReadOnlyDatabase,
+} from "../../../../desktop/src/main/services/projects/readOnlySqlite";
 import type { SyncForeignChatTranscriptResolver } from "./syncHostService";
 
-// Anchor builtin resolution to the active runtime, mirroring kvDb / the cheap
-// cross-project read in recentProjectSummary.ts. The roster opens each
-// project's `.ade/ade.db` read-only with `node:sqlite` — NO cr-sqlite, NO
-// runtime boot — so an all-projects feed never has to activate every project.
-type DatabaseSyncConstructor = new (
-  dbPath: string,
-  options?: { allowExtension?: boolean; readOnly?: boolean },
-) => DatabaseSyncType;
-const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
+// The roster opens each project's `.ade/ade.db` read-only with `node:sqlite`
+// (`openReadOnlyDatabase`) — NO cr-sqlite, NO runtime boot — so an
+// all-projects feed never has to activate every project.
 
 const PREVIEW_MAX_CHARS = 120;
 
@@ -193,35 +190,20 @@ function laneExistsOnDisk(row: LaneRow, projectRoot: string): boolean {
   return candidate ? fs.existsSync(candidate) : false;
 }
 
-function hasTable(db: DatabaseSyncType, tableName: string): boolean {
-  return Boolean(
-    db
-      .prepare("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1")
-      .get<{ present?: number }>(tableName)?.present,
-  );
-}
-
-function hasColumn(db: DatabaseSyncType, tableName: string, columnName: string): boolean {
-  return db
-    .prepare(`pragma table_info(${tableName})`)
-    .all<{ name?: string }>()
-    .some((row) => row.name === columnName);
-}
-
 /**
  * The tool type of one session, read from a project's database on disk, or
  * null when the project has no such session (or no readable database).
  *
- * For asking "does this project own that chat" of a project whose runtime is
- * not loaded. Loading the runtime to ask is what made one transcript read of
- * an unknown chat id load every registered project in turn.
+ * Answers "does this project own that chat" for a project whose runtime is not
+ * loaded, so an unknown chat id is checked against each project's database
+ * without booting a runtime per project.
  */
 export function readSessionToolTypeFromDisk(projectRoot: string, sessionId: string): string | null {
   const dbPath = resolveAdeLayout(projectRoot).dbPath;
   if (!fs.existsSync(dbPath)) return null;
   let db: DatabaseSyncType | null = null;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = openReadOnlyDatabase(dbPath);
     db.exec("PRAGMA busy_timeout = 250");
     if (!hasTable(db, "terminal_sessions")) return null;
     const row = db
@@ -353,7 +335,7 @@ function readProjectFromDiskUncached(
   const empty = emptyDiskProject();
   let db: DatabaseSyncType | null = null;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = openReadOnlyDatabase(dbPath);
     db.exec("PRAGMA busy_timeout = 2000");
     if (!hasTable(db, "lanes")) return empty;
 

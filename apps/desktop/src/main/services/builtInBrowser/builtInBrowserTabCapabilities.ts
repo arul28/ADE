@@ -726,11 +726,11 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         // DevTools and the CDP debugger cannot own the same target, so opening
         // DevTools would silently kill an in-flight network log. Recording is
         // unaffected: it captures through getDisplayMedia, not the debugger.
-        // The agent viewport is ADE's own layout pin, not something the
+        // The recording viewport is ADE's own layout pin, not something the
         // person asked for, so it steps aside rather than refusing: the page
         // lays out at its box while DevTools is open, and the service re-pins
-        // it when DevTools closes (`tabUsesAgentViewport`).
-        if (tab.debuggerHolds.has("agent-viewport")) releaseDebuggerHold(tab, "agent-viewport");
+        // it when DevTools closes (`tabUsesRecordingViewport`).
+        if (tab.debuggerHolds.has("recording-viewport")) releaseDebuggerHold(tab, "recording-viewport");
         if (tab.debuggerHolds.size > 0) {
           const owner = tab.debuggerHolds.has("network") ? "network" : "emulation";
           const fix = owner === "network"

@@ -39,7 +39,7 @@ import {
   BUILT_IN_BROWSER_REMOTE_CALL_EVENT,
   BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
   type BuiltInBrowserRemoteCall,
-  type BuiltInBrowserRemoteCallFile,
+  type BuiltInBrowserRemoteAgentCallOutcome,
   type BuiltInBrowserRemoteCallReply,
   type BuiltInBrowserRemoteRequest,
   type BuiltInBrowserRemoteRequestAck,
@@ -3008,6 +3008,7 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteMacDesktopEventFanout,
   remoteAppControlEventFanout,
   remoteBuiltInBrowserRemoteRequestFanout,
+  remoteBuiltInBrowserRemoteCallFanout,
   remoteWorkToolShowRequestFanout,
   remoteDevServerEventFanout,
 ];
@@ -3720,12 +3721,6 @@ function subscribeRemoteAppControlEvents(
   return remoteAppControlEventFanout.subscribe(cb);
 }
 
-function subscribeRemoteBuiltInBrowserRemoteRequests(
-  cb: (payload: BuiltInBrowserRemoteRequest) => void,
-): () => void {
-  return remoteBuiltInBrowserRemoteRequestFanout.subscribe(cb);
-}
-
 /**
  * `ade ui show` requests. Without a pin: the runtime this window is bound to,
  * local or paired. With a pin: that session's machine, which is only a second
@@ -4136,23 +4131,24 @@ function subscribeBuiltInBrowserEvents(
 }
 
 /**
- * Browser-open requests forwarded from a headless machine this chat is pinned
- * to. Only a remote pin can produce them: a local runtime opens the browser
- * through the desktop bridge socket directly.
+ * A browser event of the machine a chat is pinned to: a forwarded open
+ * (`built_in_browser_remote_request`) or an agent's command
+ * (`built_in_browser_remote_call`). Only a remote pin can produce them: a local
+ * runtime reaches the browser through the desktop bridge socket directly.
  */
-function subscribeBuiltInBrowserRemoteRequests(
-  cb: (payload: BuiltInBrowserRemoteRequest) => void,
+function subscribePinnedBuiltInBrowserEvents<T>(
+  eventType: string,
+  fanout: { subscribe: (cb: (payload: T) => void) => () => void },
+  label: string,
+  cb: (payload: T) => void,
   pin?: OpenProjectBinding | null,
 ): () => void {
   if (pin?.kind !== "remote") return () => {};
   const removePinned = subscribePinnedProjectRuntimeEvents(
     pin,
-    (payload) => toWrappedEvent<BuiltInBrowserRemoteRequest>(
-      payload,
-      BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
-    ),
+    (payload) => toWrappedEvent<T>(payload, eventType),
     cb,
-    "built-in browser remote request",
+    label,
   );
   if (removePinned) return removePinned;
   /*
@@ -4160,35 +4156,37 @@ function subscribeBuiltInBrowserRemoteRequests(
     own runtime, which is the common case, not an edge one.
 
     `subscribePinnedProjectRuntimeEvents` returns null there rather than open a
-    second stream against a runtime the shared pump already polls. Every sibling
-    domain then falls back to its remote fanout; this one had no fanout to fall
-    back to and returned a no-op, so `ade browser open` on the pinned machine
-    was published and never heard by the one desktop that could satisfy it.
+    second stream against a runtime the shared pump already polls. The events
+    then come from the window's remote fanout, which the pump feeds through
+    `REMOTE_RUNTIME_FANOUTS`.
   */
-  return subscribeRemoteBuiltInBrowserRemoteRequests(cb);
+  return fanout.subscribe(cb);
 }
 
-/**
- * Browser commands of an agent on the pinned machine, for this desktop to run
- * in its own browser (`built_in_browser_remote_call`). Same two sources as the
- * open requests above: the pinned stream, or the window's own remote runtime.
- */
+function subscribeBuiltInBrowserRemoteRequests(
+  cb: (payload: BuiltInBrowserRemoteRequest) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  return subscribePinnedBuiltInBrowserEvents(
+    BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
+    remoteBuiltInBrowserRemoteRequestFanout,
+    "built-in browser remote request",
+    cb,
+    pin,
+  );
+}
+
 function subscribeBuiltInBrowserRemoteCalls(
   cb: (payload: BuiltInBrowserRemoteCall) => void,
   pin?: OpenProjectBinding | null,
 ): () => void {
-  if (pin?.kind !== "remote") return () => {};
-  const removePinned = subscribePinnedProjectRuntimeEvents(
-    pin,
-    (payload) => toWrappedEvent<BuiltInBrowserRemoteCall>(
-      payload,
-      BUILT_IN_BROWSER_REMOTE_CALL_EVENT,
-    ),
-    cb,
+  return subscribePinnedBuiltInBrowserEvents(
+    BUILT_IN_BROWSER_REMOTE_CALL_EVENT,
+    remoteBuiltInBrowserRemoteCallFanout,
     "built-in browser remote call",
+    cb,
+    pin,
   );
-  if (removePinned) return removePinned;
-  return remoteBuiltInBrowserRemoteCallFanout.subscribe(cb);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -10234,7 +10232,7 @@ const adeBridge = {
      */
     runRemoteAgentCall: async (
       args: { method: string; input: Record<string, unknown> },
-    ): Promise<{ result: unknown; files: BuiltInBrowserRemoteCallFile[]; machineName: string }> =>
+    ): Promise<BuiltInBrowserRemoteAgentCallOutcome> =>
       clearAround(
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserRunRemoteAgentCall, args),

@@ -30,7 +30,7 @@ import {
   takePendingWorkToolRequest,
 } from "./workToolRequests";
 import { holdRemoteBrowserOpen, remoteBrowserOpenMatchesOwner } from "../../lib/pendingRemoteBrowserOpens";
-import { serveRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
+import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import { registerIssueInPlaceHost, subscribeIssueToolRequests } from "../../lib/issueNavigation";
@@ -1285,20 +1285,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // browser commands from now on, in the browser the user can see. Registered
   // once the chat is in front and kept after the user moves to another chat,
   // because the agent keeps working (`remoteBrowserCallHost`).
-  const servedBrowserChatId = activeWorkSession?.id ?? null;
-  const servedBrowserLaneId = activeWorkSession?.laneId || null;
-  const servedBrowserMachineKey = browserRemoteBinding?.key ?? null;
-  useEffect(() => {
-    if (!active || !servedBrowserChatId || !browserRemoteBinding) return;
-    serveRemoteBrowserCalls(browserRemoteBinding, {
-      chatSessionId: servedBrowserChatId,
-      laneId: servedBrowserLaneId,
-      projectRoot: browserCheckoutRoot ?? null,
-    });
-    // Keyed on the machine's key, not the binding object (it can be rebuilt
-    // with the same key); the latest object is read when the effect runs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, browserCheckoutRoot, servedBrowserChatId, servedBrowserLaneId, servedBrowserMachineKey]);
+  useServeRemoteBrowserCalls({
+    active,
+    binding: browserRemoteBinding,
+    chatSessionId: activeWorkSession?.id ?? null,
+    laneId: activeWorkSession?.laneId || null,
+    projectRoot: browserCheckoutRoot ?? null,
+  });
 
   // "Open this tool" asked for from outside the Work page — the app shell's
   // browser open-request handler, the command palette. Only this page knows the

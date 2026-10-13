@@ -122,11 +122,13 @@ export function createBuiltInBrowserIpcArgParsers(args: {
     }
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     const newTab = record.newTab === true ? true : undefined;
+    const reuseOwnedTab = record.reuseOwnedTab === true ? true : undefined;
     const openPanel = optionalBoolean(record.openPanel);
     return {
       url,
       tabId,
       newTab,
+      reuseOwnedTab,
       openPanel,
       ...parseBuiltInBrowserIsolationArgs(record, channel),
       ...parseBuiltInBrowserClaimArgs(record, channel),

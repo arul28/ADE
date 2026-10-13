@@ -37,7 +37,6 @@ import {
   rankQueryText
 } from "./searchRanking";
 import {
-  FTS_KINDS,
   effectiveSearchKinds,
   queryFtsCandidates,
   type SearchCandidate as Candidate
@@ -917,7 +916,7 @@ export function createSearchService(deps: SearchServiceDeps) {
         return summaries;
       })();
       prSummariesPass = pending;
-      // A failed read is retried by the next PR, as each one used to read alone.
+      // A failed listing clears the shared pass, so the next caller retries it.
       pending.catch(() => {
         if (prSummariesPass === pending) prSummariesPass = null;
       });
@@ -1409,15 +1408,12 @@ export function createSearchService(deps: SearchServiceDeps) {
 
     const scopeChatSessionId = args.callerScope?.chatSessionId?.trim() || null;
     const excludeSessionContent = args.callerScope?.excludeSessionContent === true;
-    const { candidates: ftsCandidates, totals } = queryFtsCandidates(
-      all,
-      parsed,
-      kinds,
+    const { candidates: ftsCandidates, totals } = queryFtsCandidates(all, parsed, kinds, {
       laneId,
-      parsed.sessionId,
+      sessionId: parsed.sessionId,
       scopeChatSessionId,
-      excludeSessionContent
-    );
+      excludeSessionContent,
+    });
 
     const delegated: Candidate[] = [];
     // `session:<id>` is also an exact lookup contract, not merely an FTS

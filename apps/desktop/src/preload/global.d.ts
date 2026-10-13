@@ -93,7 +93,7 @@ import type {
 } from "../shared/types/macDesktop";
 import type {
   BuiltInBrowserRemoteCall,
-  BuiltInBrowserRemoteCallFile,
+  BuiltInBrowserRemoteAgentCallOutcome,
   BuiltInBrowserRemoteCallReply,
   BuiltInBrowserRemoteRequest,
   BuiltInBrowserRemoteRequestAck,
@@ -3577,7 +3577,7 @@ declare global {
          */
         runRemoteAgentCall: (
           args: { method: string; input: Record<string, unknown> },
-        ) => Promise<{ result: unknown; files: BuiltInBrowserRemoteCallFile[]; machineName: string }>;
+        ) => Promise<BuiltInBrowserRemoteAgentCallOutcome>;
         /** Answer a browser command on the pinned runtime that sent it. */
         replyRemoteCall: (
           args: BuiltInBrowserRemoteCallReply,

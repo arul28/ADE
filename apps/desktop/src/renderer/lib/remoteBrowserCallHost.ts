@@ -1,11 +1,11 @@
+import { useEffect, useRef } from "react";
 import type { OpenProjectBinding } from "../../shared/types";
-import { THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { parseLoopbackUrl } from "../../shared/remoteLoopbackUrl";
 import type {
   BuiltInBrowserRemoteCall,
-  BuiltInBrowserRemoteCallReply,
+  BuiltInBrowserRemoteCallReplyBody,
 } from "../../shared/types/builtInBrowserRemote";
-import { isAddressedToThisDesktop } from "./desktopClient";
+import { getDesktopClientId, isAddressedToThisDesktop } from "./desktopClient";
 
 /**
  * This desktop running the browser commands of chats that live on another
@@ -36,6 +36,8 @@ type ServedChat = {
 type ServedMachine = {
   binding: RemoteBinding;
   chats: Map<string, ServedChat>;
+  /** Commands already answered, so a replayed event is not run twice. */
+  handledIds: Set<string>;
   unsubscribe: () => void;
 };
 
@@ -45,7 +47,6 @@ const MAX_CHATS_PER_MACHINE = 24;
 const HANDLED_CAP = 64;
 
 const machines = new Map<string, ServedMachine>();
-const handledIds = new Set<string>();
 
 function browserApi() {
   return typeof window === "undefined" ? null : window.ade?.builtInBrowser ?? null;
@@ -67,8 +68,15 @@ export function remoteBrowserCallNeedsPane(call: Pick<BuiltInBrowserRemoteCall, 
   return Boolean(url && parseLoopbackUrl(url));
 }
 
-async function answer(binding: RemoteBinding, reply: BuiltInBrowserRemoteCallReply): Promise<void> {
-  await browserApi()?.replyRemoteCall?.(reply, binding).catch(() => {});
+/** Keep `id` as the newest entry of `ids`, and drop the oldest past `cap`. */
+function rememberNewest(ids: Set<string>, id: string, cap: number): void {
+  ids.delete(id);
+  ids.add(id);
+  while (ids.size > cap) {
+    const oldest = ids.values().next().value;
+    if (oldest === undefined) break;
+    ids.delete(oldest);
+  }
 }
 
 async function handleCall(machine: ServedMachine, call: BuiltInBrowserRemoteCall): Promise<void> {
@@ -76,63 +84,59 @@ async function handleCall(machine: ServedMachine, call: BuiltInBrowserRemoteCall
   // and so does this one for a chat it has never shown.
   if (!isAddressedToThisDesktop(call.targetClientId)) return;
   const chat = call.chatSessionId ? machine.chats.get(call.chatSessionId) ?? null : null;
-  if (!chat) return;
-  if (handledIds.has(call.requestId)) return;
-  handledIds.add(call.requestId);
-  while (handledIds.size > HANDLED_CAP) {
-    const oldest = handledIds.values().next().value;
-    if (oldest === undefined) break;
-    handledIds.delete(oldest);
-  }
+  if (!chat || !call.requestId || machine.handledIds.has(call.requestId)) return;
   const api = browserApi();
-  if (!api?.runRemoteAgentCall || !api.replyRemoteCall) return;
+  // A surface with only part of the browser API (the web client) runs nothing.
+  if (!api?.runRemoteAgentCall || !api.replyRemoteCall || !api.claimRemoteRequest) return;
+  rememberNewest(machine.handledIds, call.requestId, HANDLED_CAP);
   // Two windows of this desktop can both show the chat; the main process they
-  // share picks one, as it does for a forwarded open.
-  const claimed = await api.claimRemoteRequest?.({ requestId: call.requestId })
-    .then((result) => result?.claimed !== false)
-    .catch(() => true);
-  if (claimed === false) return;
+  // share picks one. When the pick itself fails, this window does not run the
+  // command: a click run twice is worse than one the daemon runs elsewhere.
+  const claimed = await api.claimRemoteRequest({ requestId: call.requestId })
+    .then((result) => result.claimed !== false)
+    .catch(() => false);
+  if (!claimed) return;
 
-  await answer(machine.binding, { requestId: call.requestId, phase: "taken", desktopLabel: THIS_MACHINE_NAME });
+  const reply = (body: BuiltInBrowserRemoteCallReplyBody) =>
+    api.replyRemoteCall({ requestId: call.requestId, clientId: getDesktopClientId(), ...body }, machine.binding)
+      .catch(() => ({ ok: false }));
+
+  // The daemon runs the command on its own machine when "taken" comes too
+  // late. A taken reply it refused means exactly that: run nothing here, or
+  // a click would happen in two browsers.
+  const taken = await reply({ phase: "taken" });
+  if (taken.ok !== true) return;
   if (remoteBrowserCallNeedsPane(call)) {
-    await answer(machine.binding, {
-      requestId: call.requestId,
+    await reply({
       phase: "done",
-      desktopLabel: THIS_MACHINE_NAME,
       ok: false,
       code: "needs_pane",
       error: "This page is on the agent's machine and opens through the Browser pane.",
     });
     return;
   }
-  try {
-    const outcome = await api.runRemoteAgentCall({
-      method: call.method,
-      input: {
-        ...call.input,
-        // Who is calling is the daemon's answer; which tabs is this window's.
-        chatSessionId: chat.chatSessionId,
-        laneId: call.laneId ?? chat.laneId ?? undefined,
-        ...(chat.projectRoot ? { projectRoot: chat.projectRoot } : { tabCollection: "personal" }),
-      },
-    });
-    await answer(machine.binding, {
-      requestId: call.requestId,
+  const outcome = await api.runRemoteAgentCall({
+    method: call.method,
+    input: {
+      ...call.input,
+      // Who is calling is the daemon's answer; which tabs is this window's.
+      chatSessionId: chat.chatSessionId,
+      laneId: call.laneId ?? chat.laneId ?? undefined,
+      ...(chat.projectRoot
+        ? { projectRoot: chat.projectRoot, tabCollection: undefined }
+        : { projectRoot: undefined, tabCollection: "personal" }),
+    },
+  }).catch((error: unknown) => ({ ok: false as const, error: errorText(error), machineName: "" }));
+  const desktopLabel = outcome.machineName || undefined;
+  await reply(outcome.ok
+    ? {
       phase: "done",
-      desktopLabel: outcome.machineName || THIS_MACHINE_NAME,
+      desktopLabel,
       ok: true,
       result: outcome.result,
       ...(outcome.files.length > 0 ? { files: outcome.files } : {}),
-    });
-  } catch (error) {
-    await answer(machine.binding, {
-      requestId: call.requestId,
-      phase: "done",
-      desktopLabel: THIS_MACHINE_NAME,
-      ok: false,
-      error: errorText(error),
-    });
-  }
+    }
+    : { phase: "done", desktopLabel, ok: false, error: outcome.error });
 }
 
 /**
@@ -151,16 +155,16 @@ export function serveRemoteBrowserCalls(
   if (!api?.onRemoteCall) return;
   let machine = machines.get(binding.key) ?? null;
   if (machine) {
-    // Most recently shown last, so the oldest machine is the one dropped.
-    machines.delete(binding.key);
     machine.binding = binding;
   } else {
-    const created: ServedMachine = { binding, chats: new Map(), unsubscribe: () => {} };
+    const created: ServedMachine = { binding, chats: new Map(), handledIds: new Set(), unsubscribe: () => {} };
     created.unsubscribe = api.onRemoteCall((call) => {
       void handleCall(created, call);
     }, binding);
     machine = created;
   }
+  // Most recently shown last, so the oldest machine is the one dropped.
+  machines.delete(binding.key);
   machines.set(binding.key, machine);
   machine.chats.delete(chat.chatSessionId);
   machine.chats.set(chat.chatSessionId, chat);
@@ -175,4 +179,26 @@ export function serveRemoteBrowserCalls(
     machines.get(oldestKey)?.unsubscribe();
     machines.delete(oldestKey);
   }
+}
+
+/**
+ * Serve the agent of the chat in front, when that chat runs on another
+ * machine. Keyed on the machine's key, not the binding object (it can be
+ * rebuilt with the same key); the latest object is read when the effect runs.
+ */
+export function useServeRemoteBrowserCalls(args: {
+  active: boolean;
+  binding: OpenProjectBinding | null | undefined;
+  chatSessionId: string | null;
+  laneId: string | null;
+  projectRoot: string | null;
+}): void {
+  const { active, binding, chatSessionId, laneId, projectRoot } = args;
+  const bindingRef = useRef(binding);
+  bindingRef.current = binding;
+  const machineKey = binding?.kind === "remote" ? binding.key : null;
+  useEffect(() => {
+    if (!active || !chatSessionId || !machineKey) return;
+    serveRemoteBrowserCalls(bindingRef.current, { chatSessionId, laneId, projectRoot });
+  }, [active, chatSessionId, laneId, machineKey, projectRoot]);
 }

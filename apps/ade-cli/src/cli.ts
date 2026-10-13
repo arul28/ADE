@@ -5384,6 +5384,24 @@ export function actionStep(
   return actionCallStep(key, "run_ade_action", { ...toolExtras, domain, action, args });
 }
 
+/**
+ * `step` with `extra` merged into its action's args when it runs an action of
+ * `domain` (the shape `actionStep` builds); any other step comes back as is.
+ */
+function withActionStepArgs(step: InvocationStep, domain: string, extra: JsonObject): InvocationStep {
+  const merge = (params: JsonObject): JsonObject => {
+    const call = isRecord(params.arguments) ? params.arguments : null;
+    if (params.name !== "run_ade_action" || !call || call.domain !== domain) return params;
+    return { ...params, arguments: { ...call, args: { ...(isRecord(call.args) ? call.args : {}), ...extra } } };
+  };
+  const params = step.params;
+  if (params === undefined) return step;
+  return {
+    ...step,
+    params: typeof params === "function" ? (values: JsonObject) => merge(params(values)) : merge(params),
+  };
+}
+
 function accountActionStep(
   key: string,
   action: string,
@@ -8924,7 +8942,9 @@ function buildSearchPlan(args: string[]): CliPlan {
     }
   }
 
-  const query = firstPositional(args) ?? readValue(args, ["--query", "-q"]);
+  // `--query <text>` first: read after the positional, its value was taken as
+  // the query and the bare flag was left behind as an unknown option.
+  const query = readValue(args, ["--query", "-q"]) ?? firstPositional(args);
   if (!query || !query.trim()) {
     throw new CliUsageError(
       'search requires a query, e.g. ade search "login redirect" --text (or --status / --rebuild).',
@@ -15246,26 +15266,9 @@ function buildBrowserPlan(args: string[]): CliPlan {
  */
 function withBrowserOnThisMachine(plan: CliPlan): CliPlan {
   if (plan.kind !== "execute") return plan;
-  const mark = (params: JsonObject): JsonObject => {
-    const call = isRecord(params.arguments) ? params.arguments : null;
-    if (params.name !== "run_ade_action" || !call || call.domain !== "built_in_browser") return params;
-    return {
-      ...params,
-      arguments: { ...call, args: { ...(isRecord(call.args) ? call.args : {}), here: true } },
-    };
-  };
   return {
     ...plan,
-    steps: plan.steps.map((step) => {
-      const params = step.params;
-      if (params === undefined) return step;
-      return {
-        ...step,
-        params: typeof params === "function"
-          ? (values: JsonObject) => mark(params(values))
-          : mark(params),
-      };
-    }),
+    steps: plan.steps.map((step) => withActionStepArgs(step, "built_in_browser", { here: true })),
   };
 }
 
@@ -33560,7 +33563,7 @@ function formatOutput(
 ): string {
   if (options.text) {
     if (isMachineFanOutResult(value)) return `${formatMachineFanOut(value)}\n`;
-    const targetLine = userBrowserTargetLine(value) || builtInBrowserHostLine(value);
+    const targetLine = browserTargetLine(value);
     // Said once, on the first line; not again as a row of the result.
     const shown = targetLine && isRecord(value)
       ? (({ userBrowserTarget: _target, browserHost: _host, ...rest }) => rest)(value)
@@ -33568,6 +33571,11 @@ function formatOutput(
     return `${targetLine}${formatTextOutput(shown, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
+}
+
+/** The first line of a browser command's text output: which browser it ran in, when that needs saying. */
+function browserTargetLine(value: unknown): string {
+  return userBrowserTargetLine(value) || builtInBrowserHostLine(value);
 }
 
 /**
@@ -34111,7 +34119,7 @@ async function runParsedCli(
       const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath);
       return {
         output: parsed.options.text
-          ? `${userBrowserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
+          ? `${browserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
             ["saved", saved.savedPath],
             ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
             ["bytes", saved.bytes],

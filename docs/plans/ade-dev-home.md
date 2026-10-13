@@ -178,8 +178,8 @@ Fixed (2026-10-13): the 2026-10-09 note above did not hold in the code: a tab
 an agent owned was still laid out at 1280x800 while on screen, so every claim,
 release and lease expiry resized the page in front of the person. Ownership no
 longer selects the fixed viewport at all; only a recording does
-(`tabUsesAgentViewport`), and main centres that view itself
-(`agentViewportViewRect`). A pane measuring 0×0 sent a fit scale of 0, which the
+(`tabUsesRecordingViewport`), and main centres that view itself
+(`recordingViewportViewRect`). A pane measuring 0×0 sent a fit scale of 0, which the
 IPC check rejected, dropping the whole bounds update ("scale is below the
 minimum"); the check now accepts 0–1 and the service clamps. A tab also keeps
 the pane's size while parked, however narrow (it used to park at 960x600 under

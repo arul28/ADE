@@ -260,27 +260,30 @@ for chat hits only. Results carry `projectId`, `projectName`, and `projectRoot`;
 personal/no-project chats are excluded. PR/commit/branch/lane/file/terminal and
 other non-chat kinds remain active-project results. `rebuildIndex` is CTO-only.
 
-**A search never loads a project.** The router asks the active project, and any
-project whose runtime is already loaded, through its search service. Every
-other registered project is answered by `querySearchIndexReadOnly`, a read-only
-query of that project's `.ade/cache/search-index.db`. The router hands the
-event loop a turn between projects.
+**A search never loads a project's runtime just to answer.** The router asks the
+active project, and any project whose runtime is already loaded, through its
+search service. Every other registered project is answered by
+`querySearchIndexReadOnly`, a read-only query of that project's
+`.ade/cache/search-index.db`. The router hands the event loop a turn between
+projects, which keeps the brain responsive on a machine with many projects.
 
-- A project with no index file, or an index of another schema version, counts
-  as searched with no hits. Its own runtime builds or rebuilds the index the
-  next time it loads.
+- A project with no index file yet counts as searched with no hits.
+- A project whose index is another schema version, or cannot be opened or read,
+  is listed in `projectsUnavailable` with a note to open that project in ADE
+  once; opening it rebuilds the index. The read path never creates, migrates or
+  deletes an index file.
 - A project whose root folder no longer exists is listed in
   `projectsUnavailable`.
+- A `lane` filter is resolved against that project's own index: a lane id, else
+  an exact lane name, else a lane name containing the value. A project with no
+  matching lane has no hits.
 - An index read from disk is as fresh as the last time that project's runtime
   ran; a project that is not loaded has no chats being written.
 
-Before this, the router loaded every registered project (database, services,
-watchers) to ask each one's search service. On a machine with 37 registered
-projects one `ade search` blocked the brain's event loop past the 30 s watchdog
-and the brain was restarted (2026-10-13). `chat.readTranscript` had the same
-shape: `resolveProjectBackedChatOwner` loaded projects in turn to find a chat's
-owner. It now asks unloaded projects from their database on disk
-(`rosterBuilder.ts#readSessionToolTypeFromDisk`) and loads only the owner.
+`chat.readTranscript` follows the same rule: `resolveProjectBackedChatOwner`
+asks unloaded projects from their database on disk
+(`rosterBuilder.ts#readSessionToolTypeFromDisk`) and loads only the owning
+project.
 
 ### Dual-host known limitation
 

@@ -523,16 +523,14 @@ shows it anyway, and that pulls two contracts into the main process.
   Otherwise the park reuses the tab's last panel rect as-is, however narrow,
   because resizing on the way out and again on the way back would fire real
   `resize` events inside the page; the 960×600 size applies only when the panel
-  never showed the tab. Until 2026-10-13 a pane under 640×400 parked at
-  960×600 to spare agents a strip, and its page was resized each time the pane
-  closed under a working agent and each time it opened again. The page now
-  stays the person's size, and the agent is told instead: an observation of a
+  never showed the tab. The page stays the person's size, and a narrow page
+  is the agent's to handle: an observation of a
   page narrower than `BUILT_IN_BROWSER_NARROW_PAGE_WIDTH` (640), whose width
   is the pane's, carries `narrowPageHint` — why a site may be in its mobile
   layout, and the `ade browser emulate --width 1280 --height 800` / `--off`
   commands for a desktop one. No hint under a device preset or a recording,
   whose width is somebody's explicit choice.
-- **The remembered rect is where the pane stopped** (`notePanelRect`). The
+- **The remembered rect is where the pane stopped** (`createPanelRectSettler`). The
   pane reports every frame of its own open, close and drag, so recording each
   rect kept whichever came last: a closing pane left a 57 px sliver as "the
   size the person chose", and the tab was parked at it. A rect becomes

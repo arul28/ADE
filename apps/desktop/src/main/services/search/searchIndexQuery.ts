@@ -25,7 +25,7 @@ import {
  * loaded by reading its index file directly.
  */
 
-export const FTS_KINDS: readonly SearchDocKind[] = ["chat", "terminal", "pr", "commit", "branch"];
+const FTS_KINDS: readonly SearchDocKind[] = ["chat", "terminal", "pr", "commit", "branch"];
 
 const FTS_CANDIDATE_LIMIT = 400;
 const MATCH_ALL_LIMIT = 200;
@@ -33,7 +33,7 @@ const MATCH_ALL_LIMIT = 200;
 /** Runs one read against an open index; the caller owns the handle. */
 export type SearchIndexAll = <T>(sql: string, params?: Array<string | number | null>) => T[];
 
-export type DocRow = {
+type DocRow = {
   doc_id: string;
   kind: string;
   lane_id: string | null;
@@ -101,15 +101,24 @@ const docRowToCandidate = (row: DocRow, bm25: number, marked: string | null): Se
   };
 };
 
+/** The scope filters a caller applies on top of the query itself. */
+export type FtsScope = {
+  /** A lane id, already resolved; null for every lane. */
+  laneId: string | null;
+  sessionId: string | null;
+  /** Restrict chat and terminal hits to one chat session. */
+  scopeChatSessionId: string | null;
+  /** Drop chat and terminal content, keeping metadata kinds only. */
+  excludeSessionContent: boolean;
+};
+
 export const queryFtsCandidates = (
   all: SearchIndexAll,
   parsed: ParsedSearchQuery,
   kinds: SearchDocKind[],
-  laneId: string | null,
-  sessionId: string | null,
-  scopeChatSessionId: string | null,
-  excludeSessionContent: boolean
+  scope: FtsScope
 ): { candidates: SearchCandidate[]; totals: Partial<Record<SearchDocKind, number>> } => {
+  const { laneId, sessionId, scopeChatSessionId, excludeSessionContent } = scope;
   const ftsKinds = kinds.filter((kind) => FTS_KINDS.includes(kind));
   if (ftsKinds.length === 0) return { candidates: [], totals: {} };
 
@@ -216,25 +225,54 @@ export const queryFtsCandidates = (
   return { candidates: rows.map((row) => docRowToCandidate(row, row.score, row.marked)), totals };
 };
 
-export type SearchIndexReadOnlyResult = {
-  results: SearchResultItem[];
-  totalByKind: Partial<Record<SearchDocKind, number>>;
-  /** More ranked hits exist than `limit` returned. */
-  truncated: boolean;
+/**
+ * Resolve a lane filter against one project's index, in the order the live
+ * service resolves it against the lane list: an exact lane id, else an exact
+ * lane name, else a lane name containing the value (case-insensitive for
+ * names). When several lanes share a name or substring, the lowest lane id
+ * wins. Returns null when no lane in this index matches.
+ */
+const resolveLaneIdInIndex = (all: SearchIndexAll, requested: string): string | null => {
+  if (all<{ found: number }>("SELECT 1 AS found FROM docs WHERE lane_id = ? LIMIT 1", [requested]).length > 0) {
+    return requested;
+  }
+  const namedLanes = all<{ lane_id: string; lane_name: string }>(
+    `SELECT lane_id, lane_name FROM docs
+     WHERE lane_id IS NOT NULL AND lane_name IS NOT NULL
+     GROUP BY lane_id, lane_name
+     ORDER BY lane_id ASC, lane_name ASC`
+  );
+  const needle = requested.toLowerCase();
+  const match =
+    namedLanes.find((lane) => lane.lane_name.toLowerCase() === needle) ??
+    namedLanes.find((lane) => lane.lane_name.toLowerCase().includes(needle));
+  return match?.lane_id ?? null;
 };
+
+export type SearchIndexReadOnlyResult =
+  | {
+      status: "answered";
+      results: SearchResultItem[];
+      totalByKind: Partial<Record<SearchDocKind, number>>;
+      /** More ranked hits exist than `limit` returned. */
+      truncated: boolean;
+    }
+  /** The project has no index yet, so it has no indexed hits. */
+  | { status: "missing" }
+  /** The index exists but this build cannot read it; the owning runtime must rebuild it. */
+  | { status: "unusable" }
+  /** The index opened but the query failed (a writer held it past the busy timeout). */
+  | { status: "busy" };
 
 /**
  * Answer a query from a project's index file, without that project's runtime.
  *
- * A search across projects used to load every registered project (database,
- * services, watchers) to ask each one's search service, and one `ade search`
- * on a machine with dozens of projects stalled the brain past its watchdog.
- * The index is a plain SQLite file, so the indexed kinds are read from it
- * directly. Kinds a runtime resolves live (lanes, files, artifacts, Linear)
- * are not in the file and are not answered here.
- *
- * Returns null when the project has no usable index (see
- * `openSearchIndexDbReadOnly`) or the read fails.
+ * Only the caller's project and projects whose runtime is already loaded are
+ * searched through their runtime. Every other project is answered here,
+ * because loading a runtime per project would stall the brain's event loop
+ * when a machine has many projects. The index is a plain SQLite file, so the indexed kinds are
+ * read from it directly. Kinds a runtime resolves live (lanes, files,
+ * artifacts, Linear) are not in the file and are not answered here.
  */
 export function querySearchIndexReadOnly(args: {
   cacheDir: string;
@@ -243,23 +281,36 @@ export function querySearchIndexReadOnly(args: {
   laneId?: string | null;
   limit: number;
   now?: Date;
-}): SearchIndexReadOnlyResult | null {
-  const index = openSearchIndexDbReadOnly(args.cacheDir);
-  if (!index) return null;
+}): SearchIndexReadOnlyResult {
+  const opened = openSearchIndexDbReadOnly(args.cacheDir);
+  if (opened.status === "missing") return { status: "missing" };
+  if (opened.status === "unusable") return { status: "unusable" };
+  const index = opened.index;
   try {
-    const parsed = parseSearchQuery(args.query ?? "", { now: args.now ?? new Date() });
-    if (parsed.invalidFilters.length > 0) return { results: [], totalByKind: {}, truncated: false };
+    const parsed = parseSearchQuery(args.query, { now: args.now ?? new Date() });
+    const answered = (
+      results: SearchResultItem[],
+      totalByKind: Partial<Record<SearchDocKind, number>>,
+      truncated: boolean
+    ): SearchIndexReadOnlyResult => ({ status: "answered", results, totalByKind, truncated });
+    if (parsed.invalidFilters.length > 0) return answered([], {}, false);
     const kinds = effectiveSearchKinds({ query: args.query, kinds: args.kinds }, parsed);
     const all: SearchIndexAll = <T,>(sql: string, params: Array<string | number | null> = []) =>
       index.db.prepare(sql).all(...params) as T[];
-    // No lane service to resolve a name against: the filter is the id as
-    // given, which is also what the live service falls back to.
-    const laneId = args.laneId?.trim() || parsed.lane || null;
-    const { candidates, totals } = queryFtsCandidates(all, parsed, kinds, laneId, parsed.sessionId, null, false);
+    const requestedLane = args.laneId?.trim() || parsed.lane || null;
+    const laneId = requestedLane ? resolveLaneIdInIndex(all, requestedLane) : null;
+    // A lane this index does not know has no hits here, as in the live service.
+    if (requestedLane && !laneId) return answered([], {}, false);
+    const { candidates, totals } = queryFtsCandidates(all, parsed, kinds, {
+      laneId,
+      sessionId: parsed.sessionId,
+      scopeChatSessionId: null,
+      excludeSessionContent: false,
+    });
     const ranked = rankCandidates(candidates, parsed);
     const limit = Math.max(1, Math.floor(args.limit));
-    return {
-      results: ranked.slice(0, limit).map((candidate) => ({
+    return answered(
+      ranked.slice(0, limit).map((candidate) => ({
         kind: candidate.kind,
         id: candidate.docId,
         title: candidate.title,
@@ -271,11 +322,13 @@ export function querySearchIndexReadOnly(args: {
         deepLink: candidate.deepLink,
         updatedAt: candidate.updatedAt
       })),
-      totalByKind: totals,
-      truncated: ranked.length > limit
-    };
+      totals,
+      ranked.length > limit
+    );
   } catch {
-    return null;
+    // The index opened with this build's schema, so a failed read is most
+    // likely its own runtime writing to it: worth another try, not a rebuild.
+    return { status: "busy" };
   } finally {
     index.close();
   }
