@@ -28,8 +28,7 @@ import {
   joinAdeAgentSkillRoots,
 } from "./agentSkillRoots";
 import {
-  buildAdeCliAgentGuidance,
-  buildAdeCliInlineGuidance,
+  buildAdeCliSessionGuidance,
   buildAdePosixTrackedCliActivityGuidance,
   buildAdeWindowsTrackedCliActivityGuidance,
 } from "./adeCliGuidance";
@@ -871,7 +870,7 @@ function workTabCliPreamblePrompt(
   return [
     launchInstruction,
     "",
-    buildAdeCliInlineGuidance(skillRoots),
+    buildAdeCliSessionGuidance(skillRoots),
   ].join("\n");
 }
 
@@ -1071,7 +1070,7 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     commandArgs.push(...claudeRuntimeEffortFlags(args.reasoningEffort));
     commandArgs.push(...claudeSessionSettingsFlags(args.fastMode, args.reasoningEffort));
-    const guidance = [buildAdeCliAgentGuidance(skillRoots), activityGuidance]
+    const guidance = [buildAdeCliSessionGuidance(skillRoots), activityGuidance]
       .filter((part): part is string => Boolean(part))
       .join("\n\n");
     commandArgs.push("--append-system-prompt", guidance);
@@ -1211,7 +1210,7 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "pi") {
     const guidance = [
-      buildAdeCliAgentGuidance(skillRoots),
+      buildAdeCliSessionGuidance(skillRoots),
       activityGuidance,
       `ADE permission policy for this Pi session: ${permissionMode}. Pi has no supported native ADE permission flag, so follow this policy and the ADE guidance without bypassing it.`,
     ].filter((part): part is string => Boolean(part)).join("\n\n");
@@ -1247,7 +1246,7 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     commandArgs.push(...qwenModelFlags(modelForLaunch));
     commandArgs.push(...permissionModeToQwenFlags(permissionMode));
-    commandArgs.push("--append-system-prompt", buildAdeCliAgentGuidance(skillRoots));
+    commandArgs.push("--append-system-prompt", buildAdeCliSessionGuidance(skillRoots));
     // `qwen` is an npm bin, so on Windows it resolves to a `.cmd` shim and the
     // prompt goes through `cmd.exe`, which expands `%NAME%`, flattens newlines,
     // and caps the command line at ~8191 characters. Same rule as Claude:
@@ -1305,7 +1304,7 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push(...grokModelFlags(modelForLaunch));
     commandArgs.push(...grokReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToGrokFlags(permissionMode));
-    commandArgs.push("--rules", buildAdeCliAgentGuidance(skillRoots));
+    commandArgs.push("--rules", buildAdeCliSessionGuidance(skillRoots));
     const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
     if (initialPrompt && promptRidesInArgv) {
       commandArgs.push(initialPrompt);
