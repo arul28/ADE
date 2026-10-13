@@ -6499,6 +6499,9 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.continueUsageLimitOnAlternate",
         // Switching accounts changes which login pays for the next turn.
         "chat.switchAccount",
+        // An MCP App request runs a tool or reads a resource on the host, so a
+        // read-only viewer never sends one.
+        "chat.mcpAppRequest",
         // Cursor Cloud writes are controller-only: phone/browser controllers
         // may invoke them, but a desktop viewer must not.
         "ai.createCursorCloudRun",
@@ -6531,6 +6534,7 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.returnControl",
         "macDesktop.renewLease",
         "macDesktop.input",
+        "chat.mcpAppRequest",
       ]);
 
       // Provider-account changes, and a running sign-in's status, are for a

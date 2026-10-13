@@ -162,7 +162,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "listLaunches", "listScheduledWork", "getScheduledWorkState", "listInterruptedChats",
       "listClaudePlugins", "listCodexPlugins", "listClaudeSessions", "listSessions",
       "listCliChildSessions", "listSubagents", "listDrafts", "getDraft", "listThreadComments",
-      "getClaudePluginUi",
+      "getClaudePluginUi", "getMcpApp", "listMcpAppGrants",
       "modelCatalog", "codexFuzzyFileSearch", "fileSearch", "listMentionSuggestions",
       "preflightCrossMachineDestination", "getCrossMachineHandoffOptions",
       "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSourceFavicons",
@@ -192,7 +192,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",
       "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused", "steer",
       "unarchiveSession", "updateSession", "regenerateSessionMetadata", "setSpawnKind",
-      "dismissSubagentTakeoverPrompt", "warmupModel",
+      "dismissSubagentTakeoverPrompt", "warmupModel", "mcpAppRequest", "revokeMcpAppGrant",
     ],
   },
   keybindings: {
