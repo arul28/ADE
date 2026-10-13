@@ -56,13 +56,9 @@ final class WorkSceneChatBridge {
   }
 
   /// The reader's message that follows the scene's message, when there is one.
-  /// Desktop counts only a message the reader wrote (`isReaderAuthoredMessage`).
-  /// Here two of the messages ADE writes for the user never arrive as a user
-  /// message, so they are skipped already: a child's completion, and a PR
-  /// watch wake that carries a card. The others (a board move, a scheduled
-  /// wake, a relay, a host continuation, a usage-limit resume) are decoded as
-  /// plain user messages with their marker dropped (`AgentChatEvent.init`), so
-  /// this still takes one of those for the reader's answer.
+  /// Only a message the reader wrote counts, the same as desktop
+  /// (`isReaderAuthoredMessage`): a message ADE wrote for the user (a wake, a
+  /// relay, a continuation, a resume) carries `writtenByAde` and is skipped.
   func answeredText(afterMessageId messageId: String) -> String? {
     let entries = timeline()
     guard let index = entries.firstIndex(where: { entry in
@@ -71,7 +67,8 @@ final class WorkSceneChatBridge {
     }) else { return nil }
     for entry in entries[entries.index(after: index)...] {
       if case .message(let message) = entry.payload,
-         message.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "user" {
+         message.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "user",
+         !message.writtenByAde {
         return message.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
       }
     }

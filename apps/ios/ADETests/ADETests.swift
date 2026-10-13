@@ -20673,6 +20673,40 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(workIsSceneFenceLanguage(""))
   }
 
+  /// Desktop `isReaderAuthoredMessage`: a message ADE wrote for the user (a
+  /// wake, a continuation) does not answer a scene. Only the reader's does.
+  @MainActor
+  func testSceneIsAnsweredOnlyByAMessageTheReaderWrote() throws {
+    let scene = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"text","text":"Pick one.","turnId":"turn-1","itemId":"item-1"}}"#
+    let wake = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"user_message","text":"Scheduled check.","turnId":"turn-2","metadata":{"scheduledWake":{"id":"w1"}}}}"#
+    let continuation = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"user_message","text":"Continue.","turnId":"turn-3","metadata":{"hostContinuation":true}}}"#
+    let reader = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"user_message","text":"Option A","turnId":"turn-4","metadata":{"usageLimitResume":null}}}"#
+
+    func answer(_ envelopes: [WorkChatEnvelope]) -> String? {
+      let messages = buildWorkChatMessages(from: envelopes)
+      let bridge = WorkSceneChatBridge()
+      bridge.timeline = {
+        messages.enumerated().map { index, message in
+          WorkTimelineEntry(id: message.id, timestamp: message.timestamp, rank: index, payload: .message(message))
+        }
+      }
+      guard let sceneMessage = messages.first(where: { $0.role != "user" }) else { return nil }
+      return bridge.answeredText(afterMessageId: sceneMessage.id)
+    }
+
+    // The stored transcript path.
+    XCTAssertNil(answer(parseWorkChatTranscript([scene, wake, continuation].joined(separator: "\n"))))
+    XCTAssertEqual(answer(parseWorkChatTranscript([scene, wake, continuation, reader].joined(separator: "\n"))), "Option A")
+
+    // The live sync path.
+    let decoder = JSONDecoder()
+    func synced(_ lines: [String]) throws -> [WorkChatEnvelope] {
+      try lines.map { makeWorkChatEnvelope(from: try decoder.decode(AgentChatEventEnvelope.self, from: Data($0.utf8))) }
+    }
+    XCTAssertNil(answer(try synced([scene, wake, continuation])))
+    XCTAssertEqual(answer(try synced([scene, wake, continuation, reader])), "Option A")
+  }
+
   func testParseWorkChatTranscriptUsesDeterministicFallbackItemIds() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"tool_call","tool":"functions.Read","args":{"path":"README.md"},"turnId":"turn-1"}}
