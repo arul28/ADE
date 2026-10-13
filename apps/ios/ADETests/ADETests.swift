@@ -3829,6 +3829,58 @@ final class ADETests: XCTestCase {
   /// connects it again: Settings lists it as available (with Connect), not as
   /// a primary that cannot be reached, and a machine the user connects next
   /// becomes primary instead of a fleet machine beside nothing.
+  /// Bonjour resolves the same machine with and without its IPv6 addresses
+  /// from one browse to the next. A resolution that only drops addresses the
+  /// profile holds keeps the fuller list (re-saving on every flip froze the
+  /// main thread); one that brings a new address replaces it.
+  @MainActor
+  func testDiscoveryKeepsFullerLanRoutesWhenAResolutionOnlyDropsAddresses() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let studio = HostConnectionProfile(
+      hostIdentity: "studio-id",
+      hostName: "Mac Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "studio-id",
+      lastSuccessfulAddress: "192.168.1.113",
+      savedAddressCandidates: ["192.168.1.113"],
+      discoveredLanAddresses: ["192.168.1.113"],
+      tailscaleAddress: nil
+    )
+    service.installSavedProfileForTesting(studio, token: "studio-secret", makeActive: true)
+    func resolution(_ addresses: [String]) -> DiscoveredSyncHost {
+      DiscoveredSyncHost(
+        id: "studio-id",
+        serviceName: "ADE Sync studio 8787",
+        hostName: "Mac Studio",
+        hostIdentity: "studio-id",
+        port: 8787,
+        addresses: addresses,
+        tailscaleAddress: nil,
+        runtimeKind: "daemon",
+        runtimeVersion: "1.0.0",
+        projectIds: [],
+        projectNames: [],
+        projectCount: 0,
+        lastResolvedAt: "2026-05-10T10:00:00.000Z"
+      )
+    }
+    let full = ["192.168.1.113", "2605:a601::2"]
+
+    service.applyDiscoveredHostsForTesting([resolution(full)])
+    XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, full)
+
+    service.applyDiscoveredHostsForTesting([resolution(["192.168.1.113"])])
+    XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, full, "A dropped IPv6 address is resolver noise at first.")
+
+    service.applyDiscoveredHostsForTesting([resolution(["10.0.0.9"])])
+    XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, ["10.0.0.9"], "A new address is a move, not noise.")
+  }
+
   @MainActor
   func testUserDisconnectedPrimaryListsAsAvailable() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -8928,6 +8980,58 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  /// The machine's project id for a checkout the phone has cached under its
+  /// own id: once adopted, a plain catalog refresh (the one every changeset
+  /// runs) must keep it. Mapping it back re-keyed the project on every
+  /// connect, and each flip cancelled the hydration in flight.
+  @MainActor
+  func testSyncServiceKeepsAdoptedRemoteProjectIdAcrossCatalogRefreshes() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
+    UserDefaults.standard.set("cached-project", forKey: activeProjectIdKey)
+    UserDefaults.standard.set("/tmp/project-two", forKey: activeProjectRootPathKey)
+    UserDefaults.standard.set("host-1", forKey: activeProjectHostIdentityKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+    }
+
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('cached-project', '/tmp/project-two', 'Project Two', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    XCTAssertEqual(service.activeProjectId, "cached-project")
+
+    service.seedRemoteProjectCatalogForTesting([
+      MobileProjectSummary(
+        id: "runtime-project",
+        displayName: "Project Two",
+        rootPath: "/tmp/project-two",
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T02:00:00.000Z",
+        laneCount: 3,
+        isAvailable: true,
+        isCached: false
+      ),
+    ])
+    XCTAssertEqual(service.activeProjectId, "runtime-project")
+
+    service.refreshProjectCatalog()
+    service.refreshProjectCatalog()
+
+    XCTAssertEqual(service.activeProjectId, "runtime-project")
+    XCTAssertEqual(service.activeProjectRootPath, "/tmp/project-two")
+    XCTAssertEqual(service.projects.filter { $0.rootPath == "/tmp/project-two" }.map(\.id), ["runtime-project"])
+
+    database.close()
+  }
+
   @MainActor
   func testSyncServiceSeedsRuntimeProjectRowBeforeHydration() throws {
     let activeProjectIdKey = "ade.sync.activeProjectId"
@@ -13280,15 +13384,22 @@ final class ADETests: XCTestCase {
       ),
     ]
 
-    XCTAssertEqual(laneScopeCount(snapshots, scope: .active), 3)
-    XCTAssertEqual(laneScopeCount(snapshots, scope: .archived), 1)
-    XCTAssertEqual(laneRuntimeCount(snapshots, filter: .running), 2)
-    XCTAssertEqual(laneRuntimeCount(snapshots, filter: .awaitingInput), 1)
+    // The Lanes chips: each filter's lanes. An archived lane with a running
+    // chat is Archived only, never Running.
+    let expectedByFilter: [(LaneQuickFilter, [String])] = [
+      (.active, ["lane-primary", "lane-attached-active", "lane-worktree"]),
+      (.running, ["lane-primary"]),
+      (.attention, ["lane-worktree"]),
+      (.dirty, ["lane-attached-active"]),
+      (.archived, ["lane-archived"]),
+    ]
+    for (filter, expectedIds) in expectedByFilter {
+      XCTAssertEqual(snapshots.filter(filter.matches).map(\.lane.id), expectedIds, "\(filter)")
+    }
 
     let activeFiltered = laneListFilteredSnapshots(
       snapshots,
       scope: .active,
-      runtimeFilter: .all,
       searchText: "",
       pinnedLaneIds: ["lane-worktree"]
     )
@@ -13308,11 +13419,6 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "is:unknown"))
     XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "type:attached"))
 
-    XCTAssertEqual(laneListEmptyStateTitle(scope: .active), "No active lanes")
-    XCTAssertEqual(
-      laneListEmptyStateMessage(scope: .all, searchText: "auth", hasFilters: true),
-      "Try a different search or clear the filter."
-    )
   }
 
   func testLaneDeleteDependencyBatchesKeepAncestorsAfterSelectedDescendants() {
