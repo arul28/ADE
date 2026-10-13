@@ -4638,6 +4638,10 @@ final class SyncService: ObservableObject {
   private var reconnectConnectInFlight = false
   private var reconnectConnectInFlightGeneration: UInt64?
   private var bonjourDiscoveredHosts: [DiscoveredSyncHost] = []
+  /// When discovery first resolved a machine with fewer LAN addresses than its
+  /// profile holds, by profile key. See `profileByApplyingDiscoveredRoutes`.
+  private var discoveredLanShrinkFirstSeen: [String: Date] = [:]
+  private static let discoveredLanShrinkGrace: TimeInterval = 120
   private var tailnetDiscoveredHosts: [DiscoveredSyncHost] = []
   private var lastNetworkPathSnapshot: SyncNetworkPathSnapshot?
   /// Single-flight over relay `/connect` dials, keyed by machine.
@@ -10198,18 +10202,7 @@ final class SyncService: ObservableObject {
           connectionGeneration == scope.connectionGeneration,
           normalizedProjectId(activeProjectId) == scope.projectId,
           normalizedProjectRoot(activeProjectRootPath) == scope.rootPath
-    else {
-      if ScrollDiagnostics.shared.isRunning {
-      ScrollDiagnostics.shared.event("hydration.scopeCancelled", [
-        "taskCancelled": Task.isCancelled,
-        "selectionGen": "\(scope.projectSelectionGeneration)->\(projectSelectionGeneration)",
-        "connectionGen": "\(scope.connectionGeneration)->\(connectionGeneration)",
-        "project": normalizedProjectId(activeProjectId) == scope.projectId,
-        "root": "\(scope.rootPath ?? "nil")->\(normalizedProjectRoot(activeProjectRootPath) ?? "nil")",
-      ])
-      }
-      throw CancellationError()
-    }
+    else { throw CancellationError() }
   }
 
   func ensureCtoSession() async throws -> AgentChatSessionSummary {
@@ -18964,12 +18957,24 @@ final class SyncService: ObservableObject {
     var liveLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
     // Bonjour resolves the same machine with and without its IPv6 addresses
     // from one browse to the next. A resolution that only drops addresses we
-    // already hold is that noise, not a move: keep the fuller list. Otherwise
-    // the profile flipped on every browse and each flip re-saved it (~46 ms on
-    // the main thread) and republished it to every screen.
-    if !liveLanAddresses.isEmpty,
-       Set(liveLanAddresses).isSubset(of: Set(profile.discoveredLanAddresses)) {
-      liveLanAddresses = profile.discoveredLanAddresses
+    // already hold is usually that noise: keep the fuller list for a while.
+    // Otherwise the profile flipped on every browse and each flip re-saved it
+    // (~46 ms on the main thread) and republished it to every screen. A drop
+    // that lasts past the grace window is real, and the shorter list wins.
+    let shrinkKey = profileStorageKey(profile) ?? profile.hostIdentity ?? ""
+    let previous = Set(profile.discoveredLanAddresses)
+    let live = Set(liveLanAddresses)
+    if !live.isEmpty, live.isStrictSubset(of: previous) {
+      let now = Date()
+      let firstSeen = discoveredLanShrinkFirstSeen[shrinkKey] ?? now
+      discoveredLanShrinkFirstSeen[shrinkKey] = firstSeen
+      if now.timeIntervalSince(firstSeen) < Self.discoveredLanShrinkGrace {
+        liveLanAddresses = profile.discoveredLanAddresses
+      } else {
+        discoveredLanShrinkFirstSeen[shrinkKey] = nil
+      }
+    } else {
+      discoveredLanShrinkFirstSeen[shrinkKey] = nil
     }
     let liveTailscaleAddress = matching.compactMap(\.tailscaleAddress).first ?? profile.tailscaleAddress
     next.discoveredLanAddresses = liveLanAddresses
@@ -22932,12 +22937,6 @@ final class SyncService: ObservableObject {
       ScrollDiagnostics.shared.event("hydration.exit", ["reason": "notConnected"])
       return
     }
-    if ScrollDiagnostics.shared.isRunning {
-      ScrollDiagnostics.shared.event("hydration.begin", [
-        "hostPhase": String(describing: projectHostPhase),
-        "hasProject": activeProjectId != nil,
-      ])
-    }
 
     // Reconnect makes `canSendLiveRequests()` true immediately, so reads stop
     // holding a queued settle's deadline — and hydration below performs reads
@@ -22954,9 +22953,7 @@ final class SyncService: ObservableObject {
     }
 
     if projectHostPhase == .takeover || projectHostPhase == .recovering {
-      if ScrollDiagnostics.shared.isRunning {
-        ScrollDiagnostics.shared.event("hydration.exit", ["reason": "hostPhase \(projectHostPhase)"])
-      }
+      ScrollDiagnostics.shared.event("hydration.exit", ["reason": "hostPhase \(projectHostPhase)"])
       return
     }
     if projectHostPhase == .ready {
@@ -22996,9 +22993,7 @@ final class SyncService: ObservableObject {
       ScrollDiagnostics.shared.event("hydration.exit", ["reason": "gateCancelled"])
       return
     } catch {
-      if ScrollDiagnostics.shared.isRunning {
-        ScrollDiagnostics.shared.event("hydration.exit", ["reason": "gateError", "error": error.localizedDescription])
-      }
+      ScrollDiagnostics.shared.event("hydration.exit", ["reason": "gateError", "error": error.localizedDescription])
       guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       if isSyncHostUnavailableError(error) {
         applyIncomingProjectHostFailure(error)
@@ -23035,8 +23030,10 @@ final class SyncService: ObservableObject {
         return
       }
     }
-    ScrollDiagnostics.shared.event("hydration.refreshing")
     refreshProjectCatalog(cachedRows: projectRows)
+    // The catalog refresh can re-key the project, which starts a fresh
+    // hydration; this one must not also issue its reads.
+    guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     // Lanes, work sessions and PRs are three independent host round trips.
     // Awaiting them in series cost the sum of three latencies on every project
     // switch — tolerable on LAN, punishing over relay. `async let` overlaps
@@ -23098,9 +23095,7 @@ final class SyncService: ObservableObject {
   /// overlapping hydration attempts re-assert `.hydrating` constantly.
   private func setDomainStatusIfChanged(_ domain: SyncDomain, _ status: SyncDomainStatus) {
     guard domainStatuses[domain] != status else { return }
-    if ScrollDiagnostics.shared.isRunning {
-      ScrollDiagnostics.shared.event("domain", ["domain": String(describing: domain), "phase": String(describing: status.phase)])
-    }
+    ScrollDiagnostics.shared.event("domain", ["domain": String(describing: domain), "phase": String(describing: status.phase)])
     domainStatuses[domain] = status
   }
 

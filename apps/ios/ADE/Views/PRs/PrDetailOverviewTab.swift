@@ -33,51 +33,36 @@ struct PrOverviewSections: View {
             .font(.footnote)
             .foregroundStyle(ADEColor.textMuted)
             .adeFlatRow(separator: .hidden)
-        } else if descriptionIsLong && !descriptionExpanded {
+        } else {
+          let folded = descriptionIsLong && !descriptionExpanded
           VStack(alignment: .leading, spacing: 6) {
             PrFlatDescription(text: description)
-              .frame(maxHeight: Self.foldedDescriptionHeight, alignment: .top)
+              .frame(maxHeight: folded ? Self.foldedDescriptionHeight : nil, alignment: .top)
               .clipped()
               .overlay(alignment: .bottom) {
-                LinearGradient(
-                  colors: [ADEColor.pageBackground.opacity(0), ADEColor.pageBackground],
-                  startPoint: .top,
-                  endPoint: .bottom
-                )
-                .frame(height: 72)
-                .allowsHitTesting(false)
+                if folded {
+                  LinearGradient(
+                    colors: [ADEColor.pageBackground.opacity(0), ADEColor.pageBackground],
+                    startPoint: .top,
+                    endPoint: .bottom
+                  )
+                  .frame(height: 72)
+                  .allowsHitTesting(false)
+                }
               }
-            Button {
-              withAnimation(.snappy(duration: 0.25)) { descriptionExpanded = true }
-            } label: {
-              HStack(spacing: 4) {
-                Text("Show more")
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
-              }
-              .font(.footnote.weight(.semibold))
-              .foregroundStyle(ADEColor.accent)
-              .frame(maxWidth: .infinity)
-              .frame(height: 36)
-              .background(ADEKit.track, in: Capsule(style: .continuous))
-            }
-            .buttonStyle(.plain)
-          }
-          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 14, trailing: 16), separator: .hidden)
-        } else {
-          VStack(alignment: .leading, spacing: 6) {
-            PrFlatDescription(text: description)
             if descriptionIsLong {
               Button {
-                withAnimation(.snappy(duration: 0.25)) { descriptionExpanded = false }
+                withAnimation(.snappy(duration: 0.25)) { descriptionExpanded.toggle() }
               } label: {
                 HStack(spacing: 4) {
-                  Text("Show less")
-                  Image(systemName: "chevron.up").font(.system(size: 10, weight: .bold))
+                  Text(folded ? "Show more" : "Show less")
+                  Image(systemName: folded ? "chevron.down" : "chevron.up").font(.system(size: 10, weight: .bold))
                 }
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(ADEColor.accent)
                 .frame(maxWidth: .infinity)
                 .frame(height: 36)
+                .background(folded ? ADEKit.track : .clear, in: Capsule(style: .continuous))
               }
               .buttonStyle(.plain)
             }

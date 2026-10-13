@@ -60,7 +60,6 @@ private func laneLinearIssueLinkRoleRank(_ role: String) -> Int {
 func laneListFilteredSnapshots(
   _ snapshots: [LaneListSnapshot],
   scope: LaneListScope,
-  runtimeFilter: LaneRuntimeFilter,
   searchText: String,
   pinnedLaneIds: Set<String>
 ) -> [LaneListSnapshot] {
@@ -74,9 +73,6 @@ func laneListFilteredSnapshots(
       case .all:
         return true
       }
-    }
-    .filter { snapshot in
-      runtimeFilter == .all || snapshot.runtime.bucket == runtimeFilter.rawValue
     }
     .filter { snapshot in
       laneMatchesSearch(snapshot: snapshot, isPinned: pinnedLaneIds.contains(snapshot.lane.id), query: searchText)
@@ -101,48 +97,6 @@ func laneListSortSnapshots(_ lhs: LaneListSnapshot, _ rhs: LaneListSnapshot) -> 
     return lhs.lane.name.localizedCaseInsensitiveCompare(rhs.lane.name) == .orderedAscending
   }
   return lhs.lane.id < rhs.lane.id
-}
-
-func laneScopeCount(_ snapshots: [LaneListSnapshot], scope: LaneListScope) -> Int {
-  snapshots.filter { snapshot in
-    switch scope {
-    case .active:
-      return snapshot.lane.archivedAt == nil
-    case .archived:
-      return snapshot.lane.archivedAt != nil
-    case .all:
-      return true
-    }
-  }.count
-}
-
-func laneRuntimeCount(_ snapshots: [LaneListSnapshot], filter: LaneRuntimeFilter) -> Int {
-  if filter == .all {
-    return snapshots.count
-  }
-  return snapshots.filter { $0.runtime.bucket == filter.rawValue }.count
-}
-
-func laneListEmptyStateTitle(scope: LaneListScope) -> String {
-  switch scope {
-  case .active: return "No active lanes"
-  case .archived: return "No archived lanes"
-  case .all: return "No lanes"
-  }
-}
-
-func laneListEmptyStateMessage(scope: LaneListScope, searchText: String, hasFilters: Bool) -> String {
-  if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-    return "Try a different search or clear the filter."
-  }
-  if hasFilters {
-    return "Try clearing the current filters."
-  }
-  switch scope {
-  case .active: return "Create a new lane or connect to a machine."
-  case .archived: return "Archived lanes will appear here."
-  case .all: return "No lanes yet. Create a lane or connect to a machine."
-  }
 }
 
 func laneMatchesSearch(snapshot: LaneListSnapshot, isPinned: Bool, query: String) -> Bool {

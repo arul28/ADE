@@ -2,6 +2,7 @@ import Combine
 import Darwin
 import Foundation
 import QuartzCore
+import SwiftUI
 import UIKit
 
 /// Field diagnostics for scroll smoothness on a real phone, for when
@@ -272,9 +273,10 @@ final class ScrollDiagnostics {
   }
 
   /// A one-off event line (connection failures and the like), written at once.
-  func event(_ name: String, _ fields: [String: Any] = [:]) {
+  /// The fields are built only while diagnostics run.
+  func event(_ name: String, _ fields: @autoclosure () -> [String: Any] = [:]) {
     guard displayLink != nil else { return }
-    var line = fields
+    var line = fields()
     line["event"] = name
     line["t"] = Date().timeIntervalSince1970
     line["surface"] = nil
@@ -519,5 +521,52 @@ enum ChatOpenCloseTiming {
       "session": sessionId,
       "toAppearMs": Int((CACurrentMediaTime() - started.at) * 1000),
     ])
+  }
+}
+
+/// Tags a scrolling screen for field diagnostics: which surface is on screen
+/// and when it is moving. A plain pass-through unless diagnostics run.
+private struct ScrollDiagnosticsSurfaceModifier: ViewModifier {
+  let surface: ScrollDiagnostics.Surface
+  let key: String
+
+  func body(content: Content) -> some View {
+    content
+      .onScrollPhaseChange { _, phase in
+        if phase.isScrolling {
+          ScrollDiagnostics.shared.scrollBegan(key)
+        } else {
+          ScrollDiagnostics.shared.scrollEnded(key)
+        }
+      }
+      .onAppear { ScrollDiagnostics.shared.enter(surface) }
+      .onDisappear {
+        ScrollDiagnostics.shared.scrollEnded(key)
+        ScrollDiagnostics.shared.leave(surface)
+      }
+  }
+}
+
+extension View {
+  func adeScrollDiagnosticsSurface(_ surface: ScrollDiagnostics.Surface, key: String) -> some View {
+    modifier(ScrollDiagnosticsSurfaceModifier(surface: surface, key: key))
+  }
+}
+
+/// A screen's open-to-ready timings: started when it appears, one event per
+/// milestone. Inert unless diagnostics run.
+struct ScreenOpenTiming {
+  private var openedAt: CFTimeInterval = 0
+
+  @MainActor
+  mutating func opened() {
+    guard ScrollDiagnostics.shared.isRunning, openedAt == 0 else { return }
+    openedAt = CACurrentMediaTime()
+  }
+
+  @MainActor
+  func mark(_ event: String) {
+    guard openedAt > 0 else { return }
+    ScrollDiagnostics.shared.event(event, ["ms": Int((CACurrentMediaTime() - openedAt) * 1000)])
   }
 }

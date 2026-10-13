@@ -18,36 +18,8 @@ enum LaneListScope: String, CaseIterable, Identifiable {
   }
 }
 
-enum LaneRuntimeFilter: String, CaseIterable, Identifiable {
-  case all
-  case running
-  case awaitingInput = "awaiting-input"
-  case ended
-
-  var id: String { rawValue }
-
-  var title: String {
-    switch self {
-    case .all: return "All"
-    case .running: return "Running"
-    case .awaitingInput: return "Awaiting"
-    case .ended: return "Ended"
-    }
-  }
-
-  var symbol: String {
-    switch self {
-    case .all: return "line.3.horizontal.decrease.circle"
-    case .running: return "waveform.path.ecg"
-    case .awaitingInput: return "exclamationmark.bubble.fill"
-    case .ended: return "stop.circle.fill"
-    }
-  }
-}
-
 /// The Lanes tab's one-tap filters (the chip row under the search field).
-/// Each is a scope plus an optional narrowing: Running and Needs you read the
-/// lane's live chats, Dirty its working tree.
+/// Running and Needs you read the lane's live chats, Changes its working tree.
 enum LaneQuickFilter: String, CaseIterable, Identifiable {
   case active
   case running
@@ -71,11 +43,13 @@ enum LaneQuickFilter: String, CaseIterable, Identifiable {
     self == .archived ? .archived : .active
   }
 
-  var runtimeFilter: LaneRuntimeFilter {
+  var emptyTitle: String {
     switch self {
-    case .running: return .running
-    case .attention: return .awaitingInput
-    default: return .all
+    case .active: return "No active lanes"
+    case .running: return "Nothing running"
+    case .attention: return "Nothing needs you"
+    case .dirty: return "No uncommitted changes"
+    case .archived: return "No archived lanes"
     }
   }
 

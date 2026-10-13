@@ -334,8 +334,9 @@ struct PrRowCard: View {
   }
 }
 
-/// The row's review state: approved (green seal) or changes requested
-/// (amber). "Requested" is the default state of an open PR and draws nothing.
+/// The row's review state: approved (green seal) or changes requested (red,
+/// as in the detail's activity). "Requested" is the default state of an open
+/// PR and draws nothing.
 struct PrRowReviewGlyph: View {
   let approved: Bool
 
@@ -350,7 +351,7 @@ struct PrRowReviewGlyph: View {
   var body: some View {
     Image(systemName: approved ? "checkmark.seal.fill" : "exclamationmark.bubble.fill")
       .font(.system(size: 10.5, weight: .semibold))
-      .foregroundStyle(approved ? ADEColor.success : ADEColor.warning)
+      .foregroundStyle(approved ? ADEColor.success : ADEColor.danger)
       .accessibilityLabel(approved ? "Approved" : "Changes requested")
   }
 }

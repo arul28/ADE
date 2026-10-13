@@ -38,7 +38,7 @@ struct LanesRootInputs: Equatable {
     focusedMachineKey = sync.focusedMachineKey
     focusedMachineName = sync.focusedMachineDisplayName
     hasHostProfile = sync.activeHostProfile != nil
-    liveMachineKeys = fleet.machines.filter { $0.state == .live }.map(\.machineKey).sorted()
+    liveMachineKeys = fleet.liveMachineKeys
   }
 }
 
@@ -99,7 +99,6 @@ struct LanesTabView: View, Equatable {
   @State var machineFilter: LaneMachineFilter = .all
 
   var scope: LaneListScope { quickFilter.scope }
-  var runtimeFilter: LaneRuntimeFilter { quickFilter.runtimeFilter }
 
   var pinnedLaneIds: Set<String> {
     get {
@@ -176,18 +175,7 @@ struct LanesTabView: View, Equatable {
       .listSectionSpacing(.compact)
       .contentMargins(.bottom, 24, for: .scrollContent)
       .environment(\.defaultMinListRowHeight, 0)
-      .onScrollPhaseChange { _, phase in
-        if phase.isScrolling {
-          ScrollDiagnostics.shared.scrollBegan("lanes")
-        } else {
-          ScrollDiagnostics.shared.scrollEnded("lanes")
-        }
-      }
-      .onAppear { ScrollDiagnostics.shared.enter(.lanes) }
-      .onDisappear {
-        ScrollDiagnostics.shared.scrollEnded("lanes")
-        ScrollDiagnostics.shared.leave(.lanes)
-      }
+      .adeScrollDiagnosticsSurface(.lanes, key: "lanes")
       .refreshable { await refreshFromPullGesture() }
       .navigationDestination(for: LaneRoute.self) { route in
         laneDestination(route)
@@ -231,16 +219,25 @@ struct LanesTabView: View, Equatable {
         }
       }
       .onChange(of: syncService.activeProjectId) { _, _ in
+        // The tab stays mounted across a project switch: drop the previous
+        // project's lanes so they never show while the new project loads.
         remoteLanes.reset()
         machineFilter = .all
+        laneSnapshots = []
+        pullRequests = []
+        laneListPresentation = .empty
+        openLaneIds = []
+        primaryBranches = []
+        primaryBranchLaneId = nil
+        selectedLaneTransitionId = nil
+        errorMessage = nil
+        lanePath = NavigationPath()
       }
+      // Keyed on the tab being active and the request id, so it runs on
+      // appear, when the tab comes forward, and for each new request.
       .task(id: laneNavigationRequestKey) {
         guard laneNavigationRequestKey != nil else { return }
         await handleRequestedLaneNavigation()
-      }
-      .onAppear {
-        guard isActive, syncService.requestedLaneNavigation != nil else { return }
-        Task { await handleRequestedLaneNavigation() }
       }
       .onChange(of: searchText) { _, _ in refreshLaneListPresentation() }
       .onChange(of: quickFilter) { _, _ in refreshLaneListPresentation() }
@@ -253,14 +250,6 @@ struct LanesTabView: View, Equatable {
         if let selectedLaneTransitionId, pendingIds.contains(selectedLaneTransitionId) {
           self.selectedLaneTransitionId = nil
         }
-      }
-      .onChange(of: isActive) { _, active in
-        guard active, syncService.requestedLaneNavigation != nil else { return }
-        Task { await handleRequestedLaneNavigation() }
-      }
-      .onChange(of: syncService.requestedLaneNavigation?.id) { _, requestId in
-        guard isActive, requestId != nil else { return }
-        Task { await handleRequestedLaneNavigation() }
       }
       .onChange(of: syncService.connectionState) { oldValue, newValue in
         guard isActive else { return }
@@ -346,39 +335,6 @@ struct LanesTabView: View, Equatable {
       } else {
         handleBlockedLiveAction()
       }
-    }
-  }
-
-  @ViewBuilder
-  func primaryBranchPickerMenu<Label: View>(@ViewBuilder label: () -> Label) -> some View {
-    if let primaryLane, !primaryBranches.isEmpty {
-      Menu {
-        ForEach(primaryBranches) { branch in
-          Button(branch.name) {
-            Task {
-              do {
-                try await syncService.checkoutPrimaryBranch(
-                  laneId: primaryLane.id,
-                  branchName: branch.name,
-                  mode: "existing",
-                  startPoint: nil,
-                  baseRef: nil,
-                  acknowledgeActiveWork: false
-                )
-                await reload(refreshRemote: true)
-                await refreshPrimaryBranches(force: true)
-              } catch {
-                ADEHaptics.error()
-                primaryBranchError = error.localizedDescription
-              }
-            }
-          }
-          .disabled(!canRunLiveActions)
-        }
-      } label: {
-        label()
-      }
-      .accessibilityLabel("Primary branch")
     }
   }
 }

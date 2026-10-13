@@ -196,21 +196,21 @@ struct LaneDetailGitActionsPane: View {
       // The message field only when there is something to commit (or an
       // amend): a clean lane's toolbar is its sync actions alone.
       if hasCommittableWork {
-      HStack(alignment: .bottom, spacing: 8) {
-        TextField("Commit message", text: $commitMessage, axis: .vertical)
-          .lineLimit(1...3)
-          .font(.system(size: 14))
-          .padding(.horizontal, 11)
-          .padding(.vertical, 8)
-          .frame(maxWidth: .infinity, minHeight: 36)
-          .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .focused($commitFieldFocused)
-          .disabled(!canRunLiveActions || busyAction != nil)
-        Button("Commit") { onCommit() }
-          .buttonStyle(ADEKitButtonStyle(prominent: true))
-          .frame(minHeight: 36)
-          .disabled(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty))
-      }
+        HStack(alignment: .bottom, spacing: 8) {
+          TextField("Commit message", text: $commitMessage, axis: .vertical)
+            .lineLimit(1...3)
+            .font(.system(size: 14))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .focused($commitFieldFocused)
+            .disabled(!canRunLiveActions || busyAction != nil)
+          Button("Commit") { onCommit() }
+            .buttonStyle(ADEKitButtonStyle(prominent: true))
+            .frame(minHeight: 36)
+            .disabled(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty))
+        }
       }
       HStack(spacing: 6) {
         Button(amendCommit ? "Amend on" : "Amend") { amendCommit.toggle() }

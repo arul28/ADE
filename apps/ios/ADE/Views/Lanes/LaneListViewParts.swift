@@ -32,7 +32,6 @@ extension LanesTabView {
     laneListPresentation.filteredSnapshots
   }
 
-
   var primaryLane: LaneSummary? {
     visibleLaneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane
   }
@@ -84,20 +83,11 @@ extension LanesTabView {
             }
             .buttonStyle(.plain)
             .contextMenu {
-              Button {
-                detailSheetTarget = LaneDetailSheetTarget(
-                  laneId: snapshot.lane.id,
-                  snapshot: snapshot,
-                  initialSection: .git
-                )
-              } label: {
-                Label("Manage lane", systemImage: "slider.horizontal.3")
-              }
+              manageLaneButton(snapshot)
               Button {
                 togglePin(snapshot.lane.id)
               } label: {
-                let pinned = pinnedLaneIds.contains(snapshot.lane.id)
-                Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
+                LanePinLabel(pinned: pinnedLaneIds.contains(snapshot.lane.id))
               }
               Button {
                 closeLaneChip(snapshot.lane.id)
@@ -121,10 +111,6 @@ extension LanesTabView {
     laneListPresentation.stackOrderedSnapshots
   }
 
-
-
-
-
   var lanePrTagsByLaneId: [String: LanePrTag] {
     laneListPresentation.lanePrTagsByLaneId
   }
@@ -135,7 +121,6 @@ extension LanesTabView {
     let filtered = laneListFilteredSnapshots(
       visible.filter(quickFilter.matches),
       scope: quickFilter.scope,
-      runtimeFilter: .all,
       searchText: searchText,
       pinnedLaneIds: pinnedLaneIds
     )
@@ -198,7 +183,6 @@ extension LanesTabView {
       let filtered = laneListFilteredSnapshots(
         machine.snapshots.filter(quickFilter.matches),
         scope: quickFilter.scope,
-        runtimeFilter: .all,
         searchText: searchText,
         pinnedLaneIds: pinnedLaneIds
       )
@@ -301,59 +285,79 @@ extension LanesTabView {
   func laneListRow(
     _ snapshot: LaneListSnapshot,
     depth: Int,
-    allLaneSnapshots: [LaneListSnapshot],
     pullRequest: LanePrTag?,
     showsMachineChip: Bool,
-    onRefreshRoot: @escaping () async -> Void
+    chips: LaneMachineChips
   ) -> some View {
     let laneId = snapshot.lane.id
     let pinned = pinnedLaneIds.contains(laneId)
+    let machine = chips.chip(forLaneId: laneId)
+    // A machine with no live link shows its last roster dimmed and inert, so
+    // its rows carry no swipe actions either.
+    let actionable = machine?.isLive != false
     LaneTreeRow(
       snapshot: snapshot,
       depth: depth,
-      allLaneSnapshots: allLaneSnapshots,
       pullRequest: pullRequest,
       isPinned: pinned,
       isOpen: openLaneIds.contains(laneId),
       transitionNamespace: transitionNamespace,
       isSelectedTransitionSource: selectedLaneTransitionId == laneId,
-      onRefreshRoot: onRefreshRoot,
       onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
-      onTogglePin: { togglePin($0) },
       onSelectLane: { selectedLaneTransitionId = $0 },
-      machine: laneMachineChips.chip(forLaneId: laneId),
-      showsMachineChip: showsMachineChip,
-      onOpen: { openLane(laneId) }
+      onOpen: { openLane(laneId) },
+      machine: machine,
+      showsMachineChip: showsMachineChip
     )
     .adeFlatRow(insets: laneRowInsets)
     .swipeActions(edge: .leading, allowsFullSwipe: true) {
-      Button {
-        togglePin(laneId)
-      } label: {
-        Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
+      if actionable {
+        Button {
+          togglePin(laneId)
+        } label: {
+          LanePinLabel(pinned: pinned)
+        }
+        .tint(ADEColor.accent)
       }
-      .tint(ADEColor.accent)
     }
     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-      if snapshot.lane.laneType != "primary" {
-        if snapshot.lane.archivedAt == nil {
-          Button {
-            Task { await archiveLane(snapshot) }
-          } label: {
-            Label("Archive", systemImage: "archivebox")
-          }
-          .tint(ADEColor.warning)
-          .disabled(!canRunLiveActions)
-        } else {
-          Button {
-            Task { await restoreLane(snapshot) }
-          } label: {
-            Label("Restore", systemImage: "tray.and.arrow.up")
-          }
-          .tint(ADEColor.success)
-          .disabled(!canRunLiveActions)
-        }
+      if actionable {
+        archiveOrRestoreButton(snapshot)
+          .tint(snapshot.lane.archivedAt == nil ? ADEColor.warning : ADEColor.success)
       }
+    }
+  }
+
+  /// Archive for an active lane, Restore for an archived one; nothing for the
+  /// primary lane.
+  /// `archiveRole` is `.destructive` in menus (red); a swipe action takes
+  /// its tint instead.
+  @ViewBuilder
+  func archiveOrRestoreButton(_ snapshot: LaneListSnapshot, archiveRole: ButtonRole? = nil) -> some View {
+    if snapshot.lane.laneType != "primary" {
+      if snapshot.lane.archivedAt == nil {
+        Button(role: archiveRole) {
+          Task { await archiveLane(snapshot) }
+        } label: {
+          Label("Archive", systemImage: "archivebox")
+        }
+        .disabled(!canRunLiveActions)
+      } else {
+        Button {
+          Task { await restoreLane(snapshot) }
+        } label: {
+          Label("Restore", systemImage: "tray.and.arrow.up")
+        }
+        .disabled(!canRunLiveActions)
+      }
+    }
+  }
+
+  func manageLaneButton(_ snapshot: LaneListSnapshot) -> some View {
+    Button {
+      detailSheetTarget = LaneDetailSheetTarget(laneId: snapshot.lane.id, snapshot: snapshot, initialSection: .git)
+    } label: {
+      Label("Manage lane", systemImage: "slider.horizontal.3")
     }
   }
 
@@ -361,6 +365,9 @@ extension LanesTabView {
   /// stack tree), then each other machine's lanes under its name.
   @ViewBuilder
   var laneListSections: some View {
+    // Built once per pass, not once per row.
+    let chips = laneMachineChips
+    let remoteSections = visibleRemoteMachineLanes
     if showsFocusedMachineLanes, laneSnapshots.isEmpty, remoteLanes.machines.isEmpty {
       if let emptyStatePresentation {
         emptyStateCard(emptyStatePresentation)
@@ -375,10 +382,10 @@ extension LanesTabView {
         .padding(.top, 32)
         .adeFlatRow(separator: .hidden)
       }
-    } else if (!showsFocusedMachineLanes || filteredSnapshots.isEmpty) && visibleRemoteMachineLanes.isEmpty {
+    } else if (!showsFocusedMachineLanes || filteredSnapshots.isEmpty) && remoteSections.isEmpty {
       ADEEmptyStateView(
         symbol: "square.stack.3d.up.slash",
-        title: laneListEmptyStateTitle(scope: scope),
+        title: quickFilter.emptyTitle,
         message: laneQuickFilterEmptyMessage
       )
       .padding(.top, 32)
@@ -391,10 +398,9 @@ extension LanesTabView {
             laneListRow(
               snapshot,
               depth: depth,
-              allLaneSnapshots: laneSnapshots,
               pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
               showsMachineChip: depth == 0,
-              onRefreshRoot: { await reload(refreshRemote: true) }
+              chips: chips
             )
           }
         } header: {
@@ -403,17 +409,16 @@ extension LanesTabView {
           }
         }
       }
-      ForEach(visibleRemoteMachineLanes, id: \.machine.machineKey) { entry in
+      ForEach(remoteSections, id: \.machine.machineKey) { entry in
         Section {
           ForEach(entry.snapshots) { snapshot in
             let depth = laneTreeDisplayDepth(for: snapshot.lane)
             laneListRow(
               snapshot,
               depth: depth,
-              allLaneSnapshots: entry.machine.snapshots,
               pullRequest: nil,
               showsMachineChip: false,
-              onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
+              chips: chips
             )
           }
         } header: {
@@ -544,7 +549,7 @@ extension LanesTabView {
     do {
       try await syncService.archiveLane(snapshot.lane.id)
       ADEHaptics.success()
-      await reload(refreshRemote: true)
+      await reloadAfterLaneAction(snapshot.lane.id, refreshRemote: true)
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
@@ -556,7 +561,7 @@ extension LanesTabView {
     do {
       try await syncService.unarchiveLane(snapshot.lane.id)
       ADEHaptics.success()
-      await reload(refreshRemote: true)
+      await reloadAfterLaneAction(snapshot.lane.id, refreshRemote: true)
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
@@ -572,15 +577,7 @@ extension LanesTabView {
         Label("Show only \(chip.name)", systemImage: "desktopcomputer")
       }
     }
-    Button {
-      detailSheetTarget = LaneDetailSheetTarget(
-        laneId: snapshot.lane.id,
-        snapshot: snapshot,
-        initialSection: .git
-      )
-    } label: {
-      Label("Manage lane", systemImage: "slider.horizontal.3")
-    }
+    manageLaneButton(snapshot)
     // The branch list belongs to the focused machine's primary lane.
     if snapshot.lane.laneType == "primary", !isWorkRemoteLaneId(snapshot.lane.id), !primaryBranches.isEmpty {
       Menu {
@@ -622,8 +619,7 @@ extension LanesTabView {
     Button {
       togglePin(snapshot.lane.id)
     } label: {
-      let pinned = pinnedLaneIds.contains(snapshot.lane.id)
-      Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
+      LanePinLabel(pinned: pinnedLaneIds.contains(snapshot.lane.id))
     }
     Menu {
       ForEach(LaneColorPalette.entries) { entry in
@@ -671,21 +667,7 @@ extension LanesTabView {
       }
       .disabled(!canRunLiveActions)
     }
-    if snapshot.lane.archivedAt == nil && snapshot.lane.laneType != "primary" {
-      Button(role: .destructive) {
-        Task { await archiveLane(snapshot) }
-      } label: {
-        Label("Archive", systemImage: "archivebox")
-      }
-      .disabled(!canRunLiveActions)
-    } else if snapshot.lane.archivedAt != nil {
-      Button {
-        Task { await restoreLane(snapshot) }
-      } label: {
-        Label("Restore", systemImage: "tray.and.arrow.up")
-      }
-      .disabled(!canRunLiveActions)
-    }
+    archiveOrRestoreButton(snapshot, archiveRole: .destructive)
     Button {
       UIPasteboard.general.string = snapshot.lane.worktreePath
     } label: {
@@ -697,10 +679,21 @@ extension LanesTabView {
   func applyLaneColor(_ hex: String?, to laneId: String) async {
     do {
       try await syncService.updateLaneAppearance(laneId, color: hex ?? "")
-      await reload(refreshRemote: false)
+      await reloadAfterLaneAction(laneId, refreshRemote: false)
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
+    }
+  }
+
+  /// After a lane action, read the lane's own machine again: another
+  /// machine's lane otherwise stays stale until its 30-second poll.
+  @MainActor
+  func reloadAfterLaneAction(_ laneId: String, refreshRemote: Bool) async {
+    if isWorkRemoteLaneId(laneId) {
+      await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+    } else {
+      await reload(refreshRemote: refreshRemote)
     }
   }
 
@@ -726,16 +719,28 @@ extension LanesTabView {
       // `laneGithubPrItems` publishes when the snapshot lands and recomputes the
       // tag map. Pull-to-refresh forces a fresh fetch; routine reloads throttle.
       Task { await syncService.refreshLaneGithubPrItems(force: refreshRemote) }
+      // This reads only this machine's lanes, so it prunes only those ids;
+      // another machine's lanes keep their pin and open state.
       let visibleIds = Set(loadedSnapshots.map(\.lane.id))
-      let nextOpenLaneIds = openLaneIds.filter { visibleIds.contains($0) }
+      // A remote id is dropped only once its machine's lanes are loaded and
+      // no longer hold it; a machine not read yet keeps its ids.
+      let remoteIdsByMachine = Dictionary(
+        remoteLanes.machines.map { ($0.machineKey, Set($0.snapshots.map(\.lane.id))) },
+        uniquingKeysWith: { first, _ in first }
+      )
+      let isStillHere = { (id: String) -> Bool in
+        guard let remote = workParseRemoteLaneId(id) else { return visibleIds.contains(id) }
+        return remoteIdsByMachine[remote.machineKey]?.contains(id) ?? true
+      }
+      let nextOpenLaneIds = openLaneIds.filter(isStillHere)
       if nextOpenLaneIds != openLaneIds {
         openLaneIds = nextOpenLaneIds
       }
-      let nextPinnedLaneIds = Set(pinnedLaneIds.filter { visibleIds.contains($0) })
+      let nextPinnedLaneIds = Set(pinnedLaneIds.filter(isStillHere))
       if nextPinnedLaneIds != pinnedLaneIds {
         pinnedLaneIds = nextPinnedLaneIds
       }
-      if let selectedLaneTransitionId, !visibleIds.contains(selectedLaneTransitionId) {
+      if let selectedLaneTransitionId, !isStillHere(selectedLaneTransitionId) {
         self.selectedLaneTransitionId = nil
       }
       if errorMessage != nil {
@@ -791,7 +796,11 @@ extension LanesTabView {
     // Let the context menu dismiss and the TabView finish presenting Lanes before
     // attaching a sheet. Without this hop, cross-tab "Go to lane" can switch
     // tabs while SwiftUI silently drops the detail presentation.
-    try? await Task.sleep(for: .milliseconds(650))
+    do {
+      try await Task.sleep(for: .milliseconds(650))
+    } catch {
+      return
+    }
     guard syncService.requestedLaneNavigation?.id == request.id else { return }
 
     var snapshot: LaneListSnapshot?
@@ -802,12 +811,14 @@ extension LanesTabView {
       snapshot = remoteSnapshot()
       if snapshot == nil {
         await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+        guard !Task.isCancelled, syncService.requestedLaneNavigation?.id == request.id else { return }
         snapshot = remoteSnapshot()
       }
     } else {
       snapshot = laneSnapshots.first(where: { $0.lane.id == request.laneId })
       if snapshot == nil {
         await reload(refreshRemote: canRunLiveActions)
+        guard !Task.isCancelled, syncService.requestedLaneNavigation?.id == request.id else { return }
         snapshot = laneSnapshots.first(where: { $0.lane.id == request.laneId })
       }
     }
@@ -935,5 +946,14 @@ struct LaneRowSkeleton: View {
     .padding(.leading, ADEKit.inset)
     .padding(.vertical, 14)
     .accessibilityHidden(true)
+  }
+}
+
+/// Pin / Unpin for a lane's menus and swipe action.
+struct LanePinLabel: View {
+  let pinned: Bool
+
+  var body: some View {
+    Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
   }
 }

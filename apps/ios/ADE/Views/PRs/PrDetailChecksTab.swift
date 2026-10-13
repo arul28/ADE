@@ -163,9 +163,10 @@ struct PrChecksSections: View {
           // A required check that never reported blocks the merge: the
           // summary must not read green while one is missing.
           let missing = missingRequired.count
+          let icon = headlineIcon(failing: headline.failing, running: headline.running, missing: missing)
           HStack(spacing: 8) {
-            Image(systemName: headline.failing > 0 ? "xmark.circle.fill" : headline.running > 0 ? "clock.fill" : missing > 0 ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-              .foregroundStyle(headline.failing > 0 ? ADEColor.danger : (headline.running > 0 || missing > 0) ? ADEColor.warning : (isNotRun ? ADEColor.textMuted : ADEColor.success))
+            Image(systemName: icon.symbol)
+              .foregroundStyle(icon.tint)
               .font(.system(size: 13, weight: .semibold))
             Text(missing > 0 ? "\(headline.text) · \(missing) required missing" : headline.text)
               .font(.subheadline.weight(.medium))
@@ -240,6 +241,15 @@ struct PrChecksSections: View {
         } header: { ADEFlatSectionHeader("Deployments", detail: "\(deployments.count)") }
       }
     }
+  }
+
+  /// The summary line's glyph: failing beats running beats a required check
+  /// that never reported; all clear is green (muted when no CI ran).
+  private func headlineIcon(failing: Int, running: Int, missing: Int) -> (symbol: String, tint: Color) {
+    if failing > 0 { return ("xmark.circle.fill", ADEColor.danger) }
+    if running > 0 { return ("clock.fill", ADEColor.warning) }
+    if missing > 0 { return ("exclamationmark.circle.fill", ADEColor.warning) }
+    return ("checkmark.circle.fill", isNotRun ? ADEColor.textMuted : ADEColor.success)
   }
 
   private func row(_ check: PrCheck) -> some View {

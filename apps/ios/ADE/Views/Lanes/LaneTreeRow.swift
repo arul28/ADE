@@ -20,83 +20,26 @@ private struct LaneTreeElbowShape: Shape {
   }
 }
 
-struct LaneTreeView: View {
-  let snapshots: [LaneListSnapshot]
-  let pinnedLaneIds: Set<String>
-  let openLaneIds: [String]
-  let allLaneSnapshots: [LaneListSnapshot]
-  let lanePrTagsByLaneId: [String: LanePrTag]
-  let transitionNamespace: Namespace.ID?
-  let selectedLaneId: String?
-  let onRefreshRoot: () async -> Void
-  let onContextMenu: (LaneListSnapshot) -> AnyView
-  let onTogglePin: (String) -> Void
-  let onSelectLane: (String) -> Void
-  var machineChips: LaneMachineChips = .none
-
-  var body: some View {
-    // Rows of one kit panel (the caller draws the card), hairlines between.
-    VStack(spacing: 0) {
-      ForEach(Array(snapshots.enumerated()), id: \.element.id) { index, snapshot in
-        if index > 0 {
-          Rectangle()
-            .fill(ADEKit.rule)
-            .frame(height: 0.75)
-            .padding(.leading, ADEKit.inset)
-        }
-        LaneTreeRow(
-          snapshot: snapshot,
-          depth: laneTreeDisplayDepth(for: snapshot.lane),
-          allLaneSnapshots: allLaneSnapshots,
-          pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
-          isPinned: pinnedLaneIds.contains(snapshot.lane.id),
-          isOpen: openLaneIds.contains(snapshot.lane.id),
-          transitionNamespace: transitionNamespace,
-          isSelectedTransitionSource: selectedLaneId == snapshot.lane.id,
-          onRefreshRoot: onRefreshRoot,
-          onContextMenu: onContextMenu,
-          onTogglePin: onTogglePin,
-          onSelectLane: onSelectLane,
-          machine: machineChips.chip(forLaneId: snapshot.lane.id),
-          // A child sits indented under its parent's row, which names the
-          // machine; repeating it squeezed the branch name.
-          showsMachineChip: laneTreeDisplayDepth(for: snapshot.lane) == 0
-        )
-      }
-    }
-  }
-}
-
+/// One lane as a row of the Lanes list: indented under its parent with an
+/// elbow, tapping opens it, long-press shows its menu over a peek.
 struct LaneTreeRow: View {
   let snapshot: LaneListSnapshot
   let depth: Int
-  let allLaneSnapshots: [LaneListSnapshot]
   let pullRequest: LanePrTag?
   let isPinned: Bool
   let isOpen: Bool
   let transitionNamespace: Namespace.ID?
   let isSelectedTransitionSource: Bool
-  let onRefreshRoot: () async -> Void
   let onContextMenu: (LaneListSnapshot) -> AnyView
-  let onTogglePin: (String) -> Void
   let onSelectLane: (String) -> Void
+  /// Pushes the lane's detail through the list's navigation path.
+  let onOpen: () -> Void
   var machine: LaneMachineChip? = nil
+  /// A child sits indented under its parent's row, which names the machine;
+  /// repeating it squeezed the branch name.
   var showsMachineChip = true
-  /// Set by the Lanes `List`: the row pushes through the list's navigation
-  /// path (no list chevron) and the list owns the swipe actions.
-  var onOpen: (() -> Void)? = nil
 
   private var isChild: Bool { snapshot.lane.laneType != "primary" && depth > 0 }
-
-  private var destination: some View {
-    LaneDetailScreen(
-      laneId: snapshot.lane.id,
-      initialSnapshot: snapshot,
-      allLaneSnapshots: allLaneSnapshots,
-      transitionNamespace: transitionNamespace,
-      onRefreshRoot: onRefreshRoot
-    )
-  }
 
   var body: some View {
     HStack(alignment: .top, spacing: 0) {
@@ -116,7 +59,7 @@ struct LaneTreeRow: View {
         // The last roster of a machine the phone has no live link to: shown,
         // dimmed, no actions (the desktop's offline rule).
         card
-      } else if let onOpen {
+      } else {
         Button {
           onSelectLane(snapshot.lane.id)
           onOpen()
@@ -124,33 +67,10 @@ struct LaneTreeRow: View {
           card
         }
         .buttonStyle(ADEKitRowButtonStyle())
-          .contextMenu {
-            onContextMenu(snapshot)
-          } preview: {
-            LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest)
-          }
-      } else {
-        NavigationLink {
-          destination
-        } label: {
-          card
-        }
-        .simultaneousGesture(TapGesture().onEnded {
-          onSelectLane(snapshot.lane.id)
-        })
-        .buttonStyle(ADEKitRowButtonStyle())
         .contextMenu {
           onContextMenu(snapshot)
         } preview: {
           LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest)
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-          Button {
-            onTogglePin(snapshot.lane.id)
-          } label: {
-            Label(isPinned ? "Unpin" : "Pin", systemImage: isPinned ? "pin.slash.fill" : "pin.fill")
-          }
-          .tint(ADEColor.accent)
         }
       }
     }

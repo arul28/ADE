@@ -33,11 +33,11 @@ struct LaneDetailScreen: View {
   @State var cachedCommitDiffFilesBySha: [String: [String]] = [:]
   @State var pendingGitConfirmation: LaneGitConfirmation?
   @State private var lastLaneDetailLocalReload = Date.distantPast
-  /// Field diagnostics: when this screen appeared, for its ready timings.
-  @State private var diagnosticsOpenedAt: CFTimeInterval = 0
-  /// Set in `onAppear` (which runs before either task starts) and cleared when
-  /// the opening load finishes.
-  @State private var openingLoadInFlight = false
+  /// Field diagnostics: this screen's open-to-ready timings.
+  @State private var openTiming = ScreenOpenTiming()
+  /// The opening load (cache, then one host read) has finished. Until then the
+  /// keyed reload task stays out of its way.
+  @State private var openingLoadFinished = false
 
   var laneDetailProjectionReloadKey: String {
     // Per-lane revision keeps this screen from reloading when an unrelated lane's
@@ -115,25 +115,27 @@ struct LaneDetailScreen: View {
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
     .onAppear {
-      if detail == nil { openingLoadInFlight = true }
       ScrollDiagnostics.shared.enter(.laneDetail)
-      if ScrollDiagnostics.shared.isRunning, diagnosticsOpenedAt == 0 {
-        diagnosticsOpenedAt = CACurrentMediaTime()
-      }
+      openTiming.opened()
     }
     .onChange(of: detail != nil) { _, loaded in
-      guard loaded, diagnosticsOpenedAt > 0 else { return }
-      ScrollDiagnostics.shared.event("laneDetail.content", ["ms": Int((CACurrentMediaTime() - diagnosticsOpenedAt) * 1000)])
+      if loaded { openTiming.mark("laneDetail.content") }
     }
     .task {
       syncService.announceLaneOpen(laneId: laneId)
+      let openingKey = laneDetailProjectionReloadKey
       await loadDetail(refreshRemote: canRunLiveActions)
-      openingLoadInFlight = false
+      openingLoadFinished = true
+      // A local bump landed during the host read: read the cache once more
+      // so the newest local state wins over an older host reply.
+      if laneDetailProjectionReloadKey != openingKey {
+        await loadDetail(refreshRemote: false)
+      }
     }
     .task(id: laneDetailProjectionReloadKey) {
-      // The opening load above already reads the host once; starting another
-      // read here at the same time doubled every lane open.
-      guard busyAction == nil, !openingLoadInFlight else { return }
+      // The opening load owns the first read, and reads again itself if
+      // this key moved while it ran.
+      guard busyAction == nil, openingLoadFinished else { return }
       if detail == nil, canRunLiveActions {
         await loadDetail(refreshRemote: true)
         return
@@ -639,9 +641,7 @@ struct LaneDetailScreen: View {
         if detail != refreshedDetail {
           detail = refreshedDetail
         }
-        if diagnosticsOpenedAt > 0 {
-          ScrollDiagnostics.shared.event("laneDetail.fresh", ["ms": Int((CACurrentMediaTime() - diagnosticsOpenedAt) * 1000)])
-        }
+        openTiming.mark("laneDetail.fresh")
         let refreshedPullRequests = try await syncService.fetchPullRequestListItems(laneId: laneId)
         if lanePullRequests != refreshedPullRequests {
           lanePullRequests = refreshedPullRequests
