@@ -220,8 +220,18 @@
       if (!mk) {
         mk = await MusicKit.configure({
           developerToken: c.developerToken,
+          // MusicKit starts at STANDARD (64 kbps AAC) and moves to HIGH (256)
+          // only after reading navigator.connection.downlink, which WebKit
+          // does not have, so the macOS host played every song at 64 kbps.
+          // Start at HIGH; on Chromium a slow measured link still lowers it.
+          bitrate: MusicKit.PlaybackBitrate ? MusicKit.PlaybackBitrate.HIGH : 256,
           app: { name: "ADE", build: c.appBuild || "1.0.0", icon: location.origin + "/ade-icon.png" },
         });
+        // In case a MusicKit release ignores the option: WebKit has no link
+        // measurement to defer to, so set it directly there.
+        if (!navigator.connection && MusicKit.PlaybackBitrate && mk.bitrate !== MusicKit.PlaybackBitrate.HIGH) {
+          mk.bitrate = MusicKit.PlaybackBitrate.HIGH;
+        }
         wire();
       }
       if (c.userToken) mk.musicUserToken = c.userToken;
