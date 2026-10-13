@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/cloudflare";
 import {
   type AccountMappingRow,
   base64ToBytes,
@@ -1761,6 +1762,7 @@ async function createAppJwtOrErrorResponse(env: RelayEnv): Promise<{ jwt: string
   try {
     return { jwt: await createGitHubAppJwt(appId, privateKey) };
   } catch (error) {
+    Sentry.captureException(error);
     return {
       response: json(
         { ok: false, error: `GitHub App JWT could not be created: ${error instanceof Error ? error.message : String(error)}` },

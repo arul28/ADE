@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -262,6 +263,9 @@ export function createFileLogger(
   };
 
   const writeLine = (level: LogLevel, event: string, meta?: Record<string, unknown>) => {
+    // Ahead of the level filter: ADE_LOG_LEVEL=error must not hide warnings
+    // from error tracking. Info and debug never leave the machine.
+    forwardLogToSentry(level, event, meta);
     if (LOG_LEVELS[level] < minLevel) return;
 
     const line = JSON.stringify({

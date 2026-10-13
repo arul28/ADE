@@ -5248,7 +5248,7 @@ export function registerIpc({
   );
 
   /**
-   * "Send a report to ADE" from the Diagnostics sharing settings section, and
+   * "Send a report to ADE" from the Settings section of that name, and
    * "Report issue" on an error screen.
    *
    * Settings passes no argument: that report is about nothing in particular,

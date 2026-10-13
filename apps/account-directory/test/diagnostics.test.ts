@@ -967,9 +967,9 @@ describe("diagnostics budget sweep", () => {
     seedDays(env, { "2020-01-01": 9, [today]: 2 });
     let cleanup: Promise<unknown> = Promise.resolve();
     await worker.scheduled(
-      {} as ScheduledEvent,
+      { scheduledTime: Date.now(), cron: "* * * * *" } as ScheduledEvent,
       env,
-      { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+      { waitUntil: (promise) => { cleanup = Promise.all([cleanup, promise]); } } as ExecutionContext,
     );
     await cleanup;
 

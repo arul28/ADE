@@ -25,7 +25,7 @@
  *   `available_commands_update`. Some of the advertised commands only work in
  *   Copilot's own terminal UI. If a user picks one of those in ADE, the text
  *   reaches the model as a prompt. They are filtered out of the picker.
- * - The server-start flags `--effort`, `--available-tools`, and
+ * - The server-start flags `--effort` (alias of `--reasoning-effort`), `--available-tools`, and
  *   `--excluded-tools` are process global. `session/new` cannot override them,
  *   so a chat that needs a different value needs a different process. Those
  *   values are therefore part of the pool key.
@@ -93,6 +93,7 @@ import {
 import type { AcpAvailableCommand } from "../acpProtocolTypes";
 import { resolveCopilotCliModelForLaunch } from "../../../../../shared/cliLaunch";
 import {
+  ACP_EFFORT_LADDER,
   ADE_CLIENT_INFO,
   inlineImagePrompt,
   standardAcpUsage,
@@ -168,6 +169,28 @@ export function includeCopilotSlashCommand(command: AcpAvailableCommand): boolea
   return !COPILOT_TUI_ONLY_COMMANDS.has(normalizeCommandName(command.name));
 }
 
+/**
+ * Copilot's documented effort levels (`copilot --help`, 1.0.96:
+ * `--reasoning-effort <level>`). `--effort` is the older spelling of the same
+ * flag and is still accepted: 1.0.96 answers `--effort bogus` with "invalid
+ * value 'bogus' for '--reasoning-effort <level>'" and starts normally with
+ * `--effort high`. The ACP session reports the same levels as its
+ * `reasoning_effort` config option (category `thought_level`) for a model that
+ * takes an effort; Auto takes none and the session lists no option for it.
+ */
+export const COPILOT_REASONING_EFFORTS = ACP_EFFORT_LADDER;
+
+/**
+ * ADE's effort as a Copilot level, or `null` when Copilot has no such level.
+ * An unknown value on the command line makes Copilot exit at startup, so
+ * ADE's own `default` (no effort picked) and any other provider's level are
+ * dropped here.
+ */
+export function resolveCopilotReasoningEffort(effort: string | null | undefined): string | null {
+  const value = effort?.trim().toLowerCase();
+  return value && (COPILOT_REASONING_EFFORTS as readonly string[]).includes(value) ? value : null;
+}
+
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   const args = ["--acp"];
   const model = resolveCopilotCliModelForLaunch(context.modelId);
@@ -178,7 +201,8 @@ function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   // `session/request_permission` with or without it, so it is a cheap gate,
   // not a supervision mechanism.
   args.push("--add-dir", context.cwd);
-  if (context.reasoningEffort?.length) args.push("--effort", context.reasoningEffort);
+  const effort = resolveCopilotReasoningEffort(context.reasoningEffort);
+  if (effort) args.push("--effort", effort);
   return {
     command: context.binaryPath,
     args,
@@ -263,4 +287,15 @@ export const copilotDialect = defineAcpDialect({
   imagePrompts: capability(inlineImagePrompt),
   configOptionIds: COPILOT_CONFIG_OPTION_IDS,
   servedModelMismatchNote: COPILOT_SERVED_MODEL_NOTE,
+  // 1.0.96 projects a `reasoning_effort` option for a model that takes one
+  // (the string table in its runtime pairs the id with "Reasoning Effort",
+  // category `thought_level`, and the seven levels above). When the session
+  // lists it, an effort change moves the open session; when it does not
+  // (Auto, an Auto-only plan, older builds), the `--effort` spawn flag
+  // carries the effort and a change restarts the process as before.
+  reasoningEffortOption: {
+    configId: "reasoning_effort",
+    toAgentValue: resolveCopilotReasoningEffort,
+    spawnFlag: "--effort",
+  },
 });

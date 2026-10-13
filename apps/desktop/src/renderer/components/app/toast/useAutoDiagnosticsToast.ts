@@ -5,8 +5,8 @@ import { showToast } from "./toastStore";
  * One toast per automatic diagnostic report.
  *
  * Auto-send only stays acceptable if it is never invisible: something left this
- * computer, and the person it belongs to gets told, every time, with the two
- * things they might want next — the report itself, and the off switch.
+ * computer, and the person it belongs to gets told, every time, with the report
+ * itself one click away.
  *
  * Subscribing is also what asks for reports the brain sent while no window was
  * open, so a headless send surfaces the next time ADE is on screen instead of
@@ -50,30 +50,6 @@ export function useAutoDiagnosticsToast(): void {
                 },
               ]
             : []),
-          {
-            label: "Turn off",
-            variant: "secondary" as const,
-            onClick: () => {
-              // `ToastStack` dismisses this toast the moment the click returns,
-              // so a write that did not land would otherwise leave the user
-              // believing they turned auto-send off while it is still on. This is
-              // a consent control: it says so instead. `setSharing` answers with
-              // what was actually persisted, which is how a refused write shows
-              // up here — it resolves still-enabled rather than rejecting.
-              void bridge
-                .setSharing(false)
-                .then((status) => {
-                  if (status?.enabled !== false) throw new Error("not_saved");
-                })
-                .catch(() => {
-                  showToast({
-                    title: "ADE could not turn this off",
-                    message: "Try again in Settings → General.",
-                    tone: "error",
-                  });
-                });
-            },
-          },
         ],
         // The ack is the claim that the toast EXISTS, so it waits for the
         // commit rather than firing beside the queueing call. Un-referenced

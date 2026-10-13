@@ -148,9 +148,9 @@ export const IPC = {
    * watching.
    */
   diagnosticsSendManual: "ade.diagnostics.sendManual",
-  /** Read the "share diagnostics automatically" setting. */
+  /** Read the automatic-report setting. No UI reads it any more; kept for the preload contract. */
   diagnosticsGetSharing: "ade.diagnostics.getSharing",
-  /** Flip that setting; also what the toast's "Turn off" action calls. */
+  /** Flip the automatic-report setting. No UI calls it any more; kept for the preload contract. */
   diagnosticsSetSharing: "ade.diagnostics.setSharing",
   /** Reveal a saved auto-report in Finder/Explorer. Reports directory only. */
   diagnosticsRevealReport: "ade.diagnostics.revealReport",

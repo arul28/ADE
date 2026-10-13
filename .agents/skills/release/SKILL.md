@@ -477,6 +477,32 @@ Commit and land the docs/release metadata on `main` before tagging. The desktop
 release tag must point at the final `main` commit that includes the
 changelog. An SDK-docs-only commit does not get a `v*` tag.
 
+## Sentry in the release (all tiers)
+
+Every release build uploads what Sentry needs for readable stack traces, and
+none of it can fail or block a release:
+
+- **Desktop** (`release-core.yml`): the two "Build signed" steps set
+  `ADE_BUILD_SOURCEMAPS=1`; the electron-builder `beforePack` hook
+  (`apps/desktop/scripts/sentry-before-pack.cjs`) injects debug ids; maps are
+  excluded from the package (`!dist/**/*.map`); an upload step after packaging
+  sends them to `ade-desktop` and `ade-brain` as release `ade@<tag without v>`
+  with dist `win-x64` / `mac-arm64` / `mac-x64`
+  (`scripts/sentry/sentry-release.mjs`). `release-publish.yml` records the
+  release's commits from the checkout's git history, and
+  `publish-runtime-packages.yml` finalizes the Sentry release on publish.
+- **Web client and Workers** (`deploy-web.yml`): release
+  `ade@<git describe>`, maps uploaded to `ade-web` / `ade-workers`, and the
+  web client's maps deleted before the Pages deploy.
+- **iOS** (TestFlight workflow): dSYMs uploaded to `ade-ios` after the bump.
+
+All of it needs the `SENTRY_AUTH_TOKEN` repository secret (a Sentry
+organization token, set 2026-10-13). Without it each step logs one "skipping"
+line. After a release, confirm in the workflow logs that the upload steps ran
+and did not warn, then `sentry release view ade@<version>`; a warning there is
+a follow-up, never a reason to stop or re-run the release. Standalone runtime
+binaries (`build:static`) are not symbolicated.
+
 ## Phase 4: Desktop GitHub Workflow Release
 
 Do this only if desktop scope is `yes`. If iOS or Cloudflare is also in

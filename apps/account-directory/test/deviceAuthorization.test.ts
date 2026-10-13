@@ -577,9 +577,9 @@ describe("device authorization bridge", () => {
     let cleanup: Promise<unknown> | undefined;
 
     await worker.scheduled(
-      {} as ScheduledEvent,
+      { scheduledTime: Date.now(), cron: "* * * * *" } as ScheduledEvent,
       env,
-      { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+      { waitUntil: (promise) => { cleanup = Promise.all([cleanup, promise]); } } as ExecutionContext,
     );
     await cleanup;
 
@@ -595,9 +595,9 @@ describe("device authorization bridge", () => {
     vi.mocked(Date.now).mockReturnValue(startedAt + 4_201_000);
     cleanup = undefined;
     await worker.scheduled(
-      {} as ScheduledEvent,
+      { scheduledTime: Date.now(), cron: "* * * * *" } as ScheduledEvent,
       env,
-      { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+      { waitUntil: (promise) => { cleanup = Promise.all([cleanup, promise]); } } as ExecutionContext,
     );
     await cleanup;
     expect(env.DB.deviceRows).toHaveLength(0);

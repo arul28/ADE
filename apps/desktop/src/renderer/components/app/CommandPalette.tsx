@@ -745,7 +745,7 @@ export function CommandPalette({
         hint: `${settingsTabLabel(entry.tab)} · ${entry.group}`,
         group: "Settings",
         // Keywords never render; they widen what the palette's own filter
-        // matches on, so "telemetry" reaches "Product analytics".
+        // matches on, so "crash" reaches "Send a report to ADE".
         keywords: entry.keywords,
         run: () => navigate(settingsEntryPath(entry)),
       })),

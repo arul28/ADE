@@ -182,19 +182,26 @@ function acpSessionAdvertisesEffort<TSteer>(runtime: AcpRuntimeState<TSteer>): b
 /**
  * True when an open runtime can serve `plan` although the invocation keys
  * differ. That is so only when the effort spawn flag is the difference and the
- * session advertises the effort option: the config option already moved the
- * session's effort, so a restart would buy nothing. A build that does not
- * advertise the option (Grok before 1.0.40) takes the effort only from the
- * flag, so it restarts.
+ * session offers the requested effort through its config option: setting the
+ * option then moves the session's effort, so a restart would buy nothing. A
+ * build that does not advertise the option (Grok before 1.0.40), or a session
+ * that does not offer that level (a Copilot model listing only low and
+ * medium), takes the effort only from the flag, so it restarts; the flag is
+ * process-wide, and reusing the process would keep the old effort.
  */
 function acpEffortFlagChangeOnly<TSteer>(
   existing: AcpRuntimeState<TSteer>,
   plan: Pick<AcpSpawnPlan, "command" | "args">,
 ): boolean {
-  const withoutFlag = acpInvocationKeyWithout(plan, existing.dialect.reasoningEffortOption?.spawnFlag);
-  return withoutFlag !== null
-    && withoutFlag === existing.invocationKeyWithoutEffortFlag
-    && acpSessionAdvertisesEffort(existing);
+  const option = existing.dialect.reasoningEffortOption;
+  const withoutFlag = acpInvocationKeyWithout(plan, option?.spawnFlag);
+  if (withoutFlag === null || withoutFlag !== existing.invocationKeyWithoutEffortFlag) return false;
+  if (!option || !acpSessionAdvertisesEffort(existing)) return false;
+  const flagIndex = option.spawnFlag ? plan.args.indexOf(option.spawnFlag) : -1;
+  const requested = flagIndex >= 0 ? plan.args[flagIndex + 1] : undefined;
+  // No flag means "the agent's default", which the session can always take.
+  if (requested === undefined) return true;
+  return resolveAcpConfigValue(existing.configOptions, option.configId, requested).kind === "advertised";
 }
 
 /** True when ADE already has a transcript and must suppress `session/load` replay. */

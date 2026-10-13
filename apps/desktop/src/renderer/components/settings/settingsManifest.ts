@@ -375,27 +375,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "ADE browser",
   },
   {
-    id: "general.analytics",
-    label: "Product analytics",
-    keywords: ["telemetry", "posthog", "tracking", "privacy", "opt out"],
-    tab: "general",
-    anchor: "product-analytics",
-    scope: "machine",
-    web: "browser",
-    group: "Privacy",
-  },
-  {
     id: "general.diagnostics-sharing",
     // Not plain "Diagnostics": `storage.diagnostics` already owns that label,
     // and two identically named search hits pointing at different tabs is a
-    // coin flip for whoever is looking for the off switch.
-    label: "Diagnostics sharing",
-    keywords: ["diagnostics", "crash", "report", "report issue", "privacy", "error", "send", "opt out"],
+    // coin flip for whoever is looking for the report button.
+    label: "Send a report to ADE",
+    keywords: ["diagnostics", "crash", "report", "report issue", "error", "send", "support"],
     tab: "general",
     anchor: "diagnostics-sharing",
     scope: "machine",
-    // Machine-local consent written into `~/.ade/secrets` by the main process;
-    // a browser has no such file, so the toggle is not offered there.
+    // The report is built on this machine by the desktop app; a browser cannot build one.
     web: "hidden",
     group: "Privacy",
   },
@@ -1219,7 +1208,6 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   // Reset ADE lived inside the About card (#1410) before it got its own section.
   "about.reset": "general.reset",
   "auto-updates": "general.auto-updates",
-  "product-analytics": "general.analytics",
   storage: "storage.usage",
   // Moved out of Notifications when Activity got its own tab.
   "attention-sounds": "activity.sounds",

@@ -652,6 +652,8 @@ jobs:
           src/main/services/appControl/appControlLaunchCommand.test.ts
           src/main/services/appControl/appControlService.test.ts
           src/main/services/shared/processExecution.test.ts
+          src/main/services/shared/treeWatcher.test.ts
+          src/main/services/ai/cliExecutableResolver.test.ts
           src/main/services/updates/autoUpdateService.test.ts
           src/main/windowAppearance.test.ts
           src/renderer/lib/pathUtils.test.ts
@@ -870,6 +872,8 @@ jobs:
       # A literal NUL in a source file makes git, GitHub and agent read tools
       # treat it as binary. Source must use the `\u0000` escape instead.
       - run: node scripts/check-source-nul-bytes.mjs
+      # The four Workers' Sentry scrubbers are one file kept in four places.
+      - run: node scripts/check-worker-sentry-scrub.mjs
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
   ci-pass:

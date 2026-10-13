@@ -6,14 +6,16 @@ import chokidar, { type ChokidarOptions } from "chokidar";
  * Watches a directory tree and reports `add`, `change`, `unlink`, `addDir` and
  * `unlinkDir` with absolute paths, as chokidar does.
  *
- * Off macOS this is chokidar. On macOS chokidar has two modes and neither
- * fits a tree: the native one opens one watch per directory, and closing
- * thousands of those can block the event loop; the polling one
- * (`chokidarOptions.ts`) checks every path under the root once a second for
+ * On Linux this is chokidar. On macOS and Windows chokidar has two modes and
+ * neither fits a tree: the native one opens one watch per directory, and
+ * opening or closing thousands of those blocks the event loop (on Windows it
+ * also stats the whole tree first, seconds on a large repository); the polling
+ * one (`chokidarOptions.ts`) checks every path under the root once a second for
  * as long as the watcher lives.
  *
- * So macOS gets one recursive native watch per root, which costs nothing while
- * the tree is still, and one handle to close. The native event only says where
+ * So macOS and Windows get one recursive native watch per root (FSEvents,
+ * ReadDirectoryChangesW), which costs nothing while the tree is still, and one
+ * handle to close. Linux has no native recursive watch. The native event only says where
  * to look. What happened is decided as a poller decides it: the path is read
  * again and compared with what was there before. A new directory is walked
  * and a removed one is reported entry by entry, so callers receive the events
@@ -44,7 +46,7 @@ const EVENT_BATCH_MS = 25;
 const SCAN_CONCURRENCY = 32;
 
 export function watchTree(rootPath: string, options: TreeWatcherOptions = {}): TreeWatcher {
-  if (process.platform !== "darwin") {
+  if (process.platform !== "darwin" && process.platform !== "win32") {
     return chokidar.watch(rootPath, {
       ignoreInitial: true,
       ...(options.awaitWriteFinish ? { awaitWriteFinish: options.awaitWriteFinish } : {}),
@@ -163,6 +165,13 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     }
     drop(absPath);
     cancelSettle(absPath);
+    if (absPath === root && process.platform === "win32") {
+      // A Windows watch follows the directory it opened, not the path: after a
+      // move it would report the moved tree as if it were still here. The
+      // parent's watch sees the root come back and opens a new one.
+      nativeWatchers.get(root)?.close();
+      nativeWatchers.delete(root);
+    }
     if (announce) emit(entry.dir ? "unlinkDir" : "unlink", absPath);
   };
 
@@ -215,18 +224,25 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     });
   };
 
-  const watchExternal = (realDir: string): void => {
-    if (closed) return;
-    if (nativeWatchers.has(realDir) || realDir === root || realDir.startsWith(`${root}${path.sep}`)) return;
+  /** One recursive native watch on `dir`. False when the OS refused it. */
+  function openNativeWatch(dir: string): boolean {
+    if (closed) return false;
     try {
-      const watcher = fs.watch(realDir, { recursive: true }, (_event, filename) => {
-        enqueueReal(filename ? path.join(realDir, String(filename)) : realDir);
+      const watcher = fs.watch(dir, { recursive: true }, (_event, filename) => {
+        onNativeEvent(dir, filename);
       });
       watcher.on("error", (error) => emit("error", error));
-      nativeWatchers.set(realDir, watcher);
+      nativeWatchers.set(dir, watcher);
+      return true;
     } catch (error) {
       emit("error", error);
+      return false;
     }
+  }
+
+  const watchExternal = (realDir: string): void => {
+    if (nativeWatchers.has(realDir) || realDir === root || realDir.startsWith(`${root}${path.sep}`)) return;
+    openNativeWatch(realDir);
   };
 
   /** At most this many directory reads and stats at once, across the whole walk. */
@@ -368,6 +384,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     }
     // A root that came back is diffed against an empty tree.
     if (!entries.has(root)) remember(root, { dir: true, mtimeMs: 0, size: 0 });
+    if (!nativeWatchers.has(root)) openNativeWatch(root);
     if (stat.isDirectory()) {
       if (known && !known.dir) forget(absPath, true);
       const visited = await ancestorsReal(parent);
@@ -387,12 +404,46 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     else if (before.mtimeMs !== stat.mtimeMs || before.size !== stat.size) announceFile(absPath, "change", stat);
   };
 
+  /**
+   * Read every known directory again, as after the first walk, and report what
+   * differs. Directories reached through a link are read once per path, as the
+   * walk does.
+   */
+  const resyncTree = async (absDir: string, visitedReal: Set<string>, linked: Set<string>): Promise<void> => {
+    if (closed) return;
+    const knownBefore = [...(childrenOf.get(absDir) ?? [])];
+    // New directories are walked whole by this read; only the known ones need a pass of their own.
+    await syncDirectory(absDir, true, visitedReal);
+    await Promise.all(knownBefore.map(async (child) => {
+      if (closed || !entries.get(child)?.dir) return;
+      if (!linked.has(child)) return resyncTree(child, visitedReal, linked);
+      const real = await io(() => fs.promises.realpath(child)).catch(() => null);
+      if (real && !visitedReal.has(real)) await resyncTree(child, new Set(visitedReal).add(real), linked);
+    }));
+  };
+
   const flush = (): void => {
     batchTimer = null;
     if (closed || !ready) return;
     const batch = [...pendingEvents].sort((left, right) => left.length - right.length);
     pendingEvents.clear();
+    // A rescan that is queued and has not started yet will see everything up
+    // to the moment it starts, so a second one behind it adds nothing. Without
+    // this, an install or checkout (seconds of dropped events, one batch every
+    // 25 ms) queues hundreds of whole-tree reads back to back.
+    const rescan = rescanPending && !rescanQueued;
+    rescanPending = false;
+    if (rescan) rescanQueued = true;
     work = work.then(async () => {
+      if (rescan) rescanQueued = false;
+      if (rescan && entries.has(root)) {
+        try {
+          const linked = new Set([...aliases.values()].flatMap((known) => [...known]));
+          await resyncTree(root, await ancestorsReal(root), linked);
+        } catch (error) {
+          emit("error", error);
+        }
+      }
       for (const absPath of batch) {
         try {
           await inspect(absPath);
@@ -404,8 +455,28 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
   };
 
   function enqueue(absPath: string): void {
-    if (closed) return;
+    // Ignored paths (`.git`, `node_modules`) are most of the traffic in a busy tree; drop them here.
+    if (closed || isIgnored(absPath)) return;
     pendingEvents.add(absPath);
+    if (!batchTimer && ready) batchTimer = setTimeout(flush, EVENT_BATCH_MS);
+  }
+
+  /**
+   * An event without a name means the OS dropped events: Windows reports a full
+   * change buffer (a checkout, an install) this way, and what changed is lost.
+   * Only a read of the whole tree can tell.
+   */
+  let rescanPending = false;
+  let rescanQueued = false;
+  function onNativeEvent(watchedDir: string, filename: string | Buffer | null): void {
+    if (closed) return;
+    if (filename) {
+      enqueueReal(path.join(watchedDir, String(filename)));
+      return;
+    }
+    rescanPending = true;
+    // Queued too, so a root that is gone is still reported as gone.
+    enqueueReal(watchedDir);
     if (!batchTimer && ready) batchTimer = setTimeout(flush, EVENT_BATCH_MS);
   }
 
@@ -418,34 +489,53 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     }
   }
 
+  /**
+   * Windows only: the root's own watch cannot see the root deleted, moved away
+   * or created again, so its parent is watched (not recursively) for that one
+   * name, as chokidar does. FSEvents watches by path and needs none of this.
+   */
+  let parentWatcher: fs.FSWatcher | null = null;
+  const watchRootParent = (): void => {
+    if (process.platform !== "win32") return;
+    const parent = path.dirname(root);
+    if (parent === root) return;
+    const name = path.basename(root).toLowerCase();
+    try {
+      parentWatcher = fs.watch(parent, (_event, filename) => {
+        if (!filename || String(filename).toLowerCase() === name) enqueue(root);
+      });
+      // Losing the parent's watch only loses news of the root itself.
+      parentWatcher.on("error", () => {});
+    } catch {
+      parentWatcher = null;
+    }
+  };
+
   const start = async (): Promise<void> => {
     const rootStat = await statOrNull(root);
     if (closed) return;
     if (!rootStat?.isDirectory()) {
-      // chokidar accepts a path that is not there yet and stays silent; so does this.
+      // A root that is not there yet: ready at once, as chokidar is. On
+      // Windows its parent's watch is what notices it being created, after
+      // which `inspect` opens the root's watch and walks the new tree.
+      watchRootParent();
       ready = true;
       emit("ready");
       return;
     }
-    try {
-      const watcher = fs.watch(root, { recursive: true }, (_event, filename) => {
-        enqueueReal(filename ? path.join(root, String(filename)) : root);
-      });
-      watcher.on("error", (error) => emit("error", error));
-      nativeWatchers.set(root, watcher);
-    } catch (error) {
+    if (!openNativeWatch(root)) {
       // No watch means no events; the caller still gets `ready`, so it does not wait on a dead watcher.
-      emit("error", error);
       ready = true;
       emit("ready");
       return;
     }
+    watchRootParent();
     remember(root, { dir: true, mtimeMs: rootStat.mtimeMs, size: 0 });
     await walkDirectory(root, false, new Set());
     if (closed) return;
     ready = true;
     emit("ready");
-    if (pendingEvents.size > 0) batchTimer = setTimeout(flush, EVENT_BATCH_MS);
+    if (pendingEvents.size > 0 || rescanPending) batchTimer = setTimeout(flush, EVENT_BATCH_MS);
   };
 
   const api: TreeWatcher = {
@@ -479,6 +569,12 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
         }
       }
       nativeWatchers.clear();
+      try {
+        parentWatcher?.close();
+      } catch {
+        // already closed
+      }
+      parentWatcher = null;
       entries.clear();
       childrenOf.clear();
       aliases.clear();

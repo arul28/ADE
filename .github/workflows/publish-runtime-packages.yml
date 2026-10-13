@@ -234,3 +234,25 @@ jobs:
             (cd "$DIR" && npm publish --access public --provenance)
             echo "Published $PKG@$VERSION." >> "$GITHUB_STEP_SUMMARY"
           done
+
+  # Marks the Sentry release ade@<version> (ade-desktop, ade-brain) as released
+  # once the GitHub release is public. Independent of the npm publish above,
+  # and it covers prereleases too, since beta users report under them. Skips
+  # without SENTRY_AUTH_TOKEN and never fails this workflow.
+  finalize-sentry-release:
+    if: ${{ github.event_name == 'release' || inputs.confirm == 'publish' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Finalize the Sentry release
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+        run: node scripts/sentry/sentry-release.mjs finalize --version "$RELEASE_TAG"

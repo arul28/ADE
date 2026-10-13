@@ -9,6 +9,7 @@ import { spawnAsync } from "../shared/utils";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   invalidateExecutableLookupCache,
+  refreshWindowsPersistedPathDirs,
   resolveExecutableFromKnownLocations,
   setPathEnvValue,
 } from "./cliExecutableResolver";
@@ -401,6 +402,9 @@ async function inspectCliAuthentication(
   for (const args of probes) {
     try {
       const result = await spawnAsync(command, args, { timeout: 8_000 });
+      // A missing binary answers no probe; the remaining ones would only
+      // spawn more `cmd.exe` "not recognized" exits on Windows.
+      if (result.notFound) break;
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
       const normalized = output.toLowerCase();
 
@@ -486,6 +490,7 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
   for (const args of probes) {
     try {
       const result = await spawnAsync(command, args, { timeout: 8_000 });
+      if (result.notFound) break;
       const stdout = result.stdout ?? "";
       const normalized = `${stdout}\n${result.stderr ?? ""}`.trim().toLowerCase();
 
@@ -1243,6 +1248,15 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
     cachedCliAuth = null;
     cachedLocalProviders = null;
     invalidateExecutableLookupCache();
+  }
+  // Windows: pick up CLIs whose installer only touched the persisted PATH
+  // since ADE started. Cached for 30 s, so a non-forced pass usually costs
+  // nothing; the forced pass (Settings "re-check") always rereads it. Folding
+  // it into process.env as well means provider CLIs spawned from here on (and
+  // their own children) resolve the same tools. On Windows that merge spawns
+  // nothing; elsewhere it runs a login shell, so it stays force-only there.
+  await refreshWindowsPersistedPathDirs({ force: options?.force === true });
+  if (options?.force || process.platform === "win32") {
     await refreshProcessPathFromShell();
   }
 

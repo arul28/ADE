@@ -112,7 +112,7 @@ and installed-host diagnosis is in [Windows support](./windows-support.md).
 ```bash
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test:win:release-contract
-npm --prefix apps/desktop run test -- --run src/main/windowAppearance.test.ts src/main/services/transcription/microphoneAccess.test.ts src/main/services/appControl/appControlService.test.ts src/main/services/pty/ptyService.test.ts src/main/services/updates/autoUpdateService.test.ts
+npm --prefix apps/desktop run test -- --run src/main/windowAppearance.test.ts src/main/services/transcription/microphoneAccess.test.ts src/main/services/appControl/appControlService.test.ts src/main/services/pty/ptyService.test.ts src/main/services/updates/autoUpdateService.test.ts src/main/services/shared/treeWatcher.test.ts src/main/services/ai/cliExecutableResolver.test.ts
 npm --prefix apps/ade-cli run test -- --run src/serviceManager/common.test.ts src/services/projects/machineLayout.test.ts src/services/sync/syncHostSingleton.test.ts
 npm --prefix apps/desktop run build
 ```

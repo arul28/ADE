@@ -928,9 +928,10 @@ for each provider, mainly Claude and Codex. The wire contract is in
   (`<provider>:local`) has no ref. The upload is anonymous: it sends no
   account token.
 - **Consent.** The report goes only while product analytics is on
-  (`productAnalyticsService.getStatus().effective`). The analytics setting in
-  Settings says so in plain words. Turns and quota readings from before the
-  user last turned analytics on are not read. To stop the report on a
+  (`productAnalyticsService.getStatus().effective`). Analytics is on by default
+  and has no Settings switch; `DO_NOT_TRACK=1` or an opt-out a previous build
+  stored stops the report. Turns and quota readings from before analytics was
+  last enabled are not read. To stop the report on a
   machine, set `ADE_USAGE_RESEARCH` to `0`, `false`, `off`, or `no`. Both are
   checked again before every request, so turning analytics off mid-run stops
   the run, and stopping the uploader aborts the request in flight.

@@ -2,6 +2,7 @@ import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { WarningCircle } from "@phosphor-icons/react";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { captureError } from "../../../shared/sentry/capture";
 import {
   ERROR_PRIMARY_BUTTON,
   ERROR_SECONDARY_BUTTON,
@@ -35,6 +36,11 @@ class PageErrorBoundaryInner extends React.Component<
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     console.error("page.crash", error, errorInfo, error?.stack);
+    captureError(error, {
+      handled: false,
+      tags: { boundary: "page", route: window.location.hash || window.location.pathname },
+      extra: { componentStack: errorInfo.componentStack ?? null },
+    });
     logRendererDebugEvent("renderer.page_boundary_crash", {
       message: error?.message ?? String(error),
       route: window.location.hash || window.location.pathname,

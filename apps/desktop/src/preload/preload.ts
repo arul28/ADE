@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
+import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
 import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
@@ -1186,6 +1187,15 @@ import type {
 import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "../shared/laneGitHubIssue";
 import { MUSIC_IPC, type MusicBridge, type MusicState } from "../shared/types/music";
 import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState, type HomeWidgetsBridge } from "../shared/types/homeWidgets";
+
+// Renderer errors reach Sentry through main over this bridge, so the
+// renderer's CSP never has to allow Sentry's host (see main/sentry/initMain.ts).
+// Main passes the flag only when its own Sentry client is running; required
+// here, not imported, so nothing loads it when Sentry is off (dev, tests).
+if (process.argv.includes(SENTRY_ENABLED_ARGV)) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  (require("@sentry/electron/preload-namespaced") as typeof import("@sentry/electron/preload-namespaced")).hookupIpc();
+}
 
 type ShortIpcCache<T> = {
   clear: () => void;

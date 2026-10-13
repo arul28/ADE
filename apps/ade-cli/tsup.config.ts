@@ -24,6 +24,9 @@ const tuiNoExternal = [
   "ws",
   "yaml",
   /^highlight\.js(?:\/.*)?$/,
+  // Reached through the shared logger's Sentry bridge; a no-op in the TUI,
+  // which never starts a Sentry client.
+  /^@sentry\//,
 ];
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const cliNodeModules = path.join(packageRoot, "node_modules");
@@ -60,12 +63,15 @@ export default defineConfig([
     // externals through NODE_PATH into apps/desktop's production tree, which
     // does not ship it (v1.2.75 release smoke). verify-built-cli.mjs guards
     // this class.
+    // @sentry/*: inlined so the brain loads one file instead of a few hundred
+    // small ones, which costs most of a second on Windows (Defender scans each).
     noExternal: [
       "@factory/droid-sdk",
       /^@opencode\/client(?:\/.*)?$/,
       /^@muse-code\/sdk(?:\/.*)?$/,
       "yaml",
       "string-width",
+      /^@sentry\//,
     ],
     outExtension: () => ({
       js: ".cjs"

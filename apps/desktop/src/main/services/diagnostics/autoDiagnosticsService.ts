@@ -36,7 +36,9 @@ import type { DiagnosticsManualSendResult } from "../../../shared/types/diagnost
  * classified, it sends the same already-redacted report by itself.
  *
  * The guardrails are the feature, not decoration around it:
- *   - a Settings toggle, default on, honoured by this process and by the brain;
+ *   - an on-by-default opt-out, honoured by this process and by the brain:
+ *     `DO_NOT_TRACK=1`, or an explicit off persisted by an earlier build (there
+ *     is no Settings control for it);
  *   - a hard client budget (one per failure code, three total, per day, per
  *     install) reserved before the request so nothing here can become a loop;
  *   - a toast on every send, so it is never something that happened silently;
@@ -45,7 +47,7 @@ import type { DiagnosticsManualSendResult } from "../../../shared/types/diagnost
  *
  * All of which is `runAutoDiagnosticsSend`, shared with the brain's sender.
  * What lives here is only what is specific to the desktop: how a report gets
- * built, that it uploads anonymously, and the toggle the settings pane reads.
+ * built, that it uploads anonymously, and the spend counts the settings pane shows.
  */
 
 type ManualSendFailure = Extract<DiagnosticsManualSendResult, { ok: false }>["reason"];
@@ -179,14 +181,11 @@ export function createAutoDiagnosticsService(
    * Same collector, same redaction, same uploader as every other send — the
    * only thing that differs is who decided and what happens afterwards.
    *
-   * Consent is deliberately NOT checked. The setting the pane offers is about
-   * reports ADE files BY ITSELF when something breaks; this is a person asking,
-   * about a report they can open and read. Refusing it would mean anyone who
-   * turned off background reporting has no way to send anything at all — and
-   * that is exactly the user this control exists for. The pane says as much
-   * next to the button when the toggle is off, so the click can never be
-   * mistaken for turning automatic sending back on. Nothing here writes
-   * `enabled`.
+   * The opt-out is deliberately NOT checked. It governs reports ADE files BY
+   * ITSELF when something breaks; this is a person asking, about a report they
+   * can open and read. Refusing it would leave someone who opted out of
+   * background reporting with no way to send anything at all. Nothing here
+   * writes `enabled`.
    *
    * It is also NOT `runAutoDiagnosticsSend`: that policy is silence on failure
    * and a pending toast, both correct for a send nobody asked for and both

@@ -3,6 +3,7 @@
   "name": "ade-account-directory",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-30",
+  "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
   "observability": { "enabled": true, "head_sampling_rate": 1 },
@@ -26,6 +27,9 @@
   // of that instance, so it is set out of band like the secret above.
   "vars": {
     "ONLINE_WINDOW_MS": "90000",
+    // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
+    // events in). SENTRY_RELEASE is set at deploy, not here.
+    "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
     // Exact hosted web-client origin allowed to read /account/machines.
     // Set to the production HTTPS origin before deployment.
     "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
@@ -112,6 +116,8 @@
         // is live (`scripts/verify-deployment-config.mjs`).
         "DEVICE_PAGE_ORIGIN": "https://ade-app.dev",
         "ONLINE_WINDOW_MS": "90000",
+        // Same public DSN as above; vars do not inherit into an environment.
+        "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
         "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
         "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev",
         // Same ceiling as the default environment, and set explicitly: wrangler
