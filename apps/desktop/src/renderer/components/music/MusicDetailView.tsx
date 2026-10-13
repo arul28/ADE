@@ -127,14 +127,20 @@ export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps &
   };
   // Shuffle pressed while pages are still arriving waits for the last one, so
   // it draws from the whole collection and not only the songs read so far.
-  const [shuffleWaiting, setShuffleWaiting] = React.useState(false);
+  // Held per collection, and dropped when anything else is played first.
+  const [shuffleWaitingFor, setShuffleWaitingFor] = React.useState<string | null>(null);
+  const shuffleWaiting = shuffleWaitingFor === item.id;
   const play = (index: number, shuffle?: boolean) => {
-    if (shuffle && loading && tracks.length) setShuffleWaiting(true);
-    else start(index, shuffle);
+    if (shuffle && loading && tracks.length) {
+      setShuffleWaitingFor(item.id);
+      return;
+    }
+    setShuffleWaitingFor(null);
+    start(index, shuffle);
   };
   React.useEffect(() => {
     if (!shuffleWaiting || loading) return;
-    setShuffleWaiting(false);
+    setShuffleWaitingFor(null);
     start(0, true);
     // Runs once, when the last page lands (or the reads stop on an error).
     // eslint-disable-next-line react-hooks/exhaustive-deps
