@@ -74,6 +74,9 @@
 
   var round = function (n) { return Math.round((n || 0) * 10) / 10; };
 
+  // A restored queue reports the second it will continue from, not MusicKit's 0.
+  var currentTime = function () { return pendingSeek > 0 ? pendingSeek : round(mk.currentPlaybackTime); };
+
   var snapshot = function () {
     if (!mk) return { ready: false, loaded: loaded };
     var q = mk.queue;
@@ -82,7 +85,7 @@
       authorized: mk.isAuthorized,
       state: playbackStateName(mk.playbackState),
       isPlaying: mk.isPlaying,
-      time: round(mk.currentPlaybackTime),
+      time: currentTime(),
       duration: round(mk.currentPlaybackDuration),
       queuePosition: q ? q.position : -1,
       queueLength: q ? q.length : 0,
@@ -115,7 +118,7 @@
       var now = Date.now();
       if (now - lastTimeEmit < 1000) return;
       lastTimeEmit = now;
-      post({ event: "time", time: round(mk.currentPlaybackTime), duration: round(mk.currentPlaybackDuration), isPlaying: mk.isPlaying });
+      post({ event: "time", time: currentTime(), duration: round(mk.currentPlaybackDuration), isPlaying: mk.isPlaying });
     });
     on("mediaPlaybackError", function (e) {
       post({ event: "playbackError", error: String((e && (e.errorCode || e.message)) || e) });
@@ -242,7 +245,7 @@
       return {
         ids: q.items.map(function (i) { return i.id; }),
         index: q.position,
-        position: pendingSeek > 0 ? pendingSeek : round(m.currentPlaybackTime),
+        position: currentTime(),
         shuffle: m.shuffleMode,
         repeat: m.repeatMode,
         volume: m.volume,
