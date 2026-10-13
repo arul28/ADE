@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import { ArrowsClockwise, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
 import { CALLER_MCP_SUPPORT } from "../../../../shared/callerMcpServers";
 import {
+  MCP_TRANSPORT_LABEL,
   mcpRegistryState,
   type McpRegistryServer,
   type McpRegistryState,
@@ -42,8 +43,6 @@ const STATE_LABEL: Record<McpRegistryState, string> = {
   "off-machine": "Off on this computer",
   "off-project": "Off in this project",
 };
-
-const TRANSPORT_LABEL = { stdio: "Command", http: "HTTP", sse: "SSE" } as const;
 
 const PROVIDER_NAME: Record<string, string> = {
   claude: "Claude",
@@ -105,6 +104,8 @@ export function McpServersSection() {
             tone: "warning",
             title: `Imported ${server.name}`,
             message: "Its arguments or URL look like they hold a secret. That part syncs as plain text. Edit it to move the secret.",
+            // A message to read, not a passing event (docs/design/notices.md, Toast timing).
+            durationMs: 18_000,
           }
         : { tone: "success", title: `Imported ${server.name}`, message: "New chats get it from now on." });
     }
@@ -196,7 +197,7 @@ export function McpServersSection() {
                 <div key={server.name} className="ade-mcp-row" data-mcp-found={server.name}>
                   <div className="ade-mcp-head">
                     <span className="ade-mcp-name">{server.name}</span>
-                    <span className="kit-tag">{TRANSPORT_LABEL[server.transport]}</span>
+                    <span className="kit-tag">{MCP_TRANSPORT_LABEL[server.transport]}</span>
                     <span className="ade-mcp-head-end">
                       <FoundFrom providers={server.providers} />
                       <button
@@ -291,7 +292,7 @@ function ServerRow({
     <div className="ade-mcp-row" data-mcp-server={server.name} data-state={state === "on" ? "on" : "off"}>
       <div className="ade-mcp-head">
         <span className="ade-mcp-name">{server.name}</span>
-        <span className="kit-tag">{TRANSPORT_LABEL[server.transport]}</span>
+        <span className="kit-tag">{MCP_TRANSPORT_LABEL[server.transport]}</span>
         <span className="kit-tag" data-tone={state === "on" ? "ok" : undefined} data-mcp-state={state}>
           {STATE_LABEL[state]}
         </span>
@@ -341,6 +342,7 @@ function ServerRow({
           </div>
         </div>
       ) : null}
+      <McpSecretWarnings server={server} compact />
       {missingSecrets.map((secret) => (
         <MissingSecret
           key={`${secret.field}:${secret.name}`}
@@ -428,9 +430,16 @@ function MissingSecret({
  *
  * The shipped providers are read off `CALLER_MCP_SUPPORT`, the table the launch
  * path itself consults, so a provider that gains or loses a transport changes
- * this page without an edit here. The last row is the part no table knows: the
- * agents ADE does not hand registry servers to yet.
+ * this page without an edit here. The last row is {@link NOT_SERVED_YET}, which
+ * no table knows.
  */
+/**
+ * The agents ADE does not hand registry servers to yet. Written by hand: it
+ * is the one row here that `CALLER_MCP_SUPPORT` does not drive, so it changes
+ * only when someone edits it.
+ */
+const NOT_SERVED_YET = "Copilot, Grok, Kimi, Qwen, Devin, and personal chats";
+
 function WhoGetsThem() {
   const groups = useMemo(() => {
     const all: string[] = [];
@@ -468,10 +477,7 @@ function WhoGetsThem() {
         {groups.none.map((id) => (
           <ModernRow key={id} title={logos([id])} hint={`None. ${providerName(id)} can't use MCP servers.`} />
         ))}
-        <ModernRow
-          title="Copilot, Grok, Kimi, Qwen, Devin, and personal chats"
-          hint="Not yet."
-        />
+        <ModernRow title={NOT_SERVED_YET} hint="Not yet." />
       </ModernRows>
     </ModernSection>
   );

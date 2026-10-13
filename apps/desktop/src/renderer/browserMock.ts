@@ -62,6 +62,7 @@ import { createChatLaunchSnapshot, toQueuedMessage } from "../shared/chatLaunch"
 // same source the host stamps onto every snapshot.
 import { usageProviderAccountUrl } from "../shared/types/usage";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
+import { mcpSecretVaultKey, mcpSecretVaultKeyPrefix } from "../shared/mcpRegistry";
 import {
   CHAT_MENTION_KINDS,
   CHAT_MENTION_MAX_PER_KIND,
@@ -4820,7 +4821,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     // only as "held" flags, as the real bridge never hands one back either.
     mcpRegistry: (() => {
       const held = new Set<string>();
-      const secretKey = (ref: { server: string; field: string; name: string }) => `mcp/${ref.server}/${ref.field}/${ref.name}`;
+      const secretKey = (ref: { server: string; field: string; name: string }) =>
+        mcpSecretVaultKey(ref.server, ref.field === "header" ? "header" : "env", ref.name);
       const found = [
         { name: "linear", transport: "http" as const, url: "https://mcp.linear.app/mcp", envNames: [], headerNames: [], providers: ["codex" as const, "droid" as const] },
         {
@@ -4858,7 +4860,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             ...(args.keep?.headerNames ?? []).map((name) => secretKey({ server: args.server, field: "header", name })),
           ]);
           for (const key of [...held]) {
-            if (key.startsWith(`mcp/${args.server}/`) && !keep.has(key)) held.delete(key);
+            if (key.startsWith(mcpSecretVaultKeyPrefix(args.server)) && !keep.has(key)) held.delete(key);
           }
           return { ok: true as const, value: null };
         },

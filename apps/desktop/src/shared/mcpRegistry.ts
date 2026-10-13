@@ -41,6 +41,13 @@ export const MCP_REGISTRY_LIMITS = {
 
 export type McpRegistryTransport = "stdio" | "http" | "sse";
 
+/** What each transport is called on the settings page, in the order it is offered. */
+export const MCP_TRANSPORT_LABEL: Readonly<Record<McpRegistryTransport, string>> = {
+  stdio: "Command",
+  http: "HTTP",
+  sse: "SSE",
+};
+
 export type McpRegistryServer = {
   /** The name agents see the server's tools under. Unique in the list. */
   name: string;

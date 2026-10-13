@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Plus, X } from "@phosphor-icons/react";
 import { ADE_RESERVED_MCP_SERVER_NAMES } from "../../../../shared/callerMcpServers";
 import {
+  MCP_TRANSPORT_LABEL,
   isValidMcpFieldName,
   isValidMcpRegistryName,
   mcpSecretVaultKey,
@@ -41,11 +42,8 @@ type FormState = {
   fields: FieldRow[];
 };
 
-const TRANSPORTS: ReadonlyArray<{ value: McpRegistryTransport; label: string }> = [
-  { value: "stdio", label: "Command" },
-  { value: "http", label: "HTTP" },
-  { value: "sse", label: "SSE" },
-];
+const TRANSPORTS: ReadonlyArray<{ value: McpRegistryTransport; label: string }> =
+  (Object.keys(MCP_TRANSPORT_LABEL) as McpRegistryTransport[]).map((value) => ({ value, label: MCP_TRANSPORT_LABEL[value] }));
 
 const SNIPPET_PLACEHOLDER = '{ "mcpServers": { "context7": { "type": "http", "url": "https://mcp.context7.com/mcp" } } }';
 
