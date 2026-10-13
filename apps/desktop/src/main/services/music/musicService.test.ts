@@ -27,6 +27,10 @@ const hosts = vi.hoisted(() => ({
   }>,
   /** Whether a host leaves as soon as it is told to quit. */
   exitOnQuit: true,
+  /** When set, a restore (`playItems` with `play: false`) answers only after it resolves. */
+  restoreGate: null as Promise<void> | null,
+  /** What the host answers to `authorize`. */
+  authorizeReply: { userToken: null as string | null, authorized: false },
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -62,11 +66,21 @@ vi.mock("node:child_process", async (importOriginal) => {
           case "quit":
             if (hosts.exitOnQuit) setImmediate(() => host.exit(0));
             return;
-          case "playItems":
+          case "playItems": {
             host.queue = command.ids as string[];
+            if (command.play === false) {
+              const restored = { state: "none", isPlaying: false, time: command.position, queueLength: host.queue.length, queuePosition: command.index };
+              void (hosts.restoreGate ?? Promise.resolve()).then(() => reply(command.rid, restored));
+              return;
+            }
             return reply(command.rid, { state: "playing", isPlaying: true, queueLength: host.queue.length, queuePosition: command.index });
+          }
           case "pause":
             return reply(command.rid, { state: "paused", isPlaying: false });
+          case "seek":
+            return reply(command.rid, { time: command.position });
+          case "authorize":
+            return reply(command.rid, hosts.authorizeReply);
           case "resume":
             return reply(command.rid, { state: "playing", isPlaying: true });
           case "snapshot":
@@ -86,6 +100,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const { createMusicService } = await import("./musicService");
+type MusicState = Awaited<ReturnType<ReturnType<typeof createMusicService>["getState"]>>;
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -96,8 +111,20 @@ function tempDir(): string {
 
 /** Apple's catalog: which of the asked song ids still exist. */
 let catalogSongs = new Set<string>();
+/** What Apple answers for a collection's tracks, by `offset`. */
+let trackPages = new Map<number, { count: number; next: boolean; total?: number }>();
 const fetchImpl = vi.fn(async (url: string | URL) => {
   const parsed = new URL(String(url));
+  if (parsed.pathname.endsWith("/tracks")) {
+    const offset = Number(parsed.searchParams.get("offset"));
+    const page = trackPages.get(offset);
+    if (!page || parsed.searchParams.get("limit") !== "100") return new Response("{}", { status: 400 });
+    const data = Array.from({ length: page.count }, (_, at) => ({ id: `i.${offset + at}`, type: "library-songs", attributes: { name: `Song ${offset + at}` } }));
+    return new Response(
+      JSON.stringify({ data, ...(page.next ? { next: "/next" } : {}), ...(page.total === undefined ? {} : { meta: { total: page.total } }) }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }
   if (parsed.pathname.endsWith("/songs")) {
     const ids = (parsed.searchParams.get("ids") ?? "").split(",").filter((id) => catalogSongs.has(id));
     return new Response(JSON.stringify({ data: ids.map((id) => ({ id, type: "songs" })) }), { status: 200, headers: { "content-type": "application/json" } });
@@ -105,7 +132,7 @@ const fetchImpl = vi.fn(async (url: string | URL) => {
   return new Response("{}", { status: 404 });
 }) as unknown as typeof fetch;
 
-function service() {
+function service(broadcast: (state: MusicState) => void = () => {}) {
   const dir = tempDir();
   const executable = path.join(dir, "ade-music-host.exe");
   fs.writeFileSync(executable, "");
@@ -121,7 +148,7 @@ function service() {
       set: async (key, value) => { stored.set(key, value); },
       delete: async (key) => { stored.delete(key); },
     },
-    broadcast: () => {},
+    broadcast,
     idleUnloadMs: 1_000,
     fetchImpl,
   });
@@ -138,7 +165,10 @@ const commandsOf = (index: number, cmd: string) => hosts.list[index]!.commands.f
 beforeEach(() => {
   hosts.list.length = 0;
   hosts.exitOnQuit = true;
+  hosts.restoreGate = null;
+  hosts.authorizeReply = { userToken: null, authorized: false };
   catalogSongs = new Set();
+  trackPages = new Map();
 });
 
 afterEach(async () => {
@@ -189,6 +219,99 @@ describe("music service: the player host's lifetime", () => {
     await music.command({ type: "play" });
     expect(hosts.list).toHaveLength(2);
     expect(commandsOf(1, "playItems")).toEqual([]);
+    await music.dispose();
+  });
+
+  it("holds a command until the tab's warm-up has put the unloaded queue back", async () => {
+    const { music } = service();
+    await music.command({ type: "playItems", ids: ["l.song-1", "l.song-2"], index: 0 });
+    await music.command({ type: "pause" });
+    await music.unloadPlayer();
+
+    // The Music tab opens (warm) and play is pressed while the restore is still loading.
+    let releaseRestore: () => void = () => {};
+    hosts.restoreGate = new Promise<void>((resolve) => { releaseRestore = resolve; });
+    const warming = music.warm();
+    const playing = music.command({ type: "play" });
+    await settle();
+    expect(commandsOf(1, "playItems")).toEqual([expect.objectContaining({ play: false, position: 42 })]);
+    expect(commandsOf(1, "resume")).toEqual([]);
+
+    releaseRestore();
+    await warming;
+    expect(await playing).toEqual({ ok: true });
+    // Once, after the restore, and the queue was put back only once.
+    expect(hosts.list[1]!.commands.map((command) => command.cmd).filter((cmd) => cmd === "playItems" || cmd === "resume")).toEqual(["playItems", "resume"]);
+    await music.dispose();
+  });
+
+  it.each([
+    ["a sign-in that returns no token closes Apple's window", null, false, 1],
+    ["a finished sign-in leaves nothing to close", "user-token-2", true, 0],
+  ])("%s", async (_label, userToken, ok, closes) => {
+    hosts.authorizeReply = { userToken, authorized: Boolean(userToken) };
+    const { music, stored } = service();
+
+    const result = await music.connect();
+    await settle();
+
+    expect(result.ok).toBe(ok);
+    expect(commandsOf(0, "authorize")).toHaveLength(1);
+    expect(commandsOf(0, "closeAuth")).toHaveLength(closes);
+    expect(stored.get("music.appleMusic.userToken")).toBe(userToken ?? "user-token");
+    await music.dispose();
+  });
+});
+
+describe("music service: the playback position", () => {
+  it("pushes a position only when the windows' own estimate would be wrong", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pushed: MusicState[] = [];
+    const { music } = service((state) => pushed.push(state));
+    await music.command({ type: "playItems", ids: ["l.song-1"], index: 0 });
+    const tick = async (time: number) => {
+      hosts.list[0]!.stdout.write(`${JSON.stringify({ event: "time", time, duration: 200, isPlaying: true })}\n`);
+      await settle();
+      vi.advanceTimersByTime(50);
+    };
+
+    // The first tick brings the duration, so it anchors the position.
+    await tick(10);
+    expect(pushed.at(-1)?.playback).toMatchObject({ position: 10, duration: 200, isPlaying: true });
+    const anchored = pushed.length;
+
+    // A tick the windows already predict is not news.
+    await tick(10.4);
+    expect(pushed).toHaveLength(anchored);
+
+    // A jump (a stall, a seek made elsewhere) is.
+    await tick(60);
+    expect(pushed).toHaveLength(anchored + 1);
+    expect(pushed.at(-1)?.playback.position).toBe(60);
+
+    // A seek's own reply moves the position even by a fraction of a second.
+    await music.command({ type: "pause" });
+    await music.command({ type: "seek", position: 60.5 });
+    expect((await music.getState()).playback).toMatchObject({ position: 60.5, isPlaying: false });
+    await music.dispose();
+  });
+});
+
+describe("music service: a collection's songs, one page at a time", () => {
+  it.each([
+    ["a middle page says where the next one starts and how many songs there are", 100, 500, { count: 100, next: true, total: 1804 }, 200, 1804],
+    ["a short last page ends the list", 1800, 100, { count: 4, next: false, total: 1804 }, null, 1804],
+    ["the last page ADE reads ends the list even when Apple has more", 1900, 100, { count: 100, next: true }, null, null],
+  ])("%s", async (_label, offset, limit, page, nextOffset, total) => {
+    trackPages.set(offset, page);
+    const { music } = service();
+
+    const result = await music.tracks({ kind: "playlist", id: "p.1", library: true, offset, limit });
+
+    expect(result.items).toHaveLength(page.count);
+    expect(result.items[0]).toMatchObject({ id: `i.${offset}`, title: `Song ${offset}` });
+    expect(result.nextOffset).toBe(nextOffset);
+    expect(result.total).toBe(total);
     await music.dispose();
   });
 });
