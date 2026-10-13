@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.102] - 2026-10-13
+
+### Desktop and web
+
+- Send a message into a running turn without a loaded model, and keep a chat's model across pane remounts (#1606).
+- Sign a machine in from your phone with a QR code (#1603).
+- Videos play in PRs, and the phone shows a PR description's pictures (#1604).
+
 ## [1.2.101] - 2026-10-12
 
 ### Desktop and web
@@ -2457,7 +2465,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.101...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.102...HEAD
+[1.2.102]: https://github.com/arul28/ADE/compare/v1.2.101...v1.2.102
 [1.2.101]: https://github.com/arul28/ADE/compare/v1.2.100...v1.2.101
 [1.2.100]: https://github.com/arul28/ADE/compare/v1.2.99...v1.2.100
 [1.2.99]: https://github.com/arul28/ADE/compare/v1.2.98...v1.2.99
