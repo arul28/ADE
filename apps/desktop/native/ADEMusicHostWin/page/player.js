@@ -96,13 +96,50 @@
     };
   };
 
+  // Moving the queue on after a song ends. MusicKit is meant to do it, but
+  // under WebKit (macOS) it goes ended -> stopped at the same queue position
+  // and stays there, with no song loaded. That "stopped where it ended" is the
+  // signal: the page then plays the next song (or the first, under repeat all)
+  // itself. Where MusicKit moves on by itself it never stops at that position,
+  // so this does nothing. While it runs, states are held back so ADE does not
+  // see a moment with no song.
+  var endedAt = -1;
+  var advancing = false;
+
   var emitState = function (reason) {
+    if (advancing) return;
     post({ event: "state", reason: reason, state: snapshot() });
+  };
+
+  var continueAfterEnd = async function (index) {
+    advancing = true;
+    try {
+      await mk.changeToMediaAtIndex(index);
+      if (!mk.isPlaying) await mk.play();
+    } catch (e) {
+      post({ event: "playbackError", error: String((e && (e.errorCode || e.message)) || e) });
+    } finally {
+      advancing = false;
+      emitState("continue");
+    }
+  };
+
+  var onPlaybackState = function () {
+    var states = MusicKit.PlaybackStates;
+    var q = mk.queue;
+    var stoppedWhereEnded = mk.playbackState === states.stopped && q && endedAt >= 0 && q.position === endedAt;
+    var next = !stoppedWhereEnded ? -1 : endedAt + 1 < q.length ? endedAt + 1 : mk.repeatMode === 2 ? 0 : -1;
+    endedAt = mk.playbackState === states.ended && q ? q.position : -1;
+    if (next >= 0 && !advancing) {
+      void continueAfterEnd(next);
+      return;
+    }
+    emitState("playbackState");
   };
 
   var wire = function () {
     var on = function (name, fn) { mk.addEventListener(name, fn); };
-    on("playbackStateDidChange", function () { emitState("playbackState"); });
+    on("playbackStateDidChange", onPlaybackState);
     on("nowPlayingItemDidChange", function () { emitState("nowPlaying"); });
     on("queueItemsDidChange", function () { emitState("queueItems"); post({ event: "queueChanged" }); });
     on("queuePositionDidChange", function () { emitState("queuePosition"); post({ event: "queueChanged" }); });
