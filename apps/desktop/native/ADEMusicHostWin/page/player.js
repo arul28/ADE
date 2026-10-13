@@ -26,6 +26,9 @@
   // MusicKit drops a seek made before the song has loaded, so it is applied
   // right after the next play instead.
   var pendingSeek = 0;
+  // The index a queue was set to start at. MusicKit's queue.position stays -1
+  // until the first play, so this names the song that will play until then.
+  var startIndex = 0;
 
   // MusicKit's key is "<prefix>.<team id>.media-user-token".
   var forgetSavedUserToken = function () {
@@ -77,6 +80,14 @@
   // A restored queue reports the second it will continue from, not MusicKit's 0.
   var currentTime = function () { return pendingSeek > 0 ? pendingSeek : round(mk.currentPlaybackTime); };
 
+  // Before the first play of a restored queue MusicKit has no nowPlayingItem
+  // and no queue position; the song that will play is the start index's.
+  var queueIndex = function (q) { return q && q.position >= 0 ? q.position : startIndex; };
+  var currentItem = function (m) {
+    var q = m.queue;
+    return m.nowPlayingItem || (q && q.items && q.items[queueIndex(q)]) || null;
+  };
+
   var snapshot = function () {
     if (!mk) return { ready: false, loaded: loaded };
     var q = mk.queue;
@@ -87,12 +98,12 @@
       isPlaying: mk.isPlaying,
       time: currentTime(),
       duration: round(mk.currentPlaybackDuration),
-      queuePosition: q ? q.position : -1,
+      queuePosition: q && q.items && q.items.length ? queueIndex(q) : -1,
       queueLength: q ? q.length : 0,
       shuffle: mk.shuffleMode,
       repeat: mk.repeatMode,
       volume: mk.volume,
-      nowPlaying: slimItem(mk.nowPlayingItem),
+      nowPlaying: slimItem(currentItem(mk)),
     };
   };
 
@@ -167,12 +178,13 @@
     if (!q) return { position: -1, items: [] };
     var items = [];
     for (var i = 0; i < q.items.length; i++) items.push(slimItem(q.items[i]));
-    return { position: q.position, items: items };
+    return { position: items.length ? queueIndex(q) : -1, items: items };
   };
 
   var setQueueAndMaybePlay = async function (descriptor, c) {
     var index = typeof c.index === "number" && c.index > 0 ? c.index : 0;
     if (index > 0) descriptor.startWith = index;
+    startIndex = index;
     descriptor.startPlaying = false;
     pendingSeek = 0;
     await mk.setQueue(descriptor);
@@ -286,7 +298,7 @@
         shuffle: m.shuffleMode,
         repeat: m.repeatMode,
         volume: m.volume,
-        nowPlaying: slimItem(m.nowPlayingItem),
+        nowPlaying: slimItem(currentItem(m)),
       };
     },
   };

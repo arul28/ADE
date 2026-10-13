@@ -501,7 +501,8 @@ export function createMusicService(args: {
       const s = snapshot;
       snapshot = null;
       try {
-        await h.request("playItems", { ids: s.ids, index: s.index, position: s.position, play: false });
+        // The reply carries the song and the second it continues from.
+        applyHostState(await h.request<HostState>("playItems", { ids: s.ids, index: s.index, position: s.position, play: false }));
         if (s.repeat) await h.request("repeat", { mode: s.repeat });
         args.logger?.info("music.queue_restored", { items: s.ids.length, index: s.index, position: s.position });
       } catch (error) {
@@ -702,7 +703,9 @@ export function createMusicService(args: {
       await loadUserToken();
       if (!userToken || !args.hostExecutable) return;
       try {
-        await withBusy(() => ensurePlayer(false));
+        // Put an unloaded queue back (paused) so the tab shows the song and
+        // the second it will continue from, not MusicKit's empty start.
+        await withBusy(() => ensurePlayer(true));
       } catch {
         // State carries the message.
       }
