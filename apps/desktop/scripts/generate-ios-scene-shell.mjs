@@ -14,7 +14,12 @@
  * markup of its own.
  *
  * Run it after any change to `chatScene.ts`, `chatSceneDocument.ts` or
- * `chatSceneChart.ts`, and commit the result. `--check` is the drift guard.
+ * `chatSceneChart.ts`, and commit the result. `--check` is the drift guard, and
+ * CI runs it (the `lint-desktop` job).
+ *
+ * `--check` also guards the scene policy's other hand-kept copy: the hosted web
+ * client serves the scene frame's page with the policy as a response header
+ * (`src/renderer/webclient/public/_headers`), and that file cannot import it.
  */
 import { build } from "esbuild";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -25,6 +30,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(here, "..");
 const outPath = path.resolve(desktopRoot, "../ios/ADE/Resources/SceneShell.html");
+const headersPath = path.join(desktopRoot, "src/renderer/webclient/public/_headers");
+/** The paths the web client's scene frame is served at; see the comments in `_headers`. */
+const SCENE_FRAME_PATHS = ["/scene-frame.html", "/scene-frame"];
 
 /** Every token Swift fills. `WorkSceneDocument.swift` reads the same list. */
 const token = (name) => `@@ADE_IOS:${name}@@`;
@@ -76,7 +84,14 @@ async function loadBuilder() {
   const outfile = path.join(dir, "chatSceneDocument.mjs");
   try {
     await build({
-      entryPoints: [path.join(desktopRoot, "src/shared/chatSceneDocument.ts")],
+      stdin: {
+        contents: [
+          'export { buildSceneDocument } from "./chatSceneDocument";',
+          'export { SCENE_CONTENT_SECURITY_POLICY } from "./chatScene";',
+        ].join("\n"),
+        resolveDir: path.join(desktopRoot, "src/shared"),
+        loader: "ts",
+      },
       bundle: true,
       format: "esm",
       platform: "node",
@@ -89,8 +104,39 @@ async function loadBuilder() {
   }
 }
 
+/**
+ * The header lines `_headers` sets for one path: the indented lines under the
+ * line that is exactly that path, up to the next line that is not indented.
+ */
+function headerLinesFor(headersText, routePath) {
+  const lines = headersText.split(/\r?\n/);
+  const start = lines.indexOf(routePath);
+  if (start < 0) return null;
+  const block = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!/^\s+\S/.test(line)) break;
+    block.push(line.trim());
+  }
+  return block;
+}
+
+/** Stop when the web client does not serve the scene frame with today's scene policy. */
+function checkWebClientHeaders(policy) {
+  let text = "";
+  try { text = readFileSync(headersPath, "utf8"); } catch { /* missing counts as wrong */ }
+  const wanted = `Content-Security-Policy: ${policy}; frame-ancestors 'self'`;
+  const shown = path.relative(process.cwd(), headersPath);
+  for (const routePath of SCENE_FRAME_PATHS) {
+    const block = headerLinesFor(text, routePath);
+    if (!block) fail(`${shown} has no entry for ${routePath}.`);
+    if (!block.includes(wanted)) {
+      fail(`${shown} does not serve ${routePath} with the scene policy. Its entry needs exactly this line:\n  ${wanted}`);
+    }
+  }
+}
+
 async function generate() {
-  const { buildSceneDocument } = await loadBuilder();
+  const { buildSceneDocument, SCENE_CONTENT_SECURITY_POLICY } = await loadBuilder();
   let html = buildSceneDocument({
     html: TOKENS.body,
     title: null,
@@ -148,10 +194,10 @@ async function generate() {
   }
   const strays = html.match(/@@ADE_IOS:[A-Z_]+@@/g).filter((found) => !Object.values(TOKENS).includes(found));
   if (strays.length) fail(`unknown tokens in the shell: ${[...new Set(strays)].join(", ")}`);
-  return html.endsWith("\n") ? html : `${html}\n`;
+  return { html: html.endsWith("\n") ? html : `${html}\n`, policy: SCENE_CONTENT_SECURITY_POLICY };
 }
 
-const html = await generate();
+const { html, policy } = await generate();
 if (process.argv.includes("--check")) {
   let current = "";
   try { current = readFileSync(outPath, "utf8"); } catch { /* missing counts as stale */ }
@@ -159,6 +205,8 @@ if (process.argv.includes("--check")) {
     fail(`${path.relative(process.cwd(), outPath)} is stale. Run: node apps/desktop/scripts/generate-ios-scene-shell.mjs`);
   }
   console.log("iOS scene shell is up to date.");
+  checkWebClientHeaders(policy);
+  console.log(`The web client serves ${SCENE_FRAME_PATHS.join(" and ")} with the scene policy.`);
 } else {
   writeFileSync(outPath, html);
   console.log(`Wrote ${path.relative(process.cwd(), outPath)} (${html.length} bytes).`);

@@ -376,7 +376,6 @@ enum WorkSceneInboundMessage: Equatable {
   case ready(height: Double?)
   case resize(height: Double?)
   case settled(height: Double?)
-  case emit(name: String)
   case error(message: String, policy: Bool)
   case open(url: String)
   case reply(id: String, text: String)
@@ -422,9 +421,6 @@ func workParseSceneInboundMessage(_ body: Any) -> WorkSceneInboundEnvelope? {
   case "ready": return envelope(.ready(height: height))
   case "resize": return envelope(.resize(height: height))
   case "settled": return envelope(.settled(height: height))
-  case "emit":
-    let name = String((payload["name"] as? String ?? "").prefix(120))
-    return name.isEmpty ? nil : envelope(.emit(name: name))
   case "error":
     let message = (payload["message"] as? String).map { String($0.prefix(WorkSceneLimits.errorMaxLength)) }
       ?? "scene error"

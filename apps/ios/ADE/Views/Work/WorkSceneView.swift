@@ -465,8 +465,6 @@ final class WorkSceneController: NSObject, ObservableObject {
       } else {
         notice = message
       }
-    case .emit:
-      break
     case .open(let url):
       open(url)
     case .reply(let id, let text):

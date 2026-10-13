@@ -8,8 +8,9 @@
  * scenes from two models look like one product.
  *
  * Plain SVG and DOM, no dependency. It runs inside the scene frame after the
- * SDK, so it is a string, written without backslashes, backticks or template
- * holes: what is typed here is exactly what the frame runs.
+ * SDK, so it is a string: a `String.raw` template with no backticks and no
+ * template holes, so what is typed here, backslashes included, is exactly what
+ * the frame runs.
  */
 
 /** Styles for the marks `ade.chart` draws. Colors are the frame's own variables, so a theme switch restyles a chart in place. */
@@ -33,7 +34,7 @@ export const SCENE_CHART_STYLES = `
 .ade-chart-spark svg { width: auto; }
 `.trim();
 
-export const SCENE_CHART_SOURCE = `
+export const SCENE_CHART_SOURCE = String.raw`
 (function () {
   if (!window.ade) return;
   var NS = "http://www.w3.org/2000/svg";
@@ -144,7 +145,7 @@ export const SCENE_CHART_SOURCE = `
       var name = data.series[s].name;
       lines.push((name ? name + ": " : "") + format(data.series[s].values[index] || 0, opts));
     }
-    return lines.join(String.fromCharCode(10));
+    return lines.join("\n");
   }
 
   function drawBar(wrap, data, opts, width, height) {
@@ -179,7 +180,7 @@ export const SCENE_CHART_SOURCE = `
         svgEl("rect", {
           x: x + 1, y: y, width: Math.max(1, barW - 2), height: Math.max(0, h), rx: Math.min(3, barW / 4),
           fill: data.series[k].color, "data-mark": "",
-          "data-tip": data.labels[g] + String.fromCharCode(10) + (name ? name + ": " : "") + format(value, opts),
+          "data-tip": data.labels[g] + "\n" + (name ? name + ": " : "") + format(value, opts),
         }, svg);
       }
       if (g % box.every === 0) xLabel(svg, data.labels[g], center, box.baseline + 15);
@@ -254,7 +255,7 @@ export const SCENE_CHART_SOURCE = `
         "stroke-dasharray": round(share * circumference) + " " + round(circumference),
         "stroke-dashoffset": round(-offset * circumference),
         transform: "rotate(-90 " + size / 2 + " " + size / 2 + ")", "data-mark": "",
-        "data-tip": data.labels[s] + String.fromCharCode(10) + format(value, opts) + " (" + percent + ")",
+        "data-tip": data.labels[s] + "\n" + format(value, opts) + " (" + percent + ")",
       }, svg);
       offset += share;
       items.push({ name: data.labels[s], color: color, value: format(value, opts) + " · " + percent });

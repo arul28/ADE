@@ -242,7 +242,6 @@ window.__ADE_SCENE_RESTORED__ = @@ADE_IOS:RESTORED@@;
         listeners[event] = (listeners[event] || []).filter(function (f) { return f !== fn; });
       };
     },
-    emit: function (name, payload) { post("emit", { name: String(name), payload: payload }); },
     /** The reader's message that followed this scene, or null while it is still open. */
     answered: null,
     /**
@@ -756,7 +755,7 @@ window.__ADE_SCENE_RESTORED__ = @@ADE_IOS:RESTORED@@;
       var name = data.series[s].name;
       lines.push((name ? name + ": " : "") + format(data.series[s].values[index] || 0, opts));
     }
-    return lines.join(String.fromCharCode(10));
+    return lines.join("\n");
   }
 
   function drawBar(wrap, data, opts, width, height) {
@@ -791,7 +790,7 @@ window.__ADE_SCENE_RESTORED__ = @@ADE_IOS:RESTORED@@;
         svgEl("rect", {
           x: x + 1, y: y, width: Math.max(1, barW - 2), height: Math.max(0, h), rx: Math.min(3, barW / 4),
           fill: data.series[k].color, "data-mark": "",
-          "data-tip": data.labels[g] + String.fromCharCode(10) + (name ? name + ": " : "") + format(value, opts),
+          "data-tip": data.labels[g] + "\n" + (name ? name + ": " : "") + format(value, opts),
         }, svg);
       }
       if (g % box.every === 0) xLabel(svg, data.labels[g], center, box.baseline + 15);
@@ -866,7 +865,7 @@ window.__ADE_SCENE_RESTORED__ = @@ADE_IOS:RESTORED@@;
         "stroke-dasharray": round(share * circumference) + " " + round(circumference),
         "stroke-dashoffset": round(-offset * circumference),
         transform: "rotate(-90 " + size / 2 + " " + size / 2 + ")", "data-mark": "",
-        "data-tip": data.labels[s] + String.fromCharCode(10) + format(value, opts) + " (" + percent + ")",
+        "data-tip": data.labels[s] + "\n" + format(value, opts) + " (" + percent + ")",
       }, svg);
       offset += share;
       items.push({ name: data.labels[s], color: color, value: format(value, opts) + " · " + percent });

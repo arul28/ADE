@@ -42,8 +42,12 @@ export function escapeForScript(value: unknown): string {
  *
  * A const rather than a function: it never varies, so building it per scene
  * only re-trimmed the same four kilobytes.
+ *
+ * A `String.raw` template, as `SCENE_CHART_SOURCE` is: a backslash typed here
+ * is the backslash the frame runs, with no second layer of escaping. Only the
+ * `${...}` holes are filled.
  */
-const SCENE_SDK_SOURCE = `
+const SCENE_SDK_SOURCE = String.raw`
 (function () {
   var listeners = Object.create(null);
   var reducedMotion = false;
@@ -155,7 +159,7 @@ const SCENE_SDK_SOURCE = `
         var node = label.childNodes[i];
         if (node.nodeType === 3 && String(node.nodeValue).trim()) text = String(node.nodeValue);
       }
-      return text.replace(/\\s+/g, " ").trim() || name;
+      return text.replace(/\s+/g, " ").trim() || name;
     } catch (e) { return name; }
   }
 
@@ -180,7 +184,7 @@ const SCENE_SDK_SOURCE = `
       values[name].push(value);
     }
     for (var j = 0; j < order.length; j++) lines.push("- " + labels[order[j]] + ": " + values[order[j]].join(", "));
-    return lines.join("\\n");
+    return lines.join("\n");
   }
 
   var ade = {
@@ -204,7 +208,6 @@ const SCENE_SDK_SOURCE = `
         listeners[event] = (listeners[event] || []).filter(function (f) { return f !== fn; });
       };
     },
-    emit: function (name, payload) { post("emit", { name: String(name), payload: payload }); },
     /** The reader's message that followed this scene, or null while it is still open. */
     answered: null,
     /**

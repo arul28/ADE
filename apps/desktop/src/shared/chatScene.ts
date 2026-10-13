@@ -562,7 +562,6 @@ export type SceneHostMessage = { nonce?: string } & (
    * the view is finished but before the turn ends and the frame comes down.
    */
   | { type: "settled"; payload: { height?: number } }
-  | { type: "emit"; payload: { name: string; payload?: unknown } }
   /** `policy`: a request the scene policy blocked (a remote font, an image), not a thrown error. */
   | { type: "error"; payload: { message: string; policy?: true } }
   /**
@@ -584,7 +583,7 @@ export type SceneHostMessage = { nonce?: string } & (
 /** Longest reply a scene may put in the prompt box. */
 export const SCENE_REPLY_MAX_CHARS = 4_000;
 
-const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "settled", "emit", "error", "open", "reply"]);
+const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "settled", "error", "open", "reply"]);
 
 /**
  * Validate an inbound frame message. The frame is untrusted, so shape-check
@@ -602,11 +601,6 @@ export function parseSceneHostMessage(value: unknown): SceneHostMessage | null {
   const rawNonce = typeof record.nonce === "string" ? record.nonce.slice(0, 120) : "";
   const nonce = rawNonce.length ? { nonce: rawNonce } : {};
 
-  if (type === "emit") {
-    const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "";
-    if (!name.length) return null;
-    return { ...nonce, type: "emit", payload: { name, payload: payload.payload } };
-  }
   if (type === "error") {
     const message = typeof payload.message === "string" ? payload.message.slice(0, 500) : "scene error";
     return { ...nonce, type: "error", payload: { message, ...(payload.policy === true ? { policy: true as const } : {}) } };

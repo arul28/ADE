@@ -31,6 +31,13 @@ import {
   SCENE_CAPTURE_RETRY_MAX_MS,
   SCENE_CAPTURE_RETRY_MS,
 } from "./sceneCapture";
+import {
+  FRAME_OPEN_MIN_INTERVAL_MS,
+  FRAME_REPLY_MIN_INTERVAL_MS,
+  passFrameGate,
+  postToOpaqueFrame,
+  watchOutsidePresses,
+} from "./sandboxedFrame";
 import { SceneDataFeed } from "./sceneData";
 import {
   cachedPreparedUrl,
@@ -75,8 +82,6 @@ import { useSceneStillLatch } from "./useSceneStillLatch";
  */
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 960;
-/** The least time between two links a scene may open. */
-const SCENE_OPEN_MIN_INTERVAL_MS = 800;
 /** The page the hosted web client loads a scene in; served with the scene policy. */
 const SCENE_WEB_FRAME_PATH = "/scene-frame.html";
 function isSceneBootRequest(value: unknown): boolean {
@@ -84,8 +89,6 @@ function isSceneBootRequest(value: unknown): boolean {
     && (value as { __adeSceneBoot?: unknown }).__adeSceneBoot === 1
     && (value as { ready?: unknown }).ready === true;
 }
-/** A floor between replies, so a scene that loops cannot churn the prompt box. */
-const SCENE_REPLY_MIN_INTERVAL_MS = 150;
 
 /** Every whole http(s) URL written in a scene's source. */
 function webUrlsIn(source: string): Set<string> {
@@ -138,7 +141,6 @@ export type SceneFrameProps = {
    * the scene is answered and its reply controls go inert.
    */
   answeredText?: string | null;
-  onEmit?: (name: string, payload: unknown) => void;
   /**
    * `expanded` fills its container, always runs, and takes no still: it is the
    * full-size view the inline scene's Expand button opens.
@@ -168,7 +170,6 @@ export function SceneFrame({
   streaming = false,
   scopeKey,
   answeredText = null,
-  onEmit,
   variant = "inline",
 }: SceneFrameProps) {
   const expandedVariant = variant === "expanded";
@@ -375,39 +376,29 @@ export function SceneFrame({
   }, [doc]);
 
   const postToFrame = useCallback((message: SceneFrameInbound) => {
-    // The frame's origin is opaque, so "*" is the only target that reaches it.
-    try { frameRef.current?.contentWindow?.postMessage(sceneFrameMessage(message), "*"); } catch { /* frame gone */ }
+    postToOpaqueFrame(frameRef.current, sceneFrameMessage(message));
   }, []);
 
   /**
-   * A scene opens links only while its frame has focus (a click inside it
-   * gives it focus), while this window holds transient user activation (a
-   * click in a child frame activates its ancestors too, and the activation
-   * lapses seconds later, so a timer firing after one click is refused), and
-   * at most one per {@link SCENE_OPEN_MIN_INTERVAL_MS}. Every open is visible:
-   * ADE navigates, or the page opens in ADE's browser.
+   * A scene opens links only right after a click or a key press inside its
+   * frame (`frameJustPressed` holds the rule: a timer firing after one click
+   * is refused, and so is a press anywhere else in ADE), and at most one per
+   * {@link FRAME_OPEN_MIN_INTERVAL_MS}. Every open is visible: ADE navigates,
+   * or the page opens in ADE's browser.
    */
+  useEffect(() => watchOutsidePresses(), []);
   const lastOpenRef = useRef(0);
   const lastReplyRef = useRef(0);
   const replyToComposer = useContext(SceneReplyContext);
   // Which scene a pick came from. A scene with no scope (a reasoning body, the
   // expanded view of an unscoped one) is told apart by its source.
   const replySourceKey = `scene:${scopeKey ?? source}`;
-  /** The user just clicked or pressed a key inside this frame. */
-  const framePressed = useCallback(() => {
-    const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
-    return frameRef.current !== null
-      && document.activeElement === frameRef.current
-      && (activation ? activation.isActive : true);
-  }, []);
   const latestDataRef = useRef<SceneDataPayload | null>(null);
   // Whole URLs only: a substring match would let a scene open any prefix of a
   // URL it was written with, and pick which one, to spell out its data.
   const writtenUrls = useMemo(() => webUrlsIn(source), [source]);
   const openFromScene = useCallback((url: string) => {
-    const now = Date.now();
-    if (!framePressed() || now - lastOpenRef.current < SCENE_OPEN_MIN_INTERVAL_MS) return;
-    lastOpenRef.current = now;
+    if (!passFrameGate(frameRef.current, lastOpenRef, FRAME_OPEN_MIN_INTERVAL_MS)) return;
     const deeplink = parseDeeplink(url);
     if (deeplink.ok) {
       openChatDeeplinkTarget(url, deeplink.target, { laneId, pin });
@@ -426,7 +417,7 @@ export function SceneFrame({
       return;
     }
     setSceneError("A scene can open ADE links (ade://) and web pages only.");
-  }, [failed, parsed, writtenUrls, pin, laneId, framePressed]);
+  }, [failed, parsed, writtenUrls, pin, laneId]);
 
   /**
    * A scene's reply goes into the prompt box as a draft, under the rule links
@@ -437,15 +428,13 @@ export function SceneFrame({
     const refuse = (error: string) => postToFrame({ type: "picked", payload: { id, ok: false, error } });
     if (!replyToComposer) { refuse("This view has no prompt box to reply in."); return; }
     if (answeredText !== null) { refuse("The reader already answered this scene."); return; }
-    const now = Date.now();
-    if (!framePressed() || now - lastReplyRef.current < SCENE_REPLY_MIN_INTERVAL_MS) {
+    if (!passFrameGate(frameRef.current, lastReplyRef, FRAME_REPLY_MIN_INTERVAL_MS)) {
       refuse("A scene replies only in answer to a click or a key press.");
       return;
     }
-    lastReplyRef.current = now;
     replyToComposer(text, replySourceKey);
     postToFrame({ type: "picked", payload: { id, ok: true } });
-  }, [replyToComposer, replySourceKey, answeredText, framePressed, postToFrame]);
+  }, [replyToComposer, replySourceKey, answeredText, postToFrame]);
 
   // Only messages from this frame's own contentWindow are considered, every one
   // is shape-checked before it reaches state, and every one must name the
@@ -457,7 +446,7 @@ export function SceneFrame({
       if (isSceneBootRequest(event.data)) {
         const html = docHtmlRef.current;
         if (html && srcRef.current?.startsWith(SCENE_WEB_FRAME_PATH)) {
-          try { frameRef.current.contentWindow?.postMessage({ __adeSceneBoot: 1, html }, "*"); } catch { /* frame gone */ }
+          postToOpaqueFrame(frameRef.current, { __adeSceneBoot: 1, html });
         }
         return;
       }
@@ -469,10 +458,6 @@ export function SceneFrame({
         // Thrown before the frame said it was up: the view did not draw. A
         // policy block (a remote font or image) is reported, not collapsed.
         if (!message.payload.policy && !readyRef.current) setDrawFailed(true);
-        return;
-      }
-      if (message.type === "emit") {
-        onEmit?.(message.payload.name, message.payload.payload);
         return;
       }
       if (message.type === "open") {
@@ -498,7 +483,7 @@ export function SceneFrame({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [onEmit, scopeKey, openFromScene, replyFromScene, advanceStage]);
+  }, [scopeKey, openFromScene, replyFromScene, advanceStage]);
 
   // Live ADE data, for a scene that asked for it, while its frame is up.
   const sendData = useCallback((payload: SceneDataPayload) => {
@@ -909,7 +894,7 @@ export function SceneFrame({
           scrollBody={false}
           testId="chat-scene-dialog"
         >
-          <SceneFrame source={source} scopeKey={null} answeredText={answeredText} onEmit={onEmit} variant="expanded" />
+          <SceneFrame source={source} scopeKey={null} answeredText={answeredText} variant="expanded" />
         </Dialog>
       ) : null}
     </div>

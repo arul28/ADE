@@ -1,4 +1,4 @@
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { AppWindow, Globe, WarningCircle } from "@phosphor-icons/react";
 
 import { sceneThemeSignature } from "../../../shared/chatScene";
@@ -7,6 +7,7 @@ import {
   MCP_APP_ERROR_REFUSED,
   MCP_APP_LIMITS,
   MCP_APP_PROTOCOL_VERSION,
+  MCP_APP_SESSION_NOT_RUNNING,
   mcpAppItemIdFromCardId,
   mcpAppThemeContext,
   parseMcpAppFrameMessage,
@@ -14,6 +15,7 @@ import {
   readMcpAppMessageText,
   readMcpAppOpenLinkUrl,
   type McpAppDocument,
+  type McpAppFrameMessage,
   type McpAppGetResult,
   type McpAppRequestResult,
 } from "../../../shared/mcpApp";
@@ -21,8 +23,18 @@ import type { AdeCardPayload } from "../../../shared/adeCard";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { COLORS } from "../lanes/laneDesignTokens";
+import { Banner } from "../ui/notice";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { SceneReplyContext } from "./SceneFrame";
+import {
+  FRAME_OPEN_MIN_INTERVAL_MS,
+  FRAME_REPLY_MIN_INTERVAL_MS,
+  frameJustPressed,
+  passFrameGate,
+  postToOpaqueFrame,
+  watchOutsidePresses,
+} from "./sandboxedFrame";
+import { knownSceneHeight, rememberSceneHeight } from "./sceneDocumentCache";
 import { useSceneTheme } from "./sceneTheme";
 import { useSceneOnScreen } from "./useSceneOnScreen";
 
@@ -52,9 +64,6 @@ import { useSceneOnScreen } from "./useSceneOnScreen";
  * draw anything, including something that looks like ADE.
  */
 
-/** The least time between two links, and between two drafts, one app may send. */
-const OPEN_MIN_INTERVAL_MS = 800;
-const MESSAGE_MIN_INTERVAL_MS = 150;
 /** Requests one frame may have with the brain at once; the brain has its own cap. */
 const MAX_FORWARDED_REQUESTS = 8;
 /** A page that has not said `ui/initialize` by now is not going to. */
@@ -76,7 +85,6 @@ export function canHostMcpApps(): boolean {
  */
 const APP_CACHE_CAPACITY = 6;
 const appCache = new Map<string, { app: McpAppDocument; url: string | null }>();
-const heightCache = new Map<string, number>();
 
 function rememberApp(key: string, entry: { app: McpAppDocument; url: string | null }): void {
   appCache.delete(key);
@@ -93,35 +101,22 @@ type LoadState =
   | { status: "ready"; app: McpAppDocument; url: string }
   | { status: "unavailable"; reason: string };
 
-export function McpAppCard({ card }: { card: AdeCardPayload }) {
-  const itemId = mcpAppItemIdFromCardId(card.cardId);
-  const { sessionId, pin } = useChatRuntimeScope();
+type RuntimePin = ReturnType<typeof useChatRuntimeScope>["pin"];
+
+/**
+ * One app's page and the URL its frame loads: read from the brain and prepared
+ * in the main process once `wanted`, then kept (`appCache`) across remounts.
+ * `reload` drops the kept copy and reads it again.
+ */
+function useMcpAppDocument(
+  sessionId: string | null | undefined,
+  itemId: string | null,
+  pin: RuntimePin,
+  wanted: boolean,
+): { load: LoadState; reload: () => void } {
   const cacheKey = sessionId && itemId ? `${sessionId}:${itemId}` : null;
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [load, setLoad] = useState<LoadState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
-  const [height, setHeight] = useState(() => (cacheKey ? heightCache.get(cacheKey) : undefined) ?? DEFAULT_HEIGHT);
-  const [notice, setNotice] = useState<string | null>(null);
-  /** Requests this frame has with the brain. The frame stays up while one is out. */
-  const [forwarded, setForwarded] = useState(0);
-  const forwardedRef = useRef(0);
-  const [initialized, setInitialized] = useState(false);
-
-  const theme = useSceneTheme();
-  const themeRef = useRef(theme);
-  themeRef.current = theme;
-  const themeKey = sceneThemeSignature(theme);
-
-  // Up while on screen, and while a call it made is still out: an approval can
-  // take a minute, and the answer has to have a frame to come back to.
-  const onScreen = useSceneOnScreen(wrapperRef, Boolean(cacheKey));
-  const wantFrame = onScreen || forwarded > 0;
-
-  // Load the page once the row is first on screen, and keep it. `wanted`
-  // latches, so scrolling away mid-load does not cancel the load.
-  const [wanted, setWanted] = useState(false);
-  useEffect(() => { if (wantFrame) setWanted(true); }, [wantFrame]);
   useEffect(() => {
     if (!cacheKey || !sessionId || !itemId || !wanted) return;
     let cancelled = false;
@@ -155,6 +150,152 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
     })();
     return () => { cancelled = true; };
   }, [cacheKey, sessionId, itemId, pin, wanted, attempt]);
+  const reload = useCallback(() => {
+    if (cacheKey) appCache.delete(cacheKey);
+    setAttempt((value) => value + 1);
+  }, [cacheKey]);
+  return { load, reload };
+}
+
+/**
+ * The tools the user always allows for this app's server, so they can be taken
+ * back on the row. Read when the app loads; `refresh` reads them again.
+ */
+function useMcpAppGrants(
+  appRef: MutableRefObject<McpAppDocument | null>,
+  pin: RuntimePin,
+  appLoaded: boolean,
+): { alwaysAllowed: string[]; refresh: () => void; stopAllowing: (tool: string) => void } {
+  const [alwaysAllowed, setAlwaysAllowed] = useState<string[]>([]);
+  const refresh = useCallback(() => {
+    const current = appRef.current;
+    const list = window.ade?.agentChat?.listMcpAppGrants;
+    if (!current || typeof list !== "function") return;
+    void list({ sessionId: current.sessionId, itemId: current.itemId }, pin)
+      .then((result) => setAlwaysAllowed(Array.isArray(result?.tools) ? result.tools : []))
+      .catch(() => { /* the row keeps what it last knew */ });
+  }, [appRef, pin]);
+  useEffect(() => { if (appLoaded) refresh(); }, [appLoaded, refresh]);
+  const stopAllowing = useCallback((tool: string) => {
+    const current = appRef.current;
+    if (!current) return;
+    void window.ade.agentChat
+      .revokeMcpAppGrant({ sessionId: current.sessionId, itemId: current.itemId, tool }, pin)
+      .then((result) => setAlwaysAllowed(Array.isArray(result?.tools) ? result.tools : []))
+      .catch(() => { /* still allowed; the row still says so */ });
+  }, [appRef, pin]);
+  return { alwaysAllowed, refresh, stopAllowing };
+}
+
+/** What answering one request from an app's frame needs from the row that hosts it. */
+type AppRequestContext = {
+  app: McpAppDocument;
+  frame: HTMLIFrameElement | null;
+  pin: RuntimePin;
+  post: (message: Record<string, unknown>) => void;
+  hostContext: () => Record<string, unknown>;
+  /** How a draft reaches the prompt box, or null in a view with none. */
+  replyToComposer: ((text: string, sourceKey: string) => void) | null;
+  replySourceKey: string;
+  lastOpenRef: { current: number };
+  lastMessageRef: { current: number };
+  forward: (id: string | number, method: "tools/call" | "resources/read", params: Record<string, unknown>) => void;
+};
+
+/** Answer one JSON-RPC request from an app's frame. Every branch posts exactly one answer, or forwards. */
+function answerAppRequest(message: Extract<McpAppFrameMessage, { kind: "request" }>, ctx: AppRequestContext): void {
+  const { id, method, params } = message;
+  const { post } = ctx;
+  const refuse = (text: string, code: number = MCP_APP_ERROR_REFUSED) => post({ id, error: { code, message: text } });
+  switch (method) {
+    case "ui/initialize":
+      post({
+        id,
+        result: {
+          protocolVersion: MCP_APP_PROTOCOL_VERSION,
+          hostInfo: { name: "ADE", version: "1" },
+          hostCapabilities: {
+            openLinks: {},
+            serverTools: {},
+            serverResources: {},
+            logging: {},
+            // What the sandbox was actually given: these origins, no device permissions.
+            sandbox: { csp: ctx.app.csp },
+          },
+          hostContext: ctx.hostContext(),
+        },
+      });
+      return;
+    case "ping":
+      post({ id, result: {} });
+      return;
+    case "ui/open-link": {
+      const url = readMcpAppOpenLinkUrl(params);
+      if (!url) { refuse("An app can open web pages (http or https) only."); return; }
+      if (!passFrameGate(ctx.frame, ctx.lastOpenRef, FRAME_OPEN_MIN_INTERVAL_MS)) {
+        refuse("An app opens a link only in answer to a click or a key press.");
+        return;
+      }
+      openUrlInAdeBrowser(url, { runtimePin: ctx.pin });
+      post({ id, result: {} });
+      return;
+    }
+    case "ui/message": {
+      const text = readMcpAppMessageText(params);
+      if (!text) { refuse("A message needs text, as the user."); return; }
+      if (!ctx.replyToComposer) { refuse("This view has no prompt box to put a message in."); return; }
+      if (!passFrameGate(ctx.frame, ctx.lastMessageRef, FRAME_REPLY_MIN_INTERVAL_MS)) {
+        refuse("An app adds a message only in answer to a click or a key press.");
+        return;
+      }
+      // A draft in the prompt box. Nothing is sent: the reader sends it.
+      ctx.replyToComposer(text, ctx.replySourceKey);
+      post({ id, result: {} });
+      return;
+    }
+    case "ui/request-display-mode":
+      post({ id, result: { mode: "inline" } });
+      return;
+    case "tools/call":
+    case "resources/read":
+      ctx.forward(id, method, params);
+      return;
+    default:
+      refuse("ADE does not support this request from an app.", MCP_APP_ERROR_METHOD_NOT_FOUND);
+  }
+}
+
+export function McpAppCard({ card }: { card: AdeCardPayload }) {
+  const itemId = mcpAppItemIdFromCardId(card.cardId);
+  const { sessionId, pin } = useChatRuntimeScope();
+  const cacheKey = sessionId && itemId ? `${sessionId}:${itemId}` : null;
+  /** Where this app's last height is kept, apart from any scene's. */
+  const heightKey = cacheKey ? `mcp-app:${cacheKey}` : null;
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const [height, setHeight] = useState(() => knownSceneHeight(heightKey) ?? DEFAULT_HEIGHT);
+  /** The page loaded and never started the handshake. */
+  const [stalled, setStalled] = useState(false);
+  /** Requests this frame has with the brain. The frame stays up while one is out. */
+  const [forwarded, setForwarded] = useState(0);
+  const forwardedRef = useRef(0);
+  const [initialized, setInitialized] = useState(false);
+
+  const theme = useSceneTheme();
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+  const themeKey = sceneThemeSignature(theme);
+
+  // Up while on screen, and while a call it made is still out: an approval can
+  // take a minute, and the answer has to have a frame to come back to.
+  const onScreen = useSceneOnScreen(wrapperRef, Boolean(cacheKey));
+  const wantFrame = onScreen || forwarded > 0;
+
+  // Load the page once the row is first on screen, and keep it. `wanted`
+  // latches, so scrolling away mid-load does not cancel the load.
+  const [wanted, setWanted] = useState(false);
+  useEffect(() => { if (wantFrame) setWanted(true); }, [wantFrame]);
+  const { load, reload } = useMcpAppDocument(sessionId, itemId, pin, wanted);
 
   const app = load.status === "ready" ? load.app : null;
   const src = load.status === "ready" && wantFrame ? load.url : null;
@@ -173,44 +314,20 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
   }, [src]);
 
   const post = useCallback((message: Record<string, unknown>) => {
-    // The frame's origin is opaque, so "*" is the only target that reaches it.
-    try { frameRef.current?.contentWindow?.postMessage({ jsonrpc: "2.0", ...message }, "*"); } catch { /* frame gone */ }
+    postToOpaqueFrame(frameRef.current, { jsonrpc: "2.0", ...message });
   }, []);
 
-  /** The user just clicked or pressed a key inside this frame. Same rule as a scene. */
-  const framePressed = useCallback(() => {
-    const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
-    return frameRef.current !== null
-      && document.activeElement === frameRef.current
-      && (activation ? activation.isActive : true);
-  }, []);
+  // A link, a draft and a tool that may change data all need a click or a key
+  // press inside this frame. Same rule as a scene: `frameJustPressed`.
+  useEffect(() => watchOutsidePresses(), []);
 
-  /** The tools the user always allows for this app's server, so they can be taken back here. */
-  const [alwaysAllowed, setAlwaysAllowed] = useState<string[]>([]);
-  const refreshGrants = useCallback(() => {
-    const current = appRef.current;
-    const list = window.ade?.agentChat?.listMcpAppGrants;
-    if (!current || typeof list !== "function") return;
-    void list({ sessionId: current.sessionId, itemId: current.itemId }, pin)
-      .then((result) => setAlwaysAllowed(Array.isArray(result?.tools) ? result.tools : []))
-      .catch(() => { /* the row keeps what it last knew */ });
-  }, [pin]);
-  const appLoaded = app !== null;
-  useEffect(() => { if (appLoaded) refreshGrants(); }, [appLoaded, refreshGrants]);
-  const stopAllowing = useCallback((tool: string) => {
-    const current = appRef.current;
-    if (!current) return;
-    void window.ade.agentChat
-      .revokeMcpAppGrant({ sessionId: current.sessionId, itemId: current.itemId, tool }, pin)
-      .then((result) => setAlwaysAllowed(Array.isArray(result?.tools) ? result.tools : []))
-      .catch(() => { /* still allowed; the row still says so */ });
-  }, [pin]);
+  const { alwaysAllowed, refresh: refreshGrants, stopAllowing } = useMcpAppGrants(appRef, pin, app !== null);
 
   const replyToComposer = useContext(SceneReplyContext);
   const lastOpenRef = useRef(0);
   const lastMessageRef = useRef(0);
 
-  const hostContext = useCallback(() => {
+  const hostContext = useCallback((): Record<string, unknown> => {
     const current = appRef.current;
     const width = Math.round(frameRef.current?.clientWidth ?? wrapperRef.current?.clientWidth ?? 0);
     return {
@@ -253,7 +370,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
     setForwarded(forwardedRef.current);
     // Read NOW, as the request arrives: the brain runs a tool that may change
     // data only when this is true, and an approval card takes focus later.
-    const userActivated = method === "tools/call" && framePressed();
+    const userActivated = method === "tools/call" && frameJustPressed(frameRef.current);
     void window.ade.agentChat
       .mcpAppRequest({ sessionId: current.sessionId, itemId: current.itemId, method, params, userActivated }, pin)
       .catch((error): McpAppRequestResult => ({
@@ -270,7 +387,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
         // The user may just have answered "Always allow".
         if (method === "tools/call") refreshGrants();
       });
-  }, [pin, post, framePressed, refreshGrants]);
+  }, [pin, post, refreshGrants]);
 
   // Only messages from this frame's own window are considered, and every one
   // is shape-checked before anything is read from it.
@@ -296,90 +413,40 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
           const next = readMcpAppHeight(message.params);
           if (next === null) return;
           setHeight(next);
-          if (cacheKey) heightCache.set(cacheKey, next);
+          rememberSceneHeight(heightKey, next);
         }
         // Log lines and anything else an app announces are dropped.
         return;
       }
 
-      const { id, method, params } = message;
-      const refuse = (text: string, code: number = MCP_APP_ERROR_REFUSED) => post({ id, error: { code, message: text } });
-      switch (method) {
-        case "ui/initialize":
-          post({
-            id,
-            result: {
-              protocolVersion: MCP_APP_PROTOCOL_VERSION,
-              hostInfo: { name: "ADE", version: "1" },
-              hostCapabilities: {
-                openLinks: {},
-                serverTools: {},
-                serverResources: {},
-                logging: {},
-                // What the sandbox was actually given: these origins, no device permissions.
-                sandbox: { csp: current.csp },
-              },
-              hostContext: hostContext(),
-            },
-          });
-          return;
-        case "ping":
-          post({ id, result: {} });
-          return;
-        case "ui/open-link": {
-          const url = readMcpAppOpenLinkUrl(params);
-          if (!url) { refuse("An app can open web pages (http or https) only."); return; }
-          const now = Date.now();
-          if (!framePressed() || now - lastOpenRef.current < OPEN_MIN_INTERVAL_MS) {
-            refuse("An app opens a link only in answer to a click or a key press.");
-            return;
-          }
-          lastOpenRef.current = now;
-          openUrlInAdeBrowser(url, { runtimePin: pin });
-          post({ id, result: {} });
-          return;
-        }
-        case "ui/message": {
-          const text = readMcpAppMessageText(params);
-          if (!text) { refuse("A message needs text, as the user."); return; }
-          if (!replyToComposer) { refuse("This view has no prompt box to put a message in."); return; }
-          const now = Date.now();
-          if (!framePressed() || now - lastMessageRef.current < MESSAGE_MIN_INTERVAL_MS) {
-            refuse("An app adds a message only in answer to a click or a key press.");
-            return;
-          }
-          lastMessageRef.current = now;
-          // A draft in the prompt box. Nothing is sent: the reader sends it.
-          replyToComposer(text, `app:${cacheKey}`);
-          post({ id, result: {} });
-          return;
-        }
-        case "ui/request-display-mode":
-          post({ id, result: { mode: "inline" } });
-          return;
-        case "tools/call":
-        case "resources/read":
-          forward(id, method, params);
-          return;
-        default:
-          refuse("ADE does not support this request from an app.", MCP_APP_ERROR_METHOD_NOT_FOUND);
-      }
+      answerAppRequest(message, {
+        app: current,
+        frame: frameRef.current,
+        pin,
+        post,
+        hostContext,
+        replyToComposer,
+        replySourceKey: `app:${cacheKey}`,
+        lastOpenRef,
+        lastMessageRef,
+        forward,
+      });
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [src, cacheKey, pin, post, framePressed, replyToComposer, hostContext, forward]);
+  }, [src, cacheKey, heightKey, pin, post, replyToComposer, hostContext, forward]);
 
   // Before the frame comes down, tell the page. Best effort: nothing waits on it.
   useEffect(() => {
     if (!src) return;
     const frame = frameRef.current;
     return () => {
-      try {
-        frame?.contentWindow?.postMessage(
-          { jsonrpc: "2.0", id: `ade-teardown-${Date.now()}`, method: "ui/resource-teardown", params: { reason: "The app scrolled out of view." } },
-          "*",
-        );
-      } catch { /* frame gone */ }
+      postToOpaqueFrame(frame, {
+        jsonrpc: "2.0",
+        id: `ade-teardown-${Date.now()}`,
+        method: "ui/resource-teardown",
+        params: { reason: "The app scrolled out of view." },
+      });
     };
   }, [src]);
 
@@ -421,16 +488,15 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
 
   // A page that never starts the handshake: say so instead of a silent box.
   useEffect(() => {
-    if (!src || initialized) { setNotice(null); return; }
-    const timer = window.setTimeout(() => setNotice("This app has not started."), INITIALIZE_TIMEOUT_MS);
+    if (!src || initialized) { setStalled(false); return; }
+    const timer = window.setTimeout(() => setStalled(true), INITIALIZE_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
   }, [src, initialized]);
 
   const retry = useCallback(() => {
-    if (cacheKey) appCache.delete(cacheKey);
-    setNotice(null);
-    setAttempt((value) => value + 1);
-  }, [cacheKey]);
+    setStalled(false);
+    reload();
+  }, [reload]);
 
   const network = useMemo(() => {
     if (!app) return [];
@@ -474,19 +540,43 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
             </button>
           </span>
         ))}
-        {notice ? (
-          <span className="inline-flex shrink-0 items-center gap-1" style={{ color: COLORS.warning }}>
-            <WarningCircle size={11} weight="bold" />
-            {notice}
-            <button type="button" className="underline" onClick={retry}>Reload</button>
-          </span>
-        ) : null}
       </div>
-      {load.status === "unavailable" ? (
-        <div className="flex items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }} data-testid="chat-mcp-app-unavailable">
-          <WarningCircle size={11} weight="bold" />
-          {load.reason}
+      {/* The page is up and has not started: the frame stays, with the way to try again above it. */}
+      {stalled && load.status !== "unavailable" ? (
+        <div className="mb-1.5" data-testid="chat-mcp-app-stalled">
+          <Banner
+            layout="inline"
+            model={{
+              id: `mcp-app-stalled-${cacheKey ?? "anon"}`,
+              tone: "warning",
+              title: `${title} has not started`,
+              detail: `The page from ${server} loaded and has not answered ADE.`,
+              actions: [{ label: "Retry", onClick: retry }],
+            }}
+          />
         </div>
+      ) : null}
+      {load.status === "unavailable" ? (
+        load.reason === MCP_APP_SESSION_NOT_RUNNING ? (
+          // Not a failure: the chat has stopped, and trying again changes nothing.
+          <div className="flex items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }} data-testid="chat-mcp-app-unavailable">
+            <WarningCircle size={11} weight="bold" />
+            {load.reason}
+          </div>
+        ) : (
+          <div data-testid="chat-mcp-app-unavailable">
+            <Banner
+              layout="inline"
+              model={{
+                id: `mcp-app-unavailable-${cacheKey ?? "anon"}`,
+                tone: "warning",
+                title: `${title} could not be shown`,
+                detail: load.reason,
+                actions: [{ label: "Retry", onClick: retry }],
+              }}
+            />
+          </div>
+        )
       ) : (
         <div
           className="relative min-w-0 overflow-hidden rounded-md"
