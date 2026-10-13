@@ -6,10 +6,27 @@ import {
   augmentPathWithKnownCliDirs,
   augmentProcessPathWithShellAndKnownCliDirs,
   getPathEnvValue,
+  refreshWindowsPersistedPathDirs,
   resolveExecutableCandidatesFromKnownLocations,
   resolveExecutableFromKnownLocations,
   setPathEnvValue,
 } from "./cliExecutableResolver";
+
+type ExecFileCallback = (error: Error | null) => void;
+const childProcessMock = vi.hoisted(() => ({
+  execFile: null as null | ((command: string, args: string[], options: unknown, callback: ExecFileCallback) => void),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFile: (...args: unknown[]) =>
+      childProcessMock.execFile
+        ? childProcessMock.execFile(...(args as [string, string[], unknown, ExecFileCallback]))
+        : (actual.execFile as (...inner: unknown[]) => unknown)(...args),
+  };
+});
 
 const originalPlatform = process.platform;
 const originalPathDelimiter = path.delimiter;
@@ -51,6 +68,8 @@ describe("cliExecutableResolver", () => {
   let tempRoot: string | null = null;
 
   afterEach(() => {
+    childProcessMock.execFile = null;
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     setPlatform(originalPlatform);
     setPathDelimiter(originalPathDelimiter);
@@ -345,5 +364,43 @@ describe("cliExecutableResolver", () => {
     });
     expect(resolved?.source).toBe("path");
     expect(resolved?.path.toLowerCase()).toBe(executablePath.toLowerCase());
+  });
+
+  it("reads the persisted machine and user Path from `reg export`, including non-ASCII folders", async () => {
+    setPlatform("win32");
+    vi.stubEnv("ADE_DISABLE_OFF_THREAD_SPAWN", "1");
+    vi.stubEnv("SystemRoot", String.raw`C:\Windows`);
+    // `reg export` writes UTF-16 with a BOM: REG_EXPAND_SZ as `hex(2):` bytes
+    // wrapped with `\` continuations, REG_SZ as a quoted string with `\\` escapes.
+    const machinePath = String.raw`%SYSTEMROOT%\system32;C:\Users\José\bin;C:\ツール`;
+    const hexBytes = [...Buffer.from(`${machinePath}\0`, "utf16le")].map((byte) => byte.toString(16).padStart(2, "0"));
+    const hexLines: string[] = [];
+    for (let index = 0; index < hexBytes.length; index += 24) hexLines.push(hexBytes.slice(index, index + 24).join(","));
+    const exports: Record<string, string> = {
+      [String.raw`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`]:
+        `"ComSpec"="C:\\\\Windows\\\\cmd.exe"\r\n"Path"=hex(2):${hexLines.join(",\\\r\n  ")}\r\n`,
+      [String.raw`HKCU\Environment`]:
+        `"TEMP"="x"\r\n"Path"="C:\\\\Users\\\\José\\\\AppData\\\\Local\\\\cursor-agent;"\r\n`,
+    };
+    childProcessMock.execFile = (_command, args, _options, callback) => {
+      const [, key, file] = args;
+      const body = exports[key!];
+      if (body === undefined) return callback(new Error(`unexpected key ${key}`));
+      fs.writeFileSync(file!, Buffer.from(`\uFEFFWindows Registry Editor Version 5.00\r\n\r\n[${key}]\r\n${body}`, "utf16le"));
+      callback(null);
+    };
+    // Earlier Windows cases start a background refresh; let it settle first.
+    await refreshWindowsPersistedPathDirs();
+
+    await expect(refreshWindowsPersistedPathDirs({ force: true })).resolves.toEqual([
+      String.raw`C:\Windows\system32`,
+      String.raw`C:\Users\José\bin`,
+      String.raw`C:\ツール`,
+      String.raw`C:\Users\José\AppData\Local\cursor-agent`,
+    ]);
+
+    // A failed read keeps the last answer instead of dropping every folder.
+    childProcessMock.execFile = (_command, _args, _options, callback) => callback(new Error("reg failed"));
+    await expect(refreshWindowsPersistedPathDirs({ force: true })).resolves.toHaveLength(4);
   });
 });

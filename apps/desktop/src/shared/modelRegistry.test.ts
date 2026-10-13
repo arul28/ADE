@@ -117,6 +117,8 @@ describe("modelRegistry", () => {
   });
 
   it("shows only the live Qwen list once one exists, in place of the curated Alibaba rows", () => {
+    const curatedId = listModelDescriptorsForProvider("qwen").find((model) => model.providerModelId === "qwen3-coder-plus")?.id;
+    expect(curatedId, "curated qwen3-coder-plus row").toBeTruthy();
     try {
       replaceDynamicAcpModelDescriptors("qwen", [
         createDynamicAcpModelDescriptor("qwen", "gpt-5.5"),
@@ -125,6 +127,9 @@ describe("modelRegistry", () => {
       expect(models[0]?.providerModelId).toBe("gpt-5.5");
       expect(getDefaultModelDescriptor("qwen")?.providerModelId).toBe("gpt-5.5");
       expect(models.some((model) => model.providerModelId === "qwen3-coder-plus")).toBe(false);
+      // Hidden from the picker, not deleted: a chat saved on it still resolves and launches.
+      expect(getModelById(curatedId!)?.providerModelId).toBe("qwen3-coder-plus");
+      expect(resolveModelDescriptor(curatedId!)?.providerModelId).toBe("qwen3-coder-plus");
     } finally {
       clearDynamicAcpModelDescriptors();
     }

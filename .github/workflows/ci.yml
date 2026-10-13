@@ -652,6 +652,8 @@ jobs:
           src/main/services/appControl/appControlLaunchCommand.test.ts
           src/main/services/appControl/appControlService.test.ts
           src/main/services/shared/processExecution.test.ts
+          src/main/services/shared/treeWatcher.test.ts
+          src/main/services/ai/cliExecutableResolver.test.ts
           src/main/services/updates/autoUpdateService.test.ts
           src/main/windowAppearance.test.ts
           src/renderer/lib/pathUtils.test.ts

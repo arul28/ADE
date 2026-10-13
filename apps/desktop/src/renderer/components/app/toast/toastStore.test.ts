@@ -26,6 +26,7 @@ import {
   resetChatLaunchStoreForTests,
 } from "../../../state/chatLaunchStore";
 import type { DiagnosticsAutoSentPayload } from "../../../../shared/types/diagnostics";
+import { connectSentry } from "../../../../shared/sentry/capture";
 
 // The store is a module-level singleton with no reset hook; each test clears
 // the stack it created so state doesn't leak between cases.
@@ -179,6 +180,43 @@ describe("toastStore", () => {
     // No lingering timer should fire and error.
     vi.advanceTimersByTime(6000);
     expect(getToasts()).toHaveLength(0);
+  });
+
+  it("reports error toasts to Sentry as one issue per kind of failure, not per lane or file name", () => {
+    const reports: Array<{ message: string; fingerprint: string[] | null; extras: Record<string, unknown> }> = [];
+    connectSentry({
+      withScope: (callback) => {
+        const report = { message: "", fingerprint: null as string[] | null, extras: {} as Record<string, unknown> };
+        reports.push(report);
+        callback({
+          setTag: () => undefined,
+          setExtras: (extras) => { report.extras = extras; },
+          setFingerprint: (fingerprint) => { report.fingerprint = fingerprint; },
+          setLevel: () => undefined,
+        });
+      },
+      captureException: (error) => {
+        reports[reports.length - 1]!.message = (error as Error).message;
+      },
+      addBreadcrumb: () => undefined,
+      logger: { warn: () => undefined, error: () => undefined },
+    });
+    try {
+      showToast({ title: "Push failed: lane-one", tone: "error" });
+      showToast({ title: "Push failed: lane-two", tone: "error", message: "x".repeat(1_000) });
+      showToast({ title: "Could not open \"notes.md\"", tone: "error" });
+      showToast({ title: "Pushed lane-one", tone: "success" });
+
+      expect(reports.map((report) => [report.message, report.fingerprint])).toEqual([
+        ["Toast: Push failed", ["toast", "Push failed"]],
+        ["Toast: Push failed", ["toast", "Push failed"]],
+        ["Toast: Could not open", ["toast", "Could not open"]],
+      ]);
+      // The text rides along, cut short: an error message can quote what it failed on.
+      expect(reports[1]!.extras).toEqual({ title: "Push failed: lane-two", message: "x".repeat(300) });
+    } finally {
+      connectSentry(null as never);
+    }
   });
 });
 

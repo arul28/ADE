@@ -744,9 +744,9 @@ describe("usage research sweep", () => {
     try {
       let cleanup: Promise<unknown> = Promise.resolve();
       await worker.scheduled(
-        {} as ScheduledEvent,
+        { scheduledTime: Date.now(), cron: "* * * * *" } as ScheduledEvent,
         env as never,
-        { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+        { waitUntil: (promise) => { cleanup = Promise.all([cleanup, promise]); } } as ExecutionContext,
       );
       // The tick settles instead of rejecting, and the other sweeps still ran.
       await expect(cleanup).resolves.toBeDefined();
@@ -767,9 +767,9 @@ describe("usage research sweep", () => {
     seedReport(env, 2, today);
     let cleanup: Promise<unknown> = Promise.resolve();
     await worker.scheduled(
-      {} as ScheduledEvent,
+      { scheduledTime: Date.now(), cron: "* * * * *" } as ScheduledEvent,
       env as never,
-      { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+      { waitUntil: (promise) => { cleanup = Promise.all([cleanup, promise]); } } as ExecutionContext,
     );
     await cleanup;
     expect([...env.DB.usageResearchRows.values()].map((row) => row.day)).toEqual([today]);

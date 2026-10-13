@@ -6,10 +6,11 @@ import { watchTree, type TreeWatcher, type TreeWatcherEvent } from "./treeWatche
 
 const TREE_EVENTS: TreeWatcherEvent[] = ["add", "change", "unlink", "addDir", "unlinkDir"];
 
-// DARWIN-GATE: `watchTree` selects the recursive native watcher only on macOS
-// and has no seam to select it elsewhere; other platforms hand the tree to
-// chokidar. No macOS CI job runs the desktop tests, so these run on a Mac.
-describe.skipIf(process.platform !== "darwin")("watchTree on macOS", () => {
+// `watchTree` selects the recursive native watcher on macOS and Windows and has
+// no seam to select it elsewhere; Linux hands the tree to chokidar. The Windows
+// job runs this file; no macOS CI job runs the desktop tests, so a Mac does.
+// DARWIN-GATE: no macOS runner executes the desktop vitest suites
+describe.skipIf(process.platform !== "darwin" && process.platform !== "win32")("watchTree on macOS and Windows", () => {
   let base: string;
   let root: string;
   let watcher: TreeWatcher | null;
@@ -37,7 +38,7 @@ describe.skipIf(process.platform !== "darwin")("watchTree on macOS", () => {
     watcher = started;
     for (const event of TREE_EVENTS) {
       started.on(event, (absPath) => {
-        seen.push(`${event} ${path.relative(root, absPath)}`);
+        seen.push(`${event} ${path.relative(root, absPath).split(path.sep).join("/")}`);
         for (const waiter of waiters) {
           if (waiter.wanted.every((entry) => seen.includes(entry))) waiter.resolve();
         }
@@ -87,6 +88,45 @@ describe.skipIf(process.platform !== "darwin")("watchTree on macOS", () => {
     await events.saw("add fresh.txt");
     // The old tree is gone; nothing of it is announced again.
     expect(events.seen.filter((entry) => entry.startsWith("add "))).toEqual(["add fresh.txt"]);
+  });
+
+  it("reads the whole tree again when the OS reports that it dropped events", async () => {
+    // The root's recursive watch delivers nothing of its own here; the test
+    // decides when the OS "overflows" (an event with no file name).
+    const realWatch = fs.watch.bind(fs) as (...args: unknown[]) => fs.FSWatcher;
+    let overflow: (() => void) | null = null;
+    vi.spyOn(fs, "watch").mockImplementation(((dir: string, options: unknown, listener: (event: string, name: string | null) => void) => {
+      if ((options as { recursive?: boolean } | undefined)?.recursive) {
+        overflow = () => listener("rename", null);
+        return realWatch(dir, options, () => {});
+      }
+      return realWatch(dir, options, listener);
+    }) as never);
+    const events = await watchRoot();
+    expect(overflow, "the root's watch was opened").not.toBeNull();
+
+    fs.mkdirSync(path.join(root, "lib"));
+    fs.writeFileSync(path.join(root, "lib", "new.txt"), "new");
+    fs.rmSync(path.join(root, "two.txt"));
+    fs.writeFileSync(path.join(root, "src", "one.txt"), "one, changed");
+    for (let index = 0; index < 20; index += 1) overflow!();
+
+    await events.saw("addDir lib", "add lib/new.txt", "unlink two.txt", "change src/one.txt");
+    // However many overflows arrive, each change is reported once.
+    expect(events.seen.filter((entry) => entry === "add lib/new.txt")).toEqual(["add lib/new.txt"]);
+  });
+
+  it.skipIf(process.platform !== "win32")("notices a root that is created after the watch starts (Windows)", async () => {
+    fs.rmSync(root, { recursive: true, force: true });
+    const events = await watchRoot();
+    expect(events.seen).toEqual([]);
+
+    fs.mkdirSync(root);
+    fs.writeFileSync(path.join(root, "fresh.txt"), "fresh");
+    await events.saw("add fresh.txt");
+    // Later changes come from the new root's own watch.
+    fs.writeFileSync(path.join(root, "later.txt"), "later");
+    await events.saw("add later.txt");
   });
 
   it("still reports ready when the root cannot be watched, so a caller that waits to close is not left waiting", async () => {
