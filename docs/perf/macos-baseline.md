@@ -183,6 +183,7 @@ UI, against a running dev app (`scripts/perf/ui/`):
 | `cdp.mjs eval\|metrics\|profile\|shot\|anim` | One-off probes: evaluate, metrics delta, CPU profile with top functions, screenshot, running animations |
 | `music-host.sh <secs>` | CPU %, RSS and physical footprint of the macOS Apple Music host and the WebKit processes it started |
 | `music.mjs first-play cold\|warm`, `music.mjs pushes <secs>` | Time from Play to the first playing state, with the host stopped or running; Music state pushes a window receives |
+| `music-library.mjs detail\|grid\|scroll\|memory` | Apple Music library: time to a playlist's first rows and full list, Playlists grid open and scroll (long tasks, IPC and Apple requests through the main process's inspector, artwork requests), renderer heap after opening playlists |
 
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
@@ -352,6 +353,46 @@ running on the machine.
 | First playing push after Play, host not running | `music.mjs first-play cold` | — | 0.76-1.15 s | 2 s |
 | Same, host running | `music.mjs first-play warm` | — | 0.16-0.39 s | 0.6 s |
 | Switching to the Music tab: long tasks / idle main thread | `route-sweep.mjs` | — | 0 ms / 0.9-2.3 ms/s | 100 ms / 30 ms/s |
+
+**Library: playlists (paged loading and four-song covers).** Arul's real
+library, 61 playlists, 37 of them with no artwork from Apple; the largest has
+1,804 songs (19 pages). Same app session, signed in, DevTools closed, nothing
+playing; "before" is the tree at `3e0e350fe` (grid rows: the old tile code put
+back by hot reload, interleaved with the new, 3 rounds each). Cold = the main
+process's 60 s Apple cache expired.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Largest playlist, cold: first song rows on screen | `music-library.mjs detail` | 9,483 ms | 516-1,077 ms | 1,500 ms |
+| Largest playlist, cold: full list | same | 9,483 ms | 2,882-3,829 ms | 9,500 ms |
+| Largest playlist: Apple requests / IPC calls | same | 19 / 1 | 19 / 19 | 19 / 20 |
+| Largest playlist: long tasks while it loads | same | 0 ms | 0 ms | 50 ms |
+| Playlists grid, first open: long tasks | `music-library.mjs grid` | 0 ms | 0 ms | 50 ms |
+| Playlists grid, first open: renderer CPU (6 s) | `process-cpu.sh 6`, mean of the runs | 6.2% (5.3-6.8) | 5.3% (3.5-6.2) | 8% |
+| Playlists grid, second open: renderer CPU (6 s) | same | 3.9% (2.8-5.3) | 2.6% (0.2-5.0) | 5% |
+| Playlists grid, first open: IPC calls / Apple requests | `music-library.mjs grid` | 1 / 1 | 10 / 10 | 14 / 14 |
+| Playlists grid, second open: IPC calls / Apple requests | same | 1 / 0 | 1 / 0 | 1 / 0 |
+| Playlists grid, first open: artwork requests / KB | same | 39 / 289 | 50-52 / 151-415 | 60 / 500 |
+| Playlists grid, scroll to the end and back: long tasks | `music-library.mjs scroll` | 0 ms | 0 ms | 50 ms |
+| Same scroll, first time: cover reads (limit 4) | same | 0 | 25-28 | 37 (one per art-less tile) |
+| Renderer JS heap after GC, five largest playlists opened | `music-library.mjs memory` | 102.6 MB | 101.3-102.3 MB | 125 MB |
+| Renderer RSS, same | `ps` | 295 MB | 265-280 MB | 360 MB |
+
+- **Full list:** the old main-process loop read the 19 pages one after
+  another and returned them together. Reading them from the view one at a
+  time measured 14.7-15.0 s (a page waited for the view to update before the
+  next request), so the view reads the first page, then the rest four at a
+  time (Apple reports the total) and appends them in order.
+- **Covers** cost one `tracks` read with limit 4 per art-less tile that comes on
+  screen (9 on first open here, the rest as you scroll), at most four at a
+  time, never while the window is hidden (verified: 0 reads while hidden, 9
+  once visible), then nothing: a bounded LRU (300) serves later opens. Each
+  cell requests Apple's artwork at its own pixel size (96 px here).
+- **Not done, measured:** 5 of the 61 playlists have their own uploaded cover
+  on `*.blobstore.apple.com`, which the renderer's CSP blocks (they show the
+  note glyph). Allowing it would load each as a fixed 1200x1200 JPEG with no
+  size parameter, under a signature that changes on every library read (after
+  the 60 s cache), so it is left out of this change.
 
 The scripts default to CDP port 9222; an App Control launch picks its own, so
 pass `CDP_PORT=<port>` (and edit the port in `process-cpu.sh` and
