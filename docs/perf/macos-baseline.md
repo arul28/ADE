@@ -370,11 +370,12 @@ process's 60 s Apple cache expired.
 | Playlists grid, first open: long tasks | `music-library.mjs grid` | 0 ms | 0 ms | 50 ms |
 | Playlists grid, first open: renderer CPU (6 s) | `process-cpu.sh 6`, mean of the runs | 6.2% (5.3-6.8) | 5.3% (3.5-6.2) | 8% |
 | Playlists grid, second open: renderer CPU (6 s) | same | 3.9% (2.8-5.3) | 2.6% (0.2-5.0) | 5% |
-| Playlists grid, first open: IPC calls / Apple requests | `music-library.mjs grid` | 1 / 1 | 10 / 10 | 14 / 14 |
+| Playlists grid, first open: IPC calls / Apple requests | `music-library.mjs grid` | 1 / 1 | 17 / 17 (`76dff3d31`; 10 / 10 at `a123eee6a`) | 14 / 14 (over: see below) |
 | Playlists grid, second open: IPC calls / Apple requests | same | 1 / 0 | 1 / 0 | 1 / 0 |
-| Playlists grid, first open: artwork requests / KB | same | 39 / 289 | 50-52 / 151-415 | 60 / 500 |
+| Playlists grid, first open: artwork requests / KB | same | 39 / 289 | 27-29 / 213-494 (`76dff3d31`) | 60 / 500 |
+| Playlists grid, second open: artwork requests | same | 34-36 | 0-2 (`76dff3d31`) | 5 |
 | Playlists grid, scroll to the end and back: long tasks | `music-library.mjs scroll` | 0 ms | 0 ms | 50 ms |
-| Same scroll, first time: cover reads (limit 4) | same | 0 | 25-28 | 37 (one per art-less tile) |
+| Same scroll, first time: cover reads (limit 4) | same | 0 | 22-38 (`76dff3d31`; 25-28 at `a123eee6a`) | 37 (over: see below) |
 | Renderer JS heap after GC, five largest playlists opened | `music-library.mjs memory` | 102.6 MB | 101.3-102.3 MB | 125 MB |
 | Renderer RSS, same | `ps` | 295 MB | 265-280 MB | 360 MB |
 
@@ -383,16 +384,34 @@ process's 60 s Apple cache expired.
   time measured 14.7-15.0 s (a page waited for the view to update before the
   next request), so the view reads the first page, then the rest four at a
   time (Apple reports the total) and appends them in order.
-- **Covers** cost one `tracks` read with limit 4 per art-less tile that comes on
-  screen (9 on first open here, the rest as you scroll), at most four at a
-  time, never while the window is hidden (verified: 0 reads while hidden, 9
-  once visible), then nothing: a bounded LRU (300) serves later opens. Each
-  cell requests Apple's artwork at its own pixel size (96 px here).
-- **Not done, measured:** 5 of the 61 playlists have their own uploaded cover
-  on `*.blobstore.apple.com`, which the renderer's CSP blocks (they show the
-  note glyph). Allowing it would load each as a fixed 1200x1200 JPEG with no
-  size parameter, under a signature that changes on every library read (after
-  the 60 s cache), so it is left out of this change.
+- **Covers** cost one `tracks` read with limit 4 per cover tile that comes on
+  screen, at most four at a time, never while the window is hidden (verified:
+  0 reads while hidden, 9 once visible), then nothing: a bounded LRU (300)
+  serves later opens. Each cell requests Apple's artwork at its own pixel size
+  (96 px here). Since `76dff3d31` a cover tile is any playlist whose artwork
+  the renderer cannot load: 54 of the 61 here, 37 with none from Apple and 17
+  with an uploaded cover on `*.blobstore.apple.com`, which the CSP blocks. A
+  first open reads the 16 on screen and a scroll reads the rest (22-38 across
+  runs, depending on how much the first open reached; every read was a
+  different playlist, checked by playlist id). The blocked cover requests are
+  gone: 34 per open at `a123eee6a`, 0 now.
+- **`76dff3d31` re-bench** (2026-10-13, interleaved with `a123eee6a`, 3 rounds,
+  main cache cold before each): long tasks 0 on open and scroll for both.
+  Renderer CPU over 6 s, first open 8.0% (6.2-9.0) at `a123eee6a` vs 7.0%
+  (2.7-11.5) now; second open 6.6% (4.2-8.0) vs 7.0% (4.8-10.5): no difference
+  within the noise. The whole session ran hotter than the baseline run (the
+  old tiles measured 6.6% on second open, against the recorded 3.9%), so the
+  CPU rows above keep their baselines.
+- **Over ceiling, waiting for approval:** the first-open IPC/Apple row (17 vs
+  14) and the scroll cover-read row (38 vs 37) cross ceilings that were set
+  from the `a123eee6a` numbers, before uploaded-cover playlists got covers.
+  The extra reads are one per newly covered tile on screen, by design. The
+  ceilings stay until someone approves new ones (proposal: 1 + one per cover
+  tile on screen, and one per cover tile).
+- **Not done:** a playlist's own uploaded cover (`*.blobstore.apple.com`) is
+  still not shown. Allowing it would load each as a fixed 1200x1200 JPEG with
+  no size parameter, under a signature that changes on every library read
+  (after the 60 s cache).
 
 The scripts default to CDP port 9222; an App Control launch picks its own, so
 pass `CDP_PORT=<port>` (and edit the port in `process-cpu.sh` and

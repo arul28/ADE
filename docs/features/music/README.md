@@ -99,14 +99,19 @@ Main process: musicService
   stops reading when you leave. A collection is read up to
   `MUSIC_MAX_COLLECTION_TRACKS` (2,000) songs.
 - **Covers for playlists without artwork.** A library playlist Apple sends
-  without artwork shows its first songs' covers, like the Music app: four
+  without artwork, or with an uploaded cover the renderer cannot load
+  (`loadableArtwork` in `musicParts.tsx`), shows its first songs' covers, like
+  the Music app: four
   distinct covers as a 2x2 CSS grid, one cover when they share an album, the
   note glyph when none. The songs come from one `tracks` read with limit 4,
   made only once the tile is on screen and the window is visible, at most four
   at a time, kept in a 300-entry LRU (`PlaylistCoverArt` in `musicParts.tsx`).
   Each cell asks Apple for its own pixel size. A playlist's own uploaded cover
   (`*.blobstore.apple.com`, a signed 1200x1200 URL) is blocked by the
-  renderer's CSP and shows the glyph.
+  renderer's CSP, so such a playlist gets the four-song cover too; songs whose
+  art is on blobstore are skipped (`coverArts`). The playlist page's header
+  uses the same cover, built from the songs it has already read
+  (`MusicCoverArt`).
 - **The player host is started on demand** (the Music tab opens while
   connected, a play command arrives, or Connect is pressed) and **unloaded after
   5 minutes** without playback. Unloading keeps a snapshot (queue ids, index,
