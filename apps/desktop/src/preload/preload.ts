@@ -18,8 +18,11 @@ import type {
   McpAppCsp,
   McpAppGetArgs,
   McpAppGetResult,
+  McpAppGrantsArgs,
+  McpAppGrantsResult,
   McpAppRequestArgs,
   McpAppRequestResult,
+  McpAppRevokeGrantArgs,
 } from "../shared/mcpApp";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import type { InstalledBrowser } from "../shared/browserTargets";
@@ -8635,6 +8638,20 @@ const adeBridge = {
     ): Promise<McpAppRequestResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "mcpAppRequest", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatMcpAppRequest, args),
+      ),
+    listMcpAppGrants: async (
+      args: McpAppGrantsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<McpAppGrantsResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "listMcpAppGrants", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListMcpAppGrants, args),
+      ),
+    revokeMcpAppGrant: async (
+      args: McpAppRevokeGrantArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<McpAppGrantsResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "revokeMcpAppGrant", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatRevokeMcpAppGrant, args),
       ),
     // No runtime bound: no favicons, and every Sources row keeps its initial.
     resolveSourceFavicons: async (args: { domains: string[] }): Promise<{ icons: Record<string, string | null> }> =>

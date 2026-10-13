@@ -171,6 +171,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // Sources favicons improve the compact phone Sources list; older hosts keep
   // working with the domain-initial fallback.
   "chat.resolveSourceFavicons",
+  // MCP Apps. Optional: against an older host the phone shows the app card's
+  // fallback text instead of the app.
+  "chat.getMcpApp",
+  "chat.mcpAppRequest",
   // Read-only Work tools pane (active tool, browser tabs, App Control, latest
   // frame). Optional because the phone simply shows no lane tool chips when
   // the brain does not advertise it — an older brain must not be flipped to

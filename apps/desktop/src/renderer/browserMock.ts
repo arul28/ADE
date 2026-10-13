@@ -7103,6 +7103,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       resolveSourceFavicons: async () => ({ icons: {} }),
       getMcpApp: async () => ({ status: "unavailable" as const, reason: "Apps do not run in the browser preview." }),
       mcpAppRequest: async () => ({ ok: false as const, error: { code: -32000, message: "Apps do not run in the browser preview." } }),
+      listMcpAppGrants: async () => ({ server: null, tools: [] }),
+      revokeMcpAppGrant: async () => ({ server: null, tools: [] }),
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;

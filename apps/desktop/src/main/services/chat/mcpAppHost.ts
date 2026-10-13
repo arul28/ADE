@@ -5,6 +5,7 @@ import {
   MCP_APP_ERROR_INVALID_PARAMS,
   MCP_APP_ERROR_METHOD_NOT_FOUND,
   MCP_APP_LIMITS,
+  MCP_APP_NEEDS_CLICK,
   MCP_APP_RESOURCE_MIME_TYPE,
   MCP_APP_SESSION_NOT_RUNNING,
   MCP_APP_TOOL_CALL_METADATA_KEY,
@@ -16,13 +17,17 @@ import {
   type McpAppDocument,
   type McpAppGetArgs,
   type McpAppGetResult,
+  type McpAppGrantsArgs,
+  type McpAppGrantsResult,
   type McpAppRequestArgs,
+  type McpAppRevokeGrantArgs,
   type McpAppRequestResult,
   type McpAppToolDescriptor,
   type McpAppToolResult,
 } from "../../../shared/mcpApp";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import type { AgentChatEvent } from "../../../shared/types";
+import type { McpAppGrantStore } from "./mcpAppGrants";
 import type { McpAppStore } from "./mcpAppStore";
 
 /**
@@ -41,9 +46,13 @@ import type { McpAppStore } from "./mcpAppStore";
  *    call the app came from. The server is read from the record this file
  *    stored when it fetched the page, so an app can reach the server it came
  *    from and no other.
- * 3. **A call that may change something asks first.** Only a tool the server
- *    itself marks read-only runs without the user. No annotations means not
- *    read-only. A tool the server hid from apps is refused before any card.
+ * 3. **A call that may change something needs the user.** Only a tool the
+ *    server itself marks read-only runs unasked; no annotations means not
+ *    read-only. Any other tool runs only when the client hosting the frame saw
+ *    a real click or key press in it just before, and the first time an app
+ *    calls it the user is asked in the chat's own card: once, always (for
+ *    this tool of this server, in this project), or no. A tool the server hid
+ *    from apps is refused before any of that.
  */
 
 /** A chat's live provider session, as far as MCP Apps need it. */
@@ -78,6 +87,8 @@ export type McpAppHostDeps = {
     eventDescription: string;
     eventDetail: Record<string, unknown>;
   }): Promise<{ decision: string; answers: Record<string, string[]> }>;
+  /** The project's "always allow" answers. */
+  grants: McpAppGrantStore;
   log(level: "info" | "warn", event: string, detail: Record<string, unknown>): void;
   now?: () => number;
 };
@@ -146,6 +157,12 @@ function previewArguments(args: Record<string, unknown>): string {
   }
   if (text === "{}") return "no arguments";
   return text.length > 1_200 ? `${text.slice(0, 1_200)}\n… (${text.length - 1_200} more characters)` : text;
+}
+
+/** A provider error as a refusal. "Not running" stays the one plain sentence it is. */
+function failure(error: unknown, what: string): McpAppRequestResult {
+  const text = errorText(error);
+  return mcpAppRefusal(text === MCP_APP_SESSION_NOT_RUNNING ? text : `${what}: ${text}`);
 }
 
 export type McpAppHost = ReturnType<typeof createMcpAppHost>;
@@ -326,8 +343,11 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
     return { status: "unavailable", reason: "This app was not saved with the chat, so it cannot be shown again." };
   };
 
-  /** Ask the user, in the chat, whether an app may run one tool. Allow only on the Allow button. */
-  const askAllow = async (app: Omit<McpAppDocument, "html">, tool: McpAppToolDescriptor, args: Record<string, unknown>): Promise<"allow" | "deny" | "unasked"> => {
+  /**
+   * Ask the user, in the chat, whether an app may run one tool. The call runs
+   * only on one of the two allow buttons; anything else is a no.
+   */
+  const askAllow = async (app: Omit<McpAppDocument, "html">, tool: McpAppToolDescriptor, args: Record<string, unknown>): Promise<"allow" | "always" | "deny" | "unasked"> => {
     const what = `The ${app.server} app wants to run ${tool.name}`;
     const metadata = {
       [MCP_APP_TOOL_CALL_METADATA_KEY]: true,
@@ -346,7 +366,12 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
           header: "App tool call",
           question: `${what}. The server does not mark this tool as read-only, so it may change something.\n\nArguments:\n${previewArguments(args)}`,
           options: [
-            { label: "Allow", value: "allow", description: `Run ${tool.name} on ${app.server} once, with these arguments.` },
+            { label: "Allow once", value: "allow", description: `Run ${tool.name} on ${app.server} once, with these arguments.` },
+            {
+              label: "Always allow",
+              value: "always",
+              description: `Run it, and stop asking when an app from ${app.server} calls ${tool.name} in this project. Each call still needs your click in the app.`,
+            },
             { label: "Don't allow", value: "deny" },
           ],
           allowsFreeform: false,
@@ -357,7 +382,9 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
       });
       if (response.decision === "decline" || response.decision === "cancel") return "deny";
       const picked = (response.answers?.mcp_app_tool_call ?? []).map((value) => value.trim().toLowerCase());
-      return picked.includes("allow") && !picked.includes("deny") ? "allow" : "deny";
+      // Exactly one answer, and it has to be one of the two allow buttons.
+      if (picked.length !== 1) return "deny";
+      return picked[0] === "allow" ? "allow" : picked[0] === "always" ? "always" : "deny";
     } catch (error) {
       deps.log("warn", "agent_chat.mcp_app_approval_unasked", { sessionId: app.sessionId, error: errorText(error) });
       return "unasked";
@@ -368,6 +395,7 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
     app: Omit<McpAppDocument, "html">,
     link: McpAppProviderLink,
     params: Record<string, unknown>,
+    userActivated: boolean,
   ): Promise<McpAppRequestResult> => {
     const name = typeof params.name === "string" ? params.name.trim() : "";
     if (!name.length || name.length > 200) return mcpAppRefusal("A tool call needs the tool's name.", MCP_APP_ERROR_INVALID_PARAMS);
@@ -379,7 +407,7 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
     try {
       tools = await catalog(app.sessionId, link, CATALOG_MAX_AGE_MS);
     } catch (error) {
-      return mcpAppRefusal(`ADE could not read the tools of ${app.server}: ${errorText(error)}`);
+      return failure(error, `ADE could not read the tools of ${app.server}`);
     }
     // The server comes from the stored record, so this is the app's own server or nothing.
     const tool = tools.find((entry) => entry.server === app.server && entry.name === name);
@@ -392,28 +420,34 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
     state.inFlight.set(app.itemId, inFlight + 1);
     try {
       if (!tool.readOnly) {
-        if (state.asking.has(app.itemId)) return mcpAppRefusal("Another call from this app is waiting for your answer.");
-        state.asking.add(app.itemId);
-        let outcome: "allow" | "deny" | "unasked";
-        try {
-          outcome = await askAllow(app, tool, args);
-        } finally {
-          state.asking.delete(app.itemId);
+        // The click comes first: no card is raised for a call nobody made.
+        if (!userActivated) return mcpAppRefusal(MCP_APP_NEEDS_CLICK);
+        const fingerprint = tool.serverFingerprint ?? null;
+        if (!deps.grants.has(app.server, name, fingerprint)) {
+          if (state.asking.has(app.itemId)) return mcpAppRefusal("Another call from this app is waiting for your answer.");
+          state.asking.add(app.itemId);
+          let outcome: "allow" | "always" | "deny" | "unasked";
+          try {
+            outcome = await askAllow(app, tool, args);
+          } finally {
+            state.asking.delete(app.itemId);
+          }
+          deps.log("info", "agent_chat.mcp_app_tool_call_decided", { sessionId: app.sessionId, server: app.server, tool: name, outcome });
+          if (outcome === "unasked") return mcpAppRefusal("ADE could not ask you about this call, so it did not run.");
+          if (outcome === "deny") return mcpAppRefusal("You did not allow this call.");
+          if (outcome === "always") deps.grants.add(app.server, name, fingerprint);
+          // The answer can take minutes. The session that was live then may be gone now.
+          const linkNow = deps.linkFor(app.sessionId);
+          if (!linkNow) return mcpAppRefusal(MCP_APP_SESSION_NOT_RUNNING);
+          link = linkNow;
         }
-        deps.log("info", "agent_chat.mcp_app_tool_call_decided", { sessionId: app.sessionId, server: app.server, tool: name, outcome });
-        if (outcome === "unasked") return mcpAppRefusal("ADE could not ask you about this call, so it did not run.");
-        if (outcome !== "allow") return mcpAppRefusal("You did not allow this call.");
-        // The answer can take minutes. The session that was live then may be gone now.
-        const linkNow = deps.linkFor(app.sessionId);
-        if (!linkNow) return mcpAppRefusal(MCP_APP_SESSION_NOT_RUNNING);
-        link = linkNow;
       }
       deps.log("info", "agent_chat.mcp_app_tool_call", { sessionId: app.sessionId, server: app.server, tool: name, readOnly: tool.readOnly });
       const result = await link.callTool(app.server, name, args);
       if (jsonBytes(result) > MCP_APP_LIMITS.maxCallResultBytes) return mcpAppRefusal("The result is too large to hand to the app.");
       return { ok: true, result };
     } catch (error) {
-      return mcpAppRefusal(`${name} failed: ${errorText(error)}`);
+      return failure(error, `${name} failed`);
     } finally {
       const left = (state.inFlight.get(app.itemId) ?? 1) - 1;
       if (left > 0) state.inFlight.set(app.itemId, left);
@@ -433,7 +467,7 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
       if (jsonBytes(result) > MCP_APP_LIMITS.maxCallResultBytes) return mcpAppRefusal("The resource is too large to hand to the app.");
       return { ok: true, result };
     } catch (error) {
-      return mcpAppRefusal(`Reading ${uri} failed: ${errorText(error)}`);
+      return failure(error, `Reading ${uri} failed`);
     }
   };
 
@@ -449,13 +483,44 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
     }
     const link = deps.linkFor(sessionId);
     if (!link) return mcpAppRefusal(MCP_APP_SESSION_NOT_RUNNING);
-    return args.method === "tools/call" ? callTool(app, link, params) : readResource(app, link, params);
+    return args.method === "tools/call"
+      ? callTool(app, link, params, args.userActivated === true)
+      : readResource(app, link, params);
+  };
+
+  /** The tools the user always allows for the server this app came from. */
+  const grants = (args: McpAppGrantsArgs): McpAppGrantsResult => {
+    const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
+    const itemId = typeof args?.itemId === "string" ? args.itemId.trim() : "";
+    const app = sessionId && itemId ? deps.store.readRecord(sessionId, itemId) : null;
+    if (!app) return { server: null, tools: [] };
+    // When this chat's session has said how the server is defined, only the
+    // grants for that definition count: a grant made for another server of
+    // the same name does not apply here, so the row must not claim it.
+    const known = sessions.get(sessionId)?.catalog?.tools.find((tool) => tool.server === app.server);
+    const all = deps.grants.list(app.server);
+    const applying = known ? all.filter((grant) => grant.fingerprint === (known.serverFingerprint ?? null)) : all;
+    return { server: app.server, tools: [...new Set(applying.map((grant) => grant.tool))] };
+  };
+
+  /** Take one "always allow" back. The server is the app's own, as everywhere here. */
+  const revokeGrant = (args: McpAppRevokeGrantArgs): McpAppGrantsResult => {
+    const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
+    const itemId = typeof args?.itemId === "string" ? args.itemId.trim() : "";
+    const tool = typeof args?.tool === "string" ? args.tool.trim() : "";
+    const app = sessionId && itemId ? deps.store.readRecord(sessionId, itemId) : null;
+    if (app && tool && deps.grants.remove(app.server, tool)) {
+      deps.log("info", "agent_chat.mcp_app_grant_removed", { sessionId, server: app.server, tool });
+    }
+    return grants({ sessionId, itemId });
   };
 
   return {
     observe,
     get,
     request,
+    grants,
+    revokeGrant,
     /** Drop the stored apps of chats that are gone. See `McpAppStore.sweepOrphans`. */
     sweepOrphans(isKnownSession: (sessionId: string) => boolean): number {
       return deps.store.sweepOrphans(isKnownSession);

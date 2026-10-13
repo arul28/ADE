@@ -922,14 +922,19 @@ import { buildDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import {
   claudeMcpToolName,
   MCP_APP_RESOURCE_MIME_TYPE,
+  MCP_APP_SESSION_NOT_RUNNING,
   readMcpToolUiMeta,
   toMcpAppToolResult,
   type McpAppGetArgs,
   type McpAppGetResult,
+  type McpAppGrantsArgs,
+  type McpAppGrantsResult,
   type McpAppRequestArgs,
   type McpAppRequestResult,
+  type McpAppRevokeGrantArgs,
   type McpAppToolDescriptor,
 } from "../../../shared/mcpApp";
+import { createMcpAppGrantStore, MCP_APP_GRANTS_KEY, mcpServerFingerprint } from "./mcpAppGrants";
 import { createMcpAppHost, type McpAppProviderLink } from "./mcpAppHost";
 import { createMcpAppStore } from "./mcpAppStore";
 import {
@@ -11499,26 +11504,39 @@ export function createAgentChatService(args: {
    */
   const MCP_APP_PROVIDER_TIMEOUT_MS = 60_000;
   const claudeMcpAppLink = (managed: ManagedChatSession, runtime: ClaudeRuntime): McpAppProviderLink | null => {
-    const query = runtime.query;
     // Reading a `ui://` resource is a capability the CLI has to advertise.
-    if (!query || !managed.session.protocolCapabilities?.includes("mcp_read_resource_v1")) return null;
+    if (!managed.session.protocolCapabilities?.includes("mcp_read_resource_v1")) return null;
+    // Between two turns ADE may be bringing this chat's query back up. That is
+    // still the chat's own session: wait for the start already in flight, and
+    // never begin one here.
+    if (!runtime.query && !runtime.queryStartPromise) return null;
+    const liveQuery = async (): Promise<ClaudeQuery> => {
+      const query = runtime.query ?? (runtime.queryStartPromise ? await runtime.queryStartPromise.catch(() => null) : null);
+      if (!query) throw new Error(MCP_APP_SESSION_NOT_RUNNING);
+      return query;
+    };
     return {
       provider: "claude",
       listTools: async () => {
+        const query = await liveQuery();
         const servers = await withTimeout(query.mcpServerStatus(), MCP_APP_PROVIDER_TIMEOUT_MS, "Claude did not list its MCP tools in time.");
         return servers.flatMap((server): McpAppToolDescriptor[] => server.status !== "connected"
           ? []
           : (server.tools ?? []).map((tool) => ({
               server: server.name,
+              serverFingerprint: mcpServerFingerprint(server.config),
               name: tool.name,
               ...(tool.description ? { description: tool.description } : {}),
               readOnly: tool.annotations?.readOnly === true,
               ui: readMcpToolUiMeta(tool._meta),
             })));
       },
-      readResource: (server, uri) =>
-        withTimeout(query.readMcpResource(server, uri), MCP_APP_PROVIDER_TIMEOUT_MS, "Claude did not read the resource in time."),
+      readResource: async (server, uri) => {
+        const query = await liveQuery();
+        return withTimeout(query.readMcpResource(server, uri), MCP_APP_PROVIDER_TIMEOUT_MS, "Claude did not read the resource in time.");
+      },
       callTool: async (server, tool, args) => {
+        const query = await liveQuery();
         // `mcp_call` is a control request the SDK types but gives no method
         // for; `request` is the channel every typed method uses. Recheck on an
         // SDK bump: without it an app's tool calls are refused, nothing else.
@@ -11563,6 +11581,10 @@ export function createAgentChatService(args: {
               const description = stringOrNull(tool.description);
               tools.push({
                 server: serverName,
+                // Codex does not report a server's definition. ADE knows it
+                // only for a server this chat was given; any other server
+                // (the registry's, the user's own config) has no fingerprint.
+                serverFingerprint: mcpServerFingerprint(managed.session.mcpServers?.[serverName]),
                 name,
                 ...(title ? { title } : {}),
                 ...(description ? { description } : {}),
@@ -11602,6 +11624,10 @@ export function createAgentChatService(args: {
       });
     },
     requestChatInput: (input) => requestChatInput(input),
+    grants: createMcpAppGrantStore({
+      load: () => db?.getJson(MCP_APP_GRANTS_KEY) ?? null,
+      save: (value) => db?.setJson(MCP_APP_GRANTS_KEY, value),
+    }),
     log: (level, event, detail) => logger[level](event, detail),
   });
   // Once, well after boot: apps left by chats another brain deleted.
@@ -11616,6 +11642,8 @@ export function createAgentChatService(args: {
   mcpAppOrphanSweepTimer.unref?.();
   const getMcpApp = (args: McpAppGetArgs): Promise<McpAppGetResult> => mcpApps.get(args);
   const mcpAppRequest = (args: McpAppRequestArgs): Promise<McpAppRequestResult> => mcpApps.request(args);
+  const listMcpAppGrants = async (args: McpAppGrantsArgs): Promise<McpAppGrantsResult> => mcpApps.grants(args);
+  const revokeMcpAppGrant = async (args: McpAppRevokeGrantArgs): Promise<McpAppGrantsResult> => mcpApps.revokeGrant(args);
 
   /** Assigned once the handoff helpers below exist; hooks before that no-op. */
   let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
@@ -64957,6 +64985,8 @@ export function createAgentChatService(args: {
     respondToInput,
     getMcpApp,
     mcpAppRequest,
+    listMcpAppGrants,
+    revokeMcpAppGrant,
     dismissPendingInputForSettlement,
     requestChatInput,
     getAvailableModels,

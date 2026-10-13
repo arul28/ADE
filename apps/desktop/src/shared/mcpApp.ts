@@ -40,6 +40,12 @@ export const MCP_APP_SESSION_NOT_RUNNING = "The chat that created this app is no
 export const MCP_APP_LIMITS = {
   /** Bytes of HTML one app may be. Bundled single-file apps run 200 KB to a few MB. */
   maxDocumentBytes: 4_000_000,
+  /**
+   * Bytes of HTML sent to a client over sync (the phone). One reply has to fit
+   * the sync channel and the phone's memory; a larger app is shown on desktop
+   * only, and the phone says so.
+   */
+  maxRemoteDocumentBytes: 1_000_000,
   /** Bytes of tool input or tool result kept with an app and replayed to it. */
   maxPayloadBytes: 512_000,
   /** Apps one chat keeps on disk; the oldest is dropped past this. */
@@ -127,6 +133,12 @@ export type McpAppToolDescriptor = {
   inputSchema?: unknown;
   /** True only when the server marked the tool read-only. Absent annotations are not read-only. */
   readOnly: boolean;
+  /**
+   * A hash of how the tool's server is started or where it is, when the
+   * session can say. Null means ADE cannot tell one definition of this server
+   * from another.
+   */
+  serverFingerprint?: string | null;
   ui: McpAppToolUiMeta;
 };
 
@@ -213,7 +225,7 @@ export function sanitizeMcpAppCsp(declared: unknown): McpAppCsp {
  * Every origin passes through {@link sanitizeMcpAppCsp} again here, so a
  * caller cannot hand this a list it did not sanitize.
  */
-export function buildMcpAppContentSecurityPolicy(declared: unknown): string {
+export function buildMcpAppContentSecurityPolicy(declared: unknown, options: { sandbox?: boolean } = {}): string {
   const { connectDomains, resourceDomains } = sanitizeMcpAppCsp(declared);
   const resources = resourceDomains.length ? ` ${resourceDomains.join(" ")}` : "";
   return [
@@ -228,8 +240,14 @@ export function buildMcpAppContentSecurityPolicy(declared: unknown): string {
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'none'",
+    // For a host with no way to put a sandbox attribute between itself and
+    // the page's response: the policy itself takes the page's origin away.
+    ...(options.sandbox ? ["sandbox allow-scripts"] : []),
   ].join("; ");
 }
+
+/** What a phone is told when an app is over {@link MCP_APP_LIMITS.maxRemoteDocumentBytes}. */
+export const MCP_APP_TOO_LARGE_FOR_REMOTE = "This app is too large to show here. Open the chat in ADE on desktop.";
 
 /* ── The stored app ── */
 
@@ -279,6 +297,12 @@ export type McpAppDocument = {
   html: string;
   /** Already sanitized; the policy is still rebuilt where the document is served. */
   csp: McpAppCsp;
+  /**
+   * The page's whole policy, built by the brain. Present only in an answer
+   * sent over sync: a phone serves the page with exactly this string and
+   * builds none of its own.
+   */
+  contentSecurityPolicy?: string;
   prefersBorder: boolean | null;
   toolInput: Record<string, unknown>;
   /** Null when the result was too large to keep. */
@@ -297,7 +321,28 @@ export type McpAppRequestArgs = {
   itemId: string;
   method: McpAppRequestMethod;
   params: unknown;
+  /**
+   * True when the client that hosts the frame saw a real click or key press
+   * inside it just before this request. The host says it, never the app: a
+   * tool that may change data runs only when it is true.
+   */
+  userActivated?: boolean;
 };
+
+/** One "always allow" answer: this tool of this server, in this project. */
+export type McpAppGrant = {
+  server: string;
+  tool: string;
+  /** See `McpAppToolDescriptor.serverFingerprint`. */
+  fingerprint: string | null;
+  grantedAt: string;
+};
+export type McpAppGrantsArgs = { sessionId: string; itemId: string };
+export type McpAppGrantsResult = { server: string | null; tools: string[] };
+export type McpAppRevokeGrantArgs = { sessionId: string; itemId: string; tool: string };
+
+/** What an app is told when it tries to change data with no click behind it. */
+export const MCP_APP_NEEDS_CLICK = "An app can change data only right after you click or press a key in it.";
 /** A JSON-RPC result or error, ready to post back to the frame. */
 export type McpAppRequestResult =
   | { ok: true; result: unknown }

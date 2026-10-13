@@ -2579,6 +2579,16 @@ declare global {
           args: import("../shared/mcpApp").McpAppRequestArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<import("../shared/mcpApp").McpAppRequestResult>;
+        /** The tools the user always allows for the server an app came from. */
+        listMcpAppGrants: (
+          args: import("../shared/mcpApp").McpAppGrantsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
+        /** Take one "always allow" back; answers the grants that are left. */
+        revokeMcpAppGrant: (
+          args: import("../shared/mcpApp").McpAppRevokeGrantArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
         /** Sources favicons as data URLs (null: the site has none), keyed by each domain as given. */
         resolveSourceFavicons: (args: { domains: string[] }) => Promise<{ icons: Record<string, string | null> }>;
         getEventHistory: (

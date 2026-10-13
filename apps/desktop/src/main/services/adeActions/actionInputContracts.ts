@@ -501,6 +501,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string, itemId: string, method: \"tools/call\" | \"resources/read\", params: object }",
       example: "ade actions run chat.mcpAppRequest --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\",\"method\":\"resources/read\",\"params\":{\"uri\":\"ui://server/page.html\"}}' --json",
     },
+    listMcpAppGrants: {
+      description: "List the tools the user always allows for the MCP server an app came from, in this project.",
+      input: "object { sessionId: string, itemId: string }",
+      example: "ade actions run chat.listMcpAppGrants --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\"}' --json",
+    },
+    revokeMcpAppGrant: {
+      description: "User clients only. Take back one \"always allow\" answer for a tool of the MCP server an app came from.",
+      input: "object { sessionId: string, itemId: string, tool: string }",
+      example: "ade actions run chat.revokeMcpAppGrant --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\",\"tool\":\"add_item\"}' --json",
+    },
     resolveSourceFavicons: {
       description: "Fetch the favicons of Sources domains from the sites themselves (HTTPS, public hosts only, cached 7 days) as data URLs; null when a site has none.",
       input: "object { domains?: string[] (max 48), domain?: string, url?: string }",

@@ -185,6 +185,27 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
       && (activation ? activation.isActive : true);
   }, []);
 
+  /** The tools the user always allows for this app's server, so they can be taken back here. */
+  const [alwaysAllowed, setAlwaysAllowed] = useState<string[]>([]);
+  const refreshGrants = useCallback(() => {
+    const current = appRef.current;
+    const list = window.ade?.agentChat?.listMcpAppGrants;
+    if (!current || typeof list !== "function") return;
+    void list({ sessionId: current.sessionId, itemId: current.itemId }, pin)
+      .then((result) => setAlwaysAllowed(Array.isArray(result?.tools) ? result.tools : []))
+      .catch(() => { /* the row keeps what it last knew */ });
+  }, [pin]);
+  const appLoaded = app !== null;
+  useEffect(() => { if (appLoaded) refreshGrants(); }, [appLoaded, refreshGrants]);
+  const stopAllowing = useCallback((tool: string) => {
+    const current = appRef.current;
+    if (!current) return;
+    void window.ade.agentChat
+      .revokeMcpAppGrant({ sessionId: current.sessionId, itemId: current.itemId, tool }, pin)
+      .then((result) => setAlwaysAllowed(Array.isArray(result?.tools) ? result.tools : []))
+      .catch(() => { /* still allowed; the row still says so */ });
+  }, [pin]);
+
   const replyToComposer = useContext(SceneReplyContext);
   const lastOpenRef = useRef(0);
   const lastMessageRef = useRef(0);
@@ -230,8 +251,11 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
     const generation = generationRef.current;
     forwardedRef.current += 1;
     setForwarded(forwardedRef.current);
+    // Read NOW, as the request arrives: the brain runs a tool that may change
+    // data only when this is true, and an approval card takes focus later.
+    const userActivated = method === "tools/call" && framePressed();
     void window.ade.agentChat
-      .mcpAppRequest({ sessionId: current.sessionId, itemId: current.itemId, method, params }, pin)
+      .mcpAppRequest({ sessionId: current.sessionId, itemId: current.itemId, method, params, userActivated }, pin)
       .catch((error): McpAppRequestResult => ({
         ok: false,
         error: { code: MCP_APP_ERROR_REFUSED, message: error instanceof Error ? error.message : "The request failed." },
@@ -243,8 +267,10 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
         setForwarded(forwardedRef.current);
         if (outcome?.ok) post({ id, result: outcome.result ?? {} });
         else post({ id, error: outcome?.error ?? { code: MCP_APP_ERROR_REFUSED, message: "The request failed." } });
+        // The user may just have answered "Always allow".
+        if (method === "tools/call") refreshGrants();
       });
-  }, [pin, post]);
+  }, [pin, post, framePressed, refreshGrants]);
 
   // Only messages from this frame's own window are considered, and every one
   // is shape-checked before anything is read from it.
@@ -434,6 +460,20 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
             <span className="truncate">can reach {network[0]}{network.length > 1 ? ` +${network.length - 1}` : ""}</span>
           </span>
         ) : null}
+        {alwaysAllowed.map((tool) => (
+          <span key={tool} className="inline-flex shrink-0 items-center gap-1" style={{ color: COLORS.textDim }} data-testid="chat-mcp-app-grant">
+            {tool} is always allowed
+            <button
+              type="button"
+              className="underline"
+              style={{ color: COLORS.textMuted }}
+              title={`Ask again before an app from ${server} runs ${tool}`}
+              onClick={() => stopAllowing(tool)}
+            >
+              Ask again
+            </button>
+          </span>
+        ))}
         {notice ? (
           <span className="inline-flex shrink-0 items-center gap-1" style={{ color: COLORS.warning }}>
             <WarningCircle size={11} weight="bold" />

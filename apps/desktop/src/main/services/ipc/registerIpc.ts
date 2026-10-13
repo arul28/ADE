@@ -1037,8 +1037,11 @@ import {
   MCP_APP_LIMITS,
   type McpAppGetArgs,
   type McpAppGetResult,
+  type McpAppGrantsArgs,
+  type McpAppGrantsResult,
   type McpAppRequestArgs,
   type McpAppRequestResult,
+  type McpAppRevokeGrantArgs,
 } from "../../../shared/mcpApp";
 import {
   resolveSceneCaptureRect,
@@ -9158,6 +9161,16 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatMcpAppRequest, async (_event, arg: McpAppRequestArgs): Promise<McpAppRequestResult> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.mcpAppRequest(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatListMcpAppGrants, async (_event, arg: McpAppGrantsArgs): Promise<McpAppGrantsResult> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.listMcpAppGrants(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatRevokeMcpAppGrant, async (_event, arg: McpAppRevokeGrantArgs): Promise<McpAppGrantsResult> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.revokeMcpAppGrant(arg);
   });
 
   ipcMain.handle(

@@ -391,6 +391,8 @@ export const IPC = {
   // `prepare` mints the ade-scene://app/ URL the frame loads the page from.
   agentChatGetMcpApp: "ade.agentChat.getMcpApp",
   agentChatMcpAppRequest: "ade.agentChat.mcpAppRequest",
+  agentChatListMcpAppGrants: "ade.agentChat.listMcpAppGrants",
+  agentChatRevokeMcpAppGrant: "ade.agentChat.revokeMcpAppGrant",
   mcpAppPrepare: "ade.mcpApp.prepare",
   agentChatModels: "ade.agentChat.models",
   agentChatLaunchDefaults: "ade.agentChat.launchDefaults",
