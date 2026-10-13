@@ -75,6 +75,6 @@ jobs:
             echo "::warning::No dSYMs at ${archive}/dSYMs; skipping the Sentry dSYM upload."
             exit 0
           fi
-          if ! npx --yes sentry@0.47.0 debug-files upload --type dsym --include-sources --wait "${archive}/dSYMs"; then
+          if ! npx --yes @sentry/cli@3.8.0 debug-files upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --type dsym --include-sources --wait "${archive}/dSYMs"; then
             echo "::warning::Sentry dSYM upload failed; crashes from this build will not be symbolicated."
           fi

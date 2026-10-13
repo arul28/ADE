@@ -1215,7 +1215,6 @@ import { devinDirectoryStatus } from "./devinCloudDirectory";
 import { syncCloudLaneMirror } from "../lanes/cloudLaneMirror";
 import { devinCloudAcpSessionId, devinCloudBareSessionId } from "./acpHost/acpDialects/devinCloud";
 import {
-  applyPersistedAcpModelCatalogs,
   buildLiveAcpModelDescriptors,
   recordAcpSessionModelCatalog,
   warmAcpModelCatalog,
@@ -5259,10 +5258,6 @@ function codexModelInfoFromDescriptor(
   };
 }
 
-/**
- * ADE's effort tiers among an ACP effort option's values, lowest first. A
- * value outside ADE's ladder (a dialect's "clear" sentinel) is not a tier.
- */
 function acpModelInfoFromDescriptor(
   descriptor: ModelDescriptor,
   provider: AcpChatProvider,
@@ -59584,7 +59579,6 @@ export function createAgentChatService(args: {
         if (!authReady) return [];
         // The provider's live list is the picker once it exists; refresh it in
         // the background when missing or old (never blocks this read).
-        applyPersistedAcpModelCatalogs();
         warmAcpModelCatalog(provider, { logger });
         if (provider === "qwen") {
           const settings = await loadQwenUserSettings();

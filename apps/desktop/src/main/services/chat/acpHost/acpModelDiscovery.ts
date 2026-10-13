@@ -44,6 +44,9 @@ import { resolveAcpExecutable } from "../../ai/acpExecutables";
 import { createAcpConnection, initializeAcpConnection } from "./acpConnection";
 import { acpDialectFor } from "./acpDialects";
 import { COPILOT_REASONING_EFFORTS } from "./acpDialects/copilot";
+import { ACP_EFFORT_LADDER } from "./acpDialects/shared";
+import { resolveAdeCacheFile } from "../../shared/adeCacheFile";
+import { writeTextAtomic } from "../../shared/utils";
 import {
   ACP_METHOD,
   hasAcpSessionCapability,
@@ -59,7 +62,6 @@ const CACHE_FILE_VERSION = 1;
 /** A chat re-reporting the same list rewrites the file at most this often. */
 const SESSION_REWRITE_MIN_MS = 30 * 60_000;
 
-const ACP_EFFORT_LADDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 /** ADE's effort ladder, filtered to what an agent listed. */
 export function acpAdvertisedReasoningTiers(values: readonly string[]): string[] {
@@ -127,26 +129,11 @@ function copilotFallbackTiers(modelId: string): string[] {
 
 type PersistedCatalog = { savedAt: number; models: ModelDescriptor[] };
 type PersistedFile = { version: number; providers: Partial<Record<AcpModelProviderGroup, PersistedCatalog>> };
-type ElectronLikeApp = { app?: { getPath(name: string): string } };
-
 let fileMemo: PersistedFile | null = null;
 let appliedFromDisk = false;
 
 function cacheFilePath(): string {
-  const envOverride = process.env.ADE_ACP_MODEL_CATALOG_CACHE_FILE?.trim();
-  if (envOverride) return path.resolve(envOverride);
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const electron = require("electron") as ElectronLikeApp;
-    const userDataPath = electron.app?.getPath?.("userData");
-    if (typeof userDataPath === "string" && userDataPath.trim().length > 0) {
-      return path.resolve(userDataPath, "acp-model-catalog-cache.json");
-    }
-  } catch {
-    // Not running inside Electron (CLI, tests).
-  }
-  const homeDir = os.homedir().trim();
-  return path.resolve(homeDir.length ? path.resolve(homeDir, ".ade") : os.tmpdir(), "acp-model-catalog-cache.json");
+  return resolveAdeCacheFile("acp-model-catalog-cache.json");
 }
 
 function isDescriptorFor(provider: AcpModelProviderGroup, value: unknown): value is ModelDescriptor {
@@ -186,19 +173,20 @@ function readFile(): PersistedFile {
   return fileMemo;
 }
 
-function persist(provider: AcpModelProviderGroup, models: ModelDescriptor[]): void {
+/**
+ * `savedAt` is the age of the last COMPLETE list, and what the TTL counts
+ * from. A partial update (a Devin session's families) keeps the age it had, so
+ * the next complete probe still comes due.
+ */
+function persist(provider: AcpModelProviderGroup, models: ModelDescriptor[], savedAt = Date.now()): void {
   const current = readFile();
   const next: PersistedFile = {
     version: CACHE_FILE_VERSION,
-    providers: { ...current.providers, [provider]: { savedAt: Date.now(), models } },
+    providers: { ...current.providers, [provider]: { savedAt, models } },
   };
   fileMemo = next;
   try {
-    const filePath = cacheFilePath();
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const tmp = `${filePath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(next), "utf8");
-    fs.renameSync(tmp, filePath);
+    writeTextAtomic(cacheFilePath(), JSON.stringify(next));
   } catch {
     // The in-memory registry already has the list; only the restart copy is lost.
   }
@@ -221,18 +209,24 @@ function signature(models: readonly ModelDescriptor[]): string {
 }
 
 /**
- * Record what a chat session's agent reported. Merged with what the provider
- * already reported (a Devin session's families next to `devin models list`'s
- * variants), then persisted.
+ * Record what a chat session's agent reported, then persist it.
+ *
+ * A session's model option is the provider's complete list, so it replaces
+ * what was there: a model the provider dropped, or one from another account,
+ * leaves the picker. Devin is the exception: its sessions list model families
+ * while `devin models list` lists the variants, so a Devin session is merged in
+ * and does not count as a fresh complete list.
  */
 export function recordAcpSessionModelCatalog(provider: AcpModelProviderGroup, descriptors: ModelDescriptor[]): void {
   if (!descriptors.length) return;
   applyPersistedAcpModelCatalogs();
-  mergeDynamicAcpModelDescriptors(provider, descriptors);
-  const merged = getLiveAcpModelDescriptors(provider);
   const saved = readFile().providers[provider];
-  if (saved && signature(saved.models) === signature(merged) && Date.now() - saved.savedAt < SESSION_REWRITE_MIN_MS) return;
-  persist(provider, merged);
+  const partial = provider === "devin";
+  if (partial) mergeDynamicAcpModelDescriptors(provider, descriptors);
+  else replaceDynamicAcpModelDescriptors(provider, descriptors);
+  const live = getLiveAcpModelDescriptors(provider);
+  if (saved && signature(saved.models) === signature(live) && Date.now() - saved.savedAt < SESSION_REWRITE_MIN_MS) return;
+  persist(provider, live, partial ? saved?.savedAt ?? 0 : Date.now());
 }
 
 /** Replace a provider's list with a complete answer from the provider, and persist it. */
@@ -309,6 +303,8 @@ async function discoverProviderModels(provider: AcpModelProviderGroup, env: Node
 
 const inFlight = new Set<AcpModelProviderGroup>();
 const lastFailureAt = new Map<AcpModelProviderGroup, number>();
+/** A provider that answered with no model list (an Auto-only plan) is not asked again until the TTL. */
+const lastEmptyAt = new Map<AcpModelProviderGroup, number>();
 let queue: Promise<void> = Promise.resolve();
 
 /**
@@ -325,6 +321,7 @@ export function warmAcpModelCatalog(
   if (saved && Date.now() - saved.savedAt < CATALOG_TTL_MS) return;
   if (inFlight.has(provider)) return;
   if (Date.now() - (lastFailureAt.get(provider) ?? 0) < RETRY_AFTER_FAILURE_MS) return;
+  if (Date.now() - (lastEmptyAt.get(provider) ?? 0) < CATALOG_TTL_MS) return;
   inFlight.add(provider);
   queue = queue.then(async () => {
     // A chat may have refreshed the list while this warm waited its turn.
@@ -333,9 +330,11 @@ export function warmAcpModelCatalog(
     try {
       const models = await discoverProviderModels(provider, options?.env ?? process.env);
       if (!models.length) {
-        // No list (an Auto-only build with no model option, a signed-out CLI):
-        // keep whatever is shown and retry later.
-        lastFailureAt.set(provider, Date.now());
+        // No list (an Auto-only plan with no model option, a signed-out CLI):
+        // keep whatever is shown. Asking again every few minutes would start
+        // the CLI and open a session each time for the same empty answer.
+        lastEmptyAt.set(provider, Date.now());
+        options?.logger?.warn?.("ai.acp_model_discovery.empty", { provider });
         return;
       }
       recordProbedCatalog(provider, models);

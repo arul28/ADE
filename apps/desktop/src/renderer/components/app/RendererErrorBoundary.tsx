@@ -42,14 +42,14 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
   private autoReported = false;
 
   componentDidCatch(error: unknown, info: React.ErrorInfo): void {
-    captureError(error, {
-      handled: false,
-      level: "fatal",
-      tags: { boundary: "root", route: window.location.hash || window.location.pathname },
-      extra: { componentStack: info.componentStack ?? null },
-    });
     if (!this.autoReported) {
       this.autoReported = true;
+      captureError(error, {
+        handled: false,
+        level: "fatal",
+        tags: { boundary: "root", route: window.location.hash || window.location.pathname },
+        extra: { componentStack: info.componentStack ?? null },
+      });
       // Main owns the setting and the budget; this is a request, and its answer
       // is deliberately uninteresting to a screen that is already broken.
       void window.ade?.diagnostics?.autoReport({

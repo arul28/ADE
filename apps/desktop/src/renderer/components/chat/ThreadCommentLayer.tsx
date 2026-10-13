@@ -1,3 +1,4 @@
+import { useOnSurfaceHidden } from "../../lib/parkedSurface";
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { createPortal } from "react-dom";
@@ -21,10 +22,17 @@ import {
   ThreadCommentEditor,
   ThreadCommentListItem,
   threadCommentErrorText,
-  useCloseWhenSurfaceHidden,
   useThreadCommentActions,
 } from "./ThreadCommentControls";
-import { addLocalThreadComment, THREAD_COMMENT_FOCUS_EVENT, threadCommentsApi } from "./threadCommentsStore";
+import {
+  addLocalThreadComment,
+  THREAD_COMMENT_FOCUS_EVENT,
+  threadCommentsApi,
+  discardUnsavedDraftBody,
+  keepUnsavedDraftBody,
+  readUnsavedDraftBody,
+  unsavedDraftKey,
+} from "./threadCommentsStore";
 
 const HIGHLIGHT_PENDING = "ade-thread-comment";
 const HIGHLIGHT_HELD = "ade-thread-comment-held";
@@ -47,30 +55,6 @@ type Draft = {
   /** What the box holds when it reopens after a failed save. */
   body?: string;
 };
-
-/**
- * Text typed into a comment box that closed without saving because the user
- * left (another chat, project or tab). Opening a comment on the same text in
- * the same chat brings it back. In memory only, and capped.
- */
-const unsavedDraftBodies = new Map<string, string>();
-const MAX_UNSAVED_DRAFTS = 50;
-
-function unsavedDraftKey(draft: Pick<Draft, "sessionId" | "messageKey" | "anchor">): string {
-  return JSON.stringify([draft.sessionId, draft.messageKey, draft.anchor]);
-}
-
-function keepUnsavedDraftBody(draft: Draft, body: string): void {
-  const key = unsavedDraftKey(draft);
-  unsavedDraftBodies.delete(key);
-  if (!body.trim()) return;
-  unsavedDraftBodies.set(key, body);
-  // A Map iterates oldest first: drop from the front.
-  for (const stale of unsavedDraftBodies.keys()) {
-    if (unsavedDraftBodies.size <= MAX_UNSAVED_DRAFTS) break;
-    unsavedDraftBodies.delete(stale);
-  }
-}
 
 type Resolved = {
   comment: ChatThreadComment;
@@ -189,7 +173,7 @@ export function ThreadCommentLayer({
   /** Closes the box for good (Cancel, Escape, saved): nothing comes back. */
   const discardDraft = useCallback(() => {
     const open = draftRef.current;
-    if (open) unsavedDraftBodies.delete(unsavedDraftKey(open));
+    if (open) discardUnsavedDraftBody(open);
     draftRef.current = null;
     setDraft(null);
     setDraftError(null);
@@ -197,7 +181,7 @@ export function ThreadCommentLayer({
 
   const openDraft = useCallback((next: Draft) => {
     closeDraftKeepingText();
-    const body = next.body ?? unsavedDraftBodies.get(unsavedDraftKey(next));
+    const body = next.body ?? readUnsavedDraftBody(next);
     draftBodyRef.current = body ?? "";
     setOpenCommentId(null);
     setDraft(body ? { ...next, body } : next);
@@ -221,9 +205,10 @@ export function ThreadCommentLayer({
     stopEditing();
   }, [closeDraftKeepingText, stopEditing]);
   const pinKey = pin?.key ?? null;
-  useEffect(() => closeAll, [closeAll, pinKey, sessionId]);
+  // Cleanup only: it runs when the chat or machine changes, and on unmount.
+  useEffect(() => () => closeAll(), [closeAll, pinKey, sessionId]);
   // So does its surface parking (another app tab or project tab on screen).
-  useCloseWhenSurfaceHidden(rootRef, Boolean(draft || openCommentId || editingId), closeAll);
+  useOnSurfaceHidden(rootRef, Boolean(draft || openCommentId || editingId), closeAll);
 
   // ── Find every comment's text again ──
   const resolvedRef = useRef<Resolved[]>([]);

@@ -3,8 +3,8 @@
  * `targetKey`: "local-machine", a remote binding's key, or a web machine).
  *
  * The page's route unmounts when you leave it, and the window can restart, so
- * the choice lives in localStorage. `null` means the user was in a new-chat
- * draft (they pressed New chat); a scope with no entry has never been opened.
+ * the choice lives in localStorage. `null` is the new-chat draft: the user
+ * pressed New chat, or the scope has never been opened.
  */
 const STORAGE_KEY = "ade.chats.lastOpenChat.v1";
 /** Machines come and go; a handful of scopes is plenty. */
@@ -29,10 +29,9 @@ function readAll(): Stored {
   }
 }
 
-/** The chat to reopen for `scopeKey`: an id, `null` for a draft, `undefined` when nothing was recorded. */
-export function readLastOpenChat(scopeKey: string): string | null | undefined {
-  const all = readAll();
-  return Object.prototype.hasOwnProperty.call(all, scopeKey) ? all[scopeKey] : undefined;
+/** The chat to reopen for `scopeKey`: its id, or `null` for the new-chat draft. */
+export function readLastOpenChat(scopeKey: string): string | null {
+  return readAll()[scopeKey] ?? null;
 }
 
 export function rememberLastOpenChat(scopeKey: string, sessionId: string | null): void {

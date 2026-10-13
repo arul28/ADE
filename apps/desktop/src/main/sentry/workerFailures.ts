@@ -16,12 +16,12 @@ type WorkerLogMessage = { level?: string; message?: unknown; detail?: unknown };
 const UNHANDLED_ORIGINS = new Set(["uncaughtException", "unhandledRejection"]);
 
 export function captureWorkerFailure(worker: "cursor" | "droid" | "pi", message: WorkerLogMessage): void {
-  const origin = (message.detail as { origin?: unknown } | null | undefined)?.origin;
-  const unhandled = typeof origin === "string" && UNHANDLED_ORIGINS.has(origin);
-  if (message.level !== "error" && !unhandled) return;
+  const rawOrigin = (message.detail as { origin?: unknown } | null | undefined)?.origin;
+  const origin = typeof rawOrigin === "string" && UNHANDLED_ORIGINS.has(rawOrigin) ? rawOrigin : null;
+  if (message.level !== "error" && !origin) return;
   const text = typeof message.message === "string" ? message.message : "SDK worker failure";
   captureProblem(text, {
-    tags: { process: `worker:${worker}`, ...(unhandled ? { "worker.origin": origin as string } : {}) },
+    tags: { process: `worker:${worker}`, ...(origin ? { "worker.origin": origin } : {}) },
     extra: { detail: message.detail ?? null },
     fingerprint: ["worker", worker, text],
   });

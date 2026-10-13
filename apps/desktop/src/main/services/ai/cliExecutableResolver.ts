@@ -310,24 +310,33 @@ function expandWindowsEnvReferences(value: string, env: NodeJS.ProcessEnv): stri
   return value.replace(/%([^%;]+)%/g, (whole, name: string) => lookup.get(name.toLowerCase()) ?? whole);
 }
 
+/**
+ * `reg.exe` writes to a pipe in the console's OEM code page, which mangles a
+ * folder name such as `C:\Users\José` or one in Japanese, so it runs under
+ * `cmd` switched to UTF-8 first. The key goes through an environment variable
+ * (quoted, since the machine key has a space) so no argument needs quoting.
+ */
 async function queryRegistryPathValue(key: string): Promise<string | null> {
-  const args = ["query", key, "/v", "Path"];
   let regExe = "reg.exe";
+  let cmdExe = "cmd.exe";
   try {
     regExe = resolveTrustedWindowsTool("reg");
+    cmdExe = resolveTrustedWindowsTool("cmd");
   } catch {
-    // Non-standard install: fall back to the PATH spelling.
+    // Non-standard install: fall back to the PATH spellings.
   }
+  const args = ["/d", "/s", "/c", `chcp 65001>nul & ${regExe} query %ADE_REG_PATH_KEY% /v Path`];
+  const envPatch = { ADE_REG_PATH_KEY: `"${key}"` };
   if (offThreadSpawnEnabled()) {
-    const result = await execFileOffThread(regExe, args, { timeoutMs: WINDOWS_PERSISTED_PATH_TIMEOUT_MS });
+    const result = await execFileOffThread(cmdExe, args, { timeoutMs: WINDOWS_PERSISTED_PATH_TIMEOUT_MS, envPatch });
     return result.exitCode === 0 ? parseRegQueryPathValue(result.stdout) : null;
   }
   return new Promise((resolve) => {
     try {
       execFile(
-        regExe,
+        cmdExe,
         args,
-        { encoding: "utf8", timeout: WINDOWS_PERSISTED_PATH_TIMEOUT_MS, windowsHide: true },
+        { encoding: "utf8", timeout: WINDOWS_PERSISTED_PATH_TIMEOUT_MS, windowsHide: true, env: { ...process.env, ...envPatch } },
         (error, stdout) => resolve(error ? null : parseRegQueryPathValue(String(stdout ?? ""))),
       );
     } catch {

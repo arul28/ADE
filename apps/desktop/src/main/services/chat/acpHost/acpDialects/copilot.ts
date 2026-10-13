@@ -93,6 +93,7 @@ import {
 import type { AcpAvailableCommand } from "../acpProtocolTypes";
 import { resolveCopilotCliModelForLaunch } from "../../../../../shared/cliLaunch";
 import {
+  ACP_EFFORT_LADDER,
   ADE_CLIENT_INFO,
   inlineImagePrompt,
   standardAcpUsage,
@@ -177,7 +178,7 @@ export function includeCopilotSlashCommand(command: AcpAvailableCommand): boolea
  * `reasoning_effort` config option (category `thought_level`) for a model that
  * takes an effort; Auto takes none and the session lists no option for it.
  */
-export const COPILOT_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const COPILOT_REASONING_EFFORTS = ACP_EFFORT_LADDER;
 
 /**
  * ADE's effort as a Copilot level, or `null` when Copilot has no such level.

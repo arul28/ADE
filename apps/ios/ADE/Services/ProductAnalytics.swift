@@ -112,6 +112,12 @@ protocol ProductAnalyticsSink: AnyObject {
   func resetIdentity()
   func setEnabled(_ enabled: Bool)
   func flush()
+  /// The id events are sent under right now, when the sink has one.
+  func currentDistinctId() -> String?
+}
+
+extension ProductAnalyticsSink {
+  func currentDistinctId() -> String? { nil }
 }
 
 protocol ProductAnalyticsHTTPTransport: AnyObject {
@@ -465,7 +471,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
   }
 
   /// The distinct id PostHog would send for this install right now.
-  func currentDistinctId() -> String {
+  func currentDistinctId() -> String? {
     lock.withLock { identifiedAccountHash() ?? installationID() }
   }
 
@@ -587,7 +593,13 @@ final class ProductAnalytics {
   /// are honored silently: default on, unless one of these is set.
   static func isOptedOut(defaults: UserDefaults) -> Bool {
     defaults.object(forKey: enabledDefaultsKey) as? Bool == false
-      || ProcessInfo.processInfo.environment["DO_NOT_TRACK"] == "1"
+      || isTruthyFlag(ProcessInfo.processInfo.environment["DO_NOT_TRACK"])
+  }
+
+  /// `1`, `true` or `yes`, in any case: the same reading as desktop's `doNotTrack.ts`.
+  static func isTruthyFlag(_ value: String?) -> Bool {
+    guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
+    return normalized == "1" || normalized == "true" || normalized == "yes"
   }
 
   func configure(bundle: Bundle = .main) {
@@ -779,7 +791,7 @@ final class ProductAnalytics {
   /// identified, else the anonymous installation id. Crash reports reuse it so
   /// both tools name one install the same way.
   func currentDistinctId() -> String? {
-    (sink as? DirectPostHogProductAnalyticsSink)?.currentDistinctId()
+    isEnabled ? sink.currentDistinctId() : nil
   }
 
   private func capture(

@@ -5,8 +5,10 @@
  * no server-side rate limits, so one broken provider or a crash loop on a
  * single machine could spend the month in an afternoon. Every process keeps
  * its own budget: a few events per fingerprint per hour, and a hard total per
- * hour. The first events of any new problem always go through, which is what
- * matters for finding it; the thousandth copy adds nothing.
+ * hour. The first events of a problem go through, which is what matters for
+ * finding it; the thousandth copy adds nothing. Once the hourly total is
+ * spent, a new problem in the same hour is dropped too: the total is the
+ * guarantee, and it is sized so that takes a dozen different failures.
  */
 
 export type SentryBudget = {
@@ -17,6 +19,16 @@ export type SentryBudget = {
 export const DEFAULT_SENTRY_BUDGET: SentryBudget = {
   perFingerprintPerHour: 5,
   totalPerHour: 60,
+};
+
+/**
+ * Crashes get their own, looser budget so the ordinary one can never starve
+ * them, and so a process that survives its uncaught exceptions (or throws many
+ * while it shuts down) still cannot spend the quota.
+ */
+export const FATAL_SENTRY_BUDGET: SentryBudget = {
+  perFingerprintPerHour: 10,
+  totalPerHour: 30,
 };
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -50,12 +62,18 @@ export function createEventLimiter(budget: SentryBudget = DEFAULT_SENTRY_BUDGET)
 }
 
 /** Errors that are expected outcomes, not bugs. Matched against the exception value or message. */
-export const IGNORED_ERROR_PATTERNS: readonly RegExp[] = [
+const IGNORED_ERROR_PATTERNS: readonly RegExp[] = [
   /ResizeObserver loop/i,
   /\bERR_ABORTED\b|\(-3\) loading/,
   /^AbortError\b|The operation was aborted|This operation was aborted|Request aborted/i,
   /\bEPIPE\b|ERR_STREAM_DESTROYED|write after end/i,
   /Non-Error promise rejection captured with value: undefined/,
+  // Too many open files: main keeps running through these on purpose
+  // (`FILE_LIMIT_CODES` in main.ts), and one burst is thousands of them.
+  /\b(?:EMFILE|ENFILE)\b/,
+  // The renderer's copy of a failed IPC call. Main already reported it, with
+  // the channel and the real stack (`main/sentry/ipcCapture.ts`).
+  /^(?:Error: )?Error invoking remote method /,
   // Sync turned off (or no project registered yet) is a state, not a failure;
   // presence and other sync calls answer with this on every lane change.
   /Sync service is not available/,

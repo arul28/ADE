@@ -4,8 +4,17 @@
  * scrub. Kept free of SDK-specific types so the Electron, Node and browser SDKs
  * can all take it.
  */
-import { createEventLimiter, eventBudgetKey, isIgnoredEvent, type SentryBudget } from "./guardrails";
-import { scrubBreadcrumb, scrubEvent, scrubLog, type ScrubbableBreadcrumb, type ScrubbableEvent, type ScrubbableLog } from "./scrub";
+import { createEventLimiter, eventBudgetKey, FATAL_SENTRY_BUDGET, isIgnoredEvent, type SentryBudget } from "./guardrails";
+import {
+  scrubBreadcrumb,
+  scrubEvent,
+  scrubLog,
+  scrubSpan,
+  type ScrubbableBreadcrumb,
+  type ScrubbableEvent,
+  type ScrubbableLog,
+  type ScrubbableSpan,
+} from "./scrub";
 
 type FilterableEvent = ScrubbableEvent & Parameters<typeof eventBudgetKey>[0] & { type?: string; level?: string };
 
@@ -32,14 +41,17 @@ function currentUserId(): string | null {
 
 export function createSentryEventHooks(budget?: SentryBudget) {
   const limiter = createEventLimiter(budget);
+  const fatalLimiter = createEventLimiter(FATAL_SENTRY_BUDGET);
   return {
     beforeSend<T>(event: T): T | null {
       const candidate = event as unknown as FilterableEvent;
       if (isIgnoredEvent(candidate)) return null;
-      // Crashes always go: they are rare, capped per session by the SDK, and
-      // the most valuable thing Sentry receives.
-      const fatal = candidate.level === "fatal";
-      if (!fatal && !limiter.admit(eventBudgetKey(candidate))) return null;
+      // Crashes are the most valuable thing Sentry receives, so they do not
+      // compete with ordinary errors for the budget; they have their own.
+      const admitted = candidate.level === "fatal"
+        ? fatalLimiter.admit(eventBudgetKey(candidate))
+        : limiter.admit(eventBudgetKey(candidate));
+      if (!admitted) return null;
       const userId = currentUserId();
       if (userId) candidate.user = { ...(candidate.user ?? {}), id: userId };
       return scrubEvent(candidate) as unknown as T;
@@ -50,6 +62,10 @@ export function createSentryEventHooks(budget?: SentryBudget) {
       // already contributes the useful lines as `log` breadcrumbs.
       if (crumb.category === "console") return null;
       return scrubBreadcrumb(crumb) as unknown as T;
+    },
+    /** Spans never pass `beforeSend`; this is their only scrub. */
+    beforeSendSpan<T>(span: T): T {
+      return scrubSpan(span as unknown as ScrubbableSpan) as unknown as T;
     },
     beforeSendLog<T>(log: T): T | null {
       return scrubLog(log as unknown as ScrubbableLog) as unknown as T;

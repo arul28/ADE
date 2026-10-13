@@ -1,4 +1,4 @@
-import { useLayoutEffect, type CSSProperties, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type CSSProperties, type RefObject } from "react";
 
 /**
  * Project and route surfaces stay mounted while another one is on screen
@@ -61,4 +61,31 @@ export function useParkedSurfaceFocus(
 /** True when `element` sits in a parked (or inert) surface, so it is not on screen. */
 export function isInParkedSurface(element: Element): boolean {
   return element.closest(`[inert], [${PARKED_SURFACE_ATTRIBUTE}]`) != null;
+}
+
+/**
+ * Calls `onHidden` when the element in `ref` goes off screen because its
+ * surface was parked (another app tab or project tab is showing) or hidden.
+ * For anything that floats in a viewport layer outside its surface (a popover,
+ * a comment box) and would otherwise stay up over whatever is shown instead.
+ * Observes only while `enabled`, so a closed popover costs nothing.
+ */
+export function useOnSurfaceHidden(
+  ref: { current: Element | null },
+  enabled: boolean,
+  onHidden: () => void,
+): void {
+  const onHiddenRef = useRef(onHidden);
+  onHiddenRef.current = onHidden;
+  useEffect(() => {
+    const node = ref.current;
+    if (!enabled || !node || typeof IntersectionObserver !== "function") return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      if (!entry || entry.isIntersecting) return;
+      if (isInParkedSurface(node) || node.getClientRects().length === 0) onHiddenRef.current();
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [enabled, ref]);
 }

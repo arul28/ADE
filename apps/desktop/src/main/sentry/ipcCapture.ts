@@ -10,16 +10,20 @@
  * error type. Slow calls leave a breadcrumb for whatever fails next.
  */
 import { ipcMain } from "electron";
-import { IPC } from "../../shared/ipc";
 import { addSentryBreadcrumb, captureError } from "../../shared/sentry/capture";
-import { isUnsupportedAdeActionError, parseCodedErrorMessage } from "../../shared/codedError";
-import { readRuntimeActionRequest } from "../services/ipc/ipcTimeouts";
+import { parseCodedErrorMessage } from "../../shared/codedError";
+import { isExpectedFailure } from "../../shared/sentry/expectedFailure";
 
 const SLOW_CALL_BREADCRUMB_MS = 250;
 
 type PatchedIpcMain = typeof ipcMain & { __adeSentryWrapped?: boolean };
 
-export function installIpcErrorCapture(): void {
+/**
+ * `labelFor` names a call more precisely than its channel when it can (the
+ * brain's action channel carries every action); it returns the channel
+ * otherwise. Supplied by the caller so this wrapper knows no channel.
+ */
+export function installIpcErrorCapture(labelFor: (channel: string, args: readonly unknown[]) => string): void {
   const target = ipcMain as PatchedIpcMain;
   if (target.__adeSentryWrapped) return;
   target.__adeSentryWrapped = true;
@@ -31,16 +35,14 @@ export function installIpcErrorCapture(): void {
         const result = await listener(event, ...args);
         const durationMs = Date.now() - startedAt;
         if (durationMs >= SLOW_CALL_BREADCRUMB_MS) {
-          addSentryBreadcrumb("ipc", channelLabel(channel, args), { durationMs, ok: true });
+          addSentryBreadcrumb("ipc", labelFor(channel, args), { durationMs, ok: true });
         }
         return result;
       } catch (error) {
-        const label = channelLabel(channel, args);
+        const label = labelFor(channel, args);
         const durationMs = Date.now() - startedAt;
         addSentryBreadcrumb("ipc", label, { durationMs, ok: false }, "error");
-        // A peer that does not know an action is a version skew, reported by
-        // the remote-machine path; it is not a bug in this handler.
-        if (!isUnsupportedAdeActionError(error)) {
+        if (!isExpectedFailure(error)) {
           const errorName = error instanceof Error ? error.name : "unknown";
           const code = parseCodedErrorMessage(error).code ?? null;
           captureError(error, {
@@ -56,12 +58,4 @@ export function installIpcErrorCapture(): void {
         throw error;
       }
     })) as typeof ipcMain.handle;
-}
-
-/** `localRuntime.callAction` carries every brain action; name the action instead. */
-function channelLabel(channel: string, args: readonly unknown[]): string {
-  if (channel !== IPC.localRuntimeCallAction) return channel;
-  const request = readRuntimeActionRequest(args);
-  if (!request) return channel;
-  return request.action ? `${request.domain}.${request.action}` : request.domain;
 }

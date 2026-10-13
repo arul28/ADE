@@ -132,7 +132,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   // The chat open in the pane. Leaving the page (or the window) and coming
   // back reopens the one you were in; only New chat starts a draft.
-  const [selectedId, setSelectedId] = useState<string | null>(() => readLastOpenChat(targetKey) ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => readLastOpenChat(targetKey));
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const targetKeyRef = useRef(targetKey);
@@ -193,7 +193,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
 
   useEffect(() => {
     const generation = ++targetGenerationRef.current;
-    const restoredId = readLastOpenChat(targetKey) ?? null;
+    const restoredId = readLastOpenChat(targetKey);
     setSessions([]);
     setSelectedId(restoredId);
     setMultiSelectedIds(EMPTY_SELECTION);

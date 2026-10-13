@@ -224,18 +224,25 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     });
   };
 
-  const watchExternal = (realDir: string): void => {
-    if (closed) return;
-    if (nativeWatchers.has(realDir) || realDir === root || realDir.startsWith(`${root}${path.sep}`)) return;
+  /** One recursive native watch on `dir`. False when the OS refused it. */
+  function openNativeWatch(dir: string): boolean {
+    if (closed) return false;
     try {
-      const watcher = fs.watch(realDir, { recursive: true }, (_event, filename) => {
-        onNativeEvent(realDir, filename);
+      const watcher = fs.watch(dir, { recursive: true }, (_event, filename) => {
+        onNativeEvent(dir, filename);
       });
       watcher.on("error", (error) => emit("error", error));
-      nativeWatchers.set(realDir, watcher);
+      nativeWatchers.set(dir, watcher);
+      return true;
     } catch (error) {
       emit("error", error);
+      return false;
     }
+  }
+
+  const watchExternal = (realDir: string): void => {
+    if (nativeWatchers.has(realDir) || realDir === root || realDir.startsWith(`${root}${path.sep}`)) return;
+    openNativeWatch(realDir);
   };
 
   /** At most this many directory reads and stats at once, across the whole walk. */
@@ -377,7 +384,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     }
     // A root that came back is diffed against an empty tree.
     if (!entries.has(root)) remember(root, { dir: true, mtimeMs: 0, size: 0 });
-    if (!nativeWatchers.has(root)) watchRoot();
+    if (!nativeWatchers.has(root)) openNativeWatch(root);
     if (stat.isDirectory()) {
       if (known && !known.dir) forget(absPath, true);
       const visited = await ancestorsReal(parent);
@@ -420,9 +427,15 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     if (closed || !ready) return;
     const batch = [...pendingEvents].sort((left, right) => left.length - right.length);
     pendingEvents.clear();
-    const rescan = rescanPending;
+    // A rescan that is queued and has not started yet will see everything up
+    // to the moment it starts, so a second one behind it adds nothing. Without
+    // this, an install or checkout (seconds of dropped events, one batch every
+    // 25 ms) queues hundreds of whole-tree reads back to back.
+    const rescan = rescanPending && !rescanQueued;
     rescanPending = false;
+    if (rescan) rescanQueued = true;
     work = work.then(async () => {
+      if (rescan) rescanQueued = false;
       if (rescan && entries.has(root)) {
         try {
           const linked = new Set([...aliases.values()].flatMap((known) => [...known]));
@@ -454,6 +467,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
    * Only a read of the whole tree can tell.
    */
   let rescanPending = false;
+  let rescanQueued = false;
   function onNativeEvent(watchedDir: string, filename: string | Buffer | null): void {
     if (closed) return;
     if (filename) {
@@ -472,21 +486,6 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
     for (const [realDir, known] of aliases) {
       if (realPath !== realDir && !realPath.startsWith(`${realDir}${path.sep}`)) continue;
       for (const alias of known) enqueue(path.join(alias, realPath.slice(realDir.length)));
-    }
-  }
-
-  function watchRoot(): boolean {
-    if (closed) return false;
-    try {
-      const watcher = fs.watch(root, { recursive: true }, (_event, filename) => {
-        onNativeEvent(root, filename);
-      });
-      watcher.on("error", (error) => emit("error", error));
-      nativeWatchers.set(root, watcher);
-      return true;
-    } catch (error) {
-      emit("error", error);
-      return false;
     }
   }
 
@@ -521,7 +520,7 @@ function createNativeTreeWatcher(rootPath: string, options: TreeWatcherOptions):
       emit("ready");
       return;
     }
-    if (!watchRoot()) {
+    if (!openNativeWatch(root)) {
       // No watch means no events; the caller still gets `ready`, so it does not wait on a dead watcher.
       ready = true;
       emit("ready");

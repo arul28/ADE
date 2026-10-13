@@ -84,9 +84,9 @@ import {
   ACTION_NOT_CALLABLE_CODE,
   ACTION_NOT_EXPOSED_CODE,
   encodeCodedErrorMessage,
-  isUnsupportedAdeActionError,
   parseCodedErrorMessage,
 } from "../../desktop/src/shared/codedError";
+import { isExpectedFailure } from "../../desktop/src/shared/sentry/expectedFailure";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   joinAdeAgentSkillRoots,
@@ -1927,9 +1927,8 @@ const CALLER_ERROR_CODES = new Set<number>([
  */
 function reportFailedAction(actionName: string, error: unknown): void {
   if (error instanceof JsonRpcError && CALLER_ERROR_CODES.has(error.code)) return;
-  if (isUnsupportedAdeActionError(error)) return;
+  if (isExpectedFailure(error)) return;
   const code = parseCodedErrorMessage(error).code ?? null;
-  if (code === ACTION_NOT_CALLABLE_CODE || code === ACTION_NOT_EXPOSED_CODE) return;
   captureError(error, {
     tags: { "runtime.action": actionName, ...(code ? { "error.code": code } : {}) },
     fingerprint: ["runtime-action", actionName, code ?? (error instanceof Error ? error.name : "unknown")],

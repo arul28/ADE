@@ -7,6 +7,8 @@
  * `DO_NOT_TRACK=1` and `ADE_SENTRY_DISABLED=1`. `ADE_SENTRY_DEV=1` turns it on
  * in a dev build for testing the wiring, reporting as `development`.
  */
+import { doNotTrackRequested, isTruthyEnvFlag } from "../doNotTrack";
+import { normalizeAppPackageChannel } from "../packageChannel";
 
 /**
  * Public DSNs for the `ade-app` organization. A DSN only lets a client submit
@@ -25,17 +27,12 @@ export type SentryEnvironment = "production" | "beta" | "alpha" | "development";
 
 type Env = Record<string, string | undefined>;
 
-function truthy(value: string | undefined): boolean {
-  const normalized = value?.trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes";
+function isSentryOptedOut(env: Env): boolean {
+  return doNotTrackRequested(env) || isTruthyEnvFlag(env.ADE_SENTRY_DISABLED);
 }
 
-export function isSentryOptedOut(env: Env): boolean {
-  return truthy(env.DO_NOT_TRACK) || truthy(env.ADE_SENTRY_DISABLED);
-}
-
-export function isSentryDevOptIn(env: Env): boolean {
-  return truthy(env.ADE_SENTRY_DEV);
+function isSentryDevOptIn(env: Env): boolean {
+  return isTruthyEnvFlag(env.ADE_SENTRY_DEV);
 }
 
 /**
@@ -43,9 +40,9 @@ export function isSentryDevOptIn(env: Env): boolean {
  * (`app.isPackaged`, `ADE_RUNTIME_PACKAGED=1` for the brain, a production
  * Vite build for the web client).
  */
-export function shouldEnableSentry(args: { env: Env; packaged: boolean }): boolean {
+export function shouldEnableSentry(args: { env: Env; packaged: boolean; priorOptOut?: boolean }): boolean {
   const { env } = args;
-  if (isSentryOptedOut(env)) return false;
+  if (isSentryOptedOut(env) || args.priorOptOut) return false;
   if (env.NODE_ENV === "test" || env.VITEST) return false;
   if (isSentryDevOptIn(env)) return true;
   return args.packaged;
@@ -55,12 +52,10 @@ export function resolveSentryDsn(surface: SentrySurface, env: Env): string {
   return env.ADE_SENTRY_DSN?.trim() || SENTRY_DSNS[surface];
 }
 
-export function resolveSentryEnvironment(args: { env: Env; packaged: boolean; channel?: string | null }): SentryEnvironment {
+export function resolveSentryEnvironment(args: { env: Env; packaged: boolean }): SentryEnvironment {
   if (!args.packaged) return "development";
-  const channel = (args.channel ?? args.env.ADE_PACKAGE_CHANNEL ?? "").trim().toLowerCase();
-  if (channel === "beta") return "beta";
-  if (channel === "alpha") return "alpha";
-  return "production";
+  const channel = normalizeAppPackageChannel(args.env.ADE_PACKAGE_CHANNEL);
+  return channel === "stable" ? "production" : channel;
 }
 
 /** One release name across desktop, brain, web client and Workers. */
@@ -76,6 +71,26 @@ export function sentryDist(platform: string, arch: string): string {
 }
 
 export const SENTRY_TRACES_SAMPLE_RATE = 0.05;
+
+/**
+ * What the SDKs may collect on their own, for every Node and browser process:
+ * no user or IP, no cookies, headers, bodies or query strings, and no model
+ * inputs or outputs.
+ */
+export const SENTRY_DATA_COLLECTION = {
+  userInfo: false,
+  cookies: false,
+  httpHeaders: false,
+  httpBodies: [],
+  urlQueryParams: false,
+  graphQL: { document: false, variables: false },
+  genAI: { inputs: false, outputs: false },
+};
+
+/** The `package.channel` tag: `stable`, `beta` or `alpha`. */
+export function sentryChannelTag(env: Env): string {
+  return normalizeAppPackageChannel(env.ADE_PACKAGE_CHANNEL);
+}
 
 /** Handed to renderers through `additionalArguments` when main's Sentry client is running. */
 export const SENTRY_ENABLED_ARGV = "--ade-sentry=1";

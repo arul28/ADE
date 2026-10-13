@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import type { ChatThreadComment } from "../../../shared/threadComments";
+import type { ChatThreadComment, ChatThreadCommentAnchor } from "../../../shared/threadComments";
 
 /**
  * Pending thread comments per chat, as last reported by the chat's host.
@@ -154,4 +154,39 @@ export const THREAD_COMMENT_FOCUS_EVENT = "ade:thread-comment-focus";
 
 export function requestThreadCommentFocus(comment: ChatThreadComment): void {
   window.dispatchEvent(new CustomEvent(THREAD_COMMENT_FOCUS_EVENT, { detail: { sessionId: comment.sessionId, commentId: comment.id } }));
+}
+
+/**
+ * Text typed into a comment box that closed without saving because the user
+ * left (another chat, project or tab). Opening a comment on the same text in
+ * the same chat brings it back. In memory only, and capped.
+ */
+type UnsavedDraftTarget = { sessionId: string; messageKey: string; anchor: ChatThreadCommentAnchor };
+
+const unsavedDraftBodies = new Map<string, string>();
+const MAX_UNSAVED_DRAFTS = 50;
+
+/** Identifies the text a comment box is open on; also a stable React key for the box. */
+export function unsavedDraftKey(target: UnsavedDraftTarget): string {
+  return JSON.stringify([target.sessionId, target.messageKey, target.anchor]);
+}
+
+export function keepUnsavedDraftBody(target: UnsavedDraftTarget, body: string): void {
+  const key = unsavedDraftKey(target);
+  unsavedDraftBodies.delete(key);
+  if (!body.trim()) return;
+  unsavedDraftBodies.set(key, body);
+  // A Map iterates oldest first: drop from the front.
+  for (const stale of unsavedDraftBodies.keys()) {
+    if (unsavedDraftBodies.size <= MAX_UNSAVED_DRAFTS) break;
+    unsavedDraftBodies.delete(stale);
+  }
+}
+
+export function readUnsavedDraftBody(target: UnsavedDraftTarget): string | undefined {
+  return unsavedDraftBodies.get(unsavedDraftKey(target));
+}
+
+export function discardUnsavedDraftBody(target: UnsavedDraftTarget): void {
+  unsavedDraftBodies.delete(unsavedDraftKey(target));
 }

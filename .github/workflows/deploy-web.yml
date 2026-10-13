@@ -95,7 +95,7 @@ jobs:
         run: cd apps/desktop && npm run build:webclient
       - name: Inject Sentry debug ids
         # Local only, no token: ties each shipped file to its map by content.
-        run: npx --yes @sentry/cli@2 sourcemaps inject apps/desktop/dist/web-client/assets
+        run: npx --yes @sentry/cli@3.8.0 sourcemaps inject apps/desktop/dist/web-client/assets
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means
         # stack traces stay minified.
@@ -108,7 +108,7 @@ jobs:
             echo "SENTRY_AUTH_TOKEN is not set; skipping the Sentry source map upload."
             exit 0
           fi
-          npx --yes @sentry/cli@2 sourcemaps upload --org ade-app --project ade-web --release "$SENTRY_RELEASE" --dist web apps/desktop/dist/web-client/assets
+          npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-web --release "$SENTRY_RELEASE" --dist web apps/desktop/dist/web-client/assets
       - name: Keep source maps off the public site
         run: find apps/desktop/dist/web-client -name '*.map' -delete
       - name: Deploy to Cloudflare Pages
@@ -150,7 +150,7 @@ jobs:
           fi
           cd apps/account-directory
           npx wrangler deploy --dry-run --env production --outdir "$RUNNER_TEMP/sentry-maps"
-          npx --yes @sentry/cli@2 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-account-directory --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
+          npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-account-directory --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
       - name: Verify health
         run: curl -fsS https://ade-account-directory-production.arulsharma1028.workers.dev/health | grep -q '"ok":true'
 
@@ -181,7 +181,7 @@ jobs:
           fi
           cd apps/webhook-relay
           npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/sentry-maps"
-          npx --yes @sentry/cli@2 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-github-webhook-relay --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
+          npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-github-webhook-relay --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
 
   tunnel-relay:
     needs: changes
@@ -210,7 +210,7 @@ jobs:
           fi
           cd apps/tunnel-relay
           npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/sentry-maps"
-          npx --yes @sentry/cli@2 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-tunnel-relay --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
+          npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-tunnel-relay --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
       - name: Verify deployed protocol and Worker version
         run: |
           for attempt in {1..18}; do
@@ -270,4 +270,4 @@ jobs:
           fi
           cd apps/push-relay
           npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/sentry-maps"
-          npx --yes @sentry/cli@2 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-push-relay --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
+          npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-push-relay --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"

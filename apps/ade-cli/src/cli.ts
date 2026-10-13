@@ -21485,6 +21485,9 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     write("fatal uncaught exception", error);
     // Sentry captured this already (its handler runs first); give the report
     // a moment to leave before the process does.
+    // The exit must not depend on the flush: a brain that just threw is not
+    // fit to keep serving chats while a network call decides when it stops.
+    setTimeout(() => process.exit(1), 3_000).unref();
     void flushSentry(2_000).finally(() => process.exit(1));
   };
   process.on("unhandledRejection", onUnhandledRejection);

@@ -366,7 +366,7 @@ function readRealIndexPath(worktreePath: string): Promise<string> {
 async function withWorkingTreeIndex<T>(
   worktreePath: string,
   fn: (env: NodeJS.ProcessEnv) => Promise<T>,
-  realIndexPathRead: Promise<string> = readRealIndexPath(worktreePath),
+  realIndexPathRead: Promise<string>,
 ): Promise<T> {
   const indexPath = path.join(os.tmpdir(), `ade-branch-diff-${randomUUID()}.index`);
   const env = { GIT_INDEX_FILE: indexPath };

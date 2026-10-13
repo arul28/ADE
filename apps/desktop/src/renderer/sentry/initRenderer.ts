@@ -9,12 +9,11 @@
  * (`webclient/sentry.ts`) and the browser mock loads neither.
  */
 import * as Sentry from "@sentry/electron/renderer";
+import { connectSentry } from "../../shared/sentry/capture";
 import { createSentryEventHooks } from "../../shared/sentry/eventFilter";
 import { SENTRY_TRACES_SAMPLE_RATE } from "../../shared/sentry/config";
 
 export function initRendererSentry(): void {
-  // The preload installs this bridge only when main's Sentry client is running.
-  if (typeof window === "undefined" || !(window as { __SENTRY_IPC__?: unknown }).__SENTRY_IPC__) return;
   const hooks = createSentryEventHooks();
   Sentry.init({
     tracesSampleRate: SENTRY_TRACES_SAMPLE_RATE,
@@ -26,7 +25,9 @@ export function initRendererSentry(): void {
     ],
     beforeSend: hooks.beforeSend,
     beforeBreadcrumb: hooks.beforeBreadcrumb,
+    beforeSendSpan: hooks.beforeSendSpan,
   });
+  connectSentry(Sentry);
   // No `process` tag here: the renderer's scope is merged into main's, where
   // it would overwrite main's own. The SDK tags each event's `event.process`.
 }

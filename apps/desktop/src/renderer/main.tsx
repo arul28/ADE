@@ -19,7 +19,7 @@ import { installAnimationPhaseAlignment } from "./lib/animationPhaseAlignment";
 // Error tracking, loaded as its own chunk and only when main's Sentry client is
 // running (the preload installs the bridge in that case alone), so dev builds
 // and the browser mock never pay for it.
-if ((window as { __SENTRY_IPC__?: unknown }).__SENTRY_IPC__) {
+if ("__SENTRY_IPC__" in window) {
   void import("./sentry/initRenderer").then((module) => module.initRendererSentry()).catch(() => undefined);
 }
 

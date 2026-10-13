@@ -6,7 +6,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { threadCommentQuoteText, threadReviewCountLabel, type ChatThreadComment } from "../../../shared/threadComments";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
 import { cssZoomOf } from "../../lib/webZoom";
-import { isInParkedSurface } from "../../lib/parkedSurface";
+import { useOnSurfaceHidden } from "../../lib/parkedSurface";
 import { cn } from "../ui/cn";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -18,33 +18,6 @@ import {
   removeThreadCommentLocally,
   threadCommentsApi,
 } from "./threadCommentsStore";
-
-/**
- * Calls `onHidden` when the element in `ref` goes off screen because its
- * surface was parked (another app tab or project tab is showing) or hidden.
- * Comment popovers float in a viewport layer outside the surface, so without
- * this they would stay up over whatever is shown instead. Observes only while
- * `enabled`, so a closed box costs nothing.
- */
-export function useCloseWhenSurfaceHidden(
-  ref: { current: Element | null },
-  enabled: boolean,
-  onHidden: () => void,
-): void {
-  const onHiddenRef = useRef(onHidden);
-  onHiddenRef.current = onHidden;
-  useEffect(() => {
-    const node = ref.current;
-    if (!enabled || !node || typeof IntersectionObserver !== "function") return undefined;
-    const observer = new IntersectionObserver((entries) => {
-      const entry = entries[entries.length - 1];
-      if (!entry || entry.isIntersecting) return;
-      if (isInParkedSurface(node) || node.getClientRects().length === 0) onHiddenRef.current();
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [enabled, ref]);
-}
 
 /** An error from a comment write, without Electron's IPC wrapper text. */
 export function threadCommentErrorText(error: unknown): string {
@@ -327,7 +300,7 @@ export function ComposerThreadCommentsButton({
   const pinKey = pin?.key ?? null;
   useEffect(() => setOpen(false), [pinKey, sessionId]);
   const close = useCallback(() => setOpen(false), []);
-  useCloseWhenSurfaceHidden(buttonRef, open, close);
+  useOnSurfaceHidden(buttonRef, open, close);
 
   useEffect(() => {
     if (!open) return undefined;

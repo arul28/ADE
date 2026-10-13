@@ -8,12 +8,13 @@
  * child processes that die. Must run after `app.setPath("userData")`, because
  * the offline queue and the crash dumps live there, and before `app` is ready.
  */
-import os from "node:os";
 import { app } from "electron";
 import * as Sentry from "@sentry/electron/main";
+import { connectSentry } from "../../shared/sentry/capture";
 import {
   resolveSentryDsn,
   resolveSentryEnvironment,
+  SENTRY_DATA_COLLECTION,
   sentryDist,
   sentryReleaseName,
   SENTRY_TRACES_SAMPLE_RATE,
@@ -21,16 +22,21 @@ import {
 } from "../../shared/sentry/config";
 import { createSentryEventHooks } from "../../shared/sentry/eventFilter";
 import { installIpcErrorCapture } from "./ipcCapture";
+import { sentryMachineContext, sentryProcessTags } from "./machineContext";
+import { hasPriorTelemetryOptOut } from "./priorOptOut";
 
 let started = false;
 
 /** Integrations ADE leaves out: local variables can hold anything, and ADE wires its own preload. */
 const EXCLUDED_INTEGRATIONS = /^(?:LocalVariables|PreloadInjection|Screenshots)/;
 
-export function initMainSentry(): boolean {
+export function initMainSentry(options: {
+  /** Names an IPC call for its issue and breadcrumb; see `installIpcErrorCapture`. */
+  ipcLabel: (channel: string, args: readonly unknown[]) => string;
+}): boolean {
   if (started) return true;
   const packaged = app.isPackaged;
-  if (!shouldEnableSentry({ env: process.env, packaged })) return false;
+  if (!shouldEnableSentry({ env: process.env, packaged, priorOptOut: hasPriorTelemetryOptOut() })) return false;
   started = true;
   const hooks = createSentryEventHooks();
   Sentry.init({
@@ -46,34 +52,17 @@ export function initMainSentry(): boolean {
     tracePropagationTargets: [],
     sendClientReports: true,
     maxBreadcrumbs: 100,
-    dataCollection: {
-      userInfo: false,
-      cookies: false,
-      httpHeaders: false,
-      httpBodies: [],
-      urlQueryParams: false,
-      graphQL: { document: false, variables: false },
-      genAI: { inputs: false, outputs: false },
-    },
+    dataCollection: SENTRY_DATA_COLLECTION,
     integrations: (defaults) => defaults.filter((integration) => !EXCLUDED_INTEGRATIONS.test(integration.name)),
     beforeSend: hooks.beforeSend,
     beforeBreadcrumb: hooks.beforeBreadcrumb,
+    beforeSendSpan: hooks.beforeSendSpan,
     beforeSendLog: hooks.beforeSendLog,
   });
-  Sentry.setTags({
-    process: "main",
-    "os.release": os.release(),
-    arch: process.arch,
-    "package.channel": process.env.ADE_PACKAGE_CHANNEL || "stable",
-  });
-  Sentry.setContext("machine", {
-    cpus: os.cpus().length,
-    cpuModel: os.cpus()[0]?.model ?? null,
-    memoryGb: Math.round(os.totalmem() / 1024 ** 3),
-    locale: app.getLocale?.() ?? null,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  });
-  installIpcErrorCapture();
+  connectSentry(Sentry);
+  Sentry.setTags(sentryProcessTags("main"));
+  Sentry.setContext("machine", { ...sentryMachineContext(), locale: app.getLocale?.() ?? null });
+  installIpcErrorCapture(options.ipcLabel);
   return true;
 }
 

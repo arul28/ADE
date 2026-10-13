@@ -138,16 +138,26 @@ function oldestEvictableIndex(stack: readonly Toast[], arrivingId: string): numb
  * Show a toast, or replace an in-place one when `id` matches an existing toast
  * (keeping its stack position). Returns the toast id.
  */
+/**
+ * What an error toast is grouped and titled by in Sentry: the fixed start of
+ * its title. Titles end in a lane, file or branch name ("Could not delete
+ * my-lane", "Push failed: my-lane"); grouping on the whole title would open
+ * one issue per name and put the name in the issue's title.
+ */
+function toastGroupKey(title: string): string {
+  return title.split(/[:"'`]/, 1)[0].trim().split(/\s+/).slice(0, 4).join(" ");
+}
+
 export function showToast(input: ToastInput): string {
   const id = input.id ?? generateId();
-  // An error the user is shown is an error ADE should hear about. Grouped by
-  // title; the message rides along only when it is plain text (a rendered
-  // node can hold anything).
-  if (input.tone === "error" && !input.id?.startsWith("diagnostics-auto-sent")) {
-    captureProblem(`Toast: ${input.title}`, {
+  // An error the user is shown is an error ADE should hear about. The message
+  // rides along only when it is plain text (a rendered node can hold anything).
+  if (input.tone === "error") {
+    const group = toastGroupKey(input.title);
+    captureProblem(`Toast: ${group}`, {
       tags: { surface: "toast" },
-      extra: typeof input.message === "string" ? { message: input.message } : undefined,
-      fingerprint: ["toast", input.title],
+      extra: { title: input.title, ...(typeof input.message === "string" ? { message: input.message } : {}) },
+      fingerprint: ["toast", group],
       level: "warning",
     });
   }

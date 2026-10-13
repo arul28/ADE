@@ -1331,8 +1331,6 @@ let dynamicAcpByAlias = new Map<string, ModelDescriptor>();
  * model is `xai/grok-4-5`; the two used to reach the picker as two rows.
  */
 const liveAcpReportsByProvider = new Map<AcpModelProviderGroup, Map<string, ModelDescriptor>>();
-/** ACP providers whose live list is authoritative. See `hasLiveAcpModelCatalog`. */
-const liveAcpCatalogProviders = new Set<AcpModelProviderGroup>();
 /**
  * Curated ACP rows as the picker sees them once a live session reported the
  * model: the curated row's own metadata with the efforts the live session
@@ -2398,8 +2396,6 @@ export function replaceDynamicAcpModelDescriptors(
   }
   dynamicAcpByProvider.set(provider, next);
   liveAcpReportsByProvider.set(provider, reports);
-  if (next.size || reports.size) liveAcpCatalogProviders.add(provider);
-  else liveAcpCatalogProviders.delete(provider);
   rebuildCuratedAcpLiveRows();
 
   dynamicAcpByAlias = new Map<string, ModelDescriptor>();
@@ -2430,7 +2426,7 @@ export function replaceDynamicAcpModelDescriptors(
  * rows it names keep their researched name, color and context window.
  */
 export function hasLiveAcpModelCatalog(provider: AcpModelProviderGroup): boolean {
-  return liveAcpCatalogProviders.has(provider);
+  return ((dynamicAcpByProvider.get(provider)?.size ?? 0) + (liveAcpReportsByProvider.get(provider)?.size ?? 0)) > 0;
 }
 
 /** Every live report for a provider as it arrived, curated or not. What a persisted catalog stores. */
@@ -2481,7 +2477,11 @@ export function mergeDynamicAcpModelDescriptors(
   provider: AcpModelProviderGroup,
   descriptors: ModelDescriptor[],
 ): void {
-  const existing = getLiveAcpModelDescriptors(provider);
+  // Uncurated models first, as before: at the size cap they are the ones kept.
+  const existing = [
+    ...getDynamicAcpModelDescriptors(provider),
+    ...(liveAcpReportsByProvider.get(provider)?.values() ?? []),
+  ];
   const incomingIds = new Set(descriptors.map((descriptor) => descriptor.id));
   const rest = existing.filter((descriptor) => !incomingIds.has(descriptor.id));
   replaceDynamicAcpModelDescriptors(provider, [...descriptors, ...rest]);
@@ -2490,7 +2490,6 @@ export function mergeDynamicAcpModelDescriptors(
 export function clearDynamicAcpModelDescriptors(): void {
   dynamicAcpByProvider.clear();
   liveAcpReportsByProvider.clear();
-  liveAcpCatalogProviders.clear();
   rebuildCuratedAcpLiveRows();
   dynamicAcpByAlias = new Map<string, ModelDescriptor>();
 }
@@ -3259,7 +3258,7 @@ function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescript
   // a second catalog that drifts behind the provider's server.
   if (isAcpModelProviderGroup(provider)) {
     const reported = liveAcpReportsByProvider.get(provider);
-    const shownCurated = liveAcpCatalogProviders.has(provider)
+    const shownCurated = hasLiveAcpModelCatalog(provider)
       ? curated.filter((descriptor) => reported?.has(descriptor.id))
       : curated;
     return [...shownCurated, ...getDynamicAcpModelDescriptors(provider)];

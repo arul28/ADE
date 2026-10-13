@@ -244,6 +244,7 @@ import { selectUpdateWorkspaceRestore } from "./services/updates/updateWorkspace
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
+import { readRuntimeActionRequest } from "./services/ipc/ipcTimeouts";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import { resolveAdeLayout } from "../shared/adeLayout";
 import { mobileProjectRepositoryIdentityFromGitOrigin } from "../shared/syncMobileProjectIdentity";
@@ -568,7 +569,15 @@ function configureDesktopUserDataPath(): void {
 configureDesktopUserDataPath();
 // Error tracking starts here: the earliest point where its crash dumps and
 // offline queue have a userData directory to live in.
-initMainSentry();
+initMainSentry({
+  // `localRuntime.callAction` carries every brain action; name the action.
+  ipcLabel: (channel, args) => {
+    if (channel !== IPC.localRuntimeCallAction) return channel;
+    const request = readRuntimeActionRequest(args);
+    if (!request) return channel;
+    return request.action ? `${request.domain}.${request.action}` : request.domain;
+  },
+});
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();

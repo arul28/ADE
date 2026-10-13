@@ -14,11 +14,13 @@ enum CrashReporting {
   /// Starts Sentry for Release and TestFlight builds. Debug and simulator runs
   /// stay silent unless `ADE_SENTRY_DEV=1` opts in (those events are sent with
   /// environment `development`). `ADE_SENTRY_DSN` overrides the Info.plist DSN.
-  /// `ADE_SENTRY_DISABLED=1` or `DO_NOT_TRACK=1` turns reporting off.
+  /// `ADE_SENTRY_DISABLED=1` or `DO_NOT_TRACK=1` turns reporting off, and so
+  /// does an analytics opt-out stored by an earlier build: a choice someone
+  /// already made covers error tracking too.
   static func start() {
     guard !didStart else { return }
     let environment = ProcessInfo.processInfo.environment
-    if environment["ADE_SENTRY_DISABLED"] == "1" || environment["DO_NOT_TRACK"] == "1" {
+    if ProductAnalytics.isTruthyFlag(environment["ADE_SENTRY_DISABLED"]) || !ProductAnalytics.shared.isEnabled {
       return
     }
     #if DEBUG
@@ -62,7 +64,12 @@ enum CrashReporting {
       options.sessionReplay.maskAllText = true
       options.sessionReplay.maskAllImages = true
       options.beforeBreadcrumb = { crumb in ADECrashScrubber.scrub(crumb) }
-      options.beforeSend = { event in ADECrashScrubber.scrub(event) }
+      // The budget decides first, on the raw event; the scrubber only cleans.
+      options.beforeSend = { event in
+        ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event))
+          ? ADECrashScrubber.scrub(event)
+          : nil
+      }
     }
     setUser(accountId: nil)
   }
@@ -94,6 +101,7 @@ enum CrashReporting {
   /// Sets the Sentry user. A non-empty `accountId` (the Clerk user id) is hashed
   /// the same way PostHog hashes it. `nil` falls back to the anonymous install
   /// id that PostHog already uses, so sign-out never keeps the old account.
+  /// With analytics off there is no id, and events carry no user.
   static func setUser(accountId: String?) {
     let normalized = accountId?.trimmingCharacters(in: .whitespacesAndNewlines)
     let userId: String?
@@ -145,22 +153,33 @@ enum CrashReporting {
   ]
 }
 
-/// Scrubs strings, dictionaries and events before they leave the device, and
-/// applies the per-fingerprint and total hourly quota.
+/// Scrubs strings, dictionaries and events before they leave the device.
 enum ADECrashScrubber {
-  static func scrub(_ event: Sentry.Event) -> Sentry.Event? {
-    guard ADECrashEventLimiter.shared.admit(fingerprint(for: event)) else { return nil }
+  static func scrub(_ event: Sentry.Event) -> Sentry.Event {
     if let user = event.user {
       user.email = nil
       user.username = nil
       user.ipAddress = nil
     }
     if let message = event.message {
-      message.formatted = scrubString(message.formatted)
+      // `formatted` is read-only; a scrubbed message is a new one.
+      event.message = SentryMessage(formatted: scrubString(message.formatted))
     }
     event.exceptions?.forEach { exception in
-      exception.value = scrubString(exception.value)
+      // Written to compile whether `value` is optional or not in this SDK version.
+      if let value = exception.value as String? {
+        exception.value = scrubString(value)
+      }
     }
+    if let request = event.request {
+      // A failed-request event names the URL it called; nothing else is kept.
+      request.url = request.url.map { scrubString($0) }
+      request.queryString = nil
+      request.fragment = nil
+      request.cookies = nil
+      request.headers = nil
+    }
+    event.breadcrumbs?.forEach { crumb in _ = scrub(crumb) }
     event.tags = event.tags.map { scrubStringDictionary($0) }
     event.extra = event.extra.map { scrubDictionary($0) }
     event.context = event.context.map { contexts in
@@ -190,6 +209,10 @@ enum ADECrashScrubber {
         withTemplate: "[redacted]"
       )
     }
+    for (pattern, template) in relayPathPatterns {
+      let range = NSRange(output.startIndex..<output.endIndex, in: output)
+      output = pattern.stringByReplacingMatches(in: output, options: [], range: range, withTemplate: template)
+    }
     return output
   }
 
@@ -207,20 +230,37 @@ enum ADECrashScrubber {
 
   // MARK: - Private
 
-  /// The SPEC secret patterns, plus PostHog keys, home-directory paths, and
+  /// The secret shapes of `apps/desktop/src/shared/sentry/scrub.ts` (keep the
+  /// two lists in step), plus PostHog keys, home-directory paths, and
   /// `code`/`pin` assignments (pairing codes).
   private static let secretPatterns: [NSRegularExpression] = [
     #"sk-[A-Za-z0-9_-]{16,}"#,
-    #"(?:ghp_|gho_|ghu_|ghs_|github_pat_)[A-Za-z0-9_]+"#,
-    #"xox[abpr]-[A-Za-z0-9-]+"#,
+    #"(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]+"#,
+    #"xox[abprs]-[A-Za-z0-9-]+"#,
     #"AKIA[0-9A-Z]{16}"#,
+    #"AIza[0-9A-Za-z_-]{35}"#,
+    #"lin_(?:api|oauth)_[A-Za-z0-9]{20,}"#,
+    #"sntrys_[A-Za-z0-9_=-]{20,}"#,
+    #"(?:xai-|gsk_|hf_|npm_|sk_live_|sk_test_|rk_live_)[A-Za-z0-9_-]{16,}"#,
+    #"ya29\.[A-Za-z0-9._-]{20,}"#,
     #"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"#,
-    #"(?i)Bearer\s+\S+"#,
+    #"(?i)(?:Bearer|Basic)\s+\S+"#,
+    #"(?i)(?<=://)[^\s/@:]+:[^\s/@]+(?=@)"#,
     #"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\z)"#,
     #"(?i)\b(?:api[_-]?key|token|secret|password|authorization|cookie|code|pin)\s*[:=]\s*\S+"#,
     #"phc_[A-Za-z0-9_-]{8,}"#,
     #"/Users/[^/\s]+"#,
   ].compactMap { try? NSRegularExpression(pattern: $0) }
+
+  /// The relays address a machine by its `machineKey` in the URL path, and a
+  /// custom webhook by `/hooks/<id>/<token>`. Rewritten wherever they appear;
+  /// the app holds no file paths that look like these.
+  private static let relayPathPatterns: [(NSRegularExpression, String)] = [
+    (#"/(host|connect|prewarm|machines)/[^\s/?#"']+"#, "/$1/[key]"),
+    (#"/hooks/(?!(?:register|events|ack|subscribe)(?:[/?#\s"']|$))[^\s/?#"']+/[^\s/?#"']+"#, "/hooks/[id]/[token]"),
+  ].compactMap { pattern, template in
+    (try? NSRegularExpression(pattern: pattern)).map { ($0, template) }
+  }
 
   private static let secretKeyPattern = try? NSRegularExpression(
     pattern: #"(?i)api[_-]?key|token|secret|password|authorization|cookie"#
@@ -255,8 +295,8 @@ enum ADECrashScrubber {
   }
 
   /// The grouping key for the quota: the caller's fingerprint, else the exception
-  /// type, else the message. The scrubber runs after this, on the raw event.
-  private static func fingerprint(for event: Sentry.Event) -> String {
+  /// type, else the message. Read from the raw event, before it is scrubbed.
+  fileprivate static func fingerprint(for event: Sentry.Event) -> String {
     if let fingerprint = event.fingerprint, !fingerprint.isEmpty {
       return fingerprint.joined(separator: "|")
     }

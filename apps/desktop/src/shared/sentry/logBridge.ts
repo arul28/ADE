@@ -12,8 +12,7 @@
  * Info and debug stay on disk only; they are too many for the quota and add
  * little to a report.
  */
-import * as Sentry from "@sentry/core";
-import { captureError, captureProblem, isSentryActive } from "./capture";
+import { addSentryBreadcrumb, captureError, captureProblem, isSentryActive, sendSentryLog } from "./capture";
 import { createEventLimiter } from "./guardrails";
 import { scrubRecord } from "./scrub";
 
@@ -60,15 +59,8 @@ export function forwardLogToSentry(level: Level, event: string, meta?: Record<st
   if (!isSentryActive()) return;
   if (SKIPPED_EVENTS.has(event)) return;
   const attributes = scrubRecord(meta) ?? {};
-  try {
-    if (logLimiter.admit(event)) {
-      if (level === "warn") Sentry.logger.warn(event, attributes);
-      else Sentry.logger.error(event, attributes);
-    }
-  } catch {
-    // Logging must never throw into the caller.
-  }
-  Sentry.addBreadcrumb({ category: "log", message: event, level: level === "warn" ? "warning" : "error", data: attributes });
+  if (logLimiter.admit(event)) sendSentryLog(level, event, attributes);
+  addSentryBreadcrumb("log", event, attributes, level === "warn" ? "warning" : "error");
   if (level !== "error" || LOG_ONLY_EVENTS.has(event)) return;
   const error = errorFromMeta(meta);
   const context = { tags: { "log.event": event }, extra: attributes, fingerprint: ["log", event] };

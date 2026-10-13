@@ -9,11 +9,12 @@
  * `logBridge`; the action endpoint and the provider paths add their own
  * reports. Off in source checkouts and tests (see `shared/sentry/config.ts`).
  */
-import os from "node:os";
 import * as Sentry from "@sentry/node";
+import { connectSentry } from "../../../desktop/src/shared/sentry/capture";
 import {
   resolveSentryDsn,
   resolveSentryEnvironment,
+  SENTRY_DATA_COLLECTION,
   sentryDist,
   sentryReleaseName,
   SENTRY_TRACES_SAMPLE_RATE,
@@ -21,6 +22,8 @@ import {
 } from "../../../desktop/src/shared/sentry/config";
 import { createSentryEventHooks } from "../../../desktop/src/shared/sentry/eventFilter";
 import { isSourceCheckoutRuntimeModule } from "../runtimePackaging";
+import { sentryMachineContext, sentryProcessTags } from "../../../desktop/src/main/sentry/machineContext";
+import { hasPriorTelemetryOptOut } from "../../../desktop/src/main/sentry/priorOptOut";
 
 declare const __ADE_VERSION__: string | undefined;
 
@@ -39,7 +42,7 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
   // brain started from an installed ADE's terminal inherits that variable and
   // would otherwise report as production.
   const packaged = !isSourceCheckoutRuntimeModule(currentModulePath());
-  if (!shouldEnableSentry({ env: process.env, packaged })) return false;
+  if (!shouldEnableSentry({ env: process.env, packaged, priorOptOut: hasPriorTelemetryOptOut() })) return false;
   started = true;
   const version = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__ : null;
   const hooks = createSentryEventHooks();
@@ -52,34 +55,22 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
     // Never add trace headers to provider, GitHub or other third-party requests.
     tracePropagationTargets: [],
     sendClientReports: true,
-    dataCollection: {
-      userInfo: false,
-      cookies: false,
-      httpHeaders: false,
-      httpBodies: [],
-      urlQueryParams: false,
-      graphQL: { document: false, variables: false },
-      genAI: { inputs: false, outputs: false },
-    },
+    // The machine's name ("Ana's MacBook Pro") is personal; the user is the
+    // pseudonymous id and nothing else.
+    includeServerName: false,
+    dataCollection: SENTRY_DATA_COLLECTION,
     integrations: (defaults) => defaults.filter((integration) => !EXCLUDED_INTEGRATIONS.test(integration.name)),
     beforeSend: hooks.beforeSend,
     beforeBreadcrumb: hooks.beforeBreadcrumb,
+    beforeSendSpan: hooks.beforeSendSpan,
     beforeSendLog: hooks.beforeSendLog,
   });
+  connectSentry(Sentry);
   Sentry.setTags({
-    process: "brain",
+    ...sentryProcessTags("brain"),
     "brain.mode": args.mode,
-    "os.release": os.release(),
-    arch: process.arch,
-    "package.channel": process.env.ADE_PACKAGE_CHANNEL || "stable",
     "brain.host": process.env.ELECTRON_RUN_AS_NODE === "1" ? "electron" : "node",
   });
-  Sentry.setContext("machine", {
-    cpus: os.cpus().length,
-    cpuModel: os.cpus()[0]?.model ?? null,
-    memoryGb: Math.round(os.totalmem() / 1024 ** 3),
-    nodeVersion: process.version,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  });
+  Sentry.setContext("machine", { ...sentryMachineContext(), nodeVersion: process.version });
   return true;
 }

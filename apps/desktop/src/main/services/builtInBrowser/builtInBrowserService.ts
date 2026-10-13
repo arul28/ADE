@@ -171,7 +171,7 @@ import {
   tabUsesRecordingViewport,
 } from "./builtInBrowserRecordingViewport";
 import { createPanelRectSettler } from "./builtInBrowserPanelRectSettler";
-import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
+import { createUrlLoader, isAllowedNavigationUrl, normalizeBrowserUrl, urlForBrowserLog } from "./builtInBrowserNavigation";
 import {
   builtInBrowserRecordingKey,
   builtInBrowserTabTitle,
@@ -2236,71 +2236,8 @@ function createBuiltInBrowserWindowService(args: {
     emit({ type: "error", message, occurredAt: new Date().toISOString() });
   };
 
-  /**
-   * `loadURL` rejects for any main-frame load that does not finish, including
-   * ones that are not failures: a newer navigation, a redirect or a download
-   * aborts the load (ERR_ABORTED). A real failure (DNS, a refused localhost)
-   * is already recorded on the tab by the did-fail-load listener, so the caller
-   * gets the tab's status, not a rejected IPC call. Errors that carry no
-   * Chromium net code still throw.
-   */
-  /**
-   * How long a navigation waits for the page to finish loading before it
-   * answers with the tab as it is. Under the 60 s IPC budget with room for the
-   * approval prompt (15 s) and setup before it.
-   */
-  const BROWSER_LOAD_WAIT_BUDGET_MS = 20_000;
-  /** Origins whose load the agent guard just cancelled, per tab, for `loadUrlSafely` to report. */
-  const guardHeldNavigations = new WeakMap<WebContents, string>();
-  const loadUrlSafely = async (wc: WebContents, url: string): Promise<void> => {
-    if (!isAllowedNavigationUrl(url)) {
-      throw new Error(`Unsupported browser URL: ${urlForBrowserLog(url) ?? "not a valid URL"}`);
-    }
-    guardHeldNavigations.delete(wc);
-    // `loadURL` settles only when the page has finished loading. A page that
-    // keeps loading (a hung resource, a dev server that accepts and never
-    // answers, a long poll) held the caller until the 60 s IPC timeout and
-    // surfaced as "IPC handler ... timed out". Past the budget the caller gets
-    // the tab as it is; the load carries on and the tab's status reports it.
-    const load = wc.loadURL(url);
-    let budgetTimer: NodeJS.Timeout | null = null;
-    const budgetElapsed = new Promise<"budget">((resolve) => {
-      budgetTimer = setTimeout(() => resolve("budget"), BROWSER_LOAD_WAIT_BUDGET_MS);
-      budgetTimer.unref?.();
-    });
-    try {
-      const outcome = await Promise.race([load.then(() => "loaded" as const), budgetElapsed]);
-      if (outcome === "budget") {
-        logger()?.warn("built_in_browser.load_still_running", {
-          origin: urlForBrowserLog(url),
-          waitedMs: BROWSER_LOAD_WAIT_BUDGET_MS,
-        });
-        // The late outcome is the tab's business now (did-fail-load records a
-        // failure on it); it must not become an unhandled rejection.
-        load.catch(() => undefined).finally(() => emitStatus());
-        emitStatus();
-        return;
-      }
-    } catch (error) {
-      const errorCode = loadErrorCodeOf(error);
-      if (errorCode == null) throw error;
-      if (errorCode === NET_ERR_ABORTED) {
-        // An abort the agent guard caused is not a harmless one: the page did
-        // not move, and the caller must hear why rather than see success.
-        const heldOrigin = guardHeldNavigations.get(wc);
-        if (heldOrigin !== undefined) {
-          guardHeldNavigations.delete(wc);
-          throw new Error(`Navigation to ${heldOrigin} was stopped: it needs your approval before an agent can open it.`);
-        }
-        logger()?.debug("built_in_browser.load_aborted", { errorCode, origin: urlForBrowserLog(url) });
-        return;
-      }
-      logger()?.warn("built_in_browser.load_failed", { errorCode, origin: urlForBrowserLog(url) });
-      emitStatus();
-    } finally {
-      if (budgetTimer) clearTimeout(budgetTimer);
-    }
-  };
+  const urlLoader = createUrlLoader({ logger, onLoadSettled: () => emitStatus() });
+  const loadUrlSafely = urlLoader.load;
 
   const currentCursorPointInView = (): BrowserInspectPoint | null => {
     if (!win || win.isDestroyed() || !visible || bounds.width <= 0 || bounds.height <= 0) return null;
@@ -3305,7 +3242,7 @@ function createBuiltInBrowserWindowService(args: {
         return;
       }
       event.preventDefault();
-      guardHeldNavigations.set(wc, browserOriginOf(url) ?? url);
+      urlLoader.noteHeldForApproval(wc, browserOriginOf(url) ?? url);
       // The action that caused this (a click on a cross-origin link, a submit
       // that redirects) is usually still in flight. Its answer must say the
       // navigation is held for the user, not "nothing changed".
@@ -6843,33 +6780,6 @@ async function fetchFaviconDataUrl(wc: WebContents, value: string): Promise<stri
     clearTimeout(timer);
     controller.abort();
   }
-}
-
-function urlForBrowserLog(value: string): string | null {
-  const url = emptyToNull(value);
-  if (!url) return null;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.origin;
-    if (parsed.protocol === "about:") return parsed.href === "about:blank" ? parsed.href : "about:";
-    return parsed.protocol;
-  } catch {
-    return null;
-  }
-}
-
-/** Chromium's ERR_ABORTED: a load superseded, redirected or turned into a download. */
-const NET_ERR_ABORTED = -3;
-
-/**
- * The Chromium net error code in a `loadURL` rejection, which Electron words
- * "ERR_ABORTED (-3) loading '…'". Null for anything else (a destroyed tab, a
- * bad argument), so the caller can tell a load failure from a broken call.
- */
-function loadErrorCodeOf(error: unknown): number | null {
-  const message = error instanceof Error ? error.message : String(error);
-  const match = /^ERR_[A-Z0-9_]+ \((-\d+)\) loading /.exec(message);
-  return match ? Number(match[1]) : null;
 }
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {

@@ -709,11 +709,13 @@ export function createProjectSecretService(projectRoot: string, options: Project
         filePath = path.join(downloadsDir, `ade-secrets (${suffix}).env`);
       }
       if (fs.existsSync(filePath)) throw new Error("Could not find an unused filename in Downloads.");
-      fs.writeFileSync(filePath, formatProjectSecretEnv(secrets), { encoding: "utf8", mode: 0o600, flag: "wx" });
-      // Windows ignores the mode above: give the plaintext file an owner-only
-      // ACL, and never leave it behind readable by anyone else.
+      // Created empty, locked down, then filled: Windows ignores the mode, so
+      // the owner-only ACL has to be in place before any secret is in the
+      // file. A file that could not be secured is never left behind.
+      fs.writeFileSync(filePath, "", { encoding: "utf8", mode: 0o600, flag: "wx" });
       try {
         securePrivatePath(filePath);
+        fs.writeFileSync(filePath, formatProjectSecretEnv(secrets), { encoding: "utf8" });
       } catch (error) {
         fs.rmSync(filePath, { force: true });
         throw error;

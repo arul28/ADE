@@ -30,6 +30,8 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bAIza[0-9A-Za-z_-]{35}\b/g,
   /\blin_(?:api|oauth)_[A-Za-z0-9]{20,}/g,
   /\bsntrys_[A-Za-z0-9_=-]{20,}/g,
+  /\b(?:xai-|gsk_|hf_|npm_|sk_live_|sk_test_|rk_live_)[A-Za-z0-9_-]{16,}/g,
+  /\bya29\.[A-Za-z0-9._-]{20,}/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
   /\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{12,}/gi,
   // `key=value` and `"key": "value"` pairs whose key names a secret.
@@ -46,7 +48,23 @@ const SECRET_QUERY_PARAM = /([?&](?:token|access_token|refresh_token|id_token|co
  * stay: `inputTokens`, `tokenCount` and `tokenId` are not secrets, while
  * `accessToken`, `pushToken` and `token` are.
  */
-const SECRET_KEY = /(?:api[_-]?key|apikey|secret|passw(?:or)?d|authorization|cookie|private[_-]?key|credential(?!s?[_-]?id)|dsn|token(?!s|[_-]?(?:count|usage|limit|budget|id|ttl|type)))/i;
+const SECRET_KEY = /(?:api[_-]?key|apikey|secret|passw(?:or)?d|authorization|cookie|private[_-]?key|machine[_-]?key|pairing[_-]?(?:code|pin)|credential(?!s?[_-]?id)|dsn|token(?!s|[_-]?(?:count|usage|limit|budget|id|ttl|type)))|^pin(?:[_-]?code)?$/i;
+
+/**
+ * ADE's relays carry a secret in the URL path, not the query string: the
+ * tunnel and push relays address a machine by its `machineKey`
+ * (`/host/<key>`, `/connect/<key>`, `/prewarm/<key>`, `/machines/<key>/...`)
+ * and the webhook relay delivers to `/hooks/<id>/<token>`. The brain calls
+ * those URLs, so they reach breadcrumbs and spans.
+ */
+const RELAY_KEY_PATH = /\/(host|connect|prewarm|machines)\/[^\s/?#"']+/g;
+const RELAY_HOOK_PATH = /\/hooks\/(?!(?:register|events|ack|subscribe)(?:[/?#\s"']|$))[^\s/?#"']+\/[^\s/?#"']+/g;
+const URL_WITH_PATH = /\b(?:https?|wss?):\/\/[^\s"'<>]+/gi;
+
+/** Redacts relay path secrets in a bare path (`/host/<key>`), as a route or `url.path` holds it. */
+export function scrubRelayPath(input: string): string {
+  return input.replace(RELAY_KEY_PATH, "/$1/[key]").replace(RELAY_HOOK_PATH, "/hooks/[id]/[token]");
+}
 
 /**
  * Keys whose value is user content. Their value is replaced by its length, so a
@@ -66,16 +84,14 @@ export function scrubString(input: string): string {
   }
   SECRET_QUERY_PARAM.lastIndex = 0;
   output = output.replace(SECRET_QUERY_PARAM, `$1${REDACTED}`);
+  // Only inside URLs: a file path such as `src/host/tunnel.ts` must stay whole.
+  output = output.replace(URL_WITH_PATH, (url) => scrubRelayPath(url));
   return output;
-}
-
-export function isSecretKey(key: string): boolean {
-  return SECRET_KEY.test(key);
 }
 
 export function scrubValue(value: unknown, depth = 0, key?: string): unknown {
   if (key !== undefined) {
-    if (isSecretKey(key) && (typeof value === "string" || (typeof value === "object" && value !== null))) return REDACTED;
+    if (SECRET_KEY.test(key) && (typeof value === "string" || (typeof value === "object" && value !== null))) return REDACTED;
     if (CONTENT_KEY.test(key)) {
       if (typeof value === "string") return `[content: ${value.length} chars]`;
       if (Array.isArray(value)) return `[content: ${value.length} items]`;
@@ -180,6 +196,31 @@ export function scrubBreadcrumb<T extends ScrubbableBreadcrumb>(crumb: T): T {
   if (crumb.message) crumb.message = scrubString(crumb.message);
   if (crumb.data) crumb.data = scrubRecord(crumb.data);
   return crumb;
+}
+
+/** Structural view of a streamed span (`beforeSendSpan`). */
+export type ScrubbableSpan = { name?: string; attributes?: Record<string, unknown> };
+
+const URLISH_ATTRIBUTE = /url|path|target|route|href/i;
+
+/**
+ * Spans carry the URLs of outgoing requests in their name and attributes, and
+ * `beforeSend` never sees them. A URL-like attribute may hold a bare path, so
+ * those also get the relay path rule that `scrubString` applies inside URLs.
+ */
+export function scrubSpan<T extends ScrubbableSpan>(span: T): T {
+  if (span.name) span.name = scrubRelayPath(scrubString(span.name));
+  if (span.attributes) {
+    for (const [key, raw] of Object.entries(span.attributes)) {
+      const holder = raw && typeof raw === "object" && "value" in raw ? raw as { value: unknown } : null;
+      const value = holder ? holder.value : raw;
+      const scrubbed = scrubValue(value, 0, key);
+      const next = typeof scrubbed === "string" && URLISH_ATTRIBUTE.test(key) ? scrubRelayPath(scrubbed) : scrubbed;
+      if (holder) holder.value = next;
+      else span.attributes[key] = next;
+    }
+  }
+  return span;
 }
 
 /** Structural view of a Sentry log record. */
