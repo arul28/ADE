@@ -536,7 +536,10 @@ jobs:
         run: |
           $installers = @(Get-ChildItem "apps/desktop/release/ADE-[0-9]*-win-x64.exe" -File)
           if ($installers.Count -ne 1) { throw "Expected exactly one signed Windows installer, found $($installers.Count)." }
-          & apps/desktop/scripts/windows-installed-product-smoke.ps1 -InstallerPath $installers[0].FullName
+          # Proof runs also install ten times in a row, counting installer
+          # crashes without retrying, to measure the installer's crash rate.
+          $repeat = if ("${{ inputs.windows_proof }}" -eq "true") { 10 } else { 0 }
+          & apps/desktop/scripts/windows-installed-product-smoke.ps1 -InstallerPath $installers[0].FullName -FreshInstallRepeat $repeat
 
       - name: Upload validated Windows release artifacts
         uses: actions/upload-artifact@v4
