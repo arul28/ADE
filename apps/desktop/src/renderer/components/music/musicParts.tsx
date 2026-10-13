@@ -201,6 +201,15 @@ export function SongRow({
  * tile is on screen (and the window is visible), at most four at a time, and
  * kept in a bounded LRU here (the main process also caches it for 60 s).
  */
+/**
+ * Artwork the renderer can show. Art the user uploaded (a playlist cover, an
+ * uploaded song) is served from `*.blobstore.apple.com`, which the renderer's
+ * CSP blocks; a playlist with such a cover gets the four-song cover instead.
+ */
+export function loadableArtwork(artwork: MusicArtwork | null | undefined): artwork is MusicArtwork {
+  return Boolean(artwork?.url) && !/^https:\/\/[^/]+\.blobstore\.apple\.com\//i.test(artwork!.url);
+}
+
 const COVER_CACHE_MAX = 300;
 const COVER_CONCURRENCY = 4;
 const coverCache = new Map<string, MusicArtwork[]>();
@@ -251,14 +260,7 @@ function loadCover(item: MusicItem, wanted: () => boolean): Promise<MusicArtwork
           return;
         }
         const page = await window.ade!.music!.tracks({ kind: "playlist", id: item.id, library: item.library, offset: 0, limit: 4 });
-        const seen = new Set<string>();
-        const arts: MusicArtwork[] = [];
-        for (const track of page.items) {
-          if (track.artwork?.url && !seen.has(track.artwork.url)) {
-            seen.add(track.artwork.url);
-            arts.push(track.artwork);
-          }
-        }
+        const arts = coverArts(page.items);
         rememberCover(key, arts);
         resolve(arts);
       } catch {
@@ -271,6 +273,19 @@ function loadCover(item: MusicItem, wanted: () => boolean): Promise<MusicArtwork
     if (coverRunning < COVER_CONCURRENCY) void run();
     else coverQueue.push(() => void run());
   });
+}
+
+/** The distinct, loadable covers of a collection's first four songs. */
+export function coverArts(tracks: readonly MusicItem[]): MusicArtwork[] {
+  const seen = new Set<string>();
+  const arts: MusicArtwork[] = [];
+  for (const track of tracks.slice(0, 4)) {
+    if (loadableArtwork(track.artwork) && !seen.has(track.artwork.url)) {
+      seen.add(track.artwork.url);
+      arts.push(track.artwork);
+    }
+  }
+  return arts;
 }
 
 /** Device pixels for a square of `cssPx`, rounded up to 32 so nearby sizes share a URL. */
@@ -307,23 +322,37 @@ function PlaylistCoverArt({ item }: { item: MusicItem }) {
     // `item` is read once per key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+  return <MusicCoverArt ref={ref} arts={cover?.arts ?? []} size={168} displayPx={cover?.tilePx ?? 168} className="ade-music-tile-img" />;
+}
+
+/** Up to four covers: a 2x2 grid of four, one cover, or the note glyph. */
+export const MusicCoverArt = React.forwardRef<
+  HTMLSpanElement,
+  { arts: MusicArtwork[]; size: number; displayPx?: number; className?: string; eager?: boolean }
+>(function MusicCoverArt({ arts: given, size, displayPx = size, className, eager = false }, ref) {
   const [failed, setFailed] = React.useState(false);
-  const arts = failed ? [] : (cover?.arts ?? []);
+  const arts = failed ? [] : given;
   const mosaic = arts.length >= 4;
+  const loading = eager ? "eager" : "lazy";
   return (
-    <span ref={ref} className={`ade-music-art ade-music-tile-img${mosaic ? " ade-music-cover-grid" : ""}`} style={{ width: 168, height: 168 }} aria-hidden>
+    <span
+      ref={ref}
+      className={`ade-music-art${className ? ` ${className}` : ""}${mosaic ? " ade-music-cover-grid" : ""}`}
+      style={{ width: size, height: size }}
+      aria-hidden
+    >
       {mosaic ? (
         arts.slice(0, 4).map((art) => (
-          <img key={art.url} src={musicArtworkUrl(art, coverPixels(cover!.tilePx / 2)) ?? undefined} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />
+          <img key={art.url} src={musicArtworkUrl(art, coverPixels(displayPx / 2)) ?? undefined} alt="" loading={loading} decoding="async" draggable={false} onError={() => setFailed(true)} />
         ))
       ) : arts.length ? (
-        <img src={musicArtworkUrl(arts[0], coverPixels(cover!.tilePx)) ?? undefined} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />
+        <img src={musicArtworkUrl(arts[0], coverPixels(displayPx)) ?? undefined} alt="" loading={loading} decoding="async" draggable={false} onError={() => setFailed(true)} />
       ) : (
-        <MusicNotesSimple size={64} weight="fill" />
+        <MusicNotesSimple size={Math.round(size * 0.38)} weight="fill" />
       )}
     </span>
   );
-}
+});
 
 export function CollectionTile({
   item,
@@ -338,7 +367,7 @@ export function CollectionTile({
   return (
     <div className={`ade-music-tile${round ? " is-artist" : ""}`} data-testid="music-tile">
       <button type="button" className="ade-music-tile-art" onClick={onOpen} aria-label={`Open ${item.title}`}>
-        {item.kind === "playlist" && !item.artwork?.url ? (
+        {item.kind === "playlist" && !loadableArtwork(item.artwork) ? (
           <PlaylistCoverArt item={item} />
         ) : (
           <MusicArt artwork={item.artwork} size={168} round={round} className="ade-music-tile-img" />

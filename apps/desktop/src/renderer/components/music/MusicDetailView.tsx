@@ -4,7 +4,7 @@ import { ArrowLeft, CircleNotch, Play, Shuffle, WarningCircle } from "@phosphor-
 
 import { MUSIC_MAX_COLLECTION_TRACKS, type MusicItem } from "../../../shared/types/music";
 import { MusicArtBackdrop } from "./MusicPlayer";
-import { MusicArt, MusicEmpty, SONG_ROW_HEIGHT, SongRow } from "./musicParts";
+import { MusicArt, MusicCoverArt, MusicEmpty, SONG_ROW_HEIGHT, SongRow, coverArts, loadableArtwork } from "./musicParts";
 import { isNowPlayingItem, queueActions, queueFromList } from "./musicQueue";
 import { musicActions } from "./musicStore";
 import { errorText, type RowProps } from "./musicViewParts";
@@ -100,6 +100,10 @@ function useCollectionTracks(kind: "album" | "playlist", id: string, library: bo
 export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps & { item: MusicItem; onBack: () => void }) {
   const kind = item.kind === "album" ? "album" : "playlist";
   const { tracks, error, loading } = useCollectionTracks(kind, item.id, item.library);
+  // Depends only on the first four songs, so appended pages don't rebuild it.
+  const heroCoverKey = tracks.slice(0, 4).map((t) => t.id).join(",");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const heroArts = React.useMemo(() => coverArts(tracks), [heroCoverKey]);
   const totalMs = React.useMemo(() => tracks.reduce((sum, t) => sum + (t.durationMs ?? 0), 0), [tracks]);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
@@ -129,7 +133,12 @@ export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps &
           <ArrowLeft size={13} /> Back
         </button>
         <header className="ade-music-hero">
-          <MusicArt artwork={item.artwork} size={208} eager className="ade-music-hero-art" />
+          {kind === "playlist" && !loadableArtwork(item.artwork) ? (
+            // Like its tile: the first four songs' covers, from the songs already read.
+            <MusicCoverArt key={heroCoverKey} arts={heroArts} size={208} eager className="ade-music-hero-art" />
+          ) : (
+            <MusicArt artwork={item.artwork} size={208} eager className="ade-music-hero-art" />
+          )}
           <div className="ade-music-hero-text">
             <div className="kit-eyebrow">{item.library ? `Library ${kind}` : kind}</div>
             <h1>{item.title}</h1>
