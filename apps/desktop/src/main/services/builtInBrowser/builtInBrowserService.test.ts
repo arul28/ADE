@@ -17,6 +17,7 @@ import {
 } from "./builtInBrowserService";
 import { createDevServerRegistry } from "../devServers/devServerRegistry";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
+import { narrowPageHint } from "./builtInBrowserRecordingViewport";
 
 const fakes = vi.hoisted(() => {
   type DebuggerHandler = (...args: unknown[]) => void;
@@ -863,12 +864,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       await service.setBounds({ ...panel, visible: true });
       expect(win.contentView.children).toEqual([view]);
       expect(view.webContents.isAudioMuted()).toBe(false);
+      // The pane stops at this size; that is the size the page keeps.
+      await vi.advanceTimersByTimeAsync(300);
       service.handTabToChat({ tabId: service.getStatus().activeTabId!, chatSessionId: "chat-1" });
 
       await service.setBounds({ ...panel, width: 0, height: 0, visible: false });
       expect(win.contentView.children).toEqual([view]);
       expect(view.webContents.isAudioMuted()).toBe(true);
-      expect(service.getStatus().tabs[0]!.agentViewport).toEqual({ width: 1280, height: 800 });
+      // An owned tab keeps the person's layout; only a recording pins 1280×800.
+      expect(service.getStatus().tabs[0]!.agentViewport).toBeNull();
       const parked = view.boundsCalls.at(-1)!;
       expect(parked).toMatchObject({ width: panel.width, height: panel.height });
       expect(parked.x).toBeGreaterThanOrEqual(win.getContentBounds().width);
@@ -876,7 +880,6 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       await vi.advanceTimersByTimeAsync(59_999);
       expect(win.contentView.children).toEqual([view]);
       expect(view.webContents.isAudioMuted()).toBe(true);
-      expect(service.getStatus().tabs[0]!.agentViewport).toEqual({ width: 1280, height: 800 });
       // The expiry sweep runs just after the sixty-second grace ends.
       await vi.advanceTimersByTimeAsync(101);
       expect(win.contentView.children).toHaveLength(0);
@@ -993,6 +996,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
       await service.createTab({ url: "https://example.test", activate: true });
       await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
+      await vi.advanceTimersByTimeAsync(300);
       const view = fakes.webContentsViewInstances.at(-1)!;
       const tabId = service.getStatus().activeTabId!;
       service.startPreviewStream({ tabId });
@@ -1271,22 +1275,6 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.dispose();
   });
 
-  it("uses the parked preview floor when the last panel size is too small", async () => {
-    // A preview below the usable capture size is parked at the floor so the
-    // page does not render as a narrow strip.
-    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
-    const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
-    const parked = view.boundsCalls.at(-1)!;
-    expect(parked).toMatchObject({
-      x: 1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-      y: 720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-      width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
-      height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
-    });
-
-    service.stopPreviewStream({ tabId });
-  });
-
   it("tags a capture that has no surface to photograph instead of throwing a bare error", async () => {
     /*
       The other half of the same P0. Switching Browser -> Terminal printed
@@ -1392,9 +1380,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
    * A helper for the parking tests: a service with one tab that has been shown
    * in the panel at `panel`, then hidden with a live preview watcher.
    */
+  /**
+   * A tab the panel showed at each of `panels` in turn, then hid. Every size
+   * but the last settles (the pane stopped there); the last one is passed
+   * through on the way to closed, as a closing pane's frames are.
+   */
   const parkedTabFixture = async (
     collectorArg: ReturnType<typeof captureStatusEvents>,
     panel: { width: number; height: number } | null,
+    unsettled: { width: number; height: number } | null = null,
   ) => {
     const service = createBuiltInBrowserService({ onEvent: collectorArg.onEvent });
     const win = fakeBrowserWindow();
@@ -1402,7 +1396,16 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     await service.createTab({ url: "https://example.test", activate: true });
     const view = fakes.webContentsViewInstances.at(-1)!;
     if (panel) {
-      await service.setBounds({ x: 12, y: 24, width: panel.width, height: panel.height, visible: true });
+      vi.useFakeTimers();
+      try {
+        await service.setBounds({ x: 12, y: 24, width: panel.width, height: panel.height, visible: true });
+        await vi.advanceTimersByTimeAsync(300);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+    if (unsettled) {
+      await service.setBounds({ x: 12, y: 24, width: unsettled.width, height: unsettled.height, visible: true });
     }
     const tabId = service.getStatus().activeTabId!;
     service.startPreviewStream({ tabId });
@@ -1616,21 +1619,25 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.dispose();
   });
 
-  it("keeps the size the panel last showed a parked tab at", async () => {
-    // A usable remembered size survives parking without a page resize.
-    const { service, view, tabId } = await parkedTabFixture(collector, { width: 1100, height: 700 });
-    expect(view.boundsCalls.at(-1)).toMatchObject({ width: 1100, height: 700 });
+  it.each([
+    // Parking never resizes the page: it keeps the size the pane stopped at,
+    // however narrow, so closing and reopening the pane fires no `resize`.
+    { name: "a wide pane", panel: { width: 1100, height: 700 }, unsettled: null, parked: { width: 1100, height: 700 } },
+    { name: "a narrow pane", panel: { width: 480, height: 640 }, unsettled: null, parked: { width: 480, height: 640 } },
+    // A closing pane passes through slivers; the last one must not stick.
+    { name: "a pane that closed through a sliver", panel: { width: 1100, height: 700 }, unsettled: { width: 57, height: 696 }, parked: { width: 1100, height: 700 } },
+    // No rect to reuse, and a zero-sized view captures nothing.
+    { name: "a tab the pane never showed", panel: null, unsettled: null, parked: { width: 960, height: 600 } },
+  ])("parks $name at the size the pane settled at", async ({ panel, unsettled, parked }) => {
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    const { service, view, tabId } = await parkedTabFixture(collector, panel, unsettled);
+    expect(view.boundsCalls.at(-1)).toMatchObject({
+      x: 1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      y: 720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      ...parked,
+    });
     service.stopPreviewStream({ tabId });
-
-    // An undersized pane has no usable page area, so the floor applies.
-    const narrow = await parkedTabFixture(collector, { width: 480, height: 640 });
-    expect(narrow.view.boundsCalls.at(-1)).toMatchObject({ width: 960, height: 600 });
-    narrow.service.stopPreviewStream({ tabId: narrow.tabId });
-
-    // A tab the panel never showed has no rect to reuse, so the floor applies.
-    const fresh = await parkedTabFixture(collector, null);
-    expect(fresh.view.boundsCalls.at(-1)).toMatchObject({ width: 960, height: 600 });
-    fresh.service.stopPreviewStream({ tabId: fresh.tabId });
+    service.dispose();
   });
 
   it("does not sweep every view for an unpaired preview stop", async () => {
@@ -5123,5 +5130,39 @@ describe("BuiltInBrowserNoTabError", () => {
     expect(isBuiltInBrowserNoTabError(new Error("No browser tab is open"))).toBe(false);
     expect(isBuiltInBrowserNoTabError({ name: "BuiltInBrowserNoTabError", tabId: "t" })).toBe(false);
     expect(isBuiltInBrowserNoTabError(null)).toBe(false);
+  });
+
+  describe("narrow page note for agents", () => {
+    const shownAt = (width: number) => ({ x: 0, y: 0, width, height: 696 });
+    const tab = (over: Record<string, unknown> = {}) => ({
+      id: "tab-7",
+      emulation: null,
+      devToolsMode: null,
+      handoff: null,
+      recording: null,
+      lastPanelRect: shownAt(385),
+      ...over,
+    }) as unknown as Parameters<typeof narrowPageHint>[0];
+
+    it("tells the agent the page is the pane's width and how to get a desktop layout", () => {
+      const hint = narrowPageHint(tab(), 385);
+      expect(hint).toContain("385");
+      expect(hint).toContain("ade browser emulate --tab tab-7 --width");
+      expect(hint).toContain("ade browser emulate --tab tab-7 --off");
+    });
+
+    it.each([
+      { name: "a page at least 640 px wide", over: {}, pageWidth: 640 },
+      { name: "a device preset the agent chose", over: { emulation: { width: 390, height: 844 } }, pageWidth: 390 },
+      { name: "a recording on the fixed viewport", over: { recording: { startedAt: "now" } }, pageWidth: 385 },
+      { name: "a tab no pane ever showed", over: { lastPanelRect: null }, pageWidth: 385 },
+    ])("adds no note for $name", ({ over, pageWidth }) => {
+      expect(narrowPageHint(tab(over), pageWidth)).toBeNull();
+    });
+
+    it("falls back to the pane's settled width when the page width is unknown", () => {
+      expect(narrowPageHint(tab({ lastPanelRect: shownAt(500) }), null)).toContain("500");
+      expect(narrowPageHint(tab({ lastPanelRect: shownAt(900) }), null)).toBeNull();
+    });
   });
 });

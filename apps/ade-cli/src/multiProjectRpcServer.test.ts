@@ -16,6 +16,8 @@ import {
 import * as gitModule from "../../desktop/src/main/services/git/git";
 import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
+import { openSearchIndexDb } from "../../desktop/src/main/services/search/searchIndexDb";
+import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import { buildProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
 import {
   createProjectlessSyncControls,
@@ -2050,12 +2052,15 @@ describe("multi-project RPC server", () => {
         nextCursor: "foreign-project-more",
       })),
     };
+    const scopeFor = (projectId: string) => {
+      const record = projectId === current.projectId ? current : foreign;
+      const runtime = projectId === current.projectId ? currentRuntime : foreignRuntime;
+      return { registryProjectId: record.projectId, record, runtime, dispose: vi.fn() };
+    };
+    // Both runtimes are loaded: each answers through its own services.
     const scopeRegistry = {
-      get: vi.fn(async (projectId: string) => {
-        const record = projectId === current.projectId ? current : foreign;
-        const runtime = projectId === current.projectId ? currentRuntime : foreignRuntime;
-        return { registryProjectId: record.projectId, record, runtime, dispose: vi.fn() };
-      }),
+      get: vi.fn(async (projectId: string) => scopeFor(projectId)),
+      getIfBooted: vi.fn((projectId: string) => Promise.resolve(scopeFor(projectId))),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
     } as unknown as ProjectScopeRegistry;
@@ -2142,6 +2147,83 @@ describe("multi-project RPC server", () => {
       limit: 200,
     }));
 
+    handler.dispose();
+  });
+
+  it.each([
+    { name: "answers from its index", laneId: undefined, index: "current", foreignHits: 1, unavailable: [] as string[] },
+    { name: "resolves a lane id in its index", laneId: "lane-123", index: "current", foreignHits: 1, unavailable: [] },
+    { name: "resolves a lane name in its index", laneId: "FIX-LOGIN", index: "current", foreignHits: 1, unavailable: [] },
+    { name: "resolves part of a lane name in its index", laneId: "login", index: "current", foreignHits: 1, unavailable: [] },
+    { name: "skips an unknown lane", laneId: "no-such-lane", index: "current", foreignHits: 0, unavailable: [] },
+    { name: "has no hits without an index", laneId: undefined, index: "none", foreignHits: 0, unavailable: [] },
+    { name: "reports an index from another version", laneId: undefined, index: "old", foreignHits: 0, unavailable: ["foreign-project"] },
+    { name: "reports a project whose folder is gone", laneId: undefined, index: "gone", foreignHits: 0, unavailable: ["foreign-project"] },
+  ])("searches a project whose runtime is not loaded without loading it: $name", async ({ laneId, index, foreignHits, unavailable }) => {
+    const { root, projectRoot, registry } = createRegistry();
+    const current = registry.add(projectRoot);
+    const foreignRootRaw = path.join(root, "foreign-project");
+    fs.mkdirSync(foreignRootRaw, { recursive: true });
+    const foreignRoot = fs.realpathSync.native(foreignRootRaw);
+    const foreign = registry.add(foreignRoot);
+    if (index !== "none" && index !== "gone") {
+      const opened = openSearchIndexDb(resolveAdeLayout(foreignRoot).cacheDir);
+      const db = opened.db;
+      db.prepare(
+        `INSERT INTO docs (doc_id, kind, lane_id, lane_name, session_id, owner_session_id, title, rank_title, snippet_source, deep_link, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run("chat:foreign", "chat", "lane-123", "fix-login", "foreign-chat", null, "foreign chat", "foreign chat",
+        "the redirect result", "ade://work/session/foreign-chat", "2026-08-01T00:00:00.000Z");
+      const row = db.prepare("SELECT id FROM docs WHERE doc_id = ?").get("chat:foreign") as { id: number };
+      db.prepare("INSERT INTO docs_fts (rowid, rank_title, body) VALUES (?, ?, ?)").run(row.id, "foreign chat", "the redirect result");
+      if (index === "old") db.prepare("UPDATE meta SET value = '1' WHERE key = 'schemaVersion'").run();
+      opened.close();
+    }
+    if (index === "gone") fs.rmSync(foreignRoot, { recursive: true, force: true });
+
+    const currentRuntime = makeRuntime("current") as ReturnType<typeof makeRuntime> & {
+      searchService: { query: ReturnType<typeof vi.fn> };
+    };
+    currentRuntime.searchService = {
+      query: vi.fn(async () => ({ results: [], totalByKind: {}, nextCursor: null })),
+    };
+    const loaded = { registryProjectId: current.projectId, record: current, runtime: currentRuntime, dispose: vi.fn() };
+    const scopeRegistry = {
+      get: vi.fn(async (projectId: string) => {
+        if (projectId !== current.projectId) throw new Error("loaded a project the search must not load");
+        return loaded;
+      }),
+      getIfBooted: vi.fn((projectId: string) => (projectId === current.projectId ? Promise.resolve(loaded) : null)),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    const search = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "ade/actions/call",
+      params: {
+        projectId: current.projectId,
+        name: "run_ade_action",
+        arguments: {
+          domain: "search",
+          action: "query",
+          args: { query: "redirect", kinds: ["chat"], limit: 10, ...(laneId ? { laneId } : {}) },
+        },
+      },
+    }) as { result: { results: Array<{ projectId?: string; sessionId?: string }>; projectsUnavailable?: string[] } };
+
+    const fromForeign = search.result.results.filter((item) => item.projectId === foreign.projectId);
+    expect(fromForeign).toHaveLength(foreignHits);
+    if (foreignHits) expect(fromForeign[0]!.sessionId).toBe("foreign-chat");
+    expect((search.result.projectsUnavailable ?? []).map((entry) => entry.split(" ")[0])).toEqual(unavailable);
+    expect(scopeRegistry.get).not.toHaveBeenCalledWith(foreign.projectId);
     handler.dispose();
   });
 

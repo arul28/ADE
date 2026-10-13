@@ -397,7 +397,7 @@ describe("remote browser forwarder", () => {
         queueMicrotask(() => {
           forwarder.acknowledgeRemoteRequest({
             requestId: request.requestId,
-            desktopLabel: "This computer",
+            desktopLabel: "Studio",
             accepted: true,
           });
         });
@@ -425,7 +425,7 @@ describe("remote browser forwarder", () => {
       status: "forwarded_to_desktop",
       url: "http://localhost:3000/",
       acknowledged: true,
-      desktopLabel: "This computer",
+      desktopLabel: "Studio",
     });
     expect(typeof result.requestId).toBe("string");
   });
@@ -526,8 +526,8 @@ describe("remote browser forwarder", () => {
       origin: { clientId: "macbook", local: false },
       method: "navigate" as const,
       args: { url: "http://localhost:4180/", chatSessionId: "chat-1", openPanel: true },
-      localArgs: { openPanel: false },
-      forwardedTo: ["macbook"],
+      localArgs: null,
+      forwards: [{ kind: "request", target: "macbook" }],
     },
     {
       label: "`open --panel` while the user is at this machine",
@@ -535,7 +535,7 @@ describe("remote browser forwarder", () => {
       method: "navigate" as const,
       args: { url: "http://localhost:4180/", chatSessionId: "chat-1", openPanel: true },
       localArgs: { openPanel: true },
-      forwardedTo: [],
+      forwards: [],
     },
     {
       label: "`open --panel` when nobody can tell where the user is",
@@ -543,15 +543,17 @@ describe("remote browser forwarder", () => {
       method: "navigate" as const,
       args: { url: "http://localhost:4180/", chatSessionId: "chat-1", openPanel: true },
       localArgs: { openPanel: true },
-      forwardedTo: [null],
+      forwards: [{ kind: "request", target: null }],
     },
     {
       label: "an agent opening a tab for itself",
       origin: { clientId: "macbook", local: false },
       method: "navigate" as const,
       args: { url: "http://localhost:4180/", chatSessionId: "chat-1", openPanel: false },
-      localArgs: { openPanel: false },
-      forwardedTo: [],
+      localArgs: null,
+      // An agent's own open now loads quietly in a background tab on the
+      // user's desktop (the call path), so this machine's bridge is not used.
+      forwards: [{ kind: "call", target: "macbook" }],
     },
     {
       label: "`browser panel` while the user talks from another machine",
@@ -559,36 +561,44 @@ describe("remote browser forwarder", () => {
       method: "showPanel" as const,
       args: { chatSessionId: "chat-1" },
       localArgs: null,
-      forwardedTo: ["macbook"],
+      forwards: [{ kind: "request", target: "macbook" }],
     },
-  ])("with a desktop here, routes $label", async ({ origin, method, args, localArgs, forwardedTo }) => {
-    const targets: Array<string | null> = [];
+  ])("with a desktop here, routes $label", async ({ origin, method, args, localArgs, forwards }) => {
+    const emitted: Array<{ kind: string; target: string | null }> = [];
     const forwarder = createRemoteBrowserForwarder({
       emitEvent: (payload) => {
         const request = payload.event as { requestId: string; targetClientId?: string | null };
-        targets.push(request.targetClientId ?? null);
+        const kind = payload.type === "built_in_browser_remote_call" ? "call" : "request";
+        emitted.push({ kind, target: request.targetClientId ?? null });
         queueMicrotask(() => {
-          forwarder.acknowledgeRemoteRequest({ requestId: request.requestId, desktopLabel: "MacBook", accepted: true });
+          if (kind === "call") {
+            forwarder.replyRemoteCall({ requestId: request.requestId, clientId: "macbook", phase: "taken", desktopLabel: "MacBook" });
+            forwarder.replyRemoteCall({ requestId: request.requestId, clientId: "macbook", phase: "done", desktopLabel: "MacBook", ok: true, result: { attached: true } });
+          } else {
+            forwarder.acknowledgeRemoteRequest({ requestId: request.requestId, desktopLabel: "MacBook", accepted: true });
+          }
         });
       },
       logger: forwarderLogger,
       resolveOrigin: () => origin,
       ackTimeoutMs: 500,
+      callTakenTimeoutMs: 500,
     });
     const local = vi.fn(async () => ({ attached: true }));
     const bridge = withRemoteBrowserForwarding(makeBridge({ [method]: local }), forwarder);
 
     await bridge[method](args as never);
 
-    // This machine's desktop keeps the tab an agent drives; it only stays
-    // hidden when the person is looking at another screen.
+    // A command that acts on the chat's tabs runs where the user is, or falls
+    // back to this machine only when nobody there takes it; a plain open that
+    // shows the panel is a request to the user's desktop instead.
     if (localArgs) {
       expect(local).toHaveBeenCalledTimes(1);
       expect(local).toHaveBeenCalledWith(expect.objectContaining({ url: args.url, ...localArgs }));
     } else {
       expect(local).not.toHaveBeenCalled();
     }
-    expect(targets).toEqual(forwardedTo);
+    expect(emitted).toEqual(forwards);
   });
 
   it("forwards from a real headless runtime when no desktop is attached", async () => {
@@ -638,6 +648,222 @@ describe("remote browser forwarder", () => {
     const forwarder = createRemoteBrowserForwarder({ emitEvent: () => {}, logger: forwarderLogger });
     expect(forwarder.acknowledgeRemoteRequest({ requestId: "bbr-gone" })).toEqual({ ok: false });
     expect(forwarder.acknowledgeRemoteRequest({})).toEqual({ ok: false });
+  });
+
+  it("sends a tab command to the user's desktop and reports where it ran", async () => {
+    const emitted: Record<string, unknown>[] = [];
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: (payload) => {
+        emitted.push(payload);
+        const call = payload.event as { requestId: string };
+        queueMicrotask(() => {
+          forwarder.replyRemoteCall({ requestId: call.requestId, clientId: "studio", phase: "taken", desktopLabel: "Studio" });
+          forwarder.replyRemoteCall({ requestId: call.requestId, clientId: "studio", phase: "done", desktopLabel: "Studio", ok: true, result: { elements: ["a"] } });
+        });
+      },
+      logger: forwarderLogger,
+      resolveOrigin: () => ({ clientId: "studio", local: false }),
+      callTakenTimeoutMs: 500,
+    });
+    const local = vi.fn(async () => ({ elements: ["local"] }));
+    const bridge = withRemoteBrowserForwarding(makeBridge({ observe: local }), forwarder);
+
+    const result = await bridge.observe({ chatSessionId: "chat-1", tabId: "tab-1" } as never) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      elements: ["a"],
+      browserHost: { machine: "Studio", userComputer: true },
+    });
+    expect(local).not.toHaveBeenCalled();
+    expect(emitted.map((entry) => entry.type)).toEqual(["built_in_browser_remote_call"]);
+  });
+
+  it("falls back to this machine when nobody takes the call, then skips the silent desktop", async () => {
+    const emitted: Record<string, unknown>[] = [];
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: (payload) => { emitted.push(payload); },
+      logger: forwarderLogger,
+      resolveOrigin: () => ({ clientId: "studio", local: false }),
+      callTakenTimeoutMs: 5,
+    });
+    const local = vi.fn(async () => ({ attached: true }));
+    const bridge = withRemoteBrowserForwarding(makeBridge({ observe: local }), forwarder);
+    const remoteCalls = () => emitted.filter((entry) => entry.type === "built_in_browser_remote_call");
+
+    const first = await bridge.observe({ chatSessionId: "chat-1" } as never) as Record<string, unknown>;
+    expect(first).toMatchObject({
+      attached: true,
+      browserHost: { machine: "this machine", userComputer: false, userElsewhere: true },
+    });
+    expect(local).toHaveBeenCalledTimes(1);
+    expect(remoteCalls()).toHaveLength(1);
+
+    // Inside the "desktop stayed silent" window this chat's commands run
+    // here without waiting out the call clock again.
+    const second = await bridge.observe({ chatSessionId: "chat-1" } as never) as Record<string, unknown>;
+    expect(second).toMatchObject({ attached: true, browserHost: { userElsewhere: true } });
+    expect(local).toHaveBeenCalledTimes(2);
+    expect(remoteCalls()).toHaveLength(1);
+  });
+
+  it("takes a remote-call reply only from the desktop it was sent to", async () => {
+    const emitted: Record<string, unknown>[] = [];
+    let requestId = "";
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: (payload) => {
+        emitted.push(payload);
+        requestId = (payload.event as { requestId: string }).requestId;
+      },
+      logger: forwarderLogger,
+      resolveOrigin: () => ({ clientId: "studio", local: false }),
+      callTakenTimeoutMs: 500,
+    });
+    const local = vi.fn(async () => ({ from: "local" }));
+    const bridge = withRemoteBrowserForwarding(makeBridge({ observe: local }), forwarder);
+
+    const pending = bridge.observe({ chatSessionId: "chat-1" } as never);
+    await vi.waitFor(() => expect(requestId).not.toBe(""));
+
+    // A reply from a desktop that was not asked is ignored, so it cannot
+    // settle the call with a wrong answer.
+    expect(forwarder.replyRemoteCall({ requestId, clientId: "someone-else", phase: "done", ok: true, result: { from: "wrong" } })).toEqual({ ok: false });
+    expect(forwarder.replyRemoteCall({ requestId, clientId: "studio", phase: "taken", desktopLabel: "Studio" })).toEqual({ ok: true });
+    expect(forwarder.replyRemoteCall({ requestId, clientId: "studio", phase: "done", desktopLabel: "Studio", ok: true, result: { from: "right" } })).toEqual({ ok: true });
+
+    const result = await pending as Record<string, unknown>;
+    expect(result).toMatchObject({ from: "right", browserHost: { machine: "Studio", userComputer: true } });
+    expect(local).not.toHaveBeenCalled();
+  });
+
+  it("refuses `--here` with no desktop on this machine instead of forwarding", async () => {
+    const emitted: Record<string, unknown>[] = [];
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: (payload) => { emitted.push(payload); },
+      logger: forwarderLogger,
+      resolveOrigin: () => ({ clientId: "studio", local: false }),
+      ackTimeoutMs: 20,
+    });
+    const bridge = withRemoteBrowserForwarding(makeBridge(), forwarder);
+
+    await expect(bridge.navigate({
+      url: "http://localhost:3000/",
+      chatSessionId: "chat-1",
+      here: true,
+    } as never)).rejects.toThrow(/--here/);
+    expect(emitted).toHaveLength(0);
+  });
+
+  it("keeps a file command off the user's desktop until a command ran here", async () => {
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: () => {},
+      logger: forwarderLogger,
+      resolveOrigin: () => ({ clientId: "studio", local: false }),
+      callTakenTimeoutMs: 5,
+    });
+    const uploadFile = vi.fn(async () => ({ uploaded: true }));
+    const observe = vi.fn(async () => ({ attached: true }));
+    const bridge = withRemoteBrowserForwarding(makeBridge({ uploadFile, observe }), forwarder);
+
+    // The chat's browser is the user's, so a file on this machine is refused.
+    await expect(bridge.uploadFile({ chatSessionId: "chat-1", path: "/tmp/a.png" } as never)).rejects.toThrow(/--here/);
+    expect(uploadFile).not.toHaveBeenCalled();
+
+    // A tab command the user's desktop never takes runs here, which records
+    // that this chat's browser is on this machine after all.
+    await bridge.observe({ chatSessionId: "chat-1" } as never);
+    expect(observe).toHaveBeenCalledTimes(1);
+
+    const result = await bridge.uploadFile({ chatSessionId: "chat-1", path: "/tmp/a.png" } as never);
+    expect(result).toEqual({ uploaded: true });
+    expect(uploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes a done reply's file where the agent can read it and clears foreign paths", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-forwarder-files-"));
+    try {
+      const bytes = Buffer.from("screenshot-bytes", "utf8");
+      const forwarder = createRemoteBrowserForwarder({
+        emitEvent: (payload) => {
+          const call = payload.event as { requestId: string };
+          queueMicrotask(() => {
+            forwarder.replyRemoteCall({
+              requestId: call.requestId,
+              clientId: "studio",
+              phase: "done",
+              desktopLabel: "Studio",
+              ok: true,
+              result: {
+                observation: { filePath: "/Users/user/on/studio/shot.png", relativePath: "shot.png" },
+                thumbnail: { filePath: "/Users/user/on/studio/thumb.png" },
+              },
+              files: [
+                { pointer: ["observation", "filePath"], fileName: "shot.png", base64: bytes.toString("base64") },
+              ],
+            });
+          });
+        },
+        logger: forwarderLogger,
+        resolveOrigin: () => ({ clientId: "studio", local: false }),
+        receivedFilesDir: dir,
+        callTakenTimeoutMs: 500,
+      });
+      const bridge = withRemoteBrowserForwarding(makeBridge({ observe: vi.fn(async () => ({})) }), forwarder);
+
+      const result = await bridge.observe({ chatSessionId: "chat-1" } as never) as unknown as {
+        observation: { filePath: string; relativePath: string | null };
+        thumbnail: { filePath: string | null };
+      };
+
+      // The bytes that crossed the wire are the bytes on disk here.
+      expect(fs.readFileSync(result.observation.filePath)).toEqual(bytes);
+      expect(result.observation.relativePath).toBeNull();
+      // The thumbnail was never sent, so its path on the desktop is dropped.
+      expect(result.thumbnail.filePath).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not keep more than four files from one reply", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-forwarder-files-cap-"));
+    try {
+      const pointers = [0, 1, 2, 3, 4];
+      const forwarder = createRemoteBrowserForwarder({
+        emitEvent: (payload) => {
+          const call = payload.event as { requestId: string };
+          queueMicrotask(() => {
+            forwarder.replyRemoteCall({
+              requestId: call.requestId,
+              clientId: "studio",
+              phase: "done",
+              desktopLabel: "Studio",
+              ok: true,
+              result: Object.fromEntries(pointers.map((n) => [`f${n}`, { filePath: `/Users/user/on/studio/f${n}.png` }])),
+              files: pointers.map((n) => ({
+                pointer: [`f${n}`, "filePath"],
+                fileName: `f${n}.png`,
+                base64: Buffer.from(`bytes-${n}`, "utf8").toString("base64"),
+              })),
+            });
+          });
+        },
+        logger: forwarderLogger,
+        resolveOrigin: () => ({ clientId: "studio", local: false }),
+        receivedFilesDir: dir,
+        callTakenTimeoutMs: 500,
+      });
+      const bridge = withRemoteBrowserForwarding(makeBridge({ observe: vi.fn(async () => ({})) }), forwarder);
+
+      const result = await bridge.observe({ chatSessionId: "chat-1" } as never) as unknown as Record<string, { filePath: string | null }>;
+
+      for (const n of [0, 1, 2, 3]) {
+        expect(fs.readFileSync(result[`f${n}`].filePath as string)).toEqual(Buffer.from(`bytes-${n}`, "utf8"));
+      }
+      // The fifth file is past the cap, so its desktop-only path is dropped.
+      expect(result.f4.filePath).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
