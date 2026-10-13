@@ -1273,7 +1273,10 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "kimi") {
     // Kimi's interactive TUI takes no argv prompt at all, so the prompt is
-    // typed in after launch — the Cursor branch's shape. Kimi also cannot be
+    // typed in after launch — the Cursor branch's shape. It has no flag for
+    // system text either, so ADE's guidance rides in front of that first
+    // message, and an empty launch stays idle rather than submitting guidance
+    // as work, exactly as Cursor's does. Kimi also cannot be
     // handed a session id at launch; the id is captured from its sessions
     // directory afterwards, so no `assignedSessionId` is returned here.
     const commandArgs = [
@@ -1284,7 +1287,9 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "kimi",
       args: commandArgs,
       startupCommand: commandArrayToLine(["kimi", ...commandArgs], { platform: "linux" }),
-      ...(initialPrompt ? { initialInput: initialPrompt, initialInputDelayMs: 750 } : {}),
+      ...(initialPrompt
+        ? { initialInput: workTabCliPrompt(initialPrompt, skillRoots, activityGuidance), initialInputDelayMs: 750 }
+        : {}),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
@@ -1338,17 +1343,22 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push(...copilotModelFlags(modelForLaunch));
     commandArgs.push(...copilotReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToCopilotFlags(permissionMode));
-    const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
-    if (initialPrompt && promptRidesInArgv) {
-      commandArgs.push("-i", initialPrompt);
+    // Copilot has no flag for system text, so ADE's guidance rides in front of
+    // the first message. An empty launch stays idle, as Cursor's does.
+    const copilotFirstMessage = initialPrompt
+      ? workTabCliPrompt(initialPrompt, skillRoots, activityGuidance)
+      : null;
+    const promptRidesInArgv = Boolean(copilotFirstMessage) && currentPlatform() !== "win32";
+    if (copilotFirstMessage && promptRidesInArgv) {
+      commandArgs.push("-i", copilotFirstMessage);
     }
     return {
       command: "copilot",
       args: commandArgs,
       startupCommand: commandArrayToLine(["copilot", ...commandArgs], { platform: "linux" }),
       ...(assignedSessionId ? { assignedSessionId } : {}),
-      ...(initialPrompt && !promptRidesInArgv
-        ? { initialInput: initialPrompt, initialInputDelayMs: 750 }
+      ...(copilotFirstMessage && !promptRidesInArgv
+        ? { initialInput: copilotFirstMessage, initialInputDelayMs: 750 }
         : {}),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
@@ -1362,9 +1372,11 @@ export function buildTrackedCliLaunchCommand(args: {
     // `devin` is a native binary on every platform (no `.cmd` shim), and its
     // documented initial-prompt spelling is `devin -- <prompt>` — argv is a
     // safe transport for it on Windows too. Devin discovers AGENTS.md and
-    // `.agents/skills/` in the lane itself, so no prompt injection rides here.
+    // `.agents/skills/` in the lane itself, but neither names the `ade`
+    // commands, so ADE's guidance rides in front of the first message. An
+    // empty launch stays idle, as Cursor's does.
     if (initialPrompt) {
-      commandArgs.push("--", initialPrompt);
+      commandArgs.push("--", workTabCliPrompt(initialPrompt, skillRoots, activityGuidance));
     }
     return {
       command: "devin",
