@@ -155,11 +155,11 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNav
         // player.js arrives as a user script (before MusicKit's own script);
         // the page's tag would ask the network for music.ade.local.
         html = html.replacingOccurrences(of: "<script src=\"player.js\"></script>", with: "")
-        // Apple's "Allow access" screen loads the icon from this URL, which
-        // only exists inside WebView2. Hand it the image itself.
-        if let icon = FileManager.default.contents(atPath: (options.page as NSString).appendingPathComponent("ade-icon.png")) {
-            html = html.replacingOccurrences(of: origin + "/ade-icon.png", with: "data:image/png;base64," + icon.base64EncodedString())
-        }
+        // The page's icon link stays a short URL. MusicKit copies that link's
+        // href into the authorize URL (base64, as a GET query), so inlining
+        // the PNG as a data URL made a 41 KB URL and Apple's sign-in page
+        // stayed blank. WKWebView cannot serve https://music.ade.local, so
+        // Apple's Allow screen shows no ADE icon on macOS.
 
         let config = WKWebViewConfiguration()
         // Autoplay without a gesture: every play comes from ADE's own UI, never this page.

@@ -211,8 +211,11 @@ ignored) and the same `page/` as Windows:
   (`postMessage` out through a `WKScriptMessageHandler`, commands in through
   `callAsyncJavaScript`). Both scripts run only on that origin, and only the
   page's main frame may post to ADE. The `<script src="player.js">` tag is
-  removed (it would ask the network for `music.ade.local`), and the app icon
-  URL Apple's Allow screen loads is replaced with the PNG as a data URL.
+  removed (it would ask the network for `music.ade.local`). The icon link
+  stays `https://music.ade.local/ade-icon.png`, which WKWebView cannot serve,
+  so Apple's Allow screen shows no ADE icon on macOS. **Never inline it as a
+  data URL:** MusicKit copies that link's `href` into the authorize URL as a
+  GET query, and the 41 KB URL left Apple's sign-in window blank.
 - **Profile.** macOS 14+: a persistent `WKWebsiteDataStore(forIdentifier:)`
   whose UUID is derived from `--udf`, so dev and installed builds keep apart;
   macOS 13 uses the default store. MusicKit's saved user token is deleted by
