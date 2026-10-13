@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@sentry/cloudflare": "^11.7.0",
     "jose": "^6.2.3"
   },
   "devDependencies": {

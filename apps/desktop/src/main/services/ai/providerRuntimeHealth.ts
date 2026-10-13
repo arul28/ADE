@@ -1,4 +1,5 @@
 import { nowIso } from "../shared/utils";
+import { addSentryBreadcrumb, captureProblem } from "../../../shared/sentry/capture";
 
 export type ProviderRuntimeHealthState = "ready" | "auth-failed" | "runtime-failed";
 export type ProviderRuntimeHealthProvider =
@@ -37,6 +38,27 @@ function setProviderRuntimeHealth(next: ProviderRuntimeHealth): void {
   }
   providerHealth.set(next.provider, next);
   providerHealthVersion += 1;
+  reportHealthTransition(previous ?? null, next);
+}
+
+/**
+ * A provider that stops working is the failure users notice first and report
+ * least: the chat just says it cannot start. Each transition into a failed
+ * state becomes one Sentry issue per provider and state; a recovery leaves a
+ * breadcrumb. Auth failures are warnings, since signing out is not a bug.
+ */
+function reportHealthTransition(previous: ProviderRuntimeHealth | null, next: ProviderRuntimeHealth): void {
+  if (next.state === "ready") {
+    if (previous && previous.state !== "ready") {
+      addSentryBreadcrumb("provider", `${next.provider} recovered`, { from: previous.state });
+    }
+    return;
+  }
+  captureProblem(`Provider ${next.provider} ${next.state}: ${next.message ?? "no message"}`, {
+    tags: { provider: next.provider, "provider.state": next.state },
+    fingerprint: ["provider", next.provider, next.state],
+    level: next.state === "auth-failed" ? "warning" : "error",
+  });
 }
 
 export function reportProviderRuntimeReady(provider: ProviderRuntimeHealthProvider): void {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { copilotDialect, grokDialect, kimiDialect, qwenDialect } from "./acpDialects";
+import { copilotDialect, devinDialect, grokDialect, kimiDialect, qwenDialect } from "./acpDialects";
 import { qwenModelIdFromAgent } from "./acpDialects/qwen";
 import type { AcpDialect } from "./acpHostTypes";
 import type { AcpSessionConfigOption } from "./acpProtocolTypes";
@@ -613,8 +613,8 @@ describe("model and effort selection", () => {
   });
 
   it("rejects a live effort change for a dialect without an effort option", async () => {
-    const session = fakeSession(copilotDialect);
-    const { runtime } = await openRuntime({ dialect: copilotDialect, session });
+    const session = fakeSession(devinDialect);
+    const { runtime } = await openRuntime({ dialect: devinDialect, session });
     await expect(setAcpReasoningEffort(runtime, "high", { sessionId: "chat-1", logger: testLogger() as unknown as Logger }))
       .resolves.toBe("rejected");
   });

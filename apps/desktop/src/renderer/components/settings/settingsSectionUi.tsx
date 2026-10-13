@@ -85,18 +85,10 @@ export function SettingsSectionShell({
 }
 
 /**
- * One privacy consent control: a labelled switch, what it shares in plain
- * words, a live footnote, and an error line that never disappears silently.
+ * A labelled on/off switch. Callers own the persisted value and pass it in.
  *
- * ADE has two of these — anonymous analytics and automatic diagnostics — and
- * they were the same eighty lines twice. They are also the two screens where a
- * copy-paste divergence matters most: these read and write the real persisted
- * value rather than assuming, because a consent toggle that renders optimism
- * is a consent toggle that can show "off" for something that is on.
- *
- * `read`/`write` may be absent, which is a build whose preload predates the
- * setting: the switch renders in its default position and stays disabled
- * rather than pretending to work.
+ * `disabled` keeps it in place but inert, for a build whose preload predates
+ * the setting, so it does not pretend to work.
  */
 export function SettingsToggle({
   checked,

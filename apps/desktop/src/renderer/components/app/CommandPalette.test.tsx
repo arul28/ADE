@@ -1527,8 +1527,8 @@ describe("CommandPalette", () => {
   });
 
   it("matches a setting by keyword when its label does not contain the query", async () => {
-    // Keywords widen matching without being rendered, so "telemetry" reaches
-    // "Product analytics".
+    // Keywords widen matching without being rendered, so "crash" reaches
+    // "Send a report to ADE".
     seedStore();
     render(
       <MemoryRouter>
@@ -1539,9 +1539,9 @@ describe("CommandPalette", () => {
     const input = await screen.findByPlaceholderText(
       "Search commands, projects, and threads…",
     );
-    fireEvent.change(input, { target: { value: "telemetry" } });
+    fireEvent.change(input, { target: { value: "crash" } });
 
-    expect(await screen.findByText("Product analytics")).toBeTruthy();
+    expect(await screen.findByText("Send a report to ADE")).toBeTruthy();
   });
 
   it("creates a project and opens Work without a success interstitial", async () => {

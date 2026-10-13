@@ -1,3 +1,4 @@
+import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { existsSync } from "node:fs";
 import { WebContentsView, app, nativeImage, screen, session } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
@@ -127,7 +128,7 @@ import {
   announceBuiltInBrowserWebContents,
   registerBrowserMediaPreload,
 } from "./builtInBrowserMediaHooks";
-import { isRecord } from "../shared/utils";
+import { isRecord, normalizeRelative } from "../shared/utils";
 import { pathKey } from "../shared/pathCompare";
 import {
   AGENT_DOM_COLLECTOR_FUNCTION,
@@ -170,7 +171,7 @@ import {
   tabUsesRecordingViewport,
 } from "./builtInBrowserRecordingViewport";
 import { createPanelRectSettler } from "./builtInBrowserPanelRectSettler";
-import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
+import { createUrlLoader, isAllowedNavigationUrl, normalizeBrowserUrl, urlForBrowserLog } from "./builtInBrowserNavigation";
 import {
   builtInBrowserRecordingKey,
   builtInBrowserTabTitle,
@@ -2235,6 +2236,9 @@ function createBuiltInBrowserWindowService(args: {
     emit({ type: "error", message, occurredAt: new Date().toISOString() });
   };
 
+  const urlLoader = createUrlLoader({ logger, onLoadSettled: () => emitStatus() });
+  const loadUrlSafely = urlLoader.load;
+
   const currentCursorPointInView = (): BrowserInspectPoint | null => {
     if (!win || win.isDestroyed() || !visible || bounds.width <= 0 || bounds.height <= 0) return null;
     try {
@@ -3211,7 +3215,7 @@ function createBuiltInBrowserWindowService(args: {
             : new WebContentsView({ webPreferences: browserWebPreferences(opener?.isolation?.partition) });
           const tab = createPopupTabStateFromView(popupUrl, opener, nextView, { activate });
           if (!popupWebContents) {
-            void tab.webContents.loadURL(popupUrl).catch((error) => {
+            void loadUrlSafely(tab.webContents, popupUrl).catch((error) => {
               emitError(new Error(`Could not load deferred browser popup: ${errorMessage(error)}`));
             });
           }
@@ -3238,6 +3242,7 @@ function createBuiltInBrowserWindowService(args: {
         return;
       }
       event.preventDefault();
+      urlLoader.noteHeldForApproval(wc, browserOriginOf(url) ?? url);
       // The action that caused this (a click on a cross-origin link, a submit
       // that redirects) is usually still in flight. Its answer must say the
       // navigation is held for the user, not "nothing changed".
@@ -3269,7 +3274,7 @@ function createBuiltInBrowserWindowService(args: {
           ));
           return;
         }
-        await wc.loadURL(url);
+        await loadUrlSafely(wc, url);
       }).catch(emitError);
     };
     wc.on("will-navigate", (event, url) => enforceAgentNavigation(event, url, "navigation"));
@@ -4908,7 +4913,9 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
+    addSentryBreadcrumb("browser", "navigate: waiting for profile migration");
     await args.waitForProfileMigration();
+    addSentryBreadcrumb("browser", "navigate: waiting for tab restore");
     await tabRestorationPromise;
     const targetUrl = normalizeBrowserUrl(input.url);
     const isolation = isolatedSessions.forInput(input);
@@ -4995,7 +5002,8 @@ function createBuiltInBrowserWindowService(args: {
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     void noteDemoAction(tab, input, "navigate", { label: demoUrlHost(targetUrl) });
-    await wc.loadURL(targetUrl);
+    addSentryBreadcrumb("browser", "navigate: loading", { origin: urlForBrowserLog(targetUrl) });
+    await loadUrlSafely(wc, targetUrl);
     if (input.openPanel) {
       requestOpenPanel({ url: targetUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
@@ -5037,7 +5045,7 @@ function createBuiltInBrowserWindowService(args: {
     if (willActivate) activeTabId = tab.id;
     attachViewsToCurrentWindow();
     if (normalizedUrl) {
-      await tab.webContents.loadURL(normalizedUrl);
+      await loadUrlSafely(tab.webContents, normalizedUrl);
     }
     if (input.openPanel) {
       requestOpenPanel({ url: normalizedUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
@@ -6373,7 +6381,8 @@ function createBuiltInBrowserWindowService(args: {
     const image = screenshot ? decodeDataUrl(screenshot.dataUrl) : null;
     const filePath = image ? path.join(dir, `${id}.png`) : null;
     if (image && filePath) await fs.writeFile(filePath, image.buffer);
-    const relativePath = filePath ? path.relative(observationRelativeBasePath, filePath) : null;
+    // Agents read these paths; they use forward slashes on every OS.
+    const relativePath = filePath ? normalizeRelative(path.relative(observationRelativeBasePath, filePath)) : null;
     const domWithHandles = dom ? applyObservationHandles(dom, id) : null;
     let elementMap: BuiltInBrowserObservationElementMap | null = null;
     if (elementMapScreenshot) {
@@ -6381,7 +6390,7 @@ function createBuiltInBrowserWindowService(args: {
       await fs.writeFile(elementMapPath, elementMapImage.buffer);
       elementMap = {
         filePath: elementMapPath,
-        relativePath: path.relative(observationRelativeBasePath, elementMapPath),
+        relativePath: normalizeRelative(path.relative(observationRelativeBasePath, elementMapPath)),
         width: elementMapScreenshot.width,
         height: elementMapScreenshot.height,
         mimeType: elementMapImage.mimeType,
@@ -6770,19 +6779,6 @@ async function fetchFaviconDataUrl(wc: WebContents, value: string): Promise<stri
   } finally {
     clearTimeout(timer);
     controller.abort();
-  }
-}
-
-function urlForBrowserLog(value: string): string | null {
-  const url = emptyToNull(value);
-  if (!url) return null;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.origin;
-    if (parsed.protocol === "about:") return parsed.href === "about:blank" ? parsed.href : "about:";
-    return parsed.protocol;
-  } catch {
-    return null;
   }
 }
 

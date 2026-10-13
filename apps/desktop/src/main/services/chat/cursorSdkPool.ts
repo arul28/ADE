@@ -1,3 +1,4 @@
+import { captureWorkerFailure } from "../../sentry/workerFailures";
 import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
@@ -945,6 +946,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
         message: message.message,
         detail: message.detail,
       });
+      captureWorkerFailure("cursor", message);
     }
   });
 

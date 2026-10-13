@@ -738,29 +738,19 @@ Renderer — settings:
   reveals the default-on **Wait until active work finishes** safety option,
   which delays the restart countdown until no agent turn or work session is
   active.
-- `apps/desktop/src/renderer/components/settings/ProductAnalyticsSection.tsx`
-  — machine-wide desktop/runtime product-analytics status and durable opt-out.
-  It shows the configured/effective state and installation daily ceiling but
-  never exposes or accepts credentials. Native iOS is independently default-on
-  without an in-app preference; hosted web keeps its own affirmative browser
-  choice. See [logging and product analytics](../../logging.md).
+- Product analytics has no Settings section. It is on by default, and
+  `DO_NOT_TRACK=1` or an opt-out a previous build stored turns it off silently.
+  See [logging and product analytics](../../logging.md).
 - `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx`
-  — the second Privacy consent control (`general.diagnostics-sharing`, anchored
-  `#diagnostics-sharing`): **"Share diagnostics with ADE when something
-  breaks"**, default **on**, machine-scoped. It is the off switch for the
-  automatic redacted report ADE sends by itself when it hits a failure it has
-  already classified; the same switch appears on the toast that announces each
-  send. `web: "hidden"` in the manifest, because the consent lives in
-  `~/.ade/secrets/diagnostics-autosend.json` and a browser has no such file.
-  Analytics consent and diagnostics consent are deliberately separate flags, so
-  turning one off never silently turns off the other. The same card also carries
-  **Send a report to ADE** — the only report control that does not require
-  something to have already visibly broken, which is what makes this section's
-  own copy (*"the same report the Report issue button makes"*) true for a user
-  whose app merely feels wrong. It has its own daily cap (5 per install per 24h,
-  counted apart from the automatic 3), sends whether or not the toggle is on
-  because a deliberate click is not something ADE did by itself, and says so in
-  the card when the toggle is off. See
+  — the one report control in Settings (`general.diagnostics-sharing`, anchored
+  `#diagnostics-sharing`, titled **"Send a report to ADE"**). It has no toggle.
+  Automatic reports are on by default and stop under `DO_NOT_TRACK=1` or an
+  earlier stored opt-out. The card's **Send a report to ADE** button is the only
+  report control that does not require something to have already visibly broken,
+  which is what makes the report's copy true for a user whose app merely feels
+  wrong. It has its own daily cap (5 per install per 24h, counted apart from the
+  automatic 3). `web: "hidden"` in the manifest, because the report is built on
+  this machine by the desktop app. See
   [storage and recovery → Auto-send](../storage-and-recovery/README.md#auto-send).
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT
@@ -985,13 +975,10 @@ Renderer — settings:
   `EnvironmentSection.tsx` wrapper that used to pair them is gone.
 - `apps/desktop/src/renderer/components/settings/settingsSectionUi.tsx`
   — shared section headers (`SettingsSectionShell`), toggle styling, and
-  `ConsentToggleSection`: the one privacy consent control — labelled switch,
-  plain-words body, live footnote, persistent error line — that both
-  `ProductAnalyticsSection` and `DiagnosticsSharingSection` render. It always
-  reads the real persisted value rather than rendering optimism, and when the
-  preload bridge predates the setting it renders disabled instead of pretending
-  to work; a consent switch showing "off" for something that is on is the one
-  failure mode this component exists to prevent.
+  `SettingsToggle`: a labelled on/off switch that callers feed the persisted
+  value, which renders disabled rather than pretending to work when a preload
+  predates the setting. The product-analytics and diagnostics consent controls
+  that used it are gone; other settings still use it.
 - `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
   — theme, interface faces, and terminal text, all per computer. (The chat
   appearance controls moved to `ChatSection.tsx`, which renders
@@ -2061,7 +2048,7 @@ The pages themselves:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx`, `ResetAdeSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). **Reset ADE** (`#reset-ade`, local machine only) is its own section, last on the page; the old `#about.reset` hash still lands on it. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
+| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx`, `ResetAdeSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and **Send a report to ADE** (`#diagnostics-sharing`, hidden on hosted web). There is no analytics or diagnostics consent switch. **Reset ADE** (`#reset-ade`, local machine only) is its own section, last on the page; the old `#about.reset` hash still lands on it. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
 | Appearance (Machines → This computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, the Focus grid's chats per page, terminal text, and the **Background** (`#background`) scene picker — plain, gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
 | Apple devices (Machines → This computer) | `AppleDevicesSection.tsx` | This computer's own simulator and preview choices — the 3D device body, recording overlays (tap rings, typed-text badges), the remote streaming bitrate cap, and the recordings storage warning — drawn in the Appearance language. Per computer, because every Mac has its own simulators, and it sits beside Appearance under This computer rather than on the Account group. It still files through the account store so the brain on this computer can read the remote streaming cap and the recording overlays: each computer's copy lives under the account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`). |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |

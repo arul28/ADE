@@ -4904,6 +4904,48 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       tabId: service.getStatus().activeTabId,
     });
   });
+
+  it("answers a navigation whose page never finishes loading after 20 seconds, well inside the IPC timeout", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://first.test", activate: true });
+    const wc = fakes.webContentsInstances[0];
+    expect(wc, "browser tab webContents exists").toBeTruthy();
+    // A dev server that accepts the connection and never answers.
+    wc.loadURL = vi.fn(() => new Promise<void>(() => {}));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let settled = false;
+      const navigation = service.navigate({ url: "https://hangs.test" }).finally(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(19_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(navigation).resolves.toMatchObject({ activeTabId: service.getStatus().activeTabId });
+      expect(wc.loadURL).toHaveBeenCalledWith("https://hangs.test/");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["a load superseded by a redirect or a newer navigation", "ERR_ABORTED (-3) loading 'https://x.test/'", true],
+    ["a load that failed (the tab records the error)", "ERR_NAME_NOT_RESOLVED (-105) loading 'https://x.test/'", true],
+    ["a broken call such as a destroyed tab", "Object has been destroyed", false],
+  ])("navigate answers instead of throwing for %s", async (_label, message, resolves) => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://first.test", activate: true });
+    const wc = fakes.webContentsInstances[0];
+    expect(wc, "browser tab webContents exists").toBeTruthy();
+    wc.loadURL = vi.fn(async () => {
+      throw new Error(message);
+    });
+
+    const navigation = service.navigate({ url: "https://x.test" });
+    if (resolves) await expect(navigation).resolves.toMatchObject({ activeTabId: service.getStatus().activeTabId });
+    else await expect(navigation).rejects.toThrow(message);
+    expect(wc.loadURL).toHaveBeenCalledWith("https://x.test/");
+  });
 });
 
 describe("createBuiltInBrowserService — switchTab and navigate inspect/selection invariants", () => {

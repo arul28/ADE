@@ -206,7 +206,6 @@ describe("settings manifest", () => {
   });
 
   it("finds settings by keyword when the label does not contain the query", () => {
-    expect(searchSettingsEntries("telemetry").map((e) => e.id)).toContain("general.analytics");
     expect(searchSettingsEntries("api key").map((e) => e.id)).toContain("secrets.secrets");
     expect(searchSettingsEntries("banner").map((e) => e.id)).toContain("lanes-git.rebase-suggestions");
     expect(searchSettingsEntries("do not disturb").map((e) => e.id)).toContain("notifications.focus-suppression");
@@ -405,7 +404,6 @@ describe("settings command palette entries", () => {
 
   it("reaches settings whose label does not contain the query", () => {
     const cases: [string, string][] = [
-      ["telemetry", "setting-general.analytics"],
       ["font size", "setting-appearance.chat-font-size"],
       ["scrollback", "setting-appearance.terminal"],
       ["do not disturb", "setting-notifications.focus-suppression"],

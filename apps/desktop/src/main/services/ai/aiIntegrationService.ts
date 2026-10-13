@@ -48,7 +48,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { disabledProviderSet } from "../../../shared/providerEnablement";
 import { presetSourceLabel } from "../../../shared/harnessPresets";
-import { getCachedDevinModels, warmDevinModels } from "./devinModelsDiscovery";
+import { applyPersistedAcpModelCatalogs, warmAcpModelCatalog } from "../chat/acpHost/acpModelDiscovery";
 import { readHarnessPresetsOrEmpty } from "../chat/harnessPresetSettings";
 import {
   getMachineProviderInstanceStore,
@@ -1162,6 +1162,8 @@ export function createAiIntegrationService(args: {
     // which populates dynamic OpenCode descriptors (including local providers).
 
     let available = getAvailableModels(auth);
+    // Last session's or probe's live ACP lists, before anything merges on top.
+    applyPersistedAcpModelCatalogs();
     // ACP model ids are provider-owned. In particular, Qwen can be pointed at
     // an arbitrary OpenAI-compatible endpoint, so its own settings are the
     // source of truth when they name models; ADE's curated Alibaba rows are
@@ -1193,19 +1195,11 @@ export function createAiIntegrationService(args: {
         !(descriptor.isCliWrapped && descriptor.family === family)
       );
       if (!hasAuth) continue;
-      if (provider === "devin") {
-        // `devin models list` is the account's real catalog, ahead of the
-        // curated family picks. Serve the cached rows; warm once in the
-        // background when cold so this read never blocks on a subprocess.
-        const discovered = getCachedDevinModels();
-        if (discovered?.length) {
-          mergeDynamicAcpModelDescriptors("devin", discovered);
-        } else {
-          void warmDevinModels().then((rows) => {
-            if (rows.length) mergeDynamicAcpModelDescriptors("devin", rows);
-          });
-        }
-      }
+      // The provider's own list (persisted from the last chat or probe) is the
+      // picker; curated rows are only the fallback before one exists. Refresh
+      // it in the background when it is missing or old, so this read never
+      // blocks on a subprocess.
+      warmAcpModelCatalog(provider, { logger });
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
           ? { configuredModelIds: qwenSettings.models.map((model) => model.id) }
@@ -1223,7 +1217,11 @@ export function createAiIntegrationService(args: {
       let cursorModels: Awaited<ReturnType<typeof discoverCursorSdkModelDescriptors>> = [];
       try {
         cursorModels = await discoverCursorSdkModelDescriptors(cursorApiKey, { mode: cursorDiscoveryMode });
-      } catch {
+      } catch (error) {
+        logger.warn("ai.cursor_model_discovery_failed", {
+          mode: cursorDiscoveryMode,
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+        });
         cursorModels = [];
       }
       if (cursorModels.length) {

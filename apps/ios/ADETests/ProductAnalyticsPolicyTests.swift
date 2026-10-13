@@ -30,11 +30,10 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     XCTAssertEqual(ADEAnalyticsOutcome.failed.rawValue, "failure")
   }
 
-  func testAnalyticsDefaultsOnAndIgnoresLegacyOptOutPreference() {
+  func testAnalyticsDefaultsOnAndInAppSetEnabledIsNotAnOptOut() {
     let (analytics, sink, _) = makeAnalytics(preference: nil)
 
     XCTAssertTrue(analytics.isEnabled)
-    XCTAssertFalse(analytics.shouldRequestConsent)
     analytics.captureScreen(.work)
     analytics.setEnabled(false)
     analytics.captureScreen(.lanes)

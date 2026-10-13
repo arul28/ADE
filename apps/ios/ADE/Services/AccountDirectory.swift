@@ -569,6 +569,7 @@ extension AccountDirectoryClient {
       } catch let error as DirectoryError {
         throw error
       } catch {
+        CrashReporting.capture(error, context: ["area": "account.directory"])
         throw DirectoryError.transport("Couldn't reach the machine directory.")
       }
     }
@@ -910,6 +911,7 @@ struct AccountAttentionRelayClient {
       } catch let error as RelayError {
         throw error
       } catch {
+        CrashReporting.capture(error, context: ["area": "attention.relay"])
         throw RelayError.transport
       }
     }

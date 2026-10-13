@@ -791,8 +791,8 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx`
   - reused route/project lifecycle capture plus the hosted-web startup event.
   It sends only normalized inputs through `window.ade.analytics`; the browser
-  client never talks to PostHog directly. There is no in-app consent prompt;
-  Settings carries the opt-out.
+  client never talks to PostHog directly. There is no in-app consent prompt and
+  no Settings control; a browser opt-out stored earlier is still honored.
 
 Machine runtime and sync host:
 
@@ -963,9 +963,9 @@ Tests:
   it in favor of the browser's socket state alone. Transport-open and
   authenticated-hello deadlines are intentionally separate so slow token/DPoP
   preparation and a dead network route produce different failures.
-- **Analytics collection is on by default and opted out browser-locally.** No
-  consent prompt is shown; the browser collects until someone turns it off in
-  Settings, which writes `"false"` to the local-storage preference. The host
+- **Analytics collection is on by default and honors a browser-local opt-out.**
+  No consent prompt is shown and no Settings control writes the preference; a
+  `"false"` in local storage from an earlier build still disables collection. The host
   keeps an in-memory consent bit for that paired socket and starts it
   disabled, so every adapter connection must reassert the local preference
   before capture. An opt-out is still fail-closed: a failed disable

@@ -1,8 +1,8 @@
-# Logging and product analytics
+# Logging, error tracking and product analytics
 
-This is ADE's ground truth for operational logging and privacy-bounded product analytics. Read it before adding telemetry, changing an analytics event, or reviewing a feature with `/test`.
+This is ADE's ground truth for operational logging, error tracking (Sentry) and privacy-bounded product analytics (PostHog). Read it before adding telemetry, changing an analytics event, adding a failure path, or reviewing a feature with `/test`.
 
-ADE is local-first. Operational logs stay local and help diagnose software behavior. Product analytics is a separate, deliberately narrow PostHog data path that answers how installations use ADE. PostHog is not a remote log sink, crash dump service, session recorder, or copy of ADE's local state.
+ADE is local-first. Operational logs stay local and help diagnose software behavior. Error tracking sends crashes, errors and warnings to Sentry so failures are seen without anyone pressing a button (see [Error tracking](#error-tracking-sentry)). Product analytics is a separate, deliberately narrow PostHog data path that answers how installations use ADE. PostHog is not a remote log sink, crash dump service, session recorder, or copy of ADE's local state; crashes and errors go to Sentry instead.
 
 ## Non-negotiable boundaries
 
@@ -14,9 +14,44 @@ Never send any of the following to PostHog:
 - credentials, tokens, email addresses, raw account identifiers, device names, or other user-provided strings;
 - raw project IDs, session IDs, or other stable local database identifiers.
 
-No PostHog SDK is linked. ADE calls the Capture API directly so autocapture, automatic pageviews, session replay, surveys, feature flags, remote config, automatic crash capture, and SDK-managed offline queues remain absent. Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets only plan, platform, and app version. ADE does not send the account ID, email, name, provider, or token.
+No PostHog SDK is linked. ADE calls the Capture API directly so autocapture, automatic pageviews, session replay, surveys, feature flags, remote config, automatic crash capture, and SDK-managed offline queues remain absent from PostHog. (Crash capture lives in Sentry. These boundaries are PostHog's; Sentry's are in its own section below.) Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets only plan, platform, and app version. ADE does not send the account ID, email, name, provider, or token.
 
 Only closed event names, closed property keys, and coarse allowlisted values may cross the analytics boundary. Desktop/runtime raw project and session IDs are installation-salted and hashed before capture. Local deduplication keys are also hashed and are never transmitted.
+
+## Error tracking (Sentry)
+
+Sentry is part of ADE on every surface, with no setting and no notice. The organization is `ade-app` (US region), and each surface reports to its own project.
+
+| Project | Surface | Started in |
+|---|---|---|
+| `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
+| `ade-brain` | the brain (`ade serve`: desktop-started, background service, remote machine) | `apps/ade-cli/src/sentry/initBrain.ts` (serve path in `cli.ts`) |
+| `ade-web` | hosted web client (Cloudflare Pages) | `apps/desktop/src/renderer/webclient/sentry.ts`, loaded after first paint |
+| `ade-workers` | push-relay, tunnel-relay, webhook-relay, account-directory (tag `worker`) | each Worker's `src/sentry.ts` |
+| `ade-ios` | the iOS app (not the widgets or App Clip) | `apps/ios/ADE/Services/CrashReporting.swift` |
+
+**When it runs.** Packaged builds only. Dev builds, source-checkout brains and tests are silent. `ADE_SENTRY_DEV=1` (web: `?ade_sentry_dev=1`) turns it on for testing the wiring and reports as `development`. `DO_NOT_TRACK` or `ADE_SENTRY_DISABLED` set to `1`, `true` or `yes` turns it off, and so does an analytics or automatic-diagnostics opt-out recorded by an earlier build (`main/sentry/priorOptOut.ts`; on iOS and the web client, the stored analytics opt-out). The forked SDK workers (Cursor, Droid, Pi, pty host) carry no SDK, because loading one costs hundreds of milliseconds per spawn on Windows; their failures reach the parent process, which reports them (`main/sentry/workerFailures.ts`, and `pty.host_fatal` through the logger).
+
+**What is sent.** Error messages, stack traces, file paths, ids (lane, chat session, project, account hash), counts, durations, OS, architecture, CPU, memory, locale and timezone, the package channel, and breadcrumbs of what happened before (slow or failed IPC calls with their channel or brain action, provider health changes, warnings from ADE's logger). Native crash minidumps are uploaded. The user is the same pseudonymous id PostHog uses as `distinct_id` (`setSentryUserResolver` in `shared/sentry/eventFilter.ts`): the hashed account when signed in, else the install's random id, and none when product analytics is off.
+
+**What is never sent.** Prompt and transcript text, model output, file contents and diffs, terminal output, clipboard, and secrets. Call sites do not pass that text, and `shared/sentry/scrub.ts` is the backstop on every desktop, brain and web process: it redacts keys, tokens, JWTs, private keys, credentials in URLs and secret query parameters, replaces fields named like content (`prompt`, `text`, `body`, `diff`, `stdout`, and so on) with their length, and drops stack-frame local variables. No IP address is stored (client `dataCollection.userInfo: false`, and server-side IP scrubbing on every project). Trace headers are never added to third-party requests (`tracePropagationTargets: []`).
+
+**What becomes an issue.**
+
+- every uncaught exception and unhandled rejection (all processes), renderer and page error-boundary crashes, native crashes;
+- every failed `ipcMain.handle` call, once, grouped per channel or brain action and error code (`main/sentry/ipcCapture.ts`);
+- every failed brain action (`reportFailedAction` in `adeRpcServer.ts`) and internal JSON-RPC error;
+- every `logger.error` line, grouped by event name (`shared/sentry/logBridge.ts`), except `window.console` (renderer console output, kept as logs only: the renderer SDK reports the real errors itself). `logger.warn` lines become Sentry Logs and breadcrumbs, not issues. Info and debug never leave the machine;
+- every error toast a user sees (`showToast` with `tone: "error"`), grouped by the fixed start of its title (`toastGroupKey`, so a lane or file name in the title does not open one issue per name); the title and message travel cut to 300 characters;
+- every provider health transition into `auth-failed` (a warning) or `runtime-failed` (`providerRuntimeHealth.ts`).
+
+**Quota.** The Developer plan allows 5,000 errors a month for the whole organization and has no server-side rate limits, so every process keeps its own budget (`shared/sentry/guardrails.ts`): at most 5 events per fingerprint and 60 in total per hour, and crashes (`fatal`) on a budget of their own, 10 per fingerprint and 30 per hour, so they never compete with ordinary errors; Sentry Logs are capped at 20 per log event name and 400 in total per hour, because some warnings repeat every second while a condition lasts. Expected outcomes (aborted navigations, user cancels, EPIPE, ResizeObserver) are dropped. Traces are sampled at 5% on desktop and brain (Workers 1%, push-relay 0.1%, tunnel frames never); the web client reports errors only, because browser tracing would add about a third to the chunk its cold-load budget counts. No profiling. iOS keeps session replay for errors only, fully masked.
+
+**Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `web`, `worker-<name>`). iOS keeps `<bundle id>@<version>+<build>`. Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
+
+**Instrumenting new code.** Use `captureError(error, context)` and `captureProblem(message, context)` from `apps/desktop/src/shared/sentry/capture.ts` (Swift: `CrashReporting.capture`). They are no-ops where Sentry is not running, so never guard them. Set a `fingerprint` that names the failure (`["provider", provider, kind]`) so repeats are one issue and one budget. Tags are low-cardinality labels (provider, channel, action); detail goes in `extra`. A caught error the app recovers from silently is still a failure: report it, or log it with `logger.warn` or `logger.error` so the bridge does. Never pass user content, and never raise the budget to fit a noisy call site; fix the noise.
+
+**Triage.** `sentry issue list ade-app/<project> --query "is:unresolved" --period 24h`, `sentry issue view <ID>`, `sentry issue events <ID>`, `sentry log list ade-app/<project> -q "severity:error"`. Test events from a dev opt-in run carry `environment:development`; resolve or delete them afterwards.
 
 ## Operational logs versus analytics
 
@@ -246,7 +281,7 @@ Shared desktop/runtime boundary:
 - `apps/desktop/src/main/services/analytics/usageProductAnalyticsExporter.ts`, `dailyUsageAnalytics.ts`, and `agentTurnProductAnalytics.ts` are the durable-ledger, daily-aggregate, and work-session producers. `agentTurnProductAnalytics.ts` also owns `captureChatHandoffReplayAnalytics`, the handoff-replay outcome described below. Their focused coverage is consolidated in `productAnalyticsService.test.ts`.
 - `apps/desktop/src/main/services/analytics/featureProductAnalytics.ts` owns the closed, content-free `ade_feature_used` producers for provider accounts, API credentials, custom presets, proxy, reset-credit outcomes, and pending-question dismissal. It maps provider-shaped input to the existing coarse provider-family allowlist before capture.
 - `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` is the capture-gesture producer (`reportCaptureGesture`). It takes a `Pick<ProductAnalyticsService, "captureInternal">` rather than the service, so the one call site cannot reach anything else through it.
-- `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts`, and `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx` expose the safe renderer boundary and lifecycle producers. `ProductAnalyticsSection.tsx` is the desktop opt-out UI.
+- `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts`, and `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx` expose the safe renderer boundary and lifecycle producers. The desktop has no analytics settings UI; the service itself honors the persisted opt-out and `DO_NOT_TRACK=1`.
 
 Attached clients and native surfaces:
 
@@ -1059,9 +1094,10 @@ only that a send happened and how it ended. Its body is redacted before it is
 written (home directory, project paths, usernames, hostnames and tailnet names,
 emails, credentials and routable IP addresses) — the same bytes on both paths,
 because redaction happens once in the builder — and the GitHub issue title and
-stub body are redacted with the same context. Automatic sending is a separate
-consent from analytics: it has its own Settings toggle (default on) and its own
-persisted flag, so turning one off does not silently turn off the other.
+stub body are redacted with the same context. Automatic sending is on by default
+and has no Settings control. It stops under `DO_NOT_TRACK=1` or a persisted
+explicit off, and its flag is separate from analytics' own opt-out. The manual
+"Send a report to ADE" button is always available.
 
 Clicking "Reconnect this computer" on the Account pane's removed-machine banner
 records the existing `ade_feature_used` event at the IPC owner boundary (the
@@ -1276,7 +1312,7 @@ untouched — no card asks that question yet.
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.
 
-iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in and Settings opt-out have been removed. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
+iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build, and `DO_NOT_TRACK=1`, are still honored at launch. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 
 Host-recorded mobile mutations may still appear in the canonical `ade_*` namespace with `surface: mobile`; those events use the machine installation identity and the same shared 200-event budget. Native `ade_mobile_*` events describe only interaction with the phone app itself.
 
@@ -1305,10 +1341,12 @@ The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does
 
 ## Consent and kill switches
 
-- Desktop/runtime builds are default-on when correctly configured and expose a durable opt-out in Settings. The machine-wide disable marker immediately stops all local clients and cancels queued delivery.
-- Native iOS is default-on and has no in-app opt-out. Hosted web and the public marketing site are default-on with a durable browser-local opt-out (explicit "false" preference); there is no first-run consent prompt.
+- Product analytics and automatic diagnostic reports are part of ADE and on by default on every surface. No Settings, web, or iOS control turns them on or off, and there is no consent prompt.
+- Two opt-outs are honored everywhere, silently: `DO_NOT_TRACK=1` in the environment (desktop and brain: PostHog and automatic diagnostic reports), and a persisted explicit opt-out from an earlier build (the desktop `secrets/product-analytics.json` `enabled: false` or its `.disabled` marker, the automatic-send ledger's `enabled: false`, the hosted-web `ade:web-product-analytics-enabled` "false" preference, and iOS's stored `ade.analytics.enabled` false). Nothing in the app can change either one.
+- The desktop machine-wide disable marker immediately stops all local clients and cancels queued delivery.
+- Native iOS honors a stored opt-out and `DO_NOT_TRACK=1`, and has no in-app control. The public marketing site keeps its own browser-local opt-out on `/privacy`, separate from ADE's product analytics.
 - `ADE_DISABLE_PRODUCT_ANALYTICS=1` disables the desktop/runtime service.
-- The daily usage research report follows the product analytics consent: the Settings opt-out, the disable marker, and `ADE_DISABLE_PRODUCT_ANALYTICS=1` all stop it. `ADE_USAGE_RESEARCH=0` stops only the report.
+- The daily usage research report follows the product analytics state: `DO_NOT_TRACK=1`, a persisted opt-out, the disable marker, and `ADE_DISABLE_PRODUCT_ANALYTICS=1` all stop it. `ADE_USAGE_RESEARCH=0` stops only the report.
 - Development builds are analytics-inert unless a developer explicitly sets `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`.
 - Tests disable analytics automatically.
 - Missing or invalid configuration disables capture without affecting ADE startup.

@@ -69,6 +69,9 @@ export default defineConfig({
     outDir: "../../dist/renderer",
     emptyOutDir: true,
     cssMinify: "lightningcss",
+    // Hidden maps for Sentry: written only when the release pipeline asks,
+    // uploaded, then deleted before electron-builder packs (release-core.yml).
+    sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1" ? "hidden" : false,
     rollupOptions: {
       output: {
         manualChunks(id) {

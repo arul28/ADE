@@ -1,7 +1,9 @@
+import * as Sentry from "@sentry/cloudflare";
 import { handleRequest, pruneRelayState, sweepRelayState, type PushRelayEnv } from "./relay";
+import { sentryOptions, type SentryEnv } from "./sentry";
 
-export default {
-  fetch(request: Request, env: PushRelayEnv): Promise<Response> {
+export default Sentry.withSentry(sentryOptions, {
+  fetch(request: Request, env: PushRelayEnv & SentryEnv): Promise<Response> {
     return handleRequest(request, env);
   },
 
@@ -15,10 +17,15 @@ export default {
   // - `sweepRelayState` retires expired Attention items and orphaned machine
   //   Activity. Those sweeps fan out into per-account revision commits and
   //   outbound APNs pushes, so they run HERE ONLY and never inside a request.
-  async scheduled(_event: ScheduledEvent, env: PushRelayEnv, ctx: ExecutionContext): Promise<void> {
+  async scheduled(_event: ScheduledEvent, env: PushRelayEnv & SentryEnv, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil((async () => {
       await sweepRelayState(env);
       await pruneRelayState(env);
-    })());
+    })().catch((error: unknown) => {
+      // The sweep runs once an hour, so every failure is worth an event. waitUntil
+      // would otherwise drop it. Rethrow so Cloudflare still logs it.
+      Sentry.captureException(error);
+      throw error;
+    }));
   },
-};
+});

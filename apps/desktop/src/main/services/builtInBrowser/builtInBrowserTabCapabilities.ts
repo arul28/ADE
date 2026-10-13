@@ -76,6 +76,7 @@ import {
 } from "../../../shared/agentObservationNormalizers";
 import { sanitizeObservationPathSegment } from "../../../shared/agentObservation";
 import type { Logger } from "../logging/logger";
+import { normalizeRelative } from "../shared/utils";
 import {
   emptyToNull,
   errorMessage,
@@ -967,7 +968,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       return {
         tabId: tab.id,
         filePath,
-        relativePath: path.relative(scratchRoot, filePath),
+        relativePath: normalizeRelative(path.relative(scratchRoot, filePath)),
         entryCount: entries.length,
         exportedAt,
       };
@@ -1501,7 +1502,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       tabId: tab.id,
       path: video.path,
       relativePath: observationRelativeBasePath
-        ? path.relative(observationRelativeBasePath, video.path)
+        ? normalizeRelative(path.relative(observationRelativeBasePath, video.path))
         : null,
       durationMs: result.durationMs,
       fps: session.fps,

@@ -1,5 +1,9 @@
 import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
+import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
+import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
+import { flushSentry } from "../shared/sentry/capture";
+import { setSentryUserResolver } from "../shared/sentry/eventFilter";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -240,6 +244,7 @@ import { selectUpdateWorkspaceRestore } from "./services/updates/updateWorkspace
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
+import { readRuntimeActionRequest } from "./services/ipc/ipcTimeouts";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import { resolveAdeLayout } from "../shared/adeLayout";
 import { mobileProjectRepositoryIdentityFromGitOrigin } from "../shared/syncMobileProjectIdentity";
@@ -562,6 +567,17 @@ function configureDesktopUserDataPath(): void {
 }
 
 configureDesktopUserDataPath();
+// Error tracking starts here: the earliest point where its crash dumps and
+// offline queue have a userData directory to live in.
+initMainSentry({
+  // `localRuntime.callAction` carries every brain action; name the action.
+  ipcLabel: (channel, args) => {
+    if (channel !== IPC.localRuntimeCallAction) return channel;
+    const request = readRuntimeActionRequest(args);
+    if (!request) return channel;
+    return request.action ? `${request.domain}.${request.action}` : request.domain;
+  },
+});
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
@@ -916,6 +932,7 @@ async function createWindow(args: {
       // does not depend on when Chromium snapshotted process.env.
       additionalArguments: [
         `${PACKAGE_CHANNEL_ARGV_PREFIX}${normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)}`,
+        ...(isMainSentryStarted() ? [SENTRY_ENABLED_ARGV] : []),
       ],
     },
   });
@@ -2089,6 +2106,7 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
     }));
+  setSentryUserResolver(() => productAnalyticsService.getDistinctId());
   /**
    * One reporter for every window: a third `createWindow` site that forgets to
    * wire this would silently stop reporting lost renderers.
@@ -7882,7 +7900,9 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       } finally {
-        await productAnalyticsService.shutdown();
+        // Sentry flushes alongside analytics: a crash that triggered this
+        // shutdown is the report that must not be lost to the exit.
+        await Promise.all([productAnalyticsService.shutdown(), flushSentry(2_000)]);
         runImmediateProcessCleanup(`complete:${args.reason}`);
       }
     })().finally(() => {

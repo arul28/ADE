@@ -3575,6 +3575,7 @@ func performLiveChatCreationWithoutReplay<T>(
     throw CancellationError()
   } catch {
     guard !isRemoteCommandApplicationError(error) else { throw error }
+    CrashReporting.capture(error, context: ["area": "sync.chat_create"])
     // Once a live creation request is written, a transport failure or timeout
     // cannot prove whether the host created the session. Replaying it later can
     // duplicate a chat after the host's command ledger expires, so preserve the
@@ -8309,6 +8310,7 @@ final class SyncService: ObservableObject {
       lastError = identityError.localizedDescription
       connectionState = .error
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
+      CrashReporting.capture(error, context: ["area": "pairing", "step": "identity_verify"])
       ProductAnalytics.shared.captureError(.pairing)
       return false
     }
@@ -8501,6 +8503,7 @@ final class SyncService: ObservableObject {
         machineWasAsleep: blamesSleep
       )
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
+      CrashReporting.capture(error, context: ["area": "pairing", "step": "connect"])
       ProductAnalytics.shared.captureError(.pairing)
       lastError = message
       connectionState = .error
@@ -9501,6 +9504,7 @@ final class SyncService: ObservableObject {
       lastError = SyncUserFacingError.message(for: error)
       connectionState = .error
       ProductAnalytics.shared.capturePairingOutcome(.failed)
+      CrashReporting.capture(error, context: ["area": "pairing", "step": "database_ready"])
       ProductAnalytics.shared.captureError(.pairing)
       return
     }
@@ -9749,6 +9753,7 @@ final class SyncService: ObservableObject {
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
       ProductAnalytics.shared.capturePairingOutcome(lastPairingFailure?.analyticsOutcome ?? .failed)
+      CrashReporting.capture(error, context: ["area": "pairing", "step": "relay_connect"])
       ProductAnalytics.shared.captureError(.pairing)
     }
   }

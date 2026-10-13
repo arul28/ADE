@@ -118,6 +118,18 @@ claims, token refresh ordering) that an E2E run cannot reach reliably.
 
 The gate applies even when the branch's main purpose is unrelated to analytics. Future agents should leave ADE with broad, decision-useful coverage and a small, predictable event budget.
 
+### Error tracking (Sentry) gate (always runs)
+
+`docs/logging.md`, "Error tracking (Sentry)", is the ground truth. For the whole branch diff:
+
+1. **New failure paths report.** Every new `catch` that recovers silently, returns a fallback (`null`, `[]`, a default), or turns an error into a status must either call `captureError` / `captureProblem` (`apps/desktop/src/shared/sentry/capture.ts`; Swift `CrashReporting.capture`) or log it with `logger.warn` / `logger.error` so the log bridge carries it. An expected outcome (user cancel, not-installed, offline) is the one exception, and the summary names it. Grep the diff for `catch {`, `catch (_`, `.catch(() =>`, `try?`, and `?? []` after an await.
+2. **New surfaces and processes are wired.** A new Electron window or preload, a new forked worker, a new runtime process, a new Worker or Durable Object, or a new app target: confirm it reports to the right project (the table in `docs/logging.md`), or record why it does not. A forked worker reports through its parent; do not load an SDK into it.
+3. **Grouping and budget.** New capture calls set a `fingerprint` that names the failure, so repeats are one issue. A call site that can fire per keystroke, frame, poll or streamed event must not capture per occurrence; capture the first and aggregate. Never raise the limits in `shared/sentry/guardrails.ts` to fit a call site.
+4. **Nothing forbidden crosses.** No prompt, transcript, model output, file content, diff, terminal output or secret in `extra`, tags, messages or breadcrumbs. New field names that carry such content are added to `CONTENT_KEY` in `shared/sentry/scrub.ts`; new secret shapes to its patterns (and to each Worker's `src/sentry.ts` and the iOS `ADECrashScrubber`).
+5. **Release plumbing.** A new bundle, entry point or deploy target gets source maps uploaded under the shared release name, maps never ship, and the upload never fails the release.
+6. **Prove one path.** For a new capture site, run it once with `ADE_SENTRY_DEV=1` and confirm the issue with `sentry issue list ade-app/<project> --query "environment:development" --period 1h`, then resolve or delete the test issue. When that is not possible (no packaged runtime, no display), say so.
+7. **Update the doc** when a project, surface, capture category, scrub rule or budget changes.
+
 ---
 
 ## Execution Mode: Autonomous

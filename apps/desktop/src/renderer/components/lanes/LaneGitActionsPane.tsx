@@ -967,7 +967,9 @@ export function LaneGitActionsPane({
   // history (`commitTimelineKey`): a commit moves files between the two scopes.
   // Keyed on contents, not the `changes` object: every status refresh hands a
   // new object, and on a lane far from its base each read costs seconds. Wait
-  // for the first real read, so opening a lane reads the branch diff once.
+  // for the first real read, so opening a lane reads the branch diff once. Also
+  // wait for the load below to bump `branchReadNonce`: with cached changes this
+  // effect would otherwise read on mount and again a moment later.
   const changesSignature = useMemo(
     () => [changes.staged, changes.unstaged]
       .map((files) => files.map((file) => `${file.path}\u0000${file.kind}\u0000${file.additions ?? ""}\u0000${file.deletions ?? ""}`).join("\u0001"))
@@ -976,7 +978,7 @@ export function LaneGitActionsPane({
   );
   const changesReady = changesReadyForLane != null && changesReadyForLane === laneId;
   useEffect(() => {
-    if (gitScope !== "branch" || !laneId || !changesReady) return;
+    if (gitScope !== "branch" || !laneId || !changesReady || branchReadNonce === 0) return;
     const getBranchChanges = window.ade?.diff?.getBranchChanges;
     if (!getBranchChanges) return;
     let cancelled = false;

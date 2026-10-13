@@ -30,7 +30,10 @@ export default defineConfig({
   // @opencode/client is ESM-only (no "require" export); force-inline it so
   // the CJS bundle doesn't emit a bare require() that Node/Electron can't resolve.
   // It is a devDependency, so neither it nor its `effect` dependency ships.
-  noExternal: [/^@opencode\/client(?:\/.*)?$/],
+  // @sentry/*: the preload half runs in the sandboxed preload, which can only
+  // require "electron", and main loads one file instead of a few hundred small
+  // ones, which costs most of a second on Windows (Defender scans each).
+  noExternal: [/^@opencode\/client(?:\/.*)?$/, /^@sentry\//],
   outDir: "dist",
   sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1",
   // Preserve Vite's dist/renderer output during main/preload watch rebuilds in dev.

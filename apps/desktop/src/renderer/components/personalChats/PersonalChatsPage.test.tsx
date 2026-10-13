@@ -401,6 +401,40 @@ describe("PersonalChatsPage", () => {
     expect(projectCalls).toEqual([]);
   });
 
+  it("reopens the chat you were in when you come back, and the most recent one when that chat is gone", async () => {
+    window.localStorage.clear();
+    try {
+      const older = makeSession({ sessionId: "s1", title: "Trip plan", lastActivityAt: "2026-01-01T00:00:00.000Z" });
+      const newer = makeSession({ sessionId: "s2", title: "Groceries", lastActivityAt: "2026-01-02T00:00:00.000Z" });
+      state.sessions = [older, newer];
+      const { call } = installBridge();
+      const openedChats = () => call.mock.calls
+        .filter(([request]) => request.action === "getEventHistory")
+        .map(([request]) => request.args?.sessionId);
+
+      await renderPage();
+      fireEvent.click(await screen.findByText("Trip plan"));
+      await waitFor(() => expect(openedChats()).toContain("s1"));
+
+      // Leave the page and come back: the same chat, with no click and no new draft.
+      cleanup();
+      call.mockClear();
+      await renderPage();
+      await waitFor(() => expect(openedChats()).toContain("s1"));
+      expect(openedChats()).not.toContain("s2");
+
+      // That chat was deleted meanwhile: the most recent one opens instead.
+      state.sessions = [newer];
+      cleanup();
+      call.mockClear();
+      await renderPage();
+      await waitFor(() => expect(openedChats()).toContain("s2"));
+      expect(openedChats()).not.toContain("s1");
+    } finally {
+      window.localStorage.clear();
+    }
+  });
+
   it("hides Pin for a machine whose host refuses it, without showing an error", async () => {
     state.sessions = [makeSession({ sessionId: "s1", title: "Old host chat" })];
     const { call } = installBridge();
