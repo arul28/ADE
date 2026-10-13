@@ -19451,6 +19451,8 @@ export function createAgentChatService(args: {
       if (!moves.some((moved) => moved.ok) && failed && !failed.ok) return { ok: false, message: failed.message };
     }
     managed.session.instanceId = to.id;
+    // The prompt cache belongs to the login that wrote it; the new one starts cold.
+    managed.session.promptCacheTtl = null;
     persistChatState(managed);
     emitTransientChatEnvelope(managed.session.id, { type: "session_meta_updated", instanceId: to.id });
     return { ok: true, from, to };

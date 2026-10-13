@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 import { compactFirstIdleMs } from "../../../shared/compactFirst";
 import { contextCompactMergeKey } from "../../../shared/contextCompaction";
@@ -11,14 +11,16 @@ export type CompactFirstChoice = { sessionId: string; value: boolean; dismissed?
  * State behind the "Compact first" chip for the selected chat.
  *
  * `idleWindowOpen` turns true once the last turn ended a cache lifetime ago
- * (`cacheTtl`, or an hour when unknown), when the prompt cache has expired. The user's pill choice covers one send: a new turn
- * end or a switch to another chat clears it. `sendRef` carries what the pill
- * shows into the send path, which is defined before the pill is computed.
+ * (`cacheTtl`, or an hour when unknown), when the prompt cache has expired. The
+ * user's choice covers one send: it is kept per chat with the turn end it was
+ * made after, so a new turn end drops it and a visit to another chat does not.
+ * `sendRef` carries what the chip shows into the send path, which is defined
+ * before the chip is computed.
  */
 export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessionId: string | null, cacheTtl?: ClaudePromptCacheTtl | null) {
   const idleMs = compactFirstIdleMs(cacheTtl);
   const [now, setNow] = useState(Date.now());
-  const [choice, setChoice] = useState<CompactFirstChoice | null>(null);
+  const [choices, setChoices] = useState<ReadonlyMap<string, CompactFirstChoice & { turnEndedAt: number | null }>>(new Map());
   const sendRef = useRef<CompactFirstChoice | null>(null);
   // Walks back only to the last `done`, so streaming deltas stay cheap.
   const lastTurnEndedAt = useMemo(() => {
@@ -28,9 +30,6 @@ export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessi
     }
     return null;
   }, [events]);
-  useEffect(() => {
-    setChoice(null);
-  }, [sessionId, lastTurnEndedAt]);
   useEffect(() => {
     if (lastTurnEndedAt == null || !Number.isFinite(lastTurnEndedAt)) return;
     const wait = lastTurnEndedAt + idleMs - Date.now();
@@ -42,6 +41,11 @@ export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessi
     return () => clearTimeout(timer);
   }, [lastTurnEndedAt, idleMs]);
   const idleWindowOpen = lastTurnEndedAt != null && now >= lastTurnEndedAt + idleMs;
+  const stored = sessionId ? choices.get(sessionId) : undefined;
+  const choice: CompactFirstChoice | null = stored && stored.turnEndedAt === lastTurnEndedAt ? stored : null;
+  const setChoice = useCallback((next: CompactFirstChoice) => {
+    setChoices((current) => new Map(current).set(next.sessionId, { ...next, turnEndedAt: lastTurnEndedAt }));
+  }, [lastTurnEndedAt]);
   return { now, idleWindowOpen, choice, setChoice, sendRef };
 }
 

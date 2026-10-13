@@ -224,7 +224,7 @@ import { ChatTaskListCard } from "./ChatTaskListCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { ContextCompactDivider } from "./ContextCompactDivider";
-import { contextCompactMergeKey, isManualCompactCommand } from "../../../shared/contextCompaction";
+import { contextCompactMergeKey, isManualCompactCommand, providerSupportsManualCompact } from "../../../shared/contextCompaction";
 import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from "./chatEventDisplay";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
@@ -2423,6 +2423,22 @@ function dispatchAdeCardAction(
   }
 }
 
+/**
+ * A `/compact` the user sent as its own turn, on a provider where that is a
+ * real compact action. A `/compact` steered into a running turn, or still
+ * queued, belongs to that turn and stays an ordinary message.
+ */
+function isCompactCommandMessage(
+  event: TranscriptGroupedEnvelope["event"] | AgentChatEvent,
+  provider: string | null | undefined,
+): boolean {
+  return event.type === "user_message"
+    && !event.steerId
+    && (event.deliveryState == null || event.deliveryState === "delivered")
+    && providerSupportsManualCompact(provider)
+    && isManualCompactCommand(event.text);
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: SpawnedChatProviderProps & {
@@ -2643,14 +2659,14 @@ function renderEvent(
      `/compact` is an action, not something the user said: the compaction line
      under it carries the result. A quiet chip keeps the record of who asked
      without a full message bubble. */
-  if (event.type === "user_message" && isManualCompactCommand(event.text)) {
+  if (event.type === "user_message" && isCompactCommandMessage(event, options?.sessionProvider)) {
     return (
       <div className="flex w-full justify-end" data-chat-compact-command="">
         <span
           title={envelope.timestampSynthetic === true ? undefined : new Date(envelope.timestamp).toLocaleString()}
           className="inline-flex max-w-[82%] items-center rounded-full border border-fg/[0.08] bg-fg/[0.03] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*11.5/14)] text-fg/55"
         >
-          <span className="min-w-0 truncate">{event.text.trim()}</span>
+          <span className="min-w-0 truncate">{event.displayText?.trim() || event.text.trim()}</span>
         </span>
       </div>
     );
@@ -6070,15 +6086,15 @@ function AgentChatMessageListMain({
     }
     return ids;
   }, [allGroupedRows]);
-  // Turns that only ran `/compact`. The compaction line is their whole story,
-  // so they get no working indicator and no turn-end line of their own.
+  // Turns that `/compact` opened. The compaction line is their whole story, so
+  // they get no working indicator and no turn-end line of their own.
   const compactOnlyTurnIds = useMemo(() => {
     const ids = new Set<string>();
     for (const row of allGroupedRows) {
-      if (row.event.type === "user_message" && row.event.turnId && isManualCompactCommand(row.event.text)) ids.add(row.event.turnId);
+      if (row.event.type === "user_message" && row.event.turnId && isCompactCommandMessage(row.event, sessionProvider)) ids.add(row.event.turnId);
     }
     return ids;
-  }, [allGroupedRows]);
+  }, [allGroupedRows, sessionProvider]);
   // Row keys that were live when their turn ended. Consecutive background jobs
   // group only with jobs that share that fate, so the fold can hide the ones
   // that finished and keep the ones still running (`groupBackgroundJobRuns`).
