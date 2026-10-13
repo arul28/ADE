@@ -19,11 +19,12 @@
     "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
     "build": "tsup && vite build",
     "build:desktop-driver": "node ./scripts/build-mac-desktop-driver.mjs",
-    "build:mac-native": "npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper && npm run build:ade-media",
+    "build:mac-native": "npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper && npm run build:ade-media && npm run build:music-host:mac",
     "test:desktop-driver": "swift test --package-path ./native/ADEDesktopDriver",
     "build:capture-helper": "node ./scripts/build-capture-helper.mjs",
     "build:capture-helper:win": "node ./scripts/build-capture-helper-win.mjs",
     "build:music-host:win": "node ./scripts/build-music-host-win.mjs",
+    "build:music-host:mac": "node ./scripts/build-music-host-mac.mjs",
     "test:capture-helper": "swift test --package-path ./native/ADECaptureHelper",
     "build:sim-helper": "node ./scripts/build-sim-helper.mjs",
     "test:sim-helper": "swift test --package-path ./native/ADESimHelper",
@@ -489,6 +490,14 @@
         {
           "from": "resources/native/ade-desktop-driver",
           "to": "native/ade-desktop-driver"
+        },
+        {
+          "from": "resources/native/ade-music-host",
+          "to": "native/ade-music-host",
+          "filter": [
+            "ade-music-host",
+            "page/**/*"
+          ]
         }
       ]
     },

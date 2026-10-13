@@ -293,6 +293,29 @@ async function assertBundledAdeMedia(resourcesPath, description) {
 }
 
 /**
+ * The Apple Music player host and its page. Missing, the Music tab says the
+ * install is broken; one arch short, Music fails on half the Macs.
+ */
+async function assertBundledMusicHost(resourcesPath, description) {
+  const hostDir = path.join(resourcesPath, "native", "ade-music-host");
+  const helperPath = path.join(hostDir, "ade-music-host");
+  await assertPathExists(helperPath, `Apple Music player host for ${description}`);
+  await assertExecutable(helperPath, `Apple Music player host for ${description}`);
+  for (const pageFile of ["index.html", "player.js", "ade-icon.png"]) {
+    await assertPathExists(path.join(hostDir, "page", pageFile), `Apple Music player page ${pageFile} for ${description}`);
+  }
+  const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
+  const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
+  for (const architecture of ["arm64", "x86_64"]) {
+    if (!architectures.has(architecture)) {
+      throw new Error(
+        `[release:mac] Apple Music player host for ${description} is missing ${architecture}: ${helperPath}`,
+      );
+    }
+  }
+}
+
+/**
  * The capture helper is a universal Mach-O, and the arch check is
  * the point: a helper built for one arch ships happily, then fails to spawn on
  * the other half of the install base with nothing but an EACCES-shaped silence.
@@ -520,6 +543,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertBundledMacDesktopDriver(resourcesPath, description);
   await assertBundledCaptureHelper(resourcesPath, description);
   await assertBundledAdeMedia(resourcesPath, description);
+  await assertBundledMusicHost(resourcesPath, description);
   await assertNoRuntimeFetchedToolPayload(nodeModulesPath, description);
   await assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, description, expectedArch);
   assertPackagedTuiEsmShims(await fs.readFile(adeCliTuiPath, "utf8"));
