@@ -3779,6 +3779,8 @@ final class WorkChatComposerDraftState: ObservableObject {
   func beginPendingSend() -> WorkChatComposerPendingSend {
     let value = trimmedText
     isFocused = false
+    // The pick goes out with this message; the next draft starts with none.
+    lastSceneReply = nil
     autosaveTask?.cancel()
     autosaveTask = nil
     var issued = WorkChatComposerPendingSend(token: nil, key: "", text: value)
@@ -3836,7 +3838,8 @@ final class WorkChatComposerDraftState: ObservableObject {
   func applySceneReply(_ reply: String) {
     let previous = lastSceneReply
     lastSceneReply = reply
-    if let previous, let range = text.range(of: previous) {
+    // The pick was added at the end, so look for it from the end.
+    if let previous, let range = text.range(of: previous, options: .backwards) {
       text.replaceSubrange(range, with: reply)
     } else if trimmedText.isEmpty {
       text = reply

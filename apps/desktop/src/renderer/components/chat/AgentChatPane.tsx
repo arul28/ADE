@@ -10035,9 +10035,11 @@ export function AgentChatPane({
   const lastSceneReplyBySourceRef = useRef(new Map<string, string>());
   const handleSceneReply = useLatestCallback((text: string, sourceKey: string) => {
     const picks = lastSceneReplyBySourceRef.current;
-    const previous = picks.get(sourceKey);
-    if (picks.size >= 64 && !picks.has(sourceKey)) picks.clear();
-    picks.set(sourceKey, text);
+    // Per chat: a pick made in one chat must never match words in the draft of another.
+    const pickKey = `${selectedSessionIdRef.current ?? ""}\u0000${sourceKey}`;
+    const previous = picks.get(pickKey);
+    if (picks.size >= 64 && !picks.has(pickKey)) picks.clear();
+    picks.set(pickKey, text);
     if (previous && draft.includes(previous)) {
       // A function, not a string: `$&` or `$$` in a reply is text, not a pattern.
       replaceComposerDraft(draft.replace(previous, () => text));

@@ -11551,7 +11551,9 @@ export function createAgentChatService(args: {
           threadId: managed.session.threadId,
           process: runtime.process,
           request: (method, params, options) => runtime.request(method, params, options),
-          serverConfig: (server) => managed.session.mcpServers?.[server],
+          // The merged map Codex was launched with: a registry server is in
+          // it and is not in the session's own list.
+          serverConfig: (server) => callerMcpServersForLaunch(managed)?.[server],
         });
       }
       // Every other provider: no way to read a tool's page or to call back.

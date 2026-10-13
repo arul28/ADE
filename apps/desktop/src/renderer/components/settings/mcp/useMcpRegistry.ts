@@ -309,6 +309,14 @@ export function useMcpRegistry(): McpRegistryApi {
   const importFound = useCallback((name: string) => mutate(async () => {
     const registry = window.ade?.mcpRegistry;
     if (!registry) return NO_BRIDGE;
+    // The import replaces the vault values under this name. Read the list as
+    // it is now, not as the page loaded it: another computer may have added a
+    // server with this name, and its values must stay.
+    const settings = window.ade?.accountSettings;
+    if (!settings) return NO_BRIDGE;
+    const row = await settings.get({ scope: ACCOUNT_SCOPE_ALL, key: MCP_SERVERS_SETTING_KEY });
+    if (!row.ok) return row.message;
+    if (normalizeMcpRegistry(row.value).some((entry) => entry.name === name)) return `You already have a server named ${name}.`;
     const imported = await registry.import({ name, projectRoot });
     if (!imported.ok) return imported.message;
     return await writeServers((current) => {

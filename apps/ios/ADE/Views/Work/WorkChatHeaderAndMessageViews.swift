@@ -419,7 +419,7 @@ struct WorkChatMessageBubble: View, Equatable {
         )
           .environment(\.workSceneMessageId, message.id)
           // A scene's own controls must stay reachable; prose reads as one label.
-          .accessibilityElement(children: preview.text.contains("```scene") ? .contain : .ignore)
+          .accessibilityElement(children: workTextMayContainScene(preview.text) ? .contain : .ignore)
           .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
       }
     }

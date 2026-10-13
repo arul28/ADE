@@ -1528,6 +1528,18 @@ func workIsSceneFenceLanguage(_ language: String?) -> Bool {
   return token.lowercased() == workSceneFenceLanguage
 }
 
+private let workSceneFenceProbe = try? NSRegularExpression(
+  pattern: "^[ \\t]*```[ \\t]*scene\\b",
+  options: [.anchorsMatchLines, .caseInsensitive]
+)
+
+/// True when this text may hold a scene the parser draws: the same fence
+/// forms `workIsSceneFenceLanguage` accepts ("``` scene", "```Scene").
+func workTextMayContainScene(_ text: String) -> Bool {
+  guard text.contains("```"), let probe = workSceneFenceProbe else { return false }
+  return probe.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) != nil
+}
+
 /// The title a scene declares in its leading `<!-- @scene title="…" -->` marker.
 /// The marker itself is read by `workSceneMarker` (`WorkSceneDocument.swift`).
 func workSceneFenceTitle(_ source: String) -> String? {

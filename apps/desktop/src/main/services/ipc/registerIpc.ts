@@ -9736,7 +9736,8 @@ export function registerIpc({
    * Nothing is written to disk and nothing in the URL is a path — the id is a
    * key into an in-memory map that the `ade-scene:` handler reads.
    */
-  ipcMain.handle(IPC.scenePrepare, async (_event, arg: { html?: unknown } | string): Promise<string> => {
+  ipcMain.handle(IPC.scenePrepare, async (event, arg: { html?: unknown } | string): Promise<string> => {
+    assertTrustedAppControlSender(event, IPC.scenePrepare);
     const html = typeof arg === "string" ? arg : typeof arg?.html === "string" ? arg.html : "";
     if (!html.length) throw new Error("A scene document is required.");
     // The renderer checks its own ceiling before it ever gets here; this is the
@@ -9757,7 +9758,8 @@ export function registerIpc({
    * sanitizes it again. The page lives in its own store, under its own URL
    * host, so no scene URL can ever answer with it.
    */
-  ipcMain.handle(IPC.mcpAppPrepare, async (_event, arg: { html?: unknown; csp?: unknown }): Promise<string> => {
+  ipcMain.handle(IPC.mcpAppPrepare, async (event, arg: { html?: unknown; csp?: unknown }): Promise<string> => {
+    assertTrustedAppControlSender(event, IPC.mcpAppPrepare);
     const html = typeof arg?.html === "string" ? arg.html : "";
     if (!html.length) throw new Error("An app document is required.");
     if (Buffer.byteLength(html, "utf8") > MCP_APP_LIMITS.maxDocumentBytes) {

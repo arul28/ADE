@@ -14555,6 +14555,10 @@ final class SyncService: ObservableObject {
       guard canSendLiveRequests() else {
         return .failure(WorkMcpAppRefusal(message: "This phone is not connected to the machine right now."))
       }
+      // Never send a call with its arguments dropped: a tool that changes data would run on nothing.
+      guard JSONSerialization.isValidJSONObject(params) else {
+        return .failure(WorkMcpAppRefusal(message: "The app sent a request that could not be encoded."))
+      }
       let scope = chatCommandScope(for: sessionId)
       let response = try await sendCommand(
         action: "chat.mcpAppRequest",
@@ -14562,7 +14566,7 @@ final class SyncService: ObservableObject {
           "sessionId": sessionId,
           "itemId": itemId,
           "method": method,
-          "params": JSONSerialization.isValidJSONObject(params) ? params : [String: Any](),
+          "params": params,
           "userActivated": userActivated,
         ],
         disconnectOnTimeout: false,

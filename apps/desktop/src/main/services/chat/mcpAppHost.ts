@@ -475,6 +475,9 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
   ): Promise<McpAppRequestResult> => {
     const uri = typeof params.uri === "string" ? params.uri.trim() : "";
     if (!uri.length || uri.length > 2_048) return mcpAppRefusal("A resource read needs a URI.", MCP_APP_ERROR_INVALID_PARAMS);
+    // A page is third-party code and a read needs no click. It gets its own
+    // server's pages, not every resource that server gives the agent.
+    if (!isMcpAppResourceUri(uri)) return mcpAppRefusal("An app can read only ui:// resources.", MCP_APP_ERROR_INVALID_PARAMS);
     try {
       const result = await link.readResource(app.server, uri);
       if (jsonBytes(result) > MCP_APP_LIMITS.maxCallResultBytes) return mcpAppRefusal("The resource is too large to hand to the app.");
