@@ -154,8 +154,6 @@ export type McpAppCsp = {
   resourceDomains: string[];
 };
 
-export const MCP_APP_NO_NETWORK_CSP: McpAppCsp = { connectDomains: [], resourceDomains: [] };
-
 /**
  * One declared origin, or null when it is not one ADE will put in a policy.
  *
@@ -297,18 +295,18 @@ export type McpAppDocument = {
   html: string;
   /** Already sanitized; the policy is still rebuilt where the document is served. */
   csp: McpAppCsp;
-  /**
-   * The page's whole policy, built by the brain. Present only in an answer
-   * sent over sync: a phone serves the page with exactly this string and
-   * builds none of its own.
-   */
-  contentSecurityPolicy?: string;
-  prefersBorder: boolean | null;
   toolInput: Record<string, unknown>;
   /** Null when the result was too large to keep. */
   toolResult: McpAppToolResult | null;
   createdAt: string;
 };
+
+/**
+ * An app as it is sent over sync. It carries the page's whole policy, built by
+ * the brain: a phone serves the page with exactly this string and builds none
+ * of its own.
+ */
+export type McpAppRemoteDocument = McpAppDocument & { contentSecurityPolicy: string };
 
 export type McpAppGetArgs = { sessionId: string; itemId: string };
 export type McpAppGetResult =

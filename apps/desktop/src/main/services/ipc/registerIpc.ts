@@ -1031,7 +1031,7 @@ import type { createProjectScaffoldService } from "../projects/projectScaffoldSe
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { createComputerUseArtifactPath, toProjectArtifactUri } from "../computerUse/localComputerUse";
-import { mcpAppDocumentStore, sceneDocumentStore } from "../scenes/sceneDocumentStore";
+import { prepareMcpAppDocument, prepareSceneDocument } from "../scenes/sceneDocumentStore";
 import {
   buildMcpAppContentSecurityPolicy,
   MCP_APP_LIMITS,
@@ -9687,7 +9687,7 @@ export function registerIpc({
     if (Buffer.byteLength(html, "utf8") > SCENE_LIMITS.maxDocumentBytes) {
       throw new Error("This scene is too large to render.");
     }
-    return sceneDocumentStore.put(html).url;
+    return prepareSceneDocument(html).url;
   });
 
   /**
@@ -9705,7 +9705,7 @@ export function registerIpc({
     if (Buffer.byteLength(html, "utf8") > MCP_APP_LIMITS.maxDocumentBytes) {
       throw new Error("This app is too large to show.");
     }
-    return mcpAppDocumentStore.put(html, buildMcpAppContentSecurityPolicy(arg?.csp)).url;
+    return prepareMcpAppDocument(html, buildMcpAppContentSecurityPolicy(arg?.csp)).url;
   });
 
   /**

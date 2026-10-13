@@ -140,11 +140,8 @@ import {
   formatClaudeSlashCommandEntry,
   planClaudeSlashCommandInjection,
   renderClaudeSlashCommandEntries,
-  buildSkillListingSection,
-  droidNativeSlashCommandRoots,
-  PER_TURN_SKILL_LISTING_BUDGET_BYTES,
-  planSlashCommandInjection,
 } from "./claudeSlashCommandDiscovery";
+import { buildDroidSkillListing } from "./droidSkillListing";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import { forkCodexThreadInEphemeralAppServer } from "./codexEphemeralFork";
 import {
@@ -380,7 +377,7 @@ import {
 } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
-import { resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
+import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
 import { decodeRoutePresetId, isRoutePresetId } from "../../../shared/harnessRoutes";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
@@ -924,22 +921,14 @@ import {
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { buildDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import {
-  claudeMcpToolName,
   MCP_APP_RESOURCE_MIME_TYPE,
-  MCP_APP_SESSION_NOT_RUNNING,
-  readMcpToolUiMeta,
-  toMcpAppToolResult,
-  type McpAppGetArgs,
-  type McpAppGetResult,
   type McpAppGrantsArgs,
   type McpAppGrantsResult,
-  type McpAppRequestArgs,
-  type McpAppRequestResult,
   type McpAppRevokeGrantArgs,
-  type McpAppToolDescriptor,
 } from "../../../shared/mcpApp";
-import { createMcpAppGrantStore, MCP_APP_GRANTS_KEY, mcpServerFingerprint } from "./mcpAppGrants";
-import { createMcpAppHost, type McpAppProviderLink } from "./mcpAppHost";
+import { createMcpAppGrantStore, MCP_APP_GRANTS_KEY } from "./mcpAppGrants";
+import { createMcpAppHost } from "./mcpAppHost";
+import { claudeMcpAppLink, codexMcpAppLink } from "./mcpAppProviderLinks";
 import { createMcpAppStore } from "./mcpAppStore";
 import {
   adeCardFallbackText,
@@ -10028,6 +10017,46 @@ function isClaudeStaleSessionError(err: unknown): boolean {
     || msg.includes("session expired");
 }
 
+/** What a caller hands `requestChatInput` to raise a blocking pending-input card in a chat. */
+export type RequestChatInputArgs = {
+  chatSessionId: string;
+  title: string;
+  /** Cancel the card and answer `timedOut` when nobody answers in time. */
+  timeoutMs?: number;
+  body: string;
+  source?: PendingInputSource;
+  kind?: PendingInputKind;
+  allowsFreeform?: boolean;
+  providerMetadata?: Record<string, unknown>;
+  eventDescription?: string;
+  eventDetail?: Record<string, unknown>;
+  /**
+   * Cancels the card when the asker stops waiting, so a late answer cannot
+   * act for a caller that is gone. Resolves as `cancel`.
+   */
+  signal?: AbortSignal;
+  /** Do the answer's work before the card resolves; throw to keep it open. */
+  beforeAccept?: (answers: Record<string, string[]>) => void;
+  questions?: Array<{
+    id?: string;
+    header?: string;
+    question: string;
+    options?: Array<{
+      label: string;
+      value?: string;
+      description?: string;
+      recommended?: boolean;
+      preview?: string;
+      previewFormat?: string;
+    }>;
+    multiSelect?: boolean;
+    allowsFreeform?: boolean;
+    isSecret?: boolean;
+    defaultAssumption?: string | null;
+    impact?: string | null;
+  }>;
+};
+
 export function createAgentChatService(args: {
   projectRoot: string;
   /**
@@ -10450,28 +10479,12 @@ export function createAgentChatService(args: {
     });
 
   /**
-   * Thread-level Codex config for one session. A session keeps the user's Codex
-   * config untouched unless an external embedder injected servers or asked for
-   * strict mode.
-   */
-  /**
    * Which withheld-header server set each chat was last warned about, so the
    * notice is written once per restart rather than once per provider launch.
    * Cleared when the host replaces the servers.
    */
   const callerMcpMissingHeadersNoticeBySession = new Map<string, string>();
 
-  /**
-   * The caller's MCP servers as a provider adapter should launch them.
-   *
-   * The one read every adapter makes. It is also where a chat reloaded after a
-   * runtime restart learns that its servers came back without their header
-   * values — ADE never writes those to disk — and says so in the transcript,
-   * because a provider dialing an authenticated server with no token fails in
-   * a way nobody can trace back to the restart. The fix is the host's: send the
-   * servers again with `updateSession({ mcpServers })` (the SDK does this on
-   * open when the host supplies `refresh.mcpServers`).
-   */
   /** Which registry gaps each chat was last told about, so a notice is written once, not once per launch. */
   const mcpRegistryNoticeBySession = new Map<string, string>();
 
@@ -10494,14 +10507,7 @@ export function createAgentChatService(args: {
       provider: managed.session.provider,
       readSecret: (vaultKey) => args.readAccountSecret?.(vaultKey) ?? null,
     });
-    const gaps = [
-      ...(registry.missing.length
-        ? [`These MCP servers started without a secret value this computer does not have (add it in Settings > MCP servers): ${registry.missing.join(", ")}.`]
-        : []),
-      ...(registry.unsupported.length
-        ? [`This provider cannot connect to these MCP servers, so they were left out: ${registry.unsupported.join(", ")}.`]
-        : []),
-    ];
+    const gaps = mcpRegistryLaunchNotices(registry);
     const key = gaps.join("\n");
     if (!key) {
       mcpRegistryNoticeBySession.delete(managed.session.id);
@@ -10521,6 +10527,17 @@ export function createAgentChatService(args: {
     return { ...registry, ...(caller ?? {}) };
   };
 
+  /**
+   * The caller's MCP servers as a provider adapter should launch them.
+   *
+   * The one read every adapter makes. It is also where a chat reloaded after a
+   * runtime restart learns that its servers came back without their header
+   * values — ADE never writes those to disk — and says so in the transcript,
+   * because a provider dialing an authenticated server with no token fails in
+   * a way nobody can trace back to the restart. The fix is the host's: send the
+   * servers again with `updateSession({ mcpServers })` (the SDK does this on
+   * open when the host supplies `refresh.mcpServers`).
+   */
   const callerMcpServersForLaunch = (managed: ManagedChatSession): CallerMcpServers | null => {
     const servers = managed.session.mcpServers ?? null;
     const notice = callerMcpMissingHeadersNotice(servers);
@@ -10540,6 +10557,11 @@ export function createAgentChatService(args: {
     return withRegistryMcpServers(managed, servers);
   };
 
+  /**
+   * Thread-level Codex config for one session. A session keeps the user's Codex
+   * config untouched unless an external embedder injected servers or asked for
+   * strict mode.
+   */
   const codexThreadConfigArgsFor = async (
     managed: ManagedChatSession,
     reasoningEffort: string | null | undefined,
@@ -11503,114 +11525,7 @@ export function createAgentChatService(args: {
 
   const managedSessions = new Map<string, ManagedChatSession>();
 
-  /*
-   * MCP Apps (`shared/mcpApp.ts`, `mcpAppHost.ts`). A link is a chat's LIVE
-   * provider session and nothing else: these two builders read a runtime that
-   * already exists and never start one, so an app in a chat that has stopped
-   * gets "not running" instead of waking its agent.
-   */
-  const MCP_APP_PROVIDER_TIMEOUT_MS = 60_000;
-  const claudeMcpAppLink = (managed: ManagedChatSession, runtime: ClaudeRuntime): McpAppProviderLink | null => {
-    // Reading a `ui://` resource is a capability the CLI has to advertise.
-    if (!managed.session.protocolCapabilities?.includes("mcp_read_resource_v1")) return null;
-    // Between two turns ADE may be bringing this chat's query back up. That is
-    // still the chat's own session: wait for the start already in flight, and
-    // never begin one here.
-    if (!runtime.query && !runtime.queryStartPromise) return null;
-    const liveQuery = async (): Promise<ClaudeQuery> => {
-      const query = runtime.query ?? (runtime.queryStartPromise ? await runtime.queryStartPromise.catch(() => null) : null);
-      if (!query) throw new Error(MCP_APP_SESSION_NOT_RUNNING);
-      return query;
-    };
-    return {
-      provider: "claude",
-      listTools: async () => {
-        const query = await liveQuery();
-        const servers = await withTimeout(query.mcpServerStatus(), MCP_APP_PROVIDER_TIMEOUT_MS, "Claude did not list its MCP tools in time.");
-        return servers.flatMap((server): McpAppToolDescriptor[] => server.status !== "connected"
-          ? []
-          : (server.tools ?? []).map((tool) => ({
-              server: server.name,
-              serverFingerprint: mcpServerFingerprint(server.config),
-              name: tool.name,
-              ...(tool.description ? { description: tool.description } : {}),
-              readOnly: tool.annotations?.readOnly === true,
-              ui: readMcpToolUiMeta(tool._meta),
-            })));
-      },
-      readResource: async (server, uri) => {
-        const query = await liveQuery();
-        return withTimeout(query.readMcpResource(server, uri), MCP_APP_PROVIDER_TIMEOUT_MS, "Claude did not read the resource in time.");
-      },
-      callTool: async (server, tool, args) => {
-        const query = await liveQuery();
-        // `mcp_call` is a control request the SDK types but gives no method
-        // for; `request` is the channel every typed method uses. Recheck on an
-        // SDK bump: without it an app's tool calls are refused, nothing else.
-        const control = query as unknown as { request?: (request: Record<string, unknown>) => Promise<{ response?: unknown }> };
-        if (typeof control.request !== "function") throw new Error("This version of Claude Code cannot run a tool for an app.");
-        const reply = await withTimeout(
-          control.request({ subtype: "mcp_call", tool: claudeMcpToolName(server, tool), arguments: args }),
-          MCP_APP_PROVIDER_TIMEOUT_MS,
-          "Claude did not finish the tool call in time.",
-        );
-        return toMcpAppToolResult(reply?.response);
-      },
-    };
-  };
-  const codexMcpAppLink = (managed: ManagedChatSession, runtime: CodexRuntime): McpAppProviderLink | null => {
-    const threadId = managed.session.threadId;
-    if (!threadId || runtime.process.exitCode !== null || runtime.process.killed) return null;
-    const options = { timeoutMs: MCP_APP_PROVIDER_TIMEOUT_MS };
-    return {
-      provider: "codex",
-      listTools: async () => {
-        const tools: McpAppToolDescriptor[] = [];
-        let cursor: string | null = null;
-        for (let page = 0; page < 20; page += 1) {
-          const listed: { data?: unknown; nextCursor?: unknown } = await runtime.request(
-            "mcpServerStatus/list",
-            // Tools only: the list is read for annotations and `_meta`, and
-            // Codex starts a second copy of each server to answer it.
-            { threadId, limit: 100, detail: "toolsAndAuthOnly", ...(cursor ? { cursor } : {}) },
-            options,
-          );
-          for (const entry of Array.isArray(listed?.data) ? listed.data : []) {
-            const server = asRecord(entry);
-            const serverName = stringOrNull(server?.name);
-            if (!serverName) continue;
-            for (const raw of Object.values(asRecord(server?.tools) ?? {})) {
-              const tool = asRecord(raw);
-              const name = stringOrNull(tool?.name);
-              if (!tool || !name) continue;
-              const annotations = asRecord(tool.annotations);
-              const title = stringOrNull(tool.title) ?? stringOrNull(annotations?.title);
-              const description = stringOrNull(tool.description);
-              tools.push({
-                server: serverName,
-                // Codex does not report a server's definition. ADE knows it
-                // only for a server this chat was given; any other server
-                // (the registry's, the user's own config) has no fingerprint.
-                serverFingerprint: mcpServerFingerprint(managed.session.mcpServers?.[serverName]),
-                name,
-                ...(title ? { title } : {}),
-                ...(description ? { description } : {}),
-                ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
-                readOnly: annotations?.readOnlyHint === true,
-                ui: readMcpToolUiMeta(tool._meta),
-              });
-            }
-          }
-          cursor = stringOrNull(listed?.nextCursor);
-          if (!cursor) break;
-        }
-        return tools;
-      },
-      readResource: (server, uri) => runtime.request("mcpServer/resource/read", { threadId, server, uri }, options),
-      callTool: async (server, tool, args) =>
-        toMcpAppToolResult(await runtime.request("mcpServer/tool/call", { threadId, server, tool, arguments: args }, options)),
-    };
-  };
+  /* MCP Apps (`shared/mcpApp.ts`, `mcpAppHost.ts`, `mcpAppProviderLinks.ts`). */
   const mcpApps = createMcpAppHost({
     store: createMcpAppStore({
       rootDir: path.join(transcriptsDir, "chat-apps"),
@@ -11620,8 +11535,17 @@ export function createAgentChatService(args: {
       const managed = managedSessions.get(sessionId);
       if (!managed || managed.closed || managed.deleted || managed.session.status === "ended") return null;
       const runtime = managed.runtime;
-      if (runtime?.kind === "claude") return claudeMcpAppLink(managed, runtime);
-      if (runtime?.kind === "codex") return codexMcpAppLink(managed, runtime);
+      if (runtime?.kind === "claude") {
+        return claudeMcpAppLink({ protocolCapabilities: managed.session.protocolCapabilities, runtime });
+      }
+      if (runtime?.kind === "codex") {
+        return codexMcpAppLink({
+          threadId: managed.session.threadId,
+          process: runtime.process,
+          request: (method, params, options) => runtime.request(method, params, options),
+          serverConfig: (server) => managed.session.mcpServers?.[server],
+        });
+      }
       // Every other provider: no way to read a tool's page or to call back.
       return null;
     },
@@ -11652,8 +11576,6 @@ export function createAgentChatService(args: {
     }
   }, 120_000);
   mcpAppOrphanSweepTimer.unref?.();
-  const getMcpApp = (args: McpAppGetArgs): Promise<McpAppGetResult> => mcpApps.get(args);
-  const mcpAppRequest = (args: McpAppRequestArgs): Promise<McpAppRequestResult> => mcpApps.request(args);
   const listMcpAppGrants = async (args: McpAppGrantsArgs): Promise<McpAppGrantsResult> => mcpApps.grants(args);
   const revokeMcpAppGrant = async (args: McpAppRevokeGrantArgs): Promise<McpAppGrantsResult> => mcpApps.revokeGrant(args);
 
@@ -51928,22 +51850,7 @@ export function createAgentChatService(args: {
       // they are for Claude. A personal chat has no project to list.
       const droidSkillListing = isPersonalSession(managed.session)
         ? []
-        : (() => {
-          try {
-            const discovered = discoverClaudeSlashCommands(managed.laneWorktreePath)
-              .filter((entry) => entry.modelInvocable !== false);
-            return buildSkillListingSection(
-              planSlashCommandInjection(discovered, droidNativeSlashCommandRoots(
-                managed.laneWorktreePath,
-                adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-              )),
-              PER_TURN_SKILL_LISTING_BUDGET_BYTES,
-              managed.laneWorktreePath,
-            );
-          } catch {
-            return [];
-          }
-        })();
+        : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }));
       const sdkInput = [
         droidHarnessPrompt,
         ...(droidSkillListing.length ? ["", ...droidSkillListing] : []),
@@ -60328,6 +60235,7 @@ export function createAgentChatService(args: {
       deletePersistedChatFile(filePath);
     }
     mcpApps.deleteSession(trimmedSessionId);
+    mcpRegistryNoticeBySession.delete(trimmedSessionId);
 
     sessionService.deleteSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
@@ -63837,44 +63745,7 @@ export function createAgentChatService(args: {
   /**
    * Create a blocking pending-input request for a chat session. Returns the user's answer.
    */
-  const requestChatInput = async (args: {
-    chatSessionId: string;
-    title: string;
-    /** Cancel the card and answer `timedOut` when nobody answers in time. */
-    timeoutMs?: number;
-    body: string;
-    source?: PendingInputSource;
-    kind?: PendingInputKind;
-    allowsFreeform?: boolean;
-    providerMetadata?: Record<string, unknown>;
-    eventDescription?: string;
-    eventDetail?: Record<string, unknown>;
-    /**
-     * Cancels the card when the asker stops waiting, so a late answer cannot
-     * act for a caller that is gone. Resolves as `cancel`.
-     */
-    signal?: AbortSignal;
-    /** Do the answer's work before the card resolves; throw to keep it open. */
-    beforeAccept?: (answers: Record<string, string[]>) => void;
-    questions?: Array<{
-      id?: string;
-      header?: string;
-      question: string;
-      options?: Array<{
-        label: string;
-        value?: string;
-        description?: string;
-        recommended?: boolean;
-        preview?: string;
-        previewFormat?: string;
-      }>;
-      multiSelect?: boolean;
-      allowsFreeform?: boolean;
-      isSecret?: boolean;
-      defaultAssumption?: string | null;
-      impact?: string | null;
-    }>;
-  }): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }> => {
+  const requestChatInput = async (args: RequestChatInputArgs): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }> => {
     const inferQuestionsFromBody = (bodyText: string): PendingInputQuestion[] | null => {
       const normalizedBody = bodyText.replace(/\r/g, "").trim();
       if (!normalizedBody.length) return null;
@@ -65017,8 +64888,8 @@ export function createAgentChatService(args: {
     isUserOnlyPendingInput,
     listPendingInputs,
     respondToInput,
-    getMcpApp,
-    mcpAppRequest,
+    getMcpApp: mcpApps.get,
+    mcpAppRequest: mcpApps.request,
     listMcpAppGrants,
     revokeMcpAppGrant,
     dismissPendingInputForSettlement,

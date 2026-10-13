@@ -47,11 +47,12 @@ export type SceneDocumentStore = {
   /**
    * Store a document and return the URL a frame can load it from.
    *
-   * `policy` is the Content-Security-Policy the document is served with. Only
-   * a store made with `policy: "per-document"` reads it (and requires it); the
-   * scene store ignores it and serves every document with the scene policy.
+   * `policy` is the Content-Security-Policy the document is served with. The
+   * store has no opinion about it beyond refusing an empty one: which policy a
+   * kind of document gets is decided by {@link prepareSceneDocument} and
+   * {@link prepareMcpAppDocument}, the only two writers.
    */
-  put(html: string, policy?: string): PreparedScene;
+  put(html: string, policy: string): PreparedScene;
   get(id: string): string | null;
   respond(requestUrl: string): SceneResponseDescriptor;
   size(): number;
@@ -102,30 +103,22 @@ export function createSceneDocumentStore(options: {
   makeId?: () => string;
   /** The URL host this store's documents are served under. */
   host?: string;
-  /**
-   * `"scene"` (the default): every document gets the scene policy, whatever a
-   * caller passes. `"per-document"`: each document carries the policy it was
-   * stored with, and storing one without a policy is refused.
-   */
-  policy?: "scene" | "per-document";
 } = {}): SceneDocumentStore {
   const host = options.host ?? SCENE_VIEW_HOST;
-  const perDocumentPolicy = options.policy === "per-document";
   const capacity = Math.max(1, Math.floor(options.capacity ?? SCENE_STORE_CAPACITY));
   const makeId = options.makeId ?? (() => randomUUID().replace(/-/g, ""));
   // Insertion-ordered, so the first key is always the oldest document.
   const documents = new Map<string, { html: string; policy: string }>();
 
-  const put = (html: string, policy?: string): PreparedScene => {
-    if (perDocumentPolicy && !policy?.trim().length) throw new Error("A document in this store needs its own policy.");
+  const put = (html: string, policy: string): PreparedScene => {
+    const servedPolicy = typeof policy === "string" ? policy.trim() : "";
+    // A document with no policy would be served with none at all.
+    if (!servedPolicy.length) throw new Error("A document needs a Content-Security-Policy to be served with.");
     const id = makeId();
     // Re-inserting a colliding id would keep its original position in the map
     // and make it evict out of order; delete first so insertion order is real.
     documents.delete(id);
-    documents.set(id, {
-      html: String(html ?? ""),
-      policy: perDocumentPolicy ? policy!.trim() : SCENE_CONTENT_SECURITY_POLICY,
-    });
+    documents.set(id, { html: String(html ?? ""), policy: servedPolicy });
     while (documents.size > capacity) {
       const oldest = documents.keys().next();
       if (oldest.done) break;
@@ -170,11 +163,13 @@ export function createSceneDocumentStore(options: {
 }
 
 /**
- * The one store the app uses. Both the `ade-scene:` handler (main.ts) and the
- * `scene.prepare` IPC (registerIpc.ts) run in the main process, so a module
- * singleton is the whole wiring.
+ * The store behind `ade-scene://view/<id>`. Both the `ade-scene:` handler
+ * (main.ts) and the `scene.prepare` IPC (registerIpc.ts) run in the main
+ * process, so a module singleton is the whole wiring. Private: the only way
+ * in is {@link prepareSceneDocument}, which is what makes "a scene is always
+ * served with the scene policy" true.
  */
-export const sceneDocumentStore = createSceneDocumentStore();
+const sceneDocumentStore = createSceneDocumentStore();
 
 /**
  * The store behind `ade-scene://app/<id>`: the pages of MCP Apps.
@@ -186,11 +181,17 @@ export const sceneDocumentStore = createSceneDocumentStore();
  * documents: a page can be a few megabytes, and one evicted is prepared again
  * the next time its frame mounts.
  */
-export const mcpAppDocumentStore = createSceneDocumentStore({
-  host: MCP_APP_VIEW_HOST,
-  policy: "per-document",
-  capacity: 12,
-});
+const mcpAppDocumentStore = createSceneDocumentStore({ host: MCP_APP_VIEW_HOST, capacity: 12 });
+
+/** Store a scene. It is served with the scene policy, always: a caller cannot name another. */
+export function prepareSceneDocument(html: string): PreparedScene {
+  return sceneDocumentStore.put(html, SCENE_CONTENT_SECURITY_POLICY);
+}
+
+/** Store an MCP App's page, to be served with `policy`, the one built for that page. */
+export function prepareMcpAppDocument(html: string, policy: string): PreparedScene {
+  return mcpAppDocumentStore.put(html, policy);
+}
 
 /** Answer an `ade-scene:` request from whichever store its host names. */
 export function respondToSceneProtocolRequest(requestUrl: string): SceneResponseDescriptor {

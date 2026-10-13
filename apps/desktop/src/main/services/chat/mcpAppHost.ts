@@ -27,6 +27,7 @@ import {
 } from "../../../shared/mcpApp";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import type { AgentChatEvent } from "../../../shared/types";
+import type { RequestChatInputArgs } from "./agentChatService";
 import type { McpAppGrantStore } from "./mcpAppGrants";
 import type { McpAppStore } from "./mcpAppStore";
 
@@ -71,29 +72,12 @@ export type McpAppHostDeps = {
   linkFor(sessionId: string): McpAppProviderLink | null;
   emitCard(sessionId: string, card: AdeCardPayload): void;
   /** The chat's native pending-input card. Rejects when the chat cannot show one. */
-  requestChatInput(input: {
-    chatSessionId: string;
-    title: string;
-    body: string;
-    timeoutMs?: number;
-    questions: Array<{
-      id: string;
-      header: string;
-      question: string;
-      options: Array<{ label: string; value: string; description?: string; recommended?: boolean }>;
-      allowsFreeform: boolean;
-    }>;
-    providerMetadata: Record<string, unknown>;
-    eventDescription: string;
-    eventDetail: Record<string, unknown>;
-  }): Promise<{ decision: string; answers: Record<string, string[]> }>;
+  requestChatInput(input: RequestChatInputArgs): Promise<{ decision: string; answers: Record<string, string[]> }>;
   /** The project's "always allow" answers. */
   grants: McpAppGrantStore;
   log(level: "info" | "warn", event: string, detail: Record<string, unknown>): void;
   now?: () => number;
 };
-
-type ToolEvent = Extract<AgentChatEvent, { type: "tool_call" | "tool_result" }>;
 
 type OpenCall = {
   provider: "claude" | "codex";
@@ -165,8 +149,6 @@ function failure(error: unknown, what: string): McpAppRequestResult {
   return mcpAppRefusal(text === MCP_APP_SESSION_NOT_RUNNING ? text : `${what}: ${text}`);
 }
 
-export type McpAppHost = ReturnType<typeof createMcpAppHost>;
-
 export function createMcpAppHost(deps: McpAppHostDeps) {
   const now = deps.now ?? Date.now;
   const sessions = new Map<string, SessionState>();
@@ -197,10 +179,15 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
     return pending;
   };
 
-  const capture = async (sessionId: string, itemId: string, call: OpenCall, rawResult: unknown): Promise<void> => {
-    if (deps.store.readRecord(sessionId, itemId)) return;
-    const link = deps.linkFor(sessionId);
-    if (!link) return;
+  /**
+   * Which server, tool and page a finished call names, or null for an ordinary
+   * tool: one with no page declared, so nothing to show.
+   */
+  const resolveAppTool = async (
+    sessionId: string,
+    call: OpenCall,
+    link: McpAppProviderLink,
+  ): Promise<{ server: string; toolName: string; resourceUri: string; descriptor: McpAppToolDescriptor | undefined } | null> => {
     const state = stateFor(sessionId);
     const lookUp = (tools: readonly McpAppToolDescriptor[]) => call.claudeToolName
       ? tools.find((tool) => claudeMcpToolName(tool.server, tool.name) === call.claudeToolName)
@@ -218,31 +205,55 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
     const server = call.server ?? descriptor?.server;
     const toolName = call.tool ?? descriptor?.name;
     const resourceUri = call.resourceUri ?? descriptor?.ui.resourceUri ?? null;
-    // An ordinary tool: no page declared, nothing to show.
-    if (!server || !toolName || !isMcpAppResourceUri(resourceUri)) return;
+    if (!server || !toolName || !isMcpAppResourceUri(resourceUri)) return null;
+    return { server, toolName, resourceUri, descriptor };
+  };
 
+  /**
+   * Read an app's page from its server: the HTML and the `_meta.ui` it came
+   * with. Null, with the reason logged, when there is no usable page.
+   */
+  const readAppPage = async (
+    sessionId: string,
+    link: McpAppProviderLink,
+    server: string,
+    resourceUri: string,
+  ): Promise<{ html: string; ui: Record<string, unknown> | null } | null> => {
     let read: unknown;
     try {
       read = await link.readResource(server, resourceUri);
     } catch (error) {
       deps.log("warn", "agent_chat.mcp_app_read_failed", { sessionId, server, resourceUri, error: errorText(error) });
-      return;
+      return null;
     }
-    const contents = Array.isArray(asRecord(read)?.contents) ? asRecord(read)!.contents as unknown[] : [];
+    const rawContents = asRecord(read)?.contents;
+    const contents: unknown[] = Array.isArray(rawContents) ? rawContents : [];
     const page = contents.map(asRecord).find((entry) => entry?.uri === resourceUri) ?? asRecord(contents[0]);
     const mimeType = typeof page?.mimeType === "string" ? page.mimeType.replace(/\s+/g, "").toLowerCase() : "";
     if (!page || mimeType !== MCP_APP_RESOURCE_MIME_TYPE) {
       deps.log("warn", "agent_chat.mcp_app_not_html", { sessionId, server, resourceUri, mimeType });
-      return;
+      return null;
     }
     let html = "";
     if (typeof page.text === "string") html = page.text;
     else if (typeof page.blob === "string") html = Buffer.from(page.blob, "base64").toString("utf8");
     if (!html.trim().length || Buffer.byteLength(html, "utf8") > MCP_APP_LIMITS.maxDocumentBytes) {
       deps.log("warn", "agent_chat.mcp_app_document_rejected", { sessionId, server, resourceUri, bytes: Buffer.byteLength(html, "utf8") });
-      return;
+      return null;
     }
-    const ui = asRecord(asRecord(page._meta)?.ui);
+    return { html, ui: asRecord(asRecord(page._meta)?.ui) };
+  };
+
+  const capture = async (sessionId: string, itemId: string, call: OpenCall, rawResult: unknown): Promise<void> => {
+    if (deps.store.readRecord(sessionId, itemId)) return;
+    const link = deps.linkFor(sessionId);
+    if (!link) return;
+    const resolved = await resolveAppTool(sessionId, call, link);
+    if (!resolved) return;
+    const { server, toolName, resourceUri, descriptor } = resolved;
+    const page = await readAppPage(sessionId, link, server, resourceUri);
+    if (!page) return;
+    const { html, ui } = page;
     const csp = sanitizeMcpAppCsp(ui?.csp);
     const toolResult = toMcpAppToolResult(rawResult);
     const app: McpAppDocument = {
@@ -257,7 +268,6 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
       resourceUri,
       html,
       csp,
-      prefersBorder: typeof ui?.prefersBorder === "boolean" ? ui.prefersBorder : null,
       toolInput: jsonBytes(call.args) <= MCP_APP_LIMITS.maxPayloadBytes ? call.args : {},
       toolResult: jsonBytes(toolResult) <= MCP_APP_LIMITS.maxPayloadBytes ? toolResult : null,
       createdAt: new Date(now()).toISOString(),
@@ -299,20 +309,23 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
   const observe = (sessionId: string, provider: string | null | undefined, event: AgentChatEvent): void => {
     if (event.type !== "tool_call" && event.type !== "tool_result") return;
     if (provider !== "claude" && provider !== "codex") return;
-    const toolEvent = event as ToolEvent;
     // A subagent's own tool calls draw in its transcript, not this one.
-    if (toolEvent.parentItemId || !toolEvent.itemId) return;
-    const isCodexApp = provider === "codex" && isMcpAppResourceUri(toolEvent.mcp?.resourceUri);
-    const isClaudeMcp = provider === "claude" && toolEvent.tool.startsWith("mcp__");
-    if (!isCodexApp && !isClaudeMcp) return;
+    if (event.parentItemId || !event.itemId) return;
+    // A Codex call that names its page, with the page's URI narrowed to a string.
+    const mcp = event.mcp;
+    const codexMcp = provider === "codex" && mcp && isMcpAppResourceUri(mcp.resourceUri)
+      ? { server: mcp.server, tool: mcp.tool, resourceUri: mcp.resourceUri }
+      : null;
+    const isClaudeMcp = provider === "claude" && event.tool.startsWith("mcp__");
+    if (!codexMcp && !isClaudeMcp) return;
     const state = stateFor(sessionId);
 
-    if (toolEvent.type === "tool_call") {
-      const args = asRecord(toolEvent.args) ?? {};
-      state.openCalls.delete(toolEvent.itemId);
-      state.openCalls.set(toolEvent.itemId, isCodexApp
-        ? { provider: "codex", server: toolEvent.mcp!.server, tool: toolEvent.mcp!.tool, resourceUri: toolEvent.mcp!.resourceUri, args, turnId: toolEvent.turnId ?? null }
-        : { provider: "claude", claudeToolName: toolEvent.tool, args, turnId: toolEvent.turnId ?? null });
+    if (event.type === "tool_call") {
+      const args = asRecord(event.args) ?? {};
+      state.openCalls.delete(event.itemId);
+      state.openCalls.set(event.itemId, codexMcp
+        ? { provider: "codex", ...codexMcp, args, turnId: event.turnId ?? null }
+        : { provider: "claude", claudeToolName: event.tool, args, turnId: event.turnId ?? null });
       while (state.openCalls.size > MAX_OPEN_CALLS) {
         const oldest = state.openCalls.keys().next();
         if (oldest.done) break;
@@ -321,12 +334,12 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
       return;
     }
 
-    const call = state.openCalls.get(toolEvent.itemId);
-    state.openCalls.delete(toolEvent.itemId);
-    if (!call || toolEvent.status !== "completed" || state.capturing.has(toolEvent.itemId)) return;
-    const itemId = toolEvent.itemId;
+    const call = state.openCalls.get(event.itemId);
+    state.openCalls.delete(event.itemId);
+    if (!call || event.status !== "completed" || state.capturing.has(event.itemId)) return;
+    const itemId = event.itemId;
     // Claude keeps the MCP result's structured half beside the flattened text.
-    const rawResult = (toolEvent as { structured?: unknown }).structured ?? toolEvent.result;
+    const rawResult = event.structured ?? event.result;
     const run = capture(sessionId, itemId, call, rawResult)
       .catch((error) => deps.log("warn", "agent_chat.mcp_app_capture_failed", { sessionId, error: errorText(error) }))
       .finally(() => { state.capturing.delete(itemId); });

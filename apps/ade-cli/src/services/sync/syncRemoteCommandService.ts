@@ -8,6 +8,7 @@ import {
   buildMcpAppContentSecurityPolicy,
   MCP_APP_LIMITS,
   MCP_APP_TOO_LARGE_FOR_REMOTE,
+  type McpAppRemoteDocument,
 } from "../../../../desktop/src/shared/mcpApp";
 import fs from "node:fs";
 import path from "node:path";
@@ -5046,13 +5047,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     if (Buffer.byteLength(result.app.html, "utf8") > MCP_APP_LIMITS.maxRemoteDocumentBytes) {
       return { status: "unavailable" as const, reason: MCP_APP_TOO_LARGE_FOR_REMOTE };
     }
-    return {
-      status: "ready" as const,
-      app: {
-        ...result.app,
-        contentSecurityPolicy: buildMcpAppContentSecurityPolicy(result.app.csp, { sandbox: true }),
-      },
+    const app: McpAppRemoteDocument = {
+      ...result.app,
+      contentSecurityPolicy: buildMcpAppContentSecurityPolicy(result.app.csp, { sandbox: true }),
     };
+    return { status: "ready" as const, app };
   });
   // Not for a viewer: this is what runs a tool. `userActivated` is the
   // controller's own word that the user just tapped inside the app's frame.

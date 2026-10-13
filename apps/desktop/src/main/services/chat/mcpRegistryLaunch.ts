@@ -6,31 +6,10 @@
  * launched offline still gets the servers this machine already knows about.
  */
 
-import fs from "node:fs";
-import path from "node:path";
-
-import { ACCOUNT_SCOPE_ALL, accountDeviceSettingKey, accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { callerMcpSupport, type CallerMcpServers } from "../../../shared/callerMcpServers";
-import {
-  MCP_OFF_SETTING_KEY,
-  MCP_SERVERS_SETTING_KEY,
-  mcpRegistryToCallerServers,
-  normalizeMcpOffList,
-  normalizeMcpRegistry,
-} from "../../../shared/mcpRegistry";
+import { mcpRegistryToCallerServers } from "../../../shared/mcpRegistry";
 import type { AgentChatProvider } from "../../../shared/types/chat";
-import { accountSettingsCacheValue, readAccountSettingsCacheRows } from "../account/accountSettingsCacheFile";
-import { readGitOriginUrl } from "../projects/recentProjectSummary";
-
-/** This computer's sync device id, or null when it has none yet. */
-export function readLocalDeviceId(adeHome: string): string | null {
-  try {
-    const value = fs.readFileSync(path.join(adeHome, "secrets", "sync-device-id"), "utf8").trim();
-    return value.length ? value : null;
-  } catch {
-    return null;
-  }
-}
+import { readCachedMcpRegistry } from "../mcp/mcpRegistryCache";
 
 export type McpRegistryLaunch = {
   /** The registry servers this provider can be handed here, or null when there are none. */
@@ -54,19 +33,27 @@ export function resolveMcpRegistryForLaunch(args: {
   // A provider with no MCP surface gets nothing, silently: the registry is
   // "every agent that can", not a reason to refuse a chat.
   if (!support || support.level === "unsupported") return NONE;
-  const rows = readAccountSettingsCacheRows(args.adeHome);
-  if (!rows) return NONE;
-  const all = normalizeMcpRegistry(accountSettingsCacheValue(rows, ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY));
-  if (!all.length) return NONE;
-  const deviceKey = accountDeviceSettingKey(readLocalDeviceId(args.adeHome), MCP_OFF_SETTING_KEY);
-  const repoScope = accountRepoScopeKey(readGitOriginUrl(args.projectRoot));
-  const off = {
-    machine: deviceKey ? normalizeMcpOffList(accountSettingsCacheValue(rows, ACCOUNT_SCOPE_ALL, deviceKey)) : [],
-    project: repoScope ? normalizeMcpOffList(accountSettingsCacheValue(rows, repoScope, MCP_OFF_SETTING_KEY)) : [],
-  };
+  const { cached } = readCachedMcpRegistry(args.adeHome, args.projectRoot);
+  if (!cached?.servers.length) return NONE;
+  const { servers: all, off } = cached;
   const blockedTransports: readonly string[] = support.unsupportedTransports ?? [];
   const unsupported = all.filter((server) => blockedTransports.includes(server.transport)).map((server) => server.name);
   const deliverable = all.filter((server) => !blockedTransports.includes(server.transport));
   const resolved = mcpRegistryToCallerServers(deliverable, off, args.readSecret);
   return { servers: resolved.servers, missing: resolved.missing, unsupported };
+}
+
+/**
+ * What a chat is told about the registry servers it did not fully get: one
+ * line per kind of gap, none when there is no gap.
+ */
+export function mcpRegistryLaunchNotices(registry: McpRegistryLaunch): string[] {
+  return [
+    ...(registry.missing.length
+      ? [`These MCP servers started without a secret value this computer does not have (add it in Settings > MCP servers): ${registry.missing.join(", ")}.`]
+      : []),
+    ...(registry.unsupported.length
+      ? [`This provider cannot connect to these MCP servers, so they were left out: ${registry.unsupported.join(", ")}.`]
+      : []),
+  ];
 }

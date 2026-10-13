@@ -80,6 +80,32 @@ const discoveryCache = new Map<string, { at: number; value: DiscoveredClaudeSlas
  */
 export function invalidateClaudeSlashCommandCache(): void {
   discoveryCache.clear();
+  for (const cache of listingCaches) cache.clear();
+}
+
+/** Memos of things built from a discovery result; dropped with it. */
+const listingCaches = new Set<Map<string, unknown>>();
+
+/**
+ * A memo, on discovery's own TTL, for a listing built from a discovery
+ * result: a listing that is rebuilt on every turn would otherwise stat the
+ * disk again each time, for a result that cannot be newer than the discovery
+ * it was built from. `invalidateClaudeSlashCommandCache` clears it too.
+ */
+export function createSlashCommandListingCache<V>(): (key: string, build: () => V) => V {
+  const cache = new Map<string, { at: number; value: V }>();
+  listingCaches.add(cache);
+  return (key, build) => {
+    const now = Date.now();
+    const cached = cache.get(key);
+    if (cached && now - cached.at < DISCOVERY_TTL_MS) return cached.value;
+    for (const [entryKey, entry] of cache) {
+      if (now - entry.at >= DISCOVERY_TTL_MS) cache.delete(entryKey);
+    }
+    const value = build();
+    cache.set(key, { at: Date.now(), value });
+    return value;
+  };
 }
 
 export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
@@ -129,6 +155,9 @@ function discoverClaudeSlashCommandsUncached(cwd: string): DiscoveredClaudeSlash
   });
 }
 
+/** The command and skill roots a harness reads for itself, so ADE lists nothing under them. */
+export type NativeSlashCommandRoots = { commandRoots: readonly string[]; skillRoots: readonly string[] };
+
 /**
  * The command and skill roots Claude Code finds without ADE's help.
  *
@@ -145,7 +174,7 @@ export function claudeNativeSlashCommandRoots(
   cwd: string,
   pluginRoots: readonly string[] = [],
   home: string = os.homedir(),
-): { commandRoots: string[]; skillRoots: string[] } {
+): NativeSlashCommandRoots {
   // Deliberately only the session directory and the home directory, not ADE's
   // full ancestor walk. Claude Code stops walking at ITS project root, and
   // reproducing that boundary here would mean reproducing its git logic. Under-
@@ -194,7 +223,7 @@ function realSkillDirsUnder(skillRoots: readonly string[]): Set<string> {
   return dirs;
 }
 
-export type ClaudeSlashCommandInjectionPlan = {
+export type SlashCommandInjectionPlan = {
   commands: DiscoveredClaudeSlashCommand[];
   skills: DiscoveredClaudeSlashCommand[];
   nativeCount: number;
@@ -212,7 +241,7 @@ export type ClaudeSlashCommandInjectionPlan = {
 export function planClaudeSlashCommandInjection(
   commands: readonly DiscoveredClaudeSlashCommand[],
   options: { cwd: string; pluginRoots?: readonly string[]; home?: string },
-): ClaudeSlashCommandInjectionPlan {
+): SlashCommandInjectionPlan {
   return planSlashCommandInjection(commands, claudeNativeSlashCommandRoots(
     options.cwd,
     options.pluginRoots ?? [],
@@ -220,35 +249,11 @@ export function planClaudeSlashCommandInjection(
   ));
 }
 
-/**
- * The skill roots Droid finds without ADE's help.
- *
- * Factory's docs name only `.factory/skills`, in the project and in the home
- * directory. Droid does not read `.claude/skills` or `.agents/skills`, so a
- * project's own skills (and the user's) never reach a Droid chat unless ADE
- * lists them. `alreadyNamedRoots` are roots the prompt names elsewhere (ADE's
- * bundled skills), so they are not listed a second time.
- */
-export function droidNativeSlashCommandRoots(
-  cwd: string,
-  alreadyNamedRoots: readonly string[] = [],
-  home: string = os.homedir(),
-): { commandRoots: string[]; skillRoots: string[] } {
-  const configRoots = [path.resolve(cwd, ".factory"), path.resolve(home, ".factory")];
-  return {
-    commandRoots: configRoots.map((root) => path.join(root, "commands")),
-    skillRoots: [
-      ...configRoots.map((root) => path.join(root, "skills")),
-      ...alreadyNamedRoots.map((root) => path.resolve(root)),
-    ],
-  };
-}
-
 /** Drops everything under the roots a harness already reads for itself. */
 export function planSlashCommandInjection(
   commands: readonly DiscoveredClaudeSlashCommand[],
-  native: { commandRoots: readonly string[]; skillRoots: readonly string[] },
-): ClaudeSlashCommandInjectionPlan {
+  native: NativeSlashCommandRoots,
+): SlashCommandInjectionPlan {
   // A skill Claude reaches through a link counts as native too. A common setup
   // keeps the real skill in `~/.agents/skills` and links it into
   // `~/.claude/skills`, so Claude lists it under the link while ADE finds the
@@ -265,7 +270,7 @@ export function planSlashCommandInjection(
     return real !== null && linkedSkillDirs.has(pathKey(real));
   };
 
-  const plan: ClaudeSlashCommandInjectionPlan = { commands: [], skills: [], nativeCount: 0 };
+  const plan: SlashCommandInjectionPlan = { commands: [], skills: [], nativeCount: 0 };
   for (const entry of commands) {
     if (isNative(entry)) {
       plan.nativeCount += 1;
@@ -307,18 +312,19 @@ export function formatClaudeSlashCommandEntry(entry: DiscoveredClaudeSlashComman
 }
 
 /**
- * Renders entries newest-budget-first, returning what did not fit so the caller
- * can say so in the prompt instead of hiding it.
+ * Renders entries in order until the budget is spent, counting what did not
+ * fit. The first entry always goes in: a list of nothing helps nobody.
  */
-export function renderClaudeSlashCommandEntries(
-  entries: readonly DiscoveredClaudeSlashCommand[],
-  budgetBytes: number = CLAUDE_SKILL_LISTING_BUDGET_BYTES,
+export function renderWithinBudget<T>(
+  entries: readonly T[],
+  format: (entry: T) => string,
+  budgetBytes: number,
 ): { lines: string[]; omitted: number } {
   const lines: string[] = [];
   let used = 0;
   let omitted = 0;
   for (const entry of entries) {
-    const rendered = formatClaudeSlashCommandEntry(entry);
+    const rendered = format(entry);
     const cost = Buffer.byteLength(rendered, "utf8") + 1;
     if (lines.length && used + cost > budgetBytes) {
       omitted += 1;
@@ -331,56 +337,14 @@ export function renderClaudeSlashCommandEntries(
 }
 
 /**
- * The listing budget for a harness whose prompt ADE re-sends with every turn
- * (Droid): the same entries, at a third of the size, because the cost is paid
- * per message rather than once per session.
+ * Renders entries newest-budget-first, returning what did not fit so the caller
+ * can say so in the prompt instead of hiding it.
  */
-export const PER_TURN_SKILL_LISTING_BUDGET_BYTES = 5 * 1024;
-const PER_TURN_SKILL_DESC_CHARS = 90;
-
-/**
- * The prompt section that tells a harness which project and user skills exist
- * that it would not find on its own. Empty when there is nothing to add.
- */
-export function buildSkillListingSection(
-  plan: ClaudeSlashCommandInjectionPlan,
-  budgetBytes: number,
-  /** The project directory: its own files are listed before the user's. */
-  cwd: string,
-): string[] {
-  // The project's own files first. They are the ones written for this
-  // codebase, and an alphabetical list spent the whole budget before reaching
-  // a project's `/quality` or `/test`.
-  const inProject = (entry: DiscoveredClaudeSlashCommand) => isPathInside(entry.filePath, cwd);
-  const entries = [...plan.commands, ...plan.skills]
-    .sort((a, b) => Number(inProject(b)) - Number(inProject(a)));
-  const lines: string[] = [];
-  let used = 0;
-  let omitted = 0;
-  for (const entry of entries) {
-    // One short line each: this list is paid for on every turn.
-    const description = entry.description.trim().replace(/\s+/g, " ");
-    const clipped = description.length > PER_TURN_SKILL_DESC_CHARS
-      ? `${description.slice(0, PER_TURN_SKILL_DESC_CHARS - 1).trimEnd()}…`
-      : description;
-    const line = `- ${entry.name}${clipped ? ` — ${clipped}` : ""} (${entry.filePath})`;
-    const cost = Buffer.byteLength(line, "utf8") + 1;
-    if (lines.length && used + cost > budgetBytes) {
-      omitted += 1;
-      continue;
-    }
-    lines.push(line);
-    used += cost;
-  }
-  if (!lines.length) return [];
-  return [
-    "## Project commands and skills",
-    "Files this project and this user keep that your harness does not load on its own. When the user sends `/<name>`, ADE expands the file for you. When one fits the task, read its file and follow it.",
-    ...lines,
-    ...(omitted > 0
-      ? [`- ${omitted} more omitted to keep this list short. Run \`ade skill list --text\` if none of these fits.`]
-      : []),
-  ];
+export function renderClaudeSlashCommandEntries(
+  entries: readonly DiscoveredClaudeSlashCommand[],
+  budgetBytes: number = CLAUDE_SKILL_LISTING_BUDGET_BYTES,
+): { lines: string[]; omitted: number } {
+  return renderWithinBudget(entries, formatClaudeSlashCommandEntry, budgetBytes);
 }
 
 export function resolveClaudeSlashCommandInvocation(

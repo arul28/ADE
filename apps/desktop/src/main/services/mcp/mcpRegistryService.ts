@@ -16,17 +16,14 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { ACCOUNT_SCOPE_ALL, accountDeviceSettingKey, accountRepoScopeKey } from "../../../shared/accountSettingsScope";
+import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import {
-  MCP_OFF_SETTING_KEY,
   MCP_SECRET_VAULT_KIND,
-  MCP_SERVERS_SETTING_KEY,
   isValidMcpFieldName,
   isValidMcpRegistryName,
   mcpSecretVaultKey,
   mcpSecretVaultKeyPrefix,
   mcpSecretVaultKeys,
-  normalizeMcpOffList,
   normalizeMcpRegistry,
   normalizeMcpRegistryServer,
   type McpRegistryServer,
@@ -40,10 +37,8 @@ import type {
   McpRegistryScan,
   McpRegistrySecretRef,
 } from "../../../shared/types/mcpRegistry";
-import { accountSettingsCacheValue, readAccountSettingsCacheRows } from "../account/accountSettingsCacheFile";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
-import { readLocalDeviceId } from "../chat/mcpRegistryLaunch";
-import { readGitOriginUrl } from "../projects/recentProjectSummary";
+import { readCachedMcpRegistry } from "./mcpRegistryCache";
 import { scanProviderMcpConfigs, toFoundServers, type ProviderMcpScan } from "./mcpProviderConfigScan";
 
 /** The four vault calls this service makes. `createAccountVaultBridge` satisfies it. */
@@ -118,21 +113,7 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
   return {
     /** Where this computer and this project keep their "switched off here" lists. */
     context(projectRoot: string | null | undefined): McpRegistryContext {
-      const root = projectRoot?.trim() || null;
-      const deviceOffKey = accountDeviceSettingKey(readLocalDeviceId(options.adeHome), MCP_OFF_SETTING_KEY);
-      const repoScope = root ? accountRepoScopeKey(readGitOriginUrl(root)) : null;
-      const rows = readAccountSettingsCacheRows(options.adeHome);
-      return {
-        deviceOffKey,
-        repoScope,
-        cached: rows ? {
-          servers: normalizeMcpRegistry(accountSettingsCacheValue(rows, ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY)),
-          off: {
-            machine: deviceOffKey ? normalizeMcpOffList(accountSettingsCacheValue(rows, ACCOUNT_SCOPE_ALL, deviceOffKey)) : [],
-            project: repoScope ? normalizeMcpOffList(accountSettingsCacheValue(rows, repoScope, MCP_OFF_SETTING_KEY)) : [],
-          },
-        } : null,
-      };
+      return readCachedMcpRegistry(options.adeHome, projectRoot?.trim() || null);
     },
 
     /** What this computer holds and can start, for the servers given. */
@@ -213,5 +194,3 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
     },
   };
 }
-
-export type McpRegistryService = ReturnType<typeof createMcpRegistryService>;

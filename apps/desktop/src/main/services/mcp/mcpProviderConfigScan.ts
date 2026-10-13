@@ -71,20 +71,50 @@ function readJson(filePath: string): Record<string, unknown> | null {
 // Codex: ~/.codex/config.toml
 // ---------------------------------------------------------------------------
 
-function stripTomlComment(line: string): string {
+/**
+ * The one walk over a piece of TOML that knows what a string is. Calls `visit`
+ * for every character outside a string that is not a bracket, with how deep in
+ * lists and inline tables it sits; `visit` answers true to stop. Returns the
+ * depth where the walk ended.
+ *
+ * A basic string (`"..."`) has backslash escapes, a literal one (`'...'`) has
+ * none: a Windows path in single quotes ends at its closing quote.
+ */
+function scanTomlOutsideStrings(text: string, visit: (char: string, index: number, depth: number) => boolean): number {
+  let depth = 0;
   let quote: string | null = null;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index]!;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
     if (quote) {
       if (char === "\\" && quote === "\"") index += 1;
       else if (char === quote) quote = null;
     } else if (char === "\"" || char === "'") {
       quote = char;
-    } else if (char === "#") {
-      return line.slice(0, index);
+    } else if (char === "[" || char === "{") {
+      depth += 1;
+    } else if (char === "]" || char === "}") {
+      depth -= 1;
+    } else if (visit(char, index, depth)) {
+      break;
     }
   }
-  return line;
+  return depth;
+}
+
+/** Where the first `target` outside a string is, or -1. */
+function findOutsideTomlStrings(text: string, target: string): number {
+  let found = -1;
+  scanTomlOutsideStrings(text, (char, index) => {
+    if (char !== target) return false;
+    found = index;
+    return true;
+  });
+  return found;
+}
+
+function stripTomlComment(line: string): string {
+  const hash = findOutsideTomlStrings(line, "#");
+  return hash < 0 ? line : line.slice(0, hash);
 }
 
 /** Splits a dotted TOML key (`mcp_servers."my.server".env`) into its segments. */
@@ -140,63 +170,25 @@ function parseTomlValue(raw: string): unknown {
 /** Splits on top-level commas: not inside a string, a list or an inline table. */
 function splitTomlList(text: string): string[] {
   const parts: string[] = [];
-  let depth = 0;
-  let quote: string | null = null;
   let start = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index]!;
-    if (quote) {
-      if (char === "\\" && quote === "\"") index += 1;
-      else if (char === quote) quote = null;
-    } else if (char === "\"" || char === "'") {
-      quote = char;
-    } else if (char === "[" || char === "{") {
-      depth += 1;
-    } else if (char === "]" || char === "}") {
-      depth -= 1;
-    } else if (char === "," && depth === 0) {
+  scanTomlOutsideStrings(text, (char, index, depth) => {
+    if (char === "," && depth === 0) {
       parts.push(text.slice(start, index));
       start = index + 1;
     }
-  }
+    return false;
+  });
   parts.push(text.slice(start));
   return parts.map((part) => part.trim()).filter((part) => part.length > 0);
 }
 
 function findTomlEquals(line: string): number {
-  let quote: string | null = null;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index]!;
-    if (quote) {
-      if (char === "\\" && quote === "\"") index += 1;
-      else if (char === quote) quote = null;
-    } else if (char === "\"" || char === "'") {
-      quote = char;
-    } else if (char === "=") {
-      return index;
-    }
-  }
-  return -1;
+  return findOutsideTomlStrings(line, "=");
 }
 
 /** True while a list opened on an earlier line has not closed yet. */
 function tomlListIsOpen(value: string): boolean {
-  let depth = 0;
-  let quote: string | null = null;
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index]!;
-    if (quote) {
-      if (char === "\\" && quote === "\"") index += 1;
-      else if (char === quote) quote = null;
-    } else if (char === "\"" || char === "'") {
-      quote = char;
-    } else if (char === "[" || char === "{") {
-      depth += 1;
-    } else if (char === "]" || char === "}") {
-      depth -= 1;
-    }
-  }
-  return depth > 0;
+  return scanTomlOutsideStrings(value, () => false) > 0;
 }
 
 /**
