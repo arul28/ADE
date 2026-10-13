@@ -6,11 +6,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
-import { confirmDialog } from "../ui/dialog/confirm";
+import { checkboxConfirmDialog } from "../ui/dialog/confirm";
 
 vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
-  confirmDialog: vi.fn(async () => true),
+  checkboxConfirmDialog: vi.fn(async () => ({ confirmed: true, checked: {} })),
 }));
 
 const idleSnapshot: AutoUpdateSnapshot = {
@@ -101,7 +101,7 @@ function installAdeMock(args: {
       },
       updateGetState: vi.fn(async () => args.snapshot ?? idleSnapshot),
       updateCheckForUpdates,
-      updateGetInstallImpact: vi.fn(async () => ({ connectedPhones: [] })),
+      updateGetInstallImpact: vi.fn(async () => ({ checked: true, chats: [], cliSessions: 0, terminals: 0, connectedPhones: [] })),
       updateQuitAndInstall,
       analytics: { capture },
       updateDismissInstalledNotice,
@@ -202,7 +202,9 @@ describe("AutoUpdateControl", () => {
   it("records accepted and deferred manual update decisions", async () => {
     const readySnapshot = { ...idleSnapshot, status: "ready" as const, version: "1.3.0" };
     const mock = installAdeMock({ snapshot: readySnapshot });
-    vi.mocked(confirmDialog).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    vi.mocked(checkboxConfirmDialog)
+      .mockResolvedValueOnce({ confirmed: false, checked: {} })
+      .mockResolvedValueOnce({ confirmed: true, checked: {} });
 
     render(<AutoUpdateControl />);
     const install = await screen.findByRole("button", { name: /install update v1\.3\.0/i });

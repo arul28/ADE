@@ -11,6 +11,7 @@ import {
   createProviderStatusService,
   decorateProjectListWithIcons,
   readMachineRuntimeActivitySummary,
+  readMachineUpdateImpact,
 } from "./multiProjectRpcServer";
 import * as gitModule from "../../desktop/src/main/services/git/git";
 import { ProjectRegistry } from "./services/projects/projectRegistry";
@@ -498,6 +499,53 @@ describe("multi-project RPC server", () => {
     } finally {
       warmExisting.mockRestore();
     }
+  });
+
+  it("names what an update would stop across booted projects and personal chats, without booting any", async () => {
+    const getIfBooted = vi.fn((projectId: string) =>
+      projectId === "project-open"
+        ? Promise.resolve({
+            runtime: {
+              agentChatService: {
+                listInterruptedChats: async () => ({ chats: [{ sessionId: "chat-1", title: "Fix login" }] }),
+              },
+              ptyService: {
+                list: () => [
+                  { toolType: "claude", runtimeState: "running" },
+                  { toolType: "codex", runtimeState: "idle" },
+                  { toolType: "shell", runtimeState: "idle" },
+                  { toolType: "claude-chat", runtimeState: "running" },
+                ],
+              },
+            },
+          })
+        : null);
+    const impact = await readMachineUpdateImpact({
+      projectRegistry: {
+        list: () => [
+          { projectId: "project-open", displayName: "ADE", rootPath: "/code/ADE" },
+          { projectId: "project-closed", displayName: "Site", rootPath: "/code/site" },
+        ],
+      } as never,
+      scopeRegistry: { getIfBooted } as never,
+      personalChatScope: {
+        updateImpact: async () => ({
+          chats: [{ sessionId: "chat-2", title: "Trip notes", projectName: "Personal chats", projectRoot: null, resumable: false }],
+          cliSessions: 0,
+          terminals: 1,
+        }),
+      },
+    });
+
+    expect(impact.chats).toEqual([
+      { sessionId: "chat-1", title: "Fix login", projectName: "ADE", projectRoot: "/code/ADE" },
+      { sessionId: "chat-2", title: "Trip notes", projectName: "Personal chats", projectRoot: null, resumable: false },
+    ]);
+    // A quiet CLI session or shell still closes on restart, so it counts; the
+    // chat's own row is already named above and is not counted again.
+    expect(impact.cliSessions).toBe(2);
+    expect(impact.terminals).toBe(2);
+    expect(getIfBooted).toHaveBeenCalledWith("project-closed");
   });
 
   it("summarizes booted project and personal-chat work independently of client sockets", async () => {

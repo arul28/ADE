@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../../../shared/ipc";
-import type { LocalRuntimeStatus, QuitPromptRequest, UpdateInterruptedChat } from "../../../shared/types";
+import type { LocalRuntimeStatus, QuitPromptRequest, UpdateInstallImpact, UpdateInterruptedChat } from "../../../shared/types";
 
 /**
  * Quitting ADE and stopping its background service, through the real IPC
@@ -91,12 +91,14 @@ describe("quit prompt", () => {
   function setup(overrides: Partial<Parameters<typeof createQuitPrompt>[0]> = {}) {
     let mode: LocalRuntimeStatus["runtimeMode"] = "primary";
     const restartService = vi.fn(async () => { mode = "primary"; });
-    const armResume = vi.fn(async (ids: readonly string[]) => ids.map(chat));
+    const armResume = vi.fn(async (chats: readonly UpdateInterruptedChat[]) => [...chats]);
     const deps = {
       logger,
       globalStatePath: statePath,
       getRuntimeStatus: () => status(mode),
-      collectImpact: async () => ({ connectedPhones: [], interruptedChats: [chat("a")] }),
+      collectImpact: async (): Promise<UpdateInstallImpact> => ({
+        checked: true, chats: [chat("a")], cliSessions: 0, terminals: 0, connectedPhones: [],
+      }),
       collectLiveChats: vi.fn(async (): Promise<UpdateInterruptedChat[] | null> => []),
       restartService,
       armResume,
@@ -127,6 +129,26 @@ describe("quit prompt", () => {
     await answer("keep");
     expect(await confirming).toBe(false);
     expect(electron.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "counts the chats when ADE could check", impact: { checked: true, chats: [chat("a"), chat("b")] }, runningAgents: 2 },
+    { name: "is unknown, not zero, when the probe did not answer", impact: { checked: false, chats: [] }, runningAgents: null },
+    {
+      name: "is unknown when an older brain only knows something unnamed is running",
+      impact: { checked: true, chats: [], busyWithoutDetail: true },
+      runningAgents: null,
+    },
+  ])("the running-agent count $name", async ({ impact, runningAgents }) => {
+    const { prompt, setMode } = setup({
+      collectImpact: async () => ({ cliSessions: 0, terminals: 0, connectedPhones: [], ...impact }),
+    });
+    setMode("app_fallback");
+    const { confirming, request, answer } = await ask(prompt);
+    expect(request.runningAgents).toBe(runningAgents);
+    expect(request.appOwnedService).toEqual({ repair: "restart" });
+    await answer("keep");
+    expect(await confirming).toBe(false);
   });
 
   it("falls back to the native box when the window reloads mid-question, and Don't ask again then skips it", async () => {
@@ -164,7 +186,7 @@ describe("quit prompt", () => {
       live: [[chat("a"), chat("b")], [chat("b")]],
       restart: "ok",
       expected: { repaired: true, resumedChats: 1 },
-      armed: ["a"],
+      armed: [chat("a")],
     },
     {
       name: "an unknown read after the restart resumes nothing",
