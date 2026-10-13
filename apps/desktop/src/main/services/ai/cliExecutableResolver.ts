@@ -2,6 +2,8 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 
 type ResolutionSource = "path" | "known-dir";
 const PATH_MARKER_START = "__ADE_PATH_START__";
@@ -32,6 +34,14 @@ function* executableCandidatesFromKnownLocations(
   }
   for (const dir of getKnownBinDirs(command, env)) {
     const candidate = nextCandidate(resolveFromDirs(command, [dir], env), "known-dir");
+    if (candidate) yield candidate;
+  }
+  // Windows: directories an installer added to the persisted PATH after this
+  // process started (see refreshWindowsPersistedPathDirs). Last, so every
+  // resolution that worked before is unchanged; this only finds what the
+  // inherited PATH and the known install dirs miss.
+  for (const dir of cachedWindowsPersistedPathDirs()) {
+    const candidate = nextCandidate(resolveFromDirs(command, [dir], env), "path");
     if (candidate) yield candidate;
   }
 }
@@ -249,7 +259,131 @@ function getWindowsKnownBinDirs(env: NodeJS.ProcessEnv, command: string): string
     command === "kimi" && env.KIMI_CODE_HOME?.trim()
       ? path.join(env.KIMI_CODE_HOME.trim(), "bin")
       : "",
+    // Cursor's Windows installer (cursor.com/install, PowerShell) writes
+    // `agent.cmd`/`cursor-agent.cmd` (+ `.ps1`) into %LOCALAPPDATA%\cursor-agent
+    // and adds that directory to the persisted user PATH only.
+    (command === "agent" || command === "cursor-agent") && localAppData
+      ? path.join(localAppData, "cursor-agent")
+      : "",
   ]);
+}
+
+/**
+ * The PATH a new Windows process would get today, from the registry.
+ *
+ * A process inherits PATH once, at launch. An installer that adds its bin dir
+ * to the persisted user or machine PATH (Cursor's `agent`, Copilot via WinGet,
+ * Codex's standalone installer) therefore stays invisible to an ADE — desktop
+ * main or the long-lived brain — that was already running, and every such CLI
+ * reads as "not installed" until ADE restarts. Explorer and new terminals pick
+ * the change up from `HKCU\Environment` and the machine-wide `Session Manager\
+ * Environment`; so does this.
+ *
+ * Read with `reg.exe` (two processes, in parallel, off the event loop where the
+ * off-thread spawner is on) and reused for {@link WINDOWS_PERSISTED_PATH_TTL_MS}.
+ * The synchronous readers never spawn: they take the cached answer and start a
+ * background refresh when it is missing or stale, so a cold first call sees
+ * only the inherited PATH. Detection paths that can wait call
+ * {@link refreshWindowsPersistedPathDirs} first. macOS/Linux: always empty.
+ */
+const WINDOWS_PERSISTED_PATH_TTL_MS = 30_000;
+const WINDOWS_PERSISTED_PATH_TIMEOUT_MS = 5_000;
+const WINDOWS_PERSISTED_PATH_KEYS = [
+  "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+  "HKCU\\Environment",
+] as const;
+let windowsPersistedPath: { at: number; dirs: string[] } | null = null;
+let windowsPersistedPathRead: Promise<string[]> | null = null;
+
+/** Parse `reg query <key> /v Path` output into the raw (unexpanded) value. */
+function parseRegQueryPathValue(stdout: string): string | null {
+  const match = stdout.match(/^\s*Path\s+REG_(?:EXPAND_)?SZ\s+(.*?)\s*$/im);
+  return match ? match[1]! : null;
+}
+
+/** Expand `%VAR%` references the way Explorer does, case-insensitively; unknown ones stay literal. */
+function expandWindowsEnvReferences(value: string, env: NodeJS.ProcessEnv): string {
+  const lookup = new Map<string, string>();
+  for (const [key, entry] of Object.entries(env)) {
+    if (typeof entry === "string") lookup.set(key.toLowerCase(), entry);
+  }
+  return value.replace(/%([^%;]+)%/g, (whole, name: string) => lookup.get(name.toLowerCase()) ?? whole);
+}
+
+async function queryRegistryPathValue(key: string): Promise<string | null> {
+  const args = ["query", key, "/v", "Path"];
+  let regExe = "reg.exe";
+  try {
+    regExe = resolveTrustedWindowsTool("reg");
+  } catch {
+    // Non-standard install: fall back to the PATH spelling.
+  }
+  if (offThreadSpawnEnabled()) {
+    const result = await execFileOffThread(regExe, args, { timeoutMs: WINDOWS_PERSISTED_PATH_TIMEOUT_MS });
+    return result.exitCode === 0 ? parseRegQueryPathValue(result.stdout) : null;
+  }
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        regExe,
+        args,
+        { encoding: "utf8", timeout: WINDOWS_PERSISTED_PATH_TIMEOUT_MS, windowsHide: true },
+        (error, stdout) => resolve(error ? null : parseRegQueryPathValue(String(stdout ?? ""))),
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * The persisted machine + user PATH directories (machine first, as Windows
+ * builds a new process's PATH), refreshed when older than the TTL. Never
+ * rejects; a failed read keeps the previous answer.
+ */
+export function refreshWindowsPersistedPathDirs(options: { force?: boolean } = {}): Promise<string[]> {
+  if (process.platform !== "win32") return Promise.resolve([]);
+  if (
+    !options.force
+    && windowsPersistedPath
+    && Date.now() - windowsPersistedPath.at < WINDOWS_PERSISTED_PATH_TTL_MS
+  ) {
+    return Promise.resolve(windowsPersistedPath.dirs);
+  }
+  if (windowsPersistedPathRead) return windowsPersistedPathRead;
+  const read = (async () => {
+    try {
+      const values = await Promise.all(WINDOWS_PERSISTED_PATH_KEYS.map((key) => queryRegistryPathValue(key)));
+      if (values.every((value) => value === null)) {
+        // Keep the last answer; retry after another TTL rather than on every call.
+        if (windowsPersistedPath) windowsPersistedPath.at = Date.now();
+        else windowsPersistedPath = { at: Date.now(), dirs: [] };
+        return windowsPersistedPath.dirs;
+      }
+      const dirs = uniqueNonEmpty(
+        values.flatMap((value) => splitPathEntries(value ? expandWindowsEnvReferences(value, process.env) : undefined)),
+      );
+      windowsPersistedPath = { at: Date.now(), dirs };
+      return dirs;
+    } catch {
+      if (!windowsPersistedPath) windowsPersistedPath = { at: Date.now(), dirs: [] };
+      return windowsPersistedPath.dirs;
+    } finally {
+      windowsPersistedPathRead = null;
+    }
+  })();
+  windowsPersistedPathRead = read;
+  return read;
+}
+
+/** Cached persisted PATH dirs; starts a background refresh when missing or stale. Never spawns synchronously. */
+function cachedWindowsPersistedPathDirs(): string[] {
+  if (process.platform !== "win32") return [];
+  const current = windowsPersistedPath;
+  if (!current || Date.now() - current.at >= WINDOWS_PERSISTED_PATH_TTL_MS) {
+    void refreshWindowsPersistedPathDirs();
+  }
+  return current?.dirs ?? [];
 }
 
 function getUnixLikeKnownBinDirs(env: NodeJS.ProcessEnv, command: string): string[] {
@@ -539,8 +673,15 @@ export function augmentProcessPathWithShellAndKnownCliDirs(args?: {
 
   if (process.platform === "win32") {
     // Windows has no direct `sh -ic` equivalent here; includeInteractiveShell
-    // and timeoutMs are intentionally ignored in favor of env PATH + known CLI dirs.
-    return augmentPathWithKnownCliDirs(getPathEnvValue(env), env);
+    // and timeoutMs are intentionally ignored in favor of env PATH, the
+    // known CLI dirs, and the persisted (registry) PATH. The persisted entries
+    // go last so existing precedence is unchanged; they are what lets a CLI
+    // installed while ADE runs, and its own child processes, resolve without
+    // restarting ADE.
+    return mergePathEntries(
+      augmentPathWithKnownCliDirs(getPathEnvValue(env), env),
+      cachedWindowsPersistedPathDirs().join(pathListDelimiter()),
+    );
   }
 
   if (process.platform !== "darwin" && process.platform !== "linux") {

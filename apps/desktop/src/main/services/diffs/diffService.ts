@@ -309,7 +309,18 @@ async function resolveBranchCompareBase(
   if (!base || base.startsWith("-")) throw new Error("This lane has no base branch to compare with.");
   const resolves = async (ref: string) =>
     (await runGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: worktreePath, timeoutMs: 8_000 })).exitCode === 0;
+  const findMergeBase = async (ref: string) => {
+    const res = await runGit(["merge-base", ref, "HEAD"], { cwd: worktreePath, timeoutMs: 12_000 });
+    return res.exitCode === 0 ? res.stdout.trim() : "";
+  };
   let compare: string | null = null;
+  if (branchRef.trim() !== base) {
+    // The usual lane: its base resolves and shares history. One git process
+    // instead of two (each costs 25-45 ms to start on Windows); anything else
+    // takes the checks below, which tell the failures apart.
+    const sha = await findMergeBase(base);
+    if (sha) return { label: base, mergeBase: sha };
+  }
   if (branchRef.trim() === base) {
     const upstream = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${base}@{upstream}`], { cwd: worktreePath, timeoutMs: 8_000 });
     const upstreamRef = upstream.exitCode === 0 ? upstream.stdout.trim() : "";
@@ -325,10 +336,15 @@ async function resolveBranchCompareBase(
   } else {
     throw new Error(`The base branch "${base}" was not found.`);
   }
-  const mergeBase = await runGit(["merge-base", compare, "HEAD"], { cwd: worktreePath, timeoutMs: 12_000 });
-  const sha = mergeBase.exitCode === 0 ? mergeBase.stdout.trim() : "";
+  const sha = await findMergeBase(compare);
   if (!sha) throw new Error(`This lane shares no history with ${compare}.`);
   return { label: compare, mergeBase: sha };
+}
+
+/** Where the worktree's own index lives; empty when git cannot say. */
+function readRealIndexPath(worktreePath: string): Promise<string> {
+  return runGit(["rev-parse", "--git-path", "index"], { cwd: worktreePath, timeoutMs: 10_000 })
+    .then((res) => (res.exitCode === 0 ? path.resolve(worktreePath, res.stdout.trim()) : ""), () => "");
 }
 
 /**
@@ -343,16 +359,19 @@ async function resolveBranchCompareBase(
  * stay present rather than reading as deleted. A repository with no index yet
  * starts from HEAD. The file lives in the OS temp directory and is removed
  * whatever happens.
+ *
+ * `realIndexPathRead` is `readRealIndexPath`, started early by a caller that has
+ * other git work to do first, so the lookup does not wait its turn.
  */
 async function withWorkingTreeIndex<T>(
   worktreePath: string,
   fn: (env: NodeJS.ProcessEnv) => Promise<T>,
+  realIndexPathRead: Promise<string> = readRealIndexPath(worktreePath),
 ): Promise<T> {
   const indexPath = path.join(os.tmpdir(), `ade-branch-diff-${randomUUID()}.index`);
   const env = { GIT_INDEX_FILE: indexPath };
   try {
-    const realIndex = await runGit(["rev-parse", "--git-path", "index"], { cwd: worktreePath, timeoutMs: 10_000 });
-    const realIndexPath = realIndex.exitCode === 0 ? path.resolve(worktreePath, realIndex.stdout.trim()) : "";
+    const realIndexPath = await realIndexPathRead;
     let copied = false;
     if (realIndexPath) {
       try {
@@ -392,6 +411,7 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
 
   const readBranchChanges = async (laneId: string, entry: BranchRead): Promise<BranchDiffChanges> => {
     const { baseRef, branchRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
+    const realIndexPath = readRealIndexPath(worktreePath);
     const { label, mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
     entry.readingWorkingTree = true;
     return await withWorkingTreeIndex(worktreePath, async (env) => {
@@ -409,7 +429,7 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
         additions: files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
         deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
       };
-    });
+    }, realIndexPath);
   };
 
   const startBranchRead = (laneId: string): Promise<BranchDiffChanges> => {
@@ -471,16 +491,18 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
 
     async getChanges(laneId: string): Promise<DiffChanges> {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-      const res = await runGit(["status", "--porcelain=v1", "-z"], { cwd: worktreePath, timeoutMs: 12_000 });
+      // The line counts do not depend on the status, so all three run at once:
+      // one process start of wall time instead of two (25-45 ms each on Windows).
+      const [res, unstagedStats, stagedStats] = await Promise.all([
+        runGit(["status", "--porcelain=v1", "-z"], { cwd: worktreePath, timeoutMs: 12_000 }),
+        runGit(["diff", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
+        runGit(["diff", "--cached", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
+      ]);
       if (res.exitCode !== 0) {
         return { unstaged: [], staged: [] };
       }
 
       const changes = parsePorcelainStatusZ(res.stdout);
-      const [unstagedStats, stagedStats] = await Promise.all([
-        runGit(["diff", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
-        runGit(["diff", "--cached", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
-      ]);
       if (unstagedStats.exitCode === 0) applyNumstat(changes.unstaged, unstagedStats.stdout);
       if (stagedStats.exitCode === 0) applyNumstat(changes.staged, stagedStats.stdout);
 
@@ -596,6 +618,7 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
         // untracked file reads as added rather than missing. A renamed file
         // needs its source in the diff too, or it reads as a new file: the
         // whole tree is staged and the rename looked up before the patch.
+        const realIndexPath = readRealIndexPath(worktreePath);
         const { mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
         const res = await withWorkingTreeIndex(worktreePath, async (env) => {
           const names = await runGit(
@@ -609,7 +632,7 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
             ["diff", "--cached", "--no-ext-diff", "--find-renames", "--patch", mergeBase, "--", ...(oldPath ? [oldPath] : []), gitPath],
             { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: MAX_DIFF_PATCH_BYTES },
           );
-        });
+        }, realIndexPath);
         if (res.exitCode !== 0) throw new Error(res.stderr.trim() || "git diff failed");
         return {
           mode,

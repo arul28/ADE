@@ -84,6 +84,8 @@ import {
   ACTION_NOT_CALLABLE_CODE,
   ACTION_NOT_EXPOSED_CODE,
   encodeCodedErrorMessage,
+  isUnsupportedAdeActionError,
+  parseCodedErrorMessage,
 } from "../../desktop/src/shared/codedError";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -130,6 +132,7 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
+import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
@@ -1908,6 +1911,29 @@ function projectLaneLinearIssueLink(value: unknown): LaneLinearIssueLink | null 
     createdAt: asOptionalTrimmedString(link.createdAt) ?? "",
     updatedAt: asOptionalTrimmedString(link.updatedAt) ?? "",
   };
+}
+
+/** Caller mistakes, answered to the caller; not failures of the brain. */
+const CALLER_ERROR_CODES = new Set<number>([
+  JsonRpcErrorCode.invalidParams,
+  JsonRpcErrorCode.methodNotFound,
+  JsonRpcErrorCode.policyDenied,
+]);
+
+/**
+ * One Sentry issue per action and error code for a failed `ade/actions/call`.
+ * The endpoint turns every failure into an `ok: false` reply, which is right
+ * for the caller and left nothing behind for anyone else.
+ */
+function reportFailedAction(actionName: string, error: unknown): void {
+  if (error instanceof JsonRpcError && CALLER_ERROR_CODES.has(error.code)) return;
+  if (isUnsupportedAdeActionError(error)) return;
+  const code = parseCodedErrorMessage(error).code ?? null;
+  if (code === ACTION_NOT_CALLABLE_CODE || code === ACTION_NOT_EXPOSED_CODE) return;
+  captureError(error, {
+    tags: { "runtime.action": actionName, ...(code ? { "error.code": code } : {}) },
+    fingerprint: ["runtime-action", actionName, code ?? (error instanceof Error ? error.name : "unknown")],
+  });
 }
 
 function assertNonEmptyString(value: unknown, field: string): string {
@@ -8545,6 +8571,7 @@ export function createAdeRpcRequestHandler(args: {
         return result;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        reportFailedAction(actionName, error);
         return {
           ok: false,
           error: {

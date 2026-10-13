@@ -194,6 +194,7 @@ final class DictationController: ObservableObject {
                 outcome: .failed,
                 source: .composer
             )
+            CrashReporting.capture(error, context: ["area": "voice_dictation"])
             ProductAnalytics.shared.captureError(.voiceDictation)
             ADEHaptics.warning()
         }

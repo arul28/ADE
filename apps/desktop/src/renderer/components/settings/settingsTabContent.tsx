@@ -35,7 +35,6 @@ import { McpServersSection } from "./mcp/McpServersSection";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { BrowserLinksSection } from "./BrowserLinksSection";
 import { BrowserAgentAccessSection } from "./BrowserAgentAccessSection";
-import { ProductAnalyticsSection } from "./ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
 import { ProjectSection } from "./ProjectSection";
@@ -376,13 +375,11 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     // `.ade/local.yaml`, read by the link router of the window bound to that
     // checkout, so it has an effect only on the tab's own machine.
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links", group: "computer" },
-    // Consent files in this install's ADE home (`~/.ade`), not the account.
-    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection />, machine: "local", title: "Product analytics", group: "privacy" },
     {
       entryIds: ["general.diagnostics-sharing"],
       render: () => <DiagnosticsSharingSection />,
       machine: "local",
-      title: "Diagnostics sharing",
+      title: "Send a report to ADE",
       group: "privacy",
     },
     // Last on purpose: the hard reset is its own section at the very bottom of

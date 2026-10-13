@@ -90,6 +90,8 @@ import {
 } from "../../desktop/src/shared/sessionStatusNote";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
+import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
+import { initBrainSentry } from "./sentry/initBrain";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
@@ -21358,6 +21360,10 @@ function reportContainedJsonRpcError(
  * `ade report-issue` tails — so the `ref` the user was shown is searchable.
  */
 function reportInternalJsonRpcError(report: JsonRpcInternalErrorReport): void {
+  captureError(report.error, {
+    tags: { "rpc.method": report.method, "rpc.error_id": report.errorId },
+    fingerprint: ["rpc-internal", report.method, report.error instanceof Error ? report.error.name : "unknown"],
+  });
   try {
     process.stderr.write(
       `ade jsonrpc internal error ref=${report.errorId} method=${report.method}: ${formatDiagnosticError(report.error)}\n`,
@@ -21477,7 +21483,9 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
   };
   const onUncaughtException = (error: Error): void => {
     write("fatal uncaught exception", error);
-    process.exit(1);
+    // Sentry captured this already (its handler runs first); give the report
+    // a moment to leave before the process does.
+    void flushSentry(2_000).finally(() => process.exit(1));
   };
   process.on("unhandledRejection", onUnhandledRejection);
   process.on("uncaughtException", onUncaughtException);
@@ -34063,6 +34071,7 @@ async function runParsedCli(
       // The brain hosts terminals and chats; it is never a child of the
       // Claude session it may have been started from.
       stripParentClaudeSessionEnv(process.env);
+      initBrainSentry({ mode: "serve" });
       const result = await runServe(plan.rest, parsed.options);
       return {
         output:

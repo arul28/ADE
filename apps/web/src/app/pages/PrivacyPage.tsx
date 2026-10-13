@@ -28,10 +28,18 @@ const sections: Section[] = [
   {
     title: "Privacy-bounded product analytics",
     body: [
-      "Configured ADE desktop and runtime surfaces use default-on, allowlisted product analytics with an accessible opt-out. The public website asks for consent first. Native iOS analytics is default-on when configured. These events help understand activation, retention, feature adoption, reliability, and quota health.",
+      "ADE desktop, runtime, hosted web, and native iOS surfaces use default-on, allowlisted product analytics. They honor the DO_NOT_TRACK=1 environment setting and any analytics opt-out you recorded in an earlier version. The public website asks for consent first. These events help understand activation, retention, feature adoption, reliability, and quota health.",
       "Desktop and runtime events start with a random installation identity. If you sign in to an ADE account, ADE sends one PostHog identify request that links that anonymous history to a one-way hash of your account ID and sets only plan, platform, and app version. ADE does not send your account ID, email, name, identity provider, or access token to analytics. Signing out rotates the anonymous analytics identity.",
       "Analytics never includes prompts, source code, file or terminal content, repository names, file paths, URLs, query strings, URL fragments, referrers, branch names, session titles, raw error messages, or stack traces. ADE does not use analytics session recordings, automatic click or page capture, surveys, advertising profiles, or PostHog feature flags.",
-      "Desktop, runtime, hosted web, and the public website provide durable analytics controls. Native iOS analytics is covered by the platform-level choices described below. Event collection is deduplicated and capped locally before transmission so a loop or high-frequency UI action cannot generate an unbounded event stream.",
+      "Event collection is deduplicated and capped locally before transmission so a loop or high-frequency UI action cannot generate an unbounded event stream.",
+    ],
+  },
+  {
+    title: "Error and crash reporting",
+    body: [
+      "To find and fix failures, ADE's desktop app, runtime, hosted web client, relay services, and iOS app send error and crash reports to Sentry. This is separate from product analytics and is part of how ADE operates; it honors the DO_NOT_TRACK=1 environment setting.",
+      "A report can include the error message and stack trace, file paths, the ADE version and build, operating system and hardware details, locale and time zone, the ADE action or screen involved, ADE-internal identifiers such as lane and chat session IDs, recent diagnostic log lines, and, for native crashes, a memory snapshot of the crashed process. Reports are associated with the same pseudonymous identifier used for product analytics (a random installation identifier, or a one-way hash of your account ID once you sign in). Sentry may derive an approximate location from the network address of a report; ADE configures Sentry not to store the address itself.",
+      "Before a report leaves your device, ADE removes credentials, API keys, access tokens, and secret-looking values, and it does not include prompts, model responses, chat transcripts, file contents, diffs, or terminal output. A native crash snapshot captures process memory at the moment of the crash and can, rarely, contain fragments of data the process held at that time; these snapshots are used only to diagnose the crash.",
     ],
   },
   {
@@ -59,7 +67,7 @@ const sections: Section[] = [
   {
     title: "What the desktop app collects",
     body: [
-      "Project files, git history, prompts, terminal content, and process output remain on your disk and are excluded from analytics. Anonymous product analytics, when enabled, is limited to the allowlisted categories described above. Raw crash logs are shared only when you choose to submit them.",
+      "Project files, git history, prompts, terminal content, and process output remain on your disk and are excluded from analytics and error reports. Product analytics is limited to the allowlisted categories described above, and error and crash reports to what is described under Error and crash reporting. A full diagnostic report with local logs is shared only when you choose to submit one.",
     ],
   },
   {
@@ -79,6 +87,7 @@ const sections: Section[] = [
           "Vercel — this website is hosted on Vercel; standard request logs apply.",
           "Cloudflare — ADE's connectivity relay can route sync traffic between already-paired clients.",
           "PostHog — receives manually selected product events when analytics is enabled. ADE creates a pseudonymous person profile only after desktop/runtime account sign-in; autocapture, replay, surveys, and feature flags are disabled.",
+          "Sentry — receives error and crash reports as described under Error and crash reporting, in Sentry's United States region. On iOS, a short, fully masked screen recording may accompany an error.",
           "Mintlify — documentation is served at /docs through Mintlify.",
           "AI providers you enable — Anthropic, OpenAI, and similar, only when you turn on a model that uses them.",
         ],
@@ -91,7 +100,7 @@ const sections: Section[] = [
     body: [
       "Unpairing an iOS device clears its saved machine profile and pairing credentials, but synced project data, caches, the anonymous analytics identifier, and local quota counters can remain in the app container until you remove the app's data. Because iOS Keychain items can survive an uninstall on some systems, unpair before uninstalling when you want to clear pairing credentials explicitly.",
       "Desktop and runtime analytics state — including its anonymous installation identifier, pseudonymous signed-in identity hash, install and activation milestones, identifier-hashing salt, preference, and quota counters — is stored under the machine's .ade/secrets directory until you delete that state. Opting out immediately stops analytics transmission and discards queued events, but retains that local state so toggling cannot reset quota limits. Computer project data otherwise remains on your local disk and is yours to keep, move, or delete.",
-      "After consent, the marketing website stores an anonymous browser identifier, local event-budget counters, and your analytics preference. Withdrawing consent rotates the identifier but retains the preference and quota counters; clearing site data removes them. ADE retains PostHog analytics events for no longer than one year and may delete them sooner. To request earlier deletion or ask what can be associated with your installation or pseudonymous account profile, email arulsharma1028@gmail.com. We may need information from your installation or account to locate applicable records. Data sent to AI providers is governed by each provider's retention policy.",
+      "After consent, the marketing website stores an anonymous browser identifier, local event-budget counters, and your analytics preference. Withdrawing consent rotates the identifier but retains the preference and quota counters; clearing site data removes them. ADE retains PostHog analytics events for no longer than one year and may delete them sooner. Sentry error reports are retained for 30 days. To request earlier deletion or ask what can be associated with your installation or pseudonymous account profile, email arulsharma1028@gmail.com. We may need information from your installation or account to locate applicable records. Data sent to AI providers is governed by each provider's retention policy.",
     ],
   },
   {
@@ -102,7 +111,7 @@ const sections: Section[] = [
           "Revoke camera or local network access in iOS Settings → ADE.",
           "Unpair the iOS app from the machine to clear the stored pairing.",
           "Disable cloud and BYOK features in the desktop app at any time.",
-          "Turn anonymous product analytics off on each applicable ADE surface.",
+          "Set DO_NOT_TRACK=1 in the environment ADE runs in to stop product analytics and error reporting from the desktop app and runtime.",
           "Unpair first to clear pairing credentials, then uninstall or clear app/site data to remove the corresponding app-container or browser data.",
         ],
       },

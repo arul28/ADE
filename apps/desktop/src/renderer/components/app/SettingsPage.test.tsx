@@ -30,7 +30,6 @@ function stubSection(anchors: string[]) {
 }
 
 vi.mock("../settings/ProjectSection", () => ({ ProjectSection: stubSection(["project"]) }));
-vi.mock("../settings/ProductAnalyticsSection", () => ({ ProductAnalyticsSection: stubSection(["product-analytics"]) }));
 vi.mock("../settings/DiagnosticsSharingSection", () => ({ DiagnosticsSharingSection: stubSection(["diagnostics-sharing"]) }));
 vi.mock("../settings/AboutSection", () => ({
   AboutSection: () => (

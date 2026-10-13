@@ -5,6 +5,7 @@
 //   node cdp.mjs metrics <seconds>        -> Performance.getMetrics delta (renderer)
 //   node cdp.mjs profile <seconds> [out]  -> CPU profile, top self-time functions
 //   node cdp.mjs shot <out.png>
+//   node cdp.mjs gc                       -> JS heap before and after a forced GC
 //   node cdp.mjs anim
 // Env: CDP_PORT (default 9222), CDP_TARGET_URL substring (default "//localhost:", the dev renderer page), CDP_WS (direct ws url, e.g. node inspector)
 import { writeFileSync } from "node:fs";
@@ -99,6 +100,12 @@ try {
     const r = await c.send("Page.captureScreenshot", { format: "png" });
     writeFileSync(rest[0], Buffer.from(r.data, "base64"));
     console.log(rest[0]);
+  } else if (cmd === "gc") {
+    await c.send("Performance.enable", { timeDomain: "threadTicks" });
+    const heap = async () => ((await c.send("Performance.getMetrics")).metrics.find((m) => m.name === "JSHeapUsedSize")?.value ?? 0) / 1048576;
+    const before = await heap();
+    await c.send("HeapProfiler.collectGarbage");
+    console.log(JSON.stringify({ heapBeforeGcMB: Math.round(before), heapAfterGcMB: Math.round(await heap()) }));
   } else if (cmd === "anim") {
     const v = await evalExpr(c, `JSON.stringify(document.getAnimations({subtree:true}).filter(a=>a.playState==='running').map(a=>({name:a.animationName||a.constructor.name, iter:a.effect?.getTiming?.().iterations, el:(a.effect?.target?.tagName||'')+'.'+String(a.effect?.target?.className?.baseVal ?? a.effect?.target?.className ?? '').slice(0,90), hidden: !!a.effect?.target?.closest?.('[data-ade-surface-hidden]')})))`);
     const arr = JSON.parse(v);

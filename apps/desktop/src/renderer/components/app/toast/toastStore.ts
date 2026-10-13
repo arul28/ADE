@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { captureProblem } from "../../../../shared/sentry/capture";
 import type { NoticeTone } from "../../ui/notice/noticeTones";
 import type { ToastCardAction, ToastCardModel, ToastChip } from "../../ui/notice/ToastCard";
 
@@ -139,6 +140,17 @@ function oldestEvictableIndex(stack: readonly Toast[], arrivingId: string): numb
  */
 export function showToast(input: ToastInput): string {
   const id = input.id ?? generateId();
+  // An error the user is shown is an error ADE should hear about. Grouped by
+  // title; the message rides along only when it is plain text (a rendered
+  // node can hold anything).
+  if (input.tone === "error" && !input.id?.startsWith("diagnostics-auto-sent")) {
+    captureProblem(`Toast: ${input.title}`, {
+      tags: { surface: "toast" },
+      extra: typeof input.message === "string" ? { message: input.message } : undefined,
+      fingerprint: ["toast", input.title],
+      level: "warning",
+    });
+  }
   const durationMs = input.durationMs ?? DEFAULT_DURATION_MS;
   const toast: Toast = {
     ...input,

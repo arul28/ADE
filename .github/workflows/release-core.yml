@@ -345,6 +345,10 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
           ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
+          # Emits source maps and lets electron-builder's beforePack hook
+          # (apps/desktop/scripts/sentry-before-pack.cjs) stamp Sentry debug IDs
+          # into the bundles. The maps themselves never ship (!dist/**/*.map).
+          ADE_BUILD_SOURCEMAPS: "1"
           ELECTRON_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron-builder
         run: cd apps/desktop && npm run dist:mac:${{ matrix.arch }}:signed
@@ -374,6 +378,19 @@ jobs:
             apps/desktop/release/*.zip
             apps/desktop/release/latest-mac-${{ matrix.arch }}.yml
           if-no-files-found: error
+
+      # Readable stack traces for this build in Sentry (ade-desktop and
+      # ade-brain). After the artifact upload, so it can never hold up or
+      # change a release; the script skips without SENTRY_AUTH_TOKEN and never
+      # exits non-zero. Release ade@<tag without v> is the version stamped
+      # above, which is what the app and the brain report.
+      - name: Upload ${{ matrix.arch }} source maps to Sentry
+        if: ${{ !inputs.windows_proof }}
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "mac-${{ matrix.arch }}"
 
   build-win-release:
     # Same shape as build-mac-release: the tagged commit is built, signed and
@@ -524,6 +541,8 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          # See the equivalent step in build-mac-release.
+          ADE_BUILD_SOURCEMAPS: "1"
         run: cd apps/desktop && npm run dist:win:signed
 
       # Windows parity with the macOS budget gate. Runs before the smoke test and
@@ -550,6 +569,17 @@ jobs:
             apps/desktop/release/ADE-*-win-x64.exe.blockmap
             apps/desktop/release/latest.yml
           if-no-files-found: error
+
+      # See the equivalent step in build-mac-release. Proof runs build commits
+      # that may never ship, so they upload nothing.
+      - name: Upload Windows source maps to Sentry
+        if: ${{ !inputs.windows_proof }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/sentry/sentry-release.mjs upload --version "$env:RELEASE_TAG" --dist win-x64
 
       # Everything below is deliberate clean-host evidence collection. It builds
       # the redacted proof bundle and its exact-SHA manifest, and never gates an

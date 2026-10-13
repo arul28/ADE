@@ -837,7 +837,6 @@ import {
   isLocalProviderFamily,
   createDynamicAcpModelDescriptor,
   listAcpModelDescriptorsForProvider,
-  resolveAcpModelDescriptor,
   listModelDescriptorsForProvider,
   mergeDynamicAcpModelDescriptors,
   LOCAL_PROVIDER_LABELS,
@@ -1215,6 +1214,12 @@ import {
 import { devinDirectoryStatus } from "./devinCloudDirectory";
 import { syncCloudLaneMirror } from "../lanes/cloudLaneMirror";
 import { devinCloudAcpSessionId, devinCloudBareSessionId } from "./acpHost/acpDialects/devinCloud";
+import {
+  applyPersistedAcpModelCatalogs,
+  buildLiveAcpModelDescriptors,
+  recordAcpSessionModelCatalog,
+  warmAcpModelCatalog,
+} from "./acpHost/acpModelDiscovery";
 import {
   acquireDroidSdkConnection,
   releaseDroidSdkConnection,
@@ -5258,12 +5263,6 @@ function codexModelInfoFromDescriptor(
  * ADE's effort tiers among an ACP effort option's values, lowest first. A
  * value outside ADE's ladder (a dialect's "clear" sentinel) is not a tier.
  */
-function acpAdvertisedReasoningTiers(values: readonly string[]): string[] {
-  const ladder = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-  const offered = new Set(values.map((value) => value.trim().toLowerCase()));
-  return ladder.filter((tier) => offered.has(tier));
-}
-
 function acpModelInfoFromDescriptor(
   descriptor: ModelDescriptor,
   provider: AcpChatProvider,
@@ -31242,31 +31241,21 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "session_meta_updated", acpConfigSnapshot: next });
 
     // Live model discovery. The agent named the models this account can reach,
-    // so they join the registry alongside the curated rows. The effort option
-    // the session advertises (Grok's `reasoning_effort`) describes the current
-    // model; a live model that was current before keeps the efforts it had
-    // then, and the others take the session's list, the only evidence there
-    // is. Without it the newest models (grok-4.7) had no effort picker.
+    // and that list becomes the provider's picker (persisted, so a restart
+    // shows it too). The effort option the session advertises (Grok's and
+    // Copilot's `reasoning_effort`) describes the current model; see
+    // `buildLiveAcpModelDescriptors` for what the other models take.
     if (next.availableModelIds?.length) {
       const effortConfigId = runtime.dialect.reasoningEffortOption?.configId;
-      const advertisedTiers = acpAdvertisedReasoningTiers(
-        optionValues(effortConfigId ? runtime.configOptions.find((option) => option.id === effortConfigId) : undefined),
-      );
-      // What the registry already holds for each model: a curated row's
-      // researched (or previously reported) tiers, or what a live model had
-      // when it was current. Read before the merge replaces it.
-      const learnedTiers = new Map(
-        next.availableModelIds.map((modelId) => [
-          modelId,
-          resolveAcpModelDescriptor(runtime.provider, modelId)?.reasoningTiers,
-        ]),
-      );
-      mergeDynamicAcpModelDescriptors(
+      recordAcpSessionModelCatalog(
         runtime.provider,
-        next.availableModelIds.map((modelId) => {
-          const learned = learnedTiers.get(modelId);
-          const reasoningTiers = modelId === next.currentModelId || !learned?.length ? advertisedTiers : learned;
-          return createDynamicAcpModelDescriptor(runtime.provider, modelId, reasoningTiers.length ? { reasoningTiers } : undefined);
+        buildLiveAcpModelDescriptors({
+          provider: runtime.provider,
+          models: (modelOption?.options ?? []).map((entry) => ({ id: entry.id, name: entry.name })),
+          currentModelId: next.currentModelId,
+          advertisedEffortValues: optionValues(
+            effortConfigId ? runtime.configOptions.find((option) => option.id === effortConfigId) : undefined,
+          ),
         }),
       );
     }
@@ -59593,6 +59582,10 @@ export function createAgentChatService(args: {
           authReady = probe.state === "ready" || health?.state === "ready";
         }
         if (!authReady) return [];
+        // The provider's live list is the picker once it exists; refresh it in
+        // the background when missing or old (never blocks this read).
+        applyPersistedAcpModelCatalogs();
+        warmAcpModelCatalog(provider, { logger });
         if (provider === "qwen") {
           const settings = await loadQwenUserSettings();
           if (settings.models.length) {

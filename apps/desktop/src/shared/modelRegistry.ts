@@ -1331,6 +1331,8 @@ let dynamicAcpByAlias = new Map<string, ModelDescriptor>();
  * model is `xai/grok-4-5`; the two used to reach the picker as two rows.
  */
 const liveAcpReportsByProvider = new Map<AcpModelProviderGroup, Map<string, ModelDescriptor>>();
+/** ACP providers whose live list is authoritative. See `hasLiveAcpModelCatalog`. */
+const liveAcpCatalogProviders = new Set<AcpModelProviderGroup>();
 /**
  * Curated ACP rows as the picker sees them once a live session reported the
  * model: the curated row's own metadata with the efforts the live session
@@ -2274,9 +2276,11 @@ const ACP_GROUP_METADATA: Record<
  *
  * A provider catalog crosses the sync wire to the phone. Shipping an unbounded
  * discovered list is how 7238 OpenCode models once became a 4.85 MB payload, so
- * discovery is bounded here rather than at each consumer.
+ * discovery is bounded here rather than at each consumer. Once a live list
+ * exists it is the whole picker for that provider, so the cap sits above any
+ * real account catalog (Devin lists 52+ families) and only stops a runaway.
  */
-export const ACP_DYNAMIC_MODEL_LIMIT = 40;
+export const ACP_DYNAMIC_MODEL_LIMIT = 100;
 
 export function isAcpModelProviderGroup(value: string | null | undefined): value is AcpModelProviderGroup {
   return value != null && (ACP_MODEL_PROVIDER_GROUPS as readonly string[]).includes(value);
@@ -2327,7 +2331,8 @@ export function createDynamicAcpModelDescriptor(
     capabilities: {
       tools: options?.capabilities?.tools ?? true,
       vision: options?.capabilities?.vision ?? false,
-      reasoning: options?.capabilities?.reasoning ?? false,
+      // A model with an effort list reasons; handoff and effort clamping read this.
+      reasoning: options?.capabilities?.reasoning ?? Boolean(options?.reasoningTiers?.length),
       streaming: options?.capabilities?.streaming ?? true,
     },
     ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
@@ -2393,6 +2398,8 @@ export function replaceDynamicAcpModelDescriptors(
   }
   dynamicAcpByProvider.set(provider, next);
   liveAcpReportsByProvider.set(provider, reports);
+  if (next.size || reports.size) liveAcpCatalogProviders.add(provider);
+  else liveAcpCatalogProviders.delete(provider);
   rebuildCuratedAcpLiveRows();
 
   dynamicAcpByAlias = new Map<string, ModelDescriptor>();
@@ -2414,6 +2421,40 @@ export function replaceDynamicAcpModelDescriptors(
       }
     }
   }
+}
+
+/**
+ * True once the provider itself has named its models (a chat session, a
+ * discovery probe, or the persisted copy of either). From then on the live list
+ * is the whole picker: curated rows it does not name are hidden, and curated
+ * rows it names keep their researched name, color and context window.
+ */
+export function hasLiveAcpModelCatalog(provider: AcpModelProviderGroup): boolean {
+  return liveAcpCatalogProviders.has(provider);
+}
+
+/** Every live report for a provider as it arrived, curated or not. What a persisted catalog stores. */
+export function getLiveAcpModelDescriptors(provider: AcpModelProviderGroup): ModelDescriptor[] {
+  return [
+    ...(liveAcpReportsByProvider.get(provider)?.values() ?? []),
+    ...getDynamicAcpModelDescriptors(provider),
+  ];
+}
+
+/**
+ * What the curated (non-ACP) registry says about whether a model reasons,
+ * matched by model name across families: an ACP agent reports
+ * `claude-sonnet-4.6` for the model curated as Anthropic's
+ * `claude-sonnet-4-6`. Undefined when no curated row names the model.
+ */
+export function curatedReasoningHintForModelName(name: string): boolean | undefined {
+  const normalize = (value: string) => value.trim().toLowerCase().replace(/[._\s]+/g, "-");
+  const wanted = normalize(name);
+  if (!wanted) return undefined;
+  const row = MODEL_REGISTRY.find((candidate) =>
+    !candidate.providerRoute.endsWith("-acp")
+    && (normalize(candidate.providerModelId) === wanted || normalize(candidate.shortId) === wanted));
+  return row?.capabilities.reasoning;
 }
 
 /** Live ACP models the registry does not curate. Reports of curated models ride their curated row. */
@@ -2440,10 +2481,7 @@ export function mergeDynamicAcpModelDescriptors(
   provider: AcpModelProviderGroup,
   descriptors: ModelDescriptor[],
 ): void {
-  const existing = [
-    ...getDynamicAcpModelDescriptors(provider),
-    ...(liveAcpReportsByProvider.get(provider)?.values() ?? []),
-  ];
+  const existing = getLiveAcpModelDescriptors(provider);
   const incomingIds = new Set(descriptors.map((descriptor) => descriptor.id));
   const rest = existing.filter((descriptor) => !incomingIds.has(descriptor.id));
   replaceDynamicAcpModelDescriptors(provider, [...descriptors, ...rest]);
@@ -2452,6 +2490,7 @@ export function mergeDynamicAcpModelDescriptors(
 export function clearDynamicAcpModelDescriptors(): void {
   dynamicAcpByProvider.clear();
   liveAcpReportsByProvider.clear();
+  liveAcpCatalogProviders.clear();
   rebuildCuratedAcpLiveRows();
   dynamicAcpByAlias = new Map<string, ModelDescriptor>();
 }
@@ -3215,9 +3254,15 @@ function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescript
   // Curated rows first (with the efforts a live session reported), then the
   // live models the registry does not curate. The replacer folds every live
   // report of a curated model into its curated row, so this cannot duplicate
-  // a model.
+  // a model. Once the provider has named its models, curated rows are only
+  // shown when it named them: the curated table is the offline fallback, not
+  // a second catalog that drifts behind the provider's server.
   if (isAcpModelProviderGroup(provider)) {
-    return [...curated, ...getDynamicAcpModelDescriptors(provider)];
+    const reported = liveAcpReportsByProvider.get(provider);
+    const shownCurated = liveAcpCatalogProviders.has(provider)
+      ? curated.filter((descriptor) => reported?.has(descriptor.id))
+      : curated;
+    return [...shownCurated, ...getDynamicAcpModelDescriptors(provider)];
   }
   return curated;
 }

@@ -163,7 +163,7 @@ export function applyWindowsOwnerOnlyAcl(
       return { status: spawned.status, stderr: spawned.stderr ?? "", error: spawned.error };
     })();
   if (result.error || result.status !== 0) {
-    const detail = result.stderr?.trim();
+    const detail = result.stderr?.trim() || (result.error instanceof Error ? result.error.message.trim() : "");
     throw new Error(`Unable to secure Windows path with icacls${detail ? `: ${detail}` : ""}`);
   }
 }

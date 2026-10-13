@@ -278,6 +278,11 @@ async function walkPath(
         names = await fs.promises.readdir(currentPath);
       } catch (error) {
         if (isEnoentError(error)) return null;
+        // One folder this user cannot list (EPERM/EACCES, common under Windows
+        // temp dirs another process owns) counts as its own size, not as a
+        // failure of the whole storage report.
+        const code = (error as NodeJS.ErrnoException | null)?.code;
+        if (code === "EPERM" || code === "EACCES") return { currentPath, stat, children: [] as string[] };
         throw error;
       }
       return { currentPath, stat, children: names.map((name) => path.join(currentPath, name)) };

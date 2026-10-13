@@ -1,91 +1,30 @@
-import { useEffect, useState } from "react";
-import type {
-  DiagnosticsManualSendResult,
-  DiagnosticsSharingStatus,
-} from "../../../shared/types/diagnostics";
+import { useState } from "react";
+import type { DiagnosticsManualSendResult } from "../../../shared/types/diagnostics";
 import { describeManualSendFailure } from "../../../shared/diagnosticsUpload";
-import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { ModernRow, ModernRows, ModernSection } from "./primitives";
 
 /**
- * The off switch for automatic diagnostic reports — and the one place a user
- * can send one on purpose.
+ * The one place a person can send ADE a report on purpose.
  *
- * This is a consent control, so it reads the real persisted state rather than
- * assuming, and it says plainly what gets sent and how often. `getSharing` /
- * `setSharing` may be absent on a preload that predates the setting: the
- * switch then renders in its default position and stays disabled rather than
- * pretending to work.
+ * Automatic reports are not a setting here. ADE sends them by itself when a
+ * failure it has already classified happens, unless `DO_NOT_TRACK=1` is set.
+ * This section only offers the button.
  *
- * The manual send is here because the copy below already promised it. Every
- * other "Report issue" button in the app lives on a screen that has already
- * broken — a crash boundary, a recovery screen, a failed repair — so a user
- * whose app merely FEELS wrong had nowhere to press, while this section told
- * them ADE sends "the same report the Report issue button makes". That button
- * has to exist somewhere they can always reach.
+ * Every other "Report issue" button in the app sits on a screen that has
+ * already broken — a crash boundary, a recovery screen, a failed repair — so a
+ * user whose app merely FEELS wrong had nowhere to press. That button has to
+ * exist somewhere they can always reach.
  */
 export function DiagnosticsSharingSection() {
-  const bridge = window.ade?.diagnostics;
-  const [status, setStatus] = useState<DiagnosticsSharingStatus | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!bridge) return;
-    void bridge.getSharing()
-      .then((next) => {
-        if (!cancelled) setStatus(next);
-      })
-      .catch(() => {
-        if (!cancelled) setError("This setting is unavailable right now.");
-      });
-    return () => {
-      cancelled = true;
-    };
-    // `bridge` is the preload object; it is stable for the life of the window,
-    // and re-running on identity alone would refetch on every parent render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const setEnabled = async (enabled: boolean) => {
-    if (saving || !bridge) return;
-    setSaving(true);
-    setError(null);
-    try {
-      setStatus(await bridge.setSharing(enabled));
-    } catch {
-      setError("ADE could not save this setting.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   return (
     <ModernSection
-      group="Diagnostics sharing"
+      group="Send a report"
       anchor="diagnostics-sharing"
-      title="Diagnostics sharing"
-      hint="Send ADE a report when something breaks, so it can be fixed."
+      title="Send a report to ADE"
+      hint="Send ADE a report about how it is behaving, so it can be looked at."
     >
       <ModernRows>
-        <ModernRow
-          title="Share diagnostics with ADE when something breaks"
-          hint={'ADE sends the same report the "Report issue" button makes: app and system versions, recent ADE logs, disk space and the failure code. Paths, names, emails and credentials are removed first. Never your code, chats or terminal output.'}
-          control={
-            <SettingsToggle
-              label="Share diagnostics with ADE when something breaks"
-              checked={status?.enabled ?? true}
-              disabled={!status || saving}
-              onChange={(enabled) => void setEnabled(enabled)}
-            />
-          }
-        >
-          <p className="ade-modern-muted">
-            {`At most ${status?.limit ?? 3} a day, one per problem. You get a message every time one is sent.`}
-          </p>
-          {error ? <p role="alert" className="ade-modern-error" style={{ marginTop: 6 }}>{error}</p> : null}
-        </ModernRow>
-        <ManualDiagnosticsSend sharingEnabled={status?.enabled ?? true} />
+        <ManualDiagnosticsSend />
       </ModernRows>
     </ModernSection>
   );
@@ -100,7 +39,7 @@ export function DiagnosticsSharingSection() {
  * error screens send. This component only presses the button and reads the
  * answer back honestly.
  */
-function ManualDiagnosticsSend({ sharingEnabled }: { sharingEnabled: boolean }) {
+function ManualDiagnosticsSend() {
   const bridge = window.ade?.diagnostics;
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<DiagnosticsManualSendResult | null>(null);
@@ -127,7 +66,7 @@ function ManualDiagnosticsSend({ sharingEnabled }: { sharingEnabled: boolean }) 
   return (
     <ModernRow
       title="Send a report now"
-      hint="Something feels wrong but nothing has broken? Send one now."
+      hint={'Something feels wrong but nothing has broken? Sends the same report the "Report issue" button makes: app and system versions, recent ADE logs, disk space and the failure code. Paths, names, emails and credentials are removed first. Never your code, chats or terminal output.'}
       control={(
         <button
           type="button"
@@ -139,39 +78,21 @@ function ManualDiagnosticsSend({ sharingEnabled }: { sharingEnabled: boolean }) 
         </button>
       )}
     >
-      {/*
-        Consent, said out loud rather than quietly contradicted. A deliberate
-        click sends whether or not automatic sharing is on — the toggle is about
-        what ADE does BY ITSELF, and a user who turned it off still deserves a
-        way to ask for help — but they must never be able to mistake this click
-        for switching background reporting back on.
-      */}
-      {sharingEnabled && !result ? null : (
-        <div className="ade-modern-stack" style={{ gap: 6 }}>
-          {sharingEnabled ? null : (
-            <p className="ade-modern-muted">
-              Automatic reports are off. This sends one report, now. It does not turn
-              automatic reports back on.
-            </p>
-          )}
-
-          {result ? (
-            <p role="status" className={result.ok ? "ade-modern-muted" : "ade-modern-warn"} style={result.ok ? { color: "var(--kit-text-2)" } : undefined}>
-              {result.ok
-                ? `Report sent. Reference ${result.reference} — quote it if you get in touch.`
-                : describeManualSendFailure(result)}
-              {reportPath ? (
-                <>
-                  {" "}
-                  <button type="button" className="ade-modern-btn" data-variant="link" onClick={() => void bridge.revealReport(reportPath)}>
-                    View report
-                  </button>
-                </>
-              ) : null}
-            </p>
+      {result ? (
+        <p role="status" className={result.ok ? "ade-modern-muted" : "ade-modern-warn"} style={result.ok ? { color: "var(--kit-text-2)" } : undefined}>
+          {result.ok
+            ? `Report sent. Reference ${result.reference} — quote it if you get in touch.`
+            : describeManualSendFailure(result)}
+          {reportPath ? (
+            <>
+              {" "}
+              <button type="button" className="ade-modern-btn" data-variant="link" onClick={() => void bridge.revealReport(reportPath)}>
+                View report
+              </button>
+            </>
           ) : null}
-        </div>
-      )}
+        </p>
+      ) : null}
     </ModernRow>
   );
 }

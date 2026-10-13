@@ -1,6 +1,11 @@
 export function normalizeBrowserUrl(rawUrl: string): string {
   const trimmed = rawUrl.trim();
   if (!trimmed) throw new Error("Browser URL is required.");
+  // "C:\x", "C:/x" and "\\server\share" have no scheme, so they would parse as
+  // https://c/x and https://server/share: a silent navigation to a made-up host.
+  if (/^[a-zA-Z]:[\\/]/.test(trimmed) || /^\\\\/.test(trimmed) || /^file:\\/i.test(trimmed)) {
+    throw new Error("Local file paths are not supported in the ADE browser. Use an http:// or https:// URL.");
+  }
 
   const localhostLike = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::|\/|$)/i.test(trimmed);
   const hasScheme = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(trimmed) || /^about:/i.test(trimmed);

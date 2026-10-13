@@ -27,6 +27,8 @@ struct ADEApp: App {
 
   @MainActor
   init() {
+    // First, so a crash later in launch is still captured.
+    CrashReporting.start()
     ADEIntentCommandRegistry.register(ADESyncIntentBridge.shared)
     // Nothing from a previous launch can still be on screen, so this is the one
     // moment the whole preview cache is provably unreferenced. Previews are

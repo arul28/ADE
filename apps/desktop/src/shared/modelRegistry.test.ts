@@ -116,7 +116,7 @@ describe("modelRegistry", () => {
     }
   });
 
-  it("prefers a Qwen model discovered from the CLI settings over curated Alibaba rows", () => {
+  it("shows only the live Qwen list once one exists, in place of the curated Alibaba rows", () => {
     try {
       replaceDynamicAcpModelDescriptors("qwen", [
         createDynamicAcpModelDescriptor("qwen", "gpt-5.5"),
@@ -124,7 +124,7 @@ describe("modelRegistry", () => {
       const models = listModelDescriptorsForProvider("qwen");
       expect(models[0]?.providerModelId).toBe("gpt-5.5");
       expect(getDefaultModelDescriptor("qwen")?.providerModelId).toBe("gpt-5.5");
-      expect(models.some((model) => model.providerModelId === "qwen3-coder-plus")).toBe(true);
+      expect(models.some((model) => model.providerModelId === "qwen3-coder-plus")).toBe(false);
     } finally {
       clearDynamicAcpModelDescriptors();
     }

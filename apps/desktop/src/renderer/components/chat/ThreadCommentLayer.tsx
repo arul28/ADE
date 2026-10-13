@@ -21,6 +21,7 @@ import {
   ThreadCommentEditor,
   ThreadCommentListItem,
   threadCommentErrorText,
+  useCloseWhenSurfaceHidden,
   useThreadCommentActions,
 } from "./ThreadCommentControls";
 import { addLocalThreadComment, THREAD_COMMENT_FOCUS_EVENT, threadCommentsApi } from "./threadCommentsStore";
@@ -34,6 +35,8 @@ const CARD_GAP_PX = 8;
 const POPOVER_WIDTH_PX = 300;
 
 type Draft = {
+  /** The chat the box was opened in. */
+  sessionId: string;
   messageKey: string;
   messageExcerpt: string;
   anchor: ChatThreadCommentAnchor;
@@ -44,6 +47,30 @@ type Draft = {
   /** What the box holds when it reopens after a failed save. */
   body?: string;
 };
+
+/**
+ * Text typed into a comment box that closed without saving because the user
+ * left (another chat, project or tab). Opening a comment on the same text in
+ * the same chat brings it back. In memory only, and capped.
+ */
+const unsavedDraftBodies = new Map<string, string>();
+const MAX_UNSAVED_DRAFTS = 50;
+
+function unsavedDraftKey(draft: Pick<Draft, "sessionId" | "messageKey" | "anchor">): string {
+  return JSON.stringify([draft.sessionId, draft.messageKey, draft.anchor]);
+}
+
+function keepUnsavedDraftBody(draft: Draft, body: string): void {
+  const key = unsavedDraftKey(draft);
+  unsavedDraftBodies.delete(key);
+  if (!body.trim()) return;
+  unsavedDraftBodies.set(key, body);
+  // A Map iterates oldest first: drop from the front.
+  for (const stale of unsavedDraftBodies.keys()) {
+    if (unsavedDraftBodies.size <= MAX_UNSAVED_DRAFTS) break;
+    unsavedDraftBodies.delete(stale);
+  }
+}
 
 type Resolved = {
   comment: ChatThreadComment;
@@ -126,10 +153,14 @@ export function ThreadCommentLayer({
   onCreateIssue?: (text: string) => void;
 }) {
   const actions = useThreadCommentActions(sessionId, pin);
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const [draft, setDraft] = useState<Draft | null>(null);
   // Read after an await, so a failed save can tell whether a newer box is open.
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  // What the open box holds right now, kept when the box closes because the user left.
+  const draftBodyRef = useRef("");
   const [draftError, setDraftError] = useState<string | null>(null);
   const [openCommentId, setOpenCommentId] = useState<string | null>(null);
   const { editingId, stopEditing } = actions;
@@ -146,16 +177,53 @@ export function ThreadCommentLayer({
   const commentsRef = useRef(comments);
   commentsRef.current = comments;
 
+  /** Closes the new-comment box, keeping what was typed for the same text. */
+  const closeDraftKeepingText = useCallback(() => {
+    const open = draftRef.current;
+    if (open) keepUnsavedDraftBody(open, draftBodyRef.current);
+    draftRef.current = null;
+    setDraft(null);
+    setDraftError(null);
+  }, []);
+
+  /** Closes the box for good (Cancel, Escape, saved): nothing comes back. */
+  const discardDraft = useCallback(() => {
+    const open = draftRef.current;
+    if (open) unsavedDraftBodies.delete(unsavedDraftKey(open));
+    draftRef.current = null;
+    setDraft(null);
+    setDraftError(null);
+  }, []);
+
+  const openDraft = useCallback((next: Draft) => {
+    closeDraftKeepingText();
+    const body = next.body ?? unsavedDraftBodies.get(unsavedDraftKey(next));
+    draftBodyRef.current = body ?? "";
+    setOpenCommentId(null);
+    setDraft(body ? { ...next, body } : next);
+  }, [closeDraftKeepingText]);
+
   // ── Start a comment from a text selection ──
   const startFromSelection = useCallback((selection: AssistantOutputSelection) => {
     const messageKey = selection.output.dataset.threadCommentKey;
     if (!messageKey) return;
     const anchor = captureTextAnchor(selection.output, selection.range);
     if (!anchor) return;
-    setDraftError(null);
+    openDraft({ sessionId, messageKey, messageExcerpt: messageExcerptOf(selection.output), anchor, rect: selection.rect, range: selection.range });
+  }, [openDraft, sessionId]);
+
+  // What is open belongs to the chat on screen. Another chat or machine, or
+  // the pane going away, closes it; typed text is kept for later.
+  const closeAll = useCallback(() => {
+    closeDraftKeepingText();
     setOpenCommentId(null);
-    setDraft({ messageKey, messageExcerpt: messageExcerptOf(selection.output), anchor, rect: selection.rect, range: selection.range });
-  }, []);
+    setRowButton(null);
+    stopEditing();
+  }, [closeDraftKeepingText, stopEditing]);
+  const pinKey = pin?.key ?? null;
+  useEffect(() => closeAll, [closeAll, pinKey, sessionId]);
+  // So does its surface parking (another app tab or project tab on screen).
+  useCloseWhenSurfaceHidden(rootRef, Boolean(draft || openCommentId || editingId), closeAll);
 
   // ── Find every comment's text again ──
   const resolvedRef = useRef<Resolved[]>([]);
@@ -276,12 +344,12 @@ export function ThreadCommentLayer({
         }
       });
       if (!hit) return;
-      setDraft(null);
+      closeDraftKeepingText();
       setOpenCommentId(hit.comment.id);
     };
     root.addEventListener("click", onClick);
     return () => root.removeEventListener("click", onClick);
-  }, [resolved, rootRef]);
+  }, [closeDraftKeepingText, resolved, rootRef]);
 
   // ── Table rows: a comment button at the row's right edge ──
   useEffect(() => {
@@ -322,11 +390,9 @@ export function ThreadCommentLayer({
     const anchor = captureTableRowAnchor(message, row);
     if (!anchor) return;
     setRowButton(null);
-    setDraftError(null);
-    setOpenCommentId(null);
     const range = document.createRange();
     range.selectNodeContents(row);
-    setDraft({ messageKey, messageExcerpt: messageExcerptOf(message), anchor, rect: row.getBoundingClientRect(), range });
+    openDraft({ sessionId, messageKey, messageExcerpt: messageExcerptOf(message), anchor, rect: row.getBoundingClientRect(), range });
   };
 
   // ── "Show in thread" from the composer list ──
@@ -341,24 +407,24 @@ export function ThreadCommentLayer({
       const range = message ? resolveThreadCommentRange(message, comment.anchor) : null;
       const target = range?.startContainer.parentElement ?? message;
       target?.scrollIntoView({ block: "center", behavior: "smooth" });
-      setDraft(null);
+      closeDraftKeepingText();
       setOpenCommentId(comment.id);
     };
     window.addEventListener(THREAD_COMMENT_FOCUS_EVENT, onFocus);
     return () => window.removeEventListener(THREAD_COMMENT_FOCUS_EVENT, onFocus);
-  }, [rootRef, sessionId]);
+  }, [closeDraftKeepingText, rootRef, sessionId]);
 
   // Escape closes whatever is open.
   useEffect(() => {
     if (!draft && !openCommentId) return undefined;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || editingId) return;
-      setDraft(null);
+      discardDraft();
       setOpenCommentId(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [draft, editingId, openCommentId]);
+  }, [discardDraft, draft, editingId, openCommentId]);
 
   // A comment that went with a send, or was deleted elsewhere, closes.
   useEffect(() => {
@@ -383,15 +449,19 @@ export function ThreadCommentLayer({
       body,
     };
     const settle = addLocalThreadComment(sessionId, fields);
-    setDraft(null);
-    setDraftError(null);
+    discardDraft();
     try {
       settle(await api.create({ sessionId, ...fields }, pin ?? null));
     } catch (error) {
       settle(null);
       // Reopen the box with the text and the reason, unless another comment
-      // was started since; that box is the user's now.
-      if (draftRef.current) return;
+      // was started since (that box is the user's now) or the user left this
+      // chat; then the text waits for the next box on the same words.
+      if (draftRef.current || saving.sessionId !== sessionIdRef.current) {
+        keepUnsavedDraftBody(saving, body);
+        return;
+      }
+      draftBodyRef.current = body;
       setDraft({ ...saving, body });
       setDraftError(threadCommentErrorText(error));
     }
@@ -507,11 +577,16 @@ export function ThreadCommentLayer({
               style={{ ...placeNear(draft.rect, "above"), width: POPOVER_WIDTH_PX }}
             >
               <ThreadCommentEditor
+                // A box on other text starts from that text's own body.
+                key={unsavedDraftKey(draft)}
                 initialBody={draft.body}
                 error={draftError}
                 placeholder="Comment for the agent. It goes with your next message."
                 onSave={(body) => void saveDraft(body)}
-                onCancel={() => setDraft(null)}
+                onCancel={discardDraft}
+                onBodyChange={(body) => {
+                  draftBodyRef.current = body;
+                }}
               />
             </div>
           </ViewportOverlayPortal>

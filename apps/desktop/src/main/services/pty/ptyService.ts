@@ -938,8 +938,22 @@ function terminatePtyProcessTree(
           invocation.command,
           invocation.args,
           { timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true },
-          (error) => {
-            if (error || !force) return;
+          (error, _stdout, stderr) => {
+            if (error) {
+              // Kill behavior is unchanged (node-pty's own kill still runs);
+              // this only makes a failed tree kill visible.
+              logger.warn("pty.taskkill_failed", {
+                sessionId: entry.sessionId,
+                toolType: entry.toolTypeHint,
+                rootPid,
+                force,
+                code: (error as NodeJS.ErrnoException).code ?? null,
+                error: error.message.slice(0, 300),
+                stderr: String(stderr ?? "").trim().slice(0, 300),
+              });
+              return;
+            }
+            if (!force) return;
             logger.warn("pty.process_tree_force_killed", {
               sessionId: entry.sessionId,
               toolType: entry.toolTypeHint,
@@ -948,8 +962,14 @@ function terminatePtyProcessTree(
             });
           },
         );
-      } catch {
+      } catch (error) {
         // taskkill may be unavailable; node-pty's own kill path still runs.
+        logger.warn("pty.taskkill_failed", {
+          sessionId: entry.sessionId,
+          rootPid,
+          force,
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+        });
       }
     };
 

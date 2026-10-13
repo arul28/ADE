@@ -995,6 +995,7 @@ final class AccountService: ObservableObject {
       if identity?.userId != nextIdentity.userId {
         invalidatePairingAuthorization()
         clearAttentionSnapshot()
+        CrashReporting.setUser(accountId: nextIdentity.userId)
       }
       SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nextIdentity.userId)
       identity = nextIdentity
@@ -1064,6 +1065,7 @@ final class AccountService: ObservableObject {
     SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nil)
     identity = nil
     ProductAnalytics.shared.resetAccountIdentity()
+    if previousOwnerId != nil { CrashReporting.setUser(accountId: nil) }
     machines = []
     machinesState = .idle
     phase = .signedOut

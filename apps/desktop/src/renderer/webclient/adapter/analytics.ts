@@ -36,7 +36,8 @@ function fallbackStatus(enabled: boolean): ProductAnalyticsStatus {
   };
 }
 
-// Analytics are on unless the browser has explicitly opted out in Settings.
+// Analytics are on unless this browser has explicitly opted out (a stored
+// "false"). No UI sets it now; an earlier opt-out is still honored.
 function readEnabledPreference(): boolean {
   try {
     return typeof window === "undefined"

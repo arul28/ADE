@@ -80,7 +80,11 @@ test("the JS SDKs and launchers still ship", () => {
 // (`build.files` stays a JSON array by deliberate choice -- migrating it to a
 // generated JS config was declined -- so this test is the guardrail that keeps
 // the array and the canonical list from drifting apart.)
-const NON_TOOL_FILES_EXCLUSIONS = Object.freeze([]);
+const NON_TOOL_FILES_EXCLUSIONS = Object.freeze([
+  // Release builds emit source maps for Sentry (ADE_BUILD_SOURCEMAPS=1); they
+  // are uploaded from CI and must never ship to users.
+  "!dist/**/*.map",
+]);
 
 test("every build.files negation traces back to the canonical list", () => {
   const negations = buildFiles.filter(

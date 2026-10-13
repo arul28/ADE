@@ -50,6 +50,7 @@ import {
   type OpenBuiltInBrowserDetail,
 } from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
+import { readLastOpenChat, rememberLastOpenChat } from "../../state/lastOpenChat";
 import { openChatInBrowserTab, openUrlInBrowserTab } from "../browser/browserTab";
 import { useAgentBrowserPresenceSince } from "../terminals/agentBrowserPresence";
 import { ChatSceneBackdrop } from "./ChatSceneBackdrop";
@@ -129,7 +130,13 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     [projectBinding, webMachines, webMachines?.machineId],
   );
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The chat open in the pane. Leaving the page (or the window) and coming
+  // back reopens the one you were in; only New chat starts a draft.
+  const [selectedId, setSelectedId] = useState<string | null>(() => readLastOpenChat(targetKey) ?? null);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  const targetKeyRef = useRef(targetKey);
+  targetKeyRef.current = targetKey;
   // Bumped only when the user navigates (picks a chat, starts a new one), so a
   // chat created by the pane's own first send keeps the same pane mounted.
   const [paneGeneration, setPaneGeneration] = useState(0);
@@ -173,7 +180,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     const archived = showArchivedRef.current;
     const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: archived });
     // A reply for the other view (the toggle moved mid-flight) is dropped too.
-    if (generation !== targetGenerationRef.current || archived !== showArchivedRef.current) return;
+    if (generation !== targetGenerationRef.current || archived !== showArchivedRef.current) return null;
     const listed = Array.isArray(rows) ? rows : [];
     // `includeArchived` returns live chats as well; the archived view shows only the archived ones.
     const inView = listed.filter((session) => Boolean(session.archivedAt) === archived);
@@ -181,12 +188,14 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       (left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt),
     );
     setSessions(ordered);
+    return ordered;
   }, []);
 
   useEffect(() => {
     const generation = ++targetGenerationRef.current;
+    const restoredId = readLastOpenChat(targetKey) ?? null;
     setSessions([]);
-    setSelectedId(null);
+    setSelectedId(restoredId);
     setMultiSelectedIds(EMPTY_SELECTION);
     setSelectionAnchorId(null);
     setRowMenu(null);
@@ -195,7 +204,16 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     setToolPanel(null);
     setLoading(true);
     setError(null);
-    void refreshSessions(generation).catch((reason) => {
+    void refreshSessions(generation).then((rows) => {
+      // The chat to reopen was deleted or archived since: open the most
+      // recent one instead, or a draft when there is none.
+      if (!rows || !restoredId || selectedIdRef.current !== restoredId) return;
+      if (rows.some((session) => session.sessionId === restoredId)) return;
+      const fallbackId = rows[0]?.sessionId ?? null;
+      rememberLastOpenChat(targetKey, fallbackId);
+      setSelectedId(fallbackId);
+      setPaneGeneration((value) => value + 1);
+    }, (reason) => {
       if (generation === targetGenerationRef.current) {
         setError(reason instanceof Error ? reason.message : String(reason));
       }
@@ -281,6 +299,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
 
 
   const selectSession = useCallback((sessionId: string | null) => {
+    rememberLastOpenChat(targetKeyRef.current, sessionId);
     setSelectedId(sessionId);
     setPaneGeneration((value) => value + 1);
     setRowMenu(null);
@@ -300,6 +319,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
 
   const handleSessionCreated = useCallback((session: AgentChatSession) => {
     // Same pane, now locked to the chat its first message created.
+    rememberLastOpenChat(targetKeyRef.current, session.id);
     setSelectedId(session.id);
     void refreshSessions().catch(() => undefined);
   }, [refreshSessions]);
