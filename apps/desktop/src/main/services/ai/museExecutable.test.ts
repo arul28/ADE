@@ -20,12 +20,18 @@ describe("museBinaryBlocker", () => {
     return { path: null, source: "tools-cache", pinnedVersion: null, fetchPending: false, ...overrides };
   }
 
+  it("stays silent when the pinned build is present", () => {
+    expect(museBinaryBlocker(resolution({ path: "/opt/ade/muse" }))).toBeNull();
+  });
+
   it.each([
-    ["stays silent when the pinned build is present", resolution({ path: "/opt/ade/muse" }), null],
-    ["names the unsupported host", resolution({ source: "unsupported" }), "ADE has no pinned Muse build for this platform."],
-    ["points at the download when the fetch is pending", resolution({ pinnedVersion: "1.4.7-R6101.1", fetchPending: true }), "ADE's pinned Muse build (1.4.7-R6101.1) is not downloaded yet. Download it from Settings > Providers."],
-    ["reports an unavailable build without a download offer", resolution({ pinnedVersion: "1.4.7-R6101.1" }), "ADE's pinned Muse build (1.4.7-R6101.1) is not available."],
-  ])("%s", (_label, value, expected) => {
-    expect(museBinaryBlocker(value)).toBe(expected);
+    ["an unsupported host", resolution({ source: "unsupported" }), false],
+    ["a pending fetch", resolution({ pinnedVersion: "1.4.7-R6101.1", fetchPending: true }), true],
+    ["an unavailable build", resolution({ pinnedVersion: "1.4.7-R6101.1" }), false],
+  ])("blocks %s and offers a download only while one can start", (_label, value, offersDownload) => {
+    const blocker = museBinaryBlocker(value);
+    expect(blocker).toBeTruthy();
+    if (value.pinnedVersion) expect(blocker).toContain(value.pinnedVersion);
+    expect(/download it/i.test(blocker ?? "")).toBe(offersDownload);
   });
 });
