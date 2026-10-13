@@ -181,6 +181,8 @@ UI, against a running dev app (`scripts/perf/ui/`):
 | `typing.mjs <keys>` | Types into the composer; keystroke events slower than 16 ms |
 | `keystroke-trace.mjs <keys>` | Renderer work per keystroke, split into style, layout, paint and script |
 | `cdp.mjs eval\|metrics\|profile\|shot\|anim` | One-off probes: evaluate, metrics delta, CPU profile with top functions, screenshot, running animations |
+| `music-host.sh <secs>` | CPU %, RSS and physical footprint of the macOS Apple Music host and the WebKit processes it started |
+| `music.mjs first-play cold\|warm`, `music.mjs pushes <secs>` | Time from Play to the first playing state, with the host stopped or running; Music state pushes a window receives |
 
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
@@ -324,6 +326,52 @@ mounting the tab, not by anything this pass changed. The heap rows need the
 snapshot file to show a difference; without it both columns read about 130 MB.
 A DevTools window draws 240 frames a second on this display by itself, so
 close it before any idle or GPU number (see the gotchas above).
+
+### Apple Music (the macOS player host and the Music tab)
+
+Measured 2026-10-13 on this Mac Studio, dev build in an App Control session,
+DevTools window closed, baseline at `2b449846f`. Signed out, so playback is a
+30-second catalog preview (the host, MusicKit and the UI do the same work for a
+full track; the FairPlay decode happens in WebKit's GPU process, which is in
+the host rows). The host is new on macOS, so its rows have no before. The tab
+rows are an interleaved A/B in one session, with the old progress-line
+transition put back by an injected style for "before". Other agents were
+running on the machine.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Player host and its WebKit processes, playing: CPU | `music-host.sh 10` | — | 0.5-0.8% | 3% |
+| Same, playing: physical footprint | same | — | 75-81 MB | 120 MB |
+| Same, paused (until the 5-minute unload): CPU / footprint | same | — | 0.0-0.2% / 73-75 MB | 1% / 120 MB |
+| Electron GPU process, playing, Work tab in front | `process-cpu.sh 8` | 21-28% | 1.9-2.5% | 5% |
+| Renderer, playing, Work tab in front | same | 11.3-14.5% | 5.4-7.1% | 10% |
+| Compositor draws, playing, Work tab in front | `gpu-trace.mjs 4` | 240/s | 2/s | 5/s |
+| Electron GPU process, playing, Music tab in front | `process-cpu.sh 8` | 26% | 12% | 15% |
+| Renderer, playing, Music tab in front | same | 10.4% | 4.9-5.0% | 8% |
+| Music state pushes to each window, steady playback | `music.mjs pushes 12` | 0.75/s | 0/s | 0.2/s |
+| First playing push after Play, host not running | `music.mjs first-play cold` | — | 0.76-1.15 s | 2 s |
+| Same, host running | `music.mjs first-play warm` | — | 0.16-0.39 s | 0.6 s |
+| Switching to the Music tab: long tasks / idle main thread | `route-sweep.mjs` | — | 0 ms / 0.9-2.3 ms/s | 100 ms / 30 ms/s |
+
+The scripts default to CDP port 9222; an App Control launch picks its own, so
+pass `CDP_PORT=<port>` (and edit the port in `process-cpu.sh` and
+`gpu-trace.mjs`, which pin 9222).
+
+- **The tab's progress line** restarted a 1 s linear transition on every
+  position tick, so Chromium drew the whole window at display rate for as
+  long as a song played, on every tab. It now steps once a second.
+- **State pushes:** the host ticks the position once a second, and the main
+  process forwarded each tick to every window. Renderers interpolate the
+  position, so a tick that agrees with that within 1.25 s is now dropped
+  (MusicKit reports whole seconds), as is a broadcast equal to the last one.
+- **The host** is a WKWebView with no window on screen, which WebKit throttles
+  like a background tab; 73-81 MB across the host, its WebContent, Networking
+  and GPU processes. The Windows host (WebView2) measured 141 MB private.
+- **Open item:** while the playing song's row is on screen, its three
+  equalizer bars (a CSS `steps()` animation) make Chromium update style and
+  draw every frame (243 style updates/s on this 240 Hz display). Driving the
+  same steps from Web Animations or from a timer cut style updates to 53-62/s
+  but did not lower renderer or GPU process CPU in an A/B, so the CSS stays.
 
 ### Hosted web client
 

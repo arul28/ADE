@@ -30,8 +30,12 @@ One visual language in three sizes (`MusicPlayer.tsx`):
 The scrubber and volume are `MusicSlider`: click or drag anywhere (the pointer
 is captured, so a drag may leave the track), or use the arrow, Page, Home and
 End keys. Only `MusicSeek` and the tab's progress line re-render on the position
-tick (twice and once a second); the store keeps `nowPlaying` and `host` objects
-stable across the main process's once-a-second pushes, so nothing else does.
+tick (twice and once a second), from the renderer's own interpolation: the main
+process pushes state only when it changes (a steady song pushes nothing; see
+"Position pushes" below), and the store keeps `nowPlaying` and `host` objects
+stable across pushes, so nothing else re-renders. The progress line steps once
+a second with no transition: a 1 s linear transition restarted every tick kept
+the compositor drawing the whole window at display rate for the whole song.
 Buttons grow on hover and press and the fill springs on a real jump; all of
 that is off under the OS or ADE's Reduce motion.
 
@@ -66,8 +70,11 @@ the official app icon from Apple Music Marketing Tools
 (tools.applemediaservices.com) before a public release**; a redrawn icon does
 not meet the guidelines.
 
-Status (2026-10-08): **Windows plays full tracks after sign-in (verified by the
-user).** macOS shows "Music on Mac is coming".
+Status (2026-10-13): **Windows plays full tracks after sign-in (verified by the
+user).** macOS has its own host (`native/ADEMusicHostMac`): catalog, charts,
+previews, transport, idle unload and resume verified in a dev build; FairPlay
+(`com.apple.fps`) is available to it. Other platforms show "Music isn't
+available here".
 
 ## How it works
 
@@ -78,6 +85,7 @@ Main process: musicService
    ├─ browsing ──► api.music.apple.com   (developer token + Music-User-Token)
    └─ playback ──► player host, stdio JSON
                      Windows: ade-music-host.exe (WebView2, hidden window)
+                     macOS:   ade-music-host (WKWebView, no window on screen)
                        └─ https://music.ade.local/index.html → MusicKit JS v3
 ```
 
@@ -92,7 +100,18 @@ Main process: musicService
   and the mini player keeps showing the last song.
 - **DRM.** WebView2's Widevine/PlayReady CDM plays full tracks (proved in the
   `tmp/spike-webview2-music` spike). Never pass `--disable-component-update` to
-  WebView2: it removes the Widevine CDM and only previews play.
+  WebView2: it removes the Widevine CDM and only previews play. On macOS,
+  WebKit's FairPlay CDM (`com.apple.fps`, no Widevine) is available to the
+  unsigned dev host as well as the signed one.
+- **Position pushes.** The host ticks the position once a second while
+  playing. Renderers interpolate from `position` + `positionAt`, so the main
+  process re-anchors (and pushes) only when a tick or state event disagrees by
+  more than 1.25 s (MusicKit reports whole seconds), or the play state, song or
+  duration changed; a broadcast equal to the last one is not sent.
+- **Resume second.** A restored queue is loaded with `play:false`; MusicKit
+  drops a seek made before the song has loaded, so `player.js` keeps the
+  second as `pendingSeek`, reports it as the current time, and seeks right
+  after the next play.
 
 ## Tokens and secrets
 
@@ -107,7 +126,8 @@ stored token and stops the host without keeping a queue snapshot. When the host
 is not running there is nothing else to clear: the profile holds no token (a
 token an older build left there is deleted before MusicKit loads on the next
 start). A 401 from Apple on a `/v1/me` call drops the token too (a 403 does
-not: it can mean "no subscription").
+not: it can mean "no subscription"). On macOS the same page runs, so the same
+deletion applies to the WebKit data store's localStorage.
 
 ## The player host (Windows)
 
@@ -155,10 +175,6 @@ not: it can mean "no subscription").
 Wire format, one JSON object per line: `{"rid":"r1","cmd":"seek","position":60}`
 in, `{"reply":"r1","ok":true,"result":{…}}` or `{"event":"time",…}` out.
 
-macOS implements the same protocol later (a WKWebView helper with FairPlay).
-`resolveMusicHostExecutable` (`services/native/nativeHelperPaths.ts`) returns null off Windows today, which is what puts
-the tab in the "coming" state.
-
 ### Building and shipping it
 
 `npm --prefix apps/desktop run build:music-host:win` (also part of `dist:win`
@@ -176,6 +192,57 @@ and `dist:win:signed`):
 The WebView2 runtime itself is not bundled: Windows 11 ships it. Without it the
 host reports `webview2_missing`. `ADE_MUSIC_HOST_PATH` overrides the exe for
 development; `ADE_MUSIC_HOST_SHOW=1` shows the player window (with DevTools).
+
+## The player host (macOS)
+
+`apps/desktop/native/ADEMusicHostMac/` (Swift package, product
+`ade-music-host`, macOS 13+): an `NSApplication` (accessory, no Dock icon)
+with one WKWebView in a window that is never shown, so WebKit throttles it like
+a background tab. Same protocol, same arguments (`--gpu` is accepted and
+ignored) and the same `page/` as Windows:
+
+- **The page.** WKWebView cannot map a folder to an https origin, so the host
+  reads `page/index.html` and loads it with `loadSimulatedRequest` as
+  `https://music.ade.local/index.html` (a secure context, which EME needs).
+  `player.js` is injected as a document-start user script behind a shim that
+  gives it the `window.chrome.webview` bridge it was written for
+  (`postMessage` out through a `WKScriptMessageHandler`, commands in through
+  `callAsyncJavaScript`). Both scripts run only on that origin, and only the
+  page's main frame may post to ADE. The `<script src="player.js">` tag is
+  removed (it would ask the network for `music.ade.local`), and the app icon
+  URL Apple's Allow screen loads is replaced with the PNG as a data URL.
+- **Profile.** macOS 14+: a persistent `WKWebsiteDataStore(forIdentifier:)`
+  whose UUID is derived from `--udf`, so dev and installed builds keep apart;
+  macOS 13 uses the default store. MusicKit's saved user token is deleted by
+  `player.js` exactly as on Windows.
+- **Sign-in.** MusicKit's `window.open` becomes a real WKWebView created from
+  WebKit's configuration (so `window.opener` works) with an empty content
+  controller (nothing of ADE's runs in Apple's page), in a light-appearance
+  window that floats above other apps until it closes. A background helper may
+  not be allowed to take focus, so floating is what keeps it visible; one
+  click makes it key. A minimal Edit menu makes Cmd-V work in Apple's fields.
+  `showAuth` / `closeAuth` work as on Windows.
+- **Navigation.** Top-level navigations go only to the page,
+  `https://*.apple.com` and `https://*.icloud.com`.
+- **Exit.** stdin EOF, `{"cmd":"quit"}`, or `--parent-pid` exiting (a
+  dispatch process source). If WebKit's WebContent process dies, the host
+  reports `hostError process_failed` and exits, so the next play starts a
+  fresh host. WebKit's WebContent, Networking and GPU processes are XPC
+  services and exit with the host.
+- **Memory.** 73-81 MB physical footprint across the host and its three
+  WebKit processes, playing or paused (see `docs/perf/macos-baseline.md`).
+
+`npm --prefix apps/desktop run build:music-host:mac` (also part of
+`build:mac-native`, so every `dist:mac*`) builds both architectures with
+SwiftPM, folds them with `lipo` and writes `resources/native/ade-music-host/`
+(`ade-music-host` plus `page/` copied from `ADEMusicHostWin/page`), which a mac
+`extraResources` entry ships. electron-builder signs it with the app
+(hardened runtime, the inherited entitlements) and the app is notarized
+whole. The release caches and attests the binary with the other Swift helpers
+(`.github/actions/release-cache-keys`), and `validate-mac-artifacts.mjs`
+checks it is universal and the page is present. `ADE_MUSIC_HOST_PATH`
+overrides it in development and `ADE_MUSIC_HOST_SHOW=1` shows the player
+window (Web Inspector enabled).
 
 ## Renderer API (for widgets)
 
@@ -228,8 +295,10 @@ formatMusicTime(seconds)
 | `apps/desktop/src/main/services/music/musicDeveloperToken.ts` | Dev-only local minting and the Worker fetch. |
 | `apps/desktop/src/main/services/music/registerMusicIpc.ts` | IPC handlers (ADE renderer only) and app wiring. |
 | `apps/desktop/src/renderer/components/music/` | `MusicPage` (the shell: rail, alert, player card or bar), one file per view (`MusicSearchView`, `MusicLibraryView` with Recently played, `MusicDetailView`, `MusicQueueView`) and their shared `musicViewParts`, `musicQueue` (every song play: catalog ids, queue windows, Play Next / Later), `MusicPlayer` (card, slider, transport, volume, Love, artwork backdrop), `MusicNowPlayingBar`, `MusicTabContent` (the tab as player), `MusicWelcome` (signed-out page, Connect, sign-in controls), `MusicAccount` (rail account menu), `musicParts`, `musicStore`, `musicTab`, `music.css` (imports `music-*.css` in cascade order), `assets/`. |
-| `apps/desktop/native/ADEMusicHostWin/` | The Windows player host and its page. |
-| `apps/desktop/scripts/build-music-host-win.mjs` | Reproducible host build. |
+| `apps/desktop/native/ADEMusicHostWin/` | The Windows player host and the player page both hosts run. |
+| `apps/desktop/native/ADEMusicHostMac/` | The macOS player host (Swift, WKWebView). |
+| `apps/desktop/scripts/build-music-host-win.mjs`, `build-music-host-mac.mjs` | Reproducible host builds. |
+| `scripts/perf/ui/music-host.sh`, `music.mjs` | Host CPU and memory; time to first play and state pushes. |
 | `apps/account-directory/src/musicDeveloperToken.ts` | The Worker route that mints developer tokens. |
 
 ## Failure modes
@@ -237,13 +306,16 @@ formatMusicTime(seconds)
 - **No developer token:** signed out of ADE (production), the Worker has no key
   (503 `music_unavailable`), or no network. The tab shows "Music isn't
   available right now" with the reason and a Try again button.
-- **Host binary missing:** dev builds say to run the build script; installs say
-  to reinstall.
+- **Host binary missing:** dev builds say to run the build script
+  (`build:music-host:win` or `build:music-host:mac`); installs say to
+  reinstall.
 - **WebView2 runtime missing or broken:** `hostError` `webview2_missing` or
   `process_failed`; the next play starts a fresh host.
 - **MusicKit CDN unreachable:** `loadFailed` after 20 s, shown in the tab.
 - **Sign-in closed:** the window closing ends the wait after 2.5 s as
-  "cancelled"; MusicKit's own promise can otherwise hang.
+  "cancelled"; MusicKit's own promise can otherwise hang. A sign-in that ends
+  any other way without a token (the 10-minute timeout, an error) closes
+  Apple's window.
 - **Token expiry mid-session:** a host keeps the developer token it was
   configured with (MusicKit has no way to swap it), so every token it gets has
   at least 24 h left and usually days; a host that played without a single

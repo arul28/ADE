@@ -23,8 +23,9 @@ import { isWebClientMode } from "../../lib/webClientMode";
  * - `musicActions`: transport, queue, Connect, and `open()` for the Music tab.
  *
  * One IPC subscription serves every component, opened the first time any of
- * them mounts. The main process pushes state on change and once a second while
- * playing; the position hook interpolates between pushes.
+ * them mounts. The main process pushes state when it changes; while a song
+ * plays steadily nothing is pushed, and the position hook interpolates from the
+ * last push.
  */
 
 type Store = {
@@ -56,9 +57,9 @@ function sameNowPlaying(a: MusicNowPlaying | null, b: MusicNowPlaying | null): b
 }
 
 /**
- * Keep the previous objects for the parts that did not change. The main process
- * pushes a fresh state once a second while playing; reusing `nowPlaying` and
- * `host` keeps selectors on them stable, so only position readers re-render.
+ * Keep the previous objects for the parts that did not change. Every push is a
+ * fresh object; reusing `nowPlaying` and `host` keeps selectors on them stable,
+ * so a position re-anchor re-renders only position readers.
  */
 function share(prev: MusicState | null, next: MusicState | null): MusicState | null {
   if (!prev || !next) return next;
