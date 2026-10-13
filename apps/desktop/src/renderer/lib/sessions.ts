@@ -227,6 +227,7 @@ export function buildOptimisticChatSessionSummary(args: {
     | "createdAt"
     | "lastActivityAt"
     | "idleSinceAt"
+    | "promptCache"
   >;
   laneName?: string | null;
 }): TerminalSessionSummary {
@@ -257,6 +258,7 @@ export function buildOptimisticChatSessionSummary(args: {
     runtimeState: isEnded ? "exited" : args.session.status === "active" ? "running" : "idle",
     resumeCommand: null,
     chatIdleSinceAt: args.session.status === "idle" ? args.session.idleSinceAt ?? null : null,
+    chatPromptCache: args.session.promptCache ?? null,
   };
 }
 

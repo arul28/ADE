@@ -27,10 +27,10 @@ export type CardState =
   | { kind: "signedOut" }
   | { kind: "copy"; ownerLabel: string };
 
-type MenuView = "main" | "compaction" | "cache" | "onExtraUsage";
-const MENU_VIEW_WIDTH: Record<MenuView, number | undefined> = { main: undefined, compaction: 340, cache: 264, onExtraUsage: 264 };
+type MenuView = "main" | "compaction" | "mainCache" | "cache" | "onExtraUsage";
+const MENU_VIEW_WIDTH: Record<MenuView, number | undefined> = { main: undefined, compaction: 340, mainCache: 264, cache: 264, onExtraUsage: 264 };
 /** The account settings that only a Claude account has. */
-export type ClaudeAccountSettingPatch = Pick<ProviderInstanceSettingsPatch, "subagentPromptCacheTtl" | "onExtraUsage">;
+export type ClaudeAccountSettingPatch = Pick<ProviderInstanceSettingsPatch, "mainPromptCacheTtl" | "subagentPromptCacheTtl" | "onExtraUsage">;
 
 export function AccountCard({
   instance,
@@ -89,6 +89,7 @@ export function AccountCard({
   // broken login; the header says it only when the row cannot.
   const rowSaysSignedOut = limitRow?.account?.login === "signed_out";
   const longPromptCache = instance.subagentPromptCacheTtl === "1h";
+  const mainPromptCache = instance.mainPromptCacheTtl ?? null;
   const stopsOnExtraUsage = instance.onExtraUsage === "stop";
   const menuItemStyle = (danger = false): React.CSSProperties => ({
     display: "block",
@@ -336,6 +337,7 @@ export function AccountCard({
                 {item("signIn", signedOut ? "Sign in" : "Sign in again")}
                 {compactionControl || onSetClaudeSetting ? <div style={menuRuleStyle} /> : null}
                 {compactionControl ? subviewRow("compaction", "Auto-compact", instance.compaction ? "Custom" : "Default") : null}
+                {onSetClaudeSetting ? subviewRow("mainCache", "Main chat cache", mainPromptCache === "1h" ? "1 hour" : mainPromptCache === "5m" ? "5 minutes" : "Automatic") : null}
                 {onSetClaudeSetting ? subviewRow("cache", "Subagent cache", longPromptCache ? "1 hour" : "5 minutes") : null}
                 {onSetClaudeSetting ? subviewRow("onExtraUsage", "Extra usage", stopsOnExtraUsage ? "Stop the turn" : "Continue") : null}
                 {/* The store refuses both on the default, and Remove on the machine's own login. */}
@@ -359,6 +361,15 @@ export function AccountCard({
               choices: [
                 { checked: !stopsOnExtraUsage, patch: { onExtraUsage: null }, text: "Continue", note: "Default. The turn keeps going and Claude bills the extra usage." },
                 { checked: stopsOnExtraUsage, patch: { onExtraUsage: "stop" }, text: "Stop the turn", note: "ADE stops the turn, as it does at a plan limit. One request can be billed before the stop." },
+              ],
+            }) : menuView === "mainCache" ? choicePage({
+              title: "Main chat cache",
+              lead: "How long Claude keeps a chat's context ready between your messages.",
+              footnote: "Applies to new sessions.",
+              choices: [
+                { checked: mainPromptCache === null, patch: { mainPromptCacheTtl: null }, text: "Automatic", note: "Default — 1 hour on a subscription, 5 minutes on an API key or extra usage." },
+                { checked: mainPromptCache === "5m", patch: { mainPromptCacheTtl: "5m" }, text: "5 minutes", note: "Each save costs less. A pause over 5 minutes re-sends the whole chat." },
+                { checked: mainPromptCache === "1h", patch: { mainPromptCacheTtl: "1h" }, text: "1 hour", note: "Each save costs more. The chat stays ready through breaks up to an hour." },
               ],
             }) : choicePage({
               title: "Subagent cache",

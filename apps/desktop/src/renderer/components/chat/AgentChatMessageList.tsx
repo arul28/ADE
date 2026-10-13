@@ -224,7 +224,7 @@ import { ChatTaskListCard } from "./ChatTaskListCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { ContextCompactDivider } from "./ContextCompactDivider";
-import { contextCompactMergeKey } from "../../../shared/contextCompaction";
+import { contextCompactMergeKey, isManualCompactCommand, providerSupportsManualCompact } from "../../../shared/contextCompaction";
 import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from "./chatEventDisplay";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
@@ -2423,6 +2423,25 @@ function dispatchAdeCardAction(
   }
 }
 
+/**
+ * A `/compact` the user sent as its own turn, on a provider where that is a
+ * real compact action. A `/compact` steered into a running turn, or still
+ * queued, belongs to that turn and stays an ordinary message; so does one that
+ * carries attachments, which the chip could not show.
+ */
+function isCompactCommandMessage(
+  event: TranscriptGroupedEnvelope["event"] | AgentChatEvent,
+  provider: string | null | undefined,
+): boolean {
+  return event.type === "user_message"
+    && !event.steerId
+    && (event.deliveryState == null || event.deliveryState === "delivered")
+    && !event.attachments?.length
+    && !event.contextAttachments?.length
+    && providerSupportsManualCompact(provider)
+    && isManualCompactCommand(event.text);
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: SpawnedChatProviderProps & {
@@ -2635,6 +2654,23 @@ function renderEvent(
             {event.text}
           </pre>
         </details>
+      </div>
+    );
+  }
+
+  /* ── Compact command ──
+     `/compact` is an action, not something the user said: the compaction line
+     under it carries the result. A quiet chip keeps the record of who asked
+     without a full message bubble. */
+  if (event.type === "user_message" && isCompactCommandMessage(event, options?.sessionProvider)) {
+    return (
+      <div className="flex w-full justify-end" data-chat-compact-command="">
+        <span
+          title={event.displayText?.trim() || event.text.trim()}
+          className="inline-flex max-w-[82%] items-center rounded-full border border-fg/[0.08] bg-fg/[0.03] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*11.5/14)] text-fg/55"
+        >
+          <span className="min-w-0 truncate">{event.displayText?.trim() || event.text.trim()}</span>
+        </span>
       </div>
     );
   }
@@ -3093,7 +3129,7 @@ function renderEvent(
         };
     // Only the chat's latest compaction offers Retry; an older failure was
     // already superseded. The pane's action refuses while a turn is live.
-    const retry = options?.onRetryCompaction && options.latestCompactionKey === contextCompactMergeKey(compactEvent)
+    const retry = options?.onRetryCompaction && !options.sessionTurnActive && options.latestCompactionKey === contextCompactMergeKey(compactEvent)
       ? options.onRetryCompaction
       : undefined;
     return <ContextCompactDivider event={compactEvent} startedAt={envelope.timestamp} onRetry={retry} />;
@@ -4736,6 +4772,8 @@ type EventRowProps = SpawnedChatProviderProps & {
   pacedTextReveal?: boolean;
   /** This reasoning row is the live turn's newest, still-streaming row. */
   liveThinking?: boolean;
+  /** A finished `/compact` turn: the compaction line stands in for the turn-end line. */
+  compactOnlyTurn?: boolean;
   /** `turn_fold` rows: whether the fold is open. */
   turnFoldOpen?: boolean;
   onToggleTurnFold?: (foldId: string) => void;
@@ -4810,6 +4848,7 @@ const EventRow = React.memo(function EventRow({
   onOpenProofDrawer,
   pacedTextReveal,
   liveThinking = false,
+  compactOnlyTurn = false,
   turnFoldOpen = false,
   onToggleTurnFold,
   turnWorkInFold = false,
@@ -4923,7 +4962,7 @@ const EventRow = React.memo(function EventRow({
             pacedTextReveal,
             liveThinking,
           })}
-      {envelope.event.type === "done" ? (
+      {envelope.event.type === "done" && !(compactOnlyTurn && envelope.event.status === "completed") ? (
         <DoneTurnDivider
           event={envelope.event}
           timestamp={envelope.timestamp}
@@ -6050,6 +6089,24 @@ function AgentChatMessageListMain({
     }
     return ids;
   }, [allGroupedRows]);
+  // Turns that `/compact` opened and that did nothing else. The compaction
+  // line is their whole story, so they get no working indicator and no
+  // turn-end line of their own. A turn that also drew anything (text, tools,
+  // an error) keeps both: its turn-end line carries that work.
+  const compactOnlyTurnIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of allGroupedRows) {
+      if (row.event.type === "user_message" && row.event.turnId && isCompactCommandMessage(row.event, sessionProvider)) ids.add(row.event.turnId);
+    }
+    if (ids.size === 0) return ids;
+    for (const row of allGroupedRows) {
+      const type = row.event.type;
+      if (type === "user_message" || type === "done" || type === "context_compact" || type === "codex_context_compaction") continue;
+      const turnId = getGroupedTurnId(row);
+      if (turnId && ids.has(turnId) && !transcriptEventDrawsNothing(row.event)) ids.delete(turnId);
+    }
+    return ids;
+  }, [allGroupedRows, sessionProvider]);
   // Row keys that were live when their turn ended. Consecutive background jobs
   // group only with jobs that share that fate, so the fold can hide the ones
   // that finished and keep the ones still running (`groupBackgroundJobRuns`).
@@ -7950,6 +8007,7 @@ function AgentChatMessageListMain({
     // A fold row reads the same per-turn facts as its turn's `done` row.
     const foldEvent = envelope.event.type === "turn_fold" ? envelope.event : null;
     const turnEndKey = envelope.event.type === "done" ? envelope.key : (foldEvent?.turnEndKey ?? null);
+    const compactOnlyTurn = envelope.event.type === "done" && envelope.event.turnId != null && compactOnlyTurnIds.has(envelope.event.turnId);
     const turnEndDurationMs = turnEndKey
       ? (turnEndDurationByRowKey.get(turnEndKey) ?? null)
       : undefined;
@@ -8065,6 +8123,7 @@ function AgentChatMessageListMain({
           onStopSubagent={onStopSubagent}
           pacedTextReveal={envelope.key === pacedTextRowKey}
           liveThinking={envelope.key === liveThinkingDrawnKey}
+          compactOnlyTurn={compactOnlyTurn}
           turnFoldOpen={turnFoldOpen}
           onToggleTurnFold={toggleTurnFold}
           turnWorkInFold={turnWorkInFold}
@@ -8140,12 +8199,13 @@ function AgentChatMessageListMain({
         onStopSubagent={onStopSubagent}
         pacedTextReveal={envelope.key === pacedTextRowKey}
         liveThinking={envelope.key === liveThinkingDrawnKey}
+        compactOnlyTurn={compactOnlyTurn}
         turnFoldOpen={turnFoldOpen}
         onToggleTurnFold={toggleTurnFold}
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -8161,7 +8221,7 @@ function AgentChatMessageListMain({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
-  const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
+  const streamingIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId)) ? (
     <motion.div
       className="w-fit max-w-[var(--chat-content-width,52rem)] pt-3 pb-2"
       initial={{ opacity: 0 }}

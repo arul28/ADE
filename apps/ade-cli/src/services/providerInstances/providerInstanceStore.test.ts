@@ -320,8 +320,22 @@ describe("providerInstanceStore", () => {
     expect(store.get(work.id)?.compaction).toBeUndefined();
     expect(store.get(work.id)?.subagentPromptCacheTtl).toBe("1h");
 
+    // The main-conversation lifetime is its own choice: either value, and null goes back to automatic.
+    store.setProviderSettings("claude", { mainPromptCacheTtl: "5m" }, work.id);
+    expect(store.get(work.id)).toMatchObject({ mainPromptCacheTtl: "5m", subagentPromptCacheTtl: "1h" });
+    expect(createProviderInstanceStore({ adeDir, env: {} }).get(work.id)?.mainPromptCacheTtl).toBe("5m");
+    store.setProviderSettings("claude", { mainPromptCacheTtl: "1h" }, work.id);
+    expect(store.get(work.id)?.mainPromptCacheTtl).toBe("1h");
+    store.setProviderSettings("claude", { mainPromptCacheTtl: null }, work.id);
+    expect(store.get(work.id)?.mainPromptCacheTtl).toBeUndefined();
+    expect(store.get(work.id)?.subagentPromptCacheTtl).toBe("1h");
+    // A Codex account has no such setting.
+    store.setProviderSettings("codex", { mainPromptCacheTtl: "1h" }, codex.id);
+    expect(store.get(codex.id)?.mainPromptCacheTtl).toBeUndefined();
+
     // With no account named there is nothing to set it on; saying "saved" would be a lie.
     expect(() => store.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" })).toThrow(/account id/);
+    expect(() => store.setProviderSettings("claude", { mainPromptCacheTtl: "1h" })).toThrow(/account id/);
     expect(() => store.setProviderSettings("claude", { onExtraUsage: "stop" })).toThrow(/account id/);
     // One patch that names an account setting and a provider setting saves both.
     const before = store.getProviderSettings("claude").smartBalance;

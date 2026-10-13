@@ -82,17 +82,26 @@ describe("CliSessionWorkSurfaceHeader", () => {
 
   it("renders the Claude cache badge for Claude Code CLI sessions while the cache window is warm", () => {
     // shouldShowClaudeCacheTtl requires provider="claude", status="idle",
-    // !awaitingInput, and a recent idleSinceAt. Use a fresh ISO timestamp so
-    // the TTL hasn't expired.
+    // !awaitingInput, a known prompt cache, and a countdown that is not over.
     const recentIdle = new Date().toISOString();
     renderHeader({
       toolType: "claude",
       runtimeState: "idle",
       chatIdleSinceAt: recentIdle,
+      chatPromptCache: { ttl: "5m" },
     });
     const badge = screen.queryByTestId("cache-badge");
     expect(badge).toBeTruthy();
     expect(badge?.getAttribute("data-idle-since")).toBe(recentIdle);
+  });
+
+  it("shows no cache badge for a Claude session whose prompt cache is unknown", () => {
+    renderHeader({
+      toolType: "claude",
+      runtimeState: "idle",
+      chatIdleSinceAt: new Date().toISOString(),
+    });
+    expect(screen.queryByTestId("cache-badge")).toBeNull();
   });
 
   it("hides the cache badge for non-Claude tool types", () => {

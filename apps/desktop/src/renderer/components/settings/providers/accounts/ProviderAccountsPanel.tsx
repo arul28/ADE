@@ -272,7 +272,16 @@ export function ProviderAccountsPanel({
     (instance: ProviderInstance, settings: ClaudeAccountSettingPatch) => {
       const api = pinnedProviderInstances(pin);
       if (!api) return;
-      void run(() => api.setSettings({ provider, instanceId: instance.id, settings }));
+      void run(async () => {
+        await api.setSettings({ provider, instanceId: instance.id, settings });
+        // An older ADE on the target machine accepts a setting it does not
+        // know and saves nothing. Read the account back, so that is an error
+        // and not a menu that closes with the old value still in it.
+        const saved = (await api.list({ provider })).find((entry) => entry.id === instance.id);
+        const dropped = (Object.keys(settings) as Array<keyof ClaudeAccountSettingPatch>)
+          .some((key) => (saved?.[key] ?? null) !== (settings[key] ?? null));
+        if (dropped) throw new Error("That setting was not saved — update ADE on that computer and try again.");
+      });
     },
     [pin, provider, run],
   );

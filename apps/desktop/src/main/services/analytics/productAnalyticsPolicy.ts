@@ -225,6 +225,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "balance_changed",
   "auto_start_changed",
   "subagent_cache_changed",
+  "main_cache_changed",
   "extra_usage_stop_changed",
   "credential_stored",
   "credential_removed",

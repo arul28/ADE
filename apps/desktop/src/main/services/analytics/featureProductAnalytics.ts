@@ -1,3 +1,4 @@
+import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsPropertyValue,
@@ -31,6 +32,7 @@ export type FeatureAnalyticsAction =
   | "balance_changed"
   | "auto_start_changed"
   | "subagent_cache_changed"
+  | "main_cache_changed"
   | "extra_usage_stop_changed"
   | "credential_stored"
   | "credential_removed"
@@ -145,6 +147,7 @@ type ProviderAccountAnalyticsAction = Extract<
   | "auto_start_changed"
   | "subagent_cache_changed"
   | "extra_usage_stop_changed"
+  | "main_cache_changed"
 >;
 
 type ProviderAccountAnalyticsOutcome = Extract<
@@ -402,6 +405,9 @@ export function captureProviderAccountSettingsChange(
   if (!instanceId || provider !== "claude") return;
   if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
     capture("subagent_cache_changed", settings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", provider);
+  }
+  if (Object.hasOwn(settings, "mainPromptCacheTtl")) {
+    capture("main_cache_changed", isClaudePromptCacheTtl(settings.mainPromptCacheTtl) ? "enabled" : "disabled", provider);
   }
   if (Object.hasOwn(settings, "onExtraUsage")) {
     capture("extra_usage_stop_changed", settings.onExtraUsage === "stop" ? "enabled" : "disabled", provider);

@@ -761,7 +761,7 @@ describe("createAgentChatService", () => {
         ...extra,
         event: { type: "message_start", message: { id: `msg-${Object.values(usage).join("-")}`, usage } },
       });
-      const { events, session } = await createClaudeStreamFixture({
+      const { events, session, service } = await createClaudeStreamFixture({
         sdkSessionId: "sdk-ledger-complete",
         serviceOverrides: { turnUsageLedger: ledger },
         messages: [
@@ -822,6 +822,18 @@ describe("createAgentChatService", () => {
       });
       expect(done?.servedModel).toBeUndefined();
       expect(done?.account).not.toHaveProperty("routedAway");
+
+      // The chat remembers the prompt cache this turn left: most of the write
+      // was 1-hour, and Claude times it from the last main request's start.
+      // The countdown badge and Compact first read this, not a fixed number.
+      const lastRequestStartedAt = done?.usage?.lastRequestStartedAt;
+      expect(lastRequestStartedAt, "the turn reports when its last request started").toEqual(expect.any(String));
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        promptCache: { ttl: "1h", since: lastRequestStartedAt },
+      });
+      expect(readPersistedChatState(session.id)).toMatchObject({
+        promptCache: { ttl: "1h", since: lastRequestStartedAt },
+      });
 
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({

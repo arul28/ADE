@@ -889,20 +889,31 @@ describe("ptyService", () => {
       presetId?: string;
       env?: Record<string, string>;
       expected: string | undefined;
+      expectedMain: string | undefined;
     }>([
-      { name: "the account that chose 1 hour", instanceId: "acct-work", expected: "1h" },
-      { name: "the default account, which chose nothing", expected: undefined },
-      { name: "that account on a preset, which bills elsewhere", instanceId: "acct-work", presetId: "hp_other_endpoint", expected: undefined },
+      { name: "the account that chose them", instanceId: "acct-work", expected: "1h", expectedMain: "5m" },
+      { name: "the default account, which chose nothing", expected: undefined, expectedMain: undefined },
+      { name: "that account on a preset, which bills elsewhere", instanceId: "acct-work", presetId: "hp_other_endpoint", expected: undefined, expectedMain: undefined },
       {
-        name: "that account when the caller already stated a TTL",
+        // Each lifetime yields to the caller on its own: stating one leaves the other to the account.
+        name: "that account when the caller already stated the subagent TTL",
         instanceId: "acct-work",
         env: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" },
         expected: "5m",
+        expectedMain: "5m",
       },
-    ])("gives a Claude terminal the subagent cache TTL of $name", async ({ instanceId, presetId, env, expected }) => {
+      {
+        name: "that account when the caller already stated the main TTL",
+        instanceId: "acct-work",
+        env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" },
+        expected: "1h",
+        expectedMain: "1h",
+      },
+    ])("gives a Claude terminal the prompt cache TTLs of $name", async ({ instanceId, presetId, env, expected, expectedMain }) => {
       const registryPath = path.join(adeHome, "provider-instances.json");
       const registry = JSON.parse(mocks.fileContents.get(registryPath) ?? "{}");
       registry.instances[0].subagentPromptCacheTtl = "1h";
+      registry.instances[0].mainPromptCacheTtl = "5m";
       mocks.fileContents.set(registryPath, JSON.stringify(registry));
       resetSharedProviderInstanceStoresForTests();
       const { service, loadPty } = createHarness();
@@ -933,6 +944,7 @@ describe("ptyService", () => {
       const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
       expect(opts?.env?.ADE_LANE_ID, "the launch env reached the spawn").toBe("lane-1");
       expect(opts?.env?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe(expected);
+      expect(opts?.env?.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe(expectedMain);
       service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
     });
 

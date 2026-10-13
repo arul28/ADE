@@ -843,6 +843,7 @@ const mockProviderInstances: Array<{
   sameLoginAs?: string;
   replacedAccount?: { email: string; plan?: string; replacedAt: string };
   subagentPromptCacheTtl?: "1h";
+  mainPromptCacheTtl?: "5m" | "1h";
   onExtraUsage?: "stop";
   compaction?: ProviderCompactionSettings;
 }> = [
@@ -7872,6 +7873,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         if (account && args.settings && Object.hasOwn(args.settings, "subagentPromptCacheTtl")) {
           if (args.settings.subagentPromptCacheTtl === "1h") account.subagentPromptCacheTtl = "1h";
           else delete account.subagentPromptCacheTtl;
+        }
+        if (account && args.settings && Object.hasOwn(args.settings, "mainPromptCacheTtl")) {
+          if (args.settings.mainPromptCacheTtl) account.mainPromptCacheTtl = args.settings.mainPromptCacheTtl;
+          else delete account.mainPromptCacheTtl;
         }
         if (account && args.settings && Object.hasOwn(args.settings, "onExtraUsage")) {
           if (args.settings.onExtraUsage === "stop") account.onExtraUsage = "stop";

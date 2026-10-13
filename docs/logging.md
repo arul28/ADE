@@ -297,6 +297,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `provider_accounts` | `account_created`, `account_removed`, `account_signed_out`, `default_selected` | `completed` | Claude/Codex family |
 | `provider_accounts` | `balance_changed`, `auto_start_changed` | `enabled`, `disabled` | Claude/Codex family |
 | `provider_accounts` | `subagent_cache_changed` | `enabled` (1 hour), `disabled` (the Claude default) | Claude only |
+| `provider_accounts` | `main_cache_changed` | `enabled` (5 minutes or 1 hour chosen), `disabled` (Automatic) | Claude only |
 | `provider_accounts` | `extra_usage_stop_changed` | `enabled` (stop the turn), `disabled` (continue, the Claude default) | Claude only |
 | `api_credentials` | `credential_stored`, `credential_removed` | `completed` | coarse provider family |
 | `presets` | `preset_created`, `preset_deleted` | `completed` | coarse harness/provider family |
@@ -558,9 +559,11 @@ signed-in account records both, at most a handful per cleanup). The two settings
 `setSettings` are split into `balance_changed` and `auto_start_changed`, with
 `outcome: "enabled"` or `"disabled"`. A Claude account's subagent prompt cache
 choice, also carried by `setSettings`, is `subagent_cache_changed`: `enabled`
-for 1 hour, `disabled` for the Claude default. A Claude account's extra usage
+for 1 hour, `disabled` for the Claude default. The main-conversation choice is
+`main_cache_changed`: `enabled` for a stated lifetime, `disabled` for
+Automatic. A Claude account's extra usage
 choice, on the same call, is `extra_usage_stop_changed`: `enabled` for "Stop
-the turn", `disabled` for "Continue". Each of the two adds two one-hour-key
+the turn", `disabled` for "Continue". Each of the three adds two one-hour-key
 slots (48 a day at most) under the same ceilings. Both boundaries that accept
 `setSettings` report through `captureProviderAccountSettingsChange`. The only other property is the Claude or
 Codex family. A per-action/per-outcome/per-family key with a one-hour minimum

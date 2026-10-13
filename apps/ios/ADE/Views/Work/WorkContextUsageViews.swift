@@ -363,14 +363,15 @@ struct WorkCompactFirstOffer: Equatable {
   let contextTokens: Int
   let estimatedPostTokens: Int
   let mode: String
-  func isEligible(at now: Date) -> Bool { now.timeIntervalSince(endedAt) >= 3600 }
+  var idleSeconds: TimeInterval = 3600
+  func isEligible(at now: Date) -> Bool { now.timeIntervalSince(endedAt) >= idleSeconds }
 }
 
 struct WorkCompactFirstPill: View {
   let offer: WorkCompactFirstOffer
   @Binding var choice: Bool?
   var body: some View {
-    TimelineView(.periodic(from: offer.endedAt.addingTimeInterval(3600), by: 60)) { context in
+    TimelineView(.periodic(from: offer.endedAt.addingTimeInterval(offer.idleSeconds), by: 60)) { context in
       if offer.isEligible(at: context.date) {
         let enabled = choice ?? (offer.mode == "always")
         Button { choice = !enabled } label: {
@@ -381,7 +382,7 @@ struct WorkCompactFirstPill: View {
         }
         .buttonStyle(.plain)
         .accessibilityValue(enabled ? "On" : "Off")
-        .help("The cache expired after an hour. Compacting first re-sends about \(workAbbreviateCount(offer.estimatedPostTokens)) tokens instead of \(workAbbreviateCount(offer.contextTokens)).")
+        .help("The cache expired after \(offer.idleSeconds < 3600 ? "5 minutes" : "an hour"). Compacting first re-sends about \(workAbbreviateCount(offer.estimatedPostTokens)) tokens instead of \(workAbbreviateCount(offer.contextTokens)).")
       }
     }
     .onChange(of: offer.endedAt) { _, _ in choice = nil }
@@ -411,7 +412,7 @@ struct WorkProviderCompactionSettings: View {
             Text("Auto (recommended)").tag("")
             ForEach(1...10, id: \.self) { step in Text(workAbbreviateCount(step * 100_000)).tag(String(step * 100_000)) }
           }
-          Picker("After an hour idle", selection: $idleMode) {
+          Picker("After the cache expires", selection: $idleMode) {
             Text("Ask (pill)").tag("ask")
             Text("Always compact first").tag("always")
             Text("Never").tag("never")

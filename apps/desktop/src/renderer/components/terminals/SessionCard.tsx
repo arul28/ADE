@@ -768,6 +768,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     provider: session.toolType === "claude-chat" ? "claude" : null,
     status: session.runtimeState === "idle" ? "idle" : "active",
     idleSinceAt: session.chatIdleSinceAt,
+    cache: session.chatPromptCache,
     awaitingInput: session.runtimeState === "waiting-input",
   });
   const hasDeltaChips = Boolean(delta && (delta.insertions > 0 || delta.deletions > 0));
@@ -1662,7 +1663,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
             )}
 
             {showClaudeCacheTimer ? (
-              <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} />
+              <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} cache={session.chatPromptCache} />
             ) : null}
             {/* The diff chips used to sit here. They moved to line 1's floor:
                 on this line they were competing with the preview text for the

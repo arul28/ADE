@@ -262,6 +262,7 @@ import {
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 
 export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
 export type { AdeActionDomain } from "./domains";
@@ -3884,6 +3885,7 @@ export function buildProviderInstancesDomainService(
       const settings = store.setProviderSettings(input.provider, {
         ...(Object.hasOwn(requestedSettings, "compaction") ? { compaction: requestedSettings.compaction === null ? null : normalizeCompactionSettings(requestedSettings.compaction) } : {}),
         ...(Object.hasOwn(requestedSettings, "subagentPromptCacheTtl") ? { subagentPromptCacheTtl: requestedSettings.subagentPromptCacheTtl === "1h" ? "1h" as const : null } : {}),
+        ...(Object.hasOwn(requestedSettings, "mainPromptCacheTtl") ? { mainPromptCacheTtl: isClaudePromptCacheTtl(requestedSettings.mainPromptCacheTtl) ? requestedSettings.mainPromptCacheTtl : null } : {}),
         ...(Object.hasOwn(requestedSettings, "onExtraUsage") ? { onExtraUsage: requestedSettings.onExtraUsage === "stop" ? "stop" as const : null } : {}),
         ...(typeof requestedSettings.smartBalance === "boolean" ? { smartBalance: requestedSettings.smartBalance } : {}),
         ...(typeof requestedSettings.autoStartWindows === "boolean"

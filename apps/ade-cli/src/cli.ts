@@ -30948,6 +30948,7 @@ function formatProviderAccounts(value: unknown): string {
       ["same login as", instance.sameLoginAs],
       ["replaced login", isRecord(instance.replacedAccount) ? instance.replacedAccount.email : undefined],
       ["accent", instance.accentColor],
+      ["main chat cache", instance.mainPromptCacheTtl === "1h" ? "1 hour" : instance.mainPromptCacheTtl === "5m" ? "5 minutes" : undefined],
       ["subagent cache", instance.subagentPromptCacheTtl === "1h" ? "1 hour" : undefined],
       ["extra usage", instance.onExtraUsage === "stop" ? "stop the turn" : undefined],
       ["config home", instance.configHome],

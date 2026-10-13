@@ -21,6 +21,7 @@
  *
  * Pure: no I/O, no clock reads.
  */
+import { CLAUDE_PROMPT_CACHE_TTL_MS, claudePromptCacheTtlOfWrites } from "../../../shared/claudePromptCache";
 import type { AdeTurnUsageRecord } from "../../../shared/types/turnUsage";
 import { findReferenceRoute, routeBillingFor, routeHarnessOf, type ModelRoute, type RouteBilling } from "./routeCatalog";
 import { pickRoute, quotaProviderForPlan, type PlanState, type RouterDecision, type RouterTaskKind } from "./routerCore";
@@ -28,9 +29,7 @@ import { pickRoute, quotaProviderForPlan, type PlanState, type RouterDecision, t
 export type RouterSwitchPoint = "thread_start" | "compaction" | "cache_expired" | "route_changed";
 
 /** Claude's long cache, and every other provider's (their caches are gone well within an hour). */
-const CACHE_TTL_LONG_MS = 3_600_000;
-/** Claude's default cache, for a thread that writes only 5-minute cache. */
-const CACHE_TTL_SHORT_MS = 5 * 60_000;
+const CACHE_TTL_LONG_MS = CLAUDE_PROMPT_CACHE_TTL_MS["1h"];
 const TOP_LIMIT = 10;
 
 export type ThreadSegment = {
@@ -58,10 +57,8 @@ function turnStartMs(turn: AdeTurnUsageRecord): number {
  */
 function cacheTtlMs(thread: readonly AdeTurnUsageRecord[]): number {
   if (thread[0]?.provider !== "claude") return CACHE_TTL_LONG_MS;
-  const knowsLongWrites = thread.some((turn) => turn.cacheWrite1hTokens != null);
-  const writesLong = thread.some((turn) => (turn.cacheWrite1hTokens ?? 0) > 0);
-  const writes = thread.some((turn) => (turn.cacheWriteTokens ?? 0) > 0);
-  return knowsLongWrites && writes && !writesLong ? CACHE_TTL_SHORT_MS : CACHE_TTL_LONG_MS;
+  const written = new Set(thread.map((turn) => claudePromptCacheTtlOfWrites(turn.cacheWriteTokens, turn.cacheWrite1hTokens)));
+  return written.has("5m") && !written.has("1h") ? CLAUDE_PROMPT_CACHE_TTL_MS["5m"] : CACHE_TTL_LONG_MS;
 }
 
 /** Splits every thread in the ledger at its free switch points. */

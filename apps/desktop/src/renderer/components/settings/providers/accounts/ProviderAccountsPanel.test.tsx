@@ -487,6 +487,40 @@ describe("ProviderAccountsPanel", () => {
     });
   });
 
+  it.each([
+    { name: "shows the new choice once the computer saved it", saved: true },
+    // An older ADE on the target computer accepts a setting it does not know and saves nothing.
+    { name: "says so when the computer did not save it", saved: false },
+  ])("sets one account's main chat cache and $name", async ({ saved }) => {
+    const harness = installBridge();
+    if (saved) {
+      harness.providerInstances.setSettings.mockImplementation(async (args: { settings: Record<string, unknown> }) => {
+        harness.providerInstances.list.mockResolvedValue([DEFAULT_INSTANCE, { ...WORK_INSTANCE, ...args.settings }]);
+        return { smartBalance: false, autoStartWindows: false };
+      });
+    }
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Main chat cache/ }));
+    // Automatic is the default: ADE states no lifetime and Claude decides.
+    expect(screen.getByRole("menuitemradio", { name: /^Automatic/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^1 hour/ }));
+
+    await waitFor(() => {
+      expect(harness.providerInstances.setSettings).toHaveBeenCalledWith(
+        { provider: "claude", instanceId: "claude-work", settings: { mainPromptCacheTtl: "1h" } },
+      );
+    });
+    if (saved) {
+      fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));
+      expect((await screen.findByRole("menuitem", { name: /Main chat cache/ })).textContent).toContain("1 hour");
+      expect(screen.queryByText(/not saved/i)).toBeNull();
+    } else {
+      expect(await screen.findByText(/not saved/i)).toBeTruthy();
+    }
+  });
+
   it("sets one account's subagent cache and Auto-compact from its row menu", async () => {
     const harness = installBridge();
     const sentSettings = () => harness.providerInstances.setSettings.mock.calls.map((call) => call[0]);
