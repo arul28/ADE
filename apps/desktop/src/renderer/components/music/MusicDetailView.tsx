@@ -2,12 +2,12 @@ import React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowLeft, CircleNotch, Play, Shuffle, WarningCircle } from "@phosphor-icons/react";
 
-import type { MusicItem } from "../../../shared/types/music";
+import { MUSIC_MAX_COLLECTION_TRACKS, type MusicItem } from "../../../shared/types/music";
 import { MusicArtBackdrop } from "./MusicPlayer";
 import { MusicArt, MusicEmpty, SONG_ROW_HEIGHT, SongRow } from "./musicParts";
 import { isNowPlayingItem, queueActions, queueFromList } from "./musicQueue";
 import { musicActions } from "./musicStore";
-import { useLoad, type RowProps } from "./musicViewParts";
+import { errorText, type RowProps } from "./musicViewParts";
 
 function formatDuration(ms: number): string {
   const minutes = Math.round(ms / 60_000);
@@ -16,12 +16,91 @@ function formatDuration(ms: number): string {
   return `${h} hr ${minutes % 60} min`;
 }
 
+/** Pages read at once after the first; Apple's per-token rate limit is generous at this size. */
+const PAGE_READS_AT_ONCE = 4;
+const PAGE_SIZE = 100;
+
+/**
+ * A collection's songs, 100 per page. The first page shows at once; when Apple
+ * says how many songs there are, the rest are read four pages at a time and
+ * appended strictly in order (a page that lands early waits for the one before
+ * it), otherwise one after another. A 1,800-song playlist has rows after one
+ * request instead of nineteen. Leaving the view (or opening another collection)
+ * starts no further reads.
+ */
+function useCollectionTracks(kind: "album" | "playlist", id: string, library: boolean) {
+  const [tracks, setTracks] = React.useState<MusicItem[]>([]);
+  const [error, setError] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  React.useEffect(() => {
+    // `live` ends with the view; `failed` ends the reads after an error.
+    let live = true;
+    let failed = false;
+    const going = () => live && !failed;
+    setTracks([]);
+    setError(null);
+    setLoading(true);
+    const read = (offset: number) => window.ade!.music!.tracks({ kind, id, library, offset, limit: PAGE_SIZE });
+    const append = (items: MusicItem[]) => {
+      if (items.length) setTracks((prev) => (prev.length ? prev.concat(items) : items));
+    };
+    void (async () => {
+      try {
+        const first = await read(0);
+        if (!live) return;
+        append(first.items);
+        if (!first.items.length || first.nextOffset === null) return;
+        if (first.total === null) {
+          // Unknown length: one page after another.
+          let offset: number | null = first.nextOffset;
+          while (going() && offset !== null) {
+            const page = await read(offset);
+            if (!going()) return;
+            append(page.items);
+            offset = page.items.length ? page.nextOffset : null;
+          }
+          return;
+        }
+        const offsets: number[] = [];
+        for (let o = first.nextOffset; o < Math.min(first.total, MUSIC_MAX_COLLECTION_TRACKS); o += PAGE_SIZE) offsets.push(o);
+        const landed = new Map<number, MusicItem[]>();
+        let nextToShow = 0;
+        let cursor = 0;
+        const worker = async () => {
+          while (going() && cursor < offsets.length) {
+            const index = cursor++;
+            const page = await read(offsets[index]!);
+            if (!going()) return;
+            landed.set(index, page.items);
+            const ready: MusicItem[] = [];
+            while (landed.has(nextToShow)) {
+              ready.push(...landed.get(nextToShow)!);
+              landed.delete(nextToShow);
+              nextToShow += 1;
+            }
+            append(ready);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(PAGE_READS_AT_ONCE, offsets.length) }, worker));
+      } catch (err) {
+        if (going()) setError(errorText(err));
+        failed = true;
+      } finally {
+        if (live) setLoading(false);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [kind, id, library]);
+  return { tracks, error, loading };
+}
+
 /** An album or playlist: its hero and every song, virtualized. */
 export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps & { item: MusicItem; onBack: () => void }) {
   const kind = item.kind === "album" ? "album" : "playlist";
-  const { data, error, loading } = useLoad(() => window.ade!.music!.tracks({ kind, id: item.id, library: item.library }), [item.id, kind, item.library]);
-  const tracks = data ?? [];
-  const totalMs = tracks.reduce((sum, t) => sum + (t.durationMs ?? 0), 0);
+  const { tracks, error, loading } = useCollectionTracks(kind, item.id, item.library);
+  const totalMs = React.useMemo(() => tracks.reduce((sum, t) => sum + (t.durationMs ?? 0), 0), [tracks]);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
   // The hero scrolls with the list, so rows are placed relative to where the list starts.
@@ -37,7 +116,7 @@ export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps &
   const play = (index: number, shuffle?: boolean) => {
     // Handing MusicKit the playlist id loads only its first page of songs, so a
     // click further down (or shuffle) never reaches the rest. Queue from the
-    // full list this page already read instead.
+    // songs this page has read (all of them once the last page is in).
     if (tracks.length) queueFromList(tracks, index, shuffle);
     else void musicActions.playCollection(kind, item.id, index, shuffle);
   };
@@ -72,7 +151,7 @@ export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps &
             </div>
           </div>
         </header>
-        {error ? <MusicEmpty icon={<WarningCircle size={22} />} title="Couldn't load the songs" hint={error} /> : null}
+        {error && !tracks.length ? <MusicEmpty icon={<WarningCircle size={22} />} title="Couldn't load the songs" hint={error} /> : null}
         {loading && !tracks.length ? <div className="ade-music-more"><CircleNotch size={16} className="animate-spin" /></div> : null}
         <div ref={listRef} className="ade-music-songs" role="table" style={{ height: virtual.getTotalSize(), position: "relative" }}>
           {virtual.getVirtualItems().map((row) => {
@@ -93,6 +172,7 @@ export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps &
             );
           })}
         </div>
+        {error && tracks.length ? <div className="ade-music-more">Couldn't load the rest of the songs.</div> : null}
       </div>
     </div>
   );

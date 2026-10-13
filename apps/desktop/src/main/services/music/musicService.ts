@@ -719,7 +719,7 @@ export function createMusicService(args: {
     library: (input: { kind: MusicLibraryKind; offset?: number; limit?: number }): Promise<MusicPage> =>
       browse(() => api.library(input)),
     recent: (): Promise<MusicRecent> => browse(() => api.recent()),
-    tracks: (input: { kind: "album" | "playlist"; id: string; library: boolean }): Promise<MusicItem[]> =>
+    tracks: (input: { kind: "album" | "playlist"; id: string; library: boolean; offset?: number; limit?: number }): Promise<MusicPage> =>
       browse(() => api.tracks(input)),
     rating: (input: { id: string; library: boolean }) => browse(() => api.rating(input)),
     charts: () => browse(() => api.charts()),
