@@ -447,6 +447,9 @@ export function createMusicService(args: {
         await stopHost(h, 1_000).catch(() => {});
         state.host = { status: snapshot ? "suspended" : "failed", pid: null, unloadAt: null };
         state.message = errorMessage(error);
+        // The host refuses an OS it cannot run on (macOS before 14): the tab
+        // says so and stops offering to play, like a platform with no host.
+        if (error instanceof MusicHostError && error.code === "unsupported_os") state.availability = "unsupported";
         emit();
         throw error;
       }
