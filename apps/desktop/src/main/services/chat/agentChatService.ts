@@ -32593,7 +32593,7 @@ export function createAgentChatService(args: {
             goal: {
               objective: typeof goal.objective === "string" ? goal.objective : null,
               // Muse sends any status string (the SDK types it `string`); the
-              // card reads the ones ADE knows, and the rest render as-is.
+              // card names the ones ADE knows and shows the rest as active.
               status: typeof goal.status === "string" ? goal.status : "active",
             },
             updateKind: "sync",

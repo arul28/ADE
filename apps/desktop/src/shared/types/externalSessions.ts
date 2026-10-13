@@ -1,3 +1,4 @@
+import { PROVIDER_DISPLAY_NAME } from "../providers";
 export type ExternalSessionProvider =
   | "claude"
   | "codex"
@@ -232,4 +233,3 @@ export type ExternalSessionImportResult =
   | { kind: "chat"; chatSessionId: string; laneId: string; chatSummary: AgentChatSessionSummary };
 import type { AgentChatSessionSummary } from "./chat";
 import type { TerminalResumeLaunchConfig, TerminalSessionSummary } from "./sessions";
-import { PROVIDER_DISPLAY_NAME } from "../providers";

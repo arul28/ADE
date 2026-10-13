@@ -258,18 +258,21 @@ resolve).
 
 All three desktop resolvers call it before their bundled-`node_modules` probe, so
 cache-first ordering is defined once and cannot drift. This is the whole
-resolution surface for both processes: **`apps/ade-cli` does not keep its own
-copies of these resolvers.** It imports the desktop main-process services across
-packages (`import … from "../../desktop/src/main/services/…"`), so desktop main
-and the brain share one resolution path by construction rather than by
-convention.
+resolution surface for both processes: **neither package keeps a second copy of
+a resolver.** `apps/ade-cli` imports the Claude, Codex and OpenCode resolvers
+from the desktop main-process services (`import … from
+"../../desktop/src/main/services/…"`). Muse runs the other way: its
+Electron-free resolver lives in `apps/ade-cli/src/services/tools/muse.ts`, and
+desktop's `museExecutable.ts` re-exports it and adds only the UI blocker text.
+Either way desktop main and the brain share one resolution path by
+construction rather than by convention.
 
 | Tool | Resolver | Order |
 |---|---|---|
 | `claude-code` | `apps/desktop/src/main/services/ai/claudeCodeExecutable.ts` | `CLAUDE_CODE_EXECUTABLE_PATH` → tools cache → bundled `node_modules` → detected auth → PATH / known dirs → bare `claude` |
 | `codex` | `apps/desktop/src/main/services/ai/codexExecutable.ts` | `CODEX_EXECUTABLE` / `CODEX_EXECUTABLE_PATH` → tools cache → bundled → detected auth → PATH / known dirs → standalone installer dirs → bare `codex` |
 | `opencode` | `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | tools cache → bundled `node_modules` roots → user-installed PATH → `missing` |
-| `muse` | `apps/desktop/src/main/services/ai/museExecutable.ts` | `ADE_MUSE_EXECUTABLE` → tools cache → `missing`. Never PATH: a user's own `muse` is only reported as "found, not used". |
+| `muse` | `apps/ade-cli/src/services/tools/muse.ts` (re-exported by `apps/desktop/src/main/services/ai/museExecutable.ts`) | `ADE_MUSE_EXECUTABLE` (dev runs only) → tools cache → `missing`. Never PATH: ADE runs only the pinned build. |
 
 Codex is the special case. It is the one tool that cannot be reached by seeding a
 module search path: its binary lives at `vendor/<triple>/bin/codex` and is found
