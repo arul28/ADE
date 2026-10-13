@@ -42,7 +42,7 @@ describe("mcpPlainTextSecretFindings", () => {
   it.each([
     {
       label: "a token passed as the value of a secret flag",
-      server: { args: ["--api-key", "sk-abcdef123456"] },
+      server: { args: ["--api-key", "placeholder"] },
       expected: [{ where: "args", kind: "value" }],
     },
     {
@@ -52,7 +52,7 @@ describe("mcpPlainTextSecretFindings", () => {
     },
     {
       label: "a token in a query parameter of the URL",
-      server: { url: "https://mcp.example.test/mcp?token=abcd1234efgh" },
+      server: { url: "https://mcp.example.test/mcp?token=placeholder" },
       expected: [{ where: "url", kind: "value" }],
     },
     {
