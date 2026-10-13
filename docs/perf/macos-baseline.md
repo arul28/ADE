@@ -416,8 +416,8 @@ process's 60 s Apple cache expired.
   (after the 60 s cache).
 
 The scripts default to CDP port 9222; an App Control launch picks its own, so
-pass `CDP_PORT=<port>` (and edit the port in `process-cpu.sh` and
-`gpu-trace.mjs`, which pin 9222).
+pass `CDP_PORT=<port>` (and edit the port in `process-cpu.sh`,
+`gpu-trace.mjs` and `route-sweep.mjs`, which pin 9222).
 
 - **The tab's progress line** restarted a 1 s linear transition on every
   position tick, so Chromium drew the whole window at display rate for as

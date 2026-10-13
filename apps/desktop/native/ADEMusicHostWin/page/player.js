@@ -22,9 +22,11 @@
   var loaded = false;
   var mk = null;
   var lastTimeEmit = 0;
-  // The second a restored queue continues from (play:false with a position).
-  // MusicKit drops a seek made before the song has loaded, so it is applied
-  // right after the next play instead.
+  // A queue restored paused (play:false) has no song loaded until its first
+  // play. Until then `awaitingFirstPlay` is true and `pendingSeek` is the second
+  // it continues from: MusicKit drops a seek made before the song has loaded,
+  // so it is applied right after that play instead.
+  var awaitingFirstPlay = false;
   var pendingSeek = 0;
   // The index a queue was set to start at. MusicKit's queue.position stays -1
   // until the first play, so this names the song that will play until then.
@@ -76,6 +78,7 @@
   };
 
   var round = function (n) { return Math.round((n || 0) * 10) / 10; };
+  var errorText = function (e) { return String((e && (e.errorCode || e.message)) || e); };
 
   // A restored queue reports the second it will continue from, not MusicKit's 0.
   var currentTime = function () { return pendingSeek > 0 ? pendingSeek : round(mk.currentPlaybackTime); };
@@ -114,8 +117,11 @@
   // itself. Where MusicKit moves on by itself it never stops at that position,
   // so this does nothing. While it runs, states are held back so ADE does not
   // see a moment with no song.
+  var ADVANCE_TIMEOUT_MS = 15000;
   var endedAt = -1;
   var advancing = false;
+  // A pause that arrived while the next song was loading.
+  var pausedWhileAdvancing = false;
 
   var emitState = function (reason) {
     if (advancing) return;
@@ -124,22 +130,38 @@
 
   var continueAfterEnd = async function (index) {
     advancing = true;
+    pausedWhileAdvancing = false;
+    pendingSeek = 0;
+    // If MusicKit never answers, stop holding states back.
+    var giveUp = setTimeout(function () {
+      advancing = false;
+      emitState("continueTimeout");
+    }, ADVANCE_TIMEOUT_MS);
     try {
       await mk.changeToMediaAtIndex(index);
-      if (!mk.isPlaying) await mk.play();
+      if (pausedWhileAdvancing) mk.pause();
+      else if (!mk.isPlaying) await mk.play();
     } catch (e) {
-      post({ event: "playbackError", error: String((e && (e.errorCode || e.message)) || e) });
+      post({ event: "playbackError", error: errorText(e) });
     } finally {
+      clearTimeout(giveUp);
       advancing = false;
       emitState("continue");
     }
+  };
+
+  // The index to play after MusicKit stopped where a song ended, or -1.
+  var nextAfterEnd = function (q) {
+    if (mk.repeatMode === 1) return endedAt;
+    if (endedAt + 1 < q.length) return endedAt + 1;
+    return mk.repeatMode === 2 ? 0 : -1;
   };
 
   var onPlaybackState = function () {
     var states = MusicKit.PlaybackStates;
     var q = mk.queue;
     var stoppedWhereEnded = mk.playbackState === states.stopped && q && endedAt >= 0 && q.position === endedAt;
-    var next = !stoppedWhereEnded ? -1 : endedAt + 1 < q.length ? endedAt + 1 : mk.repeatMode === 2 ? 0 : -1;
+    var next = stoppedWhereEnded ? nextAfterEnd(q) : -1;
     endedAt = mk.playbackState === states.ended && q ? q.position : -1;
     if (next >= 0 && !advancing) {
       void continueAfterEnd(next);
@@ -169,7 +191,7 @@
       post({ event: "time", time: currentTime(), duration: round(mk.currentPlaybackDuration), isPlaying: mk.isPlaying });
     });
     on("mediaPlaybackError", function (e) {
-      post({ event: "playbackError", error: String((e && (e.errorCode || e.message)) || e) });
+      post({ event: "playbackError", error: errorText(e) });
     });
   };
 
@@ -186,21 +208,29 @@
     if (index > 0) descriptor.startWith = index;
     startIndex = index;
     descriptor.startPlaying = false;
+    awaitingFirstPlay = false;
     pendingSeek = 0;
     await mk.setQueue(descriptor);
     if (typeof c.shuffle === "number") mk.shuffleMode = c.shuffle;
     if (mk.queue && index > 0 && mk.queue.position !== index && index < mk.queue.length) {
       await mk.changeToMediaAtIndex(index);
     }
-    if (c.play !== false) await mk.play();
-    if (typeof c.position === "number" && c.position > 0) {
-      if (c.play === false) pendingSeek = c.position;
-      else await mk.seekToTime(c.position);
+    var position = typeof c.position === "number" && c.position > 0 ? c.position : 0;
+    if (c.play === false) {
+      awaitingFirstPlay = true;
+      pendingSeek = position;
+      return;
     }
+    await mk.play();
+    if (position > 0) await mk.seekToTime(position);
   };
 
-  var startPlaying = async function (m) {
+  // Play, then apply the second a restored queue continues from. A seek that
+  // arrives while play() is still loading the song moves `pendingSeek`, so it
+  // is read only after play() returns.
+  var playFromPending = async function (m) {
     await m.play();
+    awaitingFirstPlay = false;
     if (pendingSeek > 0) {
       var at = pendingSeek;
       pendingSeek = 0;
@@ -273,20 +303,35 @@
       await setQueueAndMaybePlay(d, c);
       return snapshot();
     },
-    pause: async function () { needMk().pause(); return snapshot(); },
-    resume: async function () { await startPlaying(needMk()); return snapshot(); },
-    toggle: async function () {
-      var m = needMk();
-      if (m.isPlaying) m.pause(); else await startPlaying(m);
+    pause: async function () {
+      if (advancing) pausedWhileAdvancing = true;
+      needMk().pause();
       return snapshot();
     },
-    next: async function () { pendingSeek = 0; await needMk().skipToNextItem(); return snapshot(); },
+    resume: async function () { await playFromPending(needMk()); return snapshot(); },
+    toggle: async function () {
+      var m = needMk();
+      if (m.isPlaying) m.pause(); else await playFromPending(m);
+      return snapshot();
+    },
+    next: async function () {
+      awaitingFirstPlay = false;
+      pendingSeek = 0;
+      await needMk().skipToNextItem();
+      return snapshot();
+    },
     prev: async function () {
       var m = needMk();
+      var at = currentTime();
       pendingSeek = 0;
-      // Like every player: a few seconds in, "previous" restarts the song.
-      if (m.currentPlaybackTime > 3) await m.seekToTime(0);
-      else await m.skipToPreviousItem();
+      // Like every player: a few seconds in, "previous" restarts the song. A
+      // restored queue that has not played yet just starts from 0.
+      if (at > 3) {
+        if (!awaitingFirstPlay) await m.seekToTime(0);
+      } else {
+        awaitingFirstPlay = false;
+        await m.skipToPreviousItem();
+      }
       return snapshot();
     },
     seek: async function (c) {
@@ -294,7 +339,7 @@
       var at = Math.max(0, Number(c.position) || 0);
       // A restored queue that has not played yet has no song loaded, and
       // MusicKit drops the seek: move the second it will start from instead.
-      if (m.queue && m.queue.length > 0 && (pendingSeek > 0 || m.queue.position < 0 || !m.nowPlayingItem)) {
+      if (awaitingFirstPlay) {
         pendingSeek = at;
         return snapshot();
       }
@@ -306,7 +351,12 @@
     volume: async function (c) { needMk().volume = Math.max(0, Math.min(1, Number(c.value))); return snapshot(); },
     shuffle: async function (c) { needMk().shuffleMode = c.mode ? 1 : 0; return snapshot(); },
     repeat: async function (c) { var r = Number(c.mode); needMk().repeatMode = r === 1 || r === 2 ? r : 0; return snapshot(); },
-    playAt: async function (c) { pendingSeek = 0; await needMk().changeToMediaAtIndex(Number(c.index) || 0); return snapshot(); },
+    playAt: async function (c) {
+      awaitingFirstPlay = false;
+      pendingSeek = 0;
+      await needMk().changeToMediaAtIndex(Number(c.index) || 0);
+      return snapshot();
+    },
     playNext: async function (c) { await needMk().playNext({ songs: (c.ids || []).map(String) }); return queueItems(); },
     playLater: async function (c) { await needMk().playLater({ songs: (c.ids || []).map(String) }); return queueItems(); },
     // What ADE keeps when it unloads this host, so a relaunch continues the
@@ -336,7 +386,7 @@
       var result = await h(c);
       post({ reply: c.rid || null, cmd: c.cmd, ok: true, ms: Math.round(performance.now() - t0), result: result });
     } catch (e) {
-      post({ reply: c.rid || null, cmd: c.cmd, ok: false, ms: Math.round(performance.now() - t0), error: String((e && (e.errorCode || e.message)) || e) });
+      post({ reply: c.rid || null, cmd: c.cmd, ok: false, ms: Math.round(performance.now() - t0), error: errorText(e) });
     }
   });
 

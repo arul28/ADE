@@ -265,20 +265,28 @@ export function createMusicService(args: {
     }
   };
 
-  const applyHostState = (s: HostState | null | undefined) => {
+  /**
+   * Take the host's position when `force` says it is news (play/pause, a new
+   * state, an explicit seek) or when it has drifted from what the renderers
+   * interpolate. True when the position was re-anchored.
+   */
+  const reanchorPosition = (time: unknown, force: boolean): boolean => {
+    if (typeof time !== "number") return false;
+    const p = state.playback;
+    if (!force && Math.abs(musicPositionNow(p) - time) <= POSITION_DRIFT_S) return false;
+    p.position = time;
+    p.positionAt = Date.now();
+    return true;
+  };
+
+  const applyHostState = (s: HostState | null | undefined, options?: { positionIsNews?: boolean }) => {
     if (!s || s.ready === false) return;
     const p = state.playback;
-    const before = { state: p.state, isPlaying: p.isPlaying, position: musicPositionNow(p) };
+    const prevState = p.state;
+    const prevPlaying = p.isPlaying;
     if (typeof s.state === "string") p.state = PLAYBACK_STATES.has(s.state as MusicPlaybackState) ? (s.state as MusicPlaybackState) : "none";
     if (typeof s.isPlaying === "boolean") p.isPlaying = s.isPlaying;
-    // Re-anchor the position only when the interpolation stops holding (see "time").
-    if (
-      typeof s.time === "number" &&
-      (p.state !== before.state || p.isPlaying !== before.isPlaying || Math.abs(before.position - s.time) > POSITION_DRIFT_S)
-    ) {
-      p.position = s.time;
-      p.positionAt = Date.now();
-    }
+    reanchorPosition(s.time, Boolean(options?.positionIsNews) || p.state !== prevState || p.isPlaying !== prevPlaying);
     if (typeof s.duration === "number" && s.duration > 0) p.duration = s.duration;
     if (typeof s.queuePosition === "number") p.queuePosition = s.queuePosition;
     if (typeof s.queueLength === "number") p.queueLength = s.queueLength;
@@ -335,11 +343,7 @@ export function createMusicService(args: {
           scheduleIdleUnload();
           news = true;
         }
-        if (typeof event.time === "number" && (news || Math.abs(musicPositionNow(p) - event.time) > POSITION_DRIFT_S)) {
-          p.position = event.time;
-          p.positionAt = Date.now();
-          news = true;
-        }
+        if (reanchorPosition(event.time, news)) news = true;
         if (news) emit();
         break;
       }
@@ -494,19 +498,33 @@ export function createMusicService(args: {
     emit();
   };
 
+  // The restore in flight. Every caller waits for it, so a command sent while
+  // the Music tab's warm-up is still putting the queue back runs after it, not
+  // alongside it.
+  let restoring: Promise<void> | null = null;
+
   /** A host that is running, with the unloaded queue put back if there was one. */
   const ensurePlayer = async (restore: boolean): Promise<MusicHost> => {
     const h = await ensureHost();
+    if (restoring) await restoring;
     if (restore && snapshot) {
       const s = snapshot;
       snapshot = null;
+      const run = (async () => {
+        try {
+          // The reply carries the song and the second it continues from.
+          applyHostState(await h.request<HostState>("playItems", { ids: s.ids, index: s.index, position: s.position, play: false }));
+          if (s.repeat) await h.request("repeat", { mode: s.repeat });
+          args.logger?.info("music.queue_restored", { items: s.ids.length, index: s.index, position: s.position });
+        } catch (error) {
+          args.logger?.warn("music.queue_restore_failed", { error: errorMessage(error) });
+        }
+      })();
+      restoring = run;
       try {
-        // The reply carries the song and the second it continues from.
-        applyHostState(await h.request<HostState>("playItems", { ids: s.ids, index: s.index, position: s.position, play: false }));
-        if (s.repeat) await h.request("repeat", { mode: s.repeat });
-        args.logger?.info("music.queue_restored", { items: s.ids.length, index: s.index, position: s.position });
-      } catch (error) {
-        args.logger?.warn("music.queue_restore_failed", { error: errorMessage(error) });
+        await run;
+      } finally {
+        if (restoring === run) restoring = null;
       }
     }
     return h;
@@ -598,7 +616,8 @@ export function createMusicService(args: {
             break;
         }
         if (state.message?.startsWith("Playback failed")) state.message = null;
-        applyHostState(result);
+        // A seek's reply is the new position even when it is a small step.
+        applyHostState(result, { positionIsNews: cmd.type === "seek" });
         return { ok: true } as const;
       });
     } catch (error) {

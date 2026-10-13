@@ -102,10 +102,13 @@ Main process: musicService
   without artwork, or with an uploaded cover the renderer cannot load
   (`loadableArtwork` in `musicParts.tsx`), shows its first songs' covers, like
   the Music app: four
-  distinct covers as a 2x2 CSS grid, one cover when they share an album, the
-  note glyph when none. The songs come from one `tracks` read with limit 4,
-  made only once the tile is on screen and the window is visible, at most four
-  at a time, kept in a 300-entry LRU (`PlaylistCoverArt` in `musicParts.tsx`).
+  distinct covers as a 2x2 CSS grid, the first cover alone when there are one
+  to three, the note glyph when none. The songs come from one `tracks` read
+  with limit 4, made only once the tile is on screen and the window is
+  visible, at most four at a time, kept in a 300-entry LRU for ten minutes
+  (`PlaylistCoverArt` in `musicParts.tsx`). A failed read is tried once more
+  the next time the tile is seen. The playlist's own page builds the same
+  cover from the songs it has already read.
   Each cell asks Apple for its own pixel size. A playlist's own uploaded cover
   (`*.blobstore.apple.com`, a signed 1200x1200 URL) is blocked by the
   renderer's CSP, so such a playlist gets the four-song cover too; songs whose
@@ -126,14 +129,23 @@ Main process: musicService
 - **Position pushes.** The host ticks the position once a second while
   playing. Renderers interpolate from `position` + `positionAt`, so the main
   process re-anchors (and pushes) only when a tick or state event disagrees by
-  more than 1.25 s (MusicKit reports whole seconds), or the play state, song or
-  duration changed; a broadcast equal to the last one is not sent.
+  more than 1.25 s (MusicKit reports whole seconds), or the play state or
+  duration changed (a new song arrives as one of those); a seek's reply always
+  re-anchors. A broadcast equal to the last one is not sent.
 - **Resume second.** A restored queue is loaded with `play:false`; MusicKit
-  drops a seek made before the song has loaded, so `player.js` keeps the
-  second as `pendingSeek`, reports it as the current time, and seeks right
-  after the next play. A seek before that play moves `pendingSeek` instead.
-  Opening the tab while connected (`warm()`) restores the queue paused, so
-  the card shows the song at its second before anything plays.
+  drops a seek made before the song has loaded, so `player.js` marks the
+  queue `awaitingFirstPlay`, keeps the second as `pendingSeek`, reports it as
+  the current time, and seeks right after the next play. A seek before that
+  play moves `pendingSeek` instead, and Previous more than 3 s in restarts the
+  song from 0. Opening the tab while connected (`warm()`) restores the queue
+  paused, so the card shows the song at its second before anything plays; a
+  command sent while that restore is in flight waits for it.
+- **End of a song.** Under WebKit, MusicKit stops where a song ended instead
+  of moving on. `player.js` then plays the next song itself: the same song
+  under repeat one, the first under repeat all at the end of the queue. A
+  pause pressed while that next song loads is kept.
+- **Shuffle while a playlist loads** waits for the last page, so it draws from
+  the whole playlist. A page that fails shows a banner with Try again.
 
 ## Tokens and secrets
 
@@ -230,7 +242,7 @@ ignored) and the same `page/` as Windows:
   gives it the `window.chrome.webview` bridge it was written for
   (`postMessage` out through a `WKScriptMessageHandler`, commands in through
   `callAsyncJavaScript`). Both scripts run only on that origin, and only the
-  page's main frame may post to ADE. The `<script src="player.js">` tag is
+  page's main frame may post to ADE. The page's own `player.js` script tag is
   removed (it would ask the network for `music.ade.local`). The icon link
   stays `https://music.ade.local/ade-icon.png`, which WKWebView cannot serve,
   so Apple's Allow screen shows no ADE icon on macOS. **Never inline it as a
@@ -323,7 +335,7 @@ formatMusicTime(seconds)
 | `apps/desktop/native/ADEMusicHostWin/` | The Windows player host and the player page both hosts run. |
 | `apps/desktop/native/ADEMusicHostMac/` | The macOS player host (Swift, WKWebView). |
 | `apps/desktop/scripts/build-music-host-win.mjs`, `build-music-host-mac.mjs` | Reproducible host builds. |
-| `scripts/perf/ui/music-host.sh`, `music.mjs` | Host CPU and memory; time to first play and state pushes. |
+| `scripts/perf/ui/music-host.sh`, `music.mjs`, `music-library.mjs` | Host CPU and memory; time to first play and state pushes; playlist and Playlists-grid timings. |
 | `apps/account-directory/src/musicDeveloperToken.ts` | The Worker route that mints developer tokens. |
 
 ## Failure modes
