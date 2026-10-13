@@ -140,6 +140,10 @@ import {
   formatClaudeSlashCommandEntry,
   planClaudeSlashCommandInjection,
   renderClaudeSlashCommandEntries,
+  buildSkillListingSection,
+  droidNativeSlashCommandRoots,
+  PER_TURN_SKILL_LISTING_BUDGET_BYTES,
+  planSlashCommandInjection,
 } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import { forkCodexThreadInEphemeralAppServer } from "./codexEphemeralFork";
@@ -51911,8 +51915,29 @@ export function createAgentChatService(args: {
             adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
             sessionActivityGuidance: droidActivityGuidance,
           });
+      // Droid reads only `.factory/skills`, so the project's and the user's
+      // own skills (`.claude/skills`, `.agents/skills`) are listed for it, as
+      // they are for Claude. A personal chat has no project to list.
+      const droidSkillListing = isPersonalSession(managed.session)
+        ? []
+        : (() => {
+          try {
+            const discovered = discoverClaudeSlashCommands(managed.laneWorktreePath)
+              .filter((entry) => entry.modelInvocable !== false);
+            return buildSkillListingSection(
+              planSlashCommandInjection(discovered, droidNativeSlashCommandRoots(
+                managed.laneWorktreePath,
+                adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+              )),
+              PER_TURN_SKILL_LISTING_BUDGET_BYTES,
+            );
+          } catch {
+            return [];
+          }
+        })();
       const sdkInput = [
         droidHarnessPrompt,
+        ...(droidSkillListing.length ? ["", ...droidSkillListing] : []),
         "",
         "## User Request",
         composed,

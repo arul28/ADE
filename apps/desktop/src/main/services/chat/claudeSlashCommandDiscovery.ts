@@ -213,11 +213,42 @@ export function planClaudeSlashCommandInjection(
   commands: readonly DiscoveredClaudeSlashCommand[],
   options: { cwd: string; pluginRoots?: readonly string[]; home?: string },
 ): ClaudeSlashCommandInjectionPlan {
-  const native = claudeNativeSlashCommandRoots(
+  return planSlashCommandInjection(commands, claudeNativeSlashCommandRoots(
     options.cwd,
     options.pluginRoots ?? [],
     options.home ?? os.homedir(),
-  );
+  ));
+}
+
+/**
+ * The skill roots Droid finds without ADE's help.
+ *
+ * Factory's docs name only `.factory/skills`, in the project and in the home
+ * directory. Droid does not read `.claude/skills` or `.agents/skills`, so a
+ * project's own skills (and the user's) never reach a Droid chat unless ADE
+ * lists them. `alreadyNamedRoots` are roots the prompt names elsewhere (ADE's
+ * bundled skills), so they are not listed a second time.
+ */
+export function droidNativeSlashCommandRoots(
+  cwd: string,
+  alreadyNamedRoots: readonly string[] = [],
+  home: string = os.homedir(),
+): { commandRoots: string[]; skillRoots: string[] } {
+  const configRoots = [path.resolve(cwd, ".factory"), path.resolve(home, ".factory")];
+  return {
+    commandRoots: configRoots.map((root) => path.join(root, "commands")),
+    skillRoots: [
+      ...configRoots.map((root) => path.join(root, "skills")),
+      ...alreadyNamedRoots.map((root) => path.resolve(root)),
+    ],
+  };
+}
+
+/** Drops everything under the roots a harness already reads for itself. */
+export function planSlashCommandInjection(
+  commands: readonly DiscoveredClaudeSlashCommand[],
+  native: { commandRoots: readonly string[]; skillRoots: readonly string[] },
+): ClaudeSlashCommandInjectionPlan {
   // A skill Claude reaches through a link counts as native too. A common setup
   // keeps the real skill in `~/.agents/skills` and links it into
   // `~/.claude/skills`, so Claude lists it under the link while ADE finds the
@@ -297,6 +328,34 @@ export function renderClaudeSlashCommandEntries(
     used += cost;
   }
   return { lines, omitted };
+}
+
+/**
+ * The listing budget for a harness whose prompt ADE re-sends with every turn
+ * (Droid): the same entries, at a third of the size, because the cost is paid
+ * per message rather than once per session.
+ */
+export const PER_TURN_SKILL_LISTING_BUDGET_BYTES = 5 * 1024;
+
+/**
+ * The prompt section that tells a harness which project and user skills exist
+ * that it would not find on its own. Empty when there is nothing to add.
+ */
+export function buildSkillListingSection(
+  plan: ClaudeSlashCommandInjectionPlan,
+  budgetBytes: number,
+): string[] {
+  const entries = [...plan.commands, ...plan.skills];
+  const rendered = renderClaudeSlashCommandEntries(entries, budgetBytes);
+  if (!rendered.lines.length) return [];
+  return [
+    "## Project commands and skills",
+    "Files this project and this user keep that your harness does not load on its own. When the user sends `/<name>`, ADE expands the file for you. When one fits the task, read its file and follow it.",
+    ...rendered.lines,
+    ...(rendered.omitted > 0
+      ? [`- ${rendered.omitted} more omitted to keep this list short. Run \`ade skill list --text\` if none of these fits.`]
+      : []),
+  ];
 }
 
 export function resolveClaudeSlashCommandInvocation(
