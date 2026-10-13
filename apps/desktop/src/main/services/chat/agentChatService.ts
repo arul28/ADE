@@ -51930,6 +51930,7 @@ export function createAgentChatService(args: {
                 adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
               )),
               PER_TURN_SKILL_LISTING_BUDGET_BYTES,
+              managed.laneWorktreePath,
             );
           } catch {
             return [];

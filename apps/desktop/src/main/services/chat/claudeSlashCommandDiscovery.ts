@@ -336,6 +336,7 @@ export function renderClaudeSlashCommandEntries(
  * per message rather than once per session.
  */
 export const PER_TURN_SKILL_LISTING_BUDGET_BYTES = 5 * 1024;
+const PER_TURN_SKILL_DESC_CHARS = 90;
 
 /**
  * The prompt section that tells a harness which project and user skills exist
@@ -344,16 +345,40 @@ export const PER_TURN_SKILL_LISTING_BUDGET_BYTES = 5 * 1024;
 export function buildSkillListingSection(
   plan: ClaudeSlashCommandInjectionPlan,
   budgetBytes: number,
+  /** The project directory: its own files are listed before the user's. */
+  cwd: string,
 ): string[] {
-  const entries = [...plan.commands, ...plan.skills];
-  const rendered = renderClaudeSlashCommandEntries(entries, budgetBytes);
-  if (!rendered.lines.length) return [];
+  // The project's own files first. They are the ones written for this
+  // codebase, and an alphabetical list spent the whole budget before reaching
+  // a project's `/quality` or `/test`.
+  const inProject = (entry: DiscoveredClaudeSlashCommand) => isPathInside(entry.filePath, cwd);
+  const entries = [...plan.commands, ...plan.skills]
+    .sort((a, b) => Number(inProject(b)) - Number(inProject(a)));
+  const lines: string[] = [];
+  let used = 0;
+  let omitted = 0;
+  for (const entry of entries) {
+    // One short line each: this list is paid for on every turn.
+    const description = entry.description.trim().replace(/\s+/g, " ");
+    const clipped = description.length > PER_TURN_SKILL_DESC_CHARS
+      ? `${description.slice(0, PER_TURN_SKILL_DESC_CHARS - 1).trimEnd()}…`
+      : description;
+    const line = `- ${entry.name}${clipped ? ` — ${clipped}` : ""} (${entry.filePath})`;
+    const cost = Buffer.byteLength(line, "utf8") + 1;
+    if (lines.length && used + cost > budgetBytes) {
+      omitted += 1;
+      continue;
+    }
+    lines.push(line);
+    used += cost;
+  }
+  if (!lines.length) return [];
   return [
     "## Project commands and skills",
     "Files this project and this user keep that your harness does not load on its own. When the user sends `/<name>`, ADE expands the file for you. When one fits the task, read its file and follow it.",
-    ...rendered.lines,
-    ...(rendered.omitted > 0
-      ? [`- ${rendered.omitted} more omitted to keep this list short. Run \`ade skill list --text\` if none of these fits.`]
+    ...lines,
+    ...(omitted > 0
+      ? [`- ${omitted} more omitted to keep this list short. Run \`ade skill list --text\` if none of these fits.`]
       : []),
   ];
 }
