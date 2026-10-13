@@ -129,7 +129,7 @@ const errorMessage = (error: unknown): string =>
 export type MusicService = ReturnType<typeof createMusicService>;
 
 export function createMusicService(args: {
-  /** Null when this platform has no player host (macOS today). */
+  /** Null when this platform has no player host (anything but Windows and macOS). */
   hostExecutable: string | null;
   isPackaged: boolean;
   userDataDir: string;
@@ -156,7 +156,7 @@ export function createMusicService(args: {
 
   const state: MusicState = {
     availability: args.hostExecutable ? "ready" : "unsupported",
-    message: args.hostExecutable ? null : "Music on Mac is coming. Apple Music plays in ADE on Windows today.",
+    message: args.hostExecutable ? null : "Apple Music plays in ADE on Windows and macOS.",
     authorized: false,
     connecting: false,
     host: { status: "stopped", pid: null, unloadAt: null },
@@ -236,7 +236,7 @@ export function createMusicService(args: {
       setUnavailable(
         args.isPackaged
           ? "ADE's music player is missing from this install. Reinstall ADE."
-          : "The music player isn't built. Run `npm run build:music-host:win` in apps/desktop.",
+          : `The music player isn't built. Run \`npm run build:music-host:${process.platform === "darwin" ? "mac" : "win"}\` in apps/desktop.`,
       );
       return;
     }

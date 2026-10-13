@@ -146,8 +146,8 @@ export function MusicPage() {
         <div className="ade-music-center">
           <section className="ade-music-gate ade-chat-scene-plane" data-testid="music-unsupported">
             <span className="ade-music-gate-glyph"><MusicNotes size={30} weight="fill" /></span>
-            <h1>Music on Mac is coming</h1>
-            <p>{message ?? "Apple Music plays in ADE on Windows today."}</p>
+            <h1>Music isn't available here</h1>
+            <p>{message ?? "Apple Music plays in ADE on Windows and macOS."}</p>
             <AppleMusicMark />
           </section>
         </div>
