@@ -6,6 +6,7 @@ export type ProviderRuntimeHealthProvider =
   | "codex"
   | "cursor"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"

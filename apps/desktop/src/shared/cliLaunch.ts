@@ -3,6 +3,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatPermissionMode,
   PtySendToSessionArgs,
   TerminalResumeLaunchConfig,
@@ -18,8 +19,10 @@ import {
   PROVIDER_INSTANCE_ENV_KEY,
 } from "./types/providerInstances";
 import {
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   droidPermissionModeFromLegacyPermissionMode,
+  museCliApprovalFlag,
 } from "./types/chat";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -37,6 +40,7 @@ import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
 import { grokSupervisionEnv } from "./grokSupervision";
 import { decodeOpenCodeRegistryId, decodePiRegistryId } from "./modelRegistry";
+import { musePermissionModeFromLegacyPermissionMode } from "./modelPermissions";
 import { PI_THINKING_LEVELS } from "./piThinkingLevels";
 import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
 
@@ -49,6 +53,7 @@ export type CliProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
@@ -154,6 +159,7 @@ export type CliIdentityResumeMetadataArgs = {
   targetId: string | null;
   permissionMode: NonNullable<TerminalResumeLaunchConfig["permissionMode"]>;
   droidPermissionMode?: TerminalResumeLaunchConfig["droidPermissionMode"];
+  musePermissionMode?: TerminalResumeLaunchConfig["musePermissionMode"];
   model: string | null;
   reasoningEffort: string | null;
   fastMode: boolean | null;
@@ -183,6 +189,7 @@ export function buildCliIdentityResumeMetadata(
     launch: {
       permissionMode: args.permissionMode,
       ...(args.droidPermissionMode !== undefined ? { droidPermissionMode: args.droidPermissionMode } : {}),
+      ...(args.musePermissionMode !== undefined ? { musePermissionMode: args.musePermissionMode } : {}),
       model: args.model,
       reasoningEffort: args.reasoningEffort,
       fastMode: args.fastMode,
@@ -219,6 +226,7 @@ export const LAUNCH_PROFILES = [
   "droid",
   "opencode",
   "pi",
+  "muse",
   "qwen",
   "kimi",
   "grok",
@@ -245,6 +253,7 @@ export const LAUNCH_PROFILE_TOOL_TYPE: Record<LaunchProfile, TerminalToolType> =
   droid: "droid",
   opencode: "opencode",
   pi: "pi",
+  muse: "muse",
   qwen: "qwen",
   kimi: "kimi",
   grok: "grok",
@@ -261,6 +270,7 @@ export const LAUNCH_PROFILE_TITLE: Record<LaunchProfile, string> = {
   droid: "Factory Droid CLI",
   opencode: "OpenCode CLI",
   pi: "Pi CLI",
+  muse: "Muse Code",
   qwen: "Qwen Code CLI",
   kimi: "Kimi Code CLI",
   grok: "Grok CLI",
@@ -387,6 +397,7 @@ export function isLaunchProfilePlaceholderTitle(
   if (defaultTitle && normalized === defaultTitle) return true;
   if (profile === "codex") return normalized === "codex cli" || normalized === "codex session";
   if (profile === "claude") return normalized === "claude" || normalized === "claude cli" || normalized === "claude session";
+  if (profile === "muse") return normalized === "muse" || normalized === "muse cli" || normalized === "muse code cli" || normalized === "muse session";
   return false;
 }
 
@@ -420,6 +431,7 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   droid: ["droid", "droid-chat"],
   opencode: ["opencode", "opencode-orchestrated", "opencode-chat"],
   pi: ["pi"],
+  muse: ["muse", "muse-chat"],
   qwen: ["qwen", "qwen-chat"],
   kimi: ["kimi", "kimi-chat"],
   grok: ["grok", "grok-chat"],
@@ -479,6 +491,12 @@ export function validateLaunchProfilePermissionMode(
     if (mode === "auto" || mode === "config-toml") {
       throw new Error(`permissionMode ${mode} is not supported for GitHub Copilot CLI sessions.`);
     }
+    return;
+  }
+  if (profile === "muse") {
+    // Every ADE word has a Muse posture (see `musePermissionCliFlags`):
+    // `config-toml` defers to the user's own Muse settings, and `auto` is
+    // Muse's default, where an AI reviewer decides eligible approvals.
     return;
   }
   if (profile === "devin") {
@@ -829,6 +847,7 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   if (provider === "droid") return "droid";
   if (provider === "opencode") return "opencode";
   if (provider === "pi") return "pi";
+  if (provider === "muse") return "muse --contributor-mode off";
   if (provider === "qwen") return "qwen";
   if (provider === "kimi") return "kimi";
   if (provider === "grok") return "grok --no-alt-screen";
@@ -968,6 +987,10 @@ export function buildTrackedCliStartupCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  /** Muse's own approval mode; wins over the `permissionMode` mapping when set. */
+  musePermissionMode?: AgentChatMusePermissionMode | null;
+  /** Extra stdio MCP servers for a Muse run, attached with `-c mcpServers.<name>=…`. */
+  museMcpServers?: readonly MuseCliMcpServer[] | null;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
   /** Optional runtime model for fresh launches. Continuation commands intentionally ignore it. */
@@ -1001,6 +1024,10 @@ export function buildTrackedCliLaunchCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  /** Muse's own approval mode; wins over the `permissionMode` mapping when set. */
+  musePermissionMode?: AgentChatMusePermissionMode | null;
+  /** Extra stdio MCP servers for a Muse run, attached with `-c mcpServers.<name>=…`. */
+  museMcpServers?: readonly MuseCliMcpServer[] | null;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
   /** Optional runtime model for fresh launches. Continuation commands intentionally ignore it. */
@@ -1237,6 +1264,38 @@ export function buildTrackedCliLaunchCommand(args: {
     };
   }
 
+  if (args.provider === "muse") {
+    const museModel = passthroughModelId
+      ? normalizeCliFlagValue(args.model)
+      : resolveMuseCliModelForLaunch(args.model);
+    const workspace = normalizeCliFlagValue(args.laneWorktreePath);
+    const commandArgs: string[] = [
+      ...museBaseFlags({
+        model: museModel,
+        reasoningEffort: args.reasoningEffort,
+        permissionMode,
+        musePermissionMode: args.musePermissionMode,
+      }),
+      ...(workspace ? ["--workspace", workspace] : []),
+      ...museMcpServerConfigFlags(args.museMcpServers),
+    ];
+    // Muse has no system-prompt flag, so ADE's guidance rides the first user
+    // message, as it does for Codex. The prompt goes in argv on every
+    // platform: Muse ships only as a native executable (`muse` / `muse.exe`,
+    // never a `.cmd` shim) and the PTY boundary substitutes ADE's pinned
+    // binary path, so the spawn is direct and argv arrives intact. Typing it
+    // into the TUI instead would land it in Muse's first-run "Do you trust
+    // this workspace?" dialog; an argv prompt waits behind that dialog and is
+    // submitted once the user answers (verified against muse 1.4.7).
+    commandArgs.push(workTabCliPrompt(initialPrompt, skillRoots, activityGuidance));
+    return {
+      command: MUSE_CLI_COMMAND,
+      args: commandArgs,
+      startupCommand: commandArrayToLine([MUSE_CLI_COMMAND, ...commandArgs], { platform: "linux" }),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+    };
+  }
+
   if (args.provider === "qwen") {
     const assignedSessionId = args.sessionId?.trim() || null;
     const commandArgs: string[] = [];
@@ -1441,7 +1500,7 @@ export function buildTrackedCliSessionActivityGuidance(args: {
       supported = mode === "full-auto";
       break;
     default:
-      // Qwen, Kimi, Grok, and Copilot do not yet have a verified tracked-CLI
+      // Muse, Qwen, Kimi, Grok, and Copilot do not yet have a verified tracked-CLI
       // path that combines ADE's system guidance, scoped CLI access, and shell.
       supported = false;
   }
@@ -1583,6 +1642,120 @@ export function piThinkingLevel(reasoningEffort: string | null | undefined): str
 export function piThinkingFlags(reasoningEffort: string | null | undefined): string[] {
   const thinking = piThinkingLevel(reasoningEffort);
   return thinking ? ["--thinking", thinking] : [];
+}
+
+/**
+ * The word ADE launches Muse with. The PTY boundary swaps it for the pinned
+ * binary ADE fetched (`resolveMuseBinaryPath`); ADE never runs a user's own
+ * `muse` install.
+ */
+export const MUSE_CLI_COMMAND = "muse";
+
+/** Every reasoning effort `muse --reasoning-effort` accepts (1.4.7). */
+const MUSE_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+
+/** Muse takes its own model id; ADE's registry ids carry a `muse/` prefix. */
+export function resolveMuseCliModelForLaunch(model: string | null | undefined): string | null {
+  return stripRegistryPrefix(model, "muse");
+}
+
+/** ADE's effort as a Muse effort, or null when Muse has no such tier (Muse keeps its default). */
+export function resolveMuseReasoningEffort(reasoningEffort: string | null | undefined): string | null {
+  const effort = normalizeCliFlagValue(reasoningEffort)?.toLowerCase();
+  if (!effort) return null;
+  const mapped = effort === "ultracode" ? "ultra" : effort;
+  return (MUSE_REASONING_EFFORTS as readonly string[]).includes(mapped) ? mapped : null;
+}
+
+export function isMusePermissionMode(value: unknown): value is AgentChatMusePermissionMode {
+  return typeof value === "string" && (AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES as readonly string[]).includes(value);
+}
+
+/**
+ * The CLI flags for a Muse permission posture.
+ *
+ * The CLI knows three approval words (`untrusted | on-request | never`), so
+ * `museCliApprovalFlag` folds the two cautious wire modes together. The most
+ * cautious one is the exception here: `untrusted` still lets the user approve
+ * a write, which is more than "plan" allows, so `denyUnmatched` uses Muse's
+ * built-in `:read-only` permission profile ("Reads files only") instead. Muse
+ * refuses `--permission-profile` together with `--approval-mode`, so it is one
+ * or the other.
+ *
+ * Full access is `--approval-mode never`, never `--yolo`: `--yolo` also turns
+ * the sandbox off and trusts the workspace, which no ADE mode asks for.
+ */
+export function musePermissionCliFlags(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  musePermissionMode?: AgentChatMusePermissionMode | null;
+}): string[] {
+  const mode = isMusePermissionMode(args.musePermissionMode)
+    ? args.musePermissionMode
+    : musePermissionModeFromLegacyPermissionMode(args.permissionMode);
+  if (!mode) return [];
+  if (mode === "denyUnmatched") return ["--permission-profile", ":read-only"];
+  return ["--approval-mode", museCliApprovalFlag(mode)];
+}
+
+/** One stdio MCP server for a Muse CLI run. */
+export type MuseCliMcpServer = {
+  name: string;
+  command: string;
+  args?: readonly string[];
+  /**
+   * Names of environment variables the server needs. Muse starts stdio
+   * servers with only a small allowlist of the caller's environment, and its
+   * `-c` overrides accept secret values only as a whole-value `${VAR}`, so
+   * each name is passed as a reference, never as a value.
+   */
+  envVars?: readonly string[];
+};
+
+const MUSE_MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/u;
+const ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
+/**
+ * `-c mcpServers.<name>=<json>` for each server. Muse 1.4.7 accepts one server
+ * per `-c` (it refuses the whole `mcpServers` map, and refuses a `type` key
+ * there), with `command` a string and `args` an array. `mode: "optional"`
+ * keeps a server that fails to start from blocking the whole run: Muse's
+ * default is `required`, which fails the run.
+ */
+export function museMcpServerConfigFlags(servers: readonly MuseCliMcpServer[] | null | undefined): string[] {
+  const flags: string[] = [];
+  for (const server of servers ?? []) {
+    const name = server.name?.trim() ?? "";
+    const command = server.command?.trim() ?? "";
+    if (!MUSE_MCP_SERVER_NAME.test(name) || !command) continue;
+    const envVars = (server.envVars ?? []).filter((key) => ENV_VAR_NAME.test(key));
+    const value: Record<string, unknown> = {
+      command,
+      args: [...(server.args ?? [])],
+      ...(envVars.length ? { env: Object.fromEntries(envVars.map((key) => [key, `\${${key}}`])) } : {}),
+      mode: "optional",
+    };
+    flags.push("-c", `mcpServers.${name}=${JSON.stringify(value)}`);
+  }
+  return flags;
+}
+
+/** Flags every Muse CLI launch (fresh or resumed) carries, in a stable order. */
+function museBaseFlags(args: {
+  model: string | null;
+  reasoningEffort: string | null | undefined;
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  musePermissionMode?: AgentChatMusePermissionMode | null;
+}): string[] {
+  const effort = resolveMuseReasoningEffort(args.reasoningEffort);
+  return [
+    // Contributor mode is never offered. `serve` ignores the saved setting
+    // since 1.4.6, so ADE states it on every launch rather than relying on it.
+    "--contributor-mode",
+    "off",
+    ...modelToCliFlag(args.model),
+    ...(effort ? ["--reasoning-effort", effort] : []),
+    ...musePermissionCliFlags(args),
+  ];
 }
 
 export function codexReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
@@ -2221,6 +2394,11 @@ function buildProviderResumeLaunchCommand(
     ? droidPermissionModeFromLegacyPermissionMode(permissionMode)
     : metadata.launch.droidPermissionMode
       ?? droidPermissionModeFromLegacyPermissionMode(permissionMode);
+  // A permission override speaks ADE's generic ladder, so it replaces the
+  // stored Muse mode rather than sitting beside it.
+  const musePermissionMode = overrides.permissionMode !== undefined
+    ? null
+    : metadata.launch.musePermissionMode ?? null;
   const prompt = normalizeCliFlagValue(overrides.prompt);
   const passthroughModelId = overrides.preset?.passthroughModelId === true;
   const modelForLaunch = passthroughModelId
@@ -2365,6 +2543,38 @@ function buildProviderResumeLaunchCommand(
       args: parts.slice(1),
       startupCommand: commandArrayToLine(parts, { platform: "linux" }),
       ...(prompt && !promptRidesInArgv ? { initialInput: prompt, initialInputDelayMs: 750 } : {}),
+    };
+  }
+
+  if (metadata.provider === "muse") {
+    const museModel = passthroughModelId
+      ? normalizeCliFlagValue(model)
+      : resolveMuseCliModelForLaunch(model);
+    const parts = [
+      MUSE_CLI_COMMAND,
+      ...museBaseFlags({ model: museModel, reasoningEffort, permissionMode, musePermissionMode }),
+    ];
+    // Only a captured session id resumes. `muse resume --last` means "the most
+    // recent session in this workspace", which can be another terminal's or an
+    // ADE chat's (the same hazard Pi and Cursor refuse). Without an id this is
+    // a fresh launch, and the prompt rides argv as on any fresh launch.
+    if (targetId) {
+      parts.push("resume", targetId);
+      // `muse resume <id>` refuses a second positional ("unknown argument
+      // `resume`" in 1.4.7), so a continuation prompt is typed into the TUI
+      // once it is ready.
+      return {
+        command: parts[0]!,
+        args: parts.slice(1),
+        startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+        ...(prompt ? { initialInput: prompt, initialInputDelayMs: 750 } : {}),
+      };
+    }
+    if (prompt) parts.push(prompt);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
     };
   }
 

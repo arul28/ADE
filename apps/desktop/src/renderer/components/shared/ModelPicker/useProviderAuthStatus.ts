@@ -23,6 +23,7 @@ type ProviderStatusSnapshot = {
     codex?: unknown;
     cursor?: unknown;
     droid?: unknown;
+    muse?: unknown;
     qwen?: unknown;
     kimi?: unknown;
     grok?: unknown;
@@ -31,6 +32,7 @@ type ProviderStatusSnapshot = {
   };
   providerConnections?: {
     pi?: ProviderConnectionFlags;
+    muse?: ProviderConnectionFlags;
     qwen?: ProviderConnectionFlags;
     kimi?: ProviderConnectionFlags;
     grok?: ProviderConnectionFlags;
@@ -108,6 +110,14 @@ export function familiesFromStatus(
   out.openai = status.availableProviders?.codex === true ? "ok" : "unauthed";
   out.cursor = status.availableProviders?.cursor === true ? "ok" : "unauthed";
   out.factory = status.availableProviders?.droid === true ? "ok" : "unauthed";
+  // Muse is optional on the wire (an older host has no arm for it), so a host
+  // that never reported it leaves the rail unprobed rather than signed out.
+  const muse = status.providerConnections?.muse;
+  if (status.availableProviders?.muse === true || muse?.runtimeAvailable === true) {
+    out.muse = "ok";
+  } else if (muse || status.availableProviders?.muse === false) {
+    out.muse = "unauthed";
+  }
 
   const opencodeAny =
     Array.isArray(status.opencodeProviders) && status.opencodeProviders.some((p) => p.connected);

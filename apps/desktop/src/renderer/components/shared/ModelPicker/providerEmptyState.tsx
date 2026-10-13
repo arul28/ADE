@@ -41,6 +41,15 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.codex.docsUrl },
     },
   },
+  muse: {
+    title: "Sign in to Muse Code",
+    body: "Sign in with your Meta account (`muse login`) or set META_API_KEY to use Muse models. ADE runs its own pinned copy of Muse.",
+    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    secondary: {
+      label: "Muse Code docs",
+      action: { kind: "open-external", url: PROVIDER_REMEDIATION.muse.docsUrl },
+    },
+  },
   cursor: {
     title: "Connect Cursor",
     body: "Add a Cursor API key in Settings to discover Cursor SDK models.",
@@ -156,6 +165,7 @@ export type ProviderEmptyStateProps =
 const PROVIDER_DISPLAY_LABELS: Partial<Record<ProviderFamily, string>> = {
   anthropic: "Claude",
   openai: "OpenAI Codex",
+  muse: "Muse",
   cursor: "Cursor",
   factory: "Droid",
   pi: "Pi",

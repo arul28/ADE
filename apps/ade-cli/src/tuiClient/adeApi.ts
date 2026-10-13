@@ -30,6 +30,7 @@ import type {
   AgentChatDispatchSteerMode,
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatEventEnvelope,
   AgentChatMainTranscriptArgs,
   AgentChatEventHistoryPage,
@@ -468,6 +469,7 @@ const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
   "cursor",
   "droid-chat",
   "pi-chat",
+  "muse-chat",
   "qwen-chat",
   "kimi-chat",
   "grok-chat",
@@ -482,6 +484,7 @@ const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([
   "droid",
   "opencode",
   "pi",
+  "muse",
   "qwen",
   "kimi",
   "grok",
@@ -507,6 +510,7 @@ export function trackedCliTerminalProvider(session: ChatTerminalSession): AdeCod
   if (toolType.startsWith("droid")) return "droid";
   if (toolType.startsWith("opencode")) return "opencode";
   if (toolType.startsWith("pi")) return "pi";
+  if (toolType.startsWith("muse")) return "muse";
   if (toolType.startsWith("claude")) return "claude";
   if (toolType.startsWith("qwen")) return "qwen";
   if (toolType.startsWith("kimi")) return "kimi";
@@ -569,7 +573,7 @@ export async function signalTerminal(
 /** Provider CLIs the TUI can launch as tracked terminal sessions. */
 export type CliTerminalProvider = Extract<
   AdeCodeProvider,
-  "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin"
+  "claude" | "codex" | "muse" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin"
 >;
 
 export type StartCliTerminalSessionResult = {
@@ -834,8 +838,9 @@ export async function getAvailableModels(
     // The four ACP providers are here too, but they never spawn an agent for a
     // model list: `activateRuntime` only forces a fresh CLI auth pass, which is
     // what gates their curated rows (see loadAvailableModels in
-    // agentChatService).
+    // agentChatService). Muse answers MSP `model/list` from its live host.
     activateRuntime: provider === "cursor"
+      || provider === "muse"
       || provider === "droid"
       || provider === "pi"
       || provider === "qwen"
@@ -905,6 +910,7 @@ export async function createChatSession(args: {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
 }): Promise<CreatedChat> {
@@ -921,7 +927,9 @@ export async function createChatSession(args: {
         ? "auto"
         : provider === "droid"
           ? (getDefaultModelDescriptor("droid")?.providerModelId ?? "claude-sonnet-4-5-20250929")
-          : "gpt-6-astra";
+          : provider === "muse"
+            ? "muse-spark-1.3"
+            : "gpt-6-astra";
   const reasoningEffort = args.reasoningEffort
     ?? (provider === "codex" ? descriptor?.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT : null);
   return await args.connection.action<AgentChatSession>("chat", "createSession", {
@@ -934,13 +942,14 @@ export async function createChatSession(args: {
     ...(args.fastMode === true ? { fastMode: true } : {}),
     ...launchIdentityFields(resolveLaunchIdentity(args)),
     ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
-    ...(provider === "claude" && args.interactionMode ? { interactionMode: args.interactionMode } : {}),
+    ...((provider === "claude" || provider === "muse") && args.interactionMode ? { interactionMode: args.interactionMode } : {}),
     ...(provider === "claude" && args.claudePermissionMode ? { claudePermissionMode: args.claudePermissionMode } : {}),
     ...(provider === "codex" && args.codexApprovalPolicy ? { codexApprovalPolicy: args.codexApprovalPolicy } : {}),
     ...(provider === "codex" && args.codexSandbox ? { codexSandbox: args.codexSandbox } : {}),
     ...(provider === "codex" && args.codexConfigSource ? { codexConfigSource: args.codexConfigSource } : {}),
     ...(provider === "opencode" && args.opencodePermissionMode ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
     ...(provider === "droid" && args.droidPermissionMode ? { droidPermissionMode: args.droidPermissionMode } : {}),
+    ...(provider === "muse" && args.musePermissionMode ? { musePermissionMode: args.musePermissionMode } : {}),
     ...(provider === "cursor" && args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
     ...(provider === "cursor" && args.cursorConfigValues ? { cursorConfigValues: args.cursorConfigValues } : {}),
     surface: "work",
@@ -1379,6 +1388,7 @@ export async function updateChatModel(args: {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
 }): Promise<AgentChatSession> {
@@ -1395,6 +1405,7 @@ export async function updateChatModel(args: {
     ...(args.codexConfigSource !== undefined ? { codexConfigSource: args.codexConfigSource } : {}),
     ...(args.opencodePermissionMode !== undefined ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
     ...(args.droidPermissionMode !== undefined ? { droidPermissionMode: args.droidPermissionMode } : {}),
+    ...(args.musePermissionMode !== undefined ? { musePermissionMode: args.musePermissionMode } : {}),
     ...(args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
     ...(args.cursorConfigValues !== undefined ? { cursorConfigValues: args.cursorConfigValues } : {}),
   });

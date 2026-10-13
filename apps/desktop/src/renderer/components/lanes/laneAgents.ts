@@ -93,6 +93,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex",
   cursor: "Cursor",
   droid: "Droid",
+  muse: "Muse",
   opencode: "OpenCode",
 };
 

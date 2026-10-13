@@ -1910,7 +1910,7 @@ function isMockChatToolType(toolType: unknown): boolean {
 
 function inferMockChatProvider(
   session: any,
-): "claude" | "codex" | "cursor" | "droid" | "opencode" {
+): "claude" | "codex" | "cursor" | "droid" | "muse" | "opencode" {
   const metadataProvider = String(session?.resumeMetadata?.provider ?? "")
     .trim()
     .toLowerCase();
@@ -1919,6 +1919,7 @@ function inferMockChatProvider(
     metadataProvider === "codex" ||
     metadataProvider === "cursor" ||
     metadataProvider === "droid" ||
+    metadataProvider === "muse" ||
     metadataProvider === "opencode"
   ) {
     return metadataProvider;
@@ -1930,6 +1931,7 @@ function inferMockChatProvider(
   if (toolType.startsWith("codex")) return "codex";
   if (toolType === "cursor" || toolType.startsWith("cursor")) return "cursor";
   if (toolType === "droid-chat" || toolType.startsWith("droid")) return "droid";
+  if (toolType.startsWith("muse")) return "muse";
   return "opencode";
 }
 
@@ -2085,22 +2087,24 @@ function latestMockDoneEvent(events: any[]): any | null {
 }
 
 function fallbackMockModelForProvider(
-  provider: "claude" | "codex" | "cursor" | "droid" | "opencode",
+  provider: "claude" | "codex" | "cursor" | "droid" | "muse" | "opencode",
 ): string {
   if (provider === "claude") return "sonnet";
   if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
   if (provider === "cursor") return "auto";
   if (provider === "droid") return "claude-opus-4-6";
+  if (provider === "muse") return "muse-spark-1.3";
   return "opencode/mock";
 }
 
 function fallbackMockModelIdForProvider(
-  provider: "claude" | "codex" | "cursor" | "droid" | "opencode",
+  provider: "claude" | "codex" | "cursor" | "droid" | "muse" | "opencode",
 ): string {
   if (provider === "claude") return DEFAULT_BROWSER_MOCK_CLAUDE_MODEL;
   if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
   if (provider === "cursor") return "cursor/auto";
   if (provider === "droid") return "droid/claude-opus-4-6";
+  if (provider === "muse") return "muse/muse-spark-1.3";
   return "opencode/mock";
 }
 
@@ -2149,6 +2153,8 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
       session.resumeMetadata?.opencodePermissionMode ?? undefined,
     droidPermissionMode:
       session.resumeMetadata?.droidPermissionMode ?? undefined,
+    musePermissionMode:
+      session.resumeMetadata?.musePermissionMode ?? undefined,
     instanceId: session.resumeMetadata?.instanceId ?? undefined,
     presetId: session.resumeMetadata?.presetId ?? undefined,
     credentialId: session.resumeMetadata?.credentialId ?? undefined,
@@ -3846,7 +3852,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   };
 
   const BROWSER_MOCK_PROVIDER_CONNECTION = (
-    provider: "claude" | "codex" | "cursor" | "droid",
+    provider: "claude" | "codex" | "cursor" | "droid" | "muse",
   ) => ({
     provider,
     // Detected-but-not-authed, which is what makes the demo quota fixture below
@@ -3899,6 +3905,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       codex: BROWSER_MOCK_PROVIDER_CONNECTION("codex"),
       cursor: BROWSER_MOCK_PROVIDER_CONNECTION("cursor"),
       droid: BROWSER_MOCK_PROVIDER_CONNECTION("droid"),
+      muse: BROWSER_MOCK_PROVIDER_CONNECTION("muse"),
     },
   };
 
@@ -6698,6 +6705,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             codexConfigSource: args.codexConfigSource,
             opencodePermissionMode: args.opencodePermissionMode,
             droidPermissionMode: args.droidPermissionMode,
+            musePermissionMode: args.musePermissionMode,
             permissionMode: args.permissionMode,
             cursorModeId: args.cursorModeId,
           },

@@ -53,6 +53,11 @@ export type SubagentCapability = {
   kinds: SubagentKind[];
   /** Runtime exposes rich per-agent metadata (model / reasoning effort / role). */
   hasRichMetadata: boolean;
+  /**
+   * A subagent can be sent a message (`chat.messageSubagent`): the composer
+   * in its transcript view writes to the subagent instead of staying locked.
+   */
+  canMessage?: boolean;
 };
 
 /** Runtime keys we have a subagent story for. Mirrors `runtime.kind` + provider. */
@@ -62,6 +67,7 @@ export type SubagentRuntimeKey =
   | "opencode"
   | "cursor"
   | "droid"
+  | "muse"
   | "lmstudio";
 
 export const NO_SUBAGENT_CAPABILITY: SubagentCapability = {
@@ -123,6 +129,20 @@ export const SUBAGENT_CAPABILITIES: Record<SubagentRuntimeKey, SubagentCapabilit
     statsFields: ["durationMs", "exitCode", "model"],
     kinds: ["subagent"],
     hasRichMetadata: false,
+  },
+  // MSP streams each subagent as a `subagent` item (workflows as `workflow`
+  // items). A subagent runs in its own child session (`childSessionId`),
+  // read without attaching (`session/read`, `view/page`), so takeover shows
+  // the child's full transcript. `subagent/sendMessage` / `followupTask`
+  // back the composer in that view; `subagent/stop` and `workflow/cancel`
+  // back Stop; the other subagent and workflow verbs are `chat.controlSubagent`.
+  muse: {
+    canList: true,
+    canViewFullTranscript: true,
+    statsFields: ["tokens", "durationMs", "role"],
+    kinds: ["subagent", "local_workflow"],
+    hasRichMetadata: false,
+    canMessage: true,
   },
   lmstudio: NO_SUBAGENT_CAPABILITY,
 };

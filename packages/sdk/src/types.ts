@@ -32,7 +32,8 @@ export type AdeProvider =
   | "cursor"
   | "droid"
   | "opencode"
-  | "pi";
+  | "pi"
+  | "muse";
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 
@@ -77,6 +78,13 @@ export type AgentChatDroidPermissionMode =
   | "auto-medium"
   | "auto-high"
   | "agi";
+
+/** Meta Muse Code's own approval modes (MSP `ApprovalMode`), most cautious first. */
+export type AgentChatMusePermissionMode =
+  | "denyUnmatched"
+  | "promptUnmatched"
+  | "onRequest"
+  | "allowAll";
 
 /**
  * Which on-disk configuration layers a provider loads for a thread.
@@ -270,6 +278,7 @@ export type PendingInputSource =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "acp"
   | "ade";
 

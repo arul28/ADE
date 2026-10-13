@@ -117,6 +117,16 @@ export const PROVIDER_REMEDIATION = {
     loginCommand: "pi",
     docsUrl: "https://github.com/earendil-works/pi",
   },
+  muse: {
+    displayName: "Muse Code",
+    // Nothing to install: ADE downloads its own pinned `muse` build into the
+    // agent-tools cache and never uses a copy on PATH.
+    installCommand: null,
+    // Run with ADE's pinned binary in an ADE terminal. A Meta API key
+    // (META_API_KEY) is the other way in.
+    loginCommand: "muse login",
+    docsUrl: "https://dev.meta.ai",
+  },
 } as const satisfies Record<ShippedProvider, ProviderRemediation>;
 
 export const REMEDIATION_PROVIDERS: readonly ShippedProvider[] =

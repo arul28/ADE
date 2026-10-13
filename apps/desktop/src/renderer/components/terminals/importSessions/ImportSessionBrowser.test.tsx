@@ -220,7 +220,7 @@ describe("ImportSessionBrowser", () => {
     list.mockImplementation(() => new Promise<ExternalSessionSummary[]>(() => undefined));
     renderBrowser();
     expect((await screen.findByRole("status")).textContent).toContain("Scanning");
-    expect(list).toHaveBeenCalledTimes(10);
+    expect(list).toHaveBeenCalledTimes(11);
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ scope: "project", providers: ["qwen"] }));
   });
 
@@ -228,13 +228,13 @@ describe("ImportSessionBrowser", () => {
     list.mockRejectedValue(new Error("Project runtime unavailable."));
     renderBrowser();
     // A host that is still starting fails every provider; the dialog waits and
-    // scans again (10 providers x 2) before it shows the error.
+    // scans again (11 providers x 2) before it shows the error.
     await waitFor(() => expect(screen.getByText("Sessions couldn't be loaded")).toBeTruthy(), { timeout: 6000 });
-    expect(list).toHaveBeenCalledTimes(20);
+    expect(list).toHaveBeenCalledTimes(22);
     expect(screen.getByText(/ADE couldn't scan sessions on This computer/i)).toBeTruthy();
     expect(screen.queryByText(/Project runtime unavailable/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Retry scan/ }));
-    await waitFor(() => expect(list).toHaveBeenCalledTimes(40), { timeout: 6000 });
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(44), { timeout: 6000 });
   }, 15_000);
 
   it("recovers without an error when the host answers on the automatic second scan", async () => {
@@ -242,7 +242,7 @@ describe("ImportSessionBrowser", () => {
     let calls = 0;
     list.mockImplementation(async (args: { providers?: string[] }) => {
       calls += 1;
-      if (calls <= 10) throw new Error("Project runtime unavailable.");
+      if (calls <= 11) throw new Error("Project runtime unavailable.");
       return rows.filter((row) => args.providers?.includes(row.provider));
     });
     watchDetail.mockImplementation(async () => detailFor(rows[0]!));

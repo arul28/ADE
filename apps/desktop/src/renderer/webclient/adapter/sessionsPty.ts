@@ -746,7 +746,7 @@ function launchInstanceId(record: Record<string, unknown>): string | null {
 }
 
 function providerFromToolType(toolType: unknown): string {
-  if (toolType === "codex" || toolType === "cursor" || toolType === "droid" || toolType === "opencode") return toolType;
+  if (toolType === "codex" || toolType === "cursor" || toolType === "droid" || toolType === "opencode" || toolType === "muse") return toolType;
   if (toolType === "claude" || toolType === null || toolType === undefined) return "claude";
   return "shell";
 }

@@ -50,9 +50,9 @@ describe("ChatAppearancePreview", () => {
         shellGeometry="default"
       />,
     );
-    for (const provider of ["Codex", "Claude", "OpenCode", "Cursor", "Droid", "Pi"]) {
+    for (const provider of ["Codex", "Claude", "Muse", "OpenCode", "Cursor", "Droid", "Pi"]) {
       expect(screen.queryByText(provider, { exact: true })).not.toBeNull();
     }
-    expect(screen.getAllByRole("heading", { name: "Files in scope", level: 3 })).toHaveLength(6);
+    expect(screen.getAllByRole("heading", { name: "Files in scope", level: 3 })).toHaveLength(7);
   });
 });

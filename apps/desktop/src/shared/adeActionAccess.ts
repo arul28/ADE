@@ -174,7 +174,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "dispatchSteer", "editSteer", "ensureCtoSession", "moveSteer", "setCodexGoal",
       "setCodexGoalStatus", "clearCodexGoal", "startCodexRealtime", "stopCodexRealtime",
       "resetCodexMemory", "terminateCodexBackgroundTerminal", "interrupt",
-      "interruptWithQueueMode", "stopTask", "restartSession", "armWait", "cancelWait",
+      "interruptWithQueueMode", "stopTask", "messageSubagent", "controlSubagent", "restartSession", "armWait", "cancelWait",
       "holdBackgroundWork", "recoverTurn", "recoverCodexTurn", "resolveUnprocessedMessage",
       "recoverContinuity", "restoreCancelledQueue", "killDroidWorker", "launchCli",
       "launchHeadless", "startLaunch", "cancelLaunch", "retryLaunch", "startLaunchNow",
@@ -205,7 +205,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   ai: {
     read: [
-      "getStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "listApiCredentials",
+      "getStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "listApiCredentials",
       "getApiCredential", "listApiKeys", "opencodeAuthMethods", "listHarnessRoutes",
       "piLoginProviders", "cursorAuthStatus", "listCursorCloudRepositories",
       "listCursorCloudAgents", "listCursorCloudRuns", "getCursorCloudLaneSecretNames",
@@ -213,7 +213,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "listCloudAgents",
     ],
     write: [
-      "getCursorAgentUsage",
+      "getCursorAgentUsage", "ensureMuseBinary", "museSettings", "museSettingsClose",
       "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential",
       "verifyApiKeyConnection", "storeApiKey", "deleteApiKey", "updateConfig",
       "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",

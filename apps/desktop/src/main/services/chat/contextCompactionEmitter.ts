@@ -29,6 +29,7 @@ const NATIVE_COMPACT_PROVIDERS: Record<Exclude<AgentChatCompactProvider, AcpChat
   cursor: true,
   droid: true,
   pi: true,
+  muse: true,
 };
 
 export function isContextCompactProvider(provider: string | null | undefined): provider is AgentChatCompactProvider {

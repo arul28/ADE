@@ -53,6 +53,7 @@ const CODEX = "#F0F0F2";
 const CURSOR = "#0EA5E9";
 const OPENCODE = "#F0F0F2";
 const PI = "#F97316";
+const MUSE = "#4A9BFF";
 const DROID = "#06B6D4";
 const OLLAMA = "#F0F0F2";
 const LMSTUDIO = "#8B5CF6";
@@ -103,6 +104,7 @@ const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
   droid: { glyph: "✺", wordmark: "Droid", color: DROID, label: "Droid" },
   opencode: { glyph: "▣", wordmark: "OpenCode", color: OPENCODE, label: "OpenCode" },
   pi: { glyph: "◈", wordmark: "Pi", color: PI, label: "Pi" },
+  muse: { glyph: "◉", wordmark: "Muse", color: MUSE, label: "Muse" },
   qwen: { glyph: "◇", wordmark: "Qwen", color: QWEN, label: "Qwen" },
   kimi: { glyph: "◐", wordmark: "Kimi", color: KIMI, label: "Kimi" },
   grok: { glyph: "✧", wordmark: "Grok", color: GROK, label: "Grok" },

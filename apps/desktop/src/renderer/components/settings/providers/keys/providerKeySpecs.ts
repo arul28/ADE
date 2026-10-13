@@ -147,6 +147,20 @@ const SPECS: Record<SettingsProviderId, ProviderKeySpec> = {
     legacyDefaultSlot: false,
     note: "Pi reads its own models.json for endpoints and model ids, so there is no endpoint to set here.",
   },
+  muse: {
+    provider: "muse",
+    // Filed under the vendor, like `anthropic` for Claude Code.
+    credentialProvider: "meta",
+    keyEnvVar: "META_API_KEY",
+    keyHelp: "A Meta Model API key. ADE passes it to Muse as META_API_KEY, never on the command line.",
+    endpoint: null,
+    protocol: false,
+    models: false,
+    providerId: false,
+    verifiable: false,
+    legacyDefaultSlot: false,
+    note: "A key takes priority over a `muse login` sign-in, the same way META_API_KEY does in Muse.",
+  },
   opencode: {
     provider: "opencode",
     credentialProvider: HARNESS_CREDENTIAL_STORE_PROVIDER.opencode,

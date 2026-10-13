@@ -5,7 +5,7 @@ const CLI_EXTERNAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/u;
 
 /** The id's shape only: no separators, so it cannot address a path outside the store. */
 export function isWellFormedExternalSessionId(provider: ExternalSessionProvider, id: string): boolean {
-  const pattern = provider === "claude" || provider === "codex"
+  const pattern = provider === "claude" || provider === "codex" || provider === "muse"
     ? UUID_EXTERNAL_SESSION_ID
     : CLI_EXTERNAL_SESSION_ID;
   return pattern.test(id.trim());

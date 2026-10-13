@@ -1175,6 +1175,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var codexEffectiveCollaborationModeWasCleared: Bool? = nil
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   /// True when the host explicitly sent `cursorModeId: null`. Optional keeps
@@ -1297,6 +1298,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.codexEffectiveCollaborationModeWasCleared == rhs.codexEffectiveCollaborationModeWasCleared
       && lhs.opencodePermissionMode == rhs.opencodePermissionMode
       && lhs.droidPermissionMode == rhs.droidPermissionMode
+      && lhs.musePermissionMode == rhs.musePermissionMode
       && lhs.cursorModeId == rhs.cursorModeId
       && lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
@@ -1364,6 +1366,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var codexEffectiveCollaborationModeWasCleared: Bool = false
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeId: String?
   /// True when the event carried `cursorModeId: null` (an intentional clear the
   /// host emits to drop a cursor mode) rather than omitting the key. Absent-key
@@ -1402,6 +1405,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case codexEffectiveCollaborationMode
     case opencodePermissionMode
     case droidPermissionMode
+    case musePermissionMode
     case cursorModeId
     case cursorModeSnapshot
     case cursorConfigValues
@@ -1435,6 +1439,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     }
     opencodePermissionMode = try c.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try c.decodeIfPresent(String.self, forKey: .droidPermissionMode)
+    musePermissionMode = try c.decodeIfPresent(String.self, forKey: .musePermissionMode)
     // Distinguish `cursorModeId: null` (an intentional clear) from an absent
     // key. decodeIfPresent collapses both to nil, so gate on `contains`: a
     // present-but-null key means the host cleared the cursor mode.
@@ -1493,6 +1498,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || codexEffectiveCollaborationModeWasCleared
       || opencodePermissionMode != nil
       || droidPermissionMode != nil
+      || musePermissionMode != nil
       || cursorModeId != nil
       || cursorModeIdWasCleared
       || cursorModeSnapshot != nil
@@ -1528,6 +1534,7 @@ extension AgentChatSessionSummary {
     }
     if let v = update.opencodePermissionMode { opencodePermissionMode = v }
     if let v = update.droidPermissionMode { droidPermissionMode = v }
+    if let v = update.musePermissionMode { musePermissionMode = v }
     if let v = update.cursorModeId {
       cursorModeId = v
       cursorModeIdWasCleared = false
@@ -1604,6 +1611,7 @@ extension AgentChatSessionSummary {
     }
     if let v = other.opencodePermissionMode { opencodePermissionMode = v }
     if let v = other.droidPermissionMode { droidPermissionMode = v }
+    if let v = other.musePermissionMode { musePermissionMode = v }
     if other.cursorModeIdWasCleared == true {
       cursorModeId = nil
       cursorModeIdWasCleared = true
@@ -2070,6 +2078,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
@@ -2113,6 +2122,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case codexConfigSource
     case opencodePermissionMode
     case droidPermissionMode
+    case musePermissionMode
     case cursorModeSnapshot
     case cursorModeId
     case cursorConfigValues
@@ -2157,6 +2167,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     codexConfigSource = try container.decodeIfPresent(String.self, forKey: .codexConfigSource)
     opencodePermissionMode = try container.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try container.decodeIfPresent(String.self, forKey: .droidPermissionMode)
+    musePermissionMode = try container.decodeIfPresent(String.self, forKey: .musePermissionMode)
     cursorModeSnapshot = try container.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
     cursorModeId = try container.decodeIfPresent(String.self, forKey: .cursorModeId)
     cursorConfigValues = try container.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
@@ -2200,6 +2211,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(codexConfigSource, forKey: .codexConfigSource)
     try container.encodeIfPresent(opencodePermissionMode, forKey: .opencodePermissionMode)
     try container.encodeIfPresent(droidPermissionMode, forKey: .droidPermissionMode)
+    try container.encodeIfPresent(musePermissionMode, forKey: .musePermissionMode)
     try container.encodeIfPresent(cursorModeSnapshot, forKey: .cursorModeSnapshot)
     try container.encodeIfPresent(cursorModeId, forKey: .cursorModeId)
     try container.encodeIfPresent(cursorConfigValues, forKey: .cursorConfigValues)
@@ -4743,6 +4755,7 @@ struct AgentChatLaunchDefaults: Codable, Equatable {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeId: String?
   var updatedAt: String
 }
@@ -4959,6 +4972,7 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
   var unifiedPermissionMode: String?
@@ -8531,7 +8545,7 @@ struct AgentChatCrossMachineHandoffOptions: Decodable, Equatable {
 
 /// Providers whose fork can travel to another machine. Mirrors
 /// `providerSupportsCrossMachineHandoffFork` in `shared/types/chat.ts`:
-/// `HANDOFF_FORK_PROVIDERS` minus droid (machine-local session index) and
+/// `HANDOFF_FORK_PROVIDERS` minus droid and muse (machine-local session stores) and
 /// cursor (an ADE-side transcript replay with nothing to package).
 func workProviderSupportsCrossMachineHandoffFork(_ provider: String?) -> Bool {
   guard let provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }

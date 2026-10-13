@@ -46,7 +46,7 @@ func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
       return summary.cursorModeId == "plan"
     }
     return workCursorPlanningModeId(summary.cursorModeSnapshot) == "plan"
-  case "droid":
+  case "droid", "muse":
     return summary.interactionMode == "plan"
   case "opencode":
     return summary.opencodePermissionMode == "plan"

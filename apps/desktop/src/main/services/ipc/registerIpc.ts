@@ -37,6 +37,8 @@ import type {
 } from "../../../shared/types/keepAwake";
 import type { KeepAwakeService } from "../power/keepAwakeService";
 import type { AgentToolsCacheService } from "../tools/agentToolsCacheService";
+import type { MuseBinaryStatus } from "../../../shared/museBinary";
+import type { MuseSettingsResult, MuseSettingsRunArgs } from "../../../shared/museSettings";
 import {
   buildGithubReleaseUrl,
   compareUpdateVersions,
@@ -502,6 +504,10 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatMessageSubagentArgs,
+  AgentChatMessageSubagentResult,
+  AgentChatControlSubagentArgs,
+  AgentChatControlSubagentResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -5451,6 +5457,37 @@ export function registerIpc({
     return { installed: Boolean(info.path), source: info.source };
   });
 
+  // The unpinned route: this machine's pinned Muse binary. A pinned call goes
+  // to the owning machine's `ai.museBinaryStatus` / `ai.ensureMuseBinary`.
+  ipcMain.handle(IPC.aiMuseBinaryStatus, async (): Promise<MuseBinaryStatus> => {
+    const { getMuseBinaryStatus } = await import("../ai/museExecutable");
+    return getMuseBinaryStatus();
+  });
+
+  ipcMain.handle(IPC.aiEnsureMuseBinary, async (): Promise<MuseBinaryStatus> => {
+    const { startMuseBinaryFetch } = await import("../ai/museExecutable");
+    return startMuseBinaryFetch();
+  });
+
+  // The unpinned route for Settings > Muse Code on this machine; a pinned call
+  // goes to the owning machine's `ai.museSettings` / `ai.museSettingsClose`.
+  ipcMain.handle(IPC.aiMuseSettings, async (_event, args: MuseSettingsRunArgs): Promise<MuseSettingsResult> => {
+    const { runMuseSettings } = await import("../ai/museSettingsService");
+    const ctx = getCtx();
+    return runMuseSettings(args, {
+      workspaceRoot: ctx.project.rootPath,
+      logger: ctx.logger,
+      clientVersion: app.getVersion(),
+    });
+  });
+
+  ipcMain.handle(IPC.aiMuseSettingsClose, async (_event, args: { handleId?: string }): Promise<{ ok: true }> => {
+    const { closeMuseSettingsHost } = await import("../ai/museSettingsService");
+    const handleId = typeof args?.handleId === "string" ? args.handleId.trim() : "";
+    if (handleId) await closeMuseSettingsHost(handleId);
+    return { ok: true };
+  });
+
   // The fetched agent-CLI cache belongs to THIS machine's install, not to the
   // bound project's runtime, so these are deliberately not routed through a
   // runtime action the way the project-scoped `ai` calls are.
@@ -9111,6 +9148,35 @@ export function registerIpc({
     return await ctx.agentChatService.stopTask({
       sessionId: (arg as { sessionId: string }).sessionId,
       taskId: (arg as { taskId: string }).taskId,
+    });
+  });
+
+  ipcMain.handle(IPC.agentChatMessageSubagent, async (_event, arg: unknown): Promise<AgentChatMessageSubagentResult> => {
+    const ctx = ensureAgentChatContext();
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
+    if (!record || typeof record.sessionId !== "string" || typeof record.taskId !== "string" || typeof record.text !== "string") {
+      throw new Error("A chat session id, subagent task id and message text are required.");
+    }
+    return await ctx.agentChatService.messageSubagent({
+      sessionId: record.sessionId,
+      taskId: record.taskId,
+      text: record.text,
+    });
+  });
+
+  ipcMain.handle(IPC.agentChatControlSubagent, async (_event, arg: unknown): Promise<AgentChatControlSubagentResult> => {
+    const ctx = ensureAgentChatContext();
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
+    if (!record || typeof record.sessionId !== "string" || typeof record.taskId !== "string" || typeof record.action !== "string") {
+      throw new Error("A chat session id, subagent task id and action are required.");
+    }
+    return await ctx.agentChatService.controlSubagent({
+      sessionId: record.sessionId,
+      taskId: record.taskId,
+      action: record.action as AgentChatControlSubagentArgs["action"],
+      ...(typeof record.childId === "string" ? { childId: record.childId } : {}),
+      ...(typeof record.attempt === "number" ? { attempt: record.attempt } : {}),
+      ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
     });
   });
 

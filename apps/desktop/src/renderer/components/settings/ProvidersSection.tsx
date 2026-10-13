@@ -47,6 +47,18 @@ import { ProviderDetailPage } from "./providers/ProviderDetailPage";
 import { ProviderSignInModal } from "./providers/ProviderSignInModal";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
+import type { TerminalToolType } from "../../../shared/types";
+
+/**
+ * The terminal sign-in for a provider: the ACP CLIs' own login commands, and
+ * Muse's `muse login`. Muse's runs as a `muse` terminal so the PTY host swaps
+ * in that machine's pinned binary (ADE never runs a `muse` from PATH).
+ */
+function providerSignIn(id: string): { command: string; label: string; toolType: TerminalToolType } | null {
+  if (id === "muse") return { command: "muse login", label: "Muse Code", toolType: "muse" };
+  const command = acpLoginCommand(id);
+  return command ? { command, label: acpProviderLabel(id) ?? id, toolType: "shell" } : null;
+}
 import {
   AlertBanner,
   PreviewChip,
@@ -148,7 +160,7 @@ function ProviderCard({
     ...(version ? [version] : []),
   ];
 
-  const signInCommand = acpLoginCommand(descriptor.id);
+  const signInCommand = providerSignIn(descriptor.id)?.command ?? null;
   const action = status.state === "sign-in"
     ? {
       label: "Sign in",
@@ -1071,8 +1083,7 @@ export function ProvidersSection({
   }, [pin]);
 
   const openSignInTerminal = useCallback((provider: SettingsProviderId) => {
-    const command = acpLoginCommand(provider);
-    if (!command) return;
+    if (!providerSignIn(provider)) return;
     setSignInProvider(provider);
   }, []);
 
@@ -1169,7 +1180,7 @@ export function ProvidersSection({
     void loadAcpDiagnostics(selectedAcpProvider);
   }, [acpDiagnostics, loadAcpDiagnostics, selectedAcpProvider]);
 
-  const signInCommand = signInProvider ? acpLoginCommand(signInProvider) : null;
+  const signIn = signInProvider ? providerSignIn(signInProvider) : null;
 
   return (
     // The `ai-providers` anchor lives on the section below. This wrapper is
@@ -1226,18 +1237,19 @@ export function ProvidersSection({
 
       {selectedDescriptor ? null : <CustomProvidersSection status={status} storedProviders={storedProviders} />}
 
-      {signInProvider && signInCommand ? (
+      {signInProvider && signIn ? (
         <ProviderSignInModal
           runtimePin={pin}
           providerId={signInProvider}
-          providerLabel={acpProviderLabel(signInProvider) ?? signInProvider}
-          command={signInCommand}
+          providerLabel={signIn.label}
+          command={signIn.command}
+          toolType={signIn.toolType}
           onClose={() => {
             setSignInProvider(null);
             void refreshStatus({ force: true, silent: true });
           }}
           onSignedIn={() => {
-            setNotice(`Signed in to ${acpProviderLabel(signInProvider) ?? signInProvider}.`);
+            setNotice(`Signed in to ${signIn.label}.`);
             invalidateAiDiscoveryCache();
           }}
           checkSignedIn={async () => {
@@ -1246,7 +1258,7 @@ export function ProvidersSection({
             // that is the moment worth closing on. `runtimeAvailable` also
             // waits on the protocol probe, which is right for the tile and too
             // slow for a dialog someone is watching.
-            return next?.providerConnections?.[signInProvider as AcpSettingsProviderId]?.authAvailable === true;
+            return next?.providerConnections?.[signInProvider as AcpSettingsProviderId | "muse"]?.authAvailable === true;
           }}
         />
       ) : null}

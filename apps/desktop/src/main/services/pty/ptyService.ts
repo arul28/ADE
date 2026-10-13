@@ -142,6 +142,8 @@ import {
   withClaudePluginInCommandLine,
   withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
+  MUSE_CLI_COMMAND,
+  shellWordSpans,
   resolveWindowsShellLaunchFields,
   resolveWindowsShellKind,
 } from "../../../shared/cliLaunch";
@@ -167,6 +169,9 @@ import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
 import { claudeConfigHome, codexConfigHome, factoryConfigHome, kimiCodeConfigHome } from "../shared/providerConfigHomes";
 import { checkKimiWindowsPrerequisites } from "../ai/acpExecutables";
+import { ensureMuseBinary, museFetchPending, resolveMuseExecutable } from "../ai/museExecutable";
+import { museCredentialEnv } from "../ai/museAuth";
+import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
@@ -247,7 +252,7 @@ export type NodePtySpawnHelperExecutableResult =
   | { status: "failed"; path?: string; error: string };
 
 /** Interactive agent TUIs often hide useful text in an alt-screen, so titles come from the first submitted user prompt instead of startup output. */
-const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode", "pi"]);
+const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode", "pi", "muse"]);
 
 function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolean {
   if (!tool || tool === "shell") return false;
@@ -1228,7 +1233,51 @@ const WINDOWS_DIRECT_PROVIDER_EXECUTABLES: ReadonlyArray<{
   { toolTypes: ["pi", "pi-chat"], launchCandidates: ["pi"] },
 ];
 
+/**
+ * ADE's pinned Muse binary, or a clear error. ADE never runs a user's own
+ * `muse`: its version drifts from the protocol ADE was built against and it can
+ * self-update under a running session. A missing build starts its fetch in the
+ * background so the next launch finds it.
+ */
+function pinnedMuseBinaryPathOrThrow(): string {
+  const resolution = resolveMuseExecutable();
+  if (resolution.path) return resolution.path;
+  if (resolution.source === "unsupported") {
+    throw new Error("Muse Code has no build for this computer, so ADE cannot start it here.");
+  }
+  const pending = museFetchPending();
+  void ensureMuseBinary().catch(() => {
+    // Settings > Providers reports fetch failures; the launch error below is enough here.
+  });
+  throw new Error(pending
+    ? "Muse Code is still downloading. Try again when it finishes (Settings > Providers > Muse Code)."
+    : "Muse Code is not installed yet. ADE started downloading it; try again when it finishes (Settings > Providers > Muse Code).");
+}
+
+/**
+ * Swap the `muse` word of a Muse terminal for the pinned binary. Any word that
+ * names Muse is replaced, a path included: a persisted line can carry an older
+ * pinned build's path, or a user's own install, and both must run the current
+ * pin. The result stays in ADE's canonical POSIX form, like OpenCode's.
+ */
+function withPinnedMuseCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
+  if (toolType !== "muse") return commandLine;
+  const invocation = providerInvocationInCommandLine(commandLine, MUSE_CLI_COMMAND);
+  if (!invocation) return commandLine;
+  const span = shellWordSpans(commandLine)[invocation.binaryIndex];
+  if (!span) return commandLine;
+  const pinned = pinnedMuseBinaryPathOrThrow();
+  return `${commandLine.slice(0, span.start)}${quoteCanonicalShellArg(pinned)}${commandLine.slice(span.end)}`;
+}
+
+function withBundledProviderCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
+  return withPinnedMuseCommandLine(withBundledOpenCodeCommandLine(commandLine, toolType), toolType);
+}
+
 function resolveDirectProviderCommand(command: string, toolType: TerminalToolType | null): string {
+  if (toolType === "muse" && isProviderBinaryCommand(command, MUSE_CLI_COMMAND)) {
+    return pinnedMuseBinaryPathOrThrow();
+  }
   const openCodeCommand = resolveDirectOpenCodeCommand(command, toolType);
   if (process.platform !== "win32" || openCodeCommand !== command) return openCodeCommand;
   const trimmedCommand = command.trim();
@@ -1373,6 +1422,8 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "claude-chat",
     "opencode-chat",
     "pi-chat",
+    "muse",
+    "muse-chat",
     "cursor",
     "droid-chat",
     "qwen",
@@ -1674,6 +1725,7 @@ function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
     || toolType === "opencode-chat"
     || toolType === "cursor"
     || toolType === "droid-chat"
+    || toolType === "muse-chat"
     || toolType === "qwen-chat"
     || toolType === "kimi-chat"
     || toolType === "grok-chat"
@@ -1785,6 +1837,11 @@ function hasProviderStorageBackfillEvidence(provider: TerminalResumeProvider, te
     return /\bpi\b.*(?:what do you want|message|thinking|model)/i.test(visible)
       || /\bpi\s*[›❯]/i.test(visible);
   }
+  if (provider === "muse") {
+    // Muse draws `Muse Code <version>` above its composer on every start and
+    // resume (1.4.7). A terminal that never got past that has no session.
+    return /\bMuse Code \d+\.\d+/u.test(visible);
+  }
   if (provider === "opencode") {
     if (
       normalized.includes("login required")
@@ -1817,6 +1874,7 @@ function resumeProviderDisplayName(provider: TerminalResumeProvider): string {
   if (provider === "droid") return "Droid";
   if (provider === "opencode") return "OpenCode";
   if (provider === "pi") return "Pi";
+  if (provider === "muse") return "Muse";
   return "Agent";
 }
 
@@ -1825,6 +1883,9 @@ const TRANSCRIPT_ROLLOVER_TARGET_BYTES = MAX_TRANSCRIPT_BYTES / 2;
 const TRANSCRIPT_ROLLOVER_STATE_VERSION = 1;
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 const RESUME_SCAN_WINDOW_MS = 60_000;
+/** Muse writes its session folder at TUI start; the tail covers a slow first launch. */
+const MUSE_CAPTURE_POLL_DELAYS_MS = [1_500, 4_000, 10_000, 25_000, 60_000] as const;
+const MUSE_CAPTURE_MAX_START_DELTA_MS = 120_000;
 
 type TranscriptRolloverState = {
   version: typeof TRANSCRIPT_ROLLOVER_STATE_VERSION;
@@ -4067,6 +4128,27 @@ export function createPtyService({
       }
     }
 
+    if (effectiveToolType === "muse" && cwd && reason !== "resume-launch" && hasStorageBackfillEvidence) {
+      const museSession = findOwnedMuseSession(sessionId, cwd, session.startedAt);
+      if (museSession) {
+        missingResumeTargetBackfillFailures.delete(sessionId);
+        sessionService.setResumeCommand(sessionId, buildTrackedCliResumeCommand({
+          provider: "muse",
+          targetKind: "session",
+          targetId: museSession.id,
+          launch: {},
+        }));
+        logger.info("pty.resume_target_backfilled", {
+          sessionId,
+          toolType: effectiveToolType,
+          reason,
+          source: "muse-session-log",
+          museSessionId: museSession.id,
+        });
+        return true;
+      }
+    }
+
     if (reason === "session-list") {
       missingResumeTargetBackfillFailures.set(sessionId, {
         toolType: effectiveToolType,
@@ -4347,6 +4429,75 @@ export function createPtyService({
     trackTimer(setTimeout(() => {
       cleanup();
     }, CODEX_LIVE_CAPTURE_HARD_TIMEOUT_MS));
+  };
+
+  /**
+   * The Muse session a tracked terminal started, proven by folder, TUI origin,
+   * launch window, and no other terminal owning it (see `findMuseSessionForCwd`).
+   */
+  const findOwnedMuseSession = (
+    sessionId: string,
+    cwd: string,
+    startedAt: string,
+  ): { id: string } | null => {
+    const excludedIds = new Set<string>();
+    for (const candidate of sessionService.list({ limit: null })) {
+      if (candidate.id === sessionId) continue;
+      const targetId = resumeTargetIdForProvider(candidate, "muse");
+      if (targetId) excludedIds.add(targetId.toLowerCase());
+    }
+    return findMuseSessionForCwd({
+      cwd,
+      startedAt,
+      maxStartDeltaMs: MUSE_CAPTURE_MAX_START_DELTA_MS,
+      excludedIds,
+    });
+  };
+
+  /**
+   * Muse takes no session id at launch, but its TUI creates the session folder
+   * the moment it starts, before any prompt. Poll for it so a terminal knows
+   * its resume target while it runs, on every platform: handle capture covers
+   * macOS and Linux, but Windows may have no handle tool, and the exit line
+   * ("To continue this session, run muse resume <id>") only arrives at exit.
+   */
+  const scheduleMuseSessionIdCaptureBestEffort = (sessionId: string, cwd: string, startedAt: string): void => {
+    let done = false;
+    const timers = new Set<NodeJS.Timeout>();
+    const finish = (): void => {
+      done = true;
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+    };
+    const attempt = (index: number): void => {
+      if (done) return;
+      const session = sessionService.get(sessionId);
+      if (!session || sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)) {
+        finish();
+        return;
+      }
+      let found: { id: string } | null = null;
+      try {
+        found = findOwnedMuseSession(sessionId, cwd, startedAt);
+      } catch (err) {
+        logger.warn("pty.muse_session_id_capture_failed", { sessionId, attempt: index, err: String(err) });
+        return;
+      }
+      if (!found) return;
+      sessionService.setResumeCommand(sessionId, buildTrackedCliResumeCommand({
+        provider: "muse",
+        targetKind: "session",
+        targetId: found.id,
+        launch: {},
+      }));
+      logger.info("pty.muse_session_id_captured_live", { sessionId, museSessionId: found.id, attempt: index });
+      finish();
+    };
+    MUSE_CAPTURE_POLL_DELAYS_MS.forEach((delayMs, index) => {
+      const timer = setTimeout(() => attempt(index + 1), delayMs);
+      timer.unref?.();
+      timers.add(timer);
+    });
   };
 
   const listOtherAdoptedKimiTargetIds = (sessionId: string): Set<string> => {
@@ -5221,6 +5372,28 @@ export function createPtyService({
       ]);
       return lastReadyIndex >= 0 && lastReadyIndex > lastBlockerIndex;
     }
+    if (provider === "muse") {
+      // Muse 1.4.7's composer is a `❯` line with a `────` rule under it (the
+      // transcript echoes user turns as `❯ …` too, but only the composer has
+      // the rule below it). Before it, a first run asks "Do you trust this
+      // workspace?" (its choices use `⟩`, not `❯`), and a resume shows
+      // progress lines; typing into either would answer the wrong thing.
+      const lastBlockerIndex = lastIndexOfAny(normalized, [
+        "do you trust this workspace",
+        "preparing resume",
+        "restoring conversation",
+        "initializing runtime",
+        "not logged in",
+        "log in to",
+        "please log in",
+        "sign in",
+        "authentication required",
+      ]);
+      const promptIndex = text.lastIndexOf("❯");
+      return promptIndex >= 0
+        && promptIndex > lastBlockerIndex
+        && text.indexOf("───", promptIndex) > promptIndex;
+    }
     if (provider === "droid") {
       const lastBlockerIndex = lastIndexOfAny(normalized, [
         "login required",
@@ -5320,7 +5493,9 @@ export function createPtyService({
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
     if (!write(AGENT_CLI_INPUT_CLEAR_TO_START_KEY)) return false;
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
-    if (provider === "codex") {
+    // Muse 1.4.7 takes a bracketed paste as one multi-line message; typed
+    // newlines would submit it line by line.
+    if (provider === "codex" || provider === "muse") {
       return write(`${AGENT_CLI_BRACKETED_PASTE_START}${inputText}${AGENT_CLI_BRACKETED_PASTE_END}`);
     }
     for (let index = 0; index < inputText.length; index += AGENT_CLI_INPUT_CHUNK_SIZE) {
@@ -6099,7 +6274,7 @@ export function createPtyService({
       const transcriptPath = tracked
         ? (existingSession?.transcriptPath?.trim() || safeTranscriptPathFor(sessionId))
         : "";
-      let startupCommand = withBundledOpenCodeCommandLine(requestedStartupCommand.trim(), toolTypeHint);
+      let startupCommand = withBundledProviderCommandLine(requestedStartupCommand.trim(), toolTypeHint);
       const cleanupPaths: string[] = [];
       let piSessionLease: PiSessionLease | null = null;
       let openCodeLease: OpenCodeServerLease | null = null;
@@ -6307,6 +6482,15 @@ export function createPtyService({
       } else {
         delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
       }
+      // A Muse API key saved in ADE reaches the terminal through env only
+      // (never argv). The user's own `META_API_KEY` wins, and a browser
+      // sign-in needs nothing here: Muse reads its own auth.json.
+      if (toolTypeHint === "muse") {
+        const museCredentialId = runtimeLaunchCredentialId
+          ?? trackedCliResumeCredentialId(initialResumeMetadata)
+          ?? undefined;
+        Object.assign(launchEnv, museCredentialEnv(launchEnv, museCredentialId));
+      }
       // The account's own prompt cache choice, on the one path every fresh
       // launch and resume takes. A preset or stored credential bills another
       // endpoint, so it gets none.
@@ -6335,7 +6519,7 @@ export function createPtyService({
         if (updatedSession?.resumeCommand?.trim()) {
           initialResumeCommand = updatedSession.resumeCommand.trim();
           initialResumeMetadata = updatedSession.resumeMetadata ?? initialResumeMetadata;
-          startupCommand = withBundledOpenCodeCommandLine(initialResumeCommand, toolTypeHint);
+          startupCommand = withBundledProviderCommandLine(initialResumeCommand, toolTypeHint);
         }
       }
       const claudePluginLaunch = withBundledClaudePlugin(
@@ -6446,7 +6630,7 @@ export function createPtyService({
             // shell, so hardcoding the binary dropped the model, thinking and
             // tool flags that the argv path keeps — the two renderings are
             // meant to be the same launch.
-            startupCommand = withBundledOpenCodeCommandLine(
+            startupCommand = withBundledProviderCommandLine(
               buildTrackedCliResumeLaunchCommand(
                 {
                   provider: "pi",
@@ -6506,7 +6690,7 @@ export function createPtyService({
               recordPiSessionOwner({ sessionFile: piSessionFile, owner: "cli", ownerSessionId: sessionId });
               const piResumeCommand = `pi --session ${latest.id}`;
               initialResumeCommand = piResumeCommand;
-              startupCommand = withBundledOpenCodeCommandLine(piResumeCommand, toolTypeHint);
+              startupCommand = withBundledProviderCommandLine(piResumeCommand, toolTypeHint);
               sessionService.setResumeCommand(sessionId, piResumeCommand);
               if (directCommand && isPiExecutableCommand(directCommand)) {
                 directArgs = directArgs.filter((arg) => !/^(?:--continue|-c|-r)$/iu.test(arg));
@@ -7284,6 +7468,9 @@ export function createPtyService({
           codexLaunchOwnershipNeedle({ initialInput: requestedInitialInput, args: directArgs }),
           codexLaunchOriginator,
         );
+      }
+      if (!existingSession && tracked && toolTypeHint === "muse" && cwd) {
+        scheduleMuseSessionIdCaptureBestEffort(sessionId, cwd, startedAt);
       }
       if (!existingSession && toolTypeHint === "kimi" && cwd) {
         // Kimi takes no session id at launch, so the id has to be adopted from

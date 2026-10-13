@@ -240,13 +240,14 @@ function readBoolLs(key: string, fallback: boolean): boolean {
 
 type ResolverPermissionFamily = Extract<
   ModelProviderGroup,
-  "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin"
+  "claude" | "codex" | "muse" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin"
 >;
 type ResolverPermissionPreferences = Record<ResolverPermissionFamily, PrAgentPermissionMode>;
 
 const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
   claude: "default",
   codex: "default",
+  muse: "default",
   opencode: "edit",
   cursor: "default",
   droid: "edit",
@@ -280,6 +281,7 @@ function readPersistedResolverPermissions(): ResolverPermissionPreferences {
     return {
       claude: normalizeResolverPermissionMode(parsed?.claude) ?? DEFAULT_RESOLVER_PERMISSIONS.claude,
       codex: normalizeResolverPermissionMode(parsed?.codex) ?? DEFAULT_RESOLVER_PERMISSIONS.codex,
+      muse: normalizeResolverPermissionMode(parsed?.muse) ?? DEFAULT_RESOLVER_PERMISSIONS.muse,
       opencode: normalizeResolverPermissionMode(parsed?.opencode) ?? DEFAULT_RESOLVER_PERMISSIONS.opencode,
       cursor: normalizeResolverPermissionMode(parsed?.cursor) ?? DEFAULT_RESOLVER_PERMISSIONS.cursor,
       droid: normalizeResolverPermissionMode(parsed?.droid) ?? DEFAULT_RESOLVER_PERMISSIONS.droid,

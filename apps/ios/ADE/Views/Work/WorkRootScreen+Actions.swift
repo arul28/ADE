@@ -1088,6 +1088,7 @@ private func cliProviderForTerminalSession(_ session: TerminalSessionSummary) ->
   if toolType.hasPrefix("codex") { return "codex" }
   if toolType.hasPrefix("cursor") { return "cursor" }
   if toolType.hasPrefix("droid") { return "droid" }
+  if toolType.hasPrefix("muse") { return "muse" }
   if toolType.hasPrefix("opencode") { return "opencode" }
   if toolType.hasPrefix("qwen") { return "qwen" }
   if toolType.hasPrefix("kimi") { return "kimi" }

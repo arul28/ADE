@@ -95,6 +95,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  muse: "Muse",
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",

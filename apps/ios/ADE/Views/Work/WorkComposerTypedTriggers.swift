@@ -520,6 +520,14 @@ enum WorkModelMentionDetector {
         PermissionOption(value: "auto-high", label: "Auto high"),
         PermissionOption(value: "agi", label: "AGI (orchestrator)"),
       ]
+    // Muse's own approval modes, as shared/modelPermissions.ts lists them.
+    case "muse":
+      return [
+        PermissionOption(value: "denyUnmatched", label: "Read-only"),
+        PermissionOption(value: "promptUnmatched", label: "Ask"),
+        PermissionOption(value: "onRequest", label: "Auto"),
+        PermissionOption(value: "allowAll", label: "Full access"),
+      ]
     default:
       return [
         PermissionOption(value: "plan", label: "Plan"),
@@ -536,6 +544,7 @@ enum WorkModelMentionDetector {
     case "claude", "codex": return "default"
     case "cursor": return "agent"
     case "droid", "factory": return "auto-low"
+    case "muse": return "onRequest"
     default: return "edit"
     }
   }
@@ -659,6 +668,7 @@ enum WorkModelMentionDetector {
     "cursor": "Cursor",
     "droid": "Droid",
     "pi": "Pi",
+    "muse": "Muse Code",
     "qwen": "Qwen Code",
     "kimi": "Kimi",
     "grok": "Grok",
@@ -1436,6 +1446,12 @@ enum WorkComposerSlashCatalog {
       return [
         ("/compact", "Summarize the visible conversation to free tokens."),
         ("/explain", "Explain a file or change."),
+        ("/review", "Review the current diff."),
+      ]
+    case "muse":
+      return [
+        ("/compact", "Summarize the visible conversation to free tokens."),
+        ("/goal", "Set, clear, or inspect the chat goal."),
         ("/review", "Review the current diff."),
       ]
     default:

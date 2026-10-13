@@ -151,6 +151,20 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     ],
   },
   {
+    agent: "muse",
+    displayName: "Muse Code",
+    binaryNames: ["muse"],
+    // No installer: ADE fetches its own pinned build (the shared table's
+    // `installCommand` is null), so recovery points at Meta's docs.
+    ...sharedRemediation("muse"),
+    notAuthErrorPatterns: [
+      // muse 1.4.7: "missing meta credentials: run `muse login` or set META_API_KEY, …"
+      /missing meta credentials/i,
+      /muse.*(not logged in|not authenticated|unauthorized|authentication failed|login required)/i,
+      /run\s+[`'"]?muse\s+login[`'"]?/i,
+    ],
+  },
+  {
     agent: "droid",
     displayName: "Factory Droid",
     binaryNames: ["droid"],

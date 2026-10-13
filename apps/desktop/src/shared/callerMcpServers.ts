@@ -121,6 +121,17 @@ export const CALLER_MCP_SUPPORT = {
     residual: null,
     delivery: "none — the Pi SDK exposes no MCP configuration",
   },
+  muse: {
+    level: "best-effort",
+    mechanism: "none — MSP adds per-session servers but has no switch to drop the user's own",
+    residual:
+      "Muse merges session/start `config.mcpServers` with the servers in ~/.config/muse and a "
+      + "trusted workspace's `.mcp.json`. There is no per-session switch to turn those off, so "
+      + "strict mode cannot remove them.",
+    delivery: "MSP session/start `config.mcpServers` (granted `sessionMcp` capability)",
+    // SessionMcpServerConfig has exactly `stdio` and `streamableHttp`.
+    unsupportedTransports: ["sse"],
+  },
 } as const satisfies Record<ShippedProvider, CallerMcpSupport>;
 
 /**

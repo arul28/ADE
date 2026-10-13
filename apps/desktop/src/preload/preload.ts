@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { MuseBinaryStatus } from "../shared/museBinary";
+import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import {
@@ -579,6 +581,10 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatMessageSubagentArgs,
+  AgentChatMessageSubagentResult,
+  AgentChatControlSubagentArgs,
+  AgentChatControlSubagentResult,
   AgentChatRestartSessionArgs,
   AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueArgs,
@@ -5304,6 +5310,30 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "isOpenCodeInstalled", {}, () =>
         ipcRenderer.invoke(IPC.aiIsOpenCodeInstalled),
       ),
+    // Scoped to the machine that owns the chat/lane: Muse runs from that
+    // machine's pinned binary, so its status and download go there.
+    museBinaryStatus: async (pin?: OpenProjectBinding | null): Promise<MuseBinaryStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "museBinaryStatus", {}, () =>
+        ipcRenderer.invoke(IPC.aiMuseBinaryStatus),
+      ),
+    ensureMuseBinary: async (pin?: OpenProjectBinding | null): Promise<MuseBinaryStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "ensureMuseBinary", {}, () =>
+        ipcRenderer.invoke(IPC.aiEnsureMuseBinary),
+      ),
+    // Settings > Muse Code: one Settings-owned `muse serve` host per page visit
+    // on the machine the page is showing (never a chat's host). The page
+    // closes it with `museSettingsClose` when it leaves.
+    museSettings: async <R extends MuseSettingsRequest>(
+      args: MuseSettingsRunArgs<R>,
+      pin?: OpenProjectBinding | null,
+    ): Promise<MuseSettingsResult<R["kind"]>> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "museSettings", { args }, () =>
+        ipcRenderer.invoke(IPC.aiMuseSettings, args),
+      ),
+    museSettingsClose: async (args: { handleId: string }, pin?: OpenProjectBinding | null): Promise<{ ok: true }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "museSettingsClose", { args }, () =>
+        ipcRenderer.invoke(IPC.aiMuseSettingsClose, args),
+      ),
     // Machine-local, not project-scoped: the tools cache lives beside this
     // install, so these bypass the runtime-action routing above.
     getToolsCache: (): Promise<AgentToolsCacheSnapshot> =>
@@ -7899,6 +7929,28 @@ const adeBridge = {
       agentChatSummaryCache.clear();
       return result;
     },
+    messageSubagent: async (
+      args: AgentChatMessageSubagentArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatMessageSubagentResult> =>
+      callPinnedOrBoundRuntimeActionOr<AgentChatMessageSubagentResult>(
+        pin,
+        "chat",
+        "messageSubagent",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatMessageSubagent, args),
+      ),
+    controlSubagent: async (
+      args: AgentChatControlSubagentArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatControlSubagentResult> =>
+      callPinnedOrBoundRuntimeActionOr<AgentChatControlSubagentResult>(
+        pin,
+        "chat",
+        "controlSubagent",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatControlSubagent, args),
+      ),
     stopTask: async (
       args: AgentChatStopTaskArgs,
       pin?: OpenProjectBinding | null,

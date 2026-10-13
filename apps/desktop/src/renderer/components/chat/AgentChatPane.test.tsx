@@ -9017,6 +9017,7 @@ describe("AgentChatPane submit recovery", () => {
           codexConfigSource: "flags",
           opencodePermissionMode: "edit",
           droidPermissionMode: "auto-low",
+          musePermissionMode: "onRequest",
           cursorModeId: "agent",
           cursorConfigValues: {},
         },

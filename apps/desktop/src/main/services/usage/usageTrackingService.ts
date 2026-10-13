@@ -194,6 +194,7 @@ import {
   pollKimiQuota,
   pollOpenCodeQuota,
 } from "./extraProviderQuota";
+import { pollMuseQuota } from "./museLiveQuota";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 import { buildTurnUsageLedgerSummary, repriceTurnForUserPrices, type TurnUsageLedger } from "./turnUsageLedger";
 import type { ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
@@ -3434,6 +3435,7 @@ const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
   grok: "Grok",
   opencode: "OpenCode",
   kimi: "Kimi",
+  muse: "Muse",
 };
 
 /**
@@ -3850,6 +3852,7 @@ type UsageTrackingDependencies = UsageLedgerScannerOverrides & {
   pollGrokUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollOpenCodeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollKimiUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  pollMuseUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   /**
    * The machine-local per-turn ledger. When present, every published snapshot
    * adds its changed quota readings to it, and `getTurnUsageSummary` reads it.
@@ -4235,6 +4238,9 @@ export function createUsageTrackingService({
   const runGrokUsagePoll = dependencies?.pollGrokUsage ?? defaultExtraPoll(pollGrokQuota);
   const runOpenCodeUsagePoll = dependencies?.pollOpenCodeUsage ?? defaultExtraPoll(pollOpenCodeQuota);
   const runKimiUsagePoll = dependencies?.pollKimiUsage ?? defaultExtraPoll(pollKimiQuota);
+  // Muse's reading is pushed by its chat runtime (MSP `usage/read` and
+  // `usage/changed`); the poll only publishes the latest one, no I/O.
+  const runMuseUsagePoll = dependencies?.pollMuseUsage ?? (() => pollMuseQuota());
   const providerStrategies: UsageProviderStrategy[] = [
     { provider: "claude", poll: (context) => runClaudeUsagePoll(context) },
     { provider: "codex", poll: (context) => runCodexUsagePoll(context) },
@@ -4243,6 +4249,7 @@ export function createUsageTrackingService({
     { provider: "grok", poll: (context) => runGrokUsagePoll(context) },
     { provider: "opencode", poll: (context) => runOpenCodeUsagePoll(context) },
     { provider: "kimi", poll: (context) => runKimiUsagePoll(context) },
+    { provider: "muse", poll: (context) => runMuseUsagePoll(context) },
   ];
   /**
    * A caller that injects any ledger scanner is a harness isolating the

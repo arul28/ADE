@@ -2,6 +2,7 @@ import {
   clampGenericPermissionMode,
   permissionFieldsForLevel,
   permissionLevelForDroid,
+  permissionLevelForMuse,
   permissionLevelRank,
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
@@ -122,7 +123,7 @@ import {
   type LaunchProfile,
   type TrackedCliLaunchCommand,
 } from "../../desktop/src/shared/cliLaunch";
-import type { AgentChatDroidPermissionMode, AgentChatPermissionMode, AgentChatRuntimeActor, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
+import type { AgentChatDroidPermissionMode, AgentChatMusePermissionMode, AgentChatPermissionMode, AgentChatRuntimeActor, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import {
   recordUsageInteraction,
@@ -154,6 +155,7 @@ import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/termin
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   isAgentChatDroidPermissionMode,
 } from "../../desktop/src/shared/types/chat";
@@ -452,9 +454,10 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "devin", "shell"] },
+        provider: { type: "string", enum: ["claude", "codex", "muse", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "devin", "shell"] },
         permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES], default: "default" },
         droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
+        musePermissionMode: { type: "string", enum: [...AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES] },
         title: { type: "string" },
         initialInput: { type: "string" },
         cols: { type: "number", minimum: 20, maximum: 400, default: 120 },
@@ -1953,6 +1956,16 @@ function parseCliSessionDroidPermissionMode(value: unknown): AgentChatDroidPermi
   );
 }
 
+function parseCliSessionMusePermissionMode(value: unknown): AgentChatMusePermissionMode | undefined {
+  const mode = asTrimmedString(value);
+  if (!mode) return undefined;
+  if ((AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES as readonly string[]).includes(mode)) return mode as AgentChatMusePermissionMode;
+  throw new JsonRpcError(
+    JsonRpcErrorCode.invalidParams,
+    `musePermissionMode must be one of ${AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES.join(", ")}`,
+  );
+}
+
 function parseCliSessionSpawnKind(value: unknown): AgentChatSpawnKind | null {
   if (value == null) return null;
   const spawnKind = asTrimmedString(value).toLowerCase();
@@ -3353,6 +3366,9 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "interrupt",
   "interruptWithQueueMode",
   "stopTask",
+  // Messaging or controlling one subagent acts on the chat that owns it.
+  "messageSubagent",
+  "controlSubagent",
   // Restarting tears down the target's runtime (and stops its turn with
   // stopFirst); holding background work arms wakes on its terminals. Both act
   // on a chat the way `interrupt` does, so a bound agent aims them at itself.
@@ -6263,6 +6279,13 @@ async function runTool(args: {
         "droidPermissionMode is only supported for Droid CLI sessions.",
       );
     }
+    const requestedMusePermissionMode = parseCliSessionMusePermissionMode(toolArgs.musePermissionMode);
+    if (requestedMusePermissionMode && provider !== "muse") {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "musePermissionMode is only supported for Muse CLI sessions.",
+      );
+    }
     const orchestrationParentSessionId = toolArgs.orchestrationParentSessionId == null
       ? null
       : assertNonEmptyString(toolArgs.orchestrationParentSessionId, "orchestrationParentSessionId");
@@ -6286,6 +6309,11 @@ async function runTool(args: {
       && permissionLevelRank(permissionLevelForDroid(requestedDroidPermissionMode)) > permissionLevelRank(cliCeiling)
       ? permissionFieldsForLevel("droid", cliCeiling).droidPermissionMode
       : requestedDroidPermissionMode;
+    // Same ceiling rule as Droid: an agent's Muse child never runs above it.
+    const musePermissionMode = cliCeiling && requestedMusePermissionMode
+      && permissionLevelRank(permissionLevelForMuse(requestedMusePermissionMode)) > permissionLevelRank(cliCeiling)
+      ? permissionFieldsForLevel("muse", cliCeiling).musePermissionMode
+      : requestedMusePermissionMode;
     const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
     // A parentless CLI launched by a bound agent records who launched it. This
     // is a passive fact: it does not nest the session or wake the launcher.
@@ -6376,6 +6404,7 @@ async function runTool(args: {
         permissionMode,
         sessionActivityReportingEnabled: runtime.sessionActivityReportingEnabled,
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
+        ...(musePermissionMode ? { musePermissionMode } : {}),
         sessionId: preassignedSessionId,
         model,
         reasoningEffort,
@@ -6478,6 +6507,7 @@ async function runTool(args: {
       title,
       permissionMode,
       droidPermissionMode: droidPermissionMode ?? null,
+      musePermissionMode: musePermissionMode ?? null,
       model: provider === "claude" ? model ?? null : null,
       ptyId: created.ptyId,
       sessionId: created.sessionId,

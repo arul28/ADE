@@ -4,6 +4,7 @@ import {
   resolveExecutableFromKnownLocations,
   type ResolvedExecutable,
 } from "../../../desktop/src/main/services/ai/cliExecutableResolver";
+import { resolveMuseBinaryPath } from "../../../desktop/src/main/services/ai/museExecutable";
 import { resolveCliSpawnInvocation } from "../../../desktop/src/main/services/shared/processExecution";
 import type { TriageBundle } from "./triageContext";
 import { TriageCommandError, TriageUsageError } from "./triageErrors";
@@ -32,13 +33,16 @@ export type TriageProviderName =
   | "codex"
   | "cursor-agent"
   | "opencode"
-  | "droid";
+  | "droid"
+  | "muse";
 
 export type TriageProviderSpec = {
   name: TriageProviderName;
   label: string;
   command: string;
   promptDelivery: TriagePromptDelivery;
+  /** Flags that go before the prompt on every launch. */
+  leadingArgs?: readonly string[];
 };
 
 /** Detection order. First installed one wins unless `--provider` overrides it. */
@@ -48,6 +52,15 @@ export const TRIAGE_PROVIDERS: readonly TriageProviderSpec[] = [
   { name: "cursor-agent", label: "Cursor CLI", command: "cursor-agent", promptDelivery: "positional" },
   { name: "opencode", label: "OpenCode", command: "opencode", promptDelivery: "paste" },
   { name: "droid", label: "Droid", command: "droid", promptDelivery: "positional" },
+  // `muse [PROMPT]` starts the TUI seeded with the prompt. Only ADE's pinned
+  // build is ever run (see the resolver), always with contributor mode off.
+  {
+    name: "muse",
+    label: "Muse Code",
+    command: "muse",
+    promptDelivery: "positional",
+    leadingArgs: ["--contributor-mode", "off"],
+  },
 ];
 
 export type DetectedTriageProvider = TriageProviderSpec & {
@@ -69,8 +82,15 @@ type TriageExecutableResolver = (
  * the way Windows does — PATHEXT, then the known install directories — and
  * reports the on-disk casing.
  */
-export const defaultTriageExecutableResolver: TriageExecutableResolver = (command, env) =>
-  resolveExecutableFromKnownLocations(command, env);
+export const defaultTriageExecutableResolver: TriageExecutableResolver = (command, env) => {
+  // Muse runs only as ADE's pinned build, never a user's own install: its
+  // version must match the protocol ADE ships against, and it self-updates.
+  if (command === "muse") {
+    const pinned = resolveMuseBinaryPath({ env });
+    return pinned ? { path: pinned, source: "path" } : null;
+  }
+  return resolveExecutableFromKnownLocations(command, env);
+};
 
 export function detectTriageProviders(
   options: {
@@ -108,6 +128,8 @@ export function parseTriageProviderName(value: string): TriageProviderName {
     opencode: "opencode",
     droid: "droid",
     factory: "droid",
+    muse: "muse",
+    "muse-code": "muse",
   };
   const match = aliases[normalized];
   if (!match) {
@@ -140,9 +162,10 @@ export function buildTriageLaunchPlan(
   platform: NodeJS.Platform = process.platform,
 ): TriageLaunchPlan {
   const wanted = provider.promptDelivery === "positional";
+  const leadingArgs = [...(provider.leadingArgs ?? [])];
   const invocation = resolveCliSpawnInvocation(
     provider.path,
-    wanted ? [prompt] : [],
+    wanted ? [...leadingArgs, prompt] : leadingArgs,
     env,
     platform,
   );
@@ -155,7 +178,7 @@ export function buildTriageLaunchPlan(
   // the same choice ADE's PTY launch builders make for the same reason.
   const wrapped = invocation.command !== provider.path;
   if (wanted && wrapped) {
-    const bare = resolveCliSpawnInvocation(provider.path, [], env, platform);
+    const bare = resolveCliSpawnInvocation(provider.path, leadingArgs, env, platform);
     return {
       provider: provider.name,
       label: provider.label,

@@ -480,10 +480,10 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // with another action's outcome. A fifth spelling is dropped, not widened.
     "chat_shortcut", "chat_palette", "chat_palette_hit", "diff_shortcut",
   ]),
-  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
+  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "muse", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([
     "gpt_5", "openai_reasoning", "claude_sonnet", "claude_opus", "claude_haiku", "cursor", "gemini",
-    "grok", "local", "other",
+    "grok", "muse", "local", "other",
   ]),
   duration_bucket: new Set(["under_10s", "under_1m", "under_5m", "under_30m", "under_2h", "over_2h"]),
   // Bucketed, never a raw count: a fleet that fails to stop must not become a

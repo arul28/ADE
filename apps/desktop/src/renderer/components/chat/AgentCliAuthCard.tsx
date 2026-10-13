@@ -337,7 +337,13 @@ export function AgentCliAuthCard({
                   <ShellRunButton
                     command={agentCli.authCommand}
                     {...(agentCli.agent === "pi" ? { initialInput: "/login\n" } : {})}
-                    label={agentCli.agent === "claude" ? "Log in to Claude" : agentCli.agent === "pi" ? "Log in to Pi" : "Run auth"}
+                    label={agentCli.agent === "claude"
+                      ? "Log in to Claude"
+                      : agentCli.agent === "pi"
+                        ? "Log in to Pi"
+                        : agentCli.agent === "muse"
+                          ? "Log in to Muse"
+                          : "Run auth"}
                     laneId={chatLaneId}
                     chatSessionId={chatSessionId}
                     accent={accent}

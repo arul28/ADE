@@ -41,6 +41,7 @@ export const PROVIDER_CATEGORY_MAP: Record<string, ProviderCategory> = {
   qwen: "cloud-api",
   moonshot: "cloud-api",
   "github-copilot": "cloud-api",
+  muse: "cloud-api",
 };
 
 export const PROVIDER_CATEGORY_LABELS: Record<ProviderCategory, string> = {
@@ -81,6 +82,7 @@ export type ModelProviderGroupBlock = {
 export const MODEL_PICKER_PROVIDER_ORDER = [
   "claude",
   "codex",
+  "muse",
   "cursor",
   "devin",
   "opencode",
@@ -102,6 +104,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   cursor: "Cursor",
   factory: "Factory Droid",
   pi: "Pi",
+  muse: "Meta Muse",
   google: "Google",
   "github-copilot": "GitHub Copilot",
   deepseek: "DeepSeek",
@@ -144,6 +147,7 @@ export const PROVIDER_ORDER: string[] = [
   "cursor",
   "factory",
   "pi",
+  "muse",
 ];
 
 const PROVIDER_GROUP_ORDER = Object.fromEntries(
@@ -223,6 +227,7 @@ const PROVIDER_GROUP_LABELS: Record<ProviderGroupKey, string> = {
   cursor: "Cursor",
   droid: "Droid",
   pi: "Pi",
+  muse: "Muse",
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",

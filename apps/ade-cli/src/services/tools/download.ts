@@ -14,6 +14,12 @@ export type ToolDownloadResult = {
   bytes: number;
   /** Streaming digest of what was written, as an SRI string. */
   integrity: string;
+  /**
+   * Streaming sha256 of what was written, lowercase hex — the digest vendors
+   * that publish bare binaries (Meta's `muse`) pin. Optional so a custom
+   * downloader may omit it; the installer then hashes the file itself.
+   */
+  sha256?: string;
 };
 
 export type ToolDownloadProgress = {
@@ -112,6 +118,7 @@ async function streamToFile(
   }
 
   const hash = createHash("sha512");
+  const sha256 = createHash("sha256");
   let receivedBytes = 0;
   const sink = fs.createWriteStream(partPath);
 
@@ -128,6 +135,7 @@ async function streamToFile(
     });
     response.on("data", (chunk: Buffer) => {
       hash.update(chunk);
+      sha256.update(chunk);
       receivedBytes += chunk.length;
       options.onProgress?.({ receivedBytes, totalBytes });
     });
@@ -152,17 +160,30 @@ async function streamToFile(
     throw networkError(`Truncated download for ${url}: expected ${totalBytes} bytes, got ${receivedBytes}.`);
   }
 
-  return { bytes: receivedBytes, integrity: `sha512-${hash.digest("base64")}` };
+  return {
+    bytes: receivedBytes,
+    integrity: `sha512-${hash.digest("base64")}`,
+    sha256: sha256.digest("hex"),
+  };
 };
 
 /** Streaming sha512 of an existing file, as an SRI string. */
 export async function fileIntegrity(filePath: string): Promise<string> {
-  const hash = createHash("sha512");
+  return `sha512-${await fileDigest(filePath, "sha512", "base64")}`;
+}
+
+/** Streaming sha256 of an existing file, as lowercase hex. */
+export async function fileSha256(filePath: string): Promise<string> {
+  return await fileDigest(filePath, "sha256", "hex");
+}
+
+async function fileDigest(filePath: string, algorithm: "sha256" | "sha512", encoding: "hex" | "base64"): Promise<string> {
+  const hash = createHash(algorithm);
   await new Promise<void>((resolve, reject) => {
     const stream = fs.createReadStream(filePath);
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("error", reject);
     stream.on("end", resolve);
   });
-  return `sha512-${hash.digest("base64")}`;
+  return hash.digest(encoding);
 }

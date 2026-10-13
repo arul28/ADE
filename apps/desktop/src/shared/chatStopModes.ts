@@ -90,7 +90,8 @@ export function providerSupportsStopModeChoice(provider: string | null | undefin
 
 /** Providers whose runtime can stop one background task (`chat.stopTask`). */
 export function providerSupportsPerTaskStop(provider: string | null | undefined): boolean {
-  return provider === "claude" || provider === "opencode";
+  // Muse: MSP `task/stop` for a background task, `subagent/stop` for a subagent.
+  return provider === "claude" || provider === "opencode" || provider === "muse";
 }
 
 /** What each mode stops besides the active turn. */
@@ -133,7 +134,8 @@ export type AgentChatStopModeSupport =
  *
  * - Background work: Claude stops tasks one by one (`stopTask`) or resets the
  *   query; OpenCode stops child sessions and kills its background shells;
- *   Codex ends its background terminals (`thread/backgroundTerminals/clean`).
+ *   Codex ends its background terminals (`thread/backgroundTerminals/clean`);
+ *   Muse stops its background tasks (MSP `task/*`).
  *   Cursor, Droid, Pi, and ACP agents expose no way to stop background work.
  * - Keeping the queue: Pi and ACP agents drop queued messages on interrupt, so
  *   a Stop that keeps them cannot be offered there.
@@ -147,8 +149,8 @@ export function providerStopModeSupport(
 ): AgentChatStopModeSupport {
   const key = String(provider ?? "").trim().toLowerCase();
   const name = providerDisplayLabel(provider, "This provider");
-  const stopsBackground = key === "claude" || key === "opencode" || key === "codex";
-  const keepsQueue = key === "claude" || key === "opencode" || key === "codex" || key === "cursor" || key === "droid";
+  const stopsBackground = key === "claude" || key === "opencode" || key === "codex" || key === "muse";
+  const keepsQueue = key === "claude" || key === "opencode" || key === "codex" || key === "muse" || key === "cursor" || key === "droid";
   if (stopModeStopsBackground(mode) && !stopsBackground) {
     return { supported: false, reason: `${name} can't stop background work its agent started.` };
   }

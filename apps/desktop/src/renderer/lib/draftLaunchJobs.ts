@@ -3,6 +3,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatExecutionMode,
   AgentChatFileRef,
   AgentChatContextAttachment,
@@ -62,6 +63,7 @@ export type NativeControlState = {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
+  musePermissionMode: AgentChatMusePermissionMode;
   cursorModeId: string | null;
   cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
 };

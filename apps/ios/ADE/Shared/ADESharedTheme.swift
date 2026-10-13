@@ -14,6 +14,7 @@ public enum ADESharedTheme {
     public static let brandClaude   = Color(red: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0) // #D97757
     public static let brandCodex    = Color(red: 0x2D / 255.0, green: 0xD4 / 255.0, blue: 0xBF / 255.0) // #2DD4BF
     public static let brandPi       = Color(red: 0xF9 / 255.0, green: 0x73 / 255.0, blue: 0x16 / 255.0) // #F97316
+    public static let brandMuse     = Color(red: 0x4A / 255.0, green: 0x9B / 255.0, blue: 0xFF / 255.0) // #4A9BFF (Meta blue)
     public static let brandCursor   = Color(red: 0x93 / 255.0, green: 0xA6 / 255.0, blue: 0xC4 / 255.0) // #93A6C4
     public static let brandOpenCode = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0) // #A78BFA
     public static let brandGoogle   = Color(red: 0x5B / 255.0, green: 0x93 / 255.0, blue: 0xF5 / 255.0) // #5B93F5
@@ -67,6 +68,7 @@ public enum ADESharedTheme {
         if raw == "openai" { return "openai" }
         if raw == "openai-codex" || raw.hasPrefix("codex") { return "codex" }
         if raw == "pi" || raw.hasPrefix("pi/") || raw.hasPrefix("pi-") { return "pi" }
+        if raw.hasPrefix("muse") { return "muse" }
         if raw.hasPrefix("opencode") { return "opencode" }
         if raw.hasPrefix("cursor") { return "cursor" }
         if raw == "factory" || raw.hasPrefix("droid") { return "droid" }
@@ -90,6 +92,7 @@ public enum ADESharedTheme {
         case "claude", "anthropic": return brandClaude
         case "codex", "openai":     return brandCodex
         case "pi":                   return brandPi
+        case "muse":                return brandMuse
         case "cursor":              return brandCursor
         case "opencode":            return brandOpenCode
         case "google", "gemini":    return brandGoogle
@@ -123,6 +126,7 @@ public enum ADESharedTheme {
         case "opencode":            return "ProviderOpenCode"
         case "droid", "factory":    return "ProviderDroid"
         case "pi":                   return nil
+        case "muse":                return "ProviderMuse"
         case "github":              return "ProviderGitHub"
         case "qwen":                return "ProviderQwen"
         case "kimi":                return "ProviderKimi"
@@ -148,6 +152,7 @@ public enum ADESharedTheme {
         case "opencode":            return "OpenCode"
         case "droid", "factory":    return "Droid"
         case "pi":                   return "Pi"
+        case "muse":                return "Muse"
         case "google", "gemini":    return "Gemini"
         case "mistral":             return "Mistral"
         case "deepseek":            return "DeepSeek"
@@ -178,6 +183,7 @@ public enum ADESharedTheme {
         if value.hasPrefix("qwen/") || value.contains("qwen") { return "qwen" }
         if value.hasPrefix("moonshot/") || value.contains("kimi") { return "kimi" }
         if value.hasPrefix("xai/") || value.contains("grok") { return "grok" }
+        if value.hasPrefix("muse/") || value.hasPrefix("muse-") { return "muse" }
         if value.contains("claude") || value.contains("anthropic") { return "claude" }
         if value.contains("codex") { return "codex" }
         if value.contains("gpt") || value.contains("openai") || value.hasPrefix("o3") || value.hasPrefix("o4") {

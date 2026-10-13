@@ -19,7 +19,13 @@ export type ToolEntry = {
   windowsPath?: string;
 };
 
-export type ToolTargetPin = {
+/**
+ * A tool published as an npm platform package. The tarball is unpacked with
+ * npm's `package/` root stripped, so the cache directory mirrors a
+ * `node_modules/<pkg>` tree.
+ */
+export type NpmTarballTargetPin = {
+  format: "npm-tarball";
   /**
    * The npm *install directory* name — what consumers expect to find in a
    * `node_modules` tree. This is not always the published package name:
@@ -32,6 +38,31 @@ export type ToolTargetPin = {
   /** Subresource-integrity string from package-lock.json, always `sha512-…`. */
   integrity: string;
 };
+
+/**
+ * A tool published as one bare executable (Meta's `muse`). The downloaded file
+ * *is* the binary: nothing is unpacked, it is written to the entry path and
+ * marked executable. Pins come from the vendor's own release manifest, which
+ * publishes a sha256 and a byte size per artifact.
+ */
+export type FileTargetPin = {
+  format: "file";
+  /** Cache directory name; not an npm package, only a path segment. */
+  package: string;
+  version: string;
+  url: string;
+  /** Lowercase hex sha256 of the whole file. */
+  sha256: string;
+  /** Exact byte size, used for the disk-space preflight and a truncation check. */
+  size: number;
+};
+
+export type ToolTargetPin = NpmTarballTargetPin | FileTargetPin;
+
+/** The URL a target pin downloads from, whatever its format. */
+export function targetPinUrl(pin: ToolTargetPin): string {
+  return pin.format === "file" ? pin.url : pin.tarball;
+}
 
 export type ToolPin = {
   name: string;
@@ -47,6 +78,7 @@ export type ToolsManifest = {
 };
 
 const INTEGRITY_PATTERN = /^sha512-[A-Za-z0-9+/]+={0,2}$/;
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const TOOL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -93,6 +125,18 @@ function parseEntry(raw: unknown, toolName: string): ToolEntry {
   return windowsPath ? { kind, path: entryPath, windowsPath } : { kind, path: entryPath };
 }
 
+function requireHttpsUrl(value: unknown, label: string, context: { tool: string; packageName: string }): string {
+  const url = requireString(value, label);
+  if (!url.startsWith("https://")) {
+    throw new ToolError(`Invalid tools manifest: ${label} must be an https URL.`, {
+      kind: "manifest",
+      tool: context.tool,
+      packageName: context.packageName,
+    });
+  }
+  return url;
+}
+
 function parseTargetPin(raw: unknown, toolName: string, target: string): ToolTargetPin {
   if (!isRecord(raw)) {
     throw new ToolError(`Invalid tools manifest: ${toolName}.targets.${target} must be an object.`, {
@@ -100,25 +144,50 @@ function parseTargetPin(raw: unknown, toolName: string, target: string): ToolTar
       tool: toolName,
     });
   }
-  const packageName = requireString(raw.package, `${toolName}.targets.${target}.package`);
-  const version = requireString(raw.version, `${toolName}.targets.${target}.version`);
+  const label = `${toolName}.targets.${target}`;
+  const packageName = requireString(raw.package, `${label}.package`);
+  const version = requireString(raw.version, `${label}.version`);
   assertSafePackageCoordinates(packageName, version);
-  const tarball = requireString(raw.tarball, `${toolName}.targets.${target}.tarball`);
-  if (!tarball.startsWith("https://")) {
-    throw new ToolError(`Invalid tools manifest: ${toolName}.targets.${target}.tarball must be an https URL.`, {
+  // Absent means npm-tarball: every pin written before file pins existed.
+  const format = raw.format ?? "npm-tarball";
+  if (format === "file") {
+    const url = requireHttpsUrl(raw.url, `${label}.url`, { tool: toolName, packageName });
+    const sha256 = requireString(raw.sha256, `${label}.sha256`);
+    if (!SHA256_HEX_PATTERN.test(sha256)) {
+      throw new ToolError(`Invalid tools manifest: ${label}.sha256 must be 64 lowercase hex characters.`, {
+        kind: "manifest",
+        tool: toolName,
+        packageName,
+        version,
+      });
+    }
+    const size = raw.size;
+    if (typeof size !== "number" || !Number.isSafeInteger(size) || size <= 0) {
+      throw new ToolError(`Invalid tools manifest: ${label}.size must be a positive integer.`, {
+        kind: "manifest",
+        tool: toolName,
+        packageName,
+        version,
+      });
+    }
+    return { format: "file", package: packageName, version, url, sha256, size };
+  }
+  if (format !== "npm-tarball") {
+    throw new ToolError(`Invalid tools manifest: ${label}.format must be "npm-tarball" or "file".`, {
       kind: "manifest",
       tool: toolName,
       packageName,
     });
   }
-  const integrity = requireString(raw.integrity, `${toolName}.targets.${target}.integrity`);
+  const tarball = requireHttpsUrl(raw.tarball, `${label}.tarball`, { tool: toolName, packageName });
+  const integrity = requireString(raw.integrity, `${label}.integrity`);
   if (!INTEGRITY_PATTERN.test(integrity)) {
     throw new ToolError(
-      `Invalid tools manifest: ${toolName}.targets.${target}.integrity must be a base64 sha512 SRI string.`,
+      `Invalid tools manifest: ${label}.integrity must be a base64 sha512 SRI string.`,
       { kind: "manifest", tool: toolName, packageName, version },
     );
   }
-  return { package: packageName, version, tarball, integrity };
+  return { format: "npm-tarball", package: packageName, version, tarball, integrity };
 }
 
 export function parseToolsManifest(raw: unknown): ToolsManifest {
@@ -171,6 +240,18 @@ export function parseToolsManifest(raw: unknown): ToolsManifest {
     }
     if (Object.keys(targets).length === 0) {
       throw new ToolError(`Invalid tools manifest: ${name} pins no targets.`, { kind: "manifest", tool: name });
+    }
+    const hasFilePin = Object.values(targets).some((targetPin) => targetPin?.format === "file");
+    // A file pin is written straight to its entry path, so that path has to
+    // name one concrete file: no glob segment to expand, no directory entry.
+    if (
+      hasFilePin
+      && (entry.kind !== "binary" || [entry.path, entry.windowsPath].some((value) => value?.split("/").includes("*")))
+    ) {
+      throw new ToolError(
+        `Invalid tools manifest: ${name} pins a bare file, so its entry must be a binary with a literal path.`,
+        { kind: "manifest", tool: name },
+      );
     }
     return { name, description, entry, targets } satisfies ToolPin;
   });

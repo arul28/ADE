@@ -2489,6 +2489,36 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       const info = resolveOpenCodeBinary();
       return { installed: Boolean(info.path), source: info.source };
     },
+    // The pinned Muse binary on THIS machine. `ensureMuseBinary` starts a
+    // background fetch and returns at once (330-470 MB must not hold a remote
+    // action open); callers poll `museBinaryStatus` for progress.
+    museBinaryStatus: async () => {
+      const { getMuseBinaryStatus } = await import("../ai/museExecutable");
+      return getMuseBinaryStatus();
+    },
+    ensureMuseBinary: async () => {
+      const { startMuseBinaryFetch } = await import("../ai/museExecutable");
+      return startMuseBinaryFetch();
+    },
+    // Settings > Providers > Muse Code on THIS machine: plugins, marketplaces,
+    // skills, hooks, computer use and feedback, through a short-lived
+    // Settings-owned `muse serve` host per page visit (never a chat's host).
+    museSettings: async (args?: { handleId?: string; request?: unknown }) => {
+      const { runMuseSettings } = await import("../ai/museSettingsService");
+      return runMuseSettings(
+        { handleId: requireNonEmptyString(args?.handleId, "handleId"), request: args?.request as never },
+        {
+          workspaceRoot: runtime.projectRoot,
+          logger: runtime.logger,
+          clientVersion: process.env.ADE_CLI_VERSION?.trim() || undefined,
+        },
+      );
+    },
+    museSettingsClose: async (args?: { handleId?: string }) => {
+      const { closeMuseSettingsHost } = await import("../ai/museSettingsService");
+      await closeMuseSettingsHost(requireNonEmptyString(args?.handleId, "handleId"));
+      return { ok: true as const };
+    },
     verifyApiKeyConnection: (args?: { provider?: string }) =>
       aiIntegrationService.verifyApiKeyConnection(requireNonEmptyString(args?.provider, "provider")),
     storeApiKey: (args?: { provider?: string; key?: string }) =>

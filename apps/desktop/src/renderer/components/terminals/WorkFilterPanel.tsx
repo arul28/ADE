@@ -225,6 +225,7 @@ function toggle<T>(list: readonly T[], value: T): T[] {
 const TOOL_LOGO_TYPE: Record<WorkToolFamily, Parameters<typeof ToolLogo>[0]["toolType"]> = {
   claude: "claude",
   codex: "codex",
+  muse: "muse",
   cursor: "cursor",
   droid: "droid",
   opencode: "opencode",

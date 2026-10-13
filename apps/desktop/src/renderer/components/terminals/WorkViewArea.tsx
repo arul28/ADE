@@ -316,6 +316,7 @@ function continuationProviderLabel(provider: TerminalResumeProvider | null): str
   if (provider === "codex") return "Codex";
   if (provider === "cursor") return "Cursor Agent";
   if (provider === "droid") return "Droid";
+  if (provider === "muse") return "Muse";
   if (provider === "opencode") return "OpenCode";
   return "agent CLI";
 }

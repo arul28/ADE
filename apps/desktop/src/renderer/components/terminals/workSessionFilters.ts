@@ -20,6 +20,7 @@ import { sessionFilingBucket, type SessionFilingBucket } from "../../lib/termina
 export type WorkToolFamily =
   | "claude"
   | "codex"
+  | "muse"
   | "cursor"
   | "droid"
   | "opencode"
@@ -29,6 +30,7 @@ export type WorkToolFamily =
 export const WORK_TOOL_FAMILIES: readonly WorkToolFamily[] = [
   "claude",
   "codex",
+  "muse",
   "cursor",
   "droid",
   "opencode",
@@ -38,6 +40,7 @@ export const WORK_TOOL_FAMILIES: readonly WorkToolFamily[] = [
 const TOOL_FAMILY_LABELS: Record<WorkToolFamily, string> = {
   claude: "Claude",
   codex: "Codex",
+  muse: "Muse",
   cursor: "Cursor",
   droid: "Droid",
   opencode: "OpenCode",
@@ -55,6 +58,9 @@ export function workToolFamily(toolType: TerminalToolType | null | undefined): W
     case "codex-chat":
     case "codex-orchestrated":
       return "codex";
+    case "muse":
+    case "muse-chat":
+      return "muse";
     case "cursor":
     case "cursor-cli":
       return "cursor";

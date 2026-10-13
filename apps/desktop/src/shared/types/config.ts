@@ -1120,7 +1120,7 @@ export type AiFeatureUsageRow = {
 
 export type AiDetectedAuth = {
   type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-  cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
+  cli?: "claude" | "codex" | "cursor" | "droid" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
   provider?: string;
   source?: "config" | "env" | "store" | "file";
   endpointSource?: "auto" | "config";
@@ -1141,7 +1141,10 @@ export type AiProviderCredentialSource =
   | "cursor-oauth"
   | "factory-env"
   | "pi-auth-file"
-  | "pi-models-file";
+  | "pi-models-file"
+  | "muse-auth-file"
+  | "muse-env"
+  | "muse-api-key-store";
 
 export type AiProviderConnectionSource = {
   kind: "cli" | "local-credentials";
@@ -1154,7 +1157,7 @@ export type AiProviderConnectionSource = {
 };
 
 export type AiProviderConnectionStatus = {
-  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
   authAvailable: boolean;
   runtimeDetected: boolean;
   runtimeAvailable: boolean;
@@ -1179,6 +1182,8 @@ export type AiProviderConnections = {
   cursor: AiProviderConnectionStatus;
   droid: AiProviderConnectionStatus;
   pi?: AiProviderConnectionStatus;
+  /** Optional like `pi`: an older host on a cross-machine call has no arm for it. */
+  muse?: AiProviderConnectionStatus;
   // ACP providers. Optional like `pi`, because an older host on the other end
   // of a cross-machine call has no arm for them and must keep deserialising.
   qwen?: AiProviderConnectionStatus;
@@ -1795,6 +1800,7 @@ export type AiSettingsStatus = {
     codex: boolean;
     cursor: boolean;
     droid: boolean;
+    muse?: boolean;
     qwen?: boolean;
     kimi?: boolean;
     grok?: boolean;
@@ -1806,6 +1812,7 @@ export type AiSettingsStatus = {
     codex: AiModelDescriptor[];
     cursor: AiModelDescriptor[];
     droid: AiModelDescriptor[];
+    muse?: AiModelDescriptor[];
     qwen?: AiModelDescriptor[];
     kimi?: AiModelDescriptor[];
     grok?: AiModelDescriptor[];
@@ -1881,6 +1888,7 @@ export type AiProviderPermissions = {
   droid?: AgentChatPermissionMode;
   opencode?: AgentChatPermissionMode;
   pi?: AgentChatPermissionMode;
+  muse?: AgentChatPermissionMode;
   // The ACP providers. One key each, sharing one option list, because they
   // share one permission round-trip (`session/request_permission`).
   qwen?: AgentChatPermissionMode;
@@ -2037,6 +2045,7 @@ export type AiIntegrationStatus = {
     codex: boolean;
     cursor: boolean;
     droid: boolean;
+    muse?: boolean;
     qwen?: boolean;
     kimi?: boolean;
     grok?: boolean;
@@ -2048,6 +2057,7 @@ export type AiIntegrationStatus = {
     codex: AgentChatModelInfo[];
     cursor: AgentChatModelInfo[];
     droid: AgentChatModelInfo[];
+    muse?: AgentChatModelInfo[];
     qwen?: AgentChatModelInfo[];
     kimi?: AgentChatModelInfo[];
     grok?: AgentChatModelInfo[];

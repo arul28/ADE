@@ -17,7 +17,16 @@ import type {
   AgentChatModelInfo,
   AgentChatPermissionMode,
 } from "../../../desktop/src/shared/types/chat";
-import { AGENT_CHAT_DROID_PERMISSION_MODE_VALUES } from "../../../desktop/src/shared/types/chat";
+import {
+  AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
+  DEFAULT_MUSE_PERMISSION_MODE,
+  type AgentChatMusePermissionMode,
+} from "../../../desktop/src/shared/types/chat";
+import {
+  legacyPermissionModeFromMusePermissionMode,
+} from "../../../desktop/src/shared/modelPermissions";
 import { DEFAULT_CODEX_REASONING_EFFORT, type CliTerminalProvider } from "./adeApi";
 import { theme } from "./theme";
 import type { AdeCodeInterfaceMode, AdeCodeModelState, AdeCodeProvider, SetupPaneRow, SetupPaneRowKind } from "./types";
@@ -29,6 +38,12 @@ export const CODEX_PRESETS = ["default", "edit", "plan", "full-auto", "config-to
 export const CLAUDE_PERMISSION_OPTIONS = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const;
 export const OPENCODE_PERMISSION_OPTIONS = ["plan", "edit", "full-auto", "config-toml"] as const;
 export const DROID_PERMISSION_OPTIONS = AGENT_CHAT_DROID_PERMISSION_MODE_VALUES;
+/**
+ * Muse's picker: ADE's plan rung (an interaction mode over `denyUnmatched`)
+ * then Muse's own approval modes, most cautious first.
+ */
+export const MUSE_PERMISSION_OPTIONS = ["plan", ...AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES] as const;
+export type MusePermissionOption = (typeof MUSE_PERMISSION_OPTIONS)[number];
 
 export type CodexPreset = (typeof CODEX_PRESETS)[number];
 
@@ -53,6 +68,7 @@ export function initialModelState(draftKind: AdeCodeInterfaceMode = "chat"): Ade
     codexConfigSource: "flags",
     opencodePermissionMode: "edit",
     droidPermissionMode: "auto-low",
+    musePermissionMode: DEFAULT_MUSE_PERMISSION_MODE,
     cursorModeId: "agent",
     cursorAvailableModeIds: [],
     cursorConfigValues: {},
@@ -89,6 +105,7 @@ export function providerSettingsMemoryFromState(state: AdeCodeModelState): AdeCo
     codexConfigSource: state.codexConfigSource,
     opencodePermissionMode: state.opencodePermissionMode,
     droidPermissionMode: state.droidPermissionMode,
+    musePermissionMode: state.musePermissionMode,
     cursorModeId: state.cursorModeId,
   };
 }
@@ -111,6 +128,7 @@ export function providerSettingsPatchFromMemory(
     codexConfigSource: memory.codexConfigSource as AdeCodeModelState["codexConfigSource"],
     opencodePermissionMode: memory.opencodePermissionMode as AdeCodeModelState["opencodePermissionMode"],
     droidPermissionMode: memory.droidPermissionMode as AdeCodeModelState["droidPermissionMode"],
+    musePermissionMode: museModeFromMemory(memory.musePermissionMode),
     cursorModeId: memory.cursorModeId,
   };
 }
@@ -164,8 +182,40 @@ export function modelMemoryFromLaunchDefaults(
     codexConfigSource: defaults.codexConfigSource ?? fallback.codexConfigSource,
     opencodePermissionMode: defaults.opencodePermissionMode ?? fallback.opencodePermissionMode,
     droidPermissionMode: defaults.droidPermissionMode ?? fallback.droidPermissionMode,
+    musePermissionMode: defaults.musePermissionMode ?? fallback.musePermissionMode,
     cursorModeId: defaults.cursorModeId ?? fallback.cursorModeId,
   };
+}
+
+function museModeFromMemory(value: string | undefined): AgentChatMusePermissionMode {
+  return (AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES as readonly string[]).includes(value ?? "")
+    ? value as AgentChatMusePermissionMode
+    : DEFAULT_MUSE_PERMISSION_MODE;
+}
+
+/** The Muse picker's current option: plan when the chat is in plan mode. */
+export function musePermissionOption(
+  modelState: Pick<AdeCodeModelState, "interactionMode" | "musePermissionMode">,
+): MusePermissionOption {
+  return modelState.interactionMode === "plan" ? "plan" : modelState.musePermissionMode;
+}
+
+/** The state patch for one Muse picker option. */
+export function musePermissionPatch(
+  option: MusePermissionOption,
+): Pick<AdeCodeModelState, "interactionMode" | "musePermissionMode" | "permissionMode"> {
+  if (option === "plan") {
+    return { interactionMode: "plan", musePermissionMode: "denyUnmatched", permissionMode: "plan" };
+  }
+  return {
+    interactionMode: "default",
+    musePermissionMode: option,
+    permissionMode: legacyPermissionModeFromMusePermissionMode(option) ?? "default",
+  };
+}
+
+function musePermissionSummary(option: MusePermissionOption): string {
+  return option === "plan" ? "plan" : AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS[option].label.toLowerCase();
 }
 
 /** Apply a project's remembered model to a freshly built model state. */
@@ -447,6 +497,7 @@ export function permissionSummary(modelState: AdeCodeModelState): string {
   }
   if (usesToolPermissionModes(modelState.provider)) return modelState.opencodePermissionMode;
   if (modelState.provider === "droid") return modelState.droidPermissionMode;
+  if (modelState.provider === "muse") return musePermissionSummary(musePermissionOption(modelState));
   return cursorModeLabel(modelState.cursorModeId);
 }
 
@@ -466,6 +517,8 @@ const MODE_DESCRIPTIONS: Record<string, string> = {
   "auto-high": "high-autonomy ops",
   agi: "orchestrator mission",
   "config-toml": "config-defined mode",
+  // Muse's approval modes, as `permissionSummary` words them.
+  "full access": "no approvals required",
 };
 
 export function modeDescription(summary: string): string {
@@ -474,7 +527,7 @@ export function modeDescription(summary: string): string {
 
 export function modeAccentColor(summary: string): string {
   if (summary === "plan" || summary === "read-only" || summary === "agi") return theme.color.planMode;
-  if (summary === "bypass" || summary === "full-auto" || summary === "auto-high") return theme.color.warning;
+  if (summary === "bypass" || summary === "full-auto" || summary === "auto-high" || summary === "full access") return theme.color.warning;
   return theme.color.accent;
 }
 
@@ -483,6 +536,7 @@ function permissionOptionsDetail(modelState: AdeCodeModelState): string {
   if (modelState.provider === "claude") return "default · plan · auto · bypass";
   if (usesToolPermissionModes(modelState.provider)) return OPENCODE_PERMISSION_OPTIONS.join(" · ");
   if (modelState.provider === "droid") return DROID_PERMISSION_OPTIONS.join(" · ");
+  if (modelState.provider === "muse") return MUSE_PERMISSION_OPTIONS.map(musePermissionSummary).join(" · ");
   return cursorModeIdsForState(modelState).map((modeId) => cursorModeLabel(modeId)).join(" · ");
 }
 
@@ -502,6 +556,7 @@ export function applyProviderPermissionMode(modelState: AdeCodeModelState): Part
   }
   if (usesToolPermissionModes(modelState.provider)) return { permissionMode: modelState.opencodePermissionMode };
   if (modelState.provider === "droid") return { permissionMode: droidPermissionToLegacy(modelState.droidPermissionMode) };
+  if (modelState.provider === "muse") return musePermissionPatch(musePermissionOption(modelState));
   if (modelState.provider === "cursor") {
     if (modelState.cursorModeId === "plan") return { permissionMode: "plan" };
     if (modelState.cursorModeId === "ask") return { permissionMode: "edit" };

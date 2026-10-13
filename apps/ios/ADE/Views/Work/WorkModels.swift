@@ -364,6 +364,7 @@ func workChatSurfaceProviderName(_ source: String?) -> String {
   case "droid", "factory": return "Droid"
   case "opencode": return "OpenCode"
   case "pi": return "Pi"
+  case "muse": return "Muse"
   case "qwen": return "Qwen"
   case "kimi", "moonshot": return "Kimi"
   case "grok", "xai": return "Grok"
@@ -676,6 +677,11 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Claude", interruptContinues: false)
     case "codex":
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "Codex", interruptContinues: false)
+    case "muse":
+      // `turn/steer` joins the live turn, `turn/start` with `ifBusy: queue`
+      // stages it, and interrupt is `turn/interrupt` then a fresh turn, so it
+      // continues the way Cursor's does.
+      return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Muse", interruptContinues: true)
     case "cursor":
       // Cursor gained `.inline` when `@cursor/sdk` 1.0.31 added `Run.steer()`.
       // `interruptContinues` stays true: its interrupt still cancels the run and
@@ -831,6 +837,7 @@ struct WorkChatStopCapability: Equatable {
     case "cursor": return "Cursor"
     case "droid": return "Droid"
     case "pi": return "Pi"
+    case "muse": return "Muse"
     case "": return "This provider"
     default: return key.prefix(1).uppercased() + key.dropFirst()
     }
@@ -843,8 +850,8 @@ struct WorkChatStopCapability: Equatable {
   static func unsupportedReason(provider: String?, mode: AgentChatStopMode) -> String? {
     let key = (provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let name = providerLabel(provider)
-    let canStopBackground = ["claude", "opencode", "codex"].contains(key)
-    let keepsQueue = ["claude", "opencode", "codex", "cursor", "droid"].contains(key)
+    let canStopBackground = ["claude", "opencode", "codex", "muse"].contains(key)
+    let keepsQueue = ["claude", "opencode", "codex", "muse", "cursor", "droid"].contains(key)
     if stopsBackground(mode) && !canStopBackground {
       return "\(name) can't stop background work its agent started."
     }

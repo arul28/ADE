@@ -2197,6 +2197,18 @@ function ModelGlyph({
       />
     );
   }
+  if (meta.family === "muse" || meta.cliCommand === "muse") {
+    return (
+      <ModelRowLogo
+        modelFamily="muse"
+        cliCommand="muse"
+        modelId={meta.modelId ?? modelId ?? model}
+        providerModelId={meta.providerModelId ?? undefined}
+        size={size}
+        className={className}
+      />
+    );
+  }
   if (meta.family === "anthropic" || meta.cliCommand === "claude") {
     return <ClaudeLogo size={size} className={className} />;
   }

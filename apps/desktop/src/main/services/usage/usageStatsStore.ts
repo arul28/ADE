@@ -361,6 +361,7 @@ function providerFromToolType(toolType: unknown): string {
   if (value.includes("cursor")) return "cursor";
   if (value.includes("opencode")) return "opencode";
   if (value.includes("droid")) return "droid";
+  if (value.includes("muse")) return "muse";
   return value.includes("shell") ? "shell" : "other";
 }
 

@@ -11,6 +11,8 @@ import {
 } from "../usage/providerAccountIdentity";
 import { getAllApiKeys } from "./apiKeyStore";
 import { getCursorSdkAuthSnapshot } from "./cursorSdkAuth";
+import { inspectMuseCredentials, museStoredApiKeyPresent } from "./museAuth";
+import { museFetchPending, resolveMuseExecutable } from "./museExecutable";
 import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { isCursorAdminApiKey } from "./utils";
 import {
@@ -26,7 +28,7 @@ import {
 } from "../../../shared/acpProviderMetadata";
 
 function createUnavailableStatus(
-  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | AcpProviderId,
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "muse" | AcpProviderId,
   checkedAt: string,
 ): AiProviderConnectionStatus {
   return {
@@ -416,6 +418,9 @@ export async function buildProviderConnections(
     : undefined;
   if (pi) applyRuntimeHealth(pi, piRuntimeHealth);
 
+  const muse = buildMuseConnection(checkedAt);
+  applyRuntimeHealth(muse, getProviderRuntimeHealth("muse"));
+
   const acpConnections: Partial<Record<AcpProviderId, AiProviderConnectionStatus>> = {};
   for (const provider of ACP_PROVIDER_IDS) {
     const metadata = ACP_PROVIDER_METADATA[provider];
@@ -461,6 +466,62 @@ export async function buildProviderConnections(
     cursor,
     droid,
     ...(pi ? { pi } : {}),
+    muse,
     ...acpConnections,
+  };
+}
+
+/**
+ * Muse runs only from ADE's pinned build, so "installed" means "the pinned
+ * build is in the tools cache", never "a `muse` is on PATH". Sign-in is read
+ * from `META_API_KEY`, a key saved in ADE, or Muse's `auth.json`.
+ *
+ * On macOS Muse keeps its login token in the Keychain, which a status poll
+ * must not read, so a signed-in Mac can show no credential file. There the
+ * pinned build alone is enough to offer chat: the first session reports
+ * `ready` or `auth-failed` through runtime health, which then corrects this.
+ */
+function buildMuseConnection(checkedAt: string): AiProviderConnectionStatus {
+  const binary = resolveMuseExecutable();
+  const credentials = inspectMuseCredentials({ storedKeyPresent: museStoredApiKeyPresent });
+  const runtimeDetected = binary.path != null;
+  const authAvailable = credentials.source != null;
+  const keychainMayHoldLogin = process.platform === "darwin";
+  const runtimeAvailable = runtimeDetected && (authAvailable || keychainMayHoldLogin);
+
+  let blocker: string | null = null;
+  if (binary.source === "unsupported") {
+    blocker = "ADE has no pinned Muse build for this platform.";
+  } else if (!runtimeDetected) {
+    blocker = museFetchPending()
+      ? `ADE's pinned Muse build (${binary.pinnedVersion}) is not downloaded yet. Download it from Settings > Providers.`
+      : "ADE's pinned Muse build is not available.";
+  } else if (!authAvailable) {
+    blocker = keychainMayHoldLogin
+      ? "No Muse sign-in file was found. If you signed in, Muse keeps it in the macOS Keychain and your first chat confirms it; otherwise sign in or add a Meta API key."
+      : "Muse is not signed in. Sign in or add a Meta API key.";
+  }
+
+  return {
+    ...createUnavailableStatus("muse", checkedAt),
+    authAvailable,
+    runtimeDetected,
+    runtimeAvailable,
+    usageAvailable: false,
+    path: binary.path,
+    sources: [
+      {
+        kind: "local-credentials",
+        detected: authAvailable,
+        source: credentials.source ?? undefined,
+        path: credentials.source === "muse-auth-file" ? credentials.authFilePath : null,
+      },
+      {
+        kind: "cli",
+        detected: runtimeDetected,
+        path: binary.path,
+      },
+    ],
+    blocker,
   };
 }

@@ -7,4 +7,4 @@
  * is declared `as const satisfies Record<ShippedProvider, …>`, so a member added
  * here without a row is caught where the row is missing.
  */
-export type ShippedProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
+export type ShippedProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "muse";

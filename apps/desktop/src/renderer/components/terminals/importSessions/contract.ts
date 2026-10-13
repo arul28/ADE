@@ -121,6 +121,7 @@ export const PROVIDER_TOOL_TYPE: Record<ExternalSessionProvider, TerminalToolTyp
   droid: "droid",
   opencode: "opencode",
   pi: "pi",
+  muse: "muse",
   qwen: "qwen",
   kimi: "kimi",
   grok: "grok",

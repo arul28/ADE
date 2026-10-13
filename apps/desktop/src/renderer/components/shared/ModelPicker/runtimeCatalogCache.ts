@@ -8,6 +8,7 @@ const REFRESH_PROVIDER_BY_FAMILY: Partial<Record<ProviderFamily, AgentChatModelC
   lmstudio: "lmstudio",
   cursor: "cursor",
   pi: "pi",
+  muse: "muse",
   factory: "droid",
   qwen: "qwen",
   moonshot: "kimi",
@@ -25,6 +26,7 @@ const RUNTIME_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
 const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
   "opencode",
   "pi",
+  "muse",
   "cursor",
   "droid",
   "lmstudio",

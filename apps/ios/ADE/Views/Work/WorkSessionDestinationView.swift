@@ -108,8 +108,8 @@ func workChatManualSteerDispatchModes(
 }
 
 /// iOS half of desktop `queuedSteersCanReorder`: ADE holds the staged queue
-/// (and can reorder it) for every provider except Codex and OpenCode, which
-/// keep their own.
+/// (and can reorder it) for every provider except Codex, OpenCode and Muse,
+/// which keep their own.
 func workChatQueuedSteersCanReorder(
   session: TerminalSessionSummary?,
   summary: AgentChatSessionSummary?
@@ -117,7 +117,7 @@ func workChatQueuedSteersCanReorder(
   guard let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType) else {
     return false
   }
-  return provider != "codex" && provider != "opencode"
+  return provider != "codex" && provider != "opencode" && provider != "muse"
 }
 
 /// iOS half of desktop `cursorSessionRunsInCloud`.

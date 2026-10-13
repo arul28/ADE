@@ -687,6 +687,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Connections",
   },
   {
+    id: "agents.provider.muse",
+    label: "Muse Code",
+    keywords: ["muse", "meta", "muse code", "spark", "provider", "sign in", "api key", "model", "permission"],
+    tab: "agents",
+    anchor: "ai-provider-muse",
+    scope: "machine",
+    web: "hidden",
+    group: "Connections",
+  },
+  {
     id: "agents.provider.pi",
     label: "Pi",
     keywords: ["pi", "earendil", "provider", "sign in", "model", "permission"],

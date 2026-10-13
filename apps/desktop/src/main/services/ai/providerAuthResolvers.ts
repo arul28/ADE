@@ -18,6 +18,7 @@ import { resolvePiInstallation } from "./piInstallation";
 import type { ShippedProvider } from "../../../shared/providers";
 import { getCachedCliAuthStatuses, parseJsonAuthStatus } from "./authDetector";
 import { getCursorSdkAuthSnapshot } from "./cursorSdkAuth";
+import { inspectMuseCredentials, museStoredApiKeyPresent } from "./museAuth";
 import { readClaudeCredentials, readCodexCredentials } from "./providerCredentialSources";
 import {
   PROVIDER_AUTH_STATUS_TIMEOUT_MS,
@@ -223,6 +224,30 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
     authMethod: null,
     detail: "OpenCode stores credentials per model provider inside its own server; ADE cannot read them without starting it.",
   }),
+  /**
+   * File and environment only: `META_API_KEY` (ADE's or one saved in ADE's
+   * key store) or Muse's own `auth.json`. Muse has no non-interactive
+   * auth-status command (`muse login` and `muse auth` stop at a workspace-trust
+   * prompt without a TTY), and on macOS its token is in the Keychain, which a
+   * status poll must not touch. So a macOS sign-in that left no `auth.json`
+   * reads as "not detected" here; chat's runtime health corrects it.
+   */
+  muse: async (context) => {
+    const snapshot = inspectMuseCredentials({
+      env: context.env,
+      readTextFile: context.readTextFile,
+      storedKeyPresent: museStoredApiKeyPresent,
+    });
+    if (snapshot.envKey || snapshot.storedKey) return { authenticated: true, authMethod: "api-key" };
+    if (snapshot.authFile) return { authenticated: true, authMethod: "unknown" };
+    return {
+      authenticated: false,
+      authMethod: null,
+      detail: context.platform === "darwin"
+        ? `No Muse sign-in was found at ${snapshot.authFilePath}. A Keychain-only sign-in is confirmed when a Muse chat starts.`
+        : null,
+    };
+  },
   pi: async (context) => {
     // The try/catch is for `resolvePiInstallation`, which throws when it cannot
     // work out where Pi keeps its state. The file tests themselves do not throw.

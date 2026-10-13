@@ -11,6 +11,7 @@ const KNOWN_PROVIDER_NAMES: Record<string, string> = {
   google: "Google",
   lmstudio: "LM Studio",
   mistral: "Mistral",
+  muse: "Muse",
   ollama: "Ollama",
   opencode: "OpenCode",
   openai: "OpenAI",

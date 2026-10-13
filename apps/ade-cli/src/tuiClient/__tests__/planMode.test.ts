@@ -20,6 +20,7 @@ function baseModelState(overrides: Partial<AdeCodeModelState>): AdeCodeModelStat
     codexConfigSource: "flags",
     opencodePermissionMode: "edit",
     droidPermissionMode: "auto-low",
+    musePermissionMode: "onRequest",
     cursorModeId: "agent",
     cursorAvailableModeIds: [],
     cursorConfigValues: {},

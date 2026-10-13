@@ -35,6 +35,9 @@ import {
   resolveQwenCliModelForLaunch,
 } from "../../../shared/cliLaunch";
 import { resolveCliProviderForModel } from "../../../shared/modelRegistry";
+import { startMuseHost } from "../chat/museSdkHost";
+import { ensureMuseBinary } from "./museExecutable";
+import { museCredentialEnv } from "./museAuth";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -495,6 +498,79 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   };
 }
 
+/**
+ * One prompt through a short-lived `muse serve` host: start a session, run a
+ * single turn, collect the reply, close. Read-only tasks select Muse's
+ * `denyUnmatched` mode, so a title or summary can never touch the workspace.
+ */
+async function runMuseTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
+  const combinedPrompt = args.system?.trim() ? `${args.system.trim()}\n\n${prompt}` : prompt;
+  const baseEnv = { ...userProcessEnv(), ...(args.accountEnv ?? {}) };
+  const env = { ...baseEnv, ...museCredentialEnv(baseEnv) };
+  const musePath = await ensureMuseBinary({ env });
+  const providerOverride = process.env.ADE_MUSE_PROVIDER?.trim();
+  const host = await startMuseHost({
+    musePath,
+    cwd: args.cwd,
+    env,
+    serveArgs: [...(providerOverride ? ["--provider", providerOverride] : []), "--no-session-log"],
+    clientVersion: "ade",
+  });
+  try {
+    const readOnly = args.backgroundUtility || args.permissionMode === "read-only";
+    const started = await host.command<{ session: { sessionId: string } }>("session/start", {
+      workspaceRoot: args.cwd,
+      modelId: args.descriptor.providerModelId,
+      approvalMode: readOnly ? "denyUnmatched" : "onRequest",
+    });
+    const sessionId = started.session.sessionId;
+    const texts = new Map<string, string>();
+    let usage: { inputTokens?: number; outputTokens?: number } | null = null;
+    const turnId = host.mintCommandId();
+    const completed = new Promise<{ terminal: string; message?: string }>((resolve) => {
+      host.subscribe(sessionId, ({ method, params }) => {
+        const item = params.item as { itemId?: string; kind?: string; text?: string; turnId?: string } | undefined;
+        if (method === "item/completed" && item?.kind === "agentMessage" && item.itemId && item.turnId === turnId) {
+          texts.set(item.itemId, item.text ?? "");
+        } else if (method === "session/tokenUsage" && params.turnId === turnId) {
+          usage = params.usage as typeof usage;
+        } else if (method === "turn/completed" && params.turnId === turnId) {
+          const error = params.error as { message?: string } | undefined;
+          resolve({ terminal: String(params.terminal ?? "completed"), ...(error?.message ? { message: error.message } : {}) });
+        }
+      });
+      host.onExit(() => resolve({ terminal: "failed", message: host.stderrTail().slice(-4).join("\n") || "Muse stopped." }));
+    });
+    await host.command("turn/start", {
+      sessionId,
+      input: [{ type: "text", text: combinedPrompt }],
+      ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
+    }, { commandId: turnId });
+    const timeoutMs = args.timeoutMs ?? 120_000;
+    let timer: NodeJS.Timeout | null = null;
+    const outcome = await Promise.race([
+      completed,
+      new Promise<{ terminal: string; message: string }>((resolve) => {
+        timer = setTimeout(() => resolve({ terminal: "failed", message: `Muse did not answer within ${timeoutMs} ms.` }), timeoutMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (outcome.terminal !== "completed") throw new Error(outcome.message ?? `Muse turn ${outcome.terminal}.`);
+    const text = [...texts.values()].join("\n").trim();
+    const counted = usage as { inputTokens?: number; outputTokens?: number } | null;
+    return {
+      text,
+      structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null,
+      sessionId,
+      inputTokens: counted?.inputTokens ?? null,
+      outputTokens: counted?.outputTokens ?? null,
+    };
+  } finally {
+    await host.close();
+  }
+}
+
 /** Run an ADE-owned metadata prompt through a provider's native CLI. */
 async function runAcpOneShotTask(
   args: ProviderTaskRunnerArgs,
@@ -667,6 +743,9 @@ export async function runProviderTask(args: ProviderTaskRunnerArgs): Promise<Pro
   }
   if (args.descriptor.family === "cursor") {
     return await runCursorTask(args);
+  }
+  if (args.descriptor.family === "muse") {
+    return await runMuseTask(args);
   }
   const cliProvider = resolveCliProviderForModel(args.descriptor);
   if (cliProvider === "qwen") {

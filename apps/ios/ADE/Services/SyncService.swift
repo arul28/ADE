@@ -14007,7 +14007,7 @@ final class SyncService: ObservableObject {
       // chats run cursor models through the SDK, so only that source is
       // probed synchronously — the CLI flavor revalidates in the background.
       var args: [String: Any] = ["provider": normalizedProvider]
-      if normalizedProvider == "cursor" || normalizedProvider == "droid" {
+      if normalizedProvider == "cursor" || normalizedProvider == "droid" || normalizedProvider == "muse" {
         args["activateRuntime"] = true
       }
       if normalizedProvider == "cursor" {
@@ -14245,6 +14245,7 @@ final class SyncService: ObservableObject {
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
+    musePermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
@@ -14272,6 +14273,7 @@ final class SyncService: ObservableObject {
       codexConfigSource: codexConfigSource,
       opencodePermissionMode: opencodePermissionMode,
       droidPermissionMode: droidPermissionMode,
+      musePermissionMode: musePermissionMode,
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
@@ -14338,6 +14340,7 @@ final class SyncService: ObservableObject {
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
+    musePermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
@@ -14365,6 +14368,7 @@ final class SyncService: ObservableObject {
       codexConfigSource: codexConfigSource,
       opencodePermissionMode: opencodePermissionMode,
       droidPermissionMode: droidPermissionMode,
+      musePermissionMode: musePermissionMode,
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
@@ -14428,6 +14432,7 @@ final class SyncService: ObservableObject {
     codexConfigSource: String?,
     opencodePermissionMode: String?,
     droidPermissionMode: String?,
+    musePermissionMode: String? = nil,
     cursorModeId: String?,
     cursorConfigValues: [String: RemoteJSONValue]?,
     computerUse: RemoteJSONValue?,
@@ -14487,6 +14492,9 @@ final class SyncService: ObservableObject {
     }
     if let droidPermissionMode, !droidPermissionMode.isEmpty {
       args["droidPermissionMode"] = droidPermissionMode
+    }
+    if let musePermissionMode, !musePermissionMode.isEmpty {
+      args["musePermissionMode"] = musePermissionMode
     }
     if let cursorModeId, !cursorModeId.isEmpty {
       args["cursorModeId"] = cursorModeId
@@ -15543,6 +15551,7 @@ final class SyncService: ObservableObject {
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
+    musePermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     unifiedPermissionMode: String? = nil,
@@ -15569,6 +15578,7 @@ final class SyncService: ObservableObject {
         codexConfigSource: codexConfigSource,
         opencodePermissionMode: opencodePermissionMode,
         droidPermissionMode: droidPermissionMode,
+        musePermissionMode: musePermissionMode,
         cursorModeId: cursorModeId,
         cursorConfigValues: cursorConfigValues,
         unifiedPermissionMode: unifiedPermissionMode,
@@ -25042,6 +25052,7 @@ extension SyncService {
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
+    musePermissionMode: String? = nil,
     cursorModeId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     try requireInvokableRemoteAction("personalChats.create")
@@ -25069,6 +25080,7 @@ extension SyncService {
     if let codexConfigSource, !codexConfigSource.isEmpty { args["codexConfigSource"] = codexConfigSource }
     if let opencodePermissionMode, !opencodePermissionMode.isEmpty { args["opencodePermissionMode"] = opencodePermissionMode }
     if let droidPermissionMode, !droidPermissionMode.isEmpty { args["droidPermissionMode"] = droidPermissionMode }
+    if let musePermissionMode, !musePermissionMode.isEmpty { args["musePermissionMode"] = musePermissionMode }
     if let cursorModeId, !cursorModeId.isEmpty { args["cursorModeId"] = cursorModeId }
 
     let summary = try await sendDecodableCommand(

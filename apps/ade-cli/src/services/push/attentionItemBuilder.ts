@@ -152,6 +152,8 @@ export function providerDisplayName(provider: string | null | undefined): string
       return "Cursor";
     case "droid":
       return "Droid";
+    case "muse":
+      return "Muse";
     case "opencode":
       return "OpenCode";
     case "gemini":

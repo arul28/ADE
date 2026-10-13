@@ -22,6 +22,7 @@
     "package:native-deps": "node ./scripts/package-native-deps.mjs",
     "tools:manifest": "node ./scripts/generate-tools-manifest.mjs",
     "tools:manifest:check": "node ./scripts/generate-tools-manifest.mjs --check",
+    "tools:muse-pin": "node ./scripts/pin-muse-release.mjs",
     "typecheck": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "pretest": "npm run tools:manifest:check",
     "test": "vitest run"
@@ -54,6 +55,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@muse-code/sdk": "1.4.7",
     "@opencode/client": "2.0.24",
     "@types/node": "^20.11.30",
     "@types/pngjs": "^6.0.5",

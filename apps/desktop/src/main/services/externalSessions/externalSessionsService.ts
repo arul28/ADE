@@ -174,6 +174,7 @@ const CHAT_SESSION_TOOL_TYPES = new Set<TerminalToolType>([
   "cursor",
   "droid-chat",
   "pi-chat",
+  "muse-chat",
 ]);
 
 function isChatToolType(toolType: TerminalToolType | null | undefined): boolean {
@@ -489,7 +490,13 @@ async function forkCommandFor(args: {
   }
 
   if (args.provider === "cursor") throw new Error("Cursor sessions cannot be forked.");
-  const label = args.provider === "kimi" ? "Kimi" : args.provider === "copilot" ? "Copilot" : args.provider;
+  const label = args.provider === "kimi"
+    ? "Kimi"
+    : args.provider === "copilot"
+      ? "Copilot"
+      : args.provider === "muse"
+        ? "Muse"
+        : args.provider;
   throw new Error(`${label} sessions cannot be copied.`);
 }
 
