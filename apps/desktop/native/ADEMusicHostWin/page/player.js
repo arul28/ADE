@@ -279,7 +279,20 @@
       else await m.skipToPreviousItem();
       return snapshot();
     },
-    seek: async function (c) { pendingSeek = 0; await needMk().seekToTime(Math.max(0, Number(c.position) || 0)); lastTimeEmit = 0; return snapshot(); },
+    seek: async function (c) {
+      var m = needMk();
+      var at = Math.max(0, Number(c.position) || 0);
+      // A restored queue that has not played yet has no song loaded, and
+      // MusicKit drops the seek: move the second it will start from instead.
+      if (m.queue && m.queue.length > 0 && (pendingSeek > 0 || m.queue.position < 0 || !m.nowPlayingItem)) {
+        pendingSeek = at;
+        return snapshot();
+      }
+      pendingSeek = 0;
+      await m.seekToTime(at);
+      lastTimeEmit = 0;
+      return snapshot();
+    },
     volume: async function (c) { needMk().volume = Math.max(0, Math.min(1, Number(c.value))); return snapshot(); },
     shuffle: async function (c) { needMk().shuffleMode = c.mode ? 1 : 0; return snapshot(); },
     repeat: async function (c) { var r = Number(c.mode); needMk().repeatMode = r === 1 || r === 2 ? r : 0; return snapshot(); },
