@@ -507,6 +507,21 @@ gh api "repos/arul28/ADE/commits/$RELEASE_SHA/check-runs" \
   --jq '.check_runs[] | select(.name=="ci-pass") | {status,conclusion,html_url}'
 ```
 
+**When the CI you need is red or stuck, get to green the fastest way.** Speed
+matters here; each step below came from a release that waited on CI.
+
+- **A flaky job failed** (a timeout in a job the release commits did not touch):
+  rerun only that job once the run finishes
+  (`gh run rerun "$RUN_ID" --failed`). GitHub refuses the rerun while any job
+  in the run is still going, so in parallel start a fresh CI run on `main`'s
+  head, which is the release-notes commit:
+  `gh workflow run ci.yml --repo arul28/ADE --ref main`. A green `ci-pass` on
+  either commit lets the tag through; tag on whichever lands first.
+- **The run is queued behind other CI:** cancel runs the release does not need,
+  such as open PRs' CI and the release-notes commit's own push run (the tag
+  borrows its parent's result). Restart the PR runs after the tag.
+- **A job fails on a real error:** stop and fix it; never tag past it.
+
 After release docs are committed on `main`:
 
 ```bash
@@ -1273,6 +1288,15 @@ What each entry point actually guards, so you know what you lose by bypassing it
 
 The `--tag` on tunnel-relay is load-bearing: `CF_VERSION_METADATA` is what makes
 `/health` able to prove *which* code is live rather than merely that something is.
+
+**A deploy job that stopped on a preflight because something else was not live
+yet** (on 2026-10-13 the account directory refused to deploy because the
+website's new `/device` page was not out yet, so phone sign-in sat undeployed)
+is rerun once that dependency is live: check the preflight's own condition by
+hand, then `gh run rerun <deploy-web run> --failed`. That reruns the same
+guarded entry point on the same code. Do not wait for the next push to `main`
+to deploy it; check every in-scope surface's last `deploy-web.yml` result, not
+only the run for the release commit.
 
 ### Step 6: Post-deploy verification
 
