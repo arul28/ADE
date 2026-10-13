@@ -1350,18 +1350,24 @@ chat pane mount, which happens either way.
   limits, 5 minutes on an API key, Bedrock, Vertex or extra usage. ADE does not
   guess. At each Claude turn end, `claudePromptCacheTtlOfWrites`
   (`shared/claudePromptCache.ts`) reads the turn's cache writes
-  (`done.usage.cacheCreationTokens` and `cacheWrite1hTokens`) and the chat
-  service stores the result as `promptCacheTtl` (`"5m"` or `"1h"`) on the
-  session, its persisted record and its summary
-  (`TerminalSessionSummary.chatPromptCacheTtl`). A turn that wrote no cache
-  keeps the last value. Two things read it:
-  - **Compact first** waits that lifetime after the last turn ended, or an hour
-    when no lifetime is known yet.
+  (`done.usage.cacheCreationTokens` and `cacheWrite1hTokens`; when a turn
+  holds both lifetimes, the one most of the tokens used). The chat service
+  stores the result as `promptCache: { ttl, since }` on the session, its
+  persisted record and its summary (`TerminalSessionSummary.chatPromptCache`).
+  `ttl` is `"5m"` or `"1h"`. `since` is the start of the turn's last model
+  request (`done.usage.lastRequestStartedAt`), because Claude times a cache
+  entry from the request that wrote or read it, not from the end of the
+  answer; when no request time is known, the turn end stands in. A turn that
+  wrote no cache but read it keeps the lifetime and moves `since`. A move to
+  another account clears it: the cache belongs to the login that wrote it.
+  Two things read it:
+  - **Compact first** waits that lifetime from `since`, or an hour after the
+    last turn ended when no lifetime is known yet.
   - **The cache countdown badge** (`ClaudeCacheTtlBadge`, `lib/claudeCacheTtl.ts`)
     on the chat header and the Work session card. A 5-minute cache counts down
-    from 5:00 at turn end. A 1-hour cache shows nothing for 45 minutes, then
-    counts down from 10:00 and ends at 55 minutes: Claude times an entry from
-    the start of the turn's last request, so the hour ends a little early. With
+    from 5:00, measured from `since`. A 1-hour cache shows nothing for 45 minutes, then
+    counts down from 10:00 and ends at 55 minutes: measured cache misses climb
+    from there, and a message needs time to reach Claude. With
     no known lifetime (a gateway preset, a chat with no cache write yet) there
     is no badge.
 - **Question answering.** When a question-type pending input is active, the

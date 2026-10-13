@@ -1,25 +1,28 @@
 import { useEffect, useState } from "react";
-import type { ClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
+import type { ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { cn } from "../ui/cn";
 import { claudeCacheCountdown, formatClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 
 export function ClaudeCacheTtlBadge({
   idleSinceAt,
-  cacheTtl,
+  cache,
   className,
 }: {
   idleSinceAt: string | null | undefined;
-  /** The lifetime Claude last wrote this chat's cache with; unknown shows nothing. */
-  cacheTtl: ClaudePromptCacheTtl | null | undefined;
+  /** The chat's prompt cache after its last turn; unknown shows nothing. */
+  cache: ClaudePromptCache | null | undefined;
   className?: string;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const ttl = cache?.ttl;
+  const since = cache?.since;
 
   useEffect(() => {
-    if (!idleSinceAt || !cacheTtl) return;
+    if (!idleSinceAt || !ttl) return;
+    const cache = { ttl, since };
     const now = Date.now();
     setNowMs(now);
-    const { remainingMs: remainingAtMount, showInMs } = claudeCacheCountdown(idleSinceAt, cacheTtl, now);
+    const { remainingMs: remainingAtMount, showInMs } = claudeCacheCountdown(idleSinceAt, cache, now);
     // Already expired at mount: publish the final state, install no timer.
     if (remainingAtMount <= 0) return;
     let intervalId: number | null = null;
@@ -32,7 +35,7 @@ export function ClaudeCacheTtlBadge({
         // the component stays mounted. An expired badge must not keep waking the
         // renderer once per second (offscreen cards / retained Work trees amplify
         // this). Cleanup below still fires on prop change and unmount.
-        if (intervalId != null && claudeCacheCountdown(idleSinceAt, cacheTtl, tickNow).remainingMs <= 0) {
+        if (intervalId != null && claudeCacheCountdown(idleSinceAt, cache, tickNow).remainingMs <= 0) {
           window.clearInterval(intervalId);
           intervalId = null;
         }
@@ -45,9 +48,9 @@ export function ClaudeCacheTtlBadge({
       if (timeoutId != null) window.clearTimeout(timeoutId);
       if (intervalId != null) window.clearInterval(intervalId);
     };
-  }, [idleSinceAt, cacheTtl]);
+  }, [idleSinceAt, ttl, since]);
 
-  const { remainingMs, showInMs } = claudeCacheCountdown(idleSinceAt, cacheTtl, nowMs);
+  const { remainingMs, showInMs } = claudeCacheCountdown(idleSinceAt, cache, nowMs);
   if (remainingMs <= 0 || showInMs > 0) return null;
 
   return (

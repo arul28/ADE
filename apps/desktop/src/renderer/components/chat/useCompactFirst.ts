@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
-import { compactFirstIdleMs } from "../../../shared/compactFirst";
+import type { ClaudePromptCache } from "../../../shared/claudePromptCache";
+import { compactFirstEligibleAtMs } from "../../../shared/compactFirst";
 import { contextCompactMergeKey } from "../../../shared/contextCompaction";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 
@@ -10,15 +10,14 @@ export type CompactFirstChoice = { sessionId: string; value: boolean; dismissed?
 /**
  * State behind the "Compact first" chip for the selected chat.
  *
- * `idleWindowOpen` turns true once the last turn ended a cache lifetime ago
- * (`cacheTtl`, or an hour when unknown), when the prompt cache has expired. The
+ * `idleWindowOpen` turns true once the chat's prompt cache has expired
+ * (`compactFirstEligibleAtMs`: its lifetime, or an hour when unknown). The
  * user's choice covers one send: it is kept per chat with the turn end it was
  * made after, so a new turn end drops it and a visit to another chat does not.
  * `sendRef` carries what the chip shows into the send path, which is defined
  * before the chip is computed.
  */
-export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessionId: string | null, cacheTtl?: ClaudePromptCacheTtl | null) {
-  const idleMs = compactFirstIdleMs(cacheTtl);
+export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessionId: string | null, cache?: ClaudePromptCache | null) {
   const [now, setNow] = useState(Date.now());
   const [choices, setChoices] = useState<ReadonlyMap<string, CompactFirstChoice & { turnEndedAt: number | null }>>(new Map());
   const sendRef = useRef<CompactFirstChoice | null>(null);
@@ -30,17 +29,23 @@ export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessi
     }
     return null;
   }, [events]);
+  const cacheTtl = cache?.ttl;
+  const cacheSince = cache?.since;
+  const eligibleAt = useMemo(
+    () => compactFirstEligibleAtMs(cacheTtl ? { ttl: cacheTtl, since: cacheSince } : null, Number.isFinite(lastTurnEndedAt) ? lastTurnEndedAt : null),
+    [cacheTtl, cacheSince, lastTurnEndedAt],
+  );
   useEffect(() => {
-    if (lastTurnEndedAt == null || !Number.isFinite(lastTurnEndedAt)) return;
-    const wait = lastTurnEndedAt + idleMs - Date.now();
+    if (eligibleAt == null) return;
+    const wait = eligibleAt - Date.now();
     if (wait <= 0) {
       setNow(Date.now());
       return;
     }
     const timer = setTimeout(() => setNow(Date.now()), Math.min(wait + 1, 2_147_483_647));
     return () => clearTimeout(timer);
-  }, [lastTurnEndedAt, idleMs]);
-  const idleWindowOpen = lastTurnEndedAt != null && now >= lastTurnEndedAt + idleMs;
+  }, [eligibleAt]);
+  const idleWindowOpen = eligibleAt != null && now >= eligibleAt;
   const stored = sessionId ? choices.get(sessionId) : undefined;
   const choice: CompactFirstChoice | null = stored && stored.turnEndedAt === lastTurnEndedAt ? stored : null;
   const setChoice = useCallback((next: CompactFirstChoice) => {

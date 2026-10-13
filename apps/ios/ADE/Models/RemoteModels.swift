@@ -1113,10 +1113,17 @@ struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
   }
 }
 
+/// `ttl` is "5m" or "1h"; `since` is when Claude started that lifetime (the
+/// start of the turn's last request), absent when the host did not see one.
+struct AgentChatPromptCache: Codable, Equatable {
+  var ttl: String
+  var since: String?
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var compactionIdleMode: String? = nil
-  /// Claude only: "5m" or "1h", the lifetime the chat's last cache-writing turn used.
-  var promptCacheTtl: String? = nil
+  /// Claude only: the chat's prompt cache after its last turn.
+  var promptCache: AgentChatPromptCache? = nil
   /// Sent only by a brain started with a lowered Compact first limit (testing).
   var compactFirstMinTokens: Int? = nil
   var manualCompactAvailable: Bool? = nil
@@ -1260,7 +1267,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
     lhs.sessionId == rhs.sessionId
       && lhs.compactionIdleMode == rhs.compactionIdleMode
-      && lhs.promptCacheTtl == rhs.promptCacheTtl
+      && lhs.promptCache == rhs.promptCache
       && lhs.compactFirstMinTokens == rhs.compactFirstMinTokens
       && lhs.manualCompactAvailable == rhs.manualCompactAvailable
       && lhs.laneId == rhs.laneId

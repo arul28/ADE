@@ -21,7 +21,7 @@ import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ChatThreadComment } from "../threadComments";
-import type { ClaudePromptCacheTtl } from "../claudePromptCache";
+import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
@@ -1602,6 +1602,8 @@ export type AgentChatEvent =
         cacheWrite1hTokens?: number | null;
         /** Model requests made during the turn, when the runtime counts them. */
         requestCount?: number | null;
+        /** When the turn's last model request started (Claude times its prompt cache from here). */
+        lastRequestStartedAt?: string | null;
       };
       costUsd?: number | null;
       /**
@@ -2960,8 +2962,8 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   /** Start of the currently active provider turn; live-only and cleared when idle. */
   currentTurnStartedAt?: string | null;
   idleSinceAt?: string | null;
-  /** Claude only. The lifetime the chat's last cache-writing turn used; absent until one is seen. */
-  promptCacheTtl?: ClaudePromptCacheTtl | null;
+  /** Claude only. The chat's prompt cache after its last turn; absent until a turn writes one. */
+  promptCache?: ClaudePromptCache | null;
   archivedAt?: string | null;
   threadId?: string;
   continuityRecovery?: AgentChatContinuityRecovery;
@@ -3143,8 +3145,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   /** Start of the currently active provider turn; null when no turn is running. */
   currentTurnStartedAt?: string | null;
   idleSinceAt?: string | null;
-  /** Claude only. The lifetime the chat's last cache-writing turn used; absent until one is seen. */
-  promptCacheTtl?: ClaudePromptCacheTtl | null;
+  /** Claude only. The chat's prompt cache after its last turn; absent until a turn writes one. */
+  promptCache?: ClaudePromptCache | null;
   startedAt: string;
   endedAt: string | null;
   archivedAt?: string | null;

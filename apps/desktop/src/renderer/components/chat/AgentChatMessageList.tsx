@@ -2426,7 +2426,8 @@ function dispatchAdeCardAction(
 /**
  * A `/compact` the user sent as its own turn, on a provider where that is a
  * real compact action. A `/compact` steered into a running turn, or still
- * queued, belongs to that turn and stays an ordinary message.
+ * queued, belongs to that turn and stays an ordinary message; so does one that
+ * carries attachments, which the chip could not show.
  */
 function isCompactCommandMessage(
   event: TranscriptGroupedEnvelope["event"] | AgentChatEvent,
@@ -2435,6 +2436,8 @@ function isCompactCommandMessage(
   return event.type === "user_message"
     && !event.steerId
     && (event.deliveryState == null || event.deliveryState === "delivered")
+    && !event.attachments?.length
+    && !event.contextAttachments?.length
     && providerSupportsManualCompact(provider)
     && isManualCompactCommand(event.text);
 }
@@ -3126,7 +3129,7 @@ function renderEvent(
         };
     // Only the chat's latest compaction offers Retry; an older failure was
     // already superseded. The pane's action refuses while a turn is live.
-    const retry = options?.onRetryCompaction && options.latestCompactionKey === contextCompactMergeKey(compactEvent)
+    const retry = options?.onRetryCompaction && !options.sessionTurnActive && options.latestCompactionKey === contextCompactMergeKey(compactEvent)
       ? options.onRetryCompaction
       : undefined;
     return <ContextCompactDivider event={compactEvent} startedAt={envelope.timestamp} onRetry={retry} />;

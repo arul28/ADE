@@ -5144,7 +5144,7 @@ export function AgentChatPane({
     : EMPTY_CHAT_EVENTS;
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
-  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCacheTtl);
+  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCache);
   const latestCompactionKey = useMemo(() => latestCompactionKeyOf(selectedEvents), [selectedEvents]);
 
   const selectedSyncPending = renderedSessionId ? syncPendingBySession[renderedSessionId] === true : false;
@@ -7168,7 +7168,7 @@ export function AgentChatPane({
     provider: selectedSession?.provider ?? null,
     status: selectedSession?.status ?? null,
     idleSinceAt: selectedSession?.idleSinceAt,
-    cacheTtl: selectedSession?.promptCacheTtl,
+    cache: selectedSession?.promptCache,
     awaitingInput: selectedSessionAwaitingInput,
   });
 
@@ -15829,7 +15829,7 @@ export function AgentChatPane({
         </>}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
-        cacheTtl={selectedSession?.promptCacheTtl ?? null}
+        promptCache={selectedSession?.promptCache ?? null}
         lifecycleSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
@@ -16074,7 +16074,7 @@ export function AgentChatPane({
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
   // it only runs once a chat has sat an hour, when no deltas stream.
   const idleCompactOffer = compactionIdleMode != null && compactFirst.idleWindowOpen && !turnActive && !pendingInput && measuredContextTokens != null
-    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, cacheTtl: selectedSession?.promptCacheTtl, minTokens: selectedSession?.compactFirstMinTokens, mode: compactionIdleMode, now: compactFirst.now })
+    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, cache: selectedSession?.promptCache, minTokens: selectedSession?.compactFirstMinTokens, mode: compactionIdleMode, now: compactFirst.now })
     : null;
   const compactFirstChoice = compactFirst.choice?.sessionId === selectedSessionId ? compactFirst.choice : null;
   const compactFirstEnabled = compactFirstChoice ? compactFirstChoice.value : selectedSession?.compactionIdleMode === "always";

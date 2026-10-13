@@ -1,11 +1,11 @@
-import { CLAUDE_PROMPT_CACHE_TTL_MS, type ClaudePromptCacheTtl } from "../../shared/claudePromptCache";
+import { CLAUDE_PROMPT_CACHE_TTL_MS, claudePromptCacheSinceMs, type ClaudePromptCache, type ClaudePromptCacheTtl } from "../../shared/claudePromptCache";
 
 /** The 1-hour cache needs no countdown until it is nearly gone. */
 const LONG_CACHE_WARNING_MS = 10 * 60_000;
 /**
- * Claude times an entry from the start of the turn's last request, and
- * `idleSinceAt` is the turn's end, so the 1-hour cache is gone a little before
- * the hour: measured misses climb from 55 minutes idle.
+ * The 1-hour countdown ends a little before the hour: measured cache misses
+ * climb from 55 minutes idle, and a message started at 0:10 has to reach Claude
+ * before the entry is gone.
  */
 const LONG_CACHE_EARLY_END_MS = 5 * 60_000;
 
@@ -23,19 +23,21 @@ function countdownWindowMs(cacheTtl: ClaudePromptCacheTtl): { showAfterMs: numbe
 }
 
 /**
- * Where the chat's countdown stands. `remainingMs` is 0 once it is over or when
- * the cache lifetime is unknown; `showInMs` is how long the badge stays hidden
- * before its window opens (0 while it shows).
+ * Where the chat's countdown stands. `remainingMs` is 0 once it is over, while
+ * a turn runs, or when the chat's cache is unknown; `showInMs` is how long the
+ * badge stays hidden before its window opens (0 while it shows). Time counts
+ * from `cache.since`, else from the turn end (`idleSinceAt`).
  */
 export function claudeCacheCountdown(
   idleSinceAt: string | null | undefined,
-  cacheTtl: ClaudePromptCacheTtl | null | undefined,
+  cache: ClaudePromptCache | null | undefined,
   nowMs = Date.now(),
 ): { remainingMs: number; showInMs: number } {
   const idleSinceMs = parseTimestampMs(idleSinceAt);
-  if (idleSinceMs == null || !cacheTtl) return { remainingMs: 0, showInMs: 0 };
-  const elapsedMs = Math.max(0, nowMs - idleSinceMs);
-  const { showAfterMs, endMs } = countdownWindowMs(cacheTtl);
+  const sinceMs = claudePromptCacheSinceMs(cache, idleSinceMs);
+  if (idleSinceMs == null || sinceMs == null || !cache) return { remainingMs: 0, showInMs: 0 };
+  const elapsedMs = Math.max(0, nowMs - sinceMs);
+  const { showAfterMs, endMs } = countdownWindowMs(cache.ttl);
   return { remainingMs: Math.max(0, endMs - elapsedMs), showInMs: Math.max(0, showAfterMs - elapsedMs) };
 }
 
@@ -47,7 +49,7 @@ export function formatClaudeCacheTtl(remainingMs: number): string {
 }
 
 /**
- * Whether to mount the badge: an idle Claude chat with a known cache lifetime
+ * Whether to mount the badge: an idle Claude chat with a known prompt cache
  * whose countdown is not over. The badge itself stays hidden until its window
  * opens (`claudeCacheCountdown().showInMs`).
  */
@@ -55,12 +57,12 @@ export function shouldShowClaudeCacheTtl(args: {
   provider: string | null | undefined;
   status: string | null | undefined;
   idleSinceAt: string | null | undefined;
-  cacheTtl: ClaudePromptCacheTtl | null | undefined;
+  cache: ClaudePromptCache | null | undefined;
   awaitingInput?: boolean;
   nowMs?: number;
 }): boolean {
   if (args.provider !== "claude") return false;
   if (args.status !== "idle") return false;
   if (args.awaitingInput) return false;
-  return claudeCacheCountdown(args.idleSinceAt, args.cacheTtl, args.nowMs).remainingMs > 0;
+  return claudeCacheCountdown(args.idleSinceAt, args.cache, args.nowMs).remainingMs > 0;
 }

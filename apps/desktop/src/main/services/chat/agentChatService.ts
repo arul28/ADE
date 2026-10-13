@@ -1,5 +1,5 @@
 import { compactFirstMinTokensFromEnv, compactFirstOffer } from "../../../shared/compactFirst";
-import { claudePromptCacheTtlOfWrites, isClaudePromptCacheTtl, type ClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
+import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
@@ -2069,7 +2069,7 @@ type PersistedChatState = {
   requestedCwd?: string | null;
   attachmentRoots?: string[];
   idleSinceAt?: string | null;
-  promptCacheTtl?: ClaudePromptCacheTtl;
+  promptCache?: ClaudePromptCache;
   /** Non-interactive runtime mode (e.g. "print" for one-shot CLI output). Drives initialize handshake opt-outs. */
   runtimeMode?: AgentChatRuntimeMode;
   /** Recent terminal Codex turn ids, used to suppress late replayed lifecycle events. */
@@ -17708,7 +17708,7 @@ export function createAgentChatService(args: {
         : {}),
       ...attachmentRootsField(managed.session.attachmentRoots),
       ...(managed.session.idleSinceAt !== undefined ? { idleSinceAt: managed.session.idleSinceAt ?? null } : {}),
-      ...(managed.session.promptCacheTtl ? { promptCacheTtl: managed.session.promptCacheTtl } : {}),
+      ...(managed.session.promptCache ? { promptCache: managed.session.promptCache } : {}),
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
         : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
@@ -18291,7 +18291,7 @@ export function createAgentChatService(args: {
           : record.idleSinceAt === null
             ? { idleSinceAt: null }
             : {}),
-        ...(isClaudePromptCacheTtl(record.promptCacheTtl) ? { promptCacheTtl: record.promptCacheTtl } : {}),
+        ...(() => { const promptCache = normalizeClaudePromptCache(record.promptCache); return promptCache ? { promptCache } : {}; })(),
         ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
         ...(answeredPlanApprovalItemIds?.length ? { answeredPlanApprovalItemIds } : {}),
         ...(record.codexAutomaticRecoveryAttempted === true
@@ -19452,7 +19452,7 @@ export function createAgentChatService(args: {
     }
     managed.session.instanceId = to.id;
     // The prompt cache belongs to the login that wrote it; the new one starts cold.
-    managed.session.promptCacheTtl = null;
+    managed.session.promptCache = null;
     persistChatState(managed);
     emitTransientChatEnvelope(managed.session.id, { type: "session_meta_updated", instanceId: to.id });
     return { ok: true, from, to };
@@ -20742,9 +20742,13 @@ export function createAgentChatService(args: {
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") settleClaudeGoalOnTurnEnd(managed, event.status);
     if (event.type === "done" && managed.session.provider === "claude") {
-      // A turn that wrote no cache keeps the last lifetime seen: the entry it read is still on that timer.
-      const writtenTtl = claudePromptCacheTtlOfWrites(event.usage?.cacheCreationTokens, event.usage?.cacheWrite1hTokens);
-      if (writtenTtl) managed.session.promptCacheTtl = writtenTtl;
+      // A turn that wrote no cache but read it restarted the same lifetime:
+      // keep the lifetime and move its start to this turn's last request. A
+      // turn that touched no cache (it failed before a request) changes nothing.
+      const ttl = claudePromptCacheTtlOfWrites(event.usage?.cacheCreationTokens, event.usage?.cacheWrite1hTokens)
+        ?? ((event.usage?.cacheReadTokens ?? 0) > 0 ? managed.session.promptCache?.ttl : undefined);
+      const since = event.usage?.lastRequestStartedAt;
+      if (ttl) managed.session.promptCache = { ttl, ...(since ? { since } : {}) };
     }
     const normalizedEvent = (() => {
       switch (event.type) {
@@ -24871,7 +24875,7 @@ export function createAgentChatService(args: {
         ...(persisted?.importedFrom ? { importedFrom: persisted.importedFrom } : {}),
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
-        ...(persisted?.promptCacheTtl ? { promptCacheTtl: persisted.promptCacheTtl } : {}),
+        ...(persisted?.promptCache ? { promptCache: persisted.promptCache } : {}),
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
         ...(persisted?.continuityRecovery ? { continuityRecovery: persisted.continuityRecovery } : {}),
         ...(persisted?.recoveredFromSessionId ? { recoveredFromSessionId: persisted.recoveredFromSessionId } : {}),
@@ -52631,7 +52635,7 @@ export function createAgentChatService(args: {
       // Native resume_return owns its send; never combine it with ADE's pill.
       if (!collectPendingInputRequests(managed).length) {
         const history = (await getChatEventHistory(args.sessionId, { maxEvents: 512 })).events;
-        const offer = compactFirstOffer({ provider: "claude", events: history, cacheTtl: managed.session.promptCacheTtl, minTokens: compactFirstMinTokens, mode: compactionSettingsFor(managed).idleMode ?? "ask" });
+        const offer = compactFirstOffer({ provider: "claude", events: history, cache: managed.session.promptCache, minTokens: compactFirstMinTokens, mode: compactionSettingsFor(managed).idleMode ?? "ask" });
         if (offer) {
           const before = managed.compactionEmitterState.sessionCompactionCount;
           const result = await runSessionTurn({ sessionId: args.sessionId, text: "/compact", timeoutMs: 90_000 });
@@ -56802,7 +56806,7 @@ export function createAgentChatService(args: {
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
         ? liveSession?.idleSinceAt ?? persisted?.idleSinceAt ?? null
         : null,
-      promptCacheTtl: liveSession?.promptCacheTtl ?? persisted?.promptCacheTtl ?? null,
+      promptCache: liveSession?.promptCache ?? persisted?.promptCache ?? null,
       startedAt: row.startedAt,
       endedAt: row.endedAt,
       archivedAt: row.archivedAt ?? null,

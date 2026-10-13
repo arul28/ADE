@@ -232,6 +232,8 @@ struct WorkChatSummaryRenderContext: Equatable {
   let compactionIdleMode: String
   /// Idle time after which the chat's prompt cache is gone: the lifetime Claude wrote, or an hour when unknown.
   let compactFirstIdleSeconds: TimeInterval
+  /// When the cache lifetime started, when the host reported it; the turn end stands in otherwise.
+  let promptCacheSince: Date?
   let compactFirstMinTokens: Int
   let compactFirstSupported: Bool
   let manualCompactAvailable: Bool
@@ -279,6 +281,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     guard let summary else {
       self.compactionIdleMode = "ask"
       self.compactFirstIdleSeconds = 3600
+      self.promptCacheSince = nil
       self.compactFirstMinTokens = 100_000
       self.compactFirstSupported = false
       self.manualCompactAvailable = false
@@ -313,7 +316,8 @@ struct WorkChatSummaryRenderContext: Equatable {
     }
 
     self.compactionIdleMode = summary.compactionIdleMode ?? "ask"
-    self.compactFirstIdleSeconds = summary.promptCacheTtl == "5m" ? 300 : 3600
+    self.compactFirstIdleSeconds = summary.promptCache?.ttl == "5m" ? 300 : 3600
+    self.promptCacheSince = summary.promptCache?.since.flatMap(workParsedDate)
     self.compactFirstMinTokens = summary.compactFirstMinTokens ?? 100_000
     self.compactFirstSupported = summary.compactionIdleMode != nil
     self.manualCompactAvailable = summary.manualCompactAvailable == true
@@ -1513,7 +1517,7 @@ struct WorkChatSessionView: View {
             !workCompactSummaryHeader(summary).contains("state:failed") else { return nil }
       return tokens
     }.first
-    return WorkCompactFirstOffer(endedAt: ended, contextTokens: context, estimatedPostTokens: post ?? max(5_000, Int(Double(context) * 0.02)), mode: chatSummaryContext.compactionIdleMode, idleSeconds: chatSummaryContext.compactFirstIdleSeconds)
+    return WorkCompactFirstOffer(endedAt: chatSummaryContext.promptCacheSince ?? ended, contextTokens: context, estimatedPostTokens: post ?? max(5_000, Int(Double(context) * 0.02)), mode: chatSummaryContext.compactionIdleMode, idleSeconds: chatSummaryContext.compactFirstIdleSeconds)
   }
 
   /// The chat's goal for the composer chip: the transcript's live Claude goal

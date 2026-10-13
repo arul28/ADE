@@ -1,9 +1,14 @@
-import { CLAUDE_PROMPT_CACHE_TTL_MS, type ClaudePromptCacheTtl } from "./claudePromptCache";
+import { CLAUDE_PROMPT_CACHE_TTL_MS, claudePromptCacheSinceMs, type ClaudePromptCache } from "./claudePromptCache";
 import type { AgentChatEventEnvelope } from "./types/chat";
 
 /** How long the chat must sit idle before its prompt cache is gone; an hour when the lifetime is not known. */
-export function compactFirstIdleMs(cacheTtl: ClaudePromptCacheTtl | null | undefined): number {
-  return CLAUDE_PROMPT_CACHE_TTL_MS[cacheTtl ?? "1h"];
+export function compactFirstIdleMs(cache: ClaudePromptCache | null | undefined): number {
+  return CLAUDE_PROMPT_CACHE_TTL_MS[cache?.ttl ?? "1h"];
+}
+/** When the chat's prompt cache is gone, given when its last turn ended; null with no finished turn. */
+export function compactFirstEligibleAtMs(cache: ClaudePromptCache | null | undefined, turnEndedAtMs: number | null): number | null {
+  const sinceMs = claudePromptCacheSinceMs(cache, turnEndedAtMs);
+  return turnEndedAtMs == null || sinceMs == null ? null : sinceMs + compactFirstIdleMs(cache);
 }
 /**
  * A compacted chat never gets smaller than its fixed part (system prompt,
@@ -29,12 +34,12 @@ export function compactFirstMinTokensFromEnv(env: Record<string, string | undefi
 export type CompactFirstOffer = { contextTokens: number; estimatedPostTokens: number; eligibleAt: number; idleMs: number };
 
 /** Only measured occupancy is eligible; cumulative turn totals are never used. */
-export function compactFirstOffer({ provider, events, contextTokens, cacheTtl, minTokens, mode = "ask", now = Date.now() }: {
+export function compactFirstOffer({ provider, events, contextTokens, cache, minTokens, mode = "ask", now = Date.now() }: {
   provider: string;
   events: readonly AgentChatEventEnvelope[];
   contextTokens?: number | null;
-  /** The lifetime the chat's cache was last written with (`AgentChatSession.promptCacheTtl`). */
-  cacheTtl?: ClaudePromptCacheTtl | null;
+  /** The chat's prompt cache after its last turn (`AgentChatSession.promptCache`). */
+  cache?: ClaudePromptCache | null;
   /** Overrides `COMPACT_FIRST_MIN_TOKENS` (`AgentChatSessionSummary.compactFirstMinTokens`). */
   minTokens?: number | null;
   mode?: "ask" | "always" | "never";
@@ -57,8 +62,8 @@ export function compactFirstOffer({ provider, events, contextTokens, cacheTtl, m
     }
   }
   if (measured == null || !Number.isFinite(measured) || measured < (minTokens ?? COMPACT_FIRST_MIN_TOKENS) || endedAt == null || !Number.isFinite(endedAt)) return null;
-  const idleMs = compactFirstIdleMs(cacheTtl);
-  const eligibleAt = endedAt + idleMs;
+  const idleMs = compactFirstIdleMs(cache);
+  const eligibleAt = compactFirstEligibleAtMs(cache, endedAt) ?? endedAt + idleMs;
   if (now < eligibleAt) return null;
   return { contextTokens: measured, estimatedPostTokens: lastPost ?? estimateCompactedTokens(measured), eligibleAt, idleMs };
 }

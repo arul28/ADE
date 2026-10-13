@@ -674,7 +674,8 @@ Claude permission mode can be changed mid-session via the SDK
 `extractClaudeResultMetadata` adds `usage.cache_creation.ephemeral_1h_input_tokens`
 as `done.usage.cacheWrite1hTokens` (the one-hour-TTL share of
 `cacheCreationTokens`). At turn end the pair becomes the session's
-`promptCacheTtl` (`claudePromptCacheTtlOfWrites`), which times the cache
+`promptCache` (`claudePromptCacheTtlOfWrites`, with the last request's start
+time from the per-turn request tally), which times the cache
 countdown and the Compact first offer. The result's `modelUsage` map is keyed by the model that
 served each request. `done.servedModel` is set when that map names a different
 model than the session asked for: its only key, or, when subagents or side calls

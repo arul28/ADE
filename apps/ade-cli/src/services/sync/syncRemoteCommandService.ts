@@ -1683,7 +1683,7 @@ async function summarizeChatSessionForRemote(
     status: session.status,
     currentTurnStartedAt: session.currentTurnStartedAt ?? null,
     idleSinceAt: session.idleSinceAt ?? null,
-    ...(session.promptCacheTtl ? { promptCacheTtl: session.promptCacheTtl } : {}),
+    ...(session.promptCache ? { promptCache: session.promptCache } : {}),
     startedAt: session.createdAt,
     endedAt: null,
     lastActivityAt: session.lastActivityAt,
@@ -2220,7 +2220,7 @@ function projectChatOntoSession(
     currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
-    ...(chat.promptCacheTtl ? { chatPromptCacheTtl: chat.promptCacheTtl } : {}),
+    ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),
   };
   if (chat.awaitingInput) {
     return {

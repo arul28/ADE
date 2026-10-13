@@ -273,7 +273,7 @@ export function CliSessionWorkSurfaceHeader({
         provider: cacheProvider,
         status: cacheGate.status,
         idleSinceAt: session.chatIdleSinceAt,
-        cacheTtl: session.chatPromptCacheTtl,
+        cache: session.chatPromptCache,
         awaitingInput: cacheGate.awaitingInput,
       })
     : false;
@@ -292,7 +292,7 @@ export function CliSessionWorkSurfaceHeader({
       }
       showCacheBadge={showCache}
       cacheIdleSinceAt={session.chatIdleSinceAt}
-      cacheTtl={session.chatPromptCacheTtl}
+      promptCache={session.chatPromptCache}
       showGitToolbar
       prSessionId={session.id}
       onTogglePrPane={onTogglePrPane}
