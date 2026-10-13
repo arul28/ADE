@@ -1,8 +1,7 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { exitIfCachedHelper } from "./native-helper-cache.mjs";
+import { buildUniversalSwiftProduct, exitIfCachedHelper } from "./native-helper-cache.mjs";
 
 /**
  * Build the macOS Apple Music host (`resources/native/ade-music-host/`).
@@ -40,47 +39,14 @@ fs.cpSync(pageSource, path.join(outputDir, "page"), { recursive: true });
 
 exitIfCachedHelper(outputPath);
 
-const requestedArchs = String(process.env.ADE_MUSIC_HOST_ARCHS || "arm64,x86_64")
-  .split(",")
-  .map((value) => value.trim())
-  .filter((value) => value === "arm64" || value === "x86_64");
-
-if (requestedArchs.length === 0) {
-  throw new Error("ADE_MUSIC_HOST_ARCHS must include arm64 and/or x86_64");
-}
-
-const builtBinaries = [];
-for (const arch of requestedArchs) {
-  const baseArgs = [
-    "build",
-    "--package-path", packageRoot,
-    "--scratch-path", path.join(packageRoot, `.build-${arch}`),
-    "--configuration", "release",
-    "--triple", `${arch}-apple-macosx13.0`,
-    "--product", "ade-music-host",
-  ];
-  console.log(`[music-host-mac] Building ${arch} host.`);
-  execFileSync("swift", baseArgs, { stdio: "inherit" });
-  const binPath = execFileSync("swift", [...baseArgs, "--show-bin-path"], { encoding: "utf8" }).trim();
-  const binaryPath = path.join(binPath, "ade-music-host");
-  if (!fs.existsSync(binaryPath)) throw new Error(`Swift build did not produce ${binaryPath}`);
-  builtBinaries.push(binaryPath);
-}
-
-// Write to a scratch name and rename into place: a half-copied binary at the
-// final path is one electron-builder would happily ship.
-const temporaryOutput = path.join(outputDir, `.ade-music-host.${process.pid}.${Date.now()}`);
-try {
-  if (builtBinaries.length === 1) {
-    fs.copyFileSync(builtBinaries[0], temporaryOutput);
-  } else {
-    execFileSync("lipo", ["-create", ...builtBinaries, "-output", temporaryOutput], { stdio: "inherit" });
-  }
-  fs.chmodSync(temporaryOutput, 0o755);
-  fs.renameSync(temporaryOutput, outputPath);
-} finally {
-  fs.rmSync(temporaryOutput, { force: true });
-}
-
-const architectures = execFileSync("lipo", ["-archs", outputPath], { encoding: "utf8" }).trim();
-console.log(`[music-host-mac] Materialized ${path.relative(desktopRoot, outputDir)} (${architectures}).`);
+// macOS 12, ADE's own minimum: the host must launch there to say that Apple
+// Music needs macOS 14 (it reports `unsupported_os`). Keep this in step with
+// `platforms:` in native/ADEMusicHostMac/Package.swift.
+buildUniversalSwiftProduct({
+  packageRoot,
+  product: "ade-music-host",
+  outputPath,
+  archsEnv: "ADE_MUSIC_HOST_ARCHS",
+  tag: "music-host-mac",
+  macosVersion: "12.0",
+});
