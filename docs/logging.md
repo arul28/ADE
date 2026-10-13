@@ -605,6 +605,18 @@ data, model ids, credential ids, labels, paths, URLs, and account-setting
 contents never enter the event. Account-settings list/sync reads and launch
 resolution are not analytics.
 
+Muse Code joins the same closed provider taxonomy. Its chats and daily-usage
+summaries report the coarse `provider` and `model_family` value `muse`, added to
+both allowlists so the provider- and model-family-adoption breakdowns separate
+Muse from `other` with no new event name and no raised ceiling. Muse's own
+account connection is untracked, like the credential reads and readiness probes
+above, because Muse keeps its credential in its own config file rather than the
+multi-credential store. Its Settings mutations — plugin install, marketplace
+add/update/remove, skill activation and import, computer-use settings, and
+feedback — are device-local configuration: the plugin, marketplace and skill
+names and the free-text feedback note are user content that cannot cross the
+analytics boundary, so none of them sends an event.
+
 Proxy sign-in, start, and stop are captured by the durable service in
 `apps/ade-cli/src/services/proxy/proxyService.ts`. A transition to running
 emits `proxy/start` with `outcome: "completed"`; a successful stop emits

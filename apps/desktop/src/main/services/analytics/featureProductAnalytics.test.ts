@@ -104,7 +104,8 @@ describe("captureNewLaneLaunchAnalytics", () => {
   it("records one coarse outcome per new-lane launch, deduped per outcome and provider family", () => {
     const { analytics, captured } = recorder();
     captureNewLaneLaunchAnalytics({ analytics, surface: "api", outcome: "cancelled", provider: "codex" });
-    expect(captured).toHaveLength(1);
+    captureNewLaneLaunchAnalytics({ analytics, surface: "api", outcome: "completed", provider: "muse" });
+    expect(captured).toHaveLength(2);
     expect(captured[0]).toMatchObject({
       event: "ade_feature_used",
       surface: "api",
@@ -114,6 +115,16 @@ describe("captureNewLaneLaunchAnalytics", () => {
     // The allowlist keeps every value: nothing is silently dropped at the boundary.
     const sanitized = sanitizeProductAnalyticsProperties("ade_feature_used", (captured[0] as { properties: Record<string, unknown> }).properties as never);
     expect(sanitized).toMatchObject({ feature: "chat", action: "new_lane_launch", outcome: "cancelled", provider: "codex" });
+    // Muse is a closed provider family of its own, not folded into "other".
+    const museProperties = (captured[1] as { properties: Record<string, unknown> }).properties;
+    expect(captured[1]).toMatchObject({
+      dedupeKey: "feature:chat:new_lane_launch:completed:muse",
+      properties: { feature: "chat", action: "new_lane_launch", outcome: "completed", provider: "muse" },
+    });
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", museProperties as never)).toEqual(museProperties);
+    // The daily-usage summary carries the same family through its own allowlist.
+    expect(sanitizeProductAnalyticsProperties("ade_daily_usage_summary", { summary_kind: "model", model_family: "muse" } as never))
+      .toEqual({ summary_kind: "model", model_family: "muse" });
   });
 });
 
