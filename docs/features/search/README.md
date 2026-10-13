@@ -85,7 +85,14 @@ ADE action domain + RPC scoping:
   most 200 hits to one aggregate query; `resultsTruncated` makes that ceiling
   explicit so callers can narrow the query instead of mistaking the bounded
   window for an exhaustive result set. Personal chats are outside the project
-  registry and are not queried.
+  registry and are not queried. Only the active project and projects whose
+  runtime is already loaded answer through their search service; every other
+  project is read from its index file (see "Machine search policy").
+- `apps/desktop/src/main/services/search/searchIndexQuery.ts` — the read side
+  of the index: the one FTS candidate query (`queryFtsCandidates`), shared by
+  the live service and by `querySearchIndexReadOnly`, which answers for a
+  project from its index file alone. `searchIndexDb.ts#openSearchIndexDbReadOnly`
+  opens that file read-only and never creates, migrates or deletes it.
 - `apps/ade-cli/src/bootstrap.ts` — constructs the runtime's search service
   via `createProjectSearchService`, wires `notifyTerminalData` into
   `broadcastData`, `notifyLaneActivity` into `onLifecycleEvent`, and
@@ -252,6 +259,28 @@ queries the active project normally and queries every other registered project
 for chat hits only. Results carry `projectId`, `projectName`, and `projectRoot`;
 personal/no-project chats are excluded. PR/commit/branch/lane/file/terminal and
 other non-chat kinds remain active-project results. `rebuildIndex` is CTO-only.
+
+**A search never loads a project.** The router asks the active project, and any
+project whose runtime is already loaded, through its search service. Every
+other registered project is answered by `querySearchIndexReadOnly`, a read-only
+query of that project's `.ade/cache/search-index.db`. The router hands the
+event loop a turn between projects.
+
+- A project with no index file, or an index of another schema version, counts
+  as searched with no hits. Its own runtime builds or rebuilds the index the
+  next time it loads.
+- A project whose root folder no longer exists is listed in
+  `projectsUnavailable`.
+- An index read from disk is as fresh as the last time that project's runtime
+  ran; a project that is not loaded has no chats being written.
+
+Before this, the router loaded every registered project (database, services,
+watchers) to ask each one's search service. On a machine with 37 registered
+projects one `ade search` blocked the brain's event loop past the 30 s watchdog
+and the brain was restarted (2026-10-13). `chat.readTranscript` had the same
+shape: `resolveProjectBackedChatOwner` loaded projects in turn to find a chat's
+owner. It now asks unloaded projects from their database on disk
+(`rosterBuilder.ts#readSessionToolTypeFromDisk`) and loads only the owner.
 
 ### Dual-host known limitation
 

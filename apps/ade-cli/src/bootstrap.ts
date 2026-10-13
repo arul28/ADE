@@ -2032,6 +2032,7 @@ export async function createAdeRuntime(args: {
           emitEvent: (payload) => pushEvent("runtime", payload),
           logger,
           resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
+          receivedFilesDir: path.join(paths.cacheDir, "browser-observations", "remote"),
         }),
         userBrowserAttachService: createUserBrowserAttachService({
           projectRoot,

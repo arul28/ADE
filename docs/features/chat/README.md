@@ -514,15 +514,32 @@ shows it anyway, and that pulls two contracts into the main process.
   first, stranding it on its warming rect with its pixel showing — and the
   surfaced mark is dropped whenever the view leaves the window, so the next
   park re-warms rather than trusting a surface that may have been released.
-- **A parked view keeps its size when it can** (`parkedPreviewSize`). A tab on
-  the agent viewport parks at that 1280×800 viewport. A tab with a device
+- **A parked view keeps its size when it can** (`parkedPreviewSize`). A tab
+  that is being recorded is on the fixed 1280×800 viewport and parks at that
+  size. A tab with a device
   preset parks at the device's drawn size (preset size × the applied fit
   scale): the device is drawn pinned to the view's top-left corner, so any
   larger box frames it with blank space that every preview frame would carry.
-  Otherwise the park reuses the tab's last panel rect as-is, because resizing
-  on the way out and again on the way back would fire real `resize` events
-  inside the page; the 960×600 minimum applies only when that rect is below the
-  usable size (a sliver of a pane) or the panel never showed the tab.
+  Otherwise the park reuses the tab's last panel rect as-is, however narrow,
+  because resizing on the way out and again on the way back would fire real
+  `resize` events inside the page; the 960×600 size applies only when the panel
+  never showed the tab. Until 2026-10-13 a pane under 640×400 parked at
+  960×600 to spare agents a strip, and its page was resized each time the pane
+  closed under a working agent and each time it opened again. The page now
+  stays the person's size, and the agent is told instead: an observation of a
+  page narrower than `BUILT_IN_BROWSER_NARROW_PAGE_WIDTH` (640), whose width
+  is the pane's, carries `narrowPageHint` — why a site may be in its mobile
+  layout, and the `ade browser emulate --width 1280 --height 800` / `--off`
+  commands for a desktop one. No hint under a device preset or a recording,
+  whose width is somebody's explicit choice.
+- **The remembered rect is where the pane stopped** (`notePanelRect`). The
+  pane reports every frame of its own open, close and drag, so recording each
+  rect kept whichever came last: a closing pane left a 57 px sliver as "the
+  size the person chose", and the tab was parked at it. A rect becomes
+  `lastPanelRect` only after the tab has stayed on screen at that size for
+  300 ms; a pane that hides or keeps moving first leaves the previous settled
+  size standing. A tab the pane has not yet settled on has none, and parks at
+  960×600.
 - **A size change off screen needs a warm.** Chromium does not re-lay out a
   view whose bounds lie wholly off the window, so a park at a different size
   than the view was last laid out at would keep the old layout (a page laid out

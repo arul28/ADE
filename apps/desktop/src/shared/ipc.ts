@@ -680,6 +680,7 @@ export const IPC = {
    * because the panels that would race for it live in different windows.
    */
   builtInBrowserClaimRemoteRequest: "ade.builtInBrowser.claimRemoteRequest",
+  builtInBrowserRunRemoteAgentCall: "ade.builtInBrowser.runRemoteAgentCall",
   builtInBrowserSetDevTools: "ade.builtInBrowser.setDevTools",
   builtInBrowserSetNetworkLogging: "ade.builtInBrowser.setNetworkLogging",
   builtInBrowserGetNetworkLog: "ade.builtInBrowser.getNetworkLog",

@@ -208,6 +208,37 @@ function hasColumn(db: DatabaseSyncType, tableName: string, columnName: string):
     .some((row) => row.name === columnName);
 }
 
+/**
+ * The tool type of one session, read from a project's database on disk, or
+ * null when the project has no such session (or no readable database).
+ *
+ * For asking "does this project own that chat" of a project whose runtime is
+ * not loaded. Loading the runtime to ask is what made one transcript read of
+ * an unknown chat id load every registered project in turn.
+ */
+export function readSessionToolTypeFromDisk(projectRoot: string, sessionId: string): string | null {
+  const dbPath = resolveAdeLayout(projectRoot).dbPath;
+  if (!fs.existsSync(dbPath)) return null;
+  let db: DatabaseSyncType | null = null;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    db.exec("PRAGMA busy_timeout = 250");
+    if (!hasTable(db, "terminal_sessions")) return null;
+    const row = db
+      .prepare("select tool_type from terminal_sessions where id = ? limit 1")
+      .get<{ tool_type?: string | null }>(sessionId);
+    return typeof row?.tool_type === "string" ? row.tool_type : null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore
+    }
+  }
+}
+
 function truncatePreview(text: string | null | undefined): string | null {
   if (typeof text !== "string") return null;
   const trimmed = text.trim();

@@ -36,7 +36,11 @@ import {
   type LocalizedRemoteUrl,
 } from "../shared/remoteLoopbackUrl";
 import {
+  BUILT_IN_BROWSER_REMOTE_CALL_EVENT,
   BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
+  type BuiltInBrowserRemoteCall,
+  type BuiltInBrowserRemoteCallFile,
+  type BuiltInBrowserRemoteCallReply,
   type BuiltInBrowserRemoteRequest,
   type BuiltInBrowserRemoteRequestAck,
 } from "../shared/types/builtInBrowserRemote";
@@ -2948,6 +2952,12 @@ const remoteBuiltInBrowserRemoteRequestFanout =
     label: "built-in browser request",
     onSubscribe: () => ensureRemoteRuntimeEventPump(),
   });
+const remoteBuiltInBrowserRemoteCallFanout =
+  createRemoteRuntimeFanout<BuiltInBrowserRemoteCall>({
+    eventType: BUILT_IN_BROWSER_REMOTE_CALL_EVENT,
+    label: "built-in browser command",
+    onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  });
 const remoteDevServerEventFanout = createRemoteRuntimeFanout<DevServerEvent>({
   eventType: DEV_SERVER_EVENT,
   label: "dev server",
@@ -4156,6 +4166,29 @@ function subscribeBuiltInBrowserRemoteRequests(
     was published and never heard by the one desktop that could satisfy it.
   */
   return subscribeRemoteBuiltInBrowserRemoteRequests(cb);
+}
+
+/**
+ * Browser commands of an agent on the pinned machine, for this desktop to run
+ * in its own browser (`built_in_browser_remote_call`). Same two sources as the
+ * open requests above: the pinned stream, or the window's own remote runtime.
+ */
+function subscribeBuiltInBrowserRemoteCalls(
+  cb: (payload: BuiltInBrowserRemoteCall) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  if (pin?.kind !== "remote") return () => {};
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<BuiltInBrowserRemoteCall>(
+      payload,
+      BUILT_IN_BROWSER_REMOTE_CALL_EVENT,
+    ),
+    cb,
+    "built-in browser remote call",
+  );
+  if (removePinned) return removePinned;
+  return remoteBuiltInBrowserRemoteCallFanout.subscribe(cb);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -10194,6 +10227,35 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.builtInBrowserFocusHost),
     claimRemoteRequest: async (args: { requestId: string }): Promise<{ claimed: boolean }> =>
       ipcRenderer.invoke(IPC.builtInBrowserClaimRemoteRequest, args),
+    /**
+     * Run a browser command an agent on another machine sent to this desktop.
+     * Never pin-routed: the browser it runs in is this desktop's own. The
+     * answer goes back with `replyRemoteCall`, which IS pin-routed.
+     */
+    runRemoteAgentCall: async (
+      args: { method: string; input: Record<string, unknown> },
+    ): Promise<{ result: unknown; files: BuiltInBrowserRemoteCallFile[]; machineName: string }> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserRunRemoteAgentCall, args),
+      ),
+    /**
+     * Tell the machine whose agent sent a browser command that this desktop
+     * took it, and later how it went. Routed to the PINNED runtime: the daemon
+     * waiting on the reply is the one that emitted the command.
+     */
+    replyRemoteCall: async (
+      args: BuiltInBrowserRemoteCallReply,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: boolean }> =>
+      pin
+        ? callPinnedRuntimeAction<{ ok: boolean }>(
+            pin,
+            "built_in_browser",
+            "replyRemoteCall",
+            { args },
+          )
+        : { ok: false },
     setDevTools: async (
       args: BuiltInBrowserSetDevToolsArgs,
       _pin?: OpenProjectBinding | null,
@@ -10270,6 +10332,7 @@ const adeBridge = {
     },
     onEvent: subscribeBuiltInBrowserEvents,
     onRemoteRequest: subscribeBuiltInBrowserRemoteRequests,
+    onRemoteCall: subscribeBuiltInBrowserRemoteCalls,
   },
   terminal: {
     list: async (

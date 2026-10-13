@@ -112,6 +112,13 @@ export type BuiltInBrowserDesktopBridgeMethod =
 export const BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD = "acknowledgeRemoteRequest";
 
 /**
+ * How a desktop elsewhere answers a command this machine sent it
+ * (`built_in_browser_remote_call`): once when it takes the command, once with
+ * the outcome. Runtime-served for the same reason as `acknowledgeRemoteRequest`.
+ */
+export const BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD = "replyRemoteCall";
+
+/**
  * Runtime-served methods for the user's own browser (`ade browser attach` /
  * `detach`). Like `acknowledgeRemoteRequest`, they never reach the desktop
  * bridge: the runtime reaches the user's browser directly, so they work on a
@@ -142,6 +149,7 @@ export type BuiltInBrowserDesktopBridgeClient = {
   acknowledgeRemoteRequest: (
     input: BuiltInBrowserAcknowledgeRemoteRequestArgs,
   ) => { ok: boolean };
+  replyRemoteCall: (input: unknown) => { ok: boolean };
   dispose: () => void;
 };
 

@@ -1,12 +1,12 @@
 /**
- * The fixed desktop layout for tabs an agent drives or records.
+ * The fixed desktop layout for tabs being recorded.
  *
- * An agent-owned or recording tab lays its page out at
- * `BUILT_IN_BROWSER_AGENT_VIEWPORT` (1280×800) with the same CDP override a
- * device preset uses, scaled to fit the view's box, so a narrow pane no longer
- * lays the page out as a thin strip and a recording is a desktop page.
- * Person-driven tabs, presets, DevTools and handoffs keep laying out at their
- * box.
+ * A recording tab lays its page out at `BUILT_IN_BROWSER_AGENT_VIEWPORT`
+ * (1280×800) with the same CDP override a device preset uses, scaled to fit
+ * the view's box, so a recording is a desktop page rather than whatever strip
+ * the pane happened to be. Every other tab — agent-owned ones included — lays
+ * out at its box: pinning a tab when an agent claimed it resized the page the
+ * person was looking at on every claim, release and lease expiry.
  */
 
 import type { WebContents } from "electron";
@@ -18,26 +18,53 @@ import type { BrowserDebuggerHoldOwner, BrowserTabState } from "./builtInBrowser
 
 /**
  * Whether the tab is laid out at `BUILT_IN_BROWSER_AGENT_VIEWPORT` rather than
- * at its box: an agent owns it, or it is being recorded.
+ * at its box: it is being recorded.
  *
- * A device preset is an explicit ask and wins. DevTools needs the debugger the
- * override holds, and a handoff hands the tab to a person, who gets the page at
- * the size of the pane they are typing into — person-driven tabs keep laying
- * out at their box, as they always have.
+ * Ownership alone does not pin it. An agent works fine at the pane's size, and
+ * its screenshots then match what the person sees. A device preset is an
+ * explicit ask and wins; DevTools needs the debugger the override holds; and a
+ * handoff hands the tab to a person, who gets the page at their pane's size.
  */
 export function tabUsesAgentViewport(
-  tab: Pick<BrowserTabState, "emulation" | "devToolsMode" | "handoff" | "ownerChatSessionId" | "recording">,
+  tab: Pick<BrowserTabState, "emulation" | "devToolsMode" | "handoff" | "recording">,
 ): boolean {
   if (tab.emulation || tab.devToolsMode !== null || tab.handoff) return false;
-  return Boolean(tab.ownerChatSessionId) || Boolean(tab.recording);
+  return Boolean(tab.recording);
+}
+
+/**
+ * Where a tab on the fixed viewport sits inside the box its pane reported:
+ * the viewport's shape, shrunk to fit, centred.
+ *
+ * The pane letterboxes the box itself once it knows the tab is on the fixed
+ * viewport, and then this is the box unchanged. It is recomputed here because
+ * main is what applies the override: a pane that had not yet heard (or missed
+ * a resize) left the view at the whole pane with the 1280×800 page drawn in
+ * its top-left corner.
+ */
+export function agentViewportViewRect<T extends { x: number; y: number; width: number; height: number }>(box: T): T {
+  const { width: viewportWidth, height: viewportHeight } = BUILT_IN_BROWSER_AGENT_VIEWPORT;
+  if (!(box.width > 0) || !(box.height > 0)) return box;
+  const scale = Math.min(1, box.width / viewportWidth, box.height / viewportHeight);
+  const width = Math.min(box.width, Math.round(viewportWidth * scale));
+  const height = Math.min(box.height, Math.round(viewportHeight * scale));
+  // Already the viewport's shape (the pane's own letterbox, give or take its
+  // rounding): keep it exactly, so the view stays on the DOM frame under it.
+  if (box.width - width <= 1 && box.height - height <= 1) return box;
+  return {
+    ...box,
+    x: box.x + Math.floor((box.width - width) / 2),
+    y: box.y + Math.floor((box.height - height) / 2),
+    width,
+    height,
+  };
 }
 
 export type BuiltInBrowserAgentViewport = ReturnType<typeof createBuiltInBrowserAgentViewport>;
 
 export function createBuiltInBrowserAgentViewport(deps: {
   tabs: () => Iterable<BrowserTabState>;
-  isParked: (tabId: string) => boolean;
-  /** Re-places every view; a parked tab's box depends on whether it wants the viewport. */
+  /** Re-places every view; a tab's box depends on whether it wants the viewport. */
   reattachViews: () => void;
   acquireDebuggerHold: (tab: BrowserTabState, owner: BrowserDebuggerHoldOwner) => Promise<void>;
   releaseDebuggerHold: (tab: BrowserTabState, owner: BrowserDebuggerHoldOwner) => void;
@@ -176,25 +203,25 @@ export function createBuiltInBrowserAgentViewport(deps: {
   };
 
   /**
-   * Every tab against its owner and recording state, from `emitStatus` — the
-   * one place every claim, release, recording edge, handoff and DevTools
-   * toggle passes through. Costs nothing but a comparison when nothing moved.
-   * A parked tab whose want flipped is re-parked, because its park box is the
-   * viewport's size only while it wants the viewport.
+   * Every tab against its recording state, from `emitStatus` — the one place
+   * every recording edge, handoff and DevTools toggle passes through. Costs
+   * nothing but a comparison when nothing moved. A tab whose want flipped is
+   * placed again: parked, its box is the viewport's size only while it wants
+   * the viewport; on screen, its view is letterboxed only while it does.
    */
   const reconcileAgentViewports = (): void => {
-    let repark = false;
+    let replace = false;
     for (const tab of deps.tabs()) {
       if (tab.webContents.isDestroyed()) continue;
       const state = agentViewportState(tab);
       const wanted = tabUsesAgentViewport(tab);
       if (wanted !== state.wanted) {
         state.wanted = wanted;
-        if (deps.isParked(tab.id)) repark = true;
+        replace = true;
       }
       syncAgentViewport(tab);
     }
-    if (repark) deps.reattachViews();
+    if (replace) deps.reattachViews();
   };
 
   /**

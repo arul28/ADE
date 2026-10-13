@@ -3236,6 +3236,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --panel, --show-panel
                          Reveal the Work sidebar Browser panel for this command.
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
+    --here               Use the browser on the machine this agent runs on. Without
+                         it, when the user drives this chat from another computer,
+                         browser commands run in the ADE browser on that computer,
+                         where the user can see them. Use --here to test a page
+                         on this machine, to record, or to upload a local file.
     --isolated           open/new-tab: use a throwaway sign-in, not the user's.
     --profile <name>     open/new-tab: the isolated sign-in to use; implies --isolated.
     --tab, --tab-id <id> Target tab for switch/close/open/control/capture/claim.
@@ -8923,6 +8928,17 @@ function buildSearchPlan(args: string[]): CliPlan {
   if (!query || !query.trim()) {
     throw new CliUsageError(
       'search requires a query, e.g. ade search "login redirect" --text (or --status / --rebuild).',
+    );
+  }
+  // An option this command does not know is refused, never dropped. A
+  // `--socket <path>` written after the command was read as nothing, and the
+  // search went to the default brain instead of the one the caller named.
+  const unknownOption = args.find((arg) => arg.startsWith("-") && arg !== "--");
+  if (unknownOption) {
+    throw new CliUsageError(
+      unknownOption === "--socket" || unknownOption.startsWith("--socket=")
+        ? '--socket is a global option and goes before the command: ade --socket <path> search "<query>".'
+        : `Unknown search option: ${unknownOption}. Run 'ade help search' for the options it takes.`,
     );
   }
 
@@ -15216,10 +15232,41 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
  * flag (or its own name demanded a value) long before the fallback was reached.
  */
 function buildBrowserPlan(args: string[]): CliPlan {
-  return buildBrowserPlanWithLiteralTail(
-    args,
-    takeArgsAfterTerminator(args, BROWSER_VALUE_CARRIER_FLAGS) ?? [],
-  );
+  // The tail first: a `--here` after `--` is text to type, not this flag.
+  const literalTail = takeArgsAfterTerminator(args, BROWSER_VALUE_CARRIER_FLAGS) ?? [];
+  const here = readFlag(args, ["--here"]);
+  const plan = buildBrowserPlanWithLiteralTail(args, literalTail);
+  return here ? withBrowserOnThisMachine(plan) : plan;
+}
+
+/**
+ * `--here`: run the plan's browser commands in the browser on the machine the
+ * agent runs on. Without it, a chat whose user sits at another desktop has
+ * its commands sent to the browser on that desktop (`remoteBrowserForwarder`).
+ */
+function withBrowserOnThisMachine(plan: CliPlan): CliPlan {
+  if (plan.kind !== "execute") return plan;
+  const mark = (params: JsonObject): JsonObject => {
+    const call = isRecord(params.arguments) ? params.arguments : null;
+    if (params.name !== "run_ade_action" || !call || call.domain !== "built_in_browser") return params;
+    return {
+      ...params,
+      arguments: { ...call, args: { ...(isRecord(call.args) ? call.args : {}), here: true } },
+    };
+  };
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => {
+      const params = step.params;
+      if (params === undefined) return step;
+      return {
+        ...step,
+        params: typeof params === "function"
+          ? (values: JsonObject) => mark(params(values))
+          : mark(params),
+      };
+    }),
+  };
 }
 
 function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]): CliPlan {
@@ -30592,6 +30639,10 @@ function formatBrowserObservation(value: unknown): string {
     ["scratch deleted", cleanup?.deletedCount],
   ]);
   const sections = [header];
+  // A full sentence with two commands in it: its own line, where a key/value
+  // row would cut it short.
+  const narrowPageHint = asString(observation.narrowPageHint);
+  if (narrowPageHint) sections.push("", `note: ${narrowPageHint}`);
   if (elements.length) sections.push("", domElementTable(elements));
   if (consoleDiagnostics.length) {
     sections.push(
@@ -33509,10 +33560,10 @@ function formatOutput(
 ): string {
   if (options.text) {
     if (isMachineFanOutResult(value)) return `${formatMachineFanOut(value)}\n`;
-    const targetLine = userBrowserTargetLine(value);
+    const targetLine = userBrowserTargetLine(value) || builtInBrowserHostLine(value);
     // Said once, on the first line; not again as a row of the result.
     const shown = targetLine && isRecord(value)
-      ? (({ userBrowserTarget: _target, ...rest }) => rest)(value)
+      ? (({ userBrowserTarget: _target, browserHost: _host, ...rest }) => rest)(value)
       : value;
     return `${targetLine}${formatTextOutput(shown, formatter)}\n`;
   }
@@ -33528,6 +33579,24 @@ function userBrowserTargetLine(value: unknown): string {
   if (!isRecord(value) || value.attached === true) return "";
   const target = asString(value.userBrowserTarget);
   return target ? `${USER_BROWSER_TARGET_PREFIX} ${target}\n` : "";
+}
+
+/**
+ * Which machine's ADE browser a command ran in, when that is not simply "the
+ * one beside the agent" (`BuiltInBrowserHostNote`). Printed first, so an agent
+ * whose user sits at another computer knows where its tab is and can say so.
+ */
+function builtInBrowserHostLine(value: unknown): string {
+  const host = isRecord(value) && isRecord(value.browserHost) ? value.browserHost : null;
+  if (!host) return "";
+  const machine = asString(host.machine) ?? "another computer";
+  if (host.userComputer === true) {
+    return `browser: on ${machine}, the computer the user sits at. They see this tab and it uses their sign-ins.\n`;
+  }
+  if (host.userElsewhere === true) {
+    return "browser: on this machine. The user drives this chat from another computer, which did not take the command, so they cannot see this browser and it has none of their tabs.\n";
+  }
+  return "";
 }
 
 function appendOutputSuffix(output: string, suffix: string): string {

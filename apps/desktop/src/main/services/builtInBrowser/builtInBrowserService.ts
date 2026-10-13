@@ -107,8 +107,7 @@ import {
   BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
-  BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_HEIGHT,
-  BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_WIDTH,
+  BUILT_IN_BROWSER_NARROW_PAGE_WIDTH,
   BUILT_IN_BROWSER_PARKED_PREVIEW_REPARK_DEBOUNCE_MS,
   BUILT_IN_BROWSER_PREVIEW_WARM_MS,
   BUILT_IN_BROWSER_VIEW_CORNER_RADIUS,
@@ -165,7 +164,11 @@ import {
   errorMessage,
   normalizeDimension,
 } from "./builtInBrowserConstants";
-import { createBuiltInBrowserAgentViewport, tabUsesAgentViewport } from "./builtInBrowserAgentViewport";
+import {
+  agentViewportViewRect,
+  createBuiltInBrowserAgentViewport,
+  tabUsesAgentViewport,
+} from "./builtInBrowserAgentViewport";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
 import {
   builtInBrowserRecordingKey,
@@ -435,7 +438,9 @@ export type BrowserTabState = {
    */
   findWaiters: Set<(requestId: number) => void>;
   /**
-   * The last non-empty rect this tab was actually shown at in the panel.
+   * The last non-empty rect this tab was shown at in the panel AND the panel
+   * stopped at (`notePanelRect`): never a frame of the pane opening, closing
+   * or being dragged.
    *
    * Parking a previewed tab has to give it a size, and the panel's live bounds
    * are already zero by then (`hideBuiltInBrowserView` sends `0×0` on the way
@@ -455,7 +460,7 @@ export type BrowserTabState = {
  * `network` is the opt-in request log; `emulation` is a device override, which
  * Chromium drops the instant the DevTools session that set it detaches — which
  * is exactly why device presets used to change the label and nothing else.
- * `agent-viewport` is the same override, held for an agent-owned or recording
+ * `agent-viewport` is the same override, held for a recording
  * tab (see `BUILT_IN_BROWSER_AGENT_VIEWPORT`); it steps aside for a preset and
  * for DevTools rather than blocking either.
  */
@@ -3579,10 +3584,9 @@ function createBuiltInBrowserWindowService(args: {
    * Window-relative placement is `parkedPreviewRect`'s job; this is only the box.
    */
   const parkedPreviewSize = (tab: BrowserTabState): { width: number; height: number } => {
-    // A tab on the agent viewport is laid out at that size whatever its box,
-    // so its park box IS that size: scale 1, and every preview frame and
-    // recording taken while nobody watches it is the full page, not a
-    // shrunk copy of whatever pane last showed it.
+    // A recording tab is laid out at the agent viewport whatever its box, so
+    // its park box IS that size: scale 1, and every frame recorded while
+    // nobody watches it is the full page, not a shrunk copy of the pane.
     if (tabUsesAgentViewport(tab)) {
       return { width: BUILT_IN_BROWSER_AGENT_VIEWPORT.width, height: BUILT_IN_BROWSER_AGENT_VIEWPORT.height };
     }
@@ -3596,27 +3600,39 @@ function createBuiltInBrowserWindowService(args: {
         height: Math.max(1, Math.round(tab.emulation.height * scale)),
       };
     }
-    // A pane squeezed to a sliver is not a page size worth keeping: a tab
-    // parked at 167 px wide laid the page out as a strip, and every
-    // screenshot, recording and preview an agent took of it came out as one.
-    // Below the usable size the floor wins, and the one resize is the price.
+    // The size the person gave it. A tab the pane has shown is parked at
+    // exactly the pane's last rect, however narrow, so parking never resizes
+    // the page: not on the way out, not on the way back. A narrow pane used
+    // to park at the floor below instead, to spare agents a strip, and the
+    // price was a real `resize` in the page each time the pane closed and
+    // opened. An agent that needs a desktop layout now asks for one
+    // (`narrowPageHint` on its observation tells it how); the default is the
+    // person's size.
     //
-    // A remembered rect is used AS IS — not floored — because the whole point
-    // is that parking must not resize the page. The Work pane is clamped to
-    // 26–55% of the window, so every realistic pane is narrower than the
-    // floor; applying it on top would fire a real `window` resize inside the
-    // page on the way out and another on the way back. The floor is only the
-    // fallback for a tab the panel never showed: it has no rect to reuse, and
-    // a zero-sized view captures nothing.
+    // The floor is only for a tab the pane never showed: it has no rect to
+    // reuse, and a zero-sized view captures nothing.
     const panelRect = tab.lastPanelRect;
-    if (
-      panelRect
-      && panelRect.width >= BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_WIDTH
-      && panelRect.height >= BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_HEIGHT
-    ) {
+    if (panelRect && panelRect.width > 0 && panelRect.height > 0) {
       return { width: panelRect.width, height: panelRect.height };
     }
     return { width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH, height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT };
+  };
+
+  /**
+   * What an agent is told when the page it reads is narrow because the
+   * person's pane is narrow. The page stays the person's size; the agent
+   * learns why a site may be in its mobile layout and how to get a desktop one
+   * when its task needs it. Null when the width is somebody's explicit choice
+   * (a device preset, a recording) or is not the pane's (a tab never shown).
+   */
+  const narrowPageHint = (tab: BrowserTabState, pageWidth: number | null): string | null => {
+    if (tab.emulation || tabUsesAgentViewport(tab) || !tab.lastPanelRect) return null;
+    const width = pageWidth ?? tab.lastPanelRect.width;
+    if (!(width > 0) || width >= BUILT_IN_BROWSER_NARROW_PAGE_WIDTH) return null;
+    return `The page is ${Math.round(width)} px wide, the size of the user's browser pane, so a site can show its mobile layout. `
+      + "This is what the user sees. If the task needs the desktop layout, run "
+      + `\`ade browser emulate --tab ${tab.id} --width 1280 --height 800\`, and `
+      + `\`ade browser emulate --tab ${tab.id} --off\` when you finish.`;
   };
 
   /** The park point past every display, at `size` (window-relative, as `setBounds` is). */
@@ -3736,6 +3752,44 @@ function createBuiltInBrowserWindowService(args: {
   const noteSurfacedSize = (tabId: string, rect: { width: number; height: number }): void => {
     if (rect.width > 0 && rect.height > 0) surfacedSizes.set(tabId, { width: rect.width, height: rect.height });
     else surfacedSizes.delete(tabId);
+  };
+  /**
+   * `lastPanelRect` is the size the person's pane SETTLED at.
+   *
+   * The pane reports every frame of its own animation, so recording each rect
+   * kept whatever frame came last: a pane that closes shrinks through a dozen
+   * widths on the way to nothing, and the tab was then parked at that last
+   * sliver (57 px wide, measured). A rect counts once the tab has stayed on
+   * screen at that size for `PANEL_RECT_SETTLE_MS`; a pane that hides, or keeps
+   * moving, before then leaves the previous settled size standing.
+   */
+  const PANEL_RECT_SETTLE_MS = 300;
+  const panelRectSettleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const cancelPanelRectSettle = (tabId: string): void => {
+    const handle = panelRectSettleTimers.get(tabId);
+    if (handle == null) return;
+    clearTimeout(handle);
+    panelRectSettleTimers.delete(tabId);
+  };
+  const cancelPanelRectSettles = (): void => {
+    for (const handle of panelRectSettleTimers.values()) clearTimeout(handle);
+    panelRectSettleTimers.clear();
+  };
+  const notePanelRect = (tab: BrowserTabState, rect: Electron.Rectangle): void => {
+    cancelPanelRectSettle(tab.id);
+    const settled = tab.lastPanelRect;
+    if (settled && settled.width === rect.width && settled.height === rect.height) return;
+    const handle = setTimeout(() => {
+      panelRectSettleTimers.delete(tab.id);
+      if (disposed || tab.webContents.isDestroyed()) return;
+      // Still the tab on screen, still this size: the pane stopped here.
+      if (!visible || tab.id !== activeTabId || parkedTabIds.has(tab.id)) return;
+      const current = toElectronRect(bounds);
+      if (current.width !== rect.width || current.height !== rect.height) return;
+      tab.lastPanelRect = { ...rect };
+    }, PANEL_RECT_SETTLE_MS);
+    handle.unref?.();
+    panelRectSettleTimers.set(tab.id, handle);
   };
   /**
    * Per tab, not one shared handle: two watched tabs warm independently, and a
@@ -3885,7 +3939,6 @@ function createBuiltInBrowserWindowService(args: {
 
   const agentViewport = createBuiltInBrowserAgentViewport({
     tabs: () => tabs,
-    isParked: (tabId) => parkedTabIds.has(tabId),
     reattachViews: () => attachViewsToCurrentWindow(),
     acquireDebuggerHold: (tab, owner) => acquireDebuggerHold(tab, owner),
     releaseDebuggerHold: (tab, owner) => releaseDebuggerHold(tab, owner),
@@ -3909,6 +3962,9 @@ function createBuiltInBrowserWindowService(args: {
       const isActive = tab.id === activeTabId;
       const shouldAttach = visible && isActive;
       if (!shouldAttach) {
+        // Leaving the screen: the size it was passing through is not a size
+        // the person chose.
+        cancelPanelRectSettle(tab.id);
         const wasAttended = win.contentView.children.includes(tab.view) && !parkedTabIds.has(tab.id);
         if (wasAttended && surfacedTabIds.has(tab.id)) {
           recentlyAttendedUntil.set(tab.id, Date.now() + RECENTLY_ATTENDED_GRACE_MS);
@@ -3978,14 +4034,15 @@ function createBuiltInBrowserWindowService(args: {
         win.contentView.addChildView(tab.view);
       }
       if (electronRect.width > 0 && electronRect.height > 0) {
-        tab.lastPanelRect = { ...electronRect };
+        notePanelRect(tab, electronRect);
       }
       applyTabViewCornerRadius(tab, BUILT_IN_BROWSER_VIEW_CORNER_RADIUS);
       // On screen at real bounds: whatever else happens, this view has a surface.
       surfacedTabIds.add(tab.id);
-      tab.view.setBounds(electronRect);
-      noteSurfacedSize(tab.id, electronRect);
-      syncAgentViewport(tab, electronRect);
+      const viewRect = tabUsesAgentViewport(tab) ? agentViewportViewRect(electronRect) : electronRect;
+      tab.view.setBounds(viewRect);
+      noteSurfacedSize(tab.id, viewRect);
+      syncAgentViewport(tab, viewRect);
       tab.view.setVisible(true);
       applyTabLifecycle(tab, true);
       if (cameOnScreen) repaintTab(tab);
@@ -5092,6 +5149,7 @@ function createBuiltInBrowserWindowService(args: {
       surfacedTabIds.delete(removed.id);
       surfacedSizes.delete(removed.id);
       clearWarmingTimer(removed.id);
+      cancelPanelRectSettle(removed.id);
       tabCapabilities.stopPreviewStreamsForTab(removed.id);
       teardownTabCapabilities(removed);
       MANAGED_BROWSER_WEB_CONTENTS.delete(removed.webContents);
@@ -5706,6 +5764,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     unregisterWindowWatchers();
     clearWarmingTimers();
+    cancelPanelRectSettles();
     tabCapabilities.dispose();
     removeBrowserDownloadListener();
     unsubscribeNetworkObserver?.();
@@ -6377,6 +6436,10 @@ function createBuiltInBrowserWindowService(args: {
       filePath,
       relativePath,
       ...(screenshotUnavailable ? { screenshotUnavailable } : {}),
+      ...(() => {
+        const hint = narrowPageHint(tab, screenshot?.width ?? null);
+        return hint ? { narrowPageHint: hint } : {};
+      })(),
       ...(input.includeDataUrl && screenshot ? { dataUrl: screenshot.dataUrl } : {}),
       ...(domWithHandles ? { dom: domWithHandles } : {}),
       ...(elementMap ? { elementMap } : {}),

@@ -464,7 +464,18 @@ monotonic deltas — the worker atomically writes an `event-loop-wedge.json`
 breadcrumb (wedged command, blocked ms, threshold, and the latest event-loop,
 memory, and resource snapshot) under the runtime dir, requests a best-effort
 Node diagnostic report, and `SIGKILL`s the brain after a one-second report
-grace so launchd restarts it. The worker also reports any of its own 1 s checks
+grace so launchd restarts it. The wedged command is the name of whichever call
+was running: remote sync commands and local `ade/actions/call` requests both
+register with `trackBrainLoopWatchdogCommand`, and a start or end is sent to
+the worker at once, so a call that blocks the moment it starts is named instead
+of reported as `idle`.
+
+The Node report is written by the main thread, which is the stuck one, so it
+only lands if the loop frees up inside the grace. On macOS the worker therefore
+first runs `/usr/bin/sample` on the brain (2 s, detached) and waits for its
+"Sampling completed" line, or 20 s at most, before the kill. The sample is
+written to `event-loop-wedge-sample.txt` after the brain is gone; its native
+frames name the blocking call. The worker also reports any of its own 1 s checks
 that run 0.5 s or more late, which means the whole process was off the CPU. A
 recovered heartbeat delay of 2 s or more is logged as info `brain.suspend_gap`
 when it used little CPU (at most 2 s, or a tenth of the delay if that is
@@ -477,8 +488,9 @@ more is logged as warn `brain.event_loop_near_miss`. Both carry `pid`,
 `majorPageFaultsDelta`, so brains that share `brain.jsonl` can be told apart. The kill decision does
 not change.
 
-On the next boot the watchdog promotes any breadcrumb and generated report to
-`last-wedge.json` / `last-wedge-report.json`,
+On the next boot the watchdog promotes any breadcrumb, generated report and
+native sample to `last-wedge.json` / `last-wedge-report.json` /
+`last-wedge-sample.txt` (the breadcrumb's `nativeSamplePath` points at it),
 logs `brain.recovered_from_wedge`, and emits a deduped `ade_brain_recovered`
 analytics event. The recovered wedge is exposed to clients through
 `runtimeInfo.lastWedge` (parsed by `adeRuntimeProtocol.parseRuntimeLastWedge`,

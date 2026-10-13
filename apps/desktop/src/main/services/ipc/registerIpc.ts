@@ -965,6 +965,7 @@ import {
 } from "../builtInBrowser/builtInBrowserService";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
 import { createRemoteRequestClaims } from "../builtInBrowser/remoteRequestClaims";
+import { runRemoteAgentBrowserCall } from "../builtInBrowser/builtInBrowserRemoteCalls";
 import {
   createBrowserLoginImportService,
   type BrowserLoginImportService,
@@ -10778,6 +10779,19 @@ export function registerIpc({
     const record = isRecord(arg) ? arg : {};
     const requestId = typeof record.requestId === "string" ? record.requestId : "";
     return { claimed: builtInBrowserRemoteRequestClaims.claim(requestId) };
+  });
+
+  // A browser command from an agent on another machine whose user sits at
+  // this desktop. The renderer received it and set which project's tabs it
+  // means; the browser itself is here.
+  ipcMain.handle(IPC.builtInBrowserRunRemoteAgentCall, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserRunRemoteAgentCall, { windowMs: 10_000, max: 400 });
+    const record = isRecord(arg) ? arg : {};
+    return runRemoteAgentBrowserCall({
+      service: ensureBuiltInBrowser(),
+      method: typeof record.method === "string" ? record.method : "",
+      input: isRecord(record.input) ? record.input : {},
+    });
   });
 
   ipcMain.handle(IPC.builtInBrowserFindInPage, async (event, arg) => {

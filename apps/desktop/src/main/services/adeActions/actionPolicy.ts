@@ -1,5 +1,6 @@
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
   USER_BROWSER_RUNTIME_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
@@ -1161,6 +1162,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   built_in_browser: [
     ...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
     BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+    // The answer to a command this machine sent to the desktop its user sits
+    // at (`built_in_browser_remote_call`). Runtime-served, like the ack above.
+    BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
     // `ade browser attach` / `detach`: also runtime-served, so a desktop's own
     // service object lacks them too.
     ...USER_BROWSER_RUNTIME_METHODS,

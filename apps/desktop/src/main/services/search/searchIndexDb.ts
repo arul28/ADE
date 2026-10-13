@@ -7,7 +7,7 @@ import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 // the active runtime (same pattern as kvDb.ts).
 const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 const { DatabaseSync } = require("node:sqlite") as {
-  DatabaseSync: new (dbPath: string) => DatabaseSyncType;
+  DatabaseSync: new (dbPath: string, options?: { readOnly?: boolean }) => DatabaseSyncType;
 };
 
 /**
@@ -201,6 +201,50 @@ export function openSearchIndexDb(cacheDir: string): SearchIndexDb {
     close: () => {
       try {
         db.close();
+      } catch {
+        // ignore double-close
+      }
+    }
+  };
+}
+
+/**
+ * Open an existing index for reading only, or null when there is none to read.
+ *
+ * For a caller that does not own the index: a search across projects reads
+ * the file of a project whose runtime is not loaded. So unlike
+ * `openSearchIndexDb` this never creates, migrates or deletes anything — a
+ * missing file, another schema version or an unreadable file is "no index
+ * here", and the owning runtime repairs it the next time it loads.
+ */
+export function openSearchIndexDbReadOnly(cacheDir: string): SearchIndexDb | null {
+  const dbPath = path.join(cacheDir, SEARCH_INDEX_DB_FILENAME);
+  if (!fs.existsSync(dbPath)) return null;
+  let db: DatabaseSyncType | null = null;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    // A WAL reader does not wait on the owner's writes; this only bounds the
+    // rare checkpoint or recovery lock, on a thread that must not stall.
+    db.exec("PRAGMA busy_timeout = 250");
+    if (readSchemaVersion(db) !== SEARCH_INDEX_SCHEMA_VERSION) {
+      db.close();
+      return null;
+    }
+  } catch {
+    try {
+      db?.close();
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+  const opened = db;
+  return {
+    db: opened,
+    path: dbPath,
+    close: () => {
+      try {
+        opened.close();
       } catch {
         // ignore double-close
       }

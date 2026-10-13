@@ -11,6 +11,7 @@ import { selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { browserHostLabel } from "../../lib/browserUrl";
+import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneDevServers } from "../../lib/laneDevServers";
 import { relativeWhen } from "../../lib/format";
 import {
@@ -274,6 +275,16 @@ export function browserStatusLine(
       ? " · other lane"
       : "";
   return statusLine(`${label}${suffix}`, true, { errorCount, attention: handedOff });
+}
+
+/**
+ * The Browser card for a chat that runs on another machine: the same line, and
+ * the one place that says so. The browser is this computer's and still opens;
+ * the chat's agent reaches it only while the person drives the chat from here.
+ */
+export function browserStatusLineForRemoteChat(status: WorkToolStatus, machineName: string): WorkToolStatus {
+  const where = `chat on ${machineName}`;
+  return { ...status, line: status.line ? `${status.line} · ${where}` : where };
 }
 
 export function gitStatusLine(lane: LaneSummary | null, statusStale = false): WorkToolStatus {
@@ -656,16 +667,21 @@ export function useWorkToolStatuses(args: {
     [macDesktopLine, macDesktopLive],
   );
 
+  // Keyed on the name, not the pin object: a pin can be rebuilt with the same key.
+  const remoteChatMachineName = runtimePin?.kind === "remote" ? machineNameForBinding(runtimePin) : null;
   const statuses = useMemo<WorkToolStatusMap>(() => ({
     terminal: terminalStatusLine(terminalTitles, panelShellCount),
     browser: offline
       ? IDLE
-      : browserStatusLine(
-        browserStatus,
-        laneId,
-        workToolBrowserErrorCount(browserErrors, browserStatus),
-        devServerPorts,
-      ),
+      : (() => {
+        const line = browserStatusLine(
+          browserStatus,
+          laneId,
+          workToolBrowserErrorCount(browserErrors, browserStatus),
+          devServerPorts,
+        );
+        return remoteChatMachineName ? browserStatusLineForRemoteChat(line, remoteChatMachineName) : line;
+      })(),
     git: gitStatusLine(lane, laneStatusStale),
     files: filesStatusLine(lane),
     ios: offline ? IDLE : iosStatusLine(appleDevice),
@@ -691,6 +707,7 @@ export function useWorkToolStatuses(args: {
     panelShellCount,
     prCount,
     openIssueTabCount,
+    remoteChatMachineName,
     terminalTitles,
   ]);
 

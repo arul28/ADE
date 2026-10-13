@@ -184,7 +184,7 @@ function navigableUrl(raw: string): string {
  * Methods that keep going to ADE's own browser machinery even while attached:
  * they do not act on a page (the dev-server list, a demo step caption).
  */
-const PASSTHROUGH_METHODS = new Set(["getDevServers", "noteDemoStep", "acknowledgeRemoteRequest"]);
+const PASSTHROUGH_METHODS = new Set(["getDevServers", "noteDemoStep", "acknowledgeRemoteRequest", "replyRemoteCall"]);
 
 /** The CLI word for a refused method, so the message names what the agent typed. */
 const METHOD_COMMAND_WORDS: Record<string, string> = {

@@ -134,14 +134,21 @@ const BLANK_FRAME = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAAL
  * (`--tab <id>`, or a tab it opened without activating) floated nothing over
  * its chat while a person's tab sat in front. Among several tabs the chat
  * owns, the one it touched last wins — every claim renews `ownerClaimedAt`.
+ *
+ * `ownedOnly` is for a chat on another machine. The card shows what the
+ * chat's agent can use, and that agent reaches this browser only through the
+ * tabs it owns here; the active-tab fallback pictured the person's own tab
+ * under a chat that could not see it.
  */
 function browserTabForChat(
   status: BuiltInBrowserStatus | null,
   chatSessionId: string | null,
+  ownedOnly: boolean,
 ): BuiltInBrowserStatus["tabs"][number] | null {
   if (!status || !Array.isArray(status.tabs)) return null;
   const active = status.tabs.find((tab) => tab.id === status.activeTabId) ?? status.tabs[0] ?? null;
-  if (!chatSessionId || active?.ownerChatSessionId === chatSessionId) return active;
+  if (!chatSessionId) return ownedOnly ? null : active;
+  if (active?.ownerChatSessionId === chatSessionId) return active;
   let owned: BuiltInBrowserStatus["tabs"][number] | null = null;
   let ownedAt = -1;
   for (const tab of status.tabs) {
@@ -152,7 +159,7 @@ function browserTabForChat(
       ownedAt = claimedAt;
     }
   }
-  return owned ?? active;
+  return owned ?? (ownedOnly ? null : active);
 }
 
 /**
@@ -165,9 +172,13 @@ function browserTabForChat(
  * navigating its own background tab (agent opens never take focus) never
  * counted.
  */
-function browserActivitySignature(status: BuiltInBrowserStatus | null, chatSessionId: string | null): string {
+function browserActivitySignature(
+  status: BuiltInBrowserStatus | null,
+  chatSessionId: string | null,
+  ownedOnly: boolean,
+): string {
   if (!status || !Array.isArray(status.tabs)) return "";
-  const tab = browserTabForChat(status, chatSessionId);
+  const tab = browserTabForChat(status, chatSessionId, ownedOnly);
   if (!tab) return `${status.tabs.length}`;
   return [
     tab.id,
@@ -227,6 +238,10 @@ export function WorkLiveCornerCard({
 
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
+  // A chat on another machine pictures only the tabs its agent owns here.
+  const ownedTabsOnly = runtimePin?.kind === "remote";
+  const ownedTabsOnlyRef = useRef(ownedTabsOnly);
+  ownedTabsOnlyRef.current = ownedTabsOnly;
 
   const [lastTrace, setLastTrace] = useState<BuiltInBrowserActionTraceEntry | null>(null);
   const [activityAt, setActivityAt] = useState<Record<WorkLiveScreenTool, number>>({
@@ -371,7 +386,7 @@ export function WorkLiveCornerCard({
 
   const onBrowserEvent = useCallback((event: BuiltInBrowserEventPayload) => {
     if (event.type === "status" || event.type === "open-request") {
-      const signature = browserActivitySignature(event.status, chatSessionIdRef.current);
+      const signature = browserActivitySignature(event.status, chatSessionIdRef.current, ownedTabsOnlyRef.current);
       // An "open-request" is somebody asking for the browser, so it always
       // counts; a plain status only counts when something actually changed.
       if (event.type === "open-request" || signature !== browserSignatureRef.current) {
@@ -409,7 +424,7 @@ export function WorkLiveCornerCard({
    */
   const onBrowserStatusSettled = useCallback((status: BuiltInBrowserStatus | null) => {
     if (!status || !Array.isArray(status.tabs) || status.tabs.length === 0) return;
-    const signature = browserActivitySignature(status, chatSessionIdRef.current);
+    const signature = browserActivitySignature(status, chatSessionIdRef.current, ownedTabsOnlyRef.current);
     if (signature === browserSignatureRef.current) return;
     browserSignatureRef.current = signature;
     bump("browser");
@@ -436,8 +451,8 @@ export function WorkLiveCornerCard({
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 
   const activeBrowserTab = useMemo(
-    () => browserTabForChat(browserStatus, chatSessionId),
-    [browserStatus, chatSessionId],
+    () => browserTabForChat(browserStatus, chatSessionId, ownedTabsOnly),
+    [browserStatus, chatSessionId, ownedTabsOnly],
   );
   // A failed page load (the agent's dev server stopped, a bad URL) is painted
   // by Chromium as plain white, and that white is all the frames would carry.
@@ -448,8 +463,8 @@ export function WorkLiveCornerCard({
   const browserStatusRef = useRef(browserStatus);
   browserStatusRef.current = browserStatus;
   useEffect(() => {
-    browserSignatureRef.current = browserActivitySignature(browserStatusRef.current, chatSessionId);
-  }, [chatSessionId]);
+    browserSignatureRef.current = browserActivitySignature(browserStatusRef.current, chatSessionId, ownedTabsOnly);
+  }, [chatSessionId, ownedTabsOnly]);
 
   // Every per-tool question the card asks — live, owner, caption, handoff,
   // recording, session key — answered once, by the adapter map beside the tool

@@ -172,19 +172,43 @@ this browser is the one for web proof.
 
 ### 7. Handle remote lanes and loopback URLs
 
-The user may be on another machine (a MacBook connected to this Mac Studio).
-To show them a page, use `ade --socket browser open <url> --panel`. ADE opens
-it on the screen they last messaged this chat from, through a tunnel. When
-this machine runs ADE Desktop, you keep driving this machine's copy; without
-it, page actions are not available (see below). Writing `http://localhost:<port>` in a reply
-is fine too: their click opens this machine's port in their ADE browser.
+The user may be on another machine (a Mac Studio driving a chat that runs on
+this Windows PC). Then your browser is the one on THEIR computer: every
+`ade browser` command runs in the ADE browser where they sit, they watch your
+tab in their own pane, the page uses their sign-ins, and a tab they attach is
+one you can claim. You do nothing different; the first line of `--text` output
+says where the command ran:
+
+- `browser: on <machine>, the computer the user sits at.` The normal case.
+- `browser: on this machine. The user drives this chat from another computer,
+  which did not take the command…` Their computer is not connected (asleep,
+  closed, or they are on the phone). You are working in a browser they cannot
+  see and that has none of their tabs. Say so if they ask what you see.
+
+The page is the size of the user's browser pane, open or closed. When that is
+under 640 px wide, `observe` adds a `note:` line (`narrowPageHint` in JSON):
+the site may show its mobile layout, which is what the user sees. Work with it
+when you can. When the task needs the desktop layout, run
+`ade browser emulate --tab <id> --width 1280 --height 800`, and
+`ade browser emulate --tab <id> --off` when you finish; the user sees that
+change in their pane.
+
+Add `--here` to use the browser on the machine you run on: to test a page on
+this OS, and for `upload`, `har` and `record`, which read or write a file here
+and are refused while your browser is on the user's computer. A tab id belongs
+to one browser, so keep a task in one of them.
+
+To show them a page, use `ade --socket browser open <url> --panel`. Writing
+`http://localhost:<port>` in a reply is fine too: their click opens this
+machine's port in their ADE browser. A `localhost` page you open reaches their
+browser through a tunnel, and the first use of a port asks them to allow it.
 Dev servers you start are found on their own, even in the background:
 `ade --socket browser dev-servers --text` lists them.
 
-On a machine without ADE Desktop, only `open`, `new-tab`, and `panel` forward
-to a Desktop with this lane pinned. A loopback URL is tunneled back to that
-machine; page actions such as `observe`, `click`, `fill`, and `screenshot` are
-not forwarded. Do not retry a page action after this headless failure.
+On a machine without ADE Desktop, and with no desktop connected to this chat,
+only `open`, `new-tab`, and `panel` can still land on a Desktop with this lane
+pinned; page actions such as `observe`, `click`, `fill`, and `screenshot` have
+no browser to run in. Do not retry a page action after that failure.
 
 ```bash
 ade --socket browser open localhost:5173 --new-tab --text

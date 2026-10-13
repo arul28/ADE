@@ -12,6 +12,8 @@ export const BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE = "event-loop-wedge.json";
 export const BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE = "last-wedge.json";
 export const BRAIN_LOOP_WATCHDOG_REPORT_FILE = "event-loop-wedge-report.json";
 export const BRAIN_LOOP_WATCHDOG_LAST_REPORT_FILE = "last-wedge-report.json";
+export const BRAIN_LOOP_WATCHDOG_SAMPLE_FILE = "event-loop-wedge-sample.txt";
+export const BRAIN_LOOP_WATCHDOG_LAST_SAMPLE_FILE = "last-wedge-sample.txt";
 
 export type BrainLoopWatchdogDiagnostics = {
   capturedAt: string;
@@ -48,6 +50,8 @@ export type BrainLoopWatchdogBreadcrumb = {
   thresholdMs?: number;
   diagnostics?: BrainLoopWatchdogDiagnostics;
   diagnosticReportPath?: string | null;
+  /** The macOS `sample` of the wedged brain, taken before the kill. */
+  nativeSamplePath?: string | null;
 };
 
 export type BrainLoopWatchdogEvaluation = {
@@ -442,6 +446,9 @@ function readBreadcrumb(filePath: string): BrainLoopWatchdogBreadcrumb | null {
     if (typeof parsed.diagnosticReportPath === "string" || parsed.diagnosticReportPath === null) {
       breadcrumb.diagnosticReportPath = parsed.diagnosticReportPath;
     }
+    if (typeof parsed.nativeSamplePath === "string" || parsed.nativeSamplePath === null) {
+      breadcrumb.nativeSamplePath = parsed.nativeSamplePath;
+    }
     return breadcrumb;
   } catch {
     return null;
@@ -491,6 +498,22 @@ export function recoverBrainLoopWatchdogBreadcrumb(args: {
   } else if (breadcrumb.diagnosticReportPath !== undefined) {
     breadcrumb.diagnosticReportPath = null;
   }
+  const samplePath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_SAMPLE_FILE);
+  const lastSamplePath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_LAST_SAMPLE_FILE);
+  try { fs.unlinkSync(`${samplePath}.log`); } catch { /* the sampler's progress file, if it ran */ }
+  if (fs.existsSync(samplePath)) {
+    try {
+      if (process.platform === "win32" && fs.existsSync(lastSamplePath)) {
+        fs.unlinkSync(lastSamplePath);
+      }
+      fs.renameSync(samplePath, lastSamplePath);
+      breadcrumb.nativeSamplePath = lastSamplePath;
+    } catch {
+      breadcrumb.nativeSamplePath = samplePath;
+    }
+  } else if (breadcrumb.nativeSamplePath !== undefined) {
+    breadcrumb.nativeSamplePath = null;
+  }
   fs.writeFileSync(lastWedgePath, `${JSON.stringify(breadcrumb)}\n`, {
     encoding: "utf8",
     mode: 0o600,
@@ -505,6 +528,8 @@ export function recoverBrainLoopWatchdogBreadcrumb(args: {
 
 let nextCommandToken = 0;
 const activeCommands = new Map<number, string>();
+/** Tells a running watchdog worker the current command; null when none runs. */
+let announceCommandToWatchdog: ((command: string) => void) | null = null;
 
 function currentCommandName(): string {
   let current = "idle";
@@ -527,8 +552,10 @@ export function currentBrainLoopWatchdogCommand(): string {
 export function trackBrainLoopWatchdogCommand(action: string): () => void {
   const token = ++nextCommandToken;
   activeCommands.set(token, action.trim() || "unknown");
+  announceCommandToWatchdog?.(currentCommandName());
   return () => {
     activeCommands.delete(token);
+    announceCommandToWatchdog?.(currentCommandName());
   };
 }
 
@@ -549,6 +576,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     let lastCommand = "idle";
     let diagnostics = null;
 
+    let killStarted = false;
     const writeBreadcrumbAndKill = (blockedMs) => {
       const breadcrumb = {
         lastCommand,
@@ -586,16 +614,72 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       } finally {
         try {
           fs.writeSync(2, "brain.event_loop_blocked " + JSON.stringify(breadcrumb) + "\n");
-        } finally {
+        } catch {}
+        // The Node report below is written by the main thread, which is the
+        // one that is stuck: it only lands if the loop frees up within the
+        // grace, so a wedge that lasts left no stack at all. On macOS, sample
+        // the process from outside first; this thread keeps running while the
+        // main one is blocked. JS frames show as JIT addresses, but the native
+        // frames (SQLite, fs, a child-process wait) name the call.
+        //
+        // -mayDie loads symbols before it samples (seconds, on Electron), so
+        // the kill waits for "Sampling completed"; the detached sampler then
+        // writes its file after this process is gone.
+        // Every check after the threshold lands here again; the breadcrumb
+        // above keeps its latest blockedMs, but one sampler and one kill.
+        if (killStarted) return;
+        killStarted = true;
+        let killed = false;
+        const kill = () => {
+          if (killed) return;
+          killed = true;
           if (workerData.reportEnabled) {
             try { process.kill(process.pid, workerData.reportSignal); } catch {}
           }
           setTimeout(() => process.kill(process.pid, "SIGKILL"), workerData.reportGraceMs);
+        };
+        if (!workerData.sampleEnabled) {
+          kill();
+          return;
+        }
+        setTimeout(kill, workerData.sampleTimeoutMs);
+        try {
+          try { fs.unlinkSync(workerData.samplePath); } catch {}
+          // Progress goes to a file, not a pipe: once this process is gone a
+          // pipe would break and could take the sampler down with it.
+          const progressPath = workerData.samplePath + ".log";
+          const progressFd = fs.openSync(progressPath, "w", 0o600);
+          const sampler = require("node:child_process").spawn(
+            "/usr/bin/sample",
+            [String(process.pid), String(workerData.sampleSeconds), "-mayDie", "-file", workerData.samplePath],
+            { detached: true, stdio: ["ignore", progressFd, progressFd] },
+          );
+          fs.closeSync(progressFd);
+          sampler.unref();
+          sampler.once("error", kill);
+          sampler.once("exit", kill);
+          const poll = setInterval(() => {
+            let progress = "";
+            try { progress = fs.readFileSync(progressPath, "utf8"); } catch {}
+            if (progress.includes("Sampling completed")) {
+              clearInterval(poll);
+              kill();
+            }
+          }, 100);
+        } catch {
+          kill();
         }
       }
     };
 
     parentPort.on("message", (message) => {
+      // A command starting or ending is sent at once: a call that blocks the
+      // loop the moment it starts never reaches the next heartbeat, and its
+      // wedge was then reported as "idle".
+      if (message && message.type === "command" && typeof message.lastCommand === "string") {
+        lastCommand = message.lastCommand || "idle";
+        return;
+      }
       if (!message || message.type !== "heartbeat") return;
       lastHeartbeatWallMs = Date.now();
       lastHeartbeatMonotonicMs = monotonicMs();
@@ -743,6 +827,12 @@ export function startBrainLoopWatchdog(args: {
         reportPath,
         reportSignal,
         reportGraceMs: 1_000,
+        sampleEnabled: process.platform === "darwin",
+        samplePath: path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_SAMPLE_FILE),
+        sampleSeconds: 2,
+        // Symbol loading plus the 2 s of sampling took ~8 s on a Node process;
+        // past this the brain is killed whether or not the sample is done.
+        sampleTimeoutMs: 20_000,
       },
     });
   } catch (error) {
@@ -752,6 +842,14 @@ export function startBrainLoopWatchdog(args: {
     return () => {};
   }
   worker.unref();
+  const announceCommand = (command: string): void => {
+    try {
+      worker.postMessage({ type: "command", lastCommand: command });
+    } catch {
+      // The worker's error/exit handlers report a failed watchdog once.
+    }
+  };
+  announceCommandToWatchdog = announceCommand;
 
   const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
   eventLoopDelay.enable();
@@ -1020,6 +1118,7 @@ export function startBrainLoopWatchdog(args: {
     // reading that gets investigated.
     emitHeldLag();
     eventLoopDelay.disable();
+    if (announceCommandToWatchdog === announceCommand) announceCommandToWatchdog = null;
     void worker.terminate();
   };
 }

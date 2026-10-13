@@ -300,6 +300,10 @@ export function useNativeBrowserViewBounds({
     if (!options?.force && boundsEqual(latestBoundsRef.current, next)) return;
     latestBoundsRef.current = next;
     setBounds(next).catch((error: unknown) => {
+      // Not applied, so not cached: the next measurement of the same box must
+      // send it again rather than be deduped against a placement that failed
+      // and leave the view wherever it last was.
+      if (latestBoundsRef.current === next) latestBoundsRef.current = null;
       onError(error instanceof Error ? error.message : String(error));
     });
   }, [enabled, launchpadVisibleRef, captureModeRef, onError, panelRef, setBounds, surfaceRef, viewScaleRef, viewportRef]);
