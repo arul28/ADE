@@ -37,7 +37,7 @@ import WebKit
 struct WorkMcpAppBackend {
   var isAvailable: @MainActor (_ sessionId: String) -> Bool
   var fetch: @MainActor (_ sessionId: String, _ itemId: String) async -> WorkMcpAppFetch
-  /// Resolves the JSON-RPC `result`, or throws the refusal to show the page.
+  /// Answers with the JSON-RPC `result`, or with the refusal to show the page.
   var request: @MainActor (
     _ sessionId: String, _ itemId: String, _ method: String, _ params: [String: Any], _ userActivated: Bool
   ) async -> Result<Any, WorkMcpAppRefusal>
@@ -171,13 +171,6 @@ final class WorkMcpAppController: NSObject, ObservableObject {
   private var lastOpenAt: CFTimeInterval = 0
   private var lastMessageAt: CFTimeInterval = 0
 
-  /// The scene rules: on screen and still before a web view is made, and four
-  /// seconds off screen before it goes.
-  private static let activateDelay: TimeInterval = 0.15
-  private static let lingerDelay: TimeInterval = 4
-  /// How long after a tap on the web view the page may open a link, draft a
-  /// message, or have a call sent as "the reader just tapped".
-  private static let tapWindow: TimeInterval = 1
   private static let bridgeWorld = WKContentWorld.world(name: "adeMcpAppBridge")
   private static let handlerName = "adeMcpApp"
 
@@ -248,12 +241,12 @@ final class WorkMcpAppController: NSObject, ObservableObject {
       lingerTimer?.invalidate()
       lingerTimer = nil
       guard webView == nil, activateTimer == nil else { return }
-      activateTimer = timer(after: Self.activateDelay) { $0.activate() }
+      activateTimer = timer(after: WorkSandboxedWebView.activateDelay) { $0.activate() }
     } else {
       activateTimer?.invalidate()
       activateTimer = nil
       guard webView != nil, lingerTimer == nil else { return }
-      lingerTimer = timer(after: Self.lingerDelay) { controller in
+      lingerTimer = timer(after: WorkSandboxedWebView.lingerDelay) { controller in
         controller.lingerTimer = nil
         // An approval can take a minute: the answer needs a page to come back to.
         if controller.container?.isOnScreen != true, controller.forwarded == 0 { controller.unmount() }
@@ -265,7 +258,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
     activateTimer = nil
     guard let container, container.isOnScreen, webView == nil, !isUnavailable else { return }
     if container.isReaderScrolling {
-      activateTimer = timer(after: Self.activateDelay) { $0.activate() }
+      activateTimer = timer(after: WorkSandboxedWebView.activateDelay) { $0.activate() }
       return
     }
     if let app = app ?? WorkMcpAppCache.app(key) {
@@ -316,16 +309,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
       pagePolicy: app.contentSecurityPolicy
     )
 
-    let configuration = WKWebViewConfiguration()
-    configuration.websiteDataStore = .nonPersistent()
-    configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
-    configuration.preferences.isElementFullscreenEnabled = false
-    configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-    configuration.dataDetectorTypes = []
-    configuration.allowsInlineMediaPlayback = true
-    configuration.mediaTypesRequiringUserActionForPlayback = .all
-    configuration.allowsAirPlayForMediaPlayback = false
-    configuration.allowsPictureInPictureMediaPlayback = false
+    let configuration = WorkSandboxedWebView.configuration()
     configuration.setURLSchemeHandler(handler, forURLScheme: WorkMcpAppPages.scheme)
     // Exactly one handler, in the bridge's own world, and only in the shell.
     configuration.userContentController.add(
@@ -340,25 +324,13 @@ final class WorkMcpAppController: NSObject, ObservableObject {
       in: Self.bridgeWorld
     ))
 
-    let webView = WKWebView(frame: container.bounds, configuration: configuration)
-    webView.navigationDelegate = self
-    webView.uiDelegate = self
-    webView.isOpaque = false
-    webView.backgroundColor = .clear
-    webView.underPageBackgroundColor = .clear
-    webView.allowsLinkPreview = false
-    webView.allowsBackForwardNavigationGestures = false
-    let scrollView = webView.scrollView
-    scrollView.backgroundColor = .clear
-    scrollView.contentInsetAdjustmentBehavior = .never
     // The row is as tall as the page says it is, so the shell never scrolls
     // and every vertical swipe belongs to the feed.
-    scrollView.isScrollEnabled = false
-    scrollView.bounces = false
-    scrollView.alwaysBounceVertical = false
-    scrollView.alwaysBounceHorizontal = false
-    scrollView.showsHorizontalScrollIndicator = false
-    scrollView.pinchGestureRecognizer?.isEnabled = false
+    let webView = WorkSandboxedWebView.make(
+      frame: container.bounds,
+      configuration: configuration,
+      navigationDelegate: self
+    )
 
     generation += 1
     self.webView = webView
@@ -401,14 +373,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
     initialized = false
     forwarded = 0
     generation += 1
-    webView.stopLoading()
-    webView.navigationDelegate = nil
-    webView.uiDelegate = nil
-    webView.configuration.userContentController.removeAllUserScripts()
-    webView.configuration.userContentController.removeScriptMessageHandler(
-      forName: Self.handlerName,
-      contentWorld: Self.bridgeWorld
-    )
+    WorkSandboxedWebView.tearDown(webView, handlerName: Self.handlerName, world: Self.bridgeWorld)
     container?.remove(webView)
   }
 
@@ -451,7 +416,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
   /// The reader tapped the web view a moment ago. The host sees the tap for
   /// itself; nothing the page says counts.
   private var tappedJustNow: Bool {
-    CACurrentMediaTime() - lastTapAt < Self.tapWindow
+    CACurrentMediaTime() - lastTapAt < WorkSandboxedWebView.tapWindow
   }
 
   private var hostContext: [String: Any] {
@@ -629,9 +594,9 @@ extension WorkMcpAppController: WorkSceneContainerOwner {
   }
 }
 
-// MARK: Navigation and UI refusals
+// MARK: Navigation (the UI refusals are `WorkSandboxedWebViewRefusals`)
 
-extension WorkMcpAppController: WKNavigationDelegate, WKUIDelegate {
+extension WorkMcpAppController: WKNavigationDelegate {
   /// Two loads, both the host's own: the shell in the main frame, and the
   /// app's page in the shell's one frame. Nothing else, ever: not a reload, not
   /// a link, not the app's frame sending itself somewhere.
@@ -692,70 +657,6 @@ extension WorkMcpAppController: WKNavigationDelegate, WKUIDelegate {
       unmount()
       scheduleEvaluate()
     }
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    createWebViewWith configuration: WKWebViewConfiguration,
-    for navigationAction: WKNavigationAction,
-    windowFeatures: WKWindowFeatures
-  ) -> WKWebView? {
-    nil
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    runJavaScriptAlertPanelWithMessage message: String,
-    initiatedByFrame frame: WKFrameInfo,
-    completionHandler: @escaping @MainActor @Sendable () -> Void
-  ) {
-    completionHandler()
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    runJavaScriptConfirmPanelWithMessage message: String,
-    initiatedByFrame frame: WKFrameInfo,
-    completionHandler: @escaping @MainActor @Sendable (Bool) -> Void
-  ) {
-    completionHandler(false)
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    runJavaScriptTextInputPanelWithPrompt prompt: String,
-    defaultText: String?,
-    initiatedByFrame frame: WKFrameInfo,
-    completionHandler: @escaping @MainActor @Sendable (String?) -> Void
-  ) {
-    completionHandler(nil)
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    requestMediaCapturePermissionFor origin: WKSecurityOrigin,
-    initiatedByFrame frame: WKFrameInfo,
-    type: WKMediaCaptureType,
-    decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
-  ) {
-    decisionHandler(.deny)
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    requestDeviceOrientationAndMotionPermissionFor origin: WKSecurityOrigin,
-    initiatedByFrame frame: WKFrameInfo,
-    decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
-  ) {
-    decisionHandler(.deny)
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
-    completionHandler: @escaping @MainActor @Sendable (UIContextMenuConfiguration?) -> Void
-  ) {
-    completionHandler(nil)
   }
 }
 

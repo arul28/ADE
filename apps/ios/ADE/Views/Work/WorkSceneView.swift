@@ -56,8 +56,13 @@ final class WorkSceneChatBridge {
   }
 
   /// The reader's message that follows the scene's message, when there is one.
-  /// As desktop derives it (`sceneAnswers`): messages ADE wrote for the user (a
-  /// board move, a PR watch wake) are cards here, not user messages.
+  /// Desktop counts only a message the reader wrote (`isReaderAuthoredMessage`).
+  /// Here two of the messages ADE writes for the user never arrive as a user
+  /// message, so they are skipped already: a child's completion, and a PR
+  /// watch wake that carries a card. The others (a board move, a scheduled
+  /// wake, a relay, a host continuation, a usage-limit resume) are decoded as
+  /// plain user messages with their marker dropped (`AgentChatEvent.init`), so
+  /// this still takes one of those for the reader's answer.
   func answeredText(afterMessageId messageId: String) -> String? {
     let entries = timeline()
     guard let index = entries.firstIndex(where: { entry in
@@ -197,13 +202,6 @@ final class WorkSceneController: NSObject, ObservableObject {
   private var lastOpenAt: CFTimeInterval = 0
   private var lastReplyAt: CFTimeInterval = 0
 
-  /// On screen this long, with the reader not scrolling, before a web view is
-  /// made: a flick past a scene makes nothing. Desktop: 120 ms + 150 ms quiet.
-  private static let activateDelay: TimeInterval = 0.15
-  /// Off screen this long before the web view goes. Desktop: 4 s.
-  private static let lingerDelay: TimeInterval = 4
-  /// How long after a tap on the web view the page may open a link or reply.
-  private static let tapWindow: TimeInterval = 1
   private static let bridgeWorld = WKContentWorld.world(name: "adeSceneBridge")
   private static let handlerName = "adeScene"
 
@@ -278,12 +276,12 @@ final class WorkSceneController: NSObject, ObservableObject {
         container.showStill(currentStill(in: container), covering: true)
       }
       guard webView == nil, !drawFailed, activateTimer == nil else { return }
-      activateTimer = timer(after: Self.activateDelay) { $0.activate() }
+      activateTimer = timer(after: WorkSandboxedWebView.activateDelay) { $0.activate() }
     } else {
       activateTimer?.invalidate()
       activateTimer = nil
       guard webView != nil, lingerTimer == nil else { return }
-      lingerTimer = timer(after: Self.lingerDelay) { controller in
+      lingerTimer = timer(after: WorkSandboxedWebView.lingerDelay) { controller in
         controller.lingerTimer = nil
         if controller.container?.isOnScreen != true { controller.unmount() }
       }
@@ -294,7 +292,7 @@ final class WorkSceneController: NSObject, ObservableObject {
     activateTimer = nil
     guard let container, container.isOnScreen, webView == nil, !drawFailed else { return }
     if container.isReaderScrolling {
-      activateTimer = timer(after: Self.activateDelay) { $0.activate() }
+      activateTimer = timer(after: WorkSandboxedWebView.activateDelay) { $0.activate() }
       return
     }
     mount(in: container)
@@ -342,16 +340,7 @@ final class WorkSceneController: NSObject, ObservableObject {
       restored: WorkSceneMemory.shared.hasPlayed(scopeKey)
     )
 
-    let configuration = WKWebViewConfiguration()
-    configuration.websiteDataStore = .nonPersistent()
-    configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
-    configuration.preferences.isElementFullscreenEnabled = false
-    configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-    configuration.dataDetectorTypes = []
-    configuration.allowsInlineMediaPlayback = true
-    configuration.mediaTypesRequiringUserActionForPlayback = .all
-    configuration.allowsAirPlayForMediaPlayback = false
-    configuration.allowsPictureInPictureMediaPlayback = false
+    let configuration = WorkSandboxedWebView.configuration()
     // Exactly one handler, in the bridge's own world.
     configuration.userContentController.add(
       WorkSceneMessageProxy(self),
@@ -365,26 +354,14 @@ final class WorkSceneController: NSObject, ObservableObject {
       in: Self.bridgeWorld
     ))
 
-    let webView = WKWebView(frame: container.bounds, configuration: configuration)
-    webView.navigationDelegate = self
-    webView.uiDelegate = self
-    webView.isOpaque = false
-    webView.backgroundColor = .clear
-    webView.underPageBackgroundColor = .clear
-    webView.allowsLinkPreview = false
-    webView.allowsBackForwardNavigationGestures = false
-    let scrollView = webView.scrollView
-    scrollView.backgroundColor = .clear
-    scrollView.contentInsetAdjustmentBehavior = .never
     // A scene is as tall as its content, so the page itself never scrolls and
     // every vertical swipe belongs to the feed. Past the height clamp the page
     // scrolls, without a bounce: at its top or bottom the swipe goes to the feed.
-    scrollView.isScrollEnabled = false
-    scrollView.bounces = false
-    scrollView.alwaysBounceVertical = false
-    scrollView.alwaysBounceHorizontal = false
-    scrollView.showsHorizontalScrollIndicator = false
-    scrollView.pinchGestureRecognizer?.isEnabled = false
+    let webView = WorkSandboxedWebView.make(
+      frame: container.bounds,
+      configuration: configuration,
+      navigationDelegate: self
+    )
 
     self.webView = webView
     self.nonce = nonce
@@ -418,14 +395,7 @@ final class WorkSceneController: NSObject, ObservableObject {
     nonce = nil
     ready = false
     settled = false
-    webView.stopLoading()
-    webView.navigationDelegate = nil
-    webView.uiDelegate = nil
-    webView.configuration.userContentController.removeAllUserScripts()
-    webView.configuration.userContentController.removeScriptMessageHandler(
-      forName: Self.handlerName,
-      contentWorld: Self.bridgeWorld
-    )
+    WorkSandboxedWebView.tearDown(webView, handlerName: Self.handlerName, world: Self.bridgeWorld)
     if let container {
       container.remove(webView)
       container.showStill(currentStill(in: container), covering: true)
@@ -568,7 +538,7 @@ final class WorkSceneController: NSObject, ObservableObject {
   /// The reader tapped the web view a moment ago. The host sees the tap for
   /// itself; nothing the page says counts.
   private var tappedJustNow: Bool {
-    CACurrentMediaTime() - lastTapAt < Self.tapWindow
+    CACurrentMediaTime() - lastTapAt < WorkSandboxedWebView.tapWindow
   }
 
   private func open(_ raw: String) {
@@ -620,9 +590,9 @@ final class WorkSceneController: NSObject, ObservableObject {
   private var initialLoadStarted = false
 }
 
-// MARK: Navigation and UI refusals
+// MARK: Navigation (the UI refusals are `WorkSandboxedWebViewRefusals`)
 
-extension WorkSceneController: WKNavigationDelegate, WKUIDelegate {
+extension WorkSceneController: WKNavigationDelegate {
   func webView(
     _ webView: WKWebView,
     decidePolicyFor navigationAction: WKNavigationAction,
@@ -678,70 +648,6 @@ extension WorkSceneController: WKNavigationDelegate, WKUIDelegate {
       scheduleEvaluate()
     }
   }
-
-  func webView(
-    _ webView: WKWebView,
-    createWebViewWith configuration: WKWebViewConfiguration,
-    for navigationAction: WKNavigationAction,
-    windowFeatures: WKWindowFeatures
-  ) -> WKWebView? {
-    nil
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    runJavaScriptAlertPanelWithMessage message: String,
-    initiatedByFrame frame: WKFrameInfo,
-    completionHandler: @escaping @MainActor @Sendable () -> Void
-  ) {
-    completionHandler()
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    runJavaScriptConfirmPanelWithMessage message: String,
-    initiatedByFrame frame: WKFrameInfo,
-    completionHandler: @escaping @MainActor @Sendable (Bool) -> Void
-  ) {
-    completionHandler(false)
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    runJavaScriptTextInputPanelWithPrompt prompt: String,
-    defaultText: String?,
-    initiatedByFrame frame: WKFrameInfo,
-    completionHandler: @escaping @MainActor @Sendable (String?) -> Void
-  ) {
-    completionHandler(nil)
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    requestMediaCapturePermissionFor origin: WKSecurityOrigin,
-    initiatedByFrame frame: WKFrameInfo,
-    type: WKMediaCaptureType,
-    decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
-  ) {
-    decisionHandler(.deny)
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    requestDeviceOrientationAndMotionPermissionFor origin: WKSecurityOrigin,
-    initiatedByFrame frame: WKFrameInfo,
-    decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
-  ) {
-    decisionHandler(.deny)
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
-    completionHandler: @escaping @MainActor @Sendable (UIContextMenuConfiguration?) -> Void
-  ) {
-    completionHandler(nil)
-  }
 }
 
 /// The content controller keeps its handler alive; this keeps the handler from
@@ -767,177 +673,11 @@ private final class WorkSceneMessageProxy: NSObject, WKScriptMessageHandler {
 
 // MARK: - Container
 
-/// Sees a tap without taking it: the web view's own recognizers and the feed's
-/// pan all still run. A touch that moves is a scroll, not a tap.
-private final class WorkSceneTapObserver: UIGestureRecognizer {
-  var onTap: (() -> Void)?
-  private var start: CGPoint?
-  private var moved = false
-
-  override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-    guard start == nil, let touch = touches.first else { return }
-    start = touch.location(in: nil)
-    moved = false
-  }
-
-  override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-    guard let start, let touch = touches.first else { return }
-    let point = touch.location(in: nil)
-    if hypot(point.x - start.x, point.y - start.y) > 12 { moved = true }
-  }
-
-  override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
-    if start != nil, !moved { onTap?() }
-    state = .failed
-  }
-
-  override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
-    state = .failed
-  }
-
-  override func reset() {
-    start = nil
-    moved = false
-  }
-
-  override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
-  override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
-}
-
-/// What a container reports to: a scene's controller here, or an MCP App's
-/// (`WorkMcpAppView.swift`). Both get the same tap observer and the same
-/// "on screen" rule, because both hold code ADE did not write.
-@MainActor
-protocol WorkSceneContainerOwner: AnyObject {
-  /// The reader tapped inside the container. The host saw it; the page did not say it.
-  func containerNoteTap()
-  func containerScheduleEvaluate()
-  func containerThemeChanged()
-  func containerDetach(_ container: WorkSceneContainerView)
-}
-
 extension WorkSceneController: WorkSceneContainerOwner {
   func containerNoteTap() { noteTap() }
   func containerScheduleEvaluate() { scheduleEvaluate() }
   func containerThemeChanged() { themeChanged() }
   func containerDetach(_ container: WorkSceneContainerView) { detach(container) }
-}
-
-/// The scene's place in the row: the picture, and the web view over it while
-/// the row is on screen. It decides "on screen" itself, from the feed it sits
-/// in, because a transcript cell is also built off screen to be measured.
-final class WorkSceneContainerView: UIView {
-  private weak var controller: (any WorkSceneContainerOwner)?
-  private let stillView = UIImageView()
-  private weak var webView: WKWebView?
-  private weak var observedScrollView: UIScrollView?
-  private var offsetObservation: NSKeyValueObservation?
-
-  init(controller: any WorkSceneContainerOwner) {
-    self.controller = controller
-    super.init(frame: .zero)
-    clipsToBounds = true
-    backgroundColor = .clear
-    stillView.contentMode = .topLeft
-    stillView.clipsToBounds = true
-    stillView.isHidden = true
-    stillView.isUserInteractionEnabled = false
-    addSubview(stillView)
-
-    let taps = WorkSceneTapObserver()
-    taps.cancelsTouchesInView = false
-    taps.delaysTouchesBegan = false
-    taps.delaysTouchesEnded = false
-    taps.onTap = { [weak self] in self?.controller?.containerNoteTap() }
-    addGestureRecognizer(taps)
-
-    registerForTraitChanges(
-      [UITraitUserInterfaceStyle.self, UITraitPreferredContentSizeCategory.self]
-    ) { (view: WorkSceneContainerView, _) in
-      view.controller?.containerThemeChanged()
-    }
-  }
-
-  @available(*, unavailable)
-  required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-  /// In a window, not hidden by any ancestor (a cell built to be measured, or
-  /// one waiting for reuse, is), and inside the feed's visible part.
-  var isOnScreen: Bool {
-    guard let window, bounds.width > 0, bounds.height > 0 else { return false }
-    var ancestor: UIView? = self
-    while let view = ancestor {
-      if view.isHidden || view.alpha < 0.01 { return false }
-      ancestor = view.superview
-    }
-    if let scrollView = observedScrollView {
-      return convert(bounds, to: scrollView).intersects(scrollView.bounds)
-    }
-    return convert(bounds, to: window).intersects(window.bounds)
-  }
-
-  /// The reader's finger or its momentum is moving the feed. A pin the
-  /// transcript writes while a turn streams is not the reader.
-  var isReaderScrolling: Bool {
-    guard let scrollView = observedScrollView else { return false }
-    return scrollView.isDragging || scrollView.isDecelerating
-  }
-
-  override func didMoveToWindow() {
-    super.didMoveToWindow()
-    observeEnclosingScrollView()
-    controller?.containerScheduleEvaluate()
-  }
-
-  override func layoutSubviews() {
-    super.layoutSubviews()
-    webView?.frame = bounds
-    stillView.frame = bounds
-    controller?.containerScheduleEvaluate()
-  }
-
-  private func observeEnclosingScrollView() {
-    var found: UIScrollView?
-    var ancestor = superview
-    while let view = ancestor {
-      if let scrollView = view as? UIScrollView {
-        found = scrollView
-        break
-      }
-      ancestor = view.superview
-    }
-    guard found !== observedScrollView || window == nil else { return }
-    offsetObservation = nil
-    observedScrollView = window == nil ? nil : found
-    offsetObservation = observedScrollView?.observe(\.contentOffset) { [weak self] _, _ in
-      MainActor.assumeIsolated {
-        self?.controller?.containerScheduleEvaluate()
-      }
-    }
-  }
-
-  func showStill(_ image: UIImage?, covering: Bool) {
-    if stillView.image !== image { stillView.image = image }
-    stillView.isHidden = image == nil || !covering
-  }
-
-  func install(_ webView: WKWebView, hidden: Bool) {
-    self.webView?.removeFromSuperview()
-    self.webView = webView
-    webView.frame = bounds
-    webView.alpha = hidden ? 0 : 1
-    addSubview(webView)
-  }
-
-  func revealWebView() {
-    webView?.alpha = 1
-    stillView.isHidden = true
-  }
-
-  func remove(_ webView: WKWebView) {
-    webView.removeFromSuperview()
-    if self.webView === webView { self.webView = nil }
-  }
 }
 
 private struct WorkSceneContainer: UIViewRepresentable {
@@ -959,17 +699,6 @@ private struct WorkSceneContainer: UIViewRepresentable {
 
   static func dismantleUIView(_ view: WorkSceneContainerView, coordinator: ()) {
     view.detachFromController()
-  }
-}
-
-extension WorkSceneContainerView {
-  func detachFromController() {
-    offsetObservation = nil
-    observedScrollView = nil
-    controller?.containerDetach(self)
-    // Whatever became of the controller, no web view outlives its row.
-    webView?.removeFromSuperview()
-    webView = nil
   }
 }
 
