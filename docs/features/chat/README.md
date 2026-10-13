@@ -2092,7 +2092,7 @@ Every agent's prompt carries one line (`buildAdeBootstrapGuidance`): use a scene
 
 An **MCP App** is a page an MCP server ships with one of its tools (the MCP Apps extension, `io.modelcontextprotocol/ui`). The tool declares a `ui://` resource in `_meta.ui.resourceUri`; when the agent calls the tool, ADE reads that resource and shows the page in the transcript, under the tool call. The page is third-party code: the server wrote it, not ADE and not the agent.
 
-**Where apps run.** Claude and Codex chats, in the desktop app and the iPhone app. Every other provider has no way to read a tool's page or to call back, so its tool calls stay ordinary rows. The hosted web client and the TUI show the card's fallback text, which says where apps run and that the web client is not one of them. The iPhone host is described under "On the phone" below; it has been compiled against stubs and not yet run on a device or simulator.
+**Where apps run.** Claude and Codex chats, in the desktop app and the iPhone app. Every other provider has no way to read a tool's page or to call back, so its tool calls stay ordinary rows. The hosted web client and the TUI show the card's fallback text, which says where apps run and that the web client is not one of them. The iPhone host is described under "On the phone" below. It has run on a simulator from a saved app document (rendering, both appearances, the sandbox and policy, the tap rule, the composer draft); a tool call from a phone to a paired Mac has not been run end to end.
 
 ### How an app gets into the chat
 
