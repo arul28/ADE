@@ -1,5 +1,5 @@
 import path from "node:path";
-import { JsonRpcClient } from "../../tuiClient/jsonRpcClient";
+import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { MAX_HANDOFF_TIMEOUT_MS } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../../desktop/src/shared/demoVideo/demoContract";
@@ -196,12 +196,15 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
         `Desktop browser bridge call ${method} timed out after ${timeoutMs}ms.`,
       );
     } catch (error) {
-      // Drop the connection on any error so the next call reconnects.
-      drop(error);
+      // The desktop answered with an error (a bad selector, a missing
+      // element): the socket is fine. Anything else drops the connection so
+      // the next call reconnects.
+      const message = error instanceof Error ? error.message : String(error);
+      if (!(error instanceof JsonRpcResponseError) || OLD_DESKTOP_AUTH_REFUSAL.test(message)) drop(error);
       if (!retried && isClosedSocketError(error)) {
         return await callBridge(method, params, true);
       }
-      if (OLD_DESKTOP_AUTH_REFUSAL.test(error instanceof Error ? error.message : String(error))) {
+      if (OLD_DESKTOP_AUTH_REFUSAL.test(message)) {
         throw new Error(OLD_DESKTOP_MESSAGE);
       }
       throw error;

@@ -25,13 +25,27 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /\bchat session '[^']+' was not found/i,
   // The project's runtime is still starting (or reconnecting) after a launch or switch.
   /unavailable until ADE is connected to the project runtime/,
+  /Local runtime project is not available for this window/,
+  // Mac-only surfaces asked for before the runtime that owns them connected.
+  /^(Mac Desktop is not available on this machine|iOS Simulator service is not available)\.$/,
   // A paired machine that is asleep, offline or stopped.
   /Can't reach .+ it may be asleep or ADE may be stopped there/,
   /Remote ADE service connection failed recently/,
+  /Remote ADE service timed out waiting for method/,
+  /Account Activity is reconnecting/,
   /is not sharing this project/,
   // Git states the user is told about and resolves themselves.
   /\bDIRTY_WORKTREE:/,
   /nothing to commit, working tree clean/,
+  /Lane worktree is missing\. Restore or recreate/,
+  /GitHub auth missing\. Run gh auth login/,
+  // A screenshot or image attachment cleaned up while a chat still shows it.
+  /\bPath does not exist: .+\.(png|jpe?g|gif|webp)$/i,
+  // Answers to an agent driving a browser or a desktop: it fixes its call and retries.
+  /Invalid element selector: /,
+  /\b(MAC|WINDOWS)_DESKTOP_(NO_DISPLAY|NO_WINDOW|HANDLE_EXPIRED|CONSENT_REQUIRED|OUT_PATH_OUTSIDE_ROOT):/,
+  /is not on this lane's display/,
+  /already has an active writer/,
   // An agent filing the same proof twice; the caller is told which one it matches.
   /\bPROOF_DUPLICATE:/,
   // A provider login that lost access; the user re-signs in.
