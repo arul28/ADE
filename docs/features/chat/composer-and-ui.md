@@ -1350,6 +1350,10 @@ chat pane mount, which happens either way.
   first, so CLI, automation, and queued sends never do. When Claude's own
   `resume_return` question is pending, ADE does not also compact. Thresholds:
   `shared/compactFirst.ts` (`compactFirstIdleMs`, `COMPACT_FIRST_MIN_TOKENS`).
+  The idle clock starts at the cache's `since`, except that a `since` older than
+  the start of the last finished turn (`lastFinishedTurnMs`) is from an earlier
+  turn whose summary has not caught up, so that turn's end is used instead; and
+  the chip stays hidden while a message is queued, since it sends on its own.
   Desktop, web, iOS and `ade code` (`/compact-first`, see the ade-code README)
   share the rule. iOS fetches the summary for a Claude chat in another project
   too, since only the summary says whether its cache expired. To try it on a small chat, start the

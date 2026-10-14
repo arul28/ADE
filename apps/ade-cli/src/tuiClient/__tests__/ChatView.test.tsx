@@ -531,19 +531,24 @@ describe("ChatView", () => {
     expect(frame).not.toContain("prompt_too_long");
   });
 
-  it("renders queued steer messages as staged instead of normal sent bubbles", () => {
+  it("renders each queued message as one line marked with its place in the queue, not as a sent bubble", () => {
+    const queued = (sequence: number, steerId: string, text: string) => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:0${sequence}.000Z`,
+      sequence,
+      event: { type: "user_message", text, steerId, deliveryState: "queued", turnId: "turn-active" },
+    });
     const frame = renderEvents([
-      {
-        sessionId: "s1",
-        timestamp: "2026-01-01T12:00:00.000Z",
-        sequence: 1,
-        event: { type: "user_message", text: "follow this after the tool finishes", steerId: "steer-1", deliveryState: "queued", turnId: "turn-active" },
-      },
-    ], { width: 80 });
+      queued(1, "steer-1", "follow this after the tool finishes"),
+      queued(2, "steer-2", "then run the tests"),
+    ] as AgentChatEventEnvelope[], { width: 80 });
 
-    expect(frame).toContain("staged message");
-    expect(frame).toContain("sends after turn");
-    expect(frame).toContain("follow this after the tool finishes");
+    const lines = frame.split("\n");
+    const firstLine = lines.find((line) => line.includes("follow this after the tool finishes"));
+    const secondLine = lines.find((line) => line.includes("then run the tests"));
+    expect(firstLine).toContain("sends next");
+    expect(secondLine).toContain("queued");
+    expect(secondLine).not.toContain("sends next");
     expect(frame).not.toMatch(/[╭╮╯╰]/);
   });
 
@@ -564,7 +569,6 @@ describe("ChatView", () => {
     ], { width: 80 });
 
     expect(frame).not.toContain("queued version");
-    expect(frame).not.toContain("staged message");
     expect(frame).toContain("delivered version");
     expect(frame).toContain("Sent after turn");
   });
