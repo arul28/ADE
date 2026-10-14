@@ -9509,8 +9509,9 @@ app.whenReady().then(async () => {
     void (postUpdateTransactionDone ?? Promise.resolve())
       .then(() => armOwedResumes(resumedAfterUpdate))
       .catch((error: unknown) => {
-        // Every step inside logs its own failure; this guards a throw none of
-        // them expected. A resume is the last thing that should go unsaid.
+        // The arm step logs its own failures, and the consume is best-effort
+        // by design; this guards a throw neither expects. A resume is the last
+        // thing that should go unsaid.
         localRuntimeLogger.warn("update_resume.arm_chain_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
