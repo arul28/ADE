@@ -315,6 +315,9 @@ export class RemoteConnectionService {
     // the last explicit Connect. Without this the list kept the old version
     // and called a finished update "didn't apply".
     this.pool.onEntryConnected((targetId, result) => {
+      // A connect that finishes after the machine was removed or disconnected
+      // by hand must not write it back.
+      if (!this.registry.get(targetId) || this.manuallyDisconnectedTargetIds.has(targetId)) return;
       this.mergeStatus(targetId, {
         version: result.version,
         arch: result.arch,

@@ -221,7 +221,7 @@ export function SavedMachineRow({
         : section === "unavailable" && row.unavailableReason
           ? row.unavailableReason
           : row.connected
-            ? [routeLabel ?? "Connected", latency].filter(Boolean).join(" · ")
+            ? [routeLabel ?? "Online", latency].filter(Boolean).join(" · ")
             : targetConnecting && !connectingStale
               ? "Connecting…"
               : target.lastConnectedAt || statusLabel !== "Not connected"
