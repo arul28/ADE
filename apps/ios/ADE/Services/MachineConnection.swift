@@ -967,10 +967,7 @@ final class MachineConnection {
   }
 
   private func noteSnapshotDropped(sessionId: String, reason: String, rawEventCount: Int) {
-    var trace = chatStreamTraces[sessionId, default: ChatStreamTrace()]
-    trace.snapshotsDropped += 1
-    trace.lastSnapshotDropReason = reason
-    chatStreamTraces[sessionId] = trace
+    chatStreamTraces[sessionId, default: ChatStreamTrace()].noteSnapshotDropped(reason: reason)
     CrashReporting.breadcrumb("chat.stream", message: "fleet chat_subscribe ack dropped", data: [
       "machine": machineKey,
       "session": sessionId,
@@ -985,7 +982,16 @@ final class MachineConnection {
     var fields = (chatStreamTraces[sessionId] ?? ChatStreamTrace()).fields
     fields["path"] = "fleet"
     fields["connLive"] = String(isLive)
-    fields["connPhase"] = String(describing: phase).prefix(60).description
+    fields["connPhase"] = {
+      switch phase {
+      case .idle: return "idle"
+      case .connecting: return "connecting"
+      case .live: return "live"
+      case .offline: return "offline"
+      case .needsUpdate: return "needsUpdate"
+      case .needsAttention: return "needsAttention"
+      }
+    }()
     fields["connRoute"] = liveRouteKind.map { String(describing: $0) } ?? "nil"
     fields["connSocketCloses"] = String(socketCloseCount)
     fields["hostChatStreaming"] = String(supportsChatStreaming)
@@ -1088,80 +1094,4 @@ func machineConnectionDecode<T: Decodable>(_ payload: Any, as type: T.Type) -> T
 func nonEmptyTrimmed(_ value: String?) -> String? {
   guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
   return trimmed
-}
-
-/// What went over a socket for one chat: subscribes, history snapshots and
-/// live events, and what was dropped and why. Diagnostics only.
-struct ChatStreamTrace {
-  var subscribesSent = 0
-  var subscribesFailedToSend = 0
-  var lastSubscribeRequestedSnapshot = false
-  var lastSubscribeResume = "none"
-  var lastSubscribeAt: Date?
-  var snapshotsApplied = 0
-  var snapshotsDropped = 0
-  var lastSnapshotDropReason = "none"
-  var lastSnapshotRawEvents = -1
-  var lastSnapshotDecodedEvents = -1
-  var lastSnapshotResumed = false
-  var lastSnapshotGap = false
-  var lastSnapshotAt: Date?
-  var liveEventsApplied = 0
-  var liveEventsSinceSnapshot = 0
-  var liveEventsDropped = 0
-  var liveEventsDroppedAsOld = 0
-  var firstLiveEventAt: Date?
-  var unsubscribes = 0
-  var socketClosesWhileSubscribed = 0
-
-  mutating func noteSubscribe(sent: Bool, requestSnapshot: Bool, resume: String) {
-    if sent { subscribesSent += 1 } else { subscribesFailedToSend += 1 }
-    lastSubscribeRequestedSnapshot = requestSnapshot
-    lastSubscribeResume = resume
-    lastSubscribeAt = Date()
-  }
-
-  mutating func noteSnapshotApplied(rawEventCount: Int, decodedEventCount: Int, resumed: Bool, gap: Bool) {
-    snapshotsApplied += 1
-    lastSnapshotRawEvents = rawEventCount
-    lastSnapshotDecodedEvents = decodedEventCount
-    lastSnapshotResumed = resumed
-    lastSnapshotGap = gap
-    lastSnapshotAt = Date()
-    liveEventsSinceSnapshot = 0
-  }
-
-  mutating func noteLiveEvent() {
-    liveEventsApplied += 1
-    liveEventsSinceSnapshot += 1
-    if firstLiveEventAt == nil { firstLiveEventAt = Date() }
-  }
-
-  var fields: [String: String] {
-    func age(_ date: Date?) -> String {
-      date.map { String(Int(Date().timeIntervalSince($0))) + "s" } ?? "never"
-    }
-    return [
-      "subscribesSent": String(subscribesSent),
-      "subscribesFailedToSend": String(subscribesFailedToSend),
-      "lastSubscribeRequestedSnapshot": String(lastSubscribeRequestedSnapshot),
-      "lastSubscribeResume": lastSubscribeResume,
-      "lastSubscribeAgo": age(lastSubscribeAt),
-      "snapshotsApplied": String(snapshotsApplied),
-      "snapshotsDropped": String(snapshotsDropped),
-      "lastSnapshotDropReason": lastSnapshotDropReason,
-      "lastSnapshotRawEvents": String(lastSnapshotRawEvents),
-      "lastSnapshotDecodedEvents": String(lastSnapshotDecodedEvents),
-      "lastSnapshotResumed": String(lastSnapshotResumed),
-      "lastSnapshotGap": String(lastSnapshotGap),
-      "lastSnapshotAgo": age(lastSnapshotAt),
-      "liveEventsApplied": String(liveEventsApplied),
-      "liveEventsSinceSnapshot": String(liveEventsSinceSnapshot),
-      "liveEventsDropped": String(liveEventsDropped),
-      "liveEventsDroppedAsOld": String(liveEventsDroppedAsOld),
-      "firstLiveEventAgo": age(firstLiveEventAt),
-      "unsubscribes": String(unsubscribes),
-      "socketClosesWhileSubscribed": String(socketClosesWhileSubscribed),
-    ]
-  }
 }

@@ -25824,10 +25824,7 @@ extension SyncService {
   }
 
   func noteFocusedChatSnapshotDropped(sessionId: String, reason: String, rawEventCount: Int) {
-    var trace = focusedChatStreamTraces[sessionId, default: ChatStreamTrace()]
-    trace.snapshotsDropped += 1
-    trace.lastSnapshotDropReason = reason
-    focusedChatStreamTraces[sessionId] = trace
+    focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].noteSnapshotDropped(reason: reason)
     CrashReporting.breadcrumb("chat.stream", message: "focused chat_subscribe ack dropped", data: [
       "session": sessionId,
       "reason": reason,

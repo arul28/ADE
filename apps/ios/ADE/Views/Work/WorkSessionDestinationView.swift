@@ -2338,10 +2338,13 @@ func workChatEmptyThreadAnomaly(
   shownTimelineCount: Int,
   isStreamingTurn: Bool,
   sessionDeleted: Bool,
+  loadState: WorkChatTranscriptLoadState,
   diagnostics: ChatThreadIngestDiagnostics,
   isLiveAndReachable: Bool
 ) -> String? {
-  guard isLiveAndReachable, !sessionDeleted, shownTimelineCount == 0 else { return nil }
+  // Only the idle empty state claims "No chat messages yet"; loading shows a
+  // skeleton and a failure shows Retry, which are different reports.
+  guard isLiveAndReachable, !sessionDeleted, shownTimelineCount == 0, loadState == .idle else { return nil }
   guard isStreamingTurn || diagnostics.liveEventCount > 0 else { return nil }
   if diagnostics.awaitingBoundaryPage { return "held_for_boundary_page" }
   if diagnostics.snapshotCount == 0 { return "no_snapshot" }
@@ -2366,6 +2369,7 @@ extension WorkSessionDestinationView {
         shownTimelineCount: shown?.presentation.timelineCount ?? 0,
         isStreamingTurn: shown?.isStreamingTurn ?? reference.isStreamingTurn,
         sessionDeleted: reference.sessionDeleted,
+        loadState: reference.loadState,
         diagnostics: reference.ingestDiagnostics,
         isLiveAndReachable: isLiveAndReachable
       ) else { continue }
@@ -2382,7 +2386,14 @@ extension WorkSessionDestinationView {
     context["kind"] = kind
     context["sessionId"] = sessionId
     context["machineKey"] = threadKey?.machineKey ?? "nil"
-    context["threadScope"] = threadKey?.scope.storageKey.prefix(24).description ?? "nil"
+    // The scope kind only: a cross-project key carries the project's root path.
+    context["threadScope"] = threadKey.map {
+      switch $0.scope {
+      case .project: return "project"
+      case .personal: return "personal"
+      case .crossProject: return "crossProject"
+      }
+    } ?? "nil"
     context["isRemoteMachineChat"] = String(isRemoteMachineChat)
     context["isCrossProject"] = String(isCrossProject)
     context["personalChat"] = String(personalChat)
