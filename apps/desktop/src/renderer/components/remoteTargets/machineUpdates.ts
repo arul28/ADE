@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { extractError } from "../../lib/format";
+import { captureError } from "../../../shared/sentry/capture";
 import { UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import { confirmMachineUpdates, type MachineWithImpact } from "./MachineUpdateImpact";
 import {
@@ -111,7 +112,10 @@ async function readLiveVersions(): Promise<Map<string, string | null>> {
   try {
     const snapshot = await window.ade.remoteRuntime.getConnectionSnapshot();
     return new Map(connectedMachinesFromSnapshot(snapshot).map((machine) => [machine.id, machine.version]));
-  } catch {
+  } catch (error) {
+    // Sending without the re-read is safe: the host refuses a version it
+    // already has. Reported because the snapshot read should not fail.
+    captureError(error, { fingerprint: ["machine-updates", "live-version-read"] });
     return new Map();
   }
 }

@@ -1,5 +1,6 @@
 import { app } from "electron";
 import net from "node:net";
+import { captureError } from "../../../shared/sentry/capture";
 import type { Client, ClientChannel } from "ssh2";
 import type {
   RemoteRuntimeActionRequest,
@@ -535,8 +536,10 @@ export class RemoteConnectionPool {
       for (const listener of [...this.connectedListeners]) {
         try {
           listener(target.id, entry.result);
-        } catch {
-          // Lifecycle notifications are best-effort.
+        } catch (error) {
+          // The connection still stands; a listener that throws is a bug in
+          // the listener, reported, not a failed connect.
+          captureError(error, { fingerprint: ["remote-connection-pool", "entry-connected-listener"] });
         }
       }
       return entry;
